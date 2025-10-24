@@ -1,0 +1,180 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lynchpin"
+version = "0.1.0"
+description = "Local-first evidence and analysis platform for personal data exports and activity captures"
+authors = [{name = "Sinity"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "cachew>=0.22",
+    "claude-agent-sdk>=0.1.48",
+    "cryptography>=42",
+    "duckdb>=0.10",
+    "hmmlearn>=0.3",
+    "mcp>=1.7",
+    "numpy>=1.26",
+    "polars>=1.0",
+    "polylogue",
+    "pyyaml>=6.0",
+    "rich>=13",
+    "scipy>=1.12",
+    "tiktoken>=0.7",
+    "typer>=0.12",
+    "tree-sitter>=0.24",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-rust>=0.23",
+    "lz4>=4.3",
+]
+
+[project.urls]
+Repository = "https://github.com/Sinity/sinity-lynchpin"
+Issues = "https://github.com/Sinity/sinity-lynchpin/issues"
+
+[project.scripts]
+lynchpin-mcp = "lynchpin.mcp.cli:main"
+lynchpin-current-state = "lynchpin.cli.current_state:main"
+lynchpin-github-frontier = "lynchpin.cli.github_frontier:main"
+lynchpin-materialize = "lynchpin.cli.materialize:main"
+lynchpin-machine-benchmarks = "lynchpin.cli.machine_benchmarks:main"
+lynchpin-substrate-snapshot = "lynchpin.cli.substrate_snapshot:main"
+lynchpin-narrative = "lynchpin.cli.narrative:main"
+
+[project.optional-dependencies]
+dev = ["black", "mypy", "pytest", "ruff", "types-PyYAML"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lynchpin*"]
+
+[tool.setuptools.package-data]
+"lynchpin.analysis.projects" = ["assets/*.html"]
+"lynchpin.analysis" = ["analysis_spec.json", "tool_rules/**/*.yml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+cache_dir = ".lynchpin/cache/pytest"
+# Default-exclude live integration coverage. Run them explicitly via
+# `pytest -m slow` (or remove the addopts override) when verifying claude
+# CLI / subscription auth interactively.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: live or long-running integration coverage",
+]
+filterwarnings = [
+    # cachew emits this on import even when orjson is installed; suppress
+    "ignore:orjson couldn't be imported:UserWarning",
+]
+
+[tool.ruff]
+cache-dir = ".lynchpin/cache/ruff"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+follow_imports = "silent"
+cache_dir = ".lynchpin/cache/mypy"
+files = [
+    "lynchpin/__init__.py",
+    "lynchpin/analysis/__init__.py",
+    "lynchpin/analysis/__main__.py",
+    "lynchpin/core/__init__.py",
+    "lynchpin/core/analytics.py",
+    "lynchpin/core/cache.py",
+    "lynchpin/core/calls.py",
+    "lynchpin/core/classify.py",
+    "lynchpin/core/claude_sdk.py",
+    "lynchpin/core/config.py",
+    "lynchpin/core/io.py",
+    "lynchpin/core/parse.py",
+    "lynchpin/core/periods.py",
+    "lynchpin/core/primitives.py",
+    "lynchpin/core/project_mentions.py",
+    "lynchpin/core/projects.py",
+    "lynchpin/core/serialization.py",
+    "lynchpin/core/title_features.py",
+    "lynchpin/graph/__init__.py",
+    "lynchpin/graph/context_pack.py",
+    "lynchpin/graph/current_state.py",
+    "lynchpin/graph/evidence_graph.py",
+    "lynchpin/graph/movement.py",
+    "lynchpin/graph/weak_tags.py",
+    "lynchpin/graph/sleep_infer.py",
+    "lynchpin/graph/source_readiness.py",
+    "lynchpin/graph/work_correlation.py",
+    "lynchpin/analysis/core/canonical.py",
+    "lynchpin/analysis/core/commit_facts.py",
+    "lynchpin/analysis/core/commit_stats.py",
+    "lynchpin/analysis/core/dag.py",
+    "lynchpin/analysis/core/fs.py",
+    "lynchpin/analysis/core/git.py",
+    "lynchpin/analysis/core/graph_metrics.py",
+    "lynchpin/analysis/core/naming.py",
+    "lynchpin/analysis/core/self_analysis.py",
+    "lynchpin/analysis/core/status.py",
+    "lynchpin/analysis/core/textshape.py",
+    "lynchpin/analysis/ecosystem/current_state.py",
+    "lynchpin/analysis/ecosystem/polylogue_metrics.py",
+    "lynchpin/analysis/ecosystem/work_package_scope.py",
+    "lynchpin/analysis/knowledge/cli.py",
+    "lynchpin/analysis/knowledge/ledgers.py",
+    "lynchpin/analysis/knowledge/__main__.py",
+    "lynchpin/analysis/knowledge/__init__.py",
+    "lynchpin/analysis/active/git_facts.py",
+    "lynchpin/analysis/active/snapshot.py",
+    "lynchpin/analysis/active/substrate_promote_ai.py",
+    "lynchpin/analysis/active/substrate_promote_artifacts.py",
+    "lynchpin/analysis/active/substrate_promote_graph.py",
+    "lynchpin/analysis/active/substrate_promote_personal.py",
+    "lynchpin/analysis/active/substrate_promote_review.py",
+    "lynchpin/analysis/change/work_packages.py",
+    "lynchpin/analysis/interpretation/velocity_windows.py",
+    "lynchpin/analysis/machine/episodes.py",
+    "lynchpin/analysis/maps/change_surface.py",
+    "lynchpin/analysis/maps/cli.py",
+    "lynchpin/analysis/maps/dependency_map.py",
+    "lynchpin/analysis/maps/module_keys.py",
+    "lynchpin/analysis/maps/project_maps.py",
+    "lynchpin/analysis/sinex/temporal.py",
+    "lynchpin/cli/current_state.py",
+    "lynchpin/ingest/_manifest.py",
+    "lynchpin/sources/analysis_artifacts.py",
+    "lynchpin/sources/activitywatch.py",
+    "lynchpin/sources/clipboard.py",
+    "lynchpin/sources/code_snapshots.py",
+    "lynchpin/sources/exports.py",
+    "lynchpin/sources/exports_dendron.py",
+    "lynchpin/sources/exports_goodreads.py",
+    "lynchpin/sources/exports_messenger.py",
+    "lynchpin/sources/exports_raindrop.py",
+    "lynchpin/sources/exports_wykop.py",
+    "lynchpin/sources/git.py",
+    "lynchpin/sources/github.py",
+    "lynchpin/sources/health.py",
+    "lynchpin/sources/health_daily.py",
+    "lynchpin/sources/health_loaders.py",
+    "lynchpin/sources/health_models.py",
+    "lynchpin/sources/__init__.py",
+    "lynchpin/sources/irc.py",
+    "lynchpin/sources/keylog.py",
+    "lynchpin/sources/machine.py",
+    "lynchpin/sources/machine_models.py",
+    "lynchpin/sources/machine_schema.py",
+    "lynchpin/sources/machine_sqlite.py",
+    "lynchpin/sources/machine_experiments.py",
+    "lynchpin/sources/polylogue.py",
+    "lynchpin/sources/raw_log.py",
+    "lynchpin/sources/reddit.py",
+    "lynchpin/sources/sleep.py",
+    "lynchpin/sources/spotify.py",
+    "lynchpin/sources/terminal.py",
+    "lynchpin/sources/substance.py",
+    "lynchpin/sources/takeout_chrome.py",
+    "lynchpin/sources/web.py",
+]

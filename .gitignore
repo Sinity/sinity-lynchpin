@@ -1,0 +1,27 @@
+# Nix & Direnv
+.direnv/
+result
+
+# Python user installs / caches
+.pyuser/
+.jupyter/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# R libraries
+.rlib/
+
+# Local raw datasets (heavy, non-versioned)
+data/raw/
+
+# Data/analysis artifacts
+tmp/
+scratch/
+
+# Editor junk
+*.swp
+*.swo
+.DS_Store

@@ -1,0 +1,140 @@
+# Sinex Analysis Commands
+
+# Default command - show help
+default:
+    @just --list
+
+# Initialize SQLite database with schema
+init-db:
+    #!/usr/bin/env bash
+    sqlite3 metrics.db << 'EOF'
+    CREATE TABLE IF NOT EXISTS metrics (
+        commit_hash TEXT,
+        timestamp INTEGER,
+        metric_type TEXT,
+        metric_value REAL,
+        metric_json TEXT,
+        tags TEXT,
+        PRIMARY KEY (commit_hash, metric_type)
+    );
+    
+    CREATE TABLE IF NOT EXISTS commits (
+        hash TEXT PRIMARY KEY,
+        timestamp INTEGER,
+        author TEXT,
+        message TEXT,
+        branch TEXT,
+        parent_hash TEXT
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_metrics_type ON metrics(metric_type);
+    EOF
+    echo "✅ Database initialized: metrics.db"
+
+# Gather LOC metrics for all commits
+gather-loc:
+    #!/usr/bin/env bash
+    cd ../sinex
+    echo "📊 Gathering LOC metrics..."
+    
+    for commit in $(git rev-list --reverse HEAD); do
+        echo -n "."
+        git checkout -q $commit 2>/dev/null
+        
+        # Get commit metadata
+        timestamp=$(git show -s --format=%ct $commit)
+        
+        # Get LOC data
+        loc_json=$(tokei --output-format json 2>/dev/null || echo '{}')
+        total_lines=$(echo "$loc_json" | jq -r '.Total.code // 0')
+        
+        # Store in SQLite
+        sqlite3 ../sinex-analysis/metrics.db << EOF
+        INSERT OR REPLACE INTO metrics (commit_hash, timestamp, metric_type, metric_value, metric_json)
+        VALUES ('$commit', $timestamp, 'loc_total', $total_lines, '$loc_json');
+EOF
+    done
+    
+    git checkout -q master
+    echo -e "\n✅ LOC metrics collected"
+
+# Quick analysis - last 10 commits
+recent:
+    sqlite3 -column -header metrics.db "SELECT datetime(timestamp, 'unixepoch') as date, metric_type, metric_value FROM metrics ORDER BY timestamp DESC LIMIT 10"
+
+# Start live-reloading web server
+serve:
+    #!/usr/bin/env python3
+    from livereload import Server
+    import os
+    
+    if not os.path.exists('web'):
+        os.makedirs('web')
+        
+    server = Server()
+    server.watch('web/*.html')
+    server.watch('web/*.js')
+    server.watch('web/*.css')
+    server.watch('metrics.db')
+    
+    print("🚀 Starting live-reload server at http://localhost:8080")
+    server.serve(root='web', port=8080)
+
+# Launch datasette for instant data exploration
+explore:
+    datasette metrics.db -o
+
+# Export all metrics as JSON
+export-json:
+    sqlite3 metrics.db "SELECT json_object('commit', commit_hash, 'timestamp', timestamp, 'metrics', json_group_object(metric_type, metric_value)) FROM metrics GROUP BY commit_hash ORDER BY timestamp" | jq -s '.'
+
+# Generate a simple line chart of LOC growth
+plot-loc:
+    #!/usr/bin/env python3
+    import sqlite3
+    import matplotlib.pyplot as plt
+    from datetime import datetime
+    
+    conn = sqlite3.connect('metrics.db')
+    data = conn.execute('''
+        SELECT timestamp, metric_value 
+        FROM metrics 
+        WHERE metric_type='loc_total' 
+        ORDER BY timestamp
+    ''').fetchall()
+    
+    dates = [datetime.fromtimestamp(row[0]) for row in data]
+    values = [row[1] for row in data]
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, values, linewidth=2)
+    plt.title('Lines of Code Over Time')
+    plt.xlabel('Date')
+    plt.ylabel('Total LOC')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('web/loc-growth.png')
+    print("📈 Chart saved to web/loc-growth.png")
+
+# Watch database and regenerate visualizations on change
+watch:
+    watchexec -w metrics.db just plot-loc
+
+# Import existing analysis data
+import-existing:
+    python3 import-existing-data.py
+
+# Clean up generated files
+clean:
+    rm -f metrics.db web/*.png web/*.html
+
+# Quick SQL query helper
+query query:
+    sqlite3 -column -header metrics.db "{{query}}"
+
+# Full setup: init DB and import existing data
+setup:
+    just init-db
+    just import-existing
+    echo "✅ Setup complete! Run 'just serve' to start the web interface"
