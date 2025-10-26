@@ -6,16 +6,22 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
         };
 
-        pythonEnv = pkgs.python312.withPackages (ps:
-          with ps; [
+        pythonEnv = pkgs.python312.withPackages (
+          ps: with ps; [
             black
             ipykernel
             ipython
@@ -25,7 +31,6 @@
             pandas
             polars
             pyarrow
-            pygwalker
             pyspark
             requests
             rich
@@ -41,7 +46,8 @@
             lxml
             networkx
             openpyxl
-          ]);
+          ]
+        );
 
         rEnv = pkgs.rWrapper.override {
           packages = with pkgs.rPackages; [
@@ -86,7 +92,6 @@
             uv
             pre-commit
             gnuplot
-            midnight-commander
           ];
 
           shellHook = ''
@@ -97,5 +102,6 @@
             echo "Loaded sinity-analysis devshell with Python ${pythonEnv.pythonVersion} and R support."
           '';
         };
-      });
+      }
+    );
 }
