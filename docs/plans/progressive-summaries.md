@@ -14,7 +14,7 @@ Establish a reproducible summarisation workflow that scales across Codex, Claude
 
 3. **Hierarchical Summaries**  
    - Level 0: raw Markdown (Polylogue output).  
-   - Level 1: per-session `summary.md` (500–800 tokens) generated via `python scripts/summarise_session.py <conversation.md>` (script TBD).  
+   - Level 1: per-session JSON produced by `python scripts/summarise_session.py <conversation.md>` (LLM-backed; outputs structured highlights/decisions/follow-ups).  
    - Level 2: weekly/initiative rollups stored in `docs/reference/sessions/weekly/YYYY-Www.md`.  
    - Level 3: thematic digests (e.g., “ActivityWatch sensitivity history”) collated under `docs/reference/themes/`.
 
@@ -28,7 +28,7 @@ Establish a reproducible summarisation workflow that scales across Codex, Claude
    - Schedule (systemd timer or cron) nightly sync that runs Polylogue watchers, summarises fresh sessions, and pushes embeddings.
 
 ## Near-Term Tasks
-- [x] Write `scripts/summarise_session.py` scaffolding (currently emits structured templates; hook in LLM once ready).  
+- [x] Ship LLM-backed `scripts/summarise_session.py` (OpenAI-compatible, JSON output).  
 - [ ] Prototype `data/derived/session_index.csv` (or DuckDB) linking sessions, categories, embeddings, and timeline IDs.  
 - [ ] Embed historical Claude Code runs (bulk) after validating Polylogue renders; backfill metadata into Sinevec.  
 - [ ] Add ActivityWatch/Git alignment columns (start/end timestamps, dominant repo) before building dashboards.

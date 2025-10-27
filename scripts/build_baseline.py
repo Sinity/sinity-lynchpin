@@ -199,11 +199,13 @@ def build_activitywatch_afk_summary(afk_path: Path) -> Dict[str, Any]:
             )
             .reset_index()
         )
+        pivot = pivot.rename(columns={"not-afk": "not_afk"})
         records: List[Dict[str, Any]] = []
         for row in pivot.itertuples(index=False):
-            payload = {col: getattr(row, col) for col in group_cols}
-            payload["active_hours"] = _round(getattr(row, "not-afk", 0.0) / 3600.0, 2)
-            payload["afk_hours"] = _round(getattr(row, "afk", 0.0) / 3600.0, 2)
+            row_dict = row._asdict()
+            payload = {col: row_dict.get(col) for col in group_cols}
+            payload["active_hours"] = _round(row_dict.get("not_afk", 0.0) / 3600.0, 2)
+            payload["afk_hours"] = _round(row_dict.get("afk", 0.0) / 3600.0, 2)
             records.append(payload)
         return sorted(records, key=lambda item: tuple(item[col] for col in group_cols))
 
