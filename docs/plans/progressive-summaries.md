@@ -10,11 +10,11 @@ Establish a reproducible summarisation workflow that scales across Codex, Claude
 
 2. **Session Registry**  
    - Mirror key runs into `docs/reference/sessions/` with raw path pointers, short highlights, and next actions (see `docs/reference/sessions/2025-10-24-codex.md` for template).  
-   - Maintain a lightweight CSV (`data/derived/session_index.csv`, TODO) with columns: date, provider, project tag, token count, markdown path, embedding id.
+   - Maintain a lightweight CSV (`artefacts/ledgers/session_index.csv`, TODO) with columns: date, provider, project tag, token count, markdown path, embedding id.
 
 3. **Hierarchical Summaries**  
    - Level 0: raw Markdown (Polylogue output).  
-   - Level 1: per-session JSON produced by `python scripts/summarise_session.py <conversation.md>` (LLM-backed; outputs structured highlights/decisions/follow-ups).  
+   - Level 1: per-session JSON produced by `python pipelines/sessions/summarise_session.py <conversation.md>` (LLM-backed; outputs structured highlights/decisions/follow-ups).  
    - Level 2: weekly/initiative rollups stored in `docs/reference/sessions/weekly/YYYY-Www.md`.  
    - Level 3: thematic digests (e.g., “ActivityWatch sensitivity history”) collated under `docs/reference/themes/`.
 
@@ -28,7 +28,7 @@ Establish a reproducible summarisation workflow that scales across Codex, Claude
    - Schedule (systemd timer or cron) nightly sync that runs Polylogue watchers, summarises fresh sessions, and pushes embeddings.
 
 ## Near-Term Tasks
-- [x] Ship LLM-backed `scripts/summarise_session.py` (OpenAI-compatible, JSON output).  
-- [ ] Prototype `data/derived/session_index.csv` (or DuckDB) linking sessions, categories, embeddings, and timeline IDs.  
+- [x] Ship LLM-backed `pipelines/sessions/summarise_session.py` (OpenAI-compatible, JSON output).  
+- [ ] Prototype `artefacts/ledgers/session_index.csv` (or DuckDB) linking sessions, categories, embeddings, and timeline IDs.  
 - [ ] Embed historical Claude Code runs (bulk) after validating Polylogue renders; backfill metadata into Sinevec.  
 - [ ] Add ActivityWatch/Git alignment columns (start/end timestamps, dominant repo) before building dashboards.

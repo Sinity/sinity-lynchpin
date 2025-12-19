@@ -19,19 +19,19 @@ Deliver day/week/month dashboards that surface attention patterns by combining A
    - Top project focus: derive from Atuin project counts + git repo totals for the month.
 
 ## Data Pipeline
-1. Run `scripts/build_baseline.py` to refresh core JSONs.  
-2. Extend pipeline with `scripts/build_wearables.py` (TODO) for steps, HR, stress.  
-3. Materialise a DuckDB dataset (`data/derived/focus_dashboard.duckdb`) joining:
+1. Run `pipelines/baseline/build_baseline.py` to refresh core JSONs.  
+2. Extend pipeline with `pipelines/wearables/build_wearables.py` (TODO) for steps, HR, stress.  
+3. Materialise a DuckDB dataset (`artefacts/focus/focus_dashboard.duckdb`) joining:
    - `activity_timeline.json`
    - Atuin category pivot
    - Git per-day churn
    - Codex/Claude session index
    - Wearable daily aggregates
-4. Use either Plotly Dash or a static Observable notebook hosted locally; ensure exports write to `results/<date>/dashboards/`.
+4. Use either Plotly Dash or a static Observable notebook hosted locally; ensure exports write to `artefacts/dashboards/<date>/`.
 
 ## Implementation Tasks
 - [ ] Sketch DuckDB schema + SQL that joins timeline, git, wearable data.  
 - [ ] Build prototype view (Plotly/Altair) for the daily ribbon.  
 - [ ] Define colour palette + category taxonomy (coding, research, comms, entertainment).  
-- [ ] Add CLI entrypoint `python scripts/render_dashboards.py --date-range ...` to regenerate assets.  
-- [ ] Document usage in `docs/pipelines/dashboards.md`.
+- [ ] Add CLI entrypoint `python pipelines/dashboards/render_dashboards.py --date-range ...` to regenerate assets.  
+- [ ] Document usage in `pipelines/dashboards/README.md`.

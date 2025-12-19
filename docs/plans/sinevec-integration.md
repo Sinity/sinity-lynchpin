@@ -13,7 +13,7 @@ Ensure all new derived artefacts (session summaries, wearable stats, instrumenta
 1. Prepare `.env` with `VOYAGE_API_KEY` and start Sinevec devshell (`nix develop`).
 2. For each artefact type, emit an NDJSON payload with fields: `id`, `text`, `metadata`, `channel`, `category`.
 3. Run `sinevec embed --input artefacts.ndjson --collection <name> --category <category>` (CLI wrapper to write to Qdrant).
-4. Record embedding ids back into the source index (e.g., `data/derived/session_index.csv`).
+4. Record embedding ids back into the source index (e.g., `artefacts/ledgers/session_index.csv`).
 5. Use `sinevec search` to smoke-test retrieval, then expose saved queries in dashboard notebooks.
 
 ## Automation Hooks
@@ -23,5 +23,5 @@ Ensure all new derived artefacts (session summaries, wearable stats, instrumenta
 
 ## Follow-ups
 - [ ] Define metadata schema (provider, project, time range, source path, summary level).
-- [ ] Draft NDJSON template and helper in `scripts/sinevec_helpers.py`.
+- [ ] Draft NDJSON template and helper in `pipelines/sinevec/sinevec_helpers.py`.
 - [ ] Backfill existing baseline summaries once the helper ships.

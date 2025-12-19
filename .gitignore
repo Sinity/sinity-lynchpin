@@ -17,6 +17,14 @@ __pycache__/
 # Local raw datasets (heavy, non-versioned)
 data/raw/
 
+# Generated artefacts (regenerable; keep out of Git)
+artefacts/
+
+# Legacy output dirs (kept ignored for back-compat)
+data/derived/
+reports/
+results/
+
 # Data/analysis artifacts
 tmp/
 scratch/
