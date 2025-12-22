@@ -14,7 +14,7 @@ Ensure all new derived artefacts (session summaries, wearable stats, instrumenta
 2. For each artefact type, emit an NDJSON payload with fields: `id`, `text`, `metadata`, `channel`, `category`.
 3. Run `sinevec embed --input artefacts.ndjson --collection <name> --category <category>` (CLI wrapper to write to Qdrant).
 4. Record embedding ids back into the source index (e.g., `artefacts/ledgers/session_index.csv`).
-5. Use `sinevec search` to smoke-test retrieval, then expose saved queries in dashboard notebooks.
+5. Use `sinevec search` to quick-check retrieval, then expose saved queries in dashboard notebooks.
 
 ## Automation Hooks
 - Add `just embed-sessions` to call the CLI for new Level-1 summaries.

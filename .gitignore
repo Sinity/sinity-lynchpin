@@ -20,6 +20,12 @@ data/raw/
 # Generated artefacts (regenerable; keep out of Git)
 artefacts/
 
+# No tracked snapshots; keep repo purely regenerable.
+checkpoints/
+
+# Regenerable HTML exports (keep markdown tracked)
+docs/reference/filesystem-audit-*.html
+
 # Legacy output dirs (kept ignored for back-compat)
 data/derived/
 reports/
