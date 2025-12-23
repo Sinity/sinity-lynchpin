@@ -153,12 +153,12 @@ life-timeline-drilldowns start="2013-10" end="" output="" md_dir="":
     ln -sfn "$(realpath "$md_dir")" "artefacts/life-timeline/life_drilldowns_latest"; \
     printf '%s\\n' "${start}_to_${end}" > "artefacts/life-timeline/life_timeline_latest_range.txt"
 
-# Render the canonical (tracked) full-range month-by-month digest from the latest life JSON.
-life-digest output="docs/analysis/life_earliest_to_now.monthly.md":
+# Render a data-dense full-range month-by-month digest from the latest life JSON (regenerable; ignored).
+life-digest output="artefacts/life-timeline/digests/life_earliest_to_now.monthly.md":
     python pipelines/life-timeline/render_monthly_digest.py --output {{output}}
 
-# Idempotent rebuild: regenerate latest life timeline + refresh the tracked digest.
-life-refresh start="2013-10" end="" digest_output="docs/analysis/life_earliest_to_now.monthly.md":
+# Idempotent rebuild: regenerate latest life timeline + refresh the digest output.
+life-refresh start="2013-10" end="" digest_output="artefacts/life-timeline/digests/life_earliest_to_now.monthly.md":
     just life-timeline-drilldowns {{start}} {{end}}
     just life-digest {{digest_output}}
 
