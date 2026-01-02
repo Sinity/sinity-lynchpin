@@ -4,7 +4,7 @@
 Ensure all new derived artefacts (session summaries, wearable stats, instrumentation metadata) gain semantic search coverage via the Sinevec + Voyage embedding stack.
 
 ## Collections
-- `sessions-v1` – Level-1 progressive summaries (see `pipelines/sessions/README.md`).
+- `sessions-v1` – Level-1 progressive summaries (see `pipelines/knowledge/sessions/README.md`).
 - `wearables-daily-v1` – Daily aggregates (sleep, steps, HR, stress) once pipelines land.
 - `instrumentation-v1` – Metadata rows for terminal/audio/screencap events.
 - `dashboards-v1` – Narrative blurbs accompanying dashboard exports.
@@ -13,7 +13,7 @@ Ensure all new derived artefacts (session summaries, wearable stats, instrumenta
 1. Prepare `.env` with `VOYAGE_API_KEY` and start Sinevec devshell (`nix develop`).
 2. For each artefact type, emit an NDJSON payload with fields: `id`, `text`, `metadata`, `channel`, `category`.
 3. Run `sinevec embed --input artefacts.ndjson --collection <name> --category <category>` (CLI wrapper to write to Qdrant).
-4. Record embedding ids back into the source index (e.g., `artefacts/ledgers/session_index.csv`).
+4. Record embedding ids back into the source index (e.g., `artefacts/knowledge/ledgers/session_index.csv`).
 5. Use `sinevec search` to quick-check retrieval, then expose saved queries in dashboard notebooks.
 
 ## Automation Hooks

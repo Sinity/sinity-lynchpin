@@ -20,7 +20,54 @@
           config.allowUnfree = true;
         };
 
-        pythonEnv = pkgs.python312.withPackages (
+        # Package Python deps not in nixpkgs
+        pythonPackagesOverlay = final: prev: {
+          voyageai = prev.buildPythonPackage rec {
+            pname = "voyageai";
+            version = "0.2.3";
+            format = "pyproject";
+            src = prev.fetchPypi {
+              inherit pname version;
+              sha256 = "sha256-KDIqp6ZM2qd0vm/PPk/WoIaU6iWs1frdHv8bjvjatoo=";
+            };
+            nativeBuildInputs = with prev; [ poetry-core ];
+            propagatedBuildInputs = with prev; [
+              requests
+              aiohttp
+              aiolimiter
+              numpy
+              tenacity
+            ];
+            doCheck = false;
+          };
+
+          qdrant-client = prev.buildPythonPackage rec {
+            pname = "qdrant_client";
+            version = "1.11.3";
+            format = "pyproject";
+            src = prev.fetchPypi {
+              inherit pname version;
+              sha256 = "sha256-WhVdgoGiJKwYrO9RLq4vXpoJB5ddUqdifsZvplhtAoU=";
+            };
+            nativeBuildInputs = with prev; [ poetry-core ];
+            propagatedBuildInputs = with prev; [
+              httpx
+              pydantic
+              grpcio
+              grpcio-tools
+              numpy
+              portalocker
+              urllib3
+            ];
+            doCheck = false;
+          };
+        };
+
+        python = pkgs.python312.override {
+          packageOverrides = pythonPackagesOverlay;
+        };
+
+        pythonEnv = python.withPackages (
           ps: with ps; [
             black
             ipykernel
@@ -41,11 +88,21 @@
             tqdm
             typer
             duckdb
+            datasette
+            cachetools
             plotly
             beautifulsoup4
             lxml
             networkx
             openpyxl
+            dulwich
+            # Sinevec dependencies
+            voyageai
+            qdrant-client
+            tiktoken
+            python-dotenv
+            fastapi
+            uvicorn
           ]
         );
 
@@ -62,10 +119,10 @@
         };
       in
       {
-        formatter.default = pkgs.nixfmt-rfc-style;
+        formatter = pkgs.nixfmt-rfc-style;
 
         devShells.default = pkgs.mkShell {
-          name = "sinity-analysis";
+          name = "sinity-lynchpin";
           packages = with pkgs; [
             pythonEnv
             rEnv
@@ -99,7 +156,7 @@
             export PYTHONUSERBASE=$PWD/.pyuser
             export JUPYTER_PATH=$PWD/.jupyter
             export R_LIBS_USER=$PWD/.rlib
-            echo "Loaded sinity-analysis devshell with Python ${pythonEnv.pythonVersion} and R support."
+            echo "Loaded sinity-lynchpin devshell with Python ${pythonEnv.pythonVersion} and R support."
           '';
         };
       }

@@ -3,9 +3,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
-# Rebuild the baseline analytics artefacts from canonical data.
-baseline session_root="/realm/data/sinity-analysis/baseline-inputs/latest" health_root="/realm/data/health/processed" output_dir="artefacts/baseline/latest" mode="auto" full="true" since="" until="" window_days="90" web_bucket="":
-    python pipelines/baseline/build_baseline.py \
+# --- Core baselines & ledgers -------------------------------------------------------
+
+baseline session_root="/realm/data/sinity-lynchpin/baseline-inputs/latest" health_root="/realm/data/health/processed" output_dir="artefacts/core/baseline/latest" mode="auto" full="true" since="" until="" window_days="90" web_bucket="":
+    mkdir -p {{output_dir}}
+    python pipelines/core/baseline/build_baseline.py \
       --session-root {{session_root}} \
       --health-root {{health_root}} \
       --output-dir {{output_dir}} \
@@ -16,160 +18,168 @@ baseline session_root="/realm/data/sinity-analysis/baseline-inputs/latest" healt
       {{ if full == "true" { "" } else { "--window-days " + window_days } }} \
       {{ if web_bucket != "" { "--include-web-sample --web-bucket " + web_bucket } else { "" } }}
 
-# Refresh the machine-readable ledger of session docs.
-session-index:
-    python pipelines/ledgers/build_session_index.py \
-      --sessions-dir docs/reference/sessions \
-      --output artefacts/ledgers/session_index.csv
+session-index sessions_dir="docs/reference/sessions" output="artefacts/knowledge/ledgers/session_index.csv":
+    just ledgers target=session sessions_dir={{sessions_dir}} output={{output}}
 
-# Produce a JSON summary of a Markdown transcript (uses OpenAI API by default).
-summarise-session input_path output="" model="gpt-4o-mini" api_base="https://api.openai.com/v1":
-    python pipelines/sessions/summarise_session.py {{input_path}} \
-      --model {{model}} \
-      --api-base {{api_base}} \
-      {{ if output != "" { "--output " + output } else { "" } }}
+artefact-index catalog="pipelines/knowledge/ledgers/artefact_catalog.json" output="artefacts/knowledge/ledgers/artefact_index.csv":
+    just ledgers target=artefact catalog={{catalog}} output={{output}}
 
-# Harvest asciinema metadata into artefacts/.
-asciinema-metadata root="/realm/data/asciinema_recording" output="artefacts/instrumentation/asciinema_metadata.jsonl":
-    python pipelines/instrumentation/collect_asciinema_metadata.py \
-      --root {{root}} \
-      --output {{output}}
-
-# Harvest audio metadata into artefacts/.
-audio-metadata root="/realm/data/audio/raw" output="artefacts/instrumentation/audio_metadata.jsonl":
-    python pipelines/instrumentation/collect_audio_metadata.py \
-      --root {{root}} \
-      --output {{output}}
-
-# Harvest screen metadata into artefacts/.
-screen-metadata root="/realm/data/screenshot" output="artefacts/instrumentation/screen_metadata.jsonl":
-    python pipelines/instrumentation/collect_screen_metadata.py \
-      --root {{root}} \
-      --output {{output}}
-
-# Rebuild artefact ledger CSV from catalog JSON.
-artefact-index catalog="pipelines/ledgers/artefact_catalog.json" output="artefacts/ledgers/artefact_index.csv":
-    python pipelines/ledgers/build_artefact_index.py \
-      --catalog {{catalog}} \
-      --output {{output}}
-
-# Generate focus portal HTML over a date range.
-focus-portal start="" end="" compact="false" output="artefacts/focus/portal/index.html":
-    python pipelines/focus/build_focus_portal.py \
-      {{ if compact == "true" { "--compact" } else { "" } }} \
-      {{ if start != "" { "--start " + start } else { "" } }} \
-      {{ if end != "" { "--end " + end } else { "" } }} \
-      --output {{output}}
-
-# Generate a compact portal over the full available range (can be slow).
-focus-portal-all output="artefacts/focus/portal/all_time.html":
-    just focus-portal start=1970-01-01 compact=true output={{output}}
-
-# Generate daily focus narrative (Markdown) from baseline timeline.
-daily-focus timeline="artefacts/baseline/latest/activity_timeline.json" start="" end="" output="artefacts/focus/daily_focus_latest.md":
-    python pipelines/focus/generate_daily_focus.py \
-      --timeline {{timeline}} \
-      {{ if start != "" { "--start " + start } else { "" } }} \
-      {{ if end != "" { "--end " + end } else { "" } }} \
-      --output {{output}}
-
-# Build a per-minute ActivityWatch timeline + viewer bundle (large; regenerable).
-minute-timeline since="" until="" output_dir="artefacts/activitywatch-minute-timeline" db="~/.local/share/activitywatch/aw-server-rust/sqlite.db":
-    mkdir -p {{output_dir}}
-    cp pipelines/activitywatch-minute-timeline/index.html {{output_dir}}/index.html
-    cp pipelines/activitywatch-minute-timeline/analysis.html {{output_dir}}/analysis.html
-    python pipelines/activitywatch-minute-timeline/build_timeline.py \
-      --db {{db}} \
-      --output-json {{output_dir}}/timeline_data.json \
-      --output-js {{output_dir}}/timeline_data.js \
-      {{ if since != "" { "--since " + since } else { "" } }} {{ if until != "" { "--until " + until } else { "" } }}
-
-# Generate weekly focus report (HTML) using built-in range.
-weekly-focus-report:
-    python pipelines/focus/generate_weekly_focus_report.py
-
-# Refresh both the session index and artefact ledger.
 refresh-ledgers:
     just session-index
     just artefact-index
 
-# Refresh both dashboard exports.
-refresh-dashboards:
-    just focus-portal
-    just weekly-focus-report
+ledgers target="session" sessions_dir="docs/reference/sessions" catalog="pipelines/knowledge/ledgers/artefact_catalog.json" output="":
+    target="{{target}}"
+    sessions_dir="{{sessions_dir}}"
+    catalog="{{catalog}}"
+    output="{{output}}"
+    if [[ "$target" == "session" ]]; then
+    if [[ -z "$output" ]]; then output="artefacts/knowledge/ledgers/session_index.csv"; fi
+    mkdir -p "$(dirname "$output")"
+    python pipelines/knowledge/ledgers/build_session_index.py \
+      --sessions-dir "$sessions_dir" \
+      --output "$output"
+    elif [[ "$target" == "artefact" ]]; then
+    if [[ -z "$output" ]]; then output="artefacts/knowledge/ledgers/artefact_index.csv"; fi
+    mkdir -p "$(dirname "$output")"
+    python pipelines/knowledge/ledgers/build_artefact_index.py \
+      --catalog "$catalog" \
+      --output "$output"
+    else
+    echo "Unknown ledger target: $target" >&2
+    exit 1
+    fi
 
-# Generate project bundles for repos (regenerable; ignored).
+# --- Session summaries & context ----------------------------------------------------
+
+summarise-session input_path output="" model="gpt-4o-mini" api_base="https://api.openai.com/v1":
+    python pipelines/knowledge/sessions/summarise_session.py {{input_path}} \
+      --model {{model}} \
+      --api-base {{api_base}} \
+      {{ if output != "" { "--output " + output } else { "" } }}
+
+# --- Instrumentation metadata -------------------------------------------------------
+
+asciinema-metadata root="/realm/data/asciinema_recording" output="artefacts/ingest/instrumentation/asciinema_metadata.jsonl":
+    python -m lynchpin.instrumentation asciinema --root {{root}} --output {{output}}
+
+audio-metadata root="/realm/data/audio/raw" output="artefacts/ingest/instrumentation/audio_metadata.jsonl":
+    python -m lynchpin.instrumentation audio --root {{root}} --output {{output}}
+
+screen-metadata root="/realm/data/screenshot" output="artefacts/ingest/instrumentation/screen_metadata.jsonl":
+    python -m lynchpin.instrumentation screen --root {{root}} --output {{output}}
+
+# --- Lynchpin helpers -------------------------------------------------------------
+
+lynchpin-warehouse:
+    python -m lynchpin.warehouse
+
+lynchpin-datasette:
+    if ! command -v datasette >/dev/null 2>&1; then echo "datasette CLI not found; install via 'pipx install datasette' or add it to the devshell." >&2; exit 1; fi
+    datasette artefacts/lynchpin/warehouse.duckdb
+
+# --- Calendar views & narratives ---------------------------------------------------
+
+calendar-refresh start="" end="" output_dir="artefacts/calendar/views" write_files="true" json="false":
+    if [[ -z "$end" ]]; then end="$(date -u +%F)"; fi
+    if [[ -z "$start" ]]; then start="$(date -u -d "$end -6 days" +%F)"; fi
+    echo "[calendar-refresh] Rendering Lynchpin views for $start → $end"
+    python pipelines/focus/calendar/view_builder.py \
+      "$start" \
+      "$end" \
+      --output "$output_dir" \
+      $(if [[ "$write_files" == "true" ]]; then echo "--write-files"; else echo "--no-write-files"; fi) \
+      $(if [[ "$json" == "true" ]]; then echo "--json"; fi)
+
+calendar-narrative start end mode="reflective" output="" prompt_only="false" model="":
+    python pipelines/focus/calendar/generate_narrative.py \
+      {{start}} \
+      {{end}} \
+      --mode {{mode}} \
+      {{ if output != "" { "--output " + output } else { "" } }} \
+      {{ if prompt_only == "true" { "--prompt-only" } else { "" } }} \
+      {{ if model != "" { "--model " + model } else { "" } }}
+
+# --- Context bundles & repo metrics -------------------------------------------------
+
 project-bundles projects="":
-    python pipelines/project-bundles/generate_project_bundles.py \
+    mkdir -p artefacts/context/project-bundles
+    python pipelines/context/project-bundles/generate_project_bundles.py \
       {{ if projects != "" { "--projects " + projects } else { "" } }}
 
-# Export Wykop activity into canonical `/realm/data/...` JSONLs (resumable).
-wykop-export username="Sinity" backend="auto" out_dir="/realm/data/personal-data/my_external_exports/wykop" extras="true":
-    python pipelines/wykop/scrape_wykop.py \
+velocity:
+    python pipelines/meta/velocity/plot_velocity.py
+
+# --- Data exports & knowledge graph -------------------------------------------------
+
+wykop-export username="Sinity" backend="auto" out_dir="/realm/data/wykop" extras="true":
+    mkdir -p {{out_dir}}
+    python pipelines/lifelog/wykop/scrape_wykop.py \
       --username {{username}} \
       --out-dir {{out_dir}} \
       --backend {{backend}} \
       {{ if extras == "true" { "--extras" } else { "--no-extras" } }}
 
-# Build a DuckDB knowledge-graph snapshot (regenerable; ignored).
-knowledge-graph output="artefacts/knowledge-graph/knowledge_graph.duckdb" manifest="artefacts/knowledge-graph/manifest.json" parquet_dir="":
-    python pipelines/knowledge-graph/build_knowledge_graph.py \
+knowledge-graph output="artefacts/knowledge/graph/knowledge_graph.duckdb" manifest="artefacts/knowledge/graph/manifest.json" parquet_dir="":
+    mkdir -p "$(dirname {{output}})"
+    python pipelines/knowledge/graph/build_knowledge_graph.py \
       --output {{output}} \
       --manifest {{manifest}} \
       {{ if parquet_dir != "" { "--parquet-dir " + parquet_dir } else { "" } }}
 
-# Rebuild historical life timeline (2020-04 → 2023-04) derived metrics.
-life-timeline start="2020-04" end="2023-04" output="artefacts/life-timeline/monthly_life_2020-04_to_2023-04.json" md_output="artefacts/life-timeline/life_2020-04_to_2023-04.generated.md":
-    python pipelines/life-timeline/build_life_timeline.py \
+# --- Life timeline family -----------------------------------------------------------
+
+life-timeline start="2020-04" end="2023-04" output="artefacts/lifelog/life-timeline/monthly_life_2020-04_to_2023-04.json" md_output="artefacts/lifelog/life-timeline/life_2020-04_to_2023-04.generated.md":
+    mkdir -p artefacts/lifelog/life-timeline
+    python pipelines/lifelog/life-timeline/build_life_timeline.py \
       --start {{start}} \
       --end {{end}} \
       --output {{output}} \
       --markdown-output {{md_output}}
 
-# Rebuild life timeline for an arbitrary month range.
 life-timeline-range start end:
-    python pipelines/life-timeline/build_life_timeline.py \
+    mkdir -p artefacts/lifelog/life-timeline
+    python pipelines/lifelog/life-timeline/build_life_timeline.py \
       --start {{start}} \
       --end {{end}} \
-      --output artefacts/life-timeline/monthly_life_{{start}}_to_{{end}}.json \
-      --markdown-output artefacts/life-timeline/life_{{start}}_to_{{end}}.generated.md
+      --output artefacts/lifelog/life-timeline/monthly_life_{{start}}_to_{{end}}.json \
+      --markdown-output artefacts/lifelog/life-timeline/life_{{start}}_to_{{end}}.generated.md
 
-# Rebuild life timeline with per-year drilldowns (recommended for long ranges).
 life-timeline-drilldowns start="2013-10" end="" output="" md_dir="":
     start="{{start}}"; \
     end="{{end}}"; \
     if [[ -z "$end" ]]; then end="$(date -u +%Y-%m)"; fi; \
     output="{{output}}"; \
-    if [[ -z "$output" ]]; then output="artefacts/life-timeline/monthly_life_${start}_to_${end}.json"; fi; \
+    if [[ -z "$output" ]]; then output="artefacts/lifelog/life-timeline/monthly_life_${start}_to_${end}.json"; fi; \
     md_dir="{{md_dir}}"; \
-    if [[ -z "$md_dir" ]]; then md_dir="artefacts/life-timeline/life_drilldowns_${start}_to_${end}"; fi; \
-    mkdir -p artefacts/life-timeline; \
-    python pipelines/life-timeline/build_life_timeline.py \
+    if [[ -z "$md_dir" ]]; then md_dir="artefacts/lifelog/life-timeline/life_drilldowns_${start}_to_${end}"; fi; \
+    mkdir -p artefacts/lifelog/life-timeline; \
+    python pipelines/lifelog/life-timeline/build_life_timeline.py \
       --start "$start" \
       --end "$end" \
       --output "$output" \
       --markdown-output-dir "$md_dir"; \
-    ln -sfn "$(realpath "$output")" "artefacts/life-timeline/monthly_life_latest.json"; \
-    ln -sfn "$(realpath "$md_dir")" "artefacts/life-timeline/life_drilldowns_latest"; \
-    printf '%s\\n' "${start}_to_${end}" > "artefacts/life-timeline/life_timeline_latest_range.txt"
+    ln -sfn "$(realpath "$output")" "artefacts/lifelog/life-timeline/monthly_life_latest.json"; \
+    ln -sfn "$(realpath "$md_dir")" "artefacts/lifelog/life-timeline/life_drilldowns_latest"; \
+    printf '%s\n' "${start}_to_${end}" > "artefacts/lifelog/life-timeline/life_timeline_latest_range.txt"
 
-# Render a data-dense full-range month-by-month digest from the latest life JSON (regenerable; ignored).
-life-digest output="artefacts/life-timeline/digests/life_earliest_to_now.monthly.md":
-    python pipelines/life-timeline/render_monthly_digest.py --output {{output}}
+life-digest output="artefacts/lifelog/life-timeline/digests/life_earliest_to_now.monthly.md":
+    mkdir -p "$(dirname {{output}})"
+    python pipelines/lifelog/life-timeline/render_monthly_digest.py --output {{output}}
 
-# Idempotent rebuild: regenerate latest life timeline + refresh the digest output.
-life-refresh start="2013-10" end="" digest_output="artefacts/life-timeline/digests/life_earliest_to_now.monthly.md":
+life-refresh start="2013-10" end="" digest_output="artefacts/lifelog/life-timeline/digests/life_earliest_to_now.monthly.md":
     just life-timeline-drilldowns {{start}} {{end}}
     just life-digest {{digest_output}}
+    just life-auto-narrative
 
-# Enrich YouTube watch-history video IDs into titles/channels (oEmbed cache; resumable).
-youtube-oembed start="2013-10" end="" life_json="" cache="artefacts/life-timeline/youtube_oembed_cache.jsonl" qps="10" workers="32":
+youtube-oembed start="2013-10" end="" life_json="" cache="artefacts/lifelog/life-timeline/youtube_oembed_cache.jsonl" qps="10" workers="32":
     start="{{start}}"; \
     end="{{end}}"; \
     if [[ -z "$end" ]]; then end="$(date -u +%Y-%m)"; fi; \
     life_json="{{life_json}}"; \
-    if [[ -z "$life_json" ]]; then life_json="artefacts/life-timeline/monthly_life_${start}_to_${end}.json"; fi; \
-    python pipelines/life-timeline/enrich_youtube_oembed.py \
+    if [[ -z "$life_json" ]]; then life_json="artefacts/lifelog/life-timeline/monthly_life_${start}_to_${end}.json"; fi; \
+    mkdir -p "$(dirname {{cache}})"; \
+    python pipelines/lifelog/life-timeline/enrich_youtube_oembed.py \
       --life-json "$life_json" \
       --cache {{cache}} \
       --start "$start" \
@@ -177,7 +187,16 @@ youtube-oembed start="2013-10" end="" life_json="" cache="artefacts/life-timelin
       --qps {{qps}} \
       --workers {{workers}}
 
-# Remove regenerable outputs/caches from the working tree (safe: ignored by Git).
+life-auto-narrative life_json="artefacts/lifelog/life-timeline/monthly_life_latest.json" output="artefacts/lifelog/life-timeline/narratives/life_auto_summary.md" quarter_limit="8" year_limit="10":
+    mkdir -p "$(dirname {{output}})"
+    python pipelines/lifelog/life-timeline/generate_auto_narrative.py \
+      --life-json {{life_json}} \
+      --output {{output}} \
+      --quarter-limit {{quarter_limit}} \
+      --year-limit {{year_limit}}
+
+# --- Utilities ----------------------------------------------------------------------
+
 clean-generated:
     rm -rf artefacts tmp scratch
     find pipelines -type d -name '__pycache__' -prune -exec rm -rf {} +
