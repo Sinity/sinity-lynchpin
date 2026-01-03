@@ -1,0 +1,559 @@
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+from typing import Dict, Iterator, List, Optional, Sequence
+
+from ..core.cache import file_signature, persistent_cache
+from ..core.config import get_config
+from .repos import GitRepository
+
+
+@dataclass
+class GitCommit:
+    date: date
+    repo: str
+    commit: str
+    lines_added: int
+    lines_deleted: int
+    subject: str
+
+
+@dataclass
+class GitCommitActivity:
+    repo: str
+    timestamp: datetime
+
+
+@persistent_cache(
+    "git_commits",
+    depends_on=lambda: file_signature(get_config().baseline_dir / "git_numstat.jsonl"),
+)
+def iter_commits() -> Iterator[GitCommit]:
+    cfg = get_config()
+    path = cfg.baseline_dir / "git_numstat.jsonl"
+    if not path.exists():
+        return iter(())
+    def generator() -> Iterator[GitCommit]:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    dt = _parse_date(record.get("date"))
+                except Exception:
+                    continue
+                if dt is None:
+                    continue
+                yield GitCommit(
+                    date=dt,
+                    repo=record.get("repo", ""),
+                    commit=record.get("commit", ""),
+                    lines_added=int(record.get("lines_added", 0)),
+                    lines_deleted=int(record.get("lines_deleted", 0)),
+                    subject=record.get("subject", ""),
+                )
+    return generator()
+
+
+def _parse_date(raw: object) -> Optional[date]:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        if "T" in text:
+            return datetime.fromisoformat(text).date()
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def commits_by_date(target: date) -> Iterator[GitCommit]:
+    iso = target.isoformat()
+    yield from (
+        commit for commit in iter_commits() if commit.date.isoformat() == iso
+    )
+
+
+def iter_commit_activity(
+    repos: Sequence[Path],
+    *,
+    start_month: Optional[str] = None,
+    end_month: Optional[str] = None,
+) -> Iterator[GitCommitActivity]:
+    since: Optional[str] = None
+    until: Optional[str] = None
+    if start_month:
+        since = f"{start_month}-01"
+    if end_month:
+        until = f"{_month_after(end_month)}-01"
+
+    for repo in repos:
+        repo = repo.expanduser()
+        if not (repo / ".git").is_dir():
+            continue
+        cmd = ["git", "-C", str(repo), "log", "--all", "--format=%cI"]
+        if since:
+            cmd.append(f"--since={since}")
+        if until:
+            cmd.append(f"--until={until}")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            stamp = raw.strip()
+            if not stamp:
+                continue
+            if stamp.endswith("Z"):
+                stamp = stamp[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(stamp)
+            except ValueError:
+                continue
+            yield GitCommitActivity(repo=repo.name, timestamp=dt)
+
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"git log failed for {repo}: {stderr.strip()}")
+
+
+def _month_after(month: str) -> str:
+    year, month_i = (int(part) for part in month.split("-", 1))
+    month_i += 1
+    if month_i == 13:
+        month_i = 1
+        year += 1
+    return f"{year:04d}-{month_i:02d}"
+
+
+_GIT_SHORTSTAT_RE = re.compile(r"(\d+)\s+files?\s+changed")
+_GIT_INSERT_RE = re.compile(r"(\d+)\s+insertions?\(\+\)")
+_GIT_DELETE_RE = re.compile(r"(\d+)\s+deletions?\(-\)")
+_GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _parse_git_shortstat(line: str) -> Dict[str, int]:
+    files_changed = 0
+    lines_added = 0
+    lines_deleted = 0
+
+    match_files = _GIT_SHORTSTAT_RE.search(line)
+    if match_files:
+        files_changed = int(match_files.group(1))
+    match_insert = _GIT_INSERT_RE.search(line)
+    if match_insert:
+        lines_added = int(match_insert.group(1))
+    match_delete = _GIT_DELETE_RE.search(line)
+    if match_delete:
+        lines_deleted = int(match_delete.group(1))
+
+    return {
+        "files_changed": files_changed,
+        "lines_added": lines_added,
+        "lines_deleted": lines_deleted,
+    }
+
+
+def iter_numstat(
+    repos: Sequence[Path],
+    *,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+) -> Iterator[Dict[str, object]]:
+    for repo_path in repos:
+        repo_path = repo_path.expanduser()
+        if not (repo_path / ".git").exists():
+            continue
+
+        cmd = [
+            "git",
+            "-C",
+            str(repo_path),
+            "log",
+            "--date=iso-strict",
+            "--pretty=format:%H%x09%ad%x09%an%x09%s",
+            "--shortstat",
+        ]
+        if until is not None:
+            cmd.append(f"--until={until.isoformat()}")
+        if since is not None:
+            cmd.append(f"--since={since.isoformat()}")
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdout is not None
+
+        current: Optional[Dict[str, object]] = None
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 4 and _GIT_SHA_RE.match(parts[0]):
+                if current:
+                    yield current
+                sha, date_str, author = parts[0], parts[1], parts[2]
+                subject = "\t".join(parts[3:])
+                current = {
+                    "repo": str(repo_path),
+                    "commit": sha,
+                    "date": date_str,
+                    "author": author,
+                    "subject": subject,
+                    "files_changed": 0,
+                    "lines_added": 0,
+                    "lines_deleted": 0,
+                }
+                continue
+            if current and ("file changed" in line or "files changed" in line):
+                current.update(_parse_git_shortstat(line))
+
+        if current:
+            yield current
+
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"git log failed for {repo_path}: {stderr.strip()}")
+
+
+# === Repository coverage ===
+
+
+@dataclass
+class RepoInfo:
+    name: str
+    path: Path
+    exists: bool
+    branch: Optional[str]
+    head: Optional[str]
+    last_commit_at: Optional[datetime]
+
+
+@dataclass
+class RepoFile:
+    repo: str
+    relative: str
+    absolute: Path
+    category: Optional[str]
+
+
+@dataclass
+class RepoCommitSummary:
+    repo: str
+    sha: str
+    author: str
+    authored_at: Optional[datetime]
+    subject: str
+
+
+@dataclass
+class TokeiLanguageStat:
+    language: str
+    code: int
+    comments: int
+    blanks: int
+
+
+@dataclass
+class TokeiReport:
+    repo: str
+    total_code: int
+    total_lines: int
+    languages: List[TokeiLanguageStat]
+
+
+def iter_repos(names: Optional[Sequence[str]] = None) -> Iterator[RepoInfo]:
+    specs = _project_specs()
+    selected = {name for name in names} if names else None
+    for name, spec in specs.items():
+        if selected and name not in selected:
+            continue
+        path = Path(spec["path"])
+        exists = path.exists()
+        branch = None
+        head = None
+        last_commit_at = None
+        if exists:
+            repo = GitRepository(path)
+            commits = repo.recent_commits(1)
+            if commits:
+                head = commits[0].sha
+                branch = _git_output(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+                last_commit_at = commits[0].authored_at
+        yield RepoInfo(
+            name=name,
+            path=path,
+            exists=exists,
+            branch=branch,
+            head=head,
+            last_commit_at=last_commit_at,
+        )
+
+
+def iter_repo_files(repo_name: str, tracked_only: bool = True) -> Iterator[RepoFile]:
+    spec = _project_specs().get(repo_name)
+    if not spec:
+        return iter(())
+    path = Path(spec["path"])
+    classifier = spec["classify"]
+    if not path.exists():
+        return iter(())
+
+    def generator() -> Iterator[RepoFile]:
+        files: List[str]
+        if tracked_only:
+            output = _git_output(path, ["ls-files"])
+            files = output.splitlines() if output else []
+        else:
+            files = [
+                str(p.relative_to(path))
+                for p in path.rglob("*")
+                if p.is_file()
+            ]
+        for rel in files:
+            category = classifier(rel)
+            absolute = path / rel
+            yield RepoFile(repo=repo_name, relative=rel, absolute=absolute, category=category)
+
+    return generator()
+
+
+def iter_recent_commits(repo_name: str, limit: int = 20) -> Iterator[RepoCommitSummary]:
+    spec = _project_specs().get(repo_name)
+    if not spec:
+        return iter(())
+    path = Path(spec["path"])
+    if not path.exists():
+        return iter(())
+
+    format_str = "%H%x1f%an%x1f%aI%x1f%s"
+    output = _git_output(path, ["--no-pager", "log", f"-n{limit}", f"--pretty={format_str}"])
+    if not output:
+        return iter(())
+
+    def generator() -> Iterator[RepoCommitSummary]:
+        for line in output.splitlines():
+            sha, author, authored_at, subject = (line.split("\x1f", 3) + ["", "", "", ""])[:4]
+            dt = None
+            try:
+                dt = datetime.fromisoformat(authored_at)
+            except ValueError:
+                pass
+            yield RepoCommitSummary(
+                repo=repo_name,
+                sha=sha,
+                author=author,
+                authored_at=dt,
+                subject=subject,
+            )
+
+    return generator()
+
+
+def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
+    spec = _project_specs().get(repo_name)
+    if not spec:
+        return None
+    path = Path(spec["path"])
+    if not path.exists() or shutil.which("tokei") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["tokei", "-o", "json"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    languages: List[TokeiLanguageStat] = []
+    for key, value in payload.items():
+        if key == "Totals":
+            continue
+        if not isinstance(value, dict):
+            continue
+        languages.append(
+            TokeiLanguageStat(
+                language=key,
+                code=int(value.get("code", 0)),
+                comments=int(value.get("comments", 0)),
+                blanks=int(value.get("blanks", 0)),
+            )
+        )
+    totals = payload.get("Totals", {})
+    total_code = int(totals.get("code", 0))
+    total_lines = int(totals.get("lines", 0))
+    return TokeiReport(repo=repo_name, total_code=total_code, total_lines=total_lines, languages=languages)
+
+
+# === Classification helpers ===
+
+
+SKIP_EXTENSIONS = {"lock", "svg", "map", "min.js", "png", "jpg", "pdf", "gif", "ico", "woff", "woff2", "ttf", "eot"}
+SKIP_PATHS = {"reports/", "pipelines/artefacts/", "artefacts/", "data/"}
+
+
+def _skip_common(filename: str) -> bool:
+    for ext in SKIP_EXTENSIONS:
+        if filename.endswith(f".{ext}"):
+            return True
+    for path in SKIP_PATHS:
+        if filename.startswith(path):
+            return True
+    return False
+
+
+def _classify_sinex(filename: str) -> Optional[str]:
+    if _skip_common(filename):
+        return None
+    if filename.startswith(".sqlx/"):
+        return "generated"
+    basename = Path(filename).name.lower()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if "/tests/" in filename or "/test/" in filename:
+        return "tests"
+    if filename.startswith(("tests/", "test/")):
+        return "tests"
+    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
+        return "tests"
+    if "/docs/" in filename or filename.startswith("docs/"):
+        return "docs"
+    if ext in {"md", "mdx", "rst", "txt"}:
+        return "docs"
+    if ext in {"nix", "toml", "yaml", "yml"}:
+        return "config"
+    if basename in {"justfile", ".gitignore", ".envrc"}:
+        return "config"
+    return "src"
+
+
+def _classify_sinnix(filename: str) -> Optional[str]:
+    if _skip_common(filename):
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if "/docs/" in filename or filename.startswith("docs/"):
+        return "docs"
+    if ext in {"md", "mdx", "rst", "txt"}:
+        return "docs"
+    if filename.startswith("host/") or "/host/" in filename:
+        return "host"
+    if filename.startswith("flake/") or filename in {"flake.nix", "flake.lock"}:
+        return "flake"
+    if filename.startswith("module/") or "/module/" in filename:
+        return "module"
+    return "other"
+
+
+def _classify_sinity_analysis(filename: str) -> Optional[str]:
+    if _skip_common(filename):
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    basename = Path(filename).name.lower()
+    if "/docs/" in filename or filename.startswith("docs/"):
+        return "docs"
+    if ext in {"md", "mdx", "rst", "txt"}:
+        return "docs"
+    if filename.startswith("pipelines/"):
+        return "pipelines"
+    if ext in {"nix", "toml", "yaml", "yml", "json"}:
+        return "config"
+    if basename in {"justfile", ".gitignore", ".envrc"}:
+        return "config"
+    return "other"
+
+
+def _classify_knowledgebase(filename: str) -> Optional[str]:
+    if _skip_common(filename):
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    basename = Path(filename).name.lower()
+    if ext in {"nix", "toml", "yaml", "yml", "json"}:
+        return "config"
+    if basename in {"justfile", ".gitignore", ".envrc"}:
+        return "config"
+    return "docs"
+
+
+def _classify_rust_simple(filename: str) -> Optional[str]:
+    if _skip_common(filename):
+        return None
+    basename = Path(filename).name.lower()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if "/tests/" in filename or "/test/" in filename:
+        return "tests"
+    if filename.startswith(("tests/", "test/")):
+        return "tests"
+    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
+        return "tests"
+    if "/docs/" in filename or filename.startswith("docs/"):
+        return "docs"
+    if ext in {"md", "mdx", "rst", "txt"}:
+        return "docs"
+    if ext in {"nix", "toml", "yaml", "yml"}:
+        return "config"
+    if basename in {"justfile", ".gitignore", ".envrc"}:
+        return "config"
+    return "src"
+
+
+PROJECT_SPECS: Dict[str, dict] = {
+    "sinity-lynchpin": {"path": "/realm/project/sinity-lynchpin", "classify": _classify_sinity_analysis},
+    "sinex": {"path": "/realm/project/sinex", "classify": _classify_sinex},
+    "polylogue": {"path": "/realm/project/polylogue", "classify": _classify_rust_simple},
+    "intercept-bounce": {"path": "/realm/project/intercept-bounce", "classify": _classify_rust_simple},
+    "scribe-tap": {"path": "/realm/project/scribe-tap", "classify": _classify_rust_simple},
+    "sinevec": {"path": "/realm/project/sinevec", "classify": _classify_rust_simple},
+    "pwrank": {"path": "/realm/project/pwrank", "classify": _classify_rust_simple},
+    "knowledge-extract": {"path": "/realm/project/knowledge-extract", "classify": _classify_rust_simple},
+    "sinnix": {"path": "/realm/project/sinnix", "classify": _classify_sinnix},
+    "knowledgebase": {"path": "/realm/project/knowledgebase", "classify": _classify_knowledgebase},
+}
+
+
+def _project_specs() -> Dict[str, dict]:
+    return PROJECT_SPECS
+
+
+def _git_output(path: Path, args: List[str]) -> Optional[str]:
+    if not path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    output = result.stdout.strip()
+    return output or None

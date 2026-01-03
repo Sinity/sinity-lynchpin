@@ -5,6 +5,7 @@ result
 # Python user installs / caches
 .pyuser/
 .jupyter/
+.bin/
 __pycache__/
 .pytest_cache/
 .mypy_cache/

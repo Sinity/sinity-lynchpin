@@ -1,50 +1,18 @@
-"""Lynchpin: lightweight HPI-style data surface for sinity-lynchpin."""
-from .config import LynchpinConfig, get_config  # noqa: F401
-from . import (
-    activitywatch,
-    atuin,
-    calendar,
-    chatlog,
-    dendron,
-    finance,
-    gitstats,
-    instrumentation,
-    meta,
-    polylogue,
-    raindrop,
-    reddit,
-    repos,
-    sessions,
-    sinex,
-    sinnix,
-    sleep,
-    spotify,
-    substack,
-    wykop,
-    webhistory,
-)
+"""Lynchpin: HPI-style data surface for sinity-lynchpin."""
+from __future__ import annotations
+
+from .core.config import LynchpinConfig, get_config
+from .core.vendor import add_vendor_paths
+
+add_vendor_paths()
 
 __all__ = [
     "LynchpinConfig",
     "get_config",
-    "activitywatch",
-    "atuin",
-    "calendar",
-    "dendron",
-    "chatlog",
-    "finance",
-    "gitstats",
-    "instrumentation",
-    "meta",
-    "repos",
-    "polylogue",
-    "raindrop",
-    "reddit",
-    "sessions",
-    "sinnix",
-    "sleep",
-    "spotify",
-    "substack",
-    "wykop",
-    "webhistory",
+    "core",
+    "sources",
+    "ingest",
+    "views",
+    "system",
+    "sinevec",
 ]

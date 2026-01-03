@@ -66,7 +66,7 @@ Pain points:
 ### 3.1 Orchestration
 - Introduce `pipelines/flow/` containing a declarative DAG (YAML/JSON) describing nodes, inputs, and outputs.
 - Add `just flow [node=...] [range=...]` that resolves dependencies:
-  - Example: `just flow node=focus.calendar range=2025-09-01:2025-10-01`.
+  - Example: `just flow node=calendar.views range=2025-09-01:2025-10-01`.
   - Uses a thin Python orchestrator (or `doit`) to check modification times + manifest entries before running child scripts.
 - Maintain run metadata in `artefacts/flow/runs/<timestamp>.json` capturing args, upstream nodes, success/failure, and output pointers.
 
@@ -97,7 +97,7 @@ Pain points:
    - Connect to the manifest so each ledger row references the run ID that produced it.
    - Provide CLI flag `--manifest-run latest` to embed metadata in CSV headers.
 4. **Artefact Catalog**:
-   - Extend `pipelines/knowledge/ledgers/artefact_catalog.json` to include dependencies on warehouse tables; `just ledgers` verifies upstream run freshness before writing.
+   - Extend `docs/reference/ledgers/artefact_catalog.json` to include dependencies on warehouse tables; `just ledgers` verifies upstream run freshness before writing.
 
 ## 4. Migration Approach
 
@@ -112,7 +112,7 @@ Pain points:
 3. Write verification notebook (DuckDB SQL) ensuring counts match previous baseline outputs.
 
 ### Phase 2 – Dashboard Refactor
-1. Update `pipelines/focus/calendar/*` scripts to query the warehouse instead of reading raw files per run.
+1. Update `lynchpin.views.calendar_views` and `lynchpin.views.calendar_narratives` to query the warehouse instead of reading raw files per run.
 2. Introduce `focus.metrics` module using shared metric functions.
 3. Deprecate direct `ActivityWatch` CLI dependencies after parity validation.
 
@@ -127,7 +127,7 @@ Pain points:
 
 ### Phase 5 – Sinex Integration
 1. Expose the DAG + manifests via API/CLI so Sinex can orchestrate runs remotely.
-2. Archive older standalone scripts once Sinex takes ownership; keep wrappers in `just` for backwards compatibility.
+2. Archive older standalone scripts once Sinex takes ownership; keep `just` as the stable command surface (no extra wrapper scripts).
 
 ## 5. Immediate Actions
 

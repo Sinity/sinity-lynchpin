@@ -4,7 +4,7 @@
 Ensure all new derived artefacts (session summaries, wearable stats, instrumentation metadata) gain semantic search coverage via the Sinevec + Voyage embedding stack.
 
 ## Collections
-- `sessions-v1` – Level-1 progressive summaries (see `pipelines/knowledge/sessions/README.md`).
+- `sessions-v1` – Level-1 progressive summaries (see `docs/reference/sessions/README.md`).
 - `wearables-daily-v1` – Daily aggregates (sleep, steps, HR, stress) once pipelines land.
 - `instrumentation-v1` – Metadata rows for terminal/audio/screencap events.
 - `dashboards-v1` – Narrative blurbs accompanying dashboard exports.

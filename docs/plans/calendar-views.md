@@ -67,7 +67,7 @@ Markdown front-matter (YAML) should include canonical metadata (range, run ID, u
 
 ## 4. Pipeline Design
 
-### 4.1 Calendar Aggregator (`pipelines/focus/calendar/`)
+### 4.1 Calendar Aggregator (`lynchpin.views.calendar_views`)
 Steps:
 1. **Load baseline artefacts** (`activity_timeline.json`, `baseline_summary.json`) for focus/git data.
 2. **Query Atuin, git, chat summaries** directly or via new DuckDB views (see pipeline-unification doc).
@@ -76,7 +76,7 @@ Steps:
 5. **Write normalized per-day rows** to `artefacts/calendar/calendar.duckdb` (tables `days`, `weeks`, `months` etc.) plus JSON exports for static site.
 
 ### 4.2 Markdown Rendering
-- Use Jinja2 templates stored under `pipelines/focus/calendar/templates/`.
+- Use Jinja2 templates stored alongside `lynchpin.views.calendar_views` (or a dedicated prompts/templates folder).
 - For each timescale, render Markdown with front-matter:
   ```yaml
   ---
@@ -106,7 +106,7 @@ Steps:
 ## 5. Implementation Phases
 
 1. **Scaffold & Proof of Concept**
-   - Create `pipelines/focus/calendar/` with README, sample template, CLI (`render_calendar.py`).
+- Create/extend `lynchpin.views.calendar_views` with README, sample template, CLI (`python -m lynchpin.views.calendar_views`).
    - Hard-code a single day to ensure formatting + data blending works.
 2. **Daily Batch**
    - Implement data aggregation for ActivityWatch + Atuin + git (baseline derivatives).
@@ -154,7 +154,7 @@ To convert the historical calendar data into coherent self-stories:
    - Include structured stats (focus minutes, AFK ratio, git deltas, chat summaries, sleep metrics), notable artefacts, and instrumentation notes.
    - Provide short extracts of key chats or diary entries to supply qualitative color.
 2. **LLM prompt template**
-   - Define templates under `pipelines/knowledge/sessions/prompts/calendar_narrative.md` with slots for metrics and highlights.
+   - Define templates in `lynchpin.views.calendar_narratives.py` (or extract them into a dedicated doc) with slots for metrics and highlights.
    - Emphasize chronology (morning/afternoon/evening) and cross-domain insights (e.g., “coding spike followed by poor sleep”).
    - Offer stylistic modes (concise recap, reflective essay, actionable retro).
 3. **Generation workflow**
@@ -204,7 +204,7 @@ Define multiple narrative templates so different consumers get tailored outputs:
 | `tactical` | Action planning | Focus on follow-ups, TODOs, and risk flags |
 
 Implementation path:
-1. Extend `generate_narrative.py` to load template snippets (prompt fragments and expected structure) from `pipelines/focus/calendar/prompts/*.md`.
+1. Extend `lynchpin.views.calendar_narratives` to load template snippets (prompt fragments and expected structure) from a dedicated prompts directory.
 2. For each mode, define required sections (e.g., `## Context`, `## Output`, `## Recovery`, `## Next steps`) and specify how data fields feed the LLM (e.g., highlight top repos for executive, sleep stats for reflective).
 3. Add CLI flags to request multiple outputs per range, e.g., `just calendar-narrative 2025-12-01 2025-12-31 mode=executive` and `... mode=playful`.
 4. Store generated narratives separately (`artefacts/calendar/narratives/<mode>/...`) and expose them via the static site so assistants can quickly browse different perspectives.
