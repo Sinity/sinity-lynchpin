@@ -11,6 +11,9 @@ clear as modules grow.
   `cachew` to memoize expensive reads into `artefacts/lynchpin/cache/*.sqlite`.
 - **Explicit writes only.** Anything under `lynchpin.views` or `lynchpin.ingest`
   writes artefacts/exports and should only run via explicit CLI/`just` calls.
+- **Snapshot manifests.** Raw export roots now carry a `MANIFEST.json` so
+  snapshot boundaries can be audited and used for invalidation without
+  modifying the source data.
 
 ## cachew wrapper (`lynchpin.core.cache`)
 - Cache path: `artefacts/lynchpin/cache/<name>.sqlite`
@@ -22,28 +25,29 @@ clear as modules grow.
 
 | Module | Canonical inputs | cachew | Notes |
 | --- | --- | --- | --- |
-| `lynchpin.sources.activitywatch` | `~/.local/share/activitywatch/aw-server-rust/sqlite.db` | no | Live DB reads (no memoization). |
-| `lynchpin.sources.atuin` | `~/.local/share/atuin/history.db` | no | Live DB reads (no memoization). |
-| `lynchpin.sources.chatlog` | Polylogue Markdown (`/realm/data/chatlog/markdown/…`) | yes | Caches per provider + file signatures. |
-| `lynchpin.sources.codex` | Codex JSONL (`~/.codex/sessions` or `/realm/data/chatlog/codex_sessions`) | yes | Caches session list via file signatures. |
-| `lynchpin.sources.dendron` | `/realm/project/knowledgebase` | no | Direct filesystem scan (YAML frontmatter). |
-| `lynchpin.sources.finance` | `/realm/data/finance/journal_clean`, statements | yes | Cached ledger parser (file signature). |
-| `lynchpin.sources.goodreads` | `/realm/data/goodreads/library_export.csv` | yes | Cached CSV parser (file signature). |
-| `lynchpin.sources.gitstats` | `/realm/project/*` repos | yes | Caches repo scans via file signatures. |
-| `lynchpin.sources.health` | `/realm/data/health/raw/samsunghealth.tar` | yes | Cached Samsung Health parser (tar signature). |
-| `lynchpin.sources.instrumentation` | `/realm/data/{asciinema_recording,audio/raw,screenshot}` | no | Reads raw capture files; no cache yet. |
-| `lynchpin.sources.polylogue` | Polylogue Markdown transcripts | yes | Caches inventory + metadata via file signatures. |
-| `lynchpin.sources.raindrop` | `/realm/data/raindrop/*.csv` | no | Parses CSV on demand. |
-| `lynchpin.sources.reddit` | `/realm/data/reddit/gdpr/<date>/*.csv` | yes | Caches CSV parses via file signatures. |
-| `lynchpin.sources.repos` | `/realm/project/*` | no | Repo discovery/tokei scan on demand. |
-| `lynchpin.sources.sessions` | `artefacts/knowledge/ledgers/session_index.csv` | yes | Cached CSV reader (file signature). |
-| `lynchpin.sources.sleep` | `/realm/data/health/processed/sleep_merged.jsonl` | yes | Cached JSONL parser (file signature). |
-| `lynchpin.sources.spotify` | `/realm/data/spotify/gdpr/**/StreamingHistory*.json` | yes | Cached JSON parser (file signatures). |
-| `lynchpin.sources.substack` | `/realm/data/doc/substack` | no | Parses Markdown/HTML on demand. |
-| `lynchpin.sources.takeout` | `/realm/data/google/takeout/raw/*.tgz` | no | Reads Takeout archives on demand. |
-| `lynchpin.sources.webhistory` | `/realm/data/webhistory/gestalt/data` (or `/realm/data/webhistory/gestalt/derived/full_history.ndjson`) | yes | Cached gestalt/NDJSON scan (content hashes via `files_digest`). |
-| `lynchpin.sources.webhistory_raw` | `/realm/data/webhistory/gestalt/raw` | yes | Cached raw exports (content hashes via `file_digest`). |
-| `lynchpin.sources.wykop` | `/realm/data/wykop/<user>/*.jsonl` | yes | Cached JSONL parser (file signatures). |
+| `lynchpin.sources.captures.activitywatch` | `~/.local/share/activitywatch/aw-server-rust/sqlite.db` | no | Live DB reads (no memoization). |
+| `lynchpin.sources.captures.atuin` | `~/.local/share/atuin/history.db` | no | Live DB reads (no memoization). |
+| `lynchpin.sources.exports.chatlog` | Polylogue Markdown (`/realm/data/exports/chatlog/processed/markdown/…`) | yes | Caches per provider + file signatures. |
+| `lynchpin.sources.captures.codex` | Codex JSONL (`~/.codex/sessions`) | yes | Caches session list via file signatures. |
+| `lynchpin.sources.libraries.dendron` | `/realm/project/knowledgebase` | no | Direct filesystem scan (YAML frontmatter). |
+| `lynchpin.sources.exports.fbmessenger` | `/realm/data/exports/comms/facebook-messenger/processed/gdpr/<date>/messages/*.json` | yes | Cached JSON export parser (file signatures). |
+| `lynchpin.sources.libraries.finance` | `/realm/data/libraries/finance/journal_clean`, statements | yes | Cached ledger parser (file signature). |
+| `lynchpin.sources.exports.goodreads` | `/realm/data/exports/goodreads/raw/library_export.csv` | yes | Cached CSV parser (file signature). |
+| `lynchpin.sources.indices.gitstats` | `/realm/project/*` repos | yes | Caches repo scans via file signatures. |
+| `lynchpin.sources.exports.health` | `/realm/data/exports/health/raw/samsung-health/` | yes | Cached Samsung Health parser (CSV/tar signature). |
+| `lynchpin.sources.captures.instrumentation` | `/realm/data/captures/{asciinema,audio/raw,screenshot}` | no | Reads raw capture files; no cache yet. |
+| `lynchpin.sources.exports.polylogue` | Polylogue Markdown transcripts + run metadata | yes | Caches inventories via file signatures. |
+| `lynchpin.sources.exports.raindrop` | `/realm/data/exports/raindrop/raw/*.csv` | no | Parses CSV on demand. |
+| `lynchpin.sources.exports.reddit` | `/realm/data/exports/reddit/processed/<date>/*.csv` | yes | Caches CSV parses via file signatures. |
+| `lynchpin.sources.indices.repos` | `/realm/project/*` | no | Repo discovery/tokei scan on demand. |
+| `lynchpin.sources.indices.sessions` | `artefacts/knowledge/ledgers/session_index.csv` | yes | Cached CSV reader (file signature). |
+| `lynchpin.sources.exports.sleep` | `/realm/data/exports/health/processed/sleep_merged.jsonl` | yes | Cached JSONL parser (file signature). |
+| `lynchpin.sources.exports.spotify` | `/realm/data/exports/spotify/processed/**/StreamingHistory*.json` | yes | Cached JSON parser (file signatures). |
+| `lynchpin.sources.libraries.substack` | `/realm/data/libraries/substack` | no | Parses Markdown/HTML on demand. |
+| `lynchpin.sources.exports.takeout` | `/realm/data/exports/google/raw/takeout/*.tgz` | no | Reads Takeout archives on demand. |
+| `lynchpin.sources.captures.webhistory` | `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson` | yes | Cached NDJSON scan (content hashes via `files_digest`). |
+| `lynchpin.sources.captures.webhistory_raw` | `/realm/data/captures/webhistory/gestalt/raw` | yes | Cached raw exports (content hashes via `file_digest`). |
+| `lynchpin.sources.exports.wykop` | `/realm/data/exports/wykop/raw/<user>/*.jsonl` | yes | Cached JSONL parser (file signatures). |
 
 Notes:
 - The **non-cached** modules are still deterministic and read-only; they are
@@ -56,8 +60,9 @@ These modules write artefacts/exports and should never run implicitly from
 `lynchpin.sources` calls:
 - `lynchpin.ingest.instrumentation` → JSONL metadata under
   `artefacts/ingest/instrumentation/`.
-- `lynchpin.ingest.webhistory` → `/realm/data/webhistory/gestalt/{data,derived}` (canonical segments + full_history + dedup reports).
-- `lynchpin.ingest.wykop_export` → `/realm/data/wykop/<user>/` exports (network I/O).
+- `lynchpin.ingest.webhistory` → `/realm/data/captures/webhistory/gestalt/{data,derived}` (dedup segments + canonical full_history + reports).
+- `lynchpin.ingest.fbmessenger_export` → `/realm/data/exports/comms/facebook-messenger/processed/fbmessengerexport.sqlite` (API-backed export).
+- `lynchpin.ingest.wykop_export` → `/realm/data/exports/wykop/raw/<user>/` exports (network I/O).
 - `lynchpin.views.calendar_views` → `artefacts/calendar/views/` (writes only when content changes).
 - `lynchpin.views.calendar_narratives` → `artefacts/calendar/narratives/**` (skips if output exists unless `--force`; prompt/output writes are change-aware).
 - `lynchpin.views.ledgers` → CSV ledgers under `artefacts/knowledge/ledgers/`.

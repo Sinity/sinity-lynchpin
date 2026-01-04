@@ -46,6 +46,16 @@ def run(
         "--warehouse-limit",
         help="Optional row cap for warehouse loads.",
     ),
+    warehouse_format: str = typer.Option(
+        "parquet",
+        "--warehouse-format",
+        help="Per-source output format for the warehouse (duckdb or parquet).",
+    ),
+    warehouse_sources: Optional[str] = typer.Option(
+        None,
+        "--warehouse-sources",
+        help="Comma-separated source list to materialize (default: all).",
+    ),
     velocity_enabled: bool = typer.Option(
         False,
         "--velocity/--no-velocity",
@@ -66,7 +76,7 @@ def run(
         typer.secho("→ Webhistory full-history", fg=typer.colors.CYAN)
         webhistory_ingest.full_history(
             root=cfg.webhistory_dir,
-            output=cfg.data_root / "webhistory/gestalt/derived/full_history.ndjson",
+            output=cfg.webhistory_dir.parent / "derived/full_history.ndjson",
         )
         if webhistory_compare:
             typer.secho("→ Webhistory compare", fg=typer.colors.CYAN)
@@ -88,7 +98,14 @@ def run(
 
     if warehouse_enabled:
         typer.secho("→ Warehouse", fg=typer.colors.CYAN)
-        warehouse.build(output=cfg.warehouse_db, limit=warehouse_limit)
+        sources = warehouse_sources.split(",") if warehouse_sources else None
+        warehouse.refresh(
+            output=cfg.warehouse_db,
+            root=cfg.warehouse_root,
+            output_format=warehouse_format,
+            sources=sources,
+            limit=warehouse_limit,
+        )
 
     if velocity_enabled:
         typer.secho("→ Velocity", fg=typer.colors.CYAN)
@@ -107,7 +124,7 @@ def _run_baseline(cfg) -> None:
         "--session-root",
         "/realm/data/sinity-lynchpin/baseline-inputs/latest",
         "--health-root",
-        "/realm/data/health/processed",
+        str(cfg.sleep_jsonl.parent),
         "--output-dir",
         str(cfg.repo_root / "artefacts/core/baseline/latest"),
         "--mode",

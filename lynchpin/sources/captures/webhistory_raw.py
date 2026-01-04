@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence
 
-from ..core.cache import file_digest, persistent_cache
-from ..core.config import get_config
+from ...core.cache import file_digest, persistent_cache
+from ...core.config import get_config
 
 try:
     csv.field_size_limit(sys.maxsize)

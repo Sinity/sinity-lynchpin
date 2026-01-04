@@ -604,7 +604,7 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             --violet: #a78bfa;
             --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
             --font-display: 'Outfit', system-ui, sans-serif;
-            --ui-scale: 1.6;
+            --ui-scale: 2;
         }}
 
         @keyframes fadeIn {{
@@ -791,6 +791,47 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             font-size: calc(16px * var(--ui-scale));
         }}
 
+        .scale-selector {{
+            position: relative;
+        }}
+
+        .scale-selector select {{
+            appearance: none;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: calc(8px * var(--ui-scale));
+            padding: calc(12px * var(--ui-scale)) calc(44px * var(--ui-scale)) calc(12px * var(--ui-scale)) calc(16px * var(--ui-scale));
+            font-family: var(--font-mono);
+            font-size: calc(14px * var(--ui-scale));
+            font-weight: 500;
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: calc(110px * var(--ui-scale));
+        }}
+
+        .scale-selector select:hover {{
+            border-color: var(--phosphor-dim);
+            background: var(--elevated);
+        }}
+
+        .scale-selector select:focus {{
+            outline: none;
+            border-color: var(--phosphor);
+            box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.1);
+        }}
+
+        .scale-selector::after {{
+            content: 'v';
+            position: absolute;
+            right: calc(16px * var(--ui-scale));
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            pointer-events: none;
+            font-size: calc(14px * var(--ui-scale));
+        }}
+
         /* Main Layout */
         .main {{
             display: flex;
@@ -813,10 +854,20 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
         .filter-bar {{
             display: flex;
             flex-wrap: wrap;
+            align-items: center;
             gap: calc(10px * var(--ui-scale));
             padding: calc(12px * var(--ui-scale)) calc(28px * var(--ui-scale));
             background: var(--deep);
             border-bottom: 1px solid var(--border-subtle);
+        }}
+
+        .filter-label {{
+            font-family: var(--font-mono);
+            font-size: calc(11px * var(--ui-scale));
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-right: calc(6px * var(--ui-scale));
         }}
 
         .filter-pill {{
@@ -1288,6 +1339,9 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             <div class="project-selector">
                 <select id="project-select"></select>
             </div>
+            <div class="scale-selector">
+                <select id="scale-select"></select>
+            </div>
             <div class="timestamp">
                 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
             </div>
@@ -1326,32 +1380,85 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
         const projects = Object.keys(projectData);
         const selectionByProject = {{}};
         let lastInspectorIndex = null;
+        let suppressLegendEvents = false;
 
         const params = new URLSearchParams(window.location.search);
-        const scaleParam = params.get('scale');
-        if (scaleParam) {{
-            const scaleValue = Number.parseFloat(scaleParam);
-            if (Number.isFinite(scaleValue) && scaleValue > 0.5 && scaleValue <= 3.0) {{
-                document.documentElement.style.setProperty('--ui-scale', String(scaleValue));
+        const rendererParam = (params.get('renderer') || 'canvas').toLowerCase();
+        const renderer = rendererParam === 'svg' ? 'svg' : 'canvas';
+        const scaleOptions = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+        function normalizeScale(raw) {{
+            const value = Number.parseFloat(raw);
+            if (!Number.isFinite(value)) return null;
+            if (value < 0.5 || value > 3.0) return null;
+            return Math.round(value * 100) / 100;
+        }}
+
+        function safeStorageGet(key) {{
+            try {{
+                return localStorage.getItem(key);
+            }} catch (_) {{
+                return null;
             }}
         }}
-        const uiScale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')) || 1;
+
+        function safeStorageSet(key, value) {{
+            try {{
+                localStorage.setItem(key, value);
+            }} catch (_) {{
+                // ignore storage failures (file:// permissions, etc.)
+            }}
+        }}
+
+        let uiScale = 2.0;
+        const paramScale = normalizeScale(params.get('scale'));
+        const storedScale = normalizeScale(safeStorageGet('velocityScale'));
+        if (paramScale !== null) {{
+            uiScale = paramScale;
+            safeStorageSet('velocityScale', String(uiScale));
+        }} else if (storedScale !== null) {{
+            uiScale = storedScale;
+        }}
+        document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+
         const scaled = (value) => Math.round(value * uiScale);
         const scaledArray = (values) => values.map((value) => Math.round(value * uiScale));
 
-        const growthChart = echarts.init(
-            document.getElementById('growth-chart'),
-            null,
-            {{ renderer: 'svg' }}
-        );
-        const churnChart = echarts.init(
-            document.getElementById('churn-chart'),
-            null,
-            {{ renderer: 'svg' }}
-        );
+        let currentDpr = 0;
+        let growthChart = null;
+        let churnChart = null;
+
+        function computeDpr() {{
+            const base = window.devicePixelRatio || 1;
+            const scaled = base * uiScale;
+            return Math.max(1, Math.round(scaled));
+        }}
+
+        function initCharts() {{
+            const nextDpr = computeDpr();
+            currentDpr = nextDpr;
+            if (growthChart) {{
+                growthChart.dispose();
+            }}
+            if (churnChart) {{
+                churnChart.dispose();
+            }}
+            growthChart = echarts.init(
+                document.getElementById('growth-chart'),
+                null,
+                {{ renderer: renderer, devicePixelRatio: nextDpr }}
+            );
+            churnChart = echarts.init(
+                document.getElementById('churn-chart'),
+                null,
+                {{ renderer: renderer, devicePixelRatio: nextDpr }}
+            );
+            bindChartEvents();
+        }}
 
         // Populate project selector
         const projectSelect = document.getElementById('project-select');
+        const scaleSelect = document.getElementById('scale-select');
         projects.forEach((p, i) => {{
             const opt = document.createElement('option');
             opt.value = p;
@@ -1359,7 +1466,35 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             projectSelect.appendChild(opt);
         }});
 
-        let currentProject = projects[0];
+        scaleOptions.forEach((value) => {{
+            const opt = document.createElement('option');
+            opt.value = String(value);
+            opt.textContent = `${{Math.round(value * 100)}}%`;
+            scaleSelect.appendChild(opt);
+        }});
+        scaleSelect.value = String(uiScale);
+
+        let currentProject = projects.includes('{AGGREGATE_PROJECT}')
+            ? '{AGGREGATE_PROJECT}'
+            : projects[0];
+
+        function setScale(rawValue, persist = true) {{
+            const next = normalizeScale(rawValue);
+            if (next === null) {{
+                return;
+            }}
+            uiScale = next;
+            document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+            if (persist) {{
+                safeStorageSet('velocityScale', String(uiScale));
+            }}
+            scaleSelect.value = String(uiScale);
+            initCharts();
+            updateCharts(currentProject);
+            if (lastInspectorIndex !== null) {{
+                updateInspector(lastInspectorIndex);
+            }}
+        }}
 
         function ensureSelection(projectName) {{
             if (!selectionByProject[projectName]) {{
@@ -1391,8 +1526,11 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             let weekNet = 0;
             let peakChurn = 0;
             let peakDate = null;
+            let peakNet = 0;
+            let peakNetDate = null;
             let recentCommits = 0;
             let recentActiveDays = 0;
+            const categoryTotals = [];
             const recentDates = new Set(dates.slice(-30));
             const recentWindow = Math.min(30, dates.length);
 
@@ -1400,8 +1538,10 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                 const series = data.categories[cat];
                 const growth = series.growth;
                 const churn = series.churn;
+                const catTotal = growth.length ? growth[growth.length - 1] : 0;
+                categoryTotals.push({{ name: cat, totalLoc: catTotal }});
                 if (growth.length) {{
-                    totalLoc += growth[growth.length - 1];
+                    totalLoc += catTotal;
                     const idx30 = Math.max(0, growth.length - 30);
                     const idx7 = Math.max(0, growth.length - 7);
                     recentNet += growth[growth.length - 1] - growth[idx30];
@@ -1418,15 +1558,39 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                 }}
             }}
 
+            for (let i = 0; i < dates.length; i++) {{
+                let dayNet = 0;
+                for (const cat of categories) {{
+                    const growth = data.categories[cat].growth;
+                    if (!growth.length) {{
+                        continue;
+                    }}
+                    const prev = i > 0 ? growth[i - 1] : 0;
+                    dayNet += growth[i] - prev;
+                }}
+                if (Math.abs(dayNet) > Math.abs(peakNet)) {{
+                    peakNet = dayNet;
+                    peakNetDate = dates[i];
+                }}
+            }}
+
+            categoryTotals.sort((a, b) => b.totalLoc - a.totalLoc);
+            const topCategories = categoryTotals.slice(0, 3);
+
             let totalCommits = 0;
             let activeDays = 0;
-            for (const [day, events] of Object.entries(data.events)) {{
+            let activityStart = null;
+            let activityEnd = null;
+            for (const day of dates) {{
+                const events = data.events[day] || [];
                 let dayCommits = 0;
+                let dayMatches = false;
                 for (const ev of events) {{
                     const cats = ev.cats ? Object.keys(ev.cats) : [];
                     if (cats.some((cat) => selectedSet.has(cat))) {{
                         totalCommits += 1;
                         dayCommits += 1;
+                        dayMatches = true;
                         if (recentDates.has(day)) {{
                             recentCommits += 1;
                         }}
@@ -1437,6 +1601,12 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                     if (recentDates.has(day)) {{
                         recentActiveDays += 1;
                     }}
+                }}
+                if (dayMatches) {{
+                    if (!activityStart) {{
+                        activityStart = day;
+                    }}
+                    activityEnd = day;
                 }}
             }}
 
@@ -1450,6 +1620,8 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                 weekNet,
                 peakChurn,
                 peakDate,
+                peakNet,
+                peakNetDate,
                 recentCommits,
                 recentActiveDays,
                 recentNetDaily: recentNet / recentDays,
@@ -1458,6 +1630,9 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                 recentDays,
                 categoriesCount: categories.length,
                 categoriesTotal: data.categoryList.length,
+                topCategories,
+                activityStart,
+                activityEnd,
             }};
         }}
 
@@ -1469,11 +1644,19 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             const recentSign = summary.recentNet >= 0 ? '+' : '';
             const weekSign = summary.weekNet >= 0 ? '+' : '';
             const peakLabel = summary.peakDate ? summary.peakDate : 'n/a';
+            const peakNetSign = summary.peakNet >= 0 ? '+' : '';
+            const peakNetLabel = summary.peakNetDate ? summary.peakNetDate : 'n/a';
             const hiddenCount = summary.categoriesTotal - summary.categoriesCount;
+            const isAggregate = projectName === '{AGGREGATE_PROJECT}';
+            const categoryLabel = isAggregate ? 'Projects' : 'Categories';
+            const topLabel = isAggregate ? 'Top Projects' : 'Top Mix';
             const selectedNames = data.categoryList.filter((cat) => selectedSet.has(cat));
             const selectedLabel = selectedNames.length <= 4
                 ? selectedNames.join(', ')
                 : `${{selectedNames.slice(0, 4).join(', ')}} +${{selectedNames.length - 4}} more`;
+            const topDetails = summary.topCategories.length
+                ? summary.topCategories.map((item) => `${{item.name}} ${{formatNumber(item.totalLoc)}}`).join(' • ')
+                : 'n/a';
 
             statsBar.innerHTML = `
                 <div class="stat-card">
@@ -1502,9 +1685,19 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                     <div class="stat-detail">${{peakLabel}}</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Categories</div>
+                    <div class="stat-label">Peak Net Day</div>
+                    <div class="stat-value ${{summary.peakNet >= 0 ? 'positive' : 'negative'}}">${{peakNetSign}}${{formatNumber(summary.peakNet)}}</div>
+                    <div class="stat-detail">${{peakNetLabel}}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">${{categoryLabel}}</div>
                     <div class="stat-value">${{summary.categoriesCount}} / ${{summary.categoriesTotal}}</div>
                     <div class="stat-detail">${{selectedLabel || 'none selected'}}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">${{topLabel}}</div>
+                    <div class="stat-value">${{summary.topCategories[0] ? summary.topCategories[0].name : 'n/a'}}</div>
+                    <div class="stat-detail">${{topDetails}}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">30-Day Commits</div>
@@ -1586,8 +1779,10 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             const data = projectData[projectName];
             const filterBar = document.getElementById('filter-bar');
             if (!data || !filterBar) return;
+            const label = projectName === '{AGGREGATE_PROJECT}' ? 'Projects' : 'Categories';
 
             const controls = `
+                <span class="filter-label">${{label}}</span>
                 <button class="filter-pill active" data-action="all">All</button>
                 <button class="filter-pill" data-action="none">None</button>
             `;
@@ -1633,12 +1828,30 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             }});
         }}
 
-        function updateRangeIndicator(projectName) {{
-            const summary = projectSummaries[projectName];
+        function updateRangeIndicator(projectName, selectedSet) {{
+            const summary = computeSummary(projectName, selectedSet);
+            const fallback = projectSummaries[projectName];
             const indicator = document.getElementById('range-indicator');
-            if (summary.firstDate && summary.lastDate) {{
-                indicator.innerHTML = `<span>${{summary.firstDate}}</span> -> <span>${{summary.lastDate}}</span>`;
+            const start = summary.activityStart || fallback.firstDate;
+            const end = summary.activityEnd || fallback.lastDate;
+            if (start && end) {{
+                const scope = summary.categoriesCount === summary.categoriesTotal ? 'full' : 'selection';
+                indicator.innerHTML = `<span>${{start}}</span> -> <span>${{end}}</span> · ${{scope}}`;
+            }} else {{
+                indicator.textContent = 'No activity range available';
             }}
+        }}
+
+        function syncLegendSelection(projectName, selectedSet) {{
+            const data = projectData[projectName];
+            if (!data) return;
+            suppressLegendEvents = true;
+            data.categoryList.forEach((cat) => {{
+                const action = selectedSet.has(cat) ? 'legendSelect' : 'legendUnSelect';
+                growthChart.dispatchAction({{ type: action, name: cat }});
+                churnChart.dispatchAction({{ type: action, name: cat }});
+            }});
+            suppressLegendEvents = false;
         }}
 
         function applySelection(projectName) {{
@@ -1646,9 +1859,11 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             const selectedMap = selectionMap(projectName, selected);
             growthChart.setOption({{ legend: {{ selected: selectedMap }} }}, false);
             churnChart.setOption({{ legend: {{ selected: selectedMap }} }}, false);
+            syncLegendSelection(projectName, selected);
             updateStatsBar(projectName, selected);
             updateLegend(projectName, selected);
             updateFilterBar(projectName, selected);
+            updateRangeIndicator(projectName, selected);
             if (lastInspectorIndex !== null) {{
                 updateInspector(lastInspectorIndex);
             }}
@@ -1666,7 +1881,7 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             updateStatsBar(projectName, selected);
             updateLegend(projectName, selected);
             updateFilterBar(projectName, selected);
-            updateRangeIndicator(projectName);
+            updateRangeIndicator(projectName, selected);
 
             // Growth series (stacked area by category)
             const growthSeries = categories.map((cat, i) => ({{
@@ -1900,6 +2115,7 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             }}, true);
 
             echarts.connect([growthChart, churnChart]);
+            syncLegendSelection(projectName, selected);
         }}
 
         function updateInspector(dateIndex) {{
@@ -1969,6 +2185,37 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             }}).join('');
         }}
 
+        function bindChartEvents() {{
+            if (!growthChart || !churnChart) {{
+                return;
+            }}
+
+            growthChart.on('legendselectchanged', function (event) {{
+                if (suppressLegendEvents) {{
+                    return;
+                }}
+                const selected = Object.entries(event.selected || {{}})
+                    .filter(([_, enabled]) => enabled)
+                    .map(([name]) => name);
+                selectionByProject[currentProject] = new Set(selected);
+                applySelection(currentProject);
+            }});
+
+            growthChart.on('updateAxisPointer', function (event) {{
+                if (event.dataIndex != null) {{
+                    lastInspectorIndex = event.dataIndex;
+                    updateInspector(event.dataIndex);
+                }}
+            }});
+
+            churnChart.on('updateAxisPointer', function (event) {{
+                if (event.dataIndex != null) {{
+                    lastInspectorIndex = event.dataIndex;
+                    updateInspector(event.dataIndex);
+                }}
+            }});
+        }}
+
         // Event handlers
         projectSelect.addEventListener('change', (e) => {{
             currentProject = e.target.value;
@@ -1977,34 +2224,26 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             updateCharts(currentProject);
         }});
 
-        growthChart.on('legendselectchanged', function (event) {{
-            const selected = Object.entries(event.selected || {{}})
-                .filter(([_, enabled]) => enabled)
-                .map(([name]) => name);
-            selectionByProject[currentProject] = new Set(selected);
-            applySelection(currentProject);
-        }});
-
-        growthChart.on('updateAxisPointer', function (event) {{
-            if (event.dataIndex != null) {{
-                lastInspectorIndex = event.dataIndex;
-                updateInspector(event.dataIndex);
-            }}
-        }});
-
-        churnChart.on('updateAxisPointer', function (event) {{
-            if (event.dataIndex != null) {{
-                lastInspectorIndex = event.dataIndex;
-                updateInspector(event.dataIndex);
-            }}
+        scaleSelect.addEventListener('change', (e) => {{
+            setScale(e.target.value);
         }});
 
         window.addEventListener('resize', () => {{
+            const nextDpr = computeDpr();
+            if (nextDpr !== currentDpr) {{
+                initCharts();
+                updateCharts(currentProject);
+                if (lastInspectorIndex !== null) {{
+                    updateInspector(lastInspectorIndex);
+                }}
+                return;
+            }}
             growthChart.resize();
             churnChart.resize();
         }});
 
         // Initial render
+        initCharts();
         projectSelect.value = currentProject;
         updateCharts(currentProject);
     </script>
@@ -2027,6 +2266,12 @@ def build(
         "-p",
         help="Limit to specific project names (default: all registered projects)",
     ),
+    exclude: Optional[List[str]] = typer.Option(
+        None,
+        "--exclude",
+        "-x",
+        help="Exclude project names from the dashboard (repeatable).",
+    ),
     aggregate: bool = typer.Option(
         True,
         "--aggregate/--no-aggregate",
@@ -2043,6 +2288,16 @@ def build(
         if missing:
             raise typer.BadParameter(f"Unknown project(s): {', '.join(sorted(missing))}")
         selected_specs = {name: PROJECT_SPECS[name] for name in requested}
+
+    if exclude:
+        excluded = [name.strip() for name in exclude if name.strip()]
+        if not excluded:
+            raise typer.BadParameter("At least one non-empty --exclude value is required.")
+        missing = [name for name in excluded if name not in PROJECT_SPECS]
+        if missing:
+            raise typer.BadParameter(f"Unknown project(s): {', '.join(sorted(missing))}")
+        for name in excluded:
+            selected_specs.pop(name, None)
 
     if not selected_specs:
         raise typer.BadParameter("No projects available to analyse.")

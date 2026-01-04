@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Sequence, Tuple
 
-from ..core.config import get_config
+from ...core.config import get_config
 
 
 @dataclass
@@ -22,6 +22,34 @@ class RaindropBookmark:
     cover: Optional[str]
     favorite: bool
     raw: dict
+
+
+@dataclass(frozen=True)
+class RaindropExport:
+    label: str
+    path: Path
+    mtime: datetime
+    is_default: bool
+
+
+def list_exports(root: Optional[Path] = None) -> List[RaindropExport]:
+    cfg = get_config()
+    base = Path(root) if root else cfg.raindrop_dir
+    if not base.exists():
+        return []
+    exports: List[RaindropExport] = []
+    for path in sorted(base.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True):
+        stat = path.stat()
+        label = path.stem
+        exports.append(
+            RaindropExport(
+                label=label,
+                path=path,
+                mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                is_default=cfg.raindrop_csv is not None and path == cfg.raindrop_csv,
+            )
+        )
+    return exports
 
 
 def iter_bookmarks(csv_path: Optional[Path] = None) -> Iterator[RaindropBookmark]:
@@ -56,6 +84,21 @@ def iter_bookmarks(csv_path: Optional[Path] = None) -> Iterator[RaindropBookmark
                 )
 
     return generator()
+
+
+def iter_bookmarks_by_name(name: str, root: Optional[Path] = None) -> Iterator[RaindropBookmark]:
+    """Iterate bookmarks for exports whose filenames contain the given token."""
+    token = name.lower()
+    for export in list_exports(root):
+        if token in export.label.lower():
+            yield from iter_bookmarks(export.path)
+
+
+def iter_bookmarks_all(root: Optional[Path] = None) -> Iterator[Tuple[RaindropExport, RaindropBookmark]]:
+    """Iterate all exports, yielding (export, bookmark) pairs."""
+    for export in list_exports(root):
+        for bookmark in iter_bookmarks(export.path):
+            yield export, bookmark
 
 
 def _parse_tags(raw: Optional[str]) -> List[str]:

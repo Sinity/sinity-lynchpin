@@ -15,7 +15,7 @@
 | Git deltas | Repos listed in baseline (sinex, sinnix, polylogue, etc.) | per commit/day | Already aggregated in baseline JSON |
 | Chat sessions | `docs/reference/sessions`, Polylogue Markdown exports, `artefacts/knowledge/sessions/summaries` | per conversation/day | Need per-day mapping via timestamps |
 | Life timeline | `artefacts/lifelog/life-timeline/monthly_life_latest.json` | per month/day subset | Contains high-sensitivity events (web, finance, health) |
-| Wearables | `/realm/data/health/processed/sleep_merged.jsonl`, `sleep_summary.json` | per night/day | Expand to steps/hr/stress later |
+| Wearables | `/realm/data/exports/health/processed/sleep_merged.jsonl`, `sleep_summary.json` | per night/day | Expand to steps/hr/stress later |
 | Instrumentation | `artefacts/ingest/instrumentation/*_metadata.jsonl` | per file/day | indicates recordings, audio capture, screen grabs |
 | Narratives/logs | `docs/analysis-log.md`, `docs/analysis/*` | per entry | Provide qualitative anchors |
 

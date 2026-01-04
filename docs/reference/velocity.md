@@ -52,8 +52,14 @@ Use the legend or inspector toggles to include/exclude repositories and the
 stats bar will recompute for the selection.
 
 ### UI scale
-You can set a base UI scale via `?scale=` in the URL (e.g., `velocity.html?scale=1.4`).
-The dashboard also defaults to a larger scale so browser zoom is less necessary.
+Use the header scale selector or set a base UI scale via `?scale=` in the URL
+(e.g., `velocity.html?scale=1.4`). The dashboard defaults to a larger scale
+(`2.0`) and reinitializes charts using `devicePixelRatio * uiScale` so the
+canvas stays crisp without relying on browser zoom. Scale changes persist in
+local storage unless overridden by the URL parameter.
+
+Optional: add `?renderer=svg` for a fully vector ECharts render (slower but
+always crisp in static exports).
 
 ## Run
 ```bash
@@ -63,6 +69,11 @@ just velocity
 Or directly:
 ```bash
 python -m lynchpin.views.velocity
+```
+
+Limit the render set (and aggregate view) with `--project` / `--exclude`:
+```bash
+python -m lynchpin.views.velocity --exclude sinnix --exclude knowledgebase
 ```
 
 ## Adding a new project

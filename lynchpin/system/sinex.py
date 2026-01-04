@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..core.config import get_config
-from ..sources.repos import GitRepository
+from ..sources.indices.repos import GitRepository
 
 
 @dataclass

@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from ..core.cache import files_digest, persistent_cache
-from ..core.config import get_config
+from ...core.cache import files_digest, persistent_cache
+from ...core.config import get_config
 
 try:
     csv.field_size_limit(sys.maxsize)
@@ -106,6 +106,9 @@ def normalize_url(url: str) -> str:
 
 def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> List[Path]:
     cfg = get_config()
+    fallback = ndjson or cfg.webhistory_ndjson
+    if root is None and fallback and Path(fallback).exists():
+        return [Path(fallback)]
     path = root or cfg.webhistory_dir
     if path.exists():
         candidates = [
@@ -116,7 +119,6 @@ def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -
         ]
         if candidates:
             return candidates
-    fallback = ndjson or cfg.webhistory_ndjson
     if fallback and Path(fallback).exists():
         return [Path(fallback)]
     return []

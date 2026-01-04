@@ -15,23 +15,23 @@
 ## Existing Lynchpin Modules
 | Module | What it exposes | Canonical inputs |
 | --- | --- | --- |
-| `activitywatch`, `sleep` | AW window/web/AFK buckets + wearables | `~/.local/share/activitywatch/`, `/realm/data/health/processed/sleep_merged.jsonl` |
+| `activitywatch`, `sleep` | AW window/web/AFK buckets + wearables | `~/.local/share/activitywatch/`, `/realm/data/exports/health/processed/sleep_merged.jsonl` |
 | `atuin` | Shell command history | `~/.local/share/atuin/history.db` |
 | `calendar` | Legacy calendar bundle reader | `artefacts/calendar/raw/**` |
-| `finance` | Ledger postings + statements | `/realm/data/finance/journal_clean`, `/realm/data/finance/data/statements/` |
+| `finance` | Ledger postings + statements | `/realm/data/libraries/finance/journal_clean`, `/realm/data/libraries/finance/data/statements/` |
 | `gitstats` | Repo metadata, churn, tokei stats | `/realm/project/*`, `artefacts/meta/velocity/git_numstat.jsonl` |
-| `polylogue` | Markdown-rendered chat transcripts | `/realm/data/chatlog/markdown/**/conversation.md` |
-| `raindrop` | Bookmark CSVs | `/realm/data/raindrop/raindrop_bookmarks_*.csv` |
-| `reddit` | GDPR exports | `/realm/data/reddit/gdpr/<date>/` (raw zips in `gdpr/raw/`) |
+| `polylogue` | Markdown-rendered chat transcripts | `/realm/data/exports/chatlog/processed/markdown/**/conversation.md` |
+| `raindrop` | Bookmark CSVs | `/realm/data/exports/raindrop/raw/raindrop_bookmarks_*.csv` |
+| `reddit` | Export bundles | `/realm/data/exports/reddit/processed/<date>/` (raw zips in `raw/<date>/`) |
 | `sessions` | Session ledger rows | `artefacts/knowledge/ledgers/session_index.csv` |
 | `sinevec` | Embedding state | `/realm/project/sinevec/var/state/**` |
 | `sinnix` | Sinnix flake hosts/features + target doc | `/realm/project/sinnix/` |
-| `sleep` | Sleep segments (Samsung Health + Sleep as Android merge) | `/realm/data/health/processed/sleep_merged.jsonl` |
-| `spotify` | Account Data + Extended Streaming JSON | `/realm/data/spotify/gdpr/<date>/` |
-| `substack` | sbstck-dl repo + manual rips | `/realm/data/doc/substack/**` |
+| `sleep` | Sleep segments (Samsung Health + Sleep as Android merge) | `/realm/data/exports/health/processed/sleep_merged.jsonl` |
+| `spotify` | Account Data + Extended Streaming JSON | `/realm/data/exports/spotify/processed/<date>/` |
+| `substack` | sbstck-dl repo + manual rips | `/realm/data/libraries/substack/**` |
 | `dendron` | Knowledgebase Markdown vault | `/realm/project/knowledgebase/` |
-| `webhistory` | Gestalt merged history (derived from raw via dedup) | `/realm/data/webhistory/gestalt/data/**` |
-| `wykop` | API + scrape exports | `/realm/data/wykop/<user>/` |
+| `webhistory` | Gestalt merged history (derived from raw via dedup) | `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson` |
+| `wykop` | API + scrape exports | `/realm/data/exports/wykop/raw/<user>/` |
 | `meta` | Analysis log, backlog, and plan docs | `docs/analysis-log.md`, `docs/backlog.md`, `docs/plans/*.md` |
 
 All modules cache into `artefacts/lynchpin/cache/` and register tables when `python -m lynchpin.views.warehouse` runs.
@@ -42,14 +42,14 @@ All modules cache into `artefacts/lynchpin/cache/` and register tables when `pyt
    - Long-term: Sinex dev-edition can import these modules (or mount the DuckDB warehouse) instead of reparsing raw exports.
 2. **Chat webapp connectors**
    - Build Chrome-profile-aware scrapers for ChatGPT, Claude, Gemini, etc. so transcripts can be fetched even when Polylogue hasn’t rendered Markdown yet.
-   - Store raw HTML/JSON under `/realm/data/chatlog/live/<provider>/` before rendering.
+   - Store raw HTML/JSON under `/realm/data/exports/chatlog/live/<provider>/` before rendering.
 3. **Twitter/Wykop/Reddit scrapers**
    - Wrap existing scraping workflows (Wykop scraper, Reddit API collectors, `sbstck-dl`, etc.) so they can be triggered via Lynchpin CLI.
    - Add Twitter module focused on bookmarks/likes/thread snapshots; rely on live API access when possible, fall back to GDPR exports.
 4. **Finance extensions**
    - Go beyond hledger: integrate Allegro shopping data, multi-bank statements, blockchain transactions tied to `sinity.eth`, etc.
 5. **Filesystem / knowledge sources**
-   - Modules for `/realm/data/doc/**` (Substack, Gmail MBOX, Dendron derivatives), `/realm/data/media/**`, syslog/screenshot archives, dendron knowledgebase, Polylogue ingestion state.
+   - Modules for `/realm/data/libraries/doc/**` (Substack, Gmail MBOX, Dendron derivatives), `/realm/data/libraries/media/**`, syslog/screenshot archives, dendron knowledgebase, Polylogue ingestion state.
 6. **Sinevec integration**
    - Consider folding Sinevec functionality into Lynchpin (shared embeddings), or ensure sinevec pipelines can import Lynchipin modules for source data.
 7. **Skill interfaces**
@@ -77,7 +77,7 @@ All modules cache into `artefacts/lynchpin/cache/` and register tables when `pyt
 
 ## Repository & Filesystem Layout
 - `/realm/project`: flat directory containing every repo (`sinity-lynchpin`, `sinex`, `sinnix`, `polylogue`, `sinevec`, `scribe-tap`, `intercept-bounce`, `knowledgebase`, etc.).
-- `/realm/data`: organized by domain (`activitywatch`, `chatlog`, `reddit`, `wykop`, `spotify`, `finance`, `health`, `media`, `doc/substack`, etc.). Maintain `docs/reference/data-sources.md` as the canonical inventory.
+- `/realm/data`: bucketed into `captures/`, `exports/`, `libraries/`, `indices/`. Maintain `docs/reference/data-sources.md` as the canonical inventory for domain paths.
 - `/realm/home`, `/realm/inbox`: reserved for future flows; document any automation touching them.
 
 ## Integration Strategy (Sinnix, Sinex, future Sinex merge)

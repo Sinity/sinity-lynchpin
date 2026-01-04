@@ -8,8 +8,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..core.cache import file_signature, persistent_cache
-from ..core.config import get_config
+from ...core.cache import file_signature, persistent_cache
+from ...core.config import get_config
 
 TRANSACTION_LINE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<desc>.+)$")
 POSTING_LINE = re.compile(r"^(?P<account>.+?)(?:\s{2,}(?P<amount>[+-]?[0-9.,]+)\s*(?P<currency>[A-Za-z]+)?)?$")

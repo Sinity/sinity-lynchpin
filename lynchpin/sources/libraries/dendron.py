@@ -7,7 +7,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 import yaml
 
-from ..core.config import get_config
+from ...core.config import get_config
 
 
 @dataclass

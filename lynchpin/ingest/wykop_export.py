@@ -1724,8 +1724,8 @@ def _iter_existing_ids(path: Path, id_key: str) -> Iterable[int]:
 def scrape(
     username: str = typer.Option("Sinity", help="Wykop username to scrape."),
     out_dir: Path = typer.Option(
-        Path("/realm/data/wykop"),
-        help="Destination folder under /realm/data.",
+        Path("/realm/data/exports/wykop/raw"),
+        help="Destination folder under /realm/data/exports.",
     ),
     backend: str = typer.Option(
         "auto",

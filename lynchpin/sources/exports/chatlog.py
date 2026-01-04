@@ -8,8 +8,8 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import yaml
 
-from ..core.cache import files_signature, persistent_cache
-from ..core.config import get_config
+from ...core.cache import files_signature, persistent_cache
+from ...core.config import get_config
 
 _TIME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[Tt](\d{2})-(\d{2})-(\d{2})")
 

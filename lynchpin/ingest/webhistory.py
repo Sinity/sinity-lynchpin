@@ -21,8 +21,8 @@ import typer
 from ..core.cache import file_digest
 from ..core.config import get_config
 from ..core.io import write_text_if_changed
-from ..sources import webhistory_raw
-from ..sources.webhistory import WebHistoryVisit, iter_gestalt_events, iter_ndjson_events, normalize_url
+from ..sources.captures import webhistory_raw
+from ..sources.captures.webhistory import WebHistoryVisit, iter_gestalt_events, iter_ndjson_events, normalize_url
 
 app = typer.Typer(help="Webhistory derived artefacts")
 
@@ -52,12 +52,12 @@ def dedup(
     report: Optional[Path] = typer.Option(
         None,
         "--report",
-        help="Optional JSON report path (defaults to /realm/data/webhistory/gestalt/derived/dedup_report.json).",
+        help="Optional JSON report path (defaults to the canonical webhistory derived directory).",
     ),
     manifest: Optional[Path] = typer.Option(
         None,
         "--manifest",
-        help="Optional manifest path to record input signatures (defaults to /realm/data/webhistory/gestalt/derived/dedup_manifest.json).",
+        help="Optional manifest path to record input signatures (defaults to the canonical webhistory derived directory).",
     ),
     force: bool = typer.Option(False, "--force", help="Rebuild even if manifest matches."),
 ) -> None:
@@ -66,8 +66,9 @@ def dedup(
     resolved_raw = raw_root or cfg.webhistory_raw_dir
     resolved_output = output_dir or cfg.webhistory_dir
     resolved_output.mkdir(parents=True, exist_ok=True)
-    report_path = report or (cfg.data_root / "webhistory/gestalt/derived/dedup_report.json")
-    manifest_path = manifest or (cfg.data_root / "webhistory/gestalt/derived/dedup_manifest.json")
+    derived_dir = resolved_output.parent / "derived"
+    report_path = report or (derived_dir / "dedup_report.json")
+    manifest_path = manifest or (derived_dir / "dedup_manifest.json")
 
     paths = webhistory_raw.raw_files(resolved_raw, files or None)
     if not paths:
@@ -195,13 +196,14 @@ def full_history(
     output: Optional[Path] = typer.Option(
         None,
         "--output",
-        help="Output NDJSON path (defaults to /realm/data/webhistory/gestalt/derived/full_history.ndjson).",
+        help="Output NDJSON path (defaults to the canonical webhistory derived directory).",
     ),
 ) -> None:
     """Write merged NDJSON (url/title/norm/source/iso_time) from canonical segments."""
     cfg = get_config()
     resolved_root = root or cfg.webhistory_dir
-    resolved_output = output or (cfg.data_root / "webhistory/gestalt/derived/full_history.ndjson")
+    derived_dir = cfg.webhistory_dir.parent / "derived"
+    resolved_output = output or (derived_dir / "full_history.ndjson")
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
 
     count = 0

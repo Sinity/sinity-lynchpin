@@ -28,7 +28,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 - Use `direnv allow` (or `nix develop`) in the repo root to load the devshell described in `flake.nix`.
 - Run `just --list` to view all recipes (baseline, ledgers, focus dashboards, life timeline, instrumentation harvesters, etc.).
 - Related recipes are grouped behind single entrypoints:
-  - `just ledgers target=session|artefact [...]`
+  - `just ledgers session|artefact [output]`
   - `just focus-portal [start=YYYY-MM-DD end=YYYY-MM-DD weeks=8]` (wrapper around `calendar-refresh`)
   - `just instrumentation target=asciinema|audio|screen [...]`
   - `just calendar-refresh start=... end=... [output_dir=...] [write_files=false] [json=true]` for per-day/week/month dossiers
@@ -42,14 +42,14 @@ This reference aggregates how the repo is structured and what each pipeline expe
 | Pipeline | Path | Status | Entry Command(s) | Primary Inputs | Outputs |
 | --- | --- | --- | --- | --- | --- |
 | Baseline | `pipelines/core/baseline/` | stable | `just baseline` | ActivityWatch DB, Atuin DB, Codex sessions, git repos, sleep merge | `artefacts/core/baseline/latest/*` rollups |
-| Ledgers | `lynchpin.views.ledgers` | stable | `just ledgers target=session|artefact`, `just refresh-ledgers` | `docs/reference/sessions/*.md`, `docs/reference/ledgers/artefact_catalog.json` | `artefacts/knowledge/ledgers/*.csv` |
-| Calendar Dossiers | `lynchpin.views.calendar_views` | prototype | `just calendar-refresh`, `just calendar-narrative` | Baseline artefacts (timeline, git numstat, Atuin summary, Codex summary), session ledger CSV, ActivityWatch DB, Atuin DB, instrumentation metadata, `/realm/data/webhistory/gestalt/data` (derived from raw via dedup), wearable sleep merge (`/realm/data/health/processed/sleep_merged.jsonl`), chat transcript roots under `/realm/data/chatlog/`, optional life timeline JSON | `artefacts/calendar/days/*.md`, weekly/monthly rollups (with aggregated sleep stats + life overlays), derived ActivityWatch focus/category summaries, git repo churn tables, static site bundles, JSON exports, raw bundles under `artefacts/calendar/raw/`, `artefacts/calendar/narratives/<mode>*.md`, mirrored velocity HTML. Backed by the lazily evaluated `lynchpin` package so scripts and Datasette pull identical metrics. |
+| Ledgers | `lynchpin.views.ledgers` | stable | `just ledgers session|artefact`, `just refresh-ledgers` | `docs/reference/sessions/*.md`, `docs/reference/ledgers/artefact_catalog.json` | `artefacts/knowledge/ledgers/*.csv` |
+| Calendar Dossiers | `lynchpin.views.calendar_views` | prototype | `just calendar-refresh`, `just calendar-narrative` | Baseline artefacts (timeline, git numstat, Atuin summary, Codex summary), session ledger CSV, ActivityWatch DB, Atuin DB, instrumentation metadata, `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson` (derived from raw via dedup), wearable sleep merge (`/realm/data/exports/health/processed/sleep_merged.jsonl`), chat transcript roots under `/realm/data/exports/chatlog/processed/markdown`, optional life timeline JSON | `artefacts/calendar/days/*.md`, weekly/monthly rollups (with aggregated sleep stats + life overlays), derived ActivityWatch focus/category summaries, git repo churn tables, static site bundles, JSON exports, raw bundles under `artefacts/calendar/raw/`, `artefacts/calendar/narratives/<mode>*.md`, mirrored velocity HTML. Backed by the lazily evaluated `lynchpin` package so scripts and Datasette pull identical metrics. |
 | Life Timeline | `pipelines/lifelog/life-timeline/` | stable | `just life-timeline*`, `just life-refresh`, `just life-digest`, `just youtube-oembed` | Reddit/Wykop exports, Google Takeout, finance, health, git, notes | Monthly JSON summaries + drilldown Markdown |
 | Life Narrative Auto | `pipelines/lifelog/life-timeline/generate_auto_narrative.py` | experimental | `just life-auto-narrative` (also runs during `just life-refresh`) | `artefacts/lifelog/life-timeline/monthly_life_latest.json` | `artefacts/lifelog/life-timeline/narratives/life_auto_summary.md` (quarter/year Markdown) |
-| Wykop Export | `lynchpin.ingest.wykop_export` | stable | `just wykop-export` | Wykop API/html + auth token | `/realm/data/wykop/<user>/` |
+| Wykop Export | `lynchpin.ingest.wykop_export` | stable | `just wykop-export` | Wykop API/html + auth token | `/realm/data/exports/wykop/raw/<user>/` |
 | Project Bundles | `lynchpin.views.project_bundles` | experimental | `just project-bundles` | Git repos (`sinex`, `polylogue`, etc.) | `artefacts/context/project-bundles/<repo>/` context packs |
 | Sessions | `lynchpin.views.session_summaries` | experimental | `just summarise-session <conversation.md>` | Polylogue Markdown transcripts | `artefacts/knowledge/sessions/summaries/*.json` |
-| Instrumentation | `lynchpin.ingest.instrumentation` | experimental | `just instrumentation target=asciinema|audio|screen` | `/realm/data/{asciinema_recording,audio/raw,screenshot}` | Metadata JSONL under `artefacts/ingest/instrumentation/` |
+| Instrumentation | `lynchpin.ingest.instrumentation` | experimental | `just instrumentation target=asciinema|audio|screen` | `/realm/data/captures/{asciinema,audio/raw,screenshot}` | Metadata JSONL under `artefacts/ingest/instrumentation/` |
 | Knowledge Graph | `lynchpin.views.knowledge_graph` | experimental | `just knowledge-graph` | Markdown roots (`/realm/project/knowledgebase`, `docs/`) | DuckDB + optional Parquet snapshot |
 | Meta / Velocity | `lynchpin.views.velocity` | experimental | `just velocity` | Git repos (LoC history) | `artefacts/meta/velocity/velocity.html` |
 
@@ -87,7 +87,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 ### Wykop Export (`pipelines/lifelog/wykop/README.md`)
 - Module: `lynchpin.ingest.wykop_export` runs the HTML/API export (resumable with `scrape_state.json`).
 - Inputs: Wykop refresh token (auto-discovered or passed), optional Chrome/Brave profiles for token retrieval.
-- Outputs: JSON/JSONL exports stored under `/realm/data/wykop/<username>/`, plus manifests.
+- Outputs: JSON/JSONL exports stored under `/realm/data/exports/wykop/raw/<username>/`, plus manifests.
 - Commands: `just wykop-export username=Sinity backend=api extras=true` (see `just` arguments for other combos).
 
 ### Project Bundles (`docs/reference/project-bundles.md`)
@@ -102,7 +102,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 
 ### Instrumentation (`lynchpin/ingest/instrumentation.py`)
 - Module: `lynchpin.ingest.instrumentation` CLI entrypoints (`python -m lynchpin.ingest.instrumentation asciinema|audio|screen`).
-- Inputs: directories under `/realm/data/{asciinema_recording,audio/raw,screenshot}` produced by Sinnix services.
+- Inputs: directories under `/realm/data/captures/{asciinema,audio/raw,screenshot}` produced by Sinnix services.
 - Outputs: NDJSON metadata pools under `artefacts/ingest/instrumentation/` with filenames, timestamps, durations, sample info, etc.
 - Commands: `just instrumentation target=asciinema|audio|screen`.
 
@@ -118,12 +118,12 @@ This reference aggregates how the repo is structured and what each pipeline expe
 
 ### Lynchpin package (`lynchpin/`)
 - Status: `experimental`
-- What: HPI-style Python modules (`lynchpin.sources.activitywatch`, `.atuin`, `.gitstats`, `.sleep`, `.webhistory`, `.instrumentation`, `.sessions`, `.polylogue`, `.reddit`, `.spotify`, `.finance`, `.sinevec`, `.calendar`, etc.) exposing canonical `/realm/data/...` sources as lazy generators with simple dataclasses.
-- Namespace layout: grouped accessors live under `lynchpin.core`, `lynchpin.sources`, `lynchpin.ingest`, `lynchpin.views`, and `lynchpin.system`. Old flat paths were removed; update imports/CLI calls accordingly.
+- What: HPI-style Python modules (`lynchpin.sources.captures.activitywatch`, `lynchpin.sources.captures.atuin`, `lynchpin.sources.indices.gitstats`, `lynchpin.sources.exports.sleep`, `lynchpin.sources.captures.webhistory`, `lynchpin.sources.captures.instrumentation`, `lynchpin.sources.indices.sessions`, `lynchpin.sources.exports.polylogue`, `lynchpin.sources.exports.reddit`, `lynchpin.sources.exports.spotify`, `lynchpin.sources.libraries.finance`, `lynchpin.sinevec`, `lynchpin.views.calendar`, etc.) exposing canonical `/realm/data/...` sources as lazy generators with simple dataclasses.
+- Namespace layout: grouped accessors live under `lynchpin.core`, `lynchpin.sources` (bucketed into `captures/`, `exports/`, `libraries/`, `indices/`), `lynchpin.ingest`, `lynchpin.views`, and `lynchpin.system`. Old flat paths were removed; update imports/CLI calls accordingly.
 - Module map: see `docs/reference/lynchpin-module-map.md` for the canonical taxonomy and upstream mappings.
-- Run: invoke Python directly (see README snippet) or use `just lynchpin-warehouse` to build/refresh `artefacts/lynchpin/warehouse.duckdb`, then `just lynchpin-datasette` to browse it via Datasette.
-- Outputs: memoized JSON caches under `artefacts/lynchpin/cache` plus DuckDB snapshots for Datasette/warehouse queries (tables now include Reddit comments/posts, Spotify streams, finance postings, Polylogue Markdown inventory, and Sinevec token usage summaries).
-- Notes: Roadmap + extended module list lives in `docs/plans/lynchpin-hpi.md`. Vendored `my.*` modules are configured via `config/my/config.py` and `MY_CONFIG`; expand modules there (e.g., Taskwarrior, blockchain holdings) as time allows.
+- Run: invoke Python directly (see README snippet) or use `just lynchpin-warehouse` to build the view-only DuckDB at `artefacts/lynchpin/warehouse.duckdb`. Use `just lynchpin-warehouse mode=refresh format=parquet` (or `just materialize`) to rebuild per-source outputs plus views, then `just lynchpin-datasette` to browse.
+- Outputs: memoized JSON caches under `artefacts/lynchpin/cache`, per-source DuckDB/Parquet outputs under `artefacts/lynchpin/warehouse/{duckdb,parquet}/`, and the view database at `artefacts/lynchpin/warehouse.duckdb`.
+- Notes: Warehouse design and table inventory live in `docs/reference/warehouse.md`. Roadmap + extended module list lives in `docs/plans/lynchpin-hpi.md`. Vendored `my.*` modules are configured via `config/my/config.py` and `MY_CONFIG`; expand modules there (e.g., Taskwarrior, blockchain holdings) as time allows.
 
 ## Supporting Artefacts
 - `artefacts/knowledge/ledgers/artefact_index.csv` – generated ledger describing major artefacts and owners (source: `docs/reference/ledgers/artefact_catalog.json`).

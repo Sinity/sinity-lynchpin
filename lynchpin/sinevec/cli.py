@@ -22,6 +22,7 @@ from .ingest.bookmarks import embed_bookmarks_csv
 from .ingest.chats import embed_chats_pipeline
 from .ingest.knowledge_code import embed_knowledge_code_pipeline
 from .search_core import SearchError, run_search
+from ..core.config import get_config
 
 app = typer.Typer(help="Sinevec CLI")
 
@@ -277,11 +278,15 @@ def options_cmd(
 
 @app.command("embed-bookmarks")
 def embed_bookmarks(
-    csv: Path = typer.Option(DATA_ROOT / "raindrop" / "raindrop_bookmarks_19_08_2025.csv", "--csv"),
+    csv: Path | None = typer.Option(None, "--csv"),
     limit: int = typer.Option(0, "--limit"),
     force: bool = typer.Option(False, "--force"),
 ):
-    processed, embedded, tokens = embed_bookmarks_csv(csv_path=csv, limit=limit, force=force)
+    cfg = get_config()
+    csv_path = csv or cfg.raindrop_csv
+    if not csv_path:
+        raise typer.BadParameter("Raindrop CSV not found; set --csv or LYNCHPIN_RAINDROP_CSV.")
+    processed, embedded, tokens = embed_bookmarks_csv(csv_path=csv_path, limit=limit, force=force)
     typer.echo("\nDone:")
     typer.echo(f" processed={processed} embedded={embedded} tokens={tokens}")
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Tuple
 
@@ -11,30 +13,29 @@ import typer
 
 from ..core.config import get_config
 from ..core.vendor import add_vendor_paths
-from ..sources import (
+from ..sources.captures import (
     activitywatch,
     atuin,
-    chatlog,
     codex,
-    dendron,
-    finance,
-    gitstats,
+    instrumentation,
+    webhistory,
+    webhistory_raw,
+)
+from ..sources.exports import (
+    chatlog,
+    fbmessenger,
     goodreads,
     health,
-    instrumentation,
     polylogue,
     raindrop,
     reddit,
-    repos,
-    sessions,
     sleep,
     spotify,
-    substack,
     takeout,
-    webhistory,
-    webhistory_raw,
     wykop,
 )
+from ..sources.indices import gitstats, repos, sessions
+from ..sources.libraries import dendron, finance, substack
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -50,23 +51,13 @@ class CheckResult:
 
 
 def _count_iter(items: Iterable[object], limit: Optional[int]) -> Tuple[int, bool]:
-    iterator = iter(items)
-    count = 0
     if limit is None:
-        for _ in iterator:
-            count += 1
-        return count, False
-    for _ in range(limit):
-        try:
-            next(iterator)
-        except StopIteration:
-            return count, False
-        count += 1
-    try:
-        next(iterator)
-    except StopIteration:
-        return count, False
-    return count, True
+        return sum(1 for _ in items), False
+    iterator = iter(items)
+    count = sum(1 for _ in islice(iterator, limit))
+    sentinel = object()
+    truncated = next(iterator, sentinel) is not sentinel
+    return count, truncated
 
 
 def _run_check(name: str, fn: Callable[[], Tuple[Optional[int], str]]) -> CheckResult:
@@ -109,6 +100,69 @@ def _run_check(name: str, fn: Callable[[], Tuple[Optional[int], str]]) -> CheckR
     )
 
 
+def _log(message: str, enabled: bool) -> None:
+    if enabled:
+        typer.echo(message, err=True)
+
+
+def _format_result_line(result: CheckResult) -> str:
+    count = "-" if result.count is None else str(result.count)
+    detail = f" detail={result.detail}" if result.detail else ""
+    error = f" error={result.error}" if result.error else ""
+    return (
+        f"done name={result.name} status={result.status} count={count} "
+        f"duration_ms={result.duration_ms:.1f}{detail}{error}"
+    )
+
+
+def _log_summary(
+    results: list[CheckResult],
+    elapsed_ms: float,
+    enabled: bool,
+    label: str,
+    quick: bool,
+    limit: Optional[int],
+) -> None:
+    if not enabled:
+        return
+    counts = Counter(result.status for result in results)
+    limit_label = "-" if limit is None else str(limit)
+    summary = (
+        f"summary label={label} checks={len(results)} ok={counts.get('ok', 0)} "
+        f"empty={counts.get('empty', 0)} missing={counts.get('missing', 0)} "
+        f"error={counts.get('error', 0)} quick={quick} limit={limit_label} "
+        f"duration_s={elapsed_ms / 1000.0:.2f}"
+    )
+    typer.echo(summary, err=True)
+    slowest = sorted(results, key=lambda result: result.duration_ms, reverse=True)[:5]
+    for result in slowest:
+        typer.echo(
+            f"slow name={result.name} status={result.status} duration_ms={result.duration_ms:.1f}",
+            err=True,
+        )
+
+
+def _run_checks(
+    checks: list[tuple[str, Callable[[], Tuple[Optional[int], str]]]],
+    output: Optional[Path],
+    progress: bool,
+    label: str,
+    quick: bool,
+    limit: Optional[int],
+) -> None:
+    started = time.perf_counter()
+    _log(f"start label={label} checks={len(checks)} quick={quick} limit={limit}", progress)
+    results: list[CheckResult] = []
+    for name, fn in checks:
+        _log(f"start name={name}", progress)
+        result = _run_check(name, fn)
+        _log(_format_result_line(result), progress)
+        results.append(result)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    _log_summary(results, elapsed_ms, progress, label, quick, limit)
+    _emit(results, output)
+
+
 def _emit(results: list[CheckResult], output: Optional[Path]) -> None:
     for result in results:
         typer.echo(json.dumps(asdict(result), ensure_ascii=False))
@@ -130,11 +184,16 @@ def _latest_takeout_archive(root: Path) -> Optional[Path]:
 @app.command()
 def lynchpin(
     quick: bool = typer.Option(
-        False,
+        True,
         "--quick/--no-quick",
         help="Limit heavy sources to a small sample.",
     ),
-    limit: int = typer.Option(5000, "--limit", help="Sample size for large iterators when --quick is set."),
+    limit: int = typer.Option(2000, "--limit", help="Sample size for large iterators when --quick is set."),
+    progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Log per-check progress to stderr.",
+    ),
     output: Optional[Path] = typer.Option(
         Path("artefacts/lynchpin/validation/lynchpin.jsonl"),
         "--output",
@@ -205,6 +264,13 @@ def lynchpin(
             detail += f" (sample {sample_limit})"
         return count, detail
 
+    def _fbmessenger_messages() -> Tuple[Optional[int], str]:
+        count, truncated = _count_iter(fbmessenger.iter_messages(), sample_limit)
+        detail = f"root={cfg.fbmessenger_gdpr_root}"
+        if truncated:
+            detail += f" (sample {sample_limit})"
+        return count, detail
+
     def _gitstats_commits() -> Tuple[Optional[int], str]:
         baseline_path = cfg.baseline_dir / "git_numstat.jsonl"
         if not baseline_path.exists():
@@ -223,17 +289,17 @@ def lynchpin(
         return count, detail
 
     def _health_sleep_sessions() -> Tuple[Optional[int], str]:
-        tar_path = cfg.data_root / "health" / "raw" / "samsunghealth.tar"
-        count, truncated = _count_iter(health.iter_samsung_sleep_sessions(tar_path), sample_limit)
-        detail = f"tar={tar_path}"
+        export_path = cfg.exports_root / "health" / "raw" / "samsung-health"
+        count, truncated = _count_iter(health.iter_samsung_sleep_sessions(export_path), sample_limit)
+        detail = f"export={export_path}"
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
 
     def _health_weight_entries() -> Tuple[Optional[int], str]:
-        tar_path = cfg.data_root / "health" / "raw" / "samsunghealth.tar"
-        count, truncated = _count_iter(health.iter_samsung_weight_entries(tar_path), sample_limit)
-        detail = f"tar={tar_path}"
+        export_path = cfg.exports_root / "health" / "raw" / "samsung-health"
+        count, truncated = _count_iter(health.iter_samsung_weight_entries(export_path), sample_limit)
+        detail = f"export={export_path}"
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -262,6 +328,13 @@ def lynchpin(
     def _polylogue_docs() -> Tuple[Optional[int], str]:
         count, truncated = _count_iter(polylogue.iter_documents(), sample_limit)
         detail = f"root={cfg.polylogue_root}"
+        if truncated:
+            detail += f" (sample {sample_limit})"
+        return count, detail
+
+    def _polylogue_runs() -> Tuple[Optional[int], str]:
+        count, truncated = _count_iter(polylogue.iter_runs(), sample_limit)
+        detail = f"root={cfg.polylogue_archive_root}"
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -357,7 +430,7 @@ def lynchpin(
         return count, detail
 
     def _takeout_archives() -> Tuple[Optional[int], str]:
-        root = cfg.data_root / "google" / "takeout" / "raw"
+        root = cfg.exports_root / "google" / "raw" / "takeout"
         latest = _latest_takeout_archive(root)
         if latest is None:
             return 0, f"no takeout archives in {root}"
@@ -367,7 +440,9 @@ def lynchpin(
 
     def _webhistory_entries() -> Tuple[Optional[int], str]:
         count, truncated = _count_iter(webhistory.iter_entries(), sample_limit)
-        detail = f"root={cfg.webhistory_dir}"
+        detail = (
+            f"ndjson={cfg.webhistory_ndjson}" if cfg.webhistory_ndjson else f"root={cfg.webhistory_dir}"
+        )
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -408,6 +483,7 @@ def lynchpin(
         ("lynchpin.codex.sessions", _codex_sessions),
         ("lynchpin.dendron.notes", _dendron_notes),
         ("lynchpin.finance.transactions", _finance_transactions),
+        ("lynchpin.fbmessenger.messages", _fbmessenger_messages),
         ("lynchpin.gitstats.commits", _gitstats_commits),
         ("lynchpin.goodreads.books", _goodreads_books),
         ("lynchpin.health.samsung_sleep", _health_sleep_sessions),
@@ -416,6 +492,7 @@ def lynchpin(
         ("lynchpin.instrumentation.audio", _instrumentation_audio),
         ("lynchpin.instrumentation.screen", _instrumentation_screen),
         ("lynchpin.polylogue.docs", _polylogue_docs),
+        ("lynchpin.polylogue.runs", _polylogue_runs),
         ("lynchpin.raindrop.bookmarks", _raindrop_bookmarks),
         ("lynchpin.reddit.comments", _reddit_comments),
         ("lynchpin.reddit.posts", _reddit_posts),
@@ -437,8 +514,14 @@ def lynchpin(
         ("lynchpin.wykop.link_comments", _wykop_link_comments),
     ]
 
-    results = [_run_check(name, fn) for name, fn in checks]
-    _emit(results, output)
+    _run_checks(
+        checks,
+        output=output,
+        progress=progress,
+        label="lynchpin",
+        quick=quick,
+        limit=sample_limit,
+    )
 
 
 @app.command()
@@ -449,7 +532,12 @@ def hpi(
         help="Limit heavy sources to a small sample.",
     ),
     limit: int = typer.Option(2000, "--limit", help="Sample size for large iterators when --quick is set."),
-    verbose: bool = typer.Option(False, "--verbose", help="Log each check as it runs."),
+    verbose: bool = typer.Option(False, "--verbose", help="Alias for --progress."),
+    progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Log per-check progress to stderr.",
+    ),
     output: Optional[Path] = typer.Option(
         Path("artefacts/lynchpin/validation/hpi.jsonl"),
         "--output",
@@ -771,12 +859,15 @@ def hpi(
         ("my.atuin", _check_atuin),
     ]
 
-    results: list[CheckResult] = []
-    for name, fn in checks:
-        if verbose:
-            typer.echo(f"→ {name}")
-        results.append(_run_check(name, fn))
-    _emit(results, output)
+    progress = progress or verbose
+    _run_checks(
+        checks,
+        output=output,
+        progress=progress,
+        label="hpi",
+        quick=quick,
+        limit=sample_limit,
+    )
 
 
 if __name__ == "__main__":

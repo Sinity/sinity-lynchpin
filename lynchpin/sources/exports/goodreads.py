@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..core.cache import file_signature, persistent_cache
-from ..core.config import get_config
+from ...core.cache import file_signature, persistent_cache
+from ...core.config import get_config
 
 
 @dataclass(frozen=True)

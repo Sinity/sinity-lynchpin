@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterator, List
 
-from ..core.cache import file_signature, persistent_cache
-from ..core.config import get_config
+from ...core.cache import file_signature, persistent_cache
+from ...core.config import get_config
 
 
 @dataclass

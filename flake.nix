@@ -565,6 +565,7 @@ EOF
             lxml
             networkx
             openpyxl
+            pillow
             dulwich
             more-itertools
             kompress
@@ -595,6 +596,7 @@ EOF
             python-xlib
             fbchat
             browserexport
+            browser-cookie3
             sqlite-backup
             python-tcxparser
             google-takeout-parser
@@ -664,6 +666,7 @@ EOF
             uv
             pre-commit
             gnuplot
+            gnome-keyring
           ];
 
           shellHook = ''

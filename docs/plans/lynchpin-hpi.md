@@ -11,9 +11,9 @@ Goal: turn the repository into a “lynchpin” layer of lazy, cacheable Python 
 
 | Source / module | Repo reference | Notes / local mapping |
 | --- | --- | --- |
-| `my.coding.commits` | HPI core | Complements `lynchpin.sources.gitstats` + calendar dashboards. |
+| `my.coding.commits` | HPI core | Complements `lynchpin.sources.indices.gitstats` + calendar dashboards. |
 | `my.calendar.holidays` | HPI core | Annotate focus reports with public holidays. |
-| `my.body.weight`, `my.body.exercise.all`, `my.sleep.manual` | HPI core | Map to `/realm/data/health/processed/` plus manual logs. |
+| `my.body.weight`, `my.body.exercise.all`, `my.sleep.manual` | HPI core | Map to `/realm/data/exports/health/processed/` plus manual logs. |
 | `my.fbmessenger` | HPI core | Live/GDPR connector for Messenger chat history. |
 | `my.github.*` (`all`, `gdpr`, `ghexport`) | HPI core | Merge GDPR data with live API pulls. |
 | `my.lastfm` | HPI core | Already partly represented via life timeline; integrate for richer stats. |
@@ -25,7 +25,7 @@ Goal: turn the repository into a “lynchpin” layer of lazy, cacheable Python 
 | `my.money` | HPI core | Stitch finance exports into ledger dashboards. |
 | `my.webhistory`, `my.browser`, `my.google.takeout.parser` | HPI core | Replace bespoke parsers for Chrome/Takeout data. |
 | `my.goodreads` | HPI core | Hook into reading stats already surfaced in life timeline. |
-| `my.spotify.gdpr` | purarue fork | Alternative to the local `lynchpin.sources.spotify` parser. |
+| `my.spotify.gdpr` | purarue fork | Alternative to the local `lynchpin.sources.exports.spotify` parser. |
 | `my.activitywatch`, `my.activitywatch.active_window` | HPI core + https://github.com/madelinecameron/hpi | Slot into the ActivityWatch DB we already mirror. |
 | `my.taskwarrior` / `my.atuin` / `my.zsh` / `my.bash` | https://github.com/purarue/HPI | Expose CLI history + task data (Atuin DB lives under `/realm/data/` already). |
 | `my.linkedin.privacy_export` | Fork variant | Useful once LinkedIn privacy exports are captured. |
@@ -46,20 +46,20 @@ Goal: turn the repository into a “lynchpin” layer of lazy, cacheable Python 
 - Potential quick wins: `focus_by_day`, `git_churn`, `webhistory_domains`, `health_sleep`, `sessions`.
 
 ## Current module coverage
-- ActivityWatch window/AFK/web events (`lynchpin.sources.activitywatch`) + upstream `my.activitywatch.*` (vendored)
-- Atuin command history (`lynchpin.sources.atuin`)
-- Git numstat deltas + repo/tokei coverage (`lynchpin.sources.gitstats`)
-- Wearable sleep merges (`lynchpin.sources.sleep`)
-- Session ledger CSV (`lynchpin.sources.sessions`)
-- Webhistory gestalt exports (`lynchpin.sources.webhistory`)
-- Polylogue Markdown transcripts (Codex/Claude/etc.) (`lynchpin.sources.polylogue`)
-- Dendron vault notes (`lynchpin.sources.dendron`)
-- Raindrop bookmarks (`lynchpin.sources.raindrop`)
-- Substack HTML/Markdown archives (`lynchpin.sources.substack`)
-- Reddit GDPR exports + aggregated CSV (`lynchpin.sources.reddit`)
-- Wykop JSONL streams + CLI wrapper stubs (`lynchpin.sources.wykop`)
-- Spotify account + extended streaming history (`lynchpin.sources.spotify`)
-- Ledger journal (`lynchpin.sources.finance`)
+- ActivityWatch window/AFK/web events (`lynchpin.sources.captures.activitywatch`) + upstream `my.activitywatch.*` (vendored)
+- Atuin command history (`lynchpin.sources.captures.atuin`)
+- Git numstat deltas + repo/tokei coverage (`lynchpin.sources.indices.gitstats`)
+- Wearable sleep merges (`lynchpin.sources.exports.sleep`)
+- Session ledger CSV (`lynchpin.sources.indices.sessions`)
+- Webhistory gestalt exports (`lynchpin.sources.captures.webhistory`)
+- Polylogue Markdown transcripts (Codex/Claude/etc.) (`lynchpin.sources.exports.polylogue`)
+- Dendron vault notes (`lynchpin.sources.libraries.dendron`)
+- Raindrop bookmarks (`lynchpin.sources.exports.raindrop`)
+- Substack HTML/Markdown archives (`lynchpin.sources.libraries.substack`)
+- Reddit GDPR exports + aggregated CSV (`lynchpin.sources.exports.reddit`)
+- Wykop JSONL streams + CLI wrapper stubs (`lynchpin.sources.exports.wykop`)
+- Spotify account + extended streaming history (`lynchpin.sources.exports.spotify`)
+- Ledger journal (`lynchpin.sources.libraries.finance`)
 - Sinevec embedding state/token usage (`lynchpin.sinevec`)
 - Calendar snapshots that stitch the above (`lynchpin.views.calendar`)
 - DuckDB builder + Datasette helper (now covering Reddit, Spotify, finance, Polylogue, Sinevec) (`lynchpin.views.warehouse`, `just lynchpin-warehouse`, `just lynchpin-datasette`)

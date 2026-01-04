@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional
 
-from ..core.config import get_config
+from ...core.config import get_config
 
 
 @dataclass

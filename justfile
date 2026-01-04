@@ -5,35 +5,24 @@ default:
 
 # --- Core baselines & ledgers -------------------------------------------------------
 
-baseline session_root="/realm/data/sinity-lynchpin/baseline-inputs/latest" health_root="/realm/data/health/processed" output_dir="artefacts/core/baseline/latest" mode="auto" full="true" since="" until="" window_days="90" web_bucket="":
+baseline session_root="/realm/data/sinity-lynchpin/baseline-inputs/latest" health_root="/realm/data/exports/health/processed" output_dir="artefacts/core/baseline/latest" mode="auto" full="true" since="" until="" window_days="90" web_bucket="":
     mkdir -p "{{output_dir}}"
     python pipelines/core/baseline/build_baseline.py --session-root "{{session_root}}" --health-root "{{health_root}}" --output-dir "{{output_dir}}" --mode "{{mode}}" {{ if full == "true" { "--full" } else { "--window-days " + window_days } }}{{ if since != "" { " --since " + since } else { "" } }}{{ if until != "" { " --until " + until } else { "" } }}{{ if web_bucket != "" { " --include-web-sample --web-bucket " + web_bucket } else { "" } }}
 
-session-index sessions_dir="docs/reference/sessions" output="artefacts/knowledge/ledgers/session_index.csv":
-    just ledgers target=session sessions_dir={{sessions_dir}} output={{output}}
+session-index output="artefacts/knowledge/ledgers/session_index.csv":
+    mkdir -p "$(dirname "{{output}}")"
+    python -m lynchpin.views.ledgers session --sessions-dir "docs/reference/sessions" --output "{{output}}"
 
-artefact-index catalog="docs/reference/ledgers/artefact_catalog.json" output="artefacts/knowledge/ledgers/artefact_index.csv":
-    just ledgers target=artefact catalog={{catalog}} output={{output}}
+artefact-index output="artefacts/knowledge/ledgers/artefact_index.csv":
+    mkdir -p "$(dirname "{{output}}")"
+    python -m lynchpin.views.ledgers artefact --catalog "docs/reference/ledgers/artefact_catalog.json" --output "{{output}}"
 
 refresh-ledgers:
     just session-index
     just artefact-index
 
-ledgers target="session" sessions_dir="docs/reference/sessions" catalog="docs/reference/ledgers/artefact_catalog.json" output="":
-    if [[ "{{target}}" == "session" ]]; then
-    out="{{output}}"
-    if [[ -z "$out" ]]; then out="artefacts/knowledge/ledgers/session_index.csv"; fi
-    mkdir -p "$(dirname "$out")"
-    python -m lynchpin.views.ledgers session --sessions-dir "{{sessions_dir}}" --output "$out"
-    elif [[ "{{target}}" == "artefact" ]]; then
-    out="{{output}}"
-    if [[ -z "$out" ]]; then out="artefacts/knowledge/ledgers/artefact_index.csv"; fi
-    mkdir -p "$(dirname "$out")"
-    python -m lynchpin.views.ledgers artefact --catalog "{{catalog}}" --output "$out"
-    else
-    echo "Unknown ledger target: {{target}}" >&2
-    exit 1
-    fi
+ledgers target="session" output="":
+    if [[ "{{target}}" == "session" ]]; then out="{{output}}"; if [[ -z "$out" ]]; then out="artefacts/knowledge/ledgers/session_index.csv"; fi; mkdir -p "$(dirname "$out")"; python -m lynchpin.views.ledgers session --sessions-dir "docs/reference/sessions" --output "$out"; elif [[ "{{target}}" == "artefact" ]]; then out="{{output}}"; if [[ -z "$out" ]]; then out="artefacts/knowledge/ledgers/artefact_index.csv"; fi; mkdir -p "$(dirname "$out")"; python -m lynchpin.views.ledgers artefact --catalog "docs/reference/ledgers/artefact_catalog.json" --output "$out"; else echo "Unknown ledger target: {{target}}" >&2; exit 1; fi
 
 # --- Session summaries & context ----------------------------------------------------
 
@@ -45,34 +34,39 @@ summarise-session input_path output="" model="gpt-5-mini" api_base="https://api.
 
 # --- Instrumentation metadata -------------------------------------------------------
 
-asciinema-metadata root="/realm/data/asciinema_recording" output="artefacts/ingest/instrumentation/asciinema_metadata.jsonl":
+asciinema-metadata root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/asciinema_metadata.jsonl":
     python -m lynchpin.ingest.instrumentation asciinema --root {{root}} --output {{output}}
 
-audio-metadata root="/realm/data/audio/raw" output="artefacts/ingest/instrumentation/audio_metadata.jsonl":
+audio-metadata root="/realm/data/captures/audio/raw" output="artefacts/ingest/instrumentation/audio_metadata.jsonl":
     python -m lynchpin.ingest.instrumentation audio --root {{root}} --output {{output}}
 
-screen-metadata root="/realm/data/screenshot" output="artefacts/ingest/instrumentation/screen_metadata.jsonl":
+screen-metadata root="/realm/data/captures/screenshot" output="artefacts/ingest/instrumentation/screen_metadata.jsonl":
     python -m lynchpin.ingest.instrumentation screen --root {{root}} --output {{output}}
 
-webhistory-full-history root="/realm/data/webhistory/gestalt/data" output="/realm/data/webhistory/gestalt/derived/full_history.ndjson":
+webhistory-full-history root="/realm/data/captures/webhistory/gestalt/data" output="/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson":
     python -m lynchpin.ingest.webhistory full-history --root {{root}} --output {{output}}
 
-webhistory-dedup raw_root="/realm/data/webhistory/gestalt/raw" output_dir="/realm/data/webhistory/gestalt/data" tolerance="5":
+webhistory-dedup raw_root="/realm/data/captures/webhistory/gestalt/raw" output_dir="/realm/data/captures/webhistory/gestalt/data" tolerance="5":
     python -m lynchpin.ingest.webhistory dedup --raw-root {{raw_root}} --output-dir {{output_dir}} --tolerance-seconds {{tolerance}}
 
-webhistory-compare canonical="/realm/data/webhistory/gestalt/data" candidate="/realm/data/webhistory/gestalt/derived/full_history.ndjson" output="artefacts/webhistory/gestalt_compare.json":
+webhistory-compare canonical="/realm/data/captures/webhistory/gestalt/data" candidate="/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson" output="artefacts/webhistory/gestalt_compare.json":
     python -m lynchpin.ingest.webhistory compare --canonical {{canonical}} --candidate {{candidate}} --output {{output}}
 
 # --- Lynchpin helpers -------------------------------------------------------------
 
-lynchpin-warehouse limit="":
-    python -m lynchpin.views.warehouse {{ if limit != "" { "--limit " + limit } else { "" } }}
+lynchpin-warehouse mode="views" format="parquet" sources="" limit="" root="" output="":
+    cmd=(python -m lynchpin.views.warehouse --mode "{{mode}}" --format "{{format}}")
+    if [[ -n "{{sources}}" ]]; then cmd+=(--sources "{{sources}}"); fi
+    if [[ -n "{{limit}}" ]]; then cmd+=(--limit "{{limit}}"); fi
+    if [[ -n "{{root}}" ]]; then cmd+=(--root "{{root}}"); fi
+    if [[ -n "{{output}}" ]]; then cmd+=(--output "{{output}}"); fi
+    "${cmd[@]}"
 
 lynchpin-datasette:
     if ! command -v datasette >/dev/null 2>&1; then echo "datasette CLI not found; install via 'pipx install datasette' or add it to the devshell." >&2; exit 1; fi
     datasette artefacts/lynchpin/warehouse.duckdb
 
-validate-lynchpin quick="false" output="artefacts/lynchpin/validation/lynchpin.jsonl":
+validate-lynchpin quick="true" output="artefacts/lynchpin/validation/lynchpin.jsonl":
     python -m lynchpin.system.validate lynchpin --output "{{output}}" {{ if quick == "true" { "--quick" } else { "--no-quick" } }}
 
 validate-hpi quick="true" output="artefacts/lynchpin/validation/hpi.jsonl":
@@ -127,12 +121,20 @@ velocity:
 
 # --- Data exports & knowledge graph -------------------------------------------------
 
-wykop-export username="Sinity" backend="auto" out_dir="/realm/data/wykop" extras="true":
+wykop-export username="Sinity" backend="auto" out_dir="/realm/data/exports/wykop/raw" extras="true":
     python -m lynchpin.ingest.wykop_export \
     --username {{username}} \
     --backend {{backend}} \
     --out-dir {{out_dir}} \
     {{ if extras == "true" { "--extras" } else { "--no-extras" } }}
+
+fbmessenger-export db="/realm/data/exports/comms/facebook-messenger/processed/fbmessengerexport.sqlite" cookie_db="~/.config/google-chrome/Default/Cookies" dry_run="false" remote_debug_port="" launch_debug_chrome="false":
+    python -m lynchpin.ingest.fbmessenger_export \
+    --db {{db}} \
+    --cookie-db {{cookie_db}} \
+    {{ if remote_debug_port != "" { "--remote-debug-port " + remote_debug_port } else { "" } }} \
+    {{ if launch_debug_chrome == "true" { "--launch-debug-chrome" } else { "" } }} \
+    {{ if dry_run == "true" { "--dry-run" } else { "" } }}
 
 knowledge-graph output="artefacts/knowledge/graph/knowledge_graph.duckdb" manifest="artefacts/knowledge/graph/manifest.json" parquet_dir="":
     mkdir -p "$(dirname {{output}})"

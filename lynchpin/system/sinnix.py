@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 from ..core.config import get_config
-from ..sources.repos import GitRepository
+from ..sources.indices.repos import GitRepository
 
 _ENABLE_RE = re.compile(r"sinnix\.([A-Za-z0-9_.-]+)\.enable\s*=\s*(true|false)", re.MULTILINE)
 _INSTRUMENTATION_KEYWORDS = {

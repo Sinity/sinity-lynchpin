@@ -8,10 +8,10 @@ from datetime import timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from ..sources import chatlog
-from ..sources.chatlog import ChatTranscript
-from ..sources.sessions import SessionRecord
-from ..sources.sleep import SleepEntry
+from ..sources.exports import chatlog
+from ..sources.exports.chatlog import ChatTranscript
+from ..sources.indices.sessions import SessionRecord
+from ..sources.exports.sleep import SleepEntry
 from .calendar import DaySnapshot
 
 

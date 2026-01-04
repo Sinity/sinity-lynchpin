@@ -12,6 +12,10 @@ class LynchpinConfig:
     repo_root: Path
     sinnix_root: Path
     data_root: Path
+    captures_root: Path
+    exports_root: Path
+    libraries_root: Path
+    indices_root: Path
     activitywatch_db: Path
     atuin_db: Path
     baseline_dir: Path
@@ -25,11 +29,15 @@ class LynchpinConfig:
     spotify_root: Path
     finance_journal: Path
     polylogue_root: Path
+    polylogue_archive_root: Path
+    fbmessenger_gdpr_root: Path
+    fbmessenger_db: Path
     sinevec_state_dir: Path
     asciinema_root: Path
     audio_root: Path
     screenshot_root: Path
     cache_dir: Path
+    warehouse_root: Path
     warehouse_db: Path
     dendron_root: Path
     raindrop_dir: Path
@@ -43,6 +51,10 @@ class LynchpinConfig:
     def from_env(cls) -> "LynchpinConfig":
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm/data"))
+        captures_root = Path(os.environ.get("LYNCHPIN_CAPTURES_ROOT", data_root / "captures"))
+        exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
+        libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
+        indices_root = Path(os.environ.get("LYNCHPIN_INDICES_ROOT", data_root / "indices"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         aw_db = Path(
             os.environ.get(
@@ -59,19 +71,19 @@ class LynchpinConfig:
         webhistory_raw_dir = Path(
             os.environ.get(
                 "LYNCHPIN_WEBHISTORY_RAW_DIR",
-                data_root / "webhistory/gestalt/raw",
+                captures_root / "webhistory/gestalt/raw",
             )
         )
         webhistory_dir = Path(
             os.environ.get(
                 "LYNCHPIN_WEBHISTORY_DIR",
-                data_root / "webhistory/gestalt/data",
+                captures_root / "webhistory/gestalt/data",
             )
         )
         webhistory_ndjson = Path(
             os.environ.get(
                 "LYNCHPIN_WEBHISTORY_NDJSON",
-                data_root / "webhistory/gestalt/derived/full_history.ndjson",
+                captures_root / "webhistory/gestalt/derived/full_history.ndjson",
             )
         )
         if not webhistory_ndjson.exists():
@@ -79,7 +91,7 @@ class LynchpinConfig:
         sleep_jsonl = Path(
             os.environ.get(
                 "LYNCHPIN_SLEEP_JSONL",
-                data_root / "health/processed/sleep_merged.jsonl",
+                exports_root / "health/processed/sleep_merged.jsonl",
             )
         )
         sessions_csv = Path(
@@ -96,51 +108,84 @@ class LynchpinConfig:
         ).expanduser()
         reddit_export_dir = _resolve_reddit_export(
             os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"),
-            data_root / "reddit/gdpr",
+            exports_root / "reddit/processed",
         )
         spotify_root = Path(
             os.environ.get(
                 "LYNCHPIN_SPOTIFY_ROOT",
-                data_root / "spotify/gdpr",
+                exports_root / "spotify/processed",
             )
         )
         spotify_root = _resolve_spotify_export(spotify_root)
-        finance_journal = Path(os.environ.get("LYNCHPIN_FINANCE_JOURNAL", data_root / "finance/journal_clean"))
-        polylogue_root = Path(
-            os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "chatlog/markdown")
+        finance_journal = Path(
+            os.environ.get("LYNCHPIN_FINANCE_JOURNAL", libraries_root / "finance/journal_clean")
         )
-        sinevec_state_dir = Path(
-            os.environ.get("LYNCHPIN_SINEVEC_STATE", "/realm/project/sinevec/var/state")
+        polylogue_root = Path(
+            os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", exports_root / "chatlog/processed/markdown")
+        )
+        polylogue_archive_root = Path(
+            os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", exports_root / "chatlog/archive")
+        )
+        fbmessenger_gdpr_root = Path(
+            os.environ.get(
+                "LYNCHPIN_FBMESSENGER_GDPR",
+                exports_root / "comms/facebook-messenger/processed/gdpr",
+            )
+        )
+        fbmessenger_db = Path(
+            os.environ.get(
+                "LYNCHPIN_FBMESSENGER_DB",
+                _resolve_fbmessenger_db(
+                    exports_root / "comms/facebook-messenger/processed/fbmessengerexport.sqlite",
+                    exports_root / "comms/facebook-messenger/fbmessengerexport.sqlite",
+                    exports_root / "comms/fbmessengerexport.sqlite",
+                ),
+            )
+        )
+        sinevec_state_dir = _resolve_sinevec_state(
+            os.environ.get("LYNCHPIN_SINEVEC_STATE"),
+            indices_root / "sinevec" / "state",
+            Path("/realm/project/sinevec/var/state"),
         )
         asciinema_root = Path(
-            os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "asciinema_recording")
+            os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", captures_root / "asciinema")
         )
-        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "audio/raw"))
+        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", captures_root / "audio/raw"))
         screenshot_root = Path(
-            os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "screenshot")
+            os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", captures_root / "screenshot")
         )
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", repo_root / "artefacts/lynchpin/cache"))
+        warehouse_root = Path(
+            os.environ.get("LYNCHPIN_WAREHOUSE_ROOT", repo_root / "artefacts/lynchpin/warehouse")
+        )
         warehouse_db = Path(
             os.environ.get("LYNCHPIN_WAREHOUSE_DB", repo_root / "artefacts/lynchpin/warehouse.duckdb")
         )
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/project/knowledgebase"))
-        raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "raindrop"))
+        raindrop_dir = Path(
+            os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw")
+        )
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
         goodreads_library = Path(
             os.environ.get(
                 "LYNCHPIN_GOODREADS_LIBRARY",
-                data_root / "goodreads/library_export.csv",
+                exports_root / "goodreads/raw/library_export.csv",
             )
         )
-        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", data_root / "wykop"))
+        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", exports_root / "wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
-        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", data_root / "doc/substack"))
+        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", libraries_root / "substack"))
         cache_dir.mkdir(parents=True, exist_ok=True)
+        warehouse_root.mkdir(parents=True, exist_ok=True)
         warehouse_db.parent.mkdir(parents=True, exist_ok=True)
         return cls(
             repo_root=repo_root,
             sinnix_root=sinnix_root,
             data_root=data_root,
+            captures_root=captures_root,
+            exports_root=exports_root,
+            libraries_root=libraries_root,
+            indices_root=indices_root,
             activitywatch_db=aw_db,
             atuin_db=atuin_db,
             baseline_dir=baseline_dir,
@@ -154,11 +199,15 @@ class LynchpinConfig:
             spotify_root=spotify_root,
             finance_journal=finance_journal,
             polylogue_root=polylogue_root,
+            polylogue_archive_root=polylogue_archive_root,
+            fbmessenger_gdpr_root=fbmessenger_gdpr_root,
+            fbmessenger_db=fbmessenger_db,
             sinevec_state_dir=sinevec_state_dir,
             asciinema_root=asciinema_root,
             audio_root=audio_root,
             screenshot_root=screenshot_root,
             cache_dir=cache_dir,
+            warehouse_root=warehouse_root,
             warehouse_db=warehouse_db,
             dendron_root=dendron_root,
             raindrop_dir=raindrop_dir,
@@ -235,7 +284,10 @@ def _resolve_latest_dated_dir(root: Path, ignore: Optional[set[str]] = None) -> 
 def _resolve_spotify_export(root: Path) -> Path:
     if (root / "Spotify Account Data").exists() or (root / "Spotify Extended Streaming History").exists():
         return root
-    candidate = _resolve_latest_dated_dir(root, ignore={"raw", "archive", "legacy", "derivative"})
+    candidate = _resolve_latest_dated_dir(
+        root,
+        ignore={"raw", "archive", "legacy", "derived", "derivative"},
+    )
     if candidate and (
         (candidate / "Spotify Account Data").exists()
         or (candidate / "Spotify Extended Streaming History").exists()
@@ -250,8 +302,24 @@ def _resolve_raindrop_csv(env_value: Optional[str], root: Path) -> Optional[Path
         return candidate if candidate.exists() else None
     if not root.exists():
         return None
-    candidates = sorted(root.glob("raindrop_bookmarks_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if candidates:
-        return candidates[0]
-    generic = sorted(root.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return generic[0] if generic else None
+    candidates = sorted(root.glob("raindrop*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _resolve_fbmessenger_db(*candidates: Path) -> str:
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return str(candidates[0])
+
+
+def _resolve_sinevec_state(
+    env_value: Optional[str], primary: Path, fallback: Path
+) -> Path:
+    if env_value:
+        return Path(env_value)
+    if primary.exists() and any(primary.iterdir()):
+        return primary
+    if fallback.exists():
+        return fallback
+    return primary

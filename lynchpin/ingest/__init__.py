@@ -1,1 +1,1 @@
-"""Ingest/export helpers that write to /realm/data."""
+"""Ingest/export helpers that write under /realm/data/{captures,exports,libraries}."""

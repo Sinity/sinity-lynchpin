@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, List, Optional, Sequence
 
-from ..core.config import get_config
+from ...core.config import get_config
 
 
 @dataclass
@@ -23,7 +23,7 @@ class SubstackPost:
 
 
 def iter_posts(sources: Optional[Sequence[str]] = None) -> Iterator[SubstackPost]:
-    """Iterate over every archived Substack post under `/realm/data/doc/substack/`."""
+    """Iterate over every archived Substack post under `/realm/data/libraries/substack/`."""
 
     cfg = get_config()
     root = cfg.substack_root

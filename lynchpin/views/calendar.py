@@ -4,12 +4,14 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
-from ..sources import activitywatch, atuin, gitstats, sessions, sleep, webhistory
-from ..sources.activitywatch import ActivityWatchEvent
-from ..sources.atuin import AtuinCommand
-from ..sources.gitstats import GitCommit
-from ..sources.sessions import SessionRecord
-from ..sources.sleep import SleepEntry
+from ..sources.captures import activitywatch, atuin, webhistory
+from ..sources.indices import gitstats, sessions
+from ..sources.exports import sleep
+from ..sources.captures.activitywatch import ActivityWatchEvent
+from ..sources.captures.atuin import AtuinCommand
+from ..sources.indices.gitstats import GitCommit
+from ..sources.indices.sessions import SessionRecord
+from ..sources.exports.sleep import SleepEntry
 
 
 @dataclass

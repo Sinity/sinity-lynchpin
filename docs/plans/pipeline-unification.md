@@ -7,7 +7,7 @@ Goal: collapse the current pipeline zoo into a cohesive “sinity-flow” stack 
 | Family | Entrypoints | Primary Inputs | Outputs / Consumers |
 | --- | --- | --- | --- |
 | Baseline rollups | `just baseline` | ActivityWatch, Atuin, Codex sessions, git, wearables (sleep) | `artefacts/core/baseline/latest/*`, provides timeline JSON to focus reports |
-| Ledgers & knowledge graph | `just ledgers target=*`, `just knowledge-graph` | Docs (`docs/reference/sessions`, `artefact_catalog.json`, Markdown corpora) | CSV ledgers + DuckDB manifest powering lookup, polyglot agents |
+| Ledgers & knowledge graph | `just ledgers session|artefact`, `just knowledge-graph` | Docs (`docs/reference/sessions`, `artefact_catalog.json`, Markdown corpora) | CSV ledgers + DuckDB manifest powering lookup, polyglot agents |
 | Focus dashboards | `just focus-portal`, `just calendar-refresh`, `just calendar-narrative` | Baseline timeline + ActivityWatch DB + Atuin | Calendar dossiers (Markdown/HTML/JSON), raw bundles, legacy portal mirror |
 | Life logging | `just life-*`, `just youtube-oembed`, `just life-auto-narrative`, `just wykop-export` | Google Takeouts, Reddit/Wykop, finance, Samsung Health | Monthly JSON, drilldowns, narratives, digests, oEmbed cache |
 | Instrumentation ingest | `just instrumentation target=*` | Asciinema/audio/screen raw capture dirs | Metadata JSONL for searches + future embeddings |
