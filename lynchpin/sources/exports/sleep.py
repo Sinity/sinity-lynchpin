@@ -32,9 +32,19 @@ def _sleep_path(path: Optional[Path]) -> Path:
     return path or get_config().sleep_jsonl
 
 
+def _sleep_depends_on(*args: object, **kwargs: object) -> Tuple[str, str]:
+    path = kwargs.get("path")
+    if path is None and args:
+        path = args[0]
+    if path is not None and not isinstance(path, Path):
+        path = Path(path)
+    sleep_path = _sleep_path(path)
+    return (str(sleep_path), file_signature(sleep_path))
+
+
 @persistent_cache(
     "sleep_entries",
-    depends_on=lambda path=None: (str(_sleep_path(path)), file_signature(_sleep_path(path))),
+    depends_on=_sleep_depends_on,
 )
 def iter_sleep(path: Optional[Path] = None) -> Iterator[SleepEntry]:
     sleep_path = _sleep_path(path)

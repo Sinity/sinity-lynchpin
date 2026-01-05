@@ -29,7 +29,7 @@ Each project has bespoke file classification to show meaningful breakdowns:
 - pipelines, docs, config, other
 
 **knowledgebase**:
-- docs, config
+- intentionally excluded from velocity dashboards (content vault, not code)
 
 **Simple Rust projects** (polylogue, intercept-bounce, etc.):
 - src, tests, docs, config
@@ -38,8 +38,16 @@ This reveals patterns that aggregate LoC would hide (e.g., "src shrinking while 
 
 ### Interactive features
 - Project selector dropdown (defaults to `all-projects` aggregate view)
-- Stacked area chart for cumulative growth
-- Stacked bar chart for daily churn
+- Stacked area chart for cumulative growth + stacked churn bars
+- Daily net momentum + commit cadence panels with rolling averages
+- Calendar heatmap + weekday profile for rhythm analysis
+- Commit size distribution + time-of-day heatmap
+- Merge topology (merge count, ratio, fan-in) + tag cadence
+- Category mix (total LOC vs 30-day churn) with ranking tables
+- File/module hotspots, co-change network, and bus-factor table
+- Churn treemap for module-level activity
+- Author contribution chart + author breakdown table
+- Compare/rank section for cross-project or cross-category snapshots
 - Commit inspector with per-category breakdown (filters to selected series)
 - Filter bar pills for quick include/exclude of categories/projects
 - Zoom/pan support
@@ -73,7 +81,7 @@ python -m lynchpin.views.velocity
 
 Limit the render set (and aggregate view) with `--project` / `--exclude`:
 ```bash
-python -m lynchpin.views.velocity --exclude sinnix --exclude knowledgebase
+python -m lynchpin.views.velocity --exclude sinnix
 ```
 
 ## Adding a new project

@@ -581,6 +581,7 @@ EOF
             timezonefinder
             pytz
             python-dateutil
+            websockets
             convertdate
             lunardate
             pyluach

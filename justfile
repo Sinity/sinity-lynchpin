@@ -55,6 +55,8 @@ webhistory-compare canonical="/realm/data/captures/webhistory/gestalt/data" cand
 # --- Lynchpin helpers -------------------------------------------------------------
 
 lynchpin-warehouse mode="views" format="parquet" sources="" limit="" root="" output="":
+    #!/usr/bin/env bash
+    set -euo pipefail
     cmd=(python -m lynchpin.views.warehouse --mode "{{mode}}" --format "{{format}}")
     if [[ -n "{{sources}}" ]]; then cmd+=(--sources "{{sources}}"); fi
     if [[ -n "{{limit}}" ]]; then cmd+=(--limit "{{limit}}"); fi
@@ -83,31 +85,40 @@ materialize webhistory="true" ledgers="true" warehouse="true" velocity="false" b
 # --- Calendar views & narratives ---------------------------------------------------
 
 calendar-refresh start="" end="" output_dir="artefacts/calendar/views" write_files="true" json="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
     end="{{end}}"
     if [[ -z "$end" ]]; then end="$(date -I)"; fi
     start="{{start}}"
     if [[ -z "$start" ]]; then start="$(date -I -d "$end - 6 days")"; fi
-    cmd=(python -m lynchpin.views.calendar_views build "$start" "$end" --output "{{output_dir}}")
+    cmd=(python -m lynchpin.views.calendar_views "$start" "$end" --output "{{output_dir}}")
     if [[ "{{write_files}}" == "true" ]]; then
-    cmd+=(--write-files)
+        cmd+=(--write-files)
     else
-    cmd+=(--no-write-files)
+        cmd+=(--no-write-files)
     fi
     if [[ "{{json}}" == "true" ]]; then
-    cmd+=(--json)
+        cmd+=(--json)
     fi
     "${cmd[@]}"
 
+artifacts-dashboard:
+    python -m lynchpin.views.export_dashboard_data
+    @echo "Dashboard data exported to artefacts/assets/dashboard-data.json"
+    @echo "Open artefacts/index.html in a browser to view"
+
 calendar-narrative start end mode="reflective" output="" prompt_only="false" model="":
-    cmd=(python -m lynchpin.views.calendar_narratives narrative "{{start}}" "{{end}}" --mode "{{mode}}")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(python -m lynchpin.views.calendar_narratives "{{start}}" "{{end}}" --mode "{{mode}}")
     if [[ -n "{{output}}" ]]; then
-    cmd+=(--output "{{output}}")
+        cmd+=(--output "{{output}}")
     fi
     if [[ "{{prompt_only}}" == "true" ]]; then
-    cmd+=(--prompt-only)
+        cmd+=(--prompt-only)
     fi
     if [[ -n "{{model}}" ]]; then
-    cmd+=(--model "{{model}}")
+        cmd+=(--model "{{model}}")
     fi
     "${cmd[@]}"
 
@@ -160,6 +171,8 @@ life-timeline-range start end:
     --markdown-output "artefacts/lifelog/life-timeline/life_{{start}}_to_{{end}}.generated.md"
 
 life-timeline-drilldowns start="2013-10" end="" output="" md_dir="":
+    #!/usr/bin/env bash
+    set -euo pipefail
     start="{{start}}"
     end="{{end}}"
     if [[ -z "$end" ]]; then end="$(date +%Y-%m)"; fi
@@ -168,10 +181,10 @@ life-timeline-drilldowns start="2013-10" end="" output="" md_dir="":
     md_dir="{{md_dir}}"
     if [[ -z "$md_dir" ]]; then md_dir="artefacts/lifelog/life-timeline/life_drilldowns_${start}_to_${end}"; fi
     python pipelines/lifelog/life-timeline/build_life_timeline.py \
-    --start "$start" \
-    --end "$end" \
-    --output "$output" \
-    --markdown-output-dir "$md_dir"
+        --start "$start" \
+        --end "$end" \
+        --output "$output" \
+        --markdown-output-dir "$md_dir"
     ln -sfn "$(realpath "$output")" "artefacts/lifelog/life-timeline/monthly_life_latest.json"
     ln -sfn "$(realpath "$md_dir")" "artefacts/lifelog/life-timeline/life_drilldowns_latest"
     echo "${start}_to_${end}" > "artefacts/lifelog/life-timeline/life_timeline_latest_range.txt"
@@ -180,22 +193,24 @@ life-digest output="artefacts/lifelog/life-timeline/digests/life_earliest_to_now
     python pipelines/lifelog/life-timeline/render_monthly_digest.py --output "{{output}}"
 
 life-refresh start="2013-10" end="" digest_output="artefacts/lifelog/life-timeline/digests/life_earliest_to_now.monthly.md":
-    just life-timeline-drilldowns start={{start}} end={{end}}
-    just life-digest output={{digest_output}}
+    just life-timeline-drilldowns "{{start}}" "{{end}}"
+    just life-digest "{{digest_output}}"
     just life-auto-narrative
 
 youtube-oembed start="2013-10" end="" life_json="" cache="artefacts/lifelog/life-timeline/youtube_oembed_cache.jsonl" qps="10" workers="32":
+    #!/usr/bin/env bash
+    set -euo pipefail
     end="{{end}}"
     if [[ -z "$end" ]]; then end="$(date +%Y-%m)"; fi
     life_json="{{life_json}}"
     if [[ -z "$life_json" ]]; then life_json="artefacts/lifelog/life-timeline/monthly_life_{{start}}_to_${end}.json"; fi
     python pipelines/lifelog/life-timeline/enrich_youtube_oembed.py \
-    --life-json "$life_json" \
-    --cache "{{cache}}" \
-    --start "{{start}}" \
-    --end "$end" \
-    --qps "{{qps}}" \
-    --workers "{{workers}}"
+        --life-json "$life_json" \
+        --cache "{{cache}}" \
+        --start "{{start}}" \
+        --end "$end" \
+        --qps "{{qps}}" \
+        --workers "{{workers}}"
 
 life-auto-narrative life_json="artefacts/lifelog/life-timeline/monthly_life_latest.json" output="artefacts/lifelog/life-timeline/narratives/life_auto_summary.md" quarter_limit="8" year_limit="10":
     python pipelines/lifelog/life-timeline/generate_auto_narrative.py \
