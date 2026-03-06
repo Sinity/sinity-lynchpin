@@ -35,46 +35,6 @@
 
         # Package Python deps not in nixpkgs
         pythonPackagesOverlay = final: prev: {
-          voyageai = prev.buildPythonPackage rec {
-            pname = "voyageai";
-            version = "0.2.3";
-            format = "pyproject";
-            src = prev.fetchPypi {
-              inherit pname version;
-              sha256 = "sha256-KDIqp6ZM2qd0vm/PPk/WoIaU6iWs1frdHv8bjvjatoo=";
-            };
-            nativeBuildInputs = with prev; [ poetry-core ];
-            propagatedBuildInputs = with prev; [
-              requests
-              aiohttp
-              aiolimiter
-              numpy
-              tenacity
-            ];
-            doCheck = false;
-          };
-
-          qdrant-client = prev.buildPythonPackage rec {
-            pname = "qdrant_client";
-            version = "1.11.3";
-            format = "pyproject";
-            src = prev.fetchPypi {
-              inherit pname version;
-              sha256 = "sha256-WhVdgoGiJKwYrO9RLq4vXpoJB5ddUqdifsZvplhtAoU=";
-            };
-            nativeBuildInputs = with prev; [ poetry-core ];
-            propagatedBuildInputs = with prev; [
-              httpx
-              pydantic
-              grpcio
-              grpcio-tools
-              numpy
-              portalocker
-              urllib3
-            ];
-            doCheck = false;
-          };
-
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
             version = "0.22.20251013";
@@ -614,13 +574,6 @@ EOF
             active_window
             PyGithub
             praw
-            # Sinevec dependencies
-            voyageai
-            qdrant-client
-            tiktoken
-            python-dotenv
-            fastapi
-            uvicorn
           ]
         );
 

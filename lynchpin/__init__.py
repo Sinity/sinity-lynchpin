@@ -14,5 +14,4 @@ __all__ = [
     "ingest",
     "views",
     "system",
-    "sinevec",
 ]

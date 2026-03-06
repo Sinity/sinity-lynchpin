@@ -22,7 +22,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 - `docs/reference/lynchpin-module-map.md` – detailed mapping between `lynchpin.*` modules and upstream HPI providers, plus caching/idempotency notes.
 - `docs/reference/lynchpin-idempotency.md` – detailed laziness/idempotency audit for `lynchpin.sources` and write modules.
 - `docs/reference/source-validation.md` – latest validation snapshot for Lynchpin + vendored HPI modules.
-- `docs/plans/` – future-state designs (Sinex adapter, Sinevec integration, secretary agent playbook).
+- `docs/plans/` – future-state designs (Sinex adapter, secretary agent playbook).
 
 ## Command & Automation Surface
 - Use `direnv allow` (or `nix develop`) in the repo root to load the devshell described in `flake.nix`.
@@ -98,7 +98,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 ### Sessions (`docs/reference/sessions/README.md`)
 - Module: `lynchpin.views.session_summaries` exposes `python -m lynchpin.views.session_summaries summarise <conversation.md>` (wrapped by `just summarise-session`). It defaults to `gpt-5-mini` (override via `--model` or `LYNCHPIN_SESSION_MODEL`) and logs every call—including token counts and estimated USD cost—to `artefacts/knowledge/sessions/logs/session_summaries.jsonl`.
 - Workflow: Polylogue renders provider exports to Markdown → docs/reference session entries capture metadata → `just summarise-session` produces Level‑1 summaries in `artefacts/knowledge/sessions/summaries/`.
-- Notes: uses `OPENAI_API_KEY` unless `--api-key` is provided. Outputs feed future Sinevec layers per `docs/plans/sinevec-integration.md`.
+- Notes: uses `OPENAI_API_KEY` unless `--api-key` is provided. Outputs can be consumed by warehouse/ledger workflows.
 
 ### Instrumentation (`lynchpin/ingest/instrumentation.py`)
 - Module: `lynchpin.ingest.instrumentation` CLI entrypoints (`python -m lynchpin.ingest.instrumentation asciinema|audio|screen`).
@@ -118,7 +118,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 
 ### Lynchpin package (`lynchpin/`)
 - Status: `experimental`
-- What: HPI-style Python modules (`lynchpin.sources.captures.activitywatch`, `lynchpin.sources.captures.atuin`, `lynchpin.sources.indices.gitstats`, `lynchpin.sources.exports.sleep`, `lynchpin.sources.captures.webhistory`, `lynchpin.sources.captures.instrumentation`, `lynchpin.sources.indices.sessions`, `lynchpin.sources.exports.polylogue`, `lynchpin.sources.exports.reddit`, `lynchpin.sources.exports.spotify`, `lynchpin.sources.libraries.finance`, `lynchpin.sinevec`, `lynchpin.views.calendar`, etc.) exposing canonical `/realm/data/...` sources as lazy generators with simple dataclasses.
+- What: HPI-style Python modules (`lynchpin.sources.captures.activitywatch`, `lynchpin.sources.captures.atuin`, `lynchpin.sources.indices.gitstats`, `lynchpin.sources.exports.sleep`, `lynchpin.sources.captures.webhistory`, `lynchpin.sources.captures.instrumentation`, `lynchpin.sources.indices.sessions`, `lynchpin.sources.exports.polylogue`, `lynchpin.sources.exports.reddit`, `lynchpin.sources.exports.spotify`, `lynchpin.sources.libraries.finance`, `lynchpin.views.calendar`, etc.) exposing canonical `/realm/data/...` sources as lazy generators with simple dataclasses.
 - Namespace layout: grouped accessors live under `lynchpin.core`, `lynchpin.sources` (bucketed into `captures/`, `exports/`, `libraries/`, `indices/`), `lynchpin.ingest`, `lynchpin.views`, and `lynchpin.system`. Old flat paths were removed; update imports/CLI calls accordingly.
 - Module map: see `docs/reference/lynchpin-module-map.md` for the canonical taxonomy and upstream mappings.
 - Run: invoke Python directly (see README snippet) or use `just lynchpin-warehouse` to build the view-only DuckDB at `artefacts/lynchpin/warehouse.duckdb`. Use `just lynchpin-warehouse mode=refresh format=parquet` (or `just materialize`) to rebuild per-source outputs plus views, then `just lynchpin-datasette` to browse.

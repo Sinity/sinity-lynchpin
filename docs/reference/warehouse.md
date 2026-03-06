@@ -50,7 +50,6 @@ If a module exists and can be expressed as a stable table, it should have a tabl
 - webhistory: `webhistory_entries`
 - webhistory_raw: `webhistory_raw_entries`
 - wykop: `wykop_entries`, `wykop_entry_comments`, `wykop_link_comments`
-- sinevec: `sinevec_state`, `sinevec_token_usage`
 
 Table inventory and coverage are recorded in `warehouse_manifest` inside the view DB.
 

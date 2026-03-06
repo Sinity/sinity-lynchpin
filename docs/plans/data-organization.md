@@ -6,7 +6,7 @@
 - Make module namespaces mirror the data domains to simplify discovery.
 
 ## Observations (current state)
-- `/realm/data/` is now physically bucketed into `captures/`, `exports/`, `libraries/`, `indices/`.
+- `/realm/data/` is now physically bucketed into `captures/`, `exports/`, `libraries/`, `runtime/`.
 - GDPR/Takeout exports live under `/realm/data/exports/<domain>/` (reddit/spotify/google/health/wykop/etc.).
 - Internal layouts vary (`raw/`, `processed/`, `derived/`, `staging/` appear in some but not all domains).
 - Lynchpin modules are grouped by layer (`sources/ingest/views/system`) but not by domain.
@@ -26,7 +26,7 @@ This preserves the bucketed layout while making each domain predictable.
 - **captures**: local telemetry + instrumentation (ActivityWatch snapshots, Atuin, asciinema, screenshots, webhistory raw, syslog).
 - **exports**: GDPR/Takeout/zip dumps (reddit, spotify, google takeout, health exports, raindrop, goodreads, chatlog, wykop).
 - **libraries**: curated long-lived collections (finance, substack, document/media libraries, model assets).
-- **indices**: derived stores (duckdb warehouse, qdrant, sinevec state, sinex state).
+- **runtime**: mutable service state (for example sinex spool/blob repo state).
 
 ## Lynchpin namespace grouping (implemented)
 Keep the layer split (`sources`, `ingest`, `views`, `system`) and add *bucket* subpackages:

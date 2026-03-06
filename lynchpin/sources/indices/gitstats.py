@@ -530,7 +530,6 @@ PROJECT_SPECS: Dict[str, dict] = {
     "polylogue": {"path": "/realm/project/polylogue", "classify": _classify_rust_simple},
     "intercept-bounce": {"path": "/realm/project/intercept-bounce", "classify": _classify_rust_simple},
     "scribe-tap": {"path": "/realm/project/scribe-tap", "classify": _classify_rust_simple},
-    "sinevec": {"path": "/realm/project/sinevec", "classify": _classify_rust_simple},
     "pwrank": {"path": "/realm/project/pwrank", "classify": _classify_rust_simple},
     "knowledge-extract": {"path": "/realm/project/knowledge-extract", "classify": _classify_rust_simple},
     "sinnix": {"path": "/realm/project/sinnix", "classify": _classify_sinnix},
