@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field, asdict
-from datetime import timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from ..sources.exports import chatlog
+
+FALSE_ACTIVE_APPS = {"gcr-prompter"}
+
 from ..sources.exports.chatlog import ChatTranscript
 from ..sources.indices.sessions import SessionRecord
 from ..sources.exports.sleep import SleepEntry
@@ -57,7 +61,7 @@ class DaySummary:
     sleep: Optional[SleepSummary]
     focus: FocusSummary
     insights: List[str] = field(default_factory=list)
-    instrumentation: Dict[str, int] = field(default_factory=dict)
+    instrumentation: Dict[str, Any] = field(default_factory=dict)
     top_apps: List[Tuple[str, float]] = field(default_factory=list)
     top_web_domains: List[Tuple[str, int]] = field(default_factory=list)
     window_event_count: int = 0
@@ -72,7 +76,7 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
     focus_categories = {name: round(minutes, 2) for name, minutes in focus_counter.items()}
     focus_minutes_total = sum(focus_counter.values())
 
-    active_hours, afk_hours = _afk_split(snapshot.afk)
+    active_hours, afk_hours = _afk_split(snapshot.afk, snapshot.windows)
     window_hours = _minutes_to_hours(sum(focus_counter.values()))
 
     command_categories = _commands_by_category(snapshot.atuin_commands)
@@ -86,6 +90,7 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
     sleep_summary = _sleep_summary(snapshot.sleep)
     top_apps = list(focus_counter.most_common(5))
     web_domains = _top_web_domains(snapshot.webhistory)
+    instrumentation_summary = _instrumentation_summary(snapshot.terminal_sessions, snapshot.terminal_events)
 
     return DaySummary(
         date=snapshot.date.isoformat(),
@@ -107,7 +112,7 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
             categories=focus_categories,
         ),
         insights=[],
-        instrumentation={},
+        instrumentation=instrumentation_summary,
         top_apps=[(name, round(minutes, 1)) for name, minutes in top_apps],
         top_web_domains=web_domains,
         window_event_count=len(snapshot.windows),
@@ -125,6 +130,102 @@ def _focus_minutes(events: Sequence) -> Counter:
         label = _window_label(data) or "unknown"
         counter[label] += minutes
     return counter
+
+
+def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Sequence) -> Dict[str, Any]:
+    session_count = len(terminal_sessions)
+    event_count = len(terminal_events)
+    active_seconds = 0.0
+    idle_seconds = 0.0
+    repo_counter: Counter = Counter()
+    command_counter: Counter = Counter()
+    event_type_counter: Counter = Counter()
+    command_sessions_with_events: set[str] = set()
+    command_count = 0
+    command_failures = 0
+    session_failures = 0
+    cwd_change_count = 0
+    sessions_missing_manifests = 0
+    sessions_missing_events = 0
+    new_model_sessions = 0
+    legacy_sessions = 0
+    header_only_sessions = 0
+
+    for session in terminal_sessions:
+        active_seconds += float(session.active_seconds or session.duration_seconds or 0.0)
+        idle_seconds += float(session.idle_seconds or 0.0)
+        if session.manifest_path:
+            new_model_sessions += 1
+        elif session.schema_generation == "legacy-meta":
+            legacy_sessions += 1
+        else:
+            header_only_sessions += 1
+        if not session.manifest_path:
+            sessions_missing_manifests += 1
+        if not session.has_events:
+            sessions_missing_events += 1
+        if session.exit_code not in (None, 0):
+            session_failures += 1
+        repo = session.final_repo_root or session.repo_root
+        if repo:
+            repo_label = Path(repo).name or repo
+            repo_counter[repo_label] += 1
+    for event in terminal_events:
+        event_type_counter[event.type] += 1
+        if event.type == "command_start":
+            command_sessions_with_events.add(event.session_id)
+            command_count += 1
+            command = _terminal_command_label(event.payload.get("command") or event.payload.get("cmd"))
+            if command:
+                command_counter[command] += 1
+        elif event.type == "command_end":
+            if event.exit_code not in (None, 0):
+                command_failures += 1
+        elif event.type in {"cwd", "location"}:
+            cwd_change_count += 1
+
+    for session in terminal_sessions:
+        if session.session_id in command_sessions_with_events:
+            continue
+        command_count += int(session.command_count or 0)
+
+    capture_mode = "absent"
+    if session_count > 0:
+        if new_model_sessions == session_count:
+            capture_mode = "new-model"
+        elif legacy_sessions == session_count:
+            capture_mode = "legacy-only"
+        elif header_only_sessions == session_count:
+            capture_mode = "header-only"
+        else:
+            capture_mode = "mixed"
+
+    return {
+        "terminal_sessions": session_count,
+        "terminal_events": event_count,
+        "terminal_active_hours": round(active_seconds / 3600.0, 2),
+        "terminal_idle_hours": round(idle_seconds / 3600.0, 2),
+        "terminal_command_count": command_count,
+        "terminal_command_failures": command_failures,
+        "terminal_session_failures": session_failures,
+        "terminal_cwd_changes": cwd_change_count,
+        "terminal_sessions_missing_manifest": sessions_missing_manifests,
+        "terminal_sessions_missing_events": sessions_missing_events,
+        "terminal_new_model_sessions": new_model_sessions,
+        "terminal_legacy_sessions": legacy_sessions,
+        "terminal_header_only_sessions": header_only_sessions,
+        "terminal_capture_mode": capture_mode,
+        "terminal_repos": dict(repo_counter.most_common(5)),
+        "terminal_commands": dict(command_counter.most_common(5)),
+        "terminal_event_types": dict(event_type_counter.most_common(6)),
+    }
+
+
+def _terminal_command_label(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    head = value.strip().split(maxsplit=1)[0]
+    return head or None
 
 
 def _window_label(data: Dict[str, object]) -> str:
@@ -153,29 +254,76 @@ def _minutes_to_hours(minutes: float) -> float:
     return minutes / 60.0
 
 
-def _afk_split(events: Sequence) -> Tuple[float, float]:
-    active = 0.0
-    afk = 0.0
+def _afk_split(events: Sequence, windows: Sequence = ()) -> Tuple[float, float]:
+    active_minutes = 0.0
+    afk_minutes = 0.0
+    active_intervals = []
+
     for event in events:
         minutes = _duration_minutes(event)
         data = getattr(event, "data", {}) or {}
         status = str(data.get("status") or "").lower()
+
+        is_afk = False
         if status in {"afk", "away"}:
-            afk += minutes
+            is_afk = True
         elif status in {"not-afk", "active", "present"}:
-            active += minutes
+            is_afk = False
         else:
             flag = data.get("afk")
-            is_afk = False
             if isinstance(flag, bool):
                 is_afk = flag
             elif isinstance(flag, str):
                 is_afk = flag.lower() == "true"
-            if is_afk:
-                afk += minutes
-            else:
-                active += minutes
-    return _minutes_to_hours(active), _minutes_to_hours(afk)
+
+        if is_afk:
+            afk_minutes += minutes
+        else:
+            active_minutes += minutes
+            # Collect active interval
+            start = getattr(event, "start", None)
+            end = getattr(event, "end", None)
+            if start and end:
+                active_intervals.append((start, end))
+
+    if windows and active_intervals:
+        false_active = _calculate_false_active_minutes(active_intervals, windows)
+        # Cap false active at total active?
+        false_active = min(false_active, active_minutes)
+        active_minutes -= false_active
+        afk_minutes += false_active
+
+    return _minutes_to_hours(active_minutes), _minutes_to_hours(afk_minutes)
+
+
+def _calculate_false_active_minutes(active_intervals: List[Tuple[datetime, datetime]], windows: Sequence) -> float:
+    total_false_active = 0.0
+
+    # We only care about windows that are "bad".
+    bad_windows = [
+        w for w in windows
+        if (_window_label(w.data or {}) in FALSE_ACTIVE_APPS or (w.data or {}).get("app") in FALSE_ACTIVE_APPS)
+    ]
+
+    if not bad_windows:
+        return 0.0
+
+    for w in bad_windows:
+        w_start = getattr(w, "start", None)
+        w_end = getattr(w, "end", None)
+        if not w_start or not w_end:
+            continue
+
+        # Check against all active intervals
+        for (a_start, a_end) in active_intervals:
+            # Overlap?
+            latest_start = max(w_start, a_start)
+            earliest_end = min(w_end, a_end)
+            if earliest_end > latest_start:
+                duration = (earliest_end - latest_start).total_seconds() / 60.0
+                total_false_active += duration
+
+    return total_false_active
 
 
 def _commands_by_category(commands: Sequence) -> Dict[str, int]:

@@ -34,8 +34,18 @@ summarise-session input_path output="" model="gpt-5-mini" api_base="https://api.
 
 # --- Instrumentation metadata -------------------------------------------------------
 
-asciinema-metadata root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/asciinema_metadata.jsonl":
-    python -m lynchpin.ingest.instrumentation asciinema --root {{root}} --output {{output}}
+terminal-sessions root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_sessions.jsonl":
+    python -m lynchpin.ingest.instrumentation terminal-sessions --root {{root}} --output {{output}}
+
+terminal-events root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_session_events.jsonl":
+    python -m lynchpin.ingest.instrumentation terminal-events --root {{root}} --output {{output}}
+
+terminal-metadata root="/realm/data/captures/asciinema" sessions_output="artefacts/ingest/instrumentation/terminal_sessions.jsonl" events_output="artefacts/ingest/instrumentation/terminal_session_events.jsonl":
+    python -m lynchpin.ingest.instrumentation terminal-sessions --root {{root}} --output {{sessions_output}}
+    python -m lynchpin.ingest.instrumentation terminal-events --root {{root}} --output {{events_output}}
+
+terminal-audit root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_capture_audit.json" detail_output="artefacts/ingest/instrumentation/terminal_capture_audit.jsonl":
+    python -m lynchpin.ingest.instrumentation audit-terminal --root {{root}} --output {{output}} --detail-output {{detail_output}}
 
 audio-metadata root="/realm/data/captures/audio/raw" output="artefacts/ingest/instrumentation/audio_metadata.jsonl":
     python -m lynchpin.ingest.instrumentation audio --root {{root}} --output {{output}}

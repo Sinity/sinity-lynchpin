@@ -1,14 +1,4 @@
-"""Instrumentation metadata collection.
-
-Lightweight metadata extractors for terminal recordings, audio captures, and
-screen recordings. The data access layer lives in `lynchpin.sources.captures.instrumentation`;
-this module only writes JSONL artefacts on demand.
-
-CLI Usage:
-    python -m lynchpin.ingest.instrumentation asciinema --root /realm/data/captures/asciinema
-    python -m lynchpin.ingest.instrumentation audio --root /realm/data/captures/audio/raw
-    python -m lynchpin.ingest.instrumentation screen --root /realm/data/captures/screenshot
-"""
+"""Instrumentation metadata collection."""
 
 from __future__ import annotations
 
@@ -19,32 +9,89 @@ from pathlib import Path
 import typer
 
 from ..sources.captures.instrumentation import (
-    AsciinemaMetadata,
     AudioMetadata,
     ScreenMetadata,
-    iter_asciinema_recordings,
+    TerminalAuditEntry,
+    TerminalAuditSummary,
+    TerminalSessionEvent,
+    TerminalSessionMetadata,
     iter_audio_recordings,
     iter_screenshots,
+    iter_terminal_audit,
+    iter_terminal_session_events,
+    iter_terminal_sessions,
+    summarize_terminal_audit,
 )
 
 app = typer.Typer(help="Instrumentation metadata collection")
 
 
-@app.command()
-def asciinema(
-    root: Path = typer.Option(Path("/realm/data/captures/asciinema"), "--root"),
-    output: Path = typer.Option(
-        Path("artefacts/ingest/instrumentation/asciinema_metadata.jsonl"), "--output"
-    ),
-) -> None:
-    """Collect asciinema recording metadata."""
+def _write_jsonl(output: Path, records) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     with output.open("w", encoding="utf-8") as fh:
-        for meta in iter_asciinema_recordings(root):
-            fh.write(json.dumps(asdict(meta), ensure_ascii=False) + "\n")
+        for record in records:
+            fh.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
             count += 1
-    typer.secho(f"✓ Wrote {count} asciinema metadata records → {output}", fg=typer.colors.GREEN)
+    return count
+
+
+def _write_json(output: Path, payload: object) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+@app.command("terminal-sessions")
+def terminal_sessions(
+    root: Path = typer.Option(Path("/realm/data/captures/asciinema"), "--root"),
+    output: Path = typer.Option(
+        Path("artefacts/ingest/instrumentation/terminal_sessions.jsonl"),
+        "--output",
+    ),
+) -> None:
+    """Collect terminal session metadata."""
+
+    count = _write_jsonl(output, iter_terminal_sessions(root))
+    typer.secho(f"✓ Wrote {count} terminal sessions → {output}", fg=typer.colors.GREEN)
+
+
+@app.command("terminal-events")
+def terminal_events(
+    root: Path = typer.Option(Path("/realm/data/captures/asciinema"), "--root"),
+    output: Path = typer.Option(
+        Path("artefacts/ingest/instrumentation/terminal_session_events.jsonl"),
+        "--output",
+    ),
+) -> None:
+    """Collect terminal session events."""
+
+    count = _write_jsonl(output, iter_terminal_session_events(root))
+    typer.secho(f"✓ Wrote {count} terminal events → {output}", fg=typer.colors.GREEN)
+
+
+@app.command("audit-terminal")
+def audit_terminal(
+    root: Path = typer.Option(Path("/realm/data/captures/asciinema"), "--root"),
+    output: Path = typer.Option(
+        Path("artefacts/ingest/instrumentation/terminal_capture_audit.json"),
+        "--output",
+    ),
+    detail_output: Path = typer.Option(
+        Path("artefacts/ingest/instrumentation/terminal_capture_audit.jsonl"),
+        "--detail-output",
+    ),
+) -> None:
+    """Audit terminal capture corpus health."""
+
+    entries = list(iter_terminal_audit(root))
+    summary = summarize_terminal_audit(iter(entries))
+    detail_output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(output, asdict(summary))
+    with detail_output.open("w", encoding="utf-8") as fh:
+        for entry in entries:
+            fh.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
+    typer.secho(f"✓ Wrote terminal audit summary → {output}", fg=typer.colors.GREEN)
+    typer.secho(f"✓ Wrote {len(entries)} terminal audit rows → {detail_output}", fg=typer.colors.GREEN)
 
 
 @app.command()
@@ -55,12 +102,8 @@ def audio(
     ),
 ) -> None:
     """Collect audio recording metadata."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with output.open("w", encoding="utf-8") as fh:
-        for meta in iter_audio_recordings(root):
-            fh.write(json.dumps(asdict(meta), ensure_ascii=False) + "\n")
-            count += 1
+
+    count = _write_jsonl(output, iter_audio_recordings(root))
     typer.secho(f"✓ Wrote {count} audio metadata records → {output}", fg=typer.colors.GREEN)
 
 
@@ -72,12 +115,8 @@ def screen(
     ),
 ) -> None:
     """Collect screenshot/screen recording metadata."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with output.open("w", encoding="utf-8") as fh:
-        for meta in iter_screenshots(root):
-            fh.write(json.dumps(asdict(meta), ensure_ascii=False) + "\n")
-            count += 1
+
+    count = _write_jsonl(output, iter_screenshots(root))
     typer.secho(f"✓ Wrote {count} screen metadata records → {output}", fg=typer.colors.GREEN)
 
 

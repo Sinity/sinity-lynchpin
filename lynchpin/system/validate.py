@@ -60,6 +60,16 @@ def _count_iter(items: Iterable[object], limit: Optional[int]) -> Tuple[int, boo
     return count, truncated
 
 
+def _sample_iter(items: Iterable[object], limit: Optional[int]) -> Tuple[list[object], bool]:
+    if limit is None:
+        return list(items), False
+    iterator = iter(items)
+    records = list(islice(iterator, limit))
+    sentinel = object()
+    truncated = next(iterator, sentinel) is not sentinel
+    return records, truncated
+
+
 def _run_check(name: str, fn: Callable[[], Tuple[Optional[int], str]]) -> CheckResult:
     started = time.perf_counter()
     try:
@@ -304,12 +314,31 @@ def lynchpin(
             detail += f" (sample {sample_limit})"
         return count, detail
 
-    def _instrumentation_asciinema() -> Tuple[Optional[int], str]:
-        count, truncated = _count_iter(instrumentation.iter_asciinema_recordings(), sample_limit)
-        detail = f"root={cfg.asciinema_root}"
+    def _instrumentation_terminal_sessions() -> Tuple[Optional[int], str]:
+        entries, truncated = _sample_iter(instrumentation.iter_terminal_audit(), sample_limit)
+        summary = instrumentation.summarize_terminal_audit(iter(entries))
+        detail = (
+            f"root={cfg.asciinema_root} "
+            f"generation={summary.counts_by_generation} "
+            f"manifest={summary.manifest_count}/{summary.cast_count} "
+            f"events={summary.events_count}/{summary.cast_count} "
+            f"legacy={summary.legacy_meta_count} "
+            f"malformed_legacy={summary.malformed_legacy_meta_count}"
+        )
         if truncated:
             detail += f" (sample {sample_limit})"
-        return count, detail
+        return summary.cast_count, detail
+
+    def _instrumentation_terminal_events() -> Tuple[Optional[int], str]:
+        events, truncated = _sample_iter(instrumentation.iter_terminal_session_events(), sample_limit)
+        detail = (
+            f"root={cfg.asciinema_root} "
+            f"sources={dict(Counter(getattr(event, 'source', 'unknown') for event in events))} "
+            f"types={dict(Counter(getattr(event, 'type', 'unknown') for event in events).most_common(5))}"
+        )
+        if truncated:
+            detail += f" (sample {sample_limit})"
+        return len(events), detail
 
     def _instrumentation_audio() -> Tuple[Optional[int], str]:
         count, truncated = _count_iter(instrumentation.iter_audio_recordings(), sample_limit)
@@ -488,7 +517,8 @@ def lynchpin(
         ("lynchpin.goodreads.books", _goodreads_books),
         ("lynchpin.health.samsung_sleep", _health_sleep_sessions),
         ("lynchpin.health.samsung_weight", _health_weight_entries),
-        ("lynchpin.instrumentation.asciinema", _instrumentation_asciinema),
+        ("lynchpin.instrumentation.terminal_sessions", _instrumentation_terminal_sessions),
+        ("lynchpin.instrumentation.terminal_events", _instrumentation_terminal_events),
         ("lynchpin.instrumentation.audio", _instrumentation_audio),
         ("lynchpin.instrumentation.screen", _instrumentation_screen),
         ("lynchpin.polylogue.docs", _polylogue_docs),

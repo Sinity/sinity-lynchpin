@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
-from ..sources.captures import activitywatch, atuin, webhistory
+from ..sources.captures import activitywatch, atuin, instrumentation, webhistory
 from ..sources.indices import gitstats, sessions
 from ..sources.exports import sleep
 from ..sources.captures.activitywatch import ActivityWatchEvent
@@ -25,6 +25,8 @@ class DaySnapshot:
     sleep: Optional[SleepEntry]
     session_records: List[SessionRecord]
     webhistory: List[Dict[str, object]]
+    terminal_sessions: List[instrumentation.TerminalSessionMetadata]
+    terminal_events: List[instrumentation.TerminalSessionEvent]
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -37,11 +39,14 @@ class DaySnapshot:
             "sleep": asdict(self.sleep) if self.sleep else None,
             "sessions": [asdict(record) for record in self.session_records],
             "webhistory": self.webhistory,
+            "terminal_sessions": [asdict(record) for record in self.terminal_sessions],
+            "terminal_events": [asdict(record) for record in self.terminal_events],
         }
 
 
 def load_day(target: date) -> DaySnapshot:
-    start = datetime.combine(target, datetime.min.time())
+    local_tz = datetime.now().astimezone().tzinfo
+    start = datetime.combine(target, datetime.min.time(), tzinfo=local_tz)
     end = start + timedelta(days=1)
     windows = list(activitywatch.window_events(day=target))
     afk = list(activitywatch.afk_events(day=target))
@@ -51,6 +56,8 @@ def load_day(target: date) -> DaySnapshot:
     sleep_entry = sleep.sleep_by_date(target.isoformat())
     day_sessions = sessions.sessions_by_date(target)
     day_wh = list(webhistory.iter_entries(start_date=target.isoformat(), end_date=target.isoformat()))
+    terminal_sessions = list(instrumentation.terminal_sessions_by_date(target))
+    terminal_events = list(instrumentation.terminal_session_events_by_date(target))
     return DaySnapshot(
         date=target,
         windows=windows,
@@ -61,4 +68,6 @@ def load_day(target: date) -> DaySnapshot:
         sleep=sleep_entry,
         session_records=day_sessions,
         webhistory=day_wh,
+        terminal_sessions=terminal_sessions,
+        terminal_events=terminal_events,
     )

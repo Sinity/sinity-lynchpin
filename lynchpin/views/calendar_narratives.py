@@ -114,7 +114,7 @@ class DayRecord:
     codex_sessions: int
     atuin_commands: int
     git: Dict[str, int]
-    instrumentation: Dict[str, int]
+    instrumentation: Dict[str, Any]
     insights: List[str]
     sessions: List[Dict[str, str]]
     transcripts: List[Dict[str, object]]
@@ -127,9 +127,7 @@ class DayRecord:
             f"{name}: {int(count)} cmds ({_percentage(count, self.command_total)}%)"
             for name, count in self.command_categories.items()
         ) or "No shell activity recorded."
-        instrumentation = ", ".join(
-            f"{kind}={count}" for kind, count in self.instrumentation.items() if count
-        ) or "none"
+        instrumentation = _instrumentation_line(self.instrumentation)
         insights = "; ".join(self.insights) or "No automatic highlights."
         repos = self.git.get("repos") or {}
         repo_text = ", ".join(f"{name} ({count})" for name, count in repos.items()) or "—"
@@ -222,6 +220,37 @@ def _segment_count(sleep: Dict[str, Any]) -> int:
     return 0
 
 
+def _instrumentation_line(instrumentation: Dict[str, Any]) -> str:
+    session_count = int(instrumentation.get("terminal_sessions", 0) or 0)
+    if session_count <= 0:
+        return "absent"
+    capture_mode = str(instrumentation.get("terminal_capture_mode") or "unknown")
+    event_count = int(instrumentation.get("terminal_events", 0) or 0)
+    command_count = int(instrumentation.get("terminal_command_count", 0) or 0)
+    active_hours = float(instrumentation.get("terminal_active_hours", 0.0) or 0.0)
+    idle_hours = float(instrumentation.get("terminal_idle_hours", 0.0) or 0.0)
+    command_failures = int(instrumentation.get("terminal_command_failures", 0) or 0)
+    session_failures = int(instrumentation.get("terminal_session_failures", 0) or 0)
+    manifest_gaps = int(instrumentation.get("terminal_sessions_missing_manifest", 0) or 0)
+    event_gaps = int(instrumentation.get("terminal_sessions_missing_events", 0) or 0)
+    repo_map = instrumentation.get("terminal_repos") or {}
+    repo_text = ", ".join(f"{name} ({count})" for name, count in list(repo_map.items())[:3]) or "none"
+    parts = [
+        capture_mode,
+        f"{session_count} session(s)",
+        f"{event_count} event(s)",
+        f"{command_count} command(s)",
+        f"{active_hours:.2f}h active",
+        f"{idle_hours:.2f}h idle",
+        f"repos: {repo_text}",
+    ]
+    if command_failures or session_failures:
+        parts.append(f"failures: {command_failures} cmd / {session_failures} session")
+    if manifest_gaps or event_gaps:
+        parts.append(f"gaps: {manifest_gaps} manifestless / {event_gaps} eventless")
+    return ", ".join(parts)
+
+
 def _load_day_record(dt: date, calendar_dir: Path) -> DayRecord:
     snapshot = lp_calendar.load_day(dt)
     summary = summarize_day(snapshot)
@@ -260,7 +289,7 @@ def _load_day_record(dt: date, calendar_dir: Path) -> DayRecord:
         codex_sessions=summary.codex_sessions,
         atuin_commands=summary.atuin_commands,
         git=git_payload,
-        instrumentation={},
+        instrumentation=dict(summary.instrumentation),
         insights=[],
         sessions=sessions,
         transcripts=transcripts,
@@ -282,7 +311,17 @@ def _build_prompt(
     total_commands = sum(day.command_total for day in days)
     total_commits = sum(day.git["commits"] for day in days)
     total_codex = sum(day.codex_sessions for day in days)
-    total_instrumentation = sum(sum(day.instrumentation.values()) for day in days)
+    total_instrumentation = sum(int(day.instrumentation.get("terminal_sessions", 0) or 0) for day in days)
+    total_terminal_events = sum(int(day.instrumentation.get("terminal_events", 0) or 0) for day in days)
+    total_terminal_commands = sum(int(day.instrumentation.get("terminal_command_count", 0) or 0) for day in days)
+    total_terminal_active = sum(float(day.instrumentation.get("terminal_active_hours", 0.0) or 0.0) for day in days)
+    total_terminal_failures = sum(
+        int(day.instrumentation.get("terminal_command_failures", 0) or 0)
+        + int(day.instrumentation.get("terminal_session_failures", 0) or 0)
+        for day in days
+    )
+    total_terminal_new_model = sum(int(day.instrumentation.get("terminal_new_model_sessions", 0) or 0) for day in days)
+    total_terminal_legacy = sum(int(day.instrumentation.get("terminal_legacy_sessions", 0) or 0) for day in days)
     total_sessions = sum(len(day.sessions) for day in days)
     total_focus_minutes = sum(float(day.focus.get("total_focus_minutes", 0.0)) for day in days)
     sleep_hours_samples: List[float] = []
@@ -337,7 +376,7 @@ Range overview:
 - Git commits: {total_commits}
 - Codex sessions: {total_codex}
 - Sessions logged: {total_sessions} (Top: {top_sessions})
-- Instrumentation captures: {total_instrumentation}
+- Terminal recording sessions: {total_instrumentation} ({total_terminal_active:.2f}h active, {total_terminal_events} events, {total_terminal_commands} commands, {total_terminal_failures} failures, new={total_terminal_new_model}, legacy={total_terminal_legacy})
 - ActivityWatch minutes tracked: {total_focus_minutes:.1f}
 - Sleep logged: {sleep_line}
 - Top highlights: {top_insights}
