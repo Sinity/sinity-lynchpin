@@ -1,47 +1,57 @@
 #!/usr/bin/env python3
 """Export data for artifacts dashboard."""
 import json
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections import defaultdict
 from typing import Any, Dict, List
 
-from ..sources.captures import activitywatch, atuin
 from ..sources.indices import gitstats, sessions
-from .calendar_summary import _afk_split, _focus_minutes, _git_summary
+from ..sources.captures import activitywatch, atuin
+from .calendar_summary import dashboard_day_metrics_from_inputs
 
 
 def _build_history(days: int) -> List[Dict[str, Any]]:
     today = datetime.now().date()
     start_date = today - timedelta(days=days - 1)
+    local_tz = datetime.now().astimezone().tzinfo
+    range_start = datetime.combine(start_date, datetime.min.time(), tzinfo=local_tz)
+    range_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=local_tz)
+
     session_map = defaultdict(list)
     for record in sessions.iter_sessions():
         if start_date <= record.date <= today:
             session_map[record.date].append(record)
+
     git_map = defaultdict(list)
     for commit in gitstats.iter_commits():
         if start_date <= commit.date <= today:
             git_map[commit.date].append(commit)
+
+    window_map = defaultdict(list)
+    for event in activitywatch.window_events(start=range_start, end=range_end):
+        window_map[event.start.astimezone(local_tz).date()].append(event)
+
+    afk_map = defaultdict(list)
+    for event in activitywatch.afk_events(start=range_start, end=range_end):
+        afk_map[event.start.astimezone(local_tz).date()].append(event)
+
+    command_map = defaultdict(list)
+    for command in atuin.iter_commands(start=range_start, end=range_end):
+        command_map[command.timestamp.astimezone(local_tz).date()].append(command)
+
     records: List[Dict[str, Any]] = []
     for offset in range(days - 1, -1, -1):
         target = today - timedelta(days=offset)
-        day_metrics = _day_metrics(
-            target,
-            session_records=session_map.get(target, []),
-            git_commits=git_map.get(target, []),
-        )
         records.append(
-            {
-                "date": target.isoformat(),
-                "active_hours": day_metrics["active_hours"],
-                "afk_hours": day_metrics["afk_hours"],
-                "window_hours": day_metrics["window_hours"],
-                "command_total": day_metrics["command_total"],
-                "codex_sessions": day_metrics["codex_sessions"],
-                "git_commits": day_metrics["git_commits"],
-                "focus_minutes": day_metrics["focus_minutes"],
-                "top_apps": day_metrics["top_apps"],
-            }
+            dashboard_day_metrics_from_inputs(
+                target,
+                windows=window_map.get(target, []),
+                afk=afk_map.get(target, []),
+                commands=command_map.get(target, []),
+                session_records=session_map.get(target, []),
+                git_commits=git_map.get(target, []),
+            ).to_dict()
         )
     return records
 
@@ -60,29 +70,6 @@ def _build_recent_calendar(history: List[Dict[str, Any]], days: int) -> List[Dic
             }
         )
     return recent_days
-
-
-def _day_metrics(target, *, session_records, git_commits) -> Dict[str, Any]:
-    start = datetime.combine(target, datetime.min.time(), tzinfo=datetime.now().astimezone().tzinfo)
-    end = start + timedelta(days=1)
-    windows = list(activitywatch.window_events(day=target))
-    afk = list(activitywatch.afk_events(day=target))
-    commands = list(atuin.iter_commands(start=start, end=end))
-    focus_counter = _focus_minutes(windows)
-    active_hours, afk_hours = _afk_split(afk, windows)
-    git_summary = _git_summary(list(git_commits))
-    return {
-        "date": target.isoformat(),
-        "active_hours": round(active_hours, 2),
-        "afk_hours": round(afk_hours, 2),
-        "window_hours": round(sum(focus_counter.values()) / 60.0, 2),
-        "command_total": len(commands),
-        "codex_sessions": sum(1 for record in session_records if "codex" in record.provider.lower()),
-        "git_commits": git_summary.commits,
-        "focus_minutes": round(sum(focus_counter.values()), 1),
-        "top_apps": [name for name, _minutes in focus_counter.most_common(3)],
-    }
-
 
 def get_summary_stats(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Calculate summary statistics from timeline."""

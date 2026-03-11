@@ -57,7 +57,7 @@ This reference aggregates how the repo is structured and what each pipeline expe
 ### Baseline (`pipelines/core/baseline/README.md`)
 - Script: `build_baseline.py` orchestrates multi-source ingestion with `--mode live|bundle|auto`, `--full/--window-days`, and optional web bucket sampling.
 - Inputs: ActivityWatch windows/AFK, Atuin command history, Codex sessions, git numstat, wearable sleep merge; optionally a frozen bundle under `/realm/data/sinity-lynchpin/baseline-inputs/<range>/`.
-- Outputs: JSON summaries (ActivityWatch, AFK, Codex cadence, Atuin stats, git deltas, sleep) + `activity_timeline.json` for focus/daily reports.
+- Outputs: baseline git index (`git_numstat.jsonl`) plus supporting git summary material. Calendar, dashboard, and narrative surfaces now read canonical sources directly instead of baseline summary rollups.
 - Usage: `just baseline session_root=... since=... until=... full=false` for range-bound reruns.
 
 ### Ledgers (`docs/reference/ledgers/README.md`)

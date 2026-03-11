@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
@@ -13,7 +13,9 @@ from ..sources.exports import chatlog
 from ..sources.exports.chatlog import ChatTranscript
 from ..sources.exports.sleep import SleepEntry
 from ..sources.indices.sessions import SessionRecord
-from .calendar import DaySnapshot
+from ..sources.indices import gitstats, sessions
+from ..sources.captures import activitywatch, atuin
+from .calendar import DaySnapshot, load_day
 
 FALSE_ACTIVE_APPS = {"gcr-prompter"}
 
@@ -70,6 +72,45 @@ class DaySummary:
         return asdict(self)
 
 
+@dataclass
+class DashboardDayMetrics:
+    date: str
+    active_hours: float
+    afk_hours: float
+    window_hours: float
+    command_total: int
+    codex_sessions: int
+    git_commits: int
+    focus_minutes: float
+    top_apps: List[str]
+
+    def to_dict(self) -> Dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class NarrativeRangeSummary:
+    total_days: int
+    total_focus_hours: float
+    total_afk_hours: float
+    total_commands: int
+    total_commits: int
+    total_codex_sessions: int
+    total_session_records: int
+    total_terminal_sessions: int
+    total_terminal_events: int
+    total_terminal_commands: int
+    total_terminal_active_hours: float
+    total_terminal_failures: int
+    total_terminal_new_model_sessions: int
+    total_terminal_legacy_sessions: int
+    total_focus_minutes: float
+    average_sleep_hours: Optional[float]
+    total_sleep_segments: int
+    top_insights: str
+    top_sessions: str
+
+
 def summarize_day(snapshot: DaySnapshot) -> DaySummary:
     focus_counter = _focus_minutes(snapshot.windows)
     focus_categories = {name: round(minutes, 2) for name, minutes in focus_counter.items()}
@@ -116,6 +157,201 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
         top_web_domains=web_domains,
         window_event_count=len(snapshot.windows),
         afk_event_count=len(snapshot.afk),
+    )
+
+
+def load_day_summary(target: date) -> DaySummary:
+    return summarize_day(load_day(target))
+
+
+def dashboard_day_metrics(summary: DaySummary) -> DashboardDayMetrics:
+    return DashboardDayMetrics(
+        date=summary.date,
+        active_hours=summary.overview.active_hours,
+        afk_hours=summary.overview.afk_hours,
+        window_hours=summary.overview.window_hours,
+        command_total=summary.command_total,
+        codex_sessions=summary.codex_sessions,
+        git_commits=summary.git.commits,
+        focus_minutes=round(summary.focus.total_focus_minutes, 1),
+        top_apps=[name for name, _minutes in summary.top_apps[:3]],
+    )
+
+
+def dashboard_day_metrics_from_inputs(
+    target: date,
+    *,
+    windows: Sequence,
+    afk: Sequence,
+    commands: Sequence,
+    session_records: Sequence[SessionRecord],
+    git_commits: Sequence,
+) -> DashboardDayMetrics:
+    focus_counter = _focus_minutes(windows)
+    active_hours, afk_hours = _afk_split(afk, windows)
+    git_summary = _git_summary(list(git_commits))
+    codex_sessions = sum(1 for record in session_records if "codex" in record.provider.lower())
+    return DashboardDayMetrics(
+        date=target.isoformat(),
+        active_hours=round(active_hours, 2),
+        afk_hours=round(afk_hours, 2),
+        window_hours=round(sum(focus_counter.values()) / 60.0, 2),
+        command_total=len(commands),
+        codex_sessions=codex_sessions,
+        git_commits=git_summary.commits,
+        focus_minutes=round(sum(focus_counter.values()), 1),
+        top_apps=[name for name, _minutes in focus_counter.most_common(3)],
+    )
+
+
+def load_dashboard_day_metrics(target: date) -> DashboardDayMetrics:
+    local_tz = datetime.now().astimezone().tzinfo
+    start = datetime.combine(target, datetime.min.time(), tzinfo=local_tz)
+    end = start + timedelta(days=1)
+    windows = list(activitywatch.window_events(day=target))
+    afk = list(activitywatch.afk_events(day=target))
+    commands = list(atuin.iter_commands(start=start, end=end))
+    return dashboard_day_metrics_from_inputs(
+        target,
+        windows=windows,
+        afk=afk,
+        commands=commands,
+        session_records=sessions.sessions_by_date(target),
+        git_commits=gitstats.commits_by_date(target),
+    )
+
+
+def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
+    total_days = len(summaries)
+    total_focus_hours = sum(summary.overview.active_hours for summary in summaries)
+    total_afk_hours = sum(summary.overview.afk_hours for summary in summaries)
+    total_commands = sum(summary.command_total for summary in summaries)
+    total_commits = sum(summary.git.commits for summary in summaries)
+    total_codex_sessions = sum(summary.codex_sessions for summary in summaries)
+    total_session_records = sum(len(summary.sessions) for summary in summaries)
+    total_terminal_sessions = sum(int(summary.instrumentation.get("terminal_sessions", 0) or 0) for summary in summaries)
+    total_terminal_events = sum(int(summary.instrumentation.get("terminal_events", 0) or 0) for summary in summaries)
+    total_terminal_commands = sum(int(summary.instrumentation.get("terminal_command_count", 0) or 0) for summary in summaries)
+    total_terminal_active_hours = sum(
+        float(summary.instrumentation.get("terminal_active_hours", 0.0) or 0.0) for summary in summaries
+    )
+    total_terminal_failures = sum(
+        int(summary.instrumentation.get("terminal_command_failures", 0) or 0)
+        + int(summary.instrumentation.get("terminal_session_failures", 0) or 0)
+        for summary in summaries
+    )
+    total_terminal_new_model_sessions = sum(
+        int(summary.instrumentation.get("terminal_new_model_sessions", 0) or 0) for summary in summaries
+    )
+    total_terminal_legacy_sessions = sum(
+        int(summary.instrumentation.get("terminal_legacy_sessions", 0) or 0) for summary in summaries
+    )
+    total_focus_minutes = sum(float(summary.focus.total_focus_minutes) for summary in summaries)
+
+    sleep_hours_samples: List[float] = []
+    total_sleep_segments = 0
+    for summary in summaries:
+        if not summary.sleep:
+            continue
+        sleep_hours_samples.append(float(summary.sleep.total_hours))
+        total_sleep_segments += summary.sleep.segments
+
+    insight_counter: Counter = Counter()
+    session_counter: Counter = Counter()
+    for summary in summaries:
+        insight_counter.update(summary.insights)
+        session_counter.update(
+            (session.get("label") or "Session", session.get("provider") or "")
+            for session in summary.sessions
+        )
+
+    top_insights = ", ".join(f"{text}×{count}" for text, count in insight_counter.most_common(6)) or "No notable highlights captured."
+    top_sessions = (
+        ", ".join(
+            f"{label}{' (' + provider + ')' if provider else ''}×{count}"
+            for (label, provider), count in session_counter.most_common(5)
+        )
+        if session_counter
+        else "No recorded sessions."
+    )
+
+    return NarrativeRangeSummary(
+        total_days=total_days,
+        total_focus_hours=total_focus_hours,
+        total_afk_hours=total_afk_hours,
+        total_commands=total_commands,
+        total_commits=total_commits,
+        total_codex_sessions=total_codex_sessions,
+        total_session_records=total_session_records,
+        total_terminal_sessions=total_terminal_sessions,
+        total_terminal_events=total_terminal_events,
+        total_terminal_commands=total_terminal_commands,
+        total_terminal_active_hours=total_terminal_active_hours,
+        total_terminal_failures=total_terminal_failures,
+        total_terminal_new_model_sessions=total_terminal_new_model_sessions,
+        total_terminal_legacy_sessions=total_terminal_legacy_sessions,
+        total_focus_minutes=total_focus_minutes,
+        average_sleep_hours=(
+            sum(sleep_hours_samples) / len(sleep_hours_samples) if sleep_hours_samples else None
+        ),
+        total_sleep_segments=total_sleep_segments,
+        top_insights=top_insights,
+        top_sessions=top_sessions,
+    )
+
+
+def terminal_capture_overview_line(instrumentation: Dict[str, Any]) -> str:
+    session_count = int(instrumentation.get("terminal_sessions", 0) or 0)
+    if session_count <= 0:
+        return "absent"
+    capture_mode = str(instrumentation.get("terminal_capture_mode") or "unknown")
+    event_count = int(instrumentation.get("terminal_events", 0) or 0)
+    command_count = int(instrumentation.get("terminal_command_count", 0) or 0)
+    duration_hours = float(instrumentation.get("terminal_duration_hours", 0.0) or 0.0)
+    active_hours = float(instrumentation.get("terminal_active_hours", 0.0) or 0.0)
+    idle_hours = float(instrumentation.get("terminal_idle_hours", 0.0) or 0.0)
+    command_failures = int(instrumentation.get("terminal_command_failures", 0) or 0)
+    session_failures = int(instrumentation.get("terminal_session_failures", 0) or 0)
+    manifest_gaps = int(instrumentation.get("terminal_sessions_missing_manifest", 0) or 0)
+    event_gaps = int(instrumentation.get("terminal_sessions_missing_events", 0) or 0)
+    degraded_sessions = int(instrumentation.get("terminal_degraded_sessions", 0) or 0)
+    damaged_sessions = int(instrumentation.get("terminal_damaged_sessions", 0) or 0)
+    estimated_timing_sessions = int(instrumentation.get("terminal_estimated_timing_sessions", 0) or 0)
+    unknown_activity_sessions = int(instrumentation.get("terminal_unknown_activity_sessions", 0) or 0)
+    unknown_activity_hours = float(instrumentation.get("terminal_unknown_activity_hours", 0.0) or 0.0)
+    repo_map = instrumentation.get("terminal_repos") or {}
+    repo_text = ", ".join(f"{name} ({count})" for name, count in list(repo_map.items())[:3]) or "none"
+    parts = [
+        capture_mode,
+        f"{session_count} session(s)",
+        f"{event_count} event(s)",
+        f"{command_count} command(s)",
+        f"{active_hours:.2f}h active",
+        f"{idle_hours:.2f}h idle",
+        f"{duration_hours:.2f}h duration",
+        f"repos: {repo_text}",
+    ]
+    if command_failures or session_failures:
+        parts.append(f"failures: {command_failures} cmd / {session_failures} session")
+    if degraded_sessions or damaged_sessions:
+        parts.append(f"quality: {degraded_sessions} degraded / {damaged_sessions} damaged")
+    if manifest_gaps or event_gaps:
+        parts.append(f"gaps: {manifest_gaps} manifestless / {event_gaps} eventless")
+    if estimated_timing_sessions:
+        parts.append(f"timing estimates: {estimated_timing_sessions}")
+    if unknown_activity_sessions:
+        parts.append(f"activity unknown: {unknown_activity_sessions} session(s) / {unknown_activity_hours:.2f}h")
+    return ", ".join(parts)
+
+
+def terminal_capture_gaps_line(instrumentation: Dict[str, Any]) -> str:
+    return (
+        f"{int(instrumentation.get('terminal_sessions_missing_manifest', 0) or 0)} manifestless, "
+        f"{int(instrumentation.get('terminal_sessions_missing_events', 0) or 0)} eventless, "
+        f"{int(instrumentation.get('terminal_unknown_activity_sessions', 0) or 0)} without activity estimate, "
+        f"{float(instrumentation.get('terminal_unknown_activity_hours', 0.0) or 0.0):.2f}h uncertain duration, "
+        f"{int(instrumentation.get('terminal_command_failures', 0) or 0)} non-zero command(s), "
+        f"{int(instrumentation.get('terminal_session_failures', 0) or 0)} non-zero session(s)"
     )
 
 

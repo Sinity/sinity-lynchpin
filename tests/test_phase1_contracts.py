@@ -127,3 +127,29 @@ def test_dashboard_export_uses_calendar_summary_shape() -> None:
     )
     result = _run_repo_python(script)
     assert result.returncode == 0, result.stderr
+
+
+def test_calendar_views_and_narratives_use_summary_helpers() -> None:
+    views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
+    narratives_text = (REPO_ROOT / "lynchpin/views/calendar_narratives.py").read_text(encoding="utf-8")
+    assert "load_day_summary" in views_text
+    assert "terminal_capture_overview_line" in views_text
+    assert "load_day_summary" in narratives_text
+    assert "summarize_range" in narratives_text
+    assert "_instrumentation_line" not in narratives_text
+
+
+def test_baseline_pipeline_no_longer_writes_redundant_non_git_rollups() -> None:
+    baseline_text = (REPO_ROOT / "pipelines/core/baseline/build_baseline.py").read_text(encoding="utf-8")
+    for obsolete_name in [
+        "activitywatch_window_summary.json",
+        "activitywatch_afk_summary.json",
+        "activitywatch_afk_window.json",
+        "codex_sessions_summary.json",
+        "atuin_summary.json",
+        "git_activity_summary.json",
+        "sleep_summary.json",
+        "activity_timeline.json",
+    ]:
+        assert obsolete_name not in baseline_text, obsolete_name
+    assert "git_numstat.jsonl" in baseline_text

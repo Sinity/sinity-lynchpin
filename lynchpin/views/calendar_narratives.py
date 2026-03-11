@@ -22,10 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import typer
 
-from . import calendar as lp_calendar
 from ..core.io import write_text_if_changed
 
-from .calendar_summary import summarize_day
+from .calendar_summary import DaySummary, load_day_summary, summarize_range, terminal_capture_overview_line
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -108,69 +107,55 @@ TOKEN_USAGE_RE = re.compile(
 class DayRecord:
     dt: date
     weekday: str
-    overview: Dict[str, float]
-    command_total: int
-    command_categories: Dict[str, int]
-    codex_sessions: int
-    atuin_commands: int
-    git: Dict[str, int]
-    instrumentation: Dict[str, Any]
-    insights: List[str]
-    sessions: List[Dict[str, str]]
-    transcripts: List[Dict[str, object]]
-    health: Dict[str, Any]
-    focus: Dict[str, Any]
+    summary: DaySummary
     view_path: Optional[Path] = None
 
     def to_prompt_block(self) -> str:
+        summary = self.summary
         categories = ", ".join(
-            f"{name}: {int(count)} cmds ({_percentage(count, self.command_total)}%)"
-            for name, count in self.command_categories.items()
+            f"{name}: {int(count)} cmds ({_percentage(count, summary.command_total)}%)"
+            for name, count in summary.command_categories.items()
         ) or "No shell activity recorded."
-        instrumentation = _instrumentation_line(self.instrumentation)
-        insights = "; ".join(self.insights) or "No automatic highlights."
-        repos = self.git.get("repos") or {}
+        instrumentation = terminal_capture_overview_line(summary.instrumentation)
+        insights = "; ".join(summary.insights) or "No automatic highlights."
+        repos = summary.git.repos or {}
         repo_text = ", ".join(f"{name} ({count})" for name, count in repos.items()) or "—"
-        lines_added = self.git.get("lines_added", 0)
-        lines_deleted = self.git.get("lines_deleted", 0)
-        commits = self.git.get("commits", 0)
-        sleep = self.health.get("sleep") if self.health else None
-        if sleep:
-            sleep_hours = sleep.get("total_hours")
-            sleep_line = f"Sleep {sleep_hours:.2f}h" if isinstance(sleep_hours, (int, float)) else "Sleep data"
-            segments = _segment_count(sleep)
-            if segments:
-                sleep_line += f" ({segments} segment(s))"
-            if sleep.get("avg_score") is not None:
-                sleep_line += f", score {sleep['avg_score']}"
+        lines_added = summary.git.lines_added
+        lines_deleted = summary.git.lines_deleted
+        commits = summary.git.commits
+        if summary.sleep:
+            sleep_line = f"Sleep {summary.sleep.total_hours:.2f}h"
+            if summary.sleep.segments:
+                sleep_line += f" ({summary.sleep.segments} segment(s))"
+            if summary.sleep.avg_score is not None:
+                sleep_line += f", score {summary.sleep.avg_score}"
         else:
             sleep_line = "No wearable data"
-        focus = self.focus or {}
         focus_summary = ""
-        categories = focus.get("categories") or {}
-        if categories:
+        if summary.focus.categories:
             focus_summary = ", ".join(
-                f"{name}: {minutes:.1f}m" for name, minutes in sorted(categories.items(), key=lambda item: item[1], reverse=True)[:4]
+                f"{name}: {minutes:.1f}m"
+                for name, minutes in sorted(summary.focus.categories.items(), key=lambda item: item[1], reverse=True)[:4]
             )
-        elif focus.get("total_focus_minutes"):
-            focus_summary = f"{focus['total_focus_minutes']:.1f}m tracked"
+        elif summary.focus.total_focus_minutes:
+            focus_summary = f"{summary.focus.total_focus_minutes:.1f}m tracked"
         else:
             focus_summary = "No ActivityWatch data"
         session_summary = ", ".join(
             f"{session.get('label') or 'Session'} ({session.get('provider') or ''})"
-            for session in self.sessions[:3]
+            for session in summary.sessions[:3]
         ) or "No recorded sessions."
         transcript_summary = ", ".join(
             f"{record.get('title') or record.get('slug')} ({record.get('provider')})"
-            for record in self.transcripts[:3]
+            for record in summary.transcripts[:3]
         ) or "No Polylogue transcripts."
         return dedent(
             f"""
             ### {self.dt.isoformat()} ({self.weekday})
-            - Focus: {self.overview['active_hours']:.2f}h active / {self.overview['afk_hours']:.2f}h afk / {self.overview['window_hours']:.2f}h focused windows
-            - Commands: {self.command_total} total (Atuin logged {self.atuin_commands}) — {categories}
+            - Focus: {summary.overview.active_hours:.2f}h active / {summary.overview.afk_hours:.2f}h afk / {summary.overview.window_hours:.2f}h focused windows
+            - Commands: {summary.command_total} total (Atuin logged {summary.atuin_commands}) — {categories}
             - Git: {commits} commits, +{lines_added:,} / -{lines_deleted:,} lines, repos: {repo_text}
-            - Codex sessions: {self.codex_sessions}
+            - Codex sessions: {summary.codex_sessions}
             - Session ledger: {session_summary}
             - Polylogue transcripts: {transcript_summary}
             - Focus signals: {focus_summary}
@@ -210,104 +195,13 @@ def _percentage(value: float, total: float) -> str:
         return "0.0"
     return f"{(value / total) * 100:.1f}"
 
-
-def _segment_count(sleep: Dict[str, Any]) -> int:
-    value = sleep.get("segments")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, (list, tuple)):
-        return len(value)
-    return 0
-
-
-def _instrumentation_line(instrumentation: Dict[str, Any]) -> str:
-    session_count = int(instrumentation.get("terminal_sessions", 0) or 0)
-    if session_count <= 0:
-        return "absent"
-    capture_mode = str(instrumentation.get("terminal_capture_mode") or "unknown")
-    event_count = int(instrumentation.get("terminal_events", 0) or 0)
-    command_count = int(instrumentation.get("terminal_command_count", 0) or 0)
-    duration_hours = float(instrumentation.get("terminal_duration_hours", 0.0) or 0.0)
-    active_hours = float(instrumentation.get("terminal_active_hours", 0.0) or 0.0)
-    idle_hours = float(instrumentation.get("terminal_idle_hours", 0.0) or 0.0)
-    command_failures = int(instrumentation.get("terminal_command_failures", 0) or 0)
-    session_failures = int(instrumentation.get("terminal_session_failures", 0) or 0)
-    manifest_gaps = int(instrumentation.get("terminal_sessions_missing_manifest", 0) or 0)
-    event_gaps = int(instrumentation.get("terminal_sessions_missing_events", 0) or 0)
-    degraded_sessions = int(instrumentation.get("terminal_degraded_sessions", 0) or 0)
-    damaged_sessions = int(instrumentation.get("terminal_damaged_sessions", 0) or 0)
-    estimated_timing_sessions = int(instrumentation.get("terminal_estimated_timing_sessions", 0) or 0)
-    unknown_activity_sessions = int(instrumentation.get("terminal_unknown_activity_sessions", 0) or 0)
-    unknown_activity_hours = float(instrumentation.get("terminal_unknown_activity_hours", 0.0) or 0.0)
-    repo_map = instrumentation.get("terminal_repos") or {}
-    repo_text = ", ".join(f"{name} ({count})" for name, count in list(repo_map.items())[:3]) or "none"
-    parts = [
-        capture_mode,
-        f"{session_count} session(s)",
-        f"{event_count} event(s)",
-        f"{command_count} command(s)",
-        f"{active_hours:.2f}h active",
-        f"{idle_hours:.2f}h idle",
-        f"{duration_hours:.2f}h duration",
-        f"repos: {repo_text}",
-    ]
-    if command_failures or session_failures:
-        parts.append(f"failures: {command_failures} cmd / {session_failures} session")
-    if degraded_sessions or damaged_sessions:
-        parts.append(f"quality: {degraded_sessions} degraded / {damaged_sessions} damaged")
-    if manifest_gaps or event_gaps:
-        parts.append(f"gaps: {manifest_gaps} manifestless / {event_gaps} eventless")
-    if estimated_timing_sessions:
-        parts.append(f"timing estimates: {estimated_timing_sessions}")
-    if unknown_activity_sessions:
-        parts.append(f"activity unknown: {unknown_activity_sessions} session(s) / {unknown_activity_hours:.2f}h")
-    return ", ".join(parts)
-
-
 def _load_day_record(dt: date, calendar_dir: Path) -> DayRecord:
-    snapshot = lp_calendar.load_day(dt)
-    summary = summarize_day(snapshot)
-
-    overview = {
-        "active_hours": summary.overview.active_hours,
-        "afk_hours": summary.overview.afk_hours,
-        "window_hours": summary.overview.window_hours,
-    }
-    git_payload = {
-        "commits": summary.git.commits,
-        "lines_added": summary.git.lines_added,
-        "lines_deleted": summary.git.lines_deleted,
-        "repos": summary.git.repos,
-    }
-    health_payload: Dict[str, Any] = {}
-    if summary.sleep:
-        health_payload["sleep"] = {
-            "total_hours": summary.sleep.total_hours,
-            "segments": summary.sleep.segments,
-            "avg_score": summary.sleep.avg_score,
-        }
-    focus_payload = {
-        "categories": summary.focus.categories,
-        "total_focus_minutes": summary.focus.total_focus_minutes,
-    }
-    sessions = list(summary.sessions)
-    transcripts = list(summary.transcripts)
+    summary = load_day_summary(dt)
     view_path = calendar_dir / "views" / f"day-{dt.isoformat()}.md"
     return DayRecord(
         dt=dt,
         weekday=dt.strftime("%A"),
-        overview=overview,
-        command_total=summary.command_total,
-        command_categories=summary.command_categories,
-        codex_sessions=summary.codex_sessions,
-        atuin_commands=summary.atuin_commands,
-        git=git_payload,
-        instrumentation=dict(summary.instrumentation),
-        insights=[],
-        sessions=sessions,
-        transcripts=transcripts,
-        health=health_payload,
-        focus=focus_payload,
+        summary=summary,
         view_path=view_path if view_path.exists() else None,
     )
 
@@ -318,62 +212,15 @@ def _build_prompt(
     end: date,
     mode: str,
 ) -> str:
-    total_days = len(days)
-    total_focus = sum(day.overview["active_hours"] for day in days)
-    total_afk = sum(day.overview["afk_hours"] for day in days)
-    total_commands = sum(day.command_total for day in days)
-    total_commits = sum(day.git["commits"] for day in days)
-    total_codex = sum(day.codex_sessions for day in days)
-    total_instrumentation = sum(int(day.instrumentation.get("terminal_sessions", 0) or 0) for day in days)
-    total_terminal_events = sum(int(day.instrumentation.get("terminal_events", 0) or 0) for day in days)
-    total_terminal_commands = sum(int(day.instrumentation.get("terminal_command_count", 0) or 0) for day in days)
-    total_terminal_active = sum(float(day.instrumentation.get("terminal_active_hours", 0.0) or 0.0) for day in days)
-    total_terminal_failures = sum(
-        int(day.instrumentation.get("terminal_command_failures", 0) or 0)
-        + int(day.instrumentation.get("terminal_session_failures", 0) or 0)
-        for day in days
-    )
-    total_terminal_new_model = sum(int(day.instrumentation.get("terminal_new_model_sessions", 0) or 0) for day in days)
-    total_terminal_legacy = sum(int(day.instrumentation.get("terminal_legacy_sessions", 0) or 0) for day in days)
-    total_sessions = sum(len(day.sessions) for day in days)
-    total_focus_minutes = sum(float(day.focus.get("total_focus_minutes", 0.0)) for day in days)
-    sleep_hours_samples: List[float] = []
-    total_sleep_segments = 0
-    for day in days:
-        sleep = day.health.get("sleep") if day.health else None
-        if not sleep:
-            continue
-        hours = sleep.get("total_hours")
-        if isinstance(hours, (int, float)):
-            sleep_hours_samples.append(float(hours))
-        total_sleep_segments += _segment_count(sleep)
-    insight_counter = Counter()
-    for day in days:
-        insight_counter.update(day.insights)
-    top_insights = ", ".join(f"{text}×{count}" for text, count in insight_counter.most_common(6)) or "No notable highlights captured."
-    session_counter = Counter()
-    for day in days:
-        session_counter.update(
-            (session.get("label") or "Session", session.get("provider") or "")
-            for session in day.sessions
-        )
-    top_sessions = (
-        ", ".join(
-            f"{label}{' (' + provider + ')' if provider else ''}×{count}"
-            for (label, provider), count in session_counter.most_common(5)
-        )
-        if session_counter
-        else "No recorded sessions."
-    )
+    range_summary = summarize_range([day.summary for day in days])
 
     profile = MODE_PROFILES.get(mode, MODE_PROFILES[DEFAULT_MODE])
     section_list = "\n".join(f"- {section}" for section in profile["sections"])
 
     day_blocks = "\n\n".join(day.to_prompt_block() for day in days)
 
-    if sleep_hours_samples:
-        avg_sleep = sum(sleep_hours_samples) / len(sleep_hours_samples)
-        sleep_line = f"{avg_sleep:.2f}h avg ({total_sleep_segments} segment(s))"
+    if range_summary.average_sleep_hours is not None:
+        sleep_line = f"{range_summary.average_sleep_hours:.2f}h avg ({range_summary.total_sleep_segments} segment(s))"
     else:
         sleep_line = "No wearable data"
 
@@ -384,15 +231,15 @@ Tone guidance: {profile['tone']}
 
 Range overview:
 - Total days: {total_days}
-- Focused hours: {total_focus:.2f}h (AFK {total_afk:.2f}h)
-- Shell commands: {total_commands:,}
-- Git commits: {total_commits}
-- Codex sessions: {total_codex}
-- Sessions logged: {total_sessions} (Top: {top_sessions})
-- Terminal recording sessions: {total_instrumentation} ({total_terminal_active:.2f}h active, {total_terminal_events} events, {total_terminal_commands} commands, {total_terminal_failures} failures, new={total_terminal_new_model}, legacy={total_terminal_legacy})
-- ActivityWatch minutes tracked: {total_focus_minutes:.1f}
+- Focused hours: {range_summary.total_focus_hours:.2f}h (AFK {range_summary.total_afk_hours:.2f}h)
+- Shell commands: {range_summary.total_commands:,}
+- Git commits: {range_summary.total_commits}
+- Codex sessions: {range_summary.total_codex_sessions}
+- Sessions logged: {range_summary.total_session_records} (Top: {range_summary.top_sessions})
+- Terminal recording sessions: {range_summary.total_terminal_sessions} ({range_summary.total_terminal_active_hours:.2f}h active, {range_summary.total_terminal_events} events, {range_summary.total_terminal_commands} commands, {range_summary.total_terminal_failures} failures, new={range_summary.total_terminal_new_model_sessions}, legacy={range_summary.total_terminal_legacy_sessions})
+- ActivityWatch minutes tracked: {range_summary.total_focus_minutes:.1f}
 - Sleep logged: {sleep_line}
-- Top highlights: {top_insights}
+- Top highlights: {range_summary.top_insights}
 
 Use the structured data below. Cite concrete numbers, weave in session insights, and follow this extra guidance: {profile['extra_guidance']}
 

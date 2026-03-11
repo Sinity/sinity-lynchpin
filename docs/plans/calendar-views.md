@@ -4,18 +4,18 @@
 - Produce a **single canonical calendar surface** that captures “what happened” per day across ActivityWatch, Atuin, git, chats, wearable metrics, life events, and instrumentation.
 - Generate **Markdown dossiers per day** (and week, month, quarter, year) that assistants can diff, edit, or quote in narratives.
 - Render **clean static webpages** (day/week/month dashboards) with minimal dependencies, optimized for local reading (mobile + desktop) and progressive drill-downs.
-- Reuse existing data feeds (baseline rollups, life timeline JSON, focus metrics, instrumentation metadata) so no new manual inputs are required.
+- Reuse canonical local sources plus the remaining baseline git index, life timeline JSON, focus metrics, and instrumentation metadata so no new manual inputs are required.
 
 ## 2. Source Inventory
 
 | Domain | Source | Frequency | Notes |
 | --- | --- | --- | --- |
-| Focus windows | `artefacts/core/baseline/latest/activity_timeline.json`, ActivityWatch DB | per minute/day | Already AFK-adjusted; calendar dossiers reuse them directly |
-| Shell history | `~/.local/share/atuin/history.db` (ingested into baseline) | per command/day | Provides counts, topics, durations |
-| Git deltas | Repos listed in baseline (sinex, sinnix, polylogue, etc.) | per commit/day | Already aggregated in baseline JSON |
+| Focus windows | ActivityWatch DB | per minute/day | Calendar summaries derive focus/AFK metrics directly from canonical events |
+| Shell history | `~/.local/share/atuin/history.db` | per command/day | Provides counts, topics, durations directly |
+| Git deltas | `artefacts/core/baseline/latest/git_numstat.jsonl`, git repos | per commit/day | Baseline remains the canonical git index input |
 | Chat sessions | `docs/reference/sessions`, Polylogue Markdown exports, `artefacts/knowledge/sessions/summaries` | per conversation/day | Need per-day mapping via timestamps |
 | Life timeline | `artefacts/lifelog/life-timeline/monthly_life_latest.json` | per month/day subset | Contains high-sensitivity events (web, finance, health) |
-| Wearables | `/realm/data/exports/health/processed/sleep_merged.jsonl`, `sleep_summary.json` | per night/day | Expand to steps/hr/stress later |
+| Wearables | `/realm/data/exports/health/processed/sleep_merged.jsonl` | per night/day | Expand to steps/hr/stress later |
 | Instrumentation | `artefacts/ingest/instrumentation/*_metadata.jsonl` | per file/day | indicates recordings, audio capture, screen grabs |
 | Narratives/logs | `docs/analysis-log.md`, `docs/analysis/*` | per entry | Provide qualitative anchors |
 
@@ -69,8 +69,8 @@ Markdown front-matter (YAML) should include canonical metadata (range, run ID, u
 
 ### 4.1 Calendar Aggregator (`lynchpin.views.calendar_views`)
 Steps:
-1. **Load baseline artefacts** (`activity_timeline.json`, `baseline_summary.json`) for focus/git data.
-2. **Query Atuin, git, chat summaries** directly or via new DuckDB views (see pipeline-unification doc).
+1. **Load canonical local sources** for ActivityWatch, Atuin, chats, sleep, and instrumentation.
+2. **Read git deltas from the baseline git index** (`git_numstat.jsonl`) or future warehouse views.
 3. **Join life timeline & wearable datasets**: map events to days using local timezone.
 4. **Ingest instrumentation metadata** to tag days with recordings.
 5. **Write normalized per-day rows** to `artefacts/calendar/calendar.duckdb` (tables `days`, `weeks`, `months` etc.) plus JSON exports for static site.
@@ -84,7 +84,7 @@ Steps:
   iso_week: 2025-W43
   run_id: 2025-10-25T03-41-00Z
   sources:
-    baseline: artefacts/core/baseline/latest/activity_timeline.json
+    baseline_git_index: artefacts/core/baseline/latest/git_numstat.jsonl
     life_timeline: artefacts/lifelog/life-timeline/monthly_life_latest.json
     instrumentation: artefacts/ingest/instrumentation/terminal_sessions.jsonl
   ---
