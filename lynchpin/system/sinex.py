@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
-from ..core.config import get_config
 from ..sources.indices.repos import GitRepository
 
 

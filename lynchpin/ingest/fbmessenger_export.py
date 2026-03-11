@@ -40,6 +40,7 @@ class _LiteExportDb:
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS threads ("
             "uid TEXT PRIMARY KEY,"
+            "name TEXT,"
             "message_count INTEGER,"
             "last_message_timestamp INTEGER,"
             "data JSON"
@@ -49,12 +50,59 @@ class _LiteExportDb:
             "CREATE TABLE IF NOT EXISTS messages ("
             "uid TEXT PRIMARY KEY,"
             "thread_id TEXT,"
+            "author TEXT,"
+            "text TEXT,"
             "timestamp INTEGER,"
             "data JSON"
             ")"
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id)")
+        self._ensure_compat_columns()
         self._pending = 0
+
+    def _ensure_compat_columns(self) -> None:
+        self._ensure_column("threads", "name", "TEXT")
+        self._ensure_column("messages", "author", "TEXT")
+        self._ensure_column("messages", "text", "TEXT")
+        self._backfill_threads()
+        self._backfill_messages()
+        self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        existing = {
+            row[1]
+            for row in self._conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    def _backfill_threads(self) -> None:
+        rows = self._conn.execute(
+            "SELECT uid, data FROM threads WHERE name IS NULL"
+        ).fetchall()
+        for uid, payload in rows:
+            try:
+                data = json.loads(payload) if payload else {}
+            except json.JSONDecodeError:
+                data = {}
+            self._conn.execute(
+                "UPDATE threads SET name=? WHERE uid=?",
+                (data.get("name"), uid),
+            )
+
+    def _backfill_messages(self) -> None:
+        rows = self._conn.execute(
+            "SELECT uid, data FROM messages WHERE author IS NULL OR text IS NULL"
+        ).fetchall()
+        for uid, payload in rows:
+            try:
+                data = json.loads(payload) if payload else {}
+            except json.JSONDecodeError:
+                data = {}
+            self._conn.execute(
+                "UPDATE messages SET author=COALESCE(author, ?), text=COALESCE(text, ?) WHERE uid=?",
+                (data.get("author"), data.get("text"), uid),
+            )
 
     def _maybe_commit(self) -> None:
         self._pending += 1
@@ -72,10 +120,11 @@ class _LiteExportDb:
             dd["last_message_timestamp"] = int(dd["last_message_timestamp"])
         dd = {k: _jsonify(v) for k, v in dd.items()}
         self._conn.execute(
-            "INSERT OR REPLACE INTO threads (uid, message_count, last_message_timestamp, data) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO threads (uid, name, message_count, last_message_timestamp, data) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 str(thread.uid),
+                dd.get("name"),
                 int(thread.message_count),
                 int(thread.last_message_timestamp),
                 json.dumps(dd, ensure_ascii=False),
@@ -101,11 +150,13 @@ class _LiteExportDb:
         dd["thread_id"] = thread.uid
         dd = {k: _jsonify(v) for k, v in dd.items()}
         self._conn.execute(
-            "INSERT OR REPLACE INTO messages (uid, thread_id, timestamp, data) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO messages (uid, thread_id, author, text, timestamp, data) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 str(message.uid),
                 str(thread.uid),
+                dd.get("author"),
+                dd.get("text"),
                 int(message.timestamp),
                 json.dumps(dd, ensure_ascii=False),
             ),
@@ -145,6 +196,14 @@ class _LiteExportDb:
             pass
 
 
+def ensure_export_db_compatibility(db_path: Path) -> None:
+    if not db_path.exists():
+        return
+    db = _LiteExportDb(db_path)
+    db.db.commit()
+    db.db.close()
+
+
 def _cookies_from_chrome(cookie_db: Path) -> dict[str, str]:
     try:
         import browser_cookie3  # type: ignore
@@ -182,7 +241,6 @@ def _cookies_from_chrome_v10_secret(cookie_db: Path, domain: str) -> dict[str, s
     import sqlite3
 
     try:
-        import browser_cookie3  # type: ignore
         from browser_cookie3 import CHROMIUM_DEFAULT_PASSWORD  # type: ignore
         from browser_cookie3 import USE_DBUS_LINUX  # type: ignore
         from browser_cookie3 import BrowserCookieError  # type: ignore

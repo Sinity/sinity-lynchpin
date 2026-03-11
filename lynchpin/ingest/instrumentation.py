@@ -12,10 +12,6 @@ from typing import Any
 import typer
 
 from ..sources.captures.instrumentation import (
-    AudioMetadata,
-    ScreenMetadata,
-    TerminalAuditEntry,
-    TerminalAuditSummary,
     TerminalSessionEvent,
     TerminalSessionMetadata,
     _summarize_session_events,

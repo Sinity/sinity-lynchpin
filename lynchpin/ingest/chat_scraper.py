@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 """
 Placeholder scaffold for chat webapp scraping integration.
 Actual scraping code will need to use the logged-in Chrome profile
 and browser automation (Playwright/Selenium).
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path

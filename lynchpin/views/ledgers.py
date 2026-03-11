@@ -12,117 +12,18 @@ import csv
 import io
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Iterable, List
 
 import typer
 
 from ..core.io import write_text_if_changed
+from ..sources.indices import sessions
 
 app = typer.Typer(help="Ledger builders (session + artefact)", pretty_exceptions_show_locals=False)
 
 
-# ---------------------------------------------------------------------------
-# Session ledger
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SessionRecord:
-    date: str
-    provider: str
-    label: str
-    doc_path: Path
-    source_files: List[str]
-    highlights: List[str]
-    next_actions: List[str]
-    last_modified: datetime
-
-    def to_row(self) -> Dict[str, str]:
-        return {
-            "date": self.date,
-            "provider": self.provider,
-            "label": self.label,
-            "doc_path": str(self.doc_path),
-            "source_files": " | ".join(self.source_files),
-            "highlights": " || ".join(self.highlights),
-            "next_actions": " || ".join(self.next_actions),
-            "source_count": str(len(self.source_files)),
-            "highlight_count": str(len(self.highlights)),
-            "next_action_count": str(len(self.next_actions)),
-            "last_modified": self.last_modified.isoformat(),
-        }
-
-
-def parse_markdown_sections(text: str) -> Dict[str, List[str]]:
-    sections: Dict[str, List[str]] = {}
-    current: Optional[str] = None
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if line.startswith("## "):
-            current = line[3:].strip()
-            sections[current] = []
-            continue
-        if current is not None:
-            sections[current].append(line)
-    return sections
-
-
-def extract_bullets(lines: List[str]) -> List[str]:
-    bullets: List[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(("#", "```")):
-            break
-        if stripped.startswith(("- ", "* ")):
-            bullets.append(_clean_inline(stripped[2:].strip()))
-        elif stripped[:2].isdigit() and stripped[2:].lstrip().startswith("."):
-            content = stripped.split(".", 1)[-1].strip()
-            bullets.append(_clean_inline(content))
-        elif stripped:
-            if bullets:
-                bullets[-1] = f"{bullets[-1]} {stripped}"
-            else:
-                bullets.append(_clean_inline(stripped))
-    return [b for b in (bullet.strip() for bullet in bullets) if b]
-
-
-def _clean_inline(value: str) -> str:
-    cleaned = value.replace("`", "").replace("*", "")
-    return " ".join(cleaned.split())
-
-
-def parse_session_file(path: Path) -> SessionRecord:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    title = next((ln.lstrip("# ").strip() for ln in lines if ln.startswith("#")), path.stem)
-
-    parts = path.stem.split("-")
-    date_str = "-".join(parts[:3]) if len(parts) >= 3 else ""
-    provider = parts[-1] if len(parts) >= 1 else "unknown"
-
-    sections = parse_markdown_sections(text)
-    source_files = extract_bullets(sections.get("Source Files", []))
-    highlights = extract_bullets(sections.get("Highlights", []))
-    next_actions = extract_bullets(sections.get("Next Actions", []))
-
-    stat = path.stat()
-    last_modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-
-    return SessionRecord(
-        date=date_str,
-        provider=provider,
-        label=title,
-        doc_path=path,
-        source_files=source_files,
-        highlights=highlights,
-        next_actions=next_actions,
-        last_modified=last_modified,
-    )
-
-
-def _write_session_csv(records: List[SessionRecord], output: Path) -> bool:
+def _write_session_csv(records: List[sessions.SessionDocument], output: Path) -> bool:
     fieldnames = [
         "date",
         "provider",
@@ -140,7 +41,21 @@ def _write_session_csv(records: List[SessionRecord], output: Path) -> bool:
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     for record in records:
-        writer.writerow(record.to_row())
+        writer.writerow(
+            {
+                "date": record.date.isoformat(),
+                "provider": record.provider,
+                "label": record.label,
+                "doc_path": str(record.doc_path),
+                "source_files": " | ".join(record.source_files),
+                "highlights": " || ".join(record.highlights),
+                "next_actions": " || ".join(record.next_actions),
+                "source_count": str(len(record.source_files)),
+                "highlight_count": str(len(record.highlights)),
+                "next_action_count": str(len(record.next_actions)),
+                "last_modified": record.last_modified.isoformat(),
+            }
+        )
     return write_text_if_changed(output, buffer.getvalue())
 
 
@@ -255,11 +170,7 @@ def session(
     if not sessions_dir.exists():
         raise typer.BadParameter(f"Sessions directory {sessions_dir} does not exist")
 
-    records: List[SessionRecord] = []
-    for path in sorted(sessions_dir.glob("*.md")):
-        if path.name.startswith("."):
-            continue
-        records.append(parse_session_file(path))
+    records = list(sessions.iter_session_documents_from(sessions_dir))
 
     wrote = _write_session_csv(records, output)
     if wrote:

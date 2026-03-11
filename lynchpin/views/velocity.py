@@ -5,22 +5,38 @@ Generates a rich, interactive HTML dashboard using Apache ECharts.
 
 Each project has bespoke categorization to show meaningful breakdowns.
 """
+
 import sys
 import json
 import datetime as dt
 import subprocess
-import re
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 
 import typer
 
+from ..core.projects import ProjectProfile, project_profiles
 from ..core.io import write_text_if_changed
+
 DEFAULT_OUTPUT = Path("artefacts/meta/velocity/velocity.html")
 AGGREGATE_PROJECT = "all-projects"
 
-SKIP_EXTENSIONS = {"lock", "svg", "map", "min.js", "png", "jpg", "pdf", "gif", "ico", "woff", "woff2", "ttf", "eot"}
+SKIP_EXTENSIONS = {
+    "lock",
+    "svg",
+    "map",
+    "min.js",
+    "png",
+    "jpg",
+    "pdf",
+    "gif",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "eot",
+}
 SKIP_PATHS = {"reports/", "pipelines/artefacts/", "artefacts/", "data/"}
 
 AGGREGATE_PALETTE = [
@@ -59,212 +75,30 @@ def module_from_path(filename: str) -> str:
         return "(root)"
     if len(parts) == 1:
         return "(root)"
-    if parts[0] in {"src", "crates", "modules", "module", "pipelines", "lynchpin", "apps", "app", "bin", "lib"}:
+    if parts[0] in {
+        "src",
+        "crates",
+        "modules",
+        "module",
+        "analyzer",
+        "history_cleanup",
+        "pipelines",
+        "lynchpin",
+        "tests",
+        "views",
+        "sources",
+        "system",
+        "apps",
+        "app",
+        "bin",
+        "lib",
+    }:
         if len(parts) > 1:
             return f"{parts[0]}/{parts[1]}"
     return parts[0]
 
 
-# === Per-project classifiers ===
-
-def classify_sinex(filename: str) -> Optional[str]:
-    """sinex: Rust project with src/tests/docs/config/generated split."""
-    if _skip_common(filename):
-        return None
-
-    if filename.startswith(".sqlx/"):
-        return "generated"
-
-    basename = Path(filename).name.lower()
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-    # Tests
-    if "/tests/" in filename or "/test/" in filename:
-        return "tests"
-    if filename.startswith(("tests/", "test/")):
-        return "tests"
-    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
-        return "tests"
-
-    # Docs
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-
-    # Config
-    if ext in {"nix", "toml", "yaml", "yml"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-
-    return "src"
-
-
-def classify_sinnix(filename: str) -> Optional[str]:
-    """sinnix: NixOS config with module/host/flake/docs split."""
-    if _skip_common(filename):
-        return None
-
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-    # Docs
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-
-    # Host-specific config
-    if filename.startswith("host/") or "/host/" in filename:
-        return "host"
-
-    # Flake infrastructure
-    if filename.startswith("flake/") or filename in {"flake.nix", "flake.lock"}:
-        return "flake"
-
-    # Modules (domain config)
-    if filename.startswith("module/") or "/module/" in filename:
-        return "module"
-
-    return "other"
-
-
-def classify_sinity_analysis(filename: str) -> Optional[str]:
-    """sinity-lynchpin: Python analysis repo with pipelines/docs/config split."""
-    if _skip_common(filename):
-        return None
-
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    basename = Path(filename).name.lower()
-
-    # Docs
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-
-    # Pipelines (the main code)
-    if filename.startswith("pipelines/"):
-        return "pipelines"
-
-    # Config
-    if ext in {"nix", "toml", "yaml", "yml", "json"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-
-    return "other"
-
-
-def classify_knowledgebase(filename: str) -> Optional[str]:
-    """knowledgebase: Mostly docs with some config."""
-    if _skip_common(filename):
-        return None
-
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    basename = Path(filename).name.lower()
-
-    # Config
-    if ext in {"nix", "toml", "yaml", "yml", "json"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-
-    # Everything else is docs/content
-    return "docs"
-
-
-def classify_rust_simple(filename: str) -> Optional[str]:
-    """Simple Rust project: src/tests/docs/config."""
-    if _skip_common(filename):
-        return None
-
-    basename = Path(filename).name.lower()
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-    # Tests
-    if "/tests/" in filename or "/test/" in filename:
-        return "tests"
-    if filename.startswith(("tests/", "test/")):
-        return "tests"
-    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
-        return "tests"
-    if re.match(r"(test_.*|.*_test|.*_tests)\.", basename):
-        return "tests"
-
-    # Docs
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-
-    # Config
-    if ext in {"nix", "toml", "yaml", "yml"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-
-    return "src"
-
-
-# === Project registry ===
-
-PROJECT_SPECS: Dict[str, dict] = {
-    "sinex": {
-        "path": "/realm/project/sinex",
-        "classify": classify_sinex,
-        "categories": ["src", "tests", "docs", "config", "generated"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666", "generated": "#73c0de"},
-    },
-    "polylogue": {
-        "path": "/realm/project/polylogue",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "intercept-bounce": {
-        "path": "/realm/project/intercept-bounce",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "scribe-tap": {
-        "path": "/realm/project/scribe-tap",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "sinevec": {
-        "path": "/realm/project/sinevec",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "pwrank": {
-        "path": "/realm/project/pwrank",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "knowledge-extract": {
-        "path": "/realm/project/knowledge-extract",
-        "classify": classify_rust_simple,
-        "categories": ["src", "tests", "docs", "config"],
-        "colors": {"src": "#5470c6", "tests": "#91cc75", "docs": "#fac858", "config": "#ee6666"},
-    },
-    "sinnix": {
-        "path": "/realm/project/sinnix",
-        "classify": classify_sinnix,
-        "categories": ["module", "host", "flake", "docs", "other"],
-        "colors": {"module": "#5470c6", "host": "#91cc75", "flake": "#fac858", "docs": "#ee6666", "other": "#73c0de"},
-    },
-    "sinity-lynchpin": {
-        "path": "/realm/project/sinity-lynchpin",
-        "classify": classify_sinity_analysis,
-        "categories": ["pipelines", "docs", "config", "other"],
-        "colors": {"pipelines": "#5470c6", "docs": "#fac858", "config": "#ee6666", "other": "#73c0de"},
-    },
-}
+PROJECT_SPECS: Dict[str, ProjectProfile] = project_profiles()
 
 
 @dataclass
@@ -299,6 +133,21 @@ class CommitEvent:
 
 
 @dataclass
+class AuthorStats:
+    commits: int = 0
+    added: int = 0
+    removed: int = 0
+
+    @property
+    def churn(self):
+        return self.added + self.removed
+
+    @property
+    def net(self):
+        return self.added - self.removed
+
+
+@dataclass
 class DailyStats:
     date: str
     by_category: Dict[str, CategoryStats] = field(default_factory=dict)
@@ -324,6 +173,7 @@ class ProjectStats:
     file_stats: Dict[str, CategoryStats] = field(default_factory=dict)
     module_stats: Dict[str, CategoryStats] = field(default_factory=dict)
     module_authors: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    author_stats: Dict[str, AuthorStats] = field(default_factory=dict)
     cochange: Dict[tuple, int] = field(default_factory=dict)
     tags: List[dict] = field(default_factory=list)
 
@@ -333,15 +183,23 @@ def run_git_log(path: Path) -> List[str]:
     fmt = f"%h{sep}%ad{sep}%an{sep}%s{sep}%P"
 
     cmd = [
-        "git", "log",
+        "git",
+        "log",
         "--all",
         "--date=iso-strict-local",
         f"--pretty=format:COMMIT:{fmt}",
-        "--numstat"
+        "--numstat",
     ]
     try:
-        subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=path, check=True, capture_output=True)
-        result = subprocess.run(cmd, cwd=path, capture_output=True, text=True, check=True, errors="replace")
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+        )
+        result = subprocess.run(
+            cmd, cwd=path, capture_output=True, text=True, check=True, errors="replace"
+        )
         return result.stdout.splitlines()
     except subprocess.CalledProcessError:
         print(f"Skipping {path} (not a git repo or error)", file=sys.stderr)
@@ -357,7 +215,9 @@ def run_git_tags(path: Path) -> List[dict]:
         "refs/tags",
     ]
     try:
-        result = subprocess.run(cmd, cwd=path, capture_output=True, text=True, check=True, errors="replace")
+        result = subprocess.run(
+            cmd, cwd=path, capture_output=True, text=True, check=True, errors="replace"
+        )
     except subprocess.CalledProcessError:
         return []
 
@@ -372,7 +232,10 @@ def run_git_tags(path: Path) -> List[dict]:
         tags.append({"name": name.strip(), "date": date})
     return tags
 
-def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], Optional[str]]) -> ProjectStats:
+
+def parse_log(
+    lines: List[str], project_name: str, classify_fn: Callable[[str], Optional[str]]
+) -> ProjectStats:
     stats = ProjectStats(name=project_name)
 
     current_commit: Optional[CommitEvent] = None
@@ -382,10 +245,17 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
     current_files_count = 0
 
     def flush_commit():
-        nonlocal current_commit, current_files_buffer, current_file_scores, current_modules, current_files_count
+        nonlocal \
+            current_commit, \
+            current_files_buffer, \
+            current_file_scores, \
+            current_modules, \
+            current_files_count
         if current_commit:
             if current_file_scores:
-                sorted_files = sorted(current_file_scores.items(), key=lambda item: item[1], reverse=True)
+                sorted_files = sorted(
+                    current_file_scores.items(), key=lambda item: item[1], reverse=True
+                )
                 current_commit.top_files = [name for name, _ in sorted_files[:5]]
             current_commit.files_count = current_files_count
 
@@ -403,6 +273,12 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
                 day.by_category[cat].removed += cat_stats.removed
 
             day.commits.append(current_commit)
+            author_stats = stats.author_stats.setdefault(
+                current_commit.author, AuthorStats()
+            )
+            author_stats.commits += 1
+            author_stats.added += current_commit.added
+            author_stats.removed += current_commit.removed
 
             if current_modules:
                 for module in current_modules:
@@ -430,10 +306,16 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
 
         if line.startswith("COMMIT:"):
             flush_commit()
-            content = line[len("COMMIT:"):]
+            content = line[len("COMMIT:") :]
             parts = content.split("|||")
             if len(parts) >= 5:
-                h, d_raw, auth, msg, parents_raw = parts[0], parts[1], parts[2], parts[3], parts[4]
+                h, d_raw, auth, msg, parents_raw = (
+                    parts[0],
+                    parts[1],
+                    parts[2],
+                    parts[3],
+                    parts[4],
+                )
                 date_str = d_raw.split("T")[0]
                 parents_count = len(parents_raw.split()) if parents_raw.strip() else 0
                 current_commit = CommitEvent(
@@ -447,7 +329,9 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
             elif len(parts) >= 4:
                 h, d_raw, auth, msg = parts[0], parts[1], parts[2], parts[3]
                 date_str = d_raw.split("T")[0]
-                current_commit = CommitEvent(hash=h, date=date_str, author=auth, message=msg, timestamp=d_raw)
+                current_commit = CommitEvent(
+                    hash=h, date=date_str, author=auth, message=msg, timestamp=d_raw
+                )
             continue
 
         parts = line.split(maxsplit=2)
@@ -477,7 +361,9 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
 
             current_files_buffer.append(filename)
             current_files_count += 1
-            current_file_scores[filename] = current_file_scores.get(filename, 0) + add_val + rem_val
+            current_file_scores[filename] = (
+                current_file_scores.get(filename, 0) + add_val + rem_val
+            )
 
             if filename not in stats.file_stats:
                 stats.file_stats[filename] = CategoryStats()
@@ -495,35 +381,36 @@ def parse_log(lines: List[str], project_name: str, classify_fn: Callable[[str], 
     return stats
 
 
-def analyze_projects(project_specs: Dict[str, dict]) -> Dict[str, ProjectStats]:
+def analyze_projects(project_specs: Dict[str, ProjectProfile]) -> Dict[str, ProjectStats]:
     all_stats = {}
     for name, spec in project_specs.items():
-        path = Path(spec["path"])
+        path = spec.path
         if not path.exists():
             print(f"Path not found: {path}, skipping...", file=sys.stderr)
             continue
 
         print(f"Analyzing {name}...")
         lines = run_git_log(path)
-        classify_fn = spec["classify"]
+        classify_fn = spec.classify
         stats = parse_log(lines, name, classify_fn)
         stats.tags = run_git_tags(path)
         all_stats[name] = stats
     return all_stats
 
 
-def _aggregate_spec(project_names: List[str]) -> dict:
+def _aggregate_spec(project_names: List[str]) -> ProjectProfile:
     categories = sorted(project_names)
     colors = {
         name: AGGREGATE_PALETTE[i % len(AGGREGATE_PALETTE)]
         for i, name in enumerate(categories)
     }
-    return {
-        "path": "(aggregate)",
-        "classify": None,
-        "categories": categories,
-        "colors": colors,
-    }
+    return ProjectProfile(
+        name=AGGREGATE_PROJECT,
+        path=Path("(aggregate)"),
+        classify=lambda _path: None,
+        categories=tuple(categories),
+        colors=colors,
+    )
 
 
 def _collapse_commit(event: CommitEvent, project: str) -> CommitEvent:
@@ -552,10 +439,41 @@ def _aggregate_stats(all_stats: Dict[str, ProjectStats]) -> ProjectStats:
             cat_stats.removed += daily.removed
             for event in daily.commits:
                 agg_day.commits.append(_collapse_commit(event, project))
+        for filename, file_stats in stats.file_stats.items():
+            prefixed_file = f"{project}:{filename}"
+            aggregate.file_stats[prefixed_file] = CategoryStats(
+                added=file_stats.added,
+                removed=file_stats.removed,
+            )
+        for module, module_stats in stats.module_stats.items():
+            prefixed_module = f"{project}:{module}"
+            aggregate.module_stats[prefixed_module] = CategoryStats(
+                added=module_stats.added,
+                removed=module_stats.removed,
+            )
+        for module, authors in stats.module_authors.items():
+            prefixed_module = f"{project}:{module}"
+            aggregate.module_authors[prefixed_module] = dict(authors)
+        for author, author_stats in stats.author_stats.items():
+            aggregate_author = aggregate.author_stats.setdefault(author, AuthorStats())
+            aggregate_author.commits += author_stats.commits
+            aggregate_author.added += author_stats.added
+            aggregate_author.removed += author_stats.removed
+        for (left, right), weight in stats.cochange.items():
+            pair = (f"{project}:{left}", f"{project}:{right}")
+            aggregate.cochange[pair] = aggregate.cochange.get(pair, 0) + weight
+        for tag in stats.tags:
+            aggregate.tags.append(
+                {"name": f"{project}:{tag['name']}", "date": tag["date"]}
+            )
     return aggregate
 
 
-def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, dict], output_path: Path):
+def generate_html(
+    all_stats: Dict[str, ProjectStats],
+    project_specs: Dict[str, ProjectProfile],
+    output_path: Path,
+):
     # Collect all dates
     all_dates = set()
     for p in all_stats.values():
@@ -571,33 +489,33 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
 
     for name, stats in all_stats.items():
         spec = project_specs[name]
-        categories = spec["categories"]
-        colors = spec["colors"]
+        categories = list(spec.categories)
+        colors = spec.colors
 
         project_data = {
             "categories": {},
             "categoryList": categories,
             "colors": colors,
             "events": {},
+            "activity": {"commits": [], "churn": [], "net": []},
             "files": [],
             "modules": [],
             "owners": [],
+            "authors": [],
             "cochange": {"nodes": [], "edges": []},
-            "tags": []
+            "tags": [],
         }
 
         # Initialize cumulative counters per category
         cumulative = {cat: 0 for cat in categories}
 
         for cat in categories:
-            project_data["categories"][cat] = {
-                "growth": [],
-                "churn": [],
-                "net": []
-            }
+            project_data["categories"][cat] = {"growth": [], "churn": [], "net": []}
 
         for d in sorted_dates:
             day_stats = stats.daily.get(d)
+            day_churn = 0
+            day_net = 0
 
             for cat in categories:
                 if day_stats and cat in day_stats.by_category:
@@ -605,31 +523,45 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
                     cumulative[cat] += cat_data.net
                     if cumulative[cat] < 0:
                         cumulative[cat] = 0
-                    project_data["categories"][cat]["churn"].append(cat_data.added + cat_data.removed)
+                    cat_churn = cat_data.added + cat_data.removed
+                    project_data["categories"][cat]["churn"].append(cat_churn)
                     project_data["categories"][cat]["net"].append(cat_data.net)
+                    day_churn += cat_churn
+                    day_net += cat_data.net
                 else:
                     project_data["categories"][cat]["churn"].append(0)
                     project_data["categories"][cat]["net"].append(0)
 
                 project_data["categories"][cat]["growth"].append(cumulative[cat])
 
+            project_data["activity"]["commits"].append(
+                len(day_stats.commits) if day_stats and day_stats.commits else 0
+            )
+            project_data["activity"]["churn"].append(day_churn)
+            project_data["activity"]["net"].append(day_net)
+
             # Events for inspector
             if day_stats and day_stats.commits:
                 ev_list = []
                 for c in day_stats.commits:
-                    cat_breakdown = {k: {"a": v.added, "r": v.removed} for k, v in c.by_category.items()}
-                    ev_list.append({
-                        "h": c.hash,
-                        "a": c.author,
-                        "m": c.message,
-                        "+": c.added,
-                        "-": c.removed,
-                        "t": c.timestamp,
-                        "p": c.parents,
-                        "cats": cat_breakdown,
-                        "f": c.top_files,
-                        "fc": c.files_count
-                    })
+                    cat_breakdown = {
+                        k: {"a": v.added, "r": v.removed}
+                        for k, v in c.by_category.items()
+                    }
+                    ev_list.append(
+                        {
+                            "h": c.hash,
+                            "a": c.author,
+                            "m": c.message,
+                            "+": c.added,
+                            "-": c.removed,
+                            "t": c.timestamp,
+                            "p": c.parents,
+                            "cats": cat_breakdown,
+                            "f": c.top_files,
+                            "fc": c.files_count,
+                        }
+                    )
                 ev_list.sort(key=lambda x: x["+"] + x["-"], reverse=True)
                 project_data["events"][d] = ev_list
 
@@ -639,13 +571,15 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             net = fstats.added - fstats.removed
             loc = max(0, net)
             volatility = churn / max(1, loc)
-            file_rows.append({
-                "name": filename,
-                "churn": churn,
-                "net": net,
-                "loc": loc,
-                "volatility": round(volatility, 3),
-            })
+            file_rows.append(
+                {
+                    "name": filename,
+                    "churn": churn,
+                    "net": net,
+                    "loc": loc,
+                    "volatility": round(volatility, 3),
+                }
+            )
         file_rows.sort(key=lambda row: row["churn"], reverse=True)
         project_data["files"] = file_rows[:200]
 
@@ -655,13 +589,15 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             net = mstats.added - mstats.removed
             loc = max(0, net)
             volatility = churn / max(1, loc)
-            module_rows.append({
-                "name": module,
-                "churn": churn,
-                "net": net,
-                "loc": loc,
-                "volatility": round(volatility, 3),
-            })
+            module_rows.append(
+                {
+                    "name": module,
+                    "churn": churn,
+                    "net": net,
+                    "loc": loc,
+                    "volatility": round(volatility, 3),
+                }
+            )
         module_rows.sort(key=lambda row: row["churn"], reverse=True)
         project_data["modules"] = module_rows[:200]
 
@@ -675,35 +611,67 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             if module in stats.module_stats:
                 mstats = stats.module_stats[module]
                 churn = mstats.added + mstats.removed
-            owners.append({
-                "module": module,
-                "author": top_author[0],
-                "share": round(top_author[1] / total, 3),
-                "commits": total,
-                "churn": churn,
-            })
+            owners.append(
+                {
+                    "module": module,
+                    "author": top_author[0],
+                    "share": round(top_author[1] / total, 3),
+                    "commits": total,
+                    "churn": churn,
+                }
+            )
         owners.sort(key=lambda row: (row["share"], row["churn"]), reverse=True)
         project_data["owners"] = owners[:200]
+
+        author_rows = []
+        author_totals: Dict[str, dict] = {}
+        for daily in stats.daily.values():
+            for event in daily.commits:
+                row = author_totals.setdefault(
+                    event.author,
+                    {
+                        "name": event.author,
+                        "commits": 0,
+                        "churn": 0,
+                        "net": 0,
+                        "mergeCommits": 0,
+                        "lastSeen": event.timestamp or daily.date,
+                    },
+                )
+                row["commits"] += 1
+                row["churn"] += event.added + event.removed
+                row["net"] += event.added - event.removed
+                row["mergeCommits"] += 1 if event.parents > 1 else 0
+                if event.timestamp and event.timestamp > row["lastSeen"]:
+                    row["lastSeen"] = event.timestamp
+        for row in author_totals.values():
+            author_rows.append(row)
+        author_rows.sort(key=lambda row: (row["churn"], row["commits"]), reverse=True)
+        project_data["authors"] = author_rows[:200]
 
         top_modules = [row["name"] for row in module_rows[:20]]
         module_weights = {row["name"]: row["churn"] for row in module_rows}
         nodes = []
         for module_name in top_modules:
             weight = module_weights.get(module_name, 0)
-            nodes.append({
-                "name": module_name,
-                "value": weight,
-                "symbolSize": max(8, min(40, 8 + (weight ** 0.5))),
-            })
+            nodes.append(
+                {
+                    "name": module_name,
+                    "value": weight,
+                    "symbolSize": max(8, min(40, 8 + (weight**0.5))),
+                }
+            )
         edges = []
         for (left, right), weight in stats.cochange.items():
             if left in top_modules and right in top_modules:
-                edges.append({
-                    "source": left,
-                    "target": right,
-                    "value": weight,
-                    "lineStyle": {"width": max(1, min(6, weight / 2))}
-                })
+                edges.append(
+                    {
+                        "source": left,
+                        "target": right,
+                        "value": weight,
+                        "lineStyle": {"width": max(1, min(6, weight / 2))},
+                    }
+                )
         edges.sort(key=lambda row: row["value"], reverse=True)
         project_data["cochange"] = {"nodes": nodes, "edges": edges[:60]}
         project_data["tags"] = stats.tags
@@ -714,8 +682,14 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
     project_summaries = {}
     for name, stats in all_stats.items():
         spec = project_specs[name]
-        categories = spec["categories"]
-        total_loc = sum(js_projects[name]["categories"][cat]["growth"][-1] for cat in categories) if sorted_dates else 0
+        categories = list(spec.categories)
+        total_loc = (
+            sum(
+                js_projects[name]["categories"][cat]["growth"][-1] for cat in categories
+            )
+            if sorted_dates
+            else 0
+        )
         total_commits = sum(len(day.commits) for day in stats.daily.values())
         active_days = len([d for d in stats.daily.values() if d.commits])
 
@@ -740,3692 +714,1514 @@ def generate_html(all_stats: Dict[str, ProjectStats], project_specs: Dict[str, d
             "recentChurn": recent_churn,
             "firstDate": min(stats.daily.keys()) if stats.daily else None,
             "lastDate": max(stats.daily.keys()) if stats.daily else None,
+            "authorCount": len(author_totals),
+            "tagCount": len(stats.tags),
         }
 
-    html = f"""
-<!DOCTYPE html>
+    dashboard_payload = {
+        "dates": sorted_dates,
+        "projectData": js_projects,
+        "projectSummaries": project_summaries,
+        "aggregateProject": AGGREGATE_PROJECT,
+        "generatedAt": dt.datetime.now().replace(microsecond=0).isoformat(),
+    }
+
+    html_template = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Velocity Observatory</title>
+    <title>Velocity Atlas</title>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.4.0/dist/mermaid.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
-        *, *::before, *::after {{ box-sizing: border-box; }}
+        :root {
+            --paper: #f6efe3;
+            --paper-2: #fcf8f1;
+            --surface: rgba(255, 252, 247, 0.84);
+            --surface-strong: rgba(255, 255, 255, 0.92);
+            --ink: #182230;
+            --ink-soft: #4d5a6c;
+            --line: rgba(24, 34, 48, 0.12);
+            --line-strong: rgba(24, 34, 48, 0.18);
+            --accent: #c5523d;
+            --accent-2: #1f7a8c;
+            --accent-3: #d19a2d;
+            --good: #24845d;
+            --bad: #b93d2f;
+            --shadow: 0 24px 60px rgba(72, 48, 14, 0.12);
+            --radius-lg: 28px;
+            --radius-md: 18px;
+            --radius-sm: 12px;
+            --font-ui: "Space Grotesk", sans-serif;
+            --font-mono: "IBM Plex Mono", monospace;
+        }
 
-        :root {{
-            --void: #08090c;
-            --abyss: #0d0f14;
-            --deep: #12151c;
-            --surface: #1a1e28;
-            --elevated: #232836;
-            --border: #2d3344;
-            --border-subtle: #252a38;
-            --text: #e4e8f1;
-            --text-secondary: #9ba3b8;
-            --text-muted: #6b7280;
-            --phosphor: #4ade80;
-            --phosphor-dim: #22c55e;
-            --amber: #fbbf24;
-            --amber-dim: #d97706;
-            --rose: #fb7185;
-            --cyan: #22d3ee;
-            --violet: #a78bfa;
-            --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
-            --font-display: 'Outfit', system-ui, sans-serif;
-            --ui-scale: 2;
-        }}
+        * {
+            box-sizing: border-box;
+        }
 
-        @keyframes fadeIn {{
-            from {{ opacity: 0; transform: translateY(8px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-
-        @keyframes pulse {{
-            0%, 100% {{ opacity: 1; }}
-            50% {{ opacity: 0.5; }}
-        }}
-
-        @keyframes slideIn {{
-            from {{ opacity: 0; transform: translateX(-12px); }}
-            to {{ opacity: 1; transform: translateX(0); }}
-        }}
-
-        @keyframes glow {{
-            0%, 100% {{ box-shadow: 0 0 20px rgba(74, 222, 128, 0.1); }}
-            50% {{ box-shadow: 0 0 30px rgba(74, 222, 128, 0.2); }}
-        }}
-
-        html, body {{
+        html, body {
             margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: auto;
-        }}
+            min-height: 100%;
+            background:
+                radial-gradient(circle at top left, rgba(197, 82, 61, 0.14), transparent 28rem),
+                radial-gradient(circle at top right, rgba(31, 122, 140, 0.12), transparent 32rem),
+                linear-gradient(180deg, #f8f2e7 0%, #f4ecde 52%, #efe6d7 100%);
+            color: var(--ink);
+            font-family: var(--font-ui);
+        }
 
-        body {{
-            font-family: var(--font-display);
-            background: var(--void);
-            color: var(--text);
+        body {
+            min-height: 100vh;
+            padding: 32px 20px 56px;
+        }
+
+        .shell {
+            max-width: 1540px;
+            margin: 0 auto;
             display: flex;
             flex-direction: column;
-            font-size: calc(15px * var(--ui-scale));
-            line-height: 1.4;
-            text-rendering: geometricPrecision;
-            -webkit-font-smoothing: antialiased;
-        }}
+            gap: 22px;
+        }
 
-        body::before {{
-            content: '';
-            position: fixed;
-            inset: 0;
-            background: radial-gradient(circle at top right, rgba(34, 211, 238, 0.05), transparent 60%),
-                        radial-gradient(circle at 10% 20%, rgba(74, 222, 128, 0.04), transparent 55%);
-            pointer-events: none;
-            z-index: 0;
-        }}
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+            gap: 18px;
+            padding: 28px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            background: linear-gradient(145deg, rgba(255,255,255,0.74), rgba(255,248,238,0.88));
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(18px);
+        }
 
-        /* Header */
-        .header {{
-            background: linear-gradient(180deg, var(--deep) 0%, var(--abyss) 100%);
-            border-bottom: 1px solid var(--border-subtle);
-            padding: 0 calc(32px * var(--ui-scale));
-            height: calc(72px * var(--ui-scale));
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-shrink: 0;
-            position: relative;
-        }}
-
-        .header::after {{
-            content: '';
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, var(--phosphor-dim), transparent);
-            opacity: 0.3;
-        }}
-
-        .logo {{
-            display: flex;
-            align-items: center;
-            gap: calc(12px * var(--ui-scale));
-        }}
-
-        .logo-icon {{
-            width: calc(40px * var(--ui-scale));
-            height: calc(40px * var(--ui-scale));
-            background: linear-gradient(135deg, var(--phosphor) 0%, var(--cyan) 100%);
-            border-radius: calc(10px * var(--ui-scale));
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: var(--font-mono);
-            font-weight: 600;
-            font-size: calc(18px * var(--ui-scale));
-            color: var(--void);
-            animation: glow 3s ease-in-out infinite;
-        }}
-
-        .logo-text {{
-            font-weight: 600;
-            font-size: calc(24px * var(--ui-scale));
-            letter-spacing: -0.02em;
-            background: linear-gradient(135deg, var(--text) 0%, var(--text-secondary) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }}
-
-        .logo-sub {{
-            font-size: calc(14px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            letter-spacing: 0.05em;
+        .eyebrow {
+            margin: 0 0 12px;
+            color: var(--accent);
             text-transform: uppercase;
-        }}
+            letter-spacing: 0.16em;
+            font-size: 11px;
+            font-weight: 700;
+        }
 
-        .header-meta {{
-            display: flex;
-            align-items: center;
-            gap: calc(24px * var(--ui-scale));
-        }}
+        h1 {
+            margin: 0;
+            font-size: clamp(2.2rem, 4vw, 4.4rem);
+            line-height: 0.95;
+            letter-spacing: -0.05em;
+        }
 
-        .timestamp {{
-            font-family: var(--font-mono);
-            font-size: calc(15px * var(--ui-scale));
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: calc(8px * var(--ui-scale));
-        }}
+        .lede {
+            max-width: 52rem;
+            margin: 16px 0 0;
+            color: var(--ink-soft);
+            font-size: 1rem;
+            line-height: 1.65;
+        }
 
-        .timestamp::before {{
-            content: '';
-            width: calc(6px * var(--ui-scale));
-            height: calc(6px * var(--ui-scale));
-            background: var(--phosphor);
-            border-radius: 50%;
-            animation: pulse 2s ease-in-out infinite;
-        }}
-
-        /* Project Selector */
-        .project-selector {{
-            position: relative;
-        }}
-
-        .project-selector select {{
-            appearance: none;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: calc(8px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale)) calc(48px * var(--ui-scale)) calc(12px * var(--ui-scale)) calc(20px * var(--ui-scale));
-            font-family: var(--font-mono);
-            font-size: calc(16px * var(--ui-scale));
-            font-weight: 500;
-            color: var(--text);
-            cursor: pointer;
-            transition: all 0.2s ease;
-            min-width: calc(220px * var(--ui-scale));
-        }}
-
-        .project-selector select:hover {{
-            border-color: var(--phosphor-dim);
-            background: var(--elevated);
-        }}
-
-        .project-selector select:focus {{
-            outline: none;
-            border-color: var(--phosphor);
-            box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.1);
-        }}
-
-        .project-selector::after {{
-            content: 'v';
-            position: absolute;
-            right: calc(18px * var(--ui-scale));
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-muted);
-            pointer-events: none;
-            font-size: calc(16px * var(--ui-scale));
-        }}
-
-        .scale-selector {{
-            position: relative;
-        }}
-
-        .scale-selector select {{
-            appearance: none;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: calc(8px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale)) calc(44px * var(--ui-scale)) calc(12px * var(--ui-scale)) calc(16px * var(--ui-scale));
-            font-family: var(--font-mono);
-            font-size: calc(14px * var(--ui-scale));
-            font-weight: 500;
-            color: var(--text);
-            cursor: pointer;
-            transition: all 0.2s ease;
-            min-width: calc(110px * var(--ui-scale));
-        }}
-
-        .scale-selector select:hover {{
-            border-color: var(--phosphor-dim);
-            background: var(--elevated);
-        }}
-
-        .scale-selector select:focus {{
-            outline: none;
-            border-color: var(--phosphor);
-            box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.1);
-        }}
-
-        .scale-selector::after {{
-            content: 'v';
-            position: absolute;
-            right: calc(16px * var(--ui-scale));
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-muted);
-            pointer-events: none;
-            font-size: calc(14px * var(--ui-scale));
-        }}
-
-        /* Main Layout */
-        .main {{
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-            background: var(--abyss);
-        }}
-
-        .section-nav {{
+        .hero-meta {
             display: flex;
             flex-wrap: wrap;
-            gap: calc(10px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale)) calc(28px * var(--ui-scale));
-            background: var(--deep);
-            border-bottom: 1px solid var(--border-subtle);
-            position: sticky;
-            top: 0;
-            z-index: 5;
-        }}
+            gap: 10px;
+            margin-top: 20px;
+        }
 
-        .section-nav a {{
-            text-decoration: none;
+        .meta-pill,
+        .segmented button,
+        .project-pill,
+        .mode-toggle button {
+            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.72);
+            color: var(--ink);
+            border-radius: 999px;
+            font: 600 12px/1 var(--font-ui);
+            padding: 10px 14px;
+            transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+        }
+
+        .meta-pill {
+            color: var(--ink-soft);
             font-family: var(--font-mono);
-            font-size: calc(12px * var(--ui-scale));
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
-            border: 1px solid transparent;
-            padding: calc(6px * var(--ui-scale)) calc(12px * var(--ui-scale));
-            border-radius: calc(999px * var(--ui-scale));
-            transition: all 0.2s ease;
-        }}
+            font-weight: 500;
+        }
 
-        .section-nav a:hover {{
-            color: var(--text);
-            border-color: var(--border);
-            background: var(--surface);
-        }}
-
-        .section {{
-            padding: calc(28px * var(--ui-scale)) calc(28px * var(--ui-scale)) calc(36px * var(--ui-scale));
-            border-bottom: 1px solid var(--border-subtle);
-            background: var(--abyss);
-            position: relative;
-        }}
-
-        .section-header {{
+        .project-panel {
             display: flex;
             flex-direction: column;
-            gap: calc(6px * var(--ui-scale));
-            margin-bottom: calc(20px * var(--ui-scale));
-        }}
+            justify-content: space-between;
+            gap: 16px;
+        }
 
-        .section-title {{
-            font-size: calc(20px * var(--ui-scale));
-            font-weight: 600;
-            letter-spacing: -0.01em;
-            color: var(--text);
-        }}
+        .project-strip,
+        .segmented,
+        .mode-toggle {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
 
-        .section-subtitle {{
-            font-size: calc(13px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            letter-spacing: 0.03em;
-        }}
+        .segmented button,
+        .project-pill,
+        .mode-toggle button,
+        .search-input {
+            cursor: pointer;
+        }
 
-        .section-grid {{
+        .segmented button.active,
+        .project-pill.active,
+        .mode-toggle button.active {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        .project-pill.aggregate {
+            border-color: rgba(197, 82, 61, 0.28);
+        }
+
+        .project-pill:hover,
+        .segmented button:hover,
+        .mode-toggle button:hover {
+            transform: translateY(-1px);
+            border-color: var(--ink-soft);
+        }
+
+        .overview-banner {
             display: grid;
-            grid-template-columns: repeat(12, minmax(0, 1fr));
-            gap: calc(16px * var(--ui-scale));
-        }}
+            grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.9fr);
+            gap: 18px;
+        }
 
-        .panel {{
-            background: var(--deep);
-            border: 1px solid var(--border-subtle);
-            border-radius: calc(16px * var(--ui-scale));
-            padding: calc(16px * var(--ui-scale));
-            display: flex;
-            flex-direction: column;
-            gap: calc(12px * var(--ui-scale));
-            min-width: 0;
-        }}
-
-        .panel-title {{
-            font-size: calc(14px * var(--ui-scale));
-            font-family: var(--font-mono);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
-        }}
-
-        .panel-subtitle {{
-            font-size: calc(12px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-secondary);
-        }}
-
-        .panel-chart {{
-            flex: 1;
-            min-height: calc(220px * var(--ui-scale));
-        }}
-
-        .panel.span-12 {{ grid-column: span 12; }}
-        .panel.span-8 {{ grid-column: span 8; }}
-        .panel.span-7 {{ grid-column: span 7; }}
-        .panel.span-6 {{ grid-column: span 6; }}
-        .panel.span-5 {{ grid-column: span 5; }}
-        .panel.span-4 {{ grid-column: span 4; }}
-
-        .insight-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(calc(160px * var(--ui-scale)), 1fr));
-            gap: calc(12px * var(--ui-scale));
-        }}
-
-        .insight-card {{
+        .feature-card,
+        .card {
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
             background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: calc(12px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale));
-            display: flex;
-            flex-direction: column;
-            gap: calc(6px * var(--ui-scale));
-        }}
+            box-shadow: 0 18px 36px rgba(83, 61, 25, 0.08);
+            backdrop-filter: blur(16px);
+        }
 
-        .insight-label {{
+        .feature-card {
+            padding: 22px 24px;
+        }
+
+        .feature-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: flex-start;
+        }
+
+        .feature-title h2,
+        .section-title {
+            margin: 0;
+            font-size: 1.2rem;
+            line-height: 1.1;
+        }
+
+        .feature-title p,
+        .section-subtitle {
+            margin: 6px 0 0;
+            color: var(--ink-soft);
+            font-size: 0.95rem;
+            line-height: 1.55;
+        }
+
+        .banner-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .banner-item {
+            border: 1px solid var(--line);
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.62);
+            padding: 14px 16px;
+        }
+
+        .banner-item span {
+            display: block;
+            color: var(--ink-soft);
+            font-size: 0.77rem;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+
+        .banner-item strong {
+            display: block;
+            margin-top: 8px;
+            font-size: 1.2rem;
             font-family: var(--font-mono);
-            font-size: calc(11px * var(--ui-scale));
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 14px;
+        }
+
+        .metric-card {
+            padding: 18px 20px;
+        }
+
+        .metric-label {
+            color: var(--ink-soft);
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: var(--text-muted);
-        }}
+            font-size: 0.72rem;
+        }
 
-        .insight-value {{
+        .metric-value {
+            margin-top: 10px;
             font-family: var(--font-mono);
-            font-size: calc(22px * var(--ui-scale));
-            font-weight: 600;
-            color: var(--text);
-        }}
+            font-size: clamp(1.3rem, 2.4vw, 2.2rem);
+        }
 
-        .insight-meta {{
-            font-family: var(--font-mono);
-            font-size: calc(11px * var(--ui-scale));
-            color: var(--text-muted);
-        }}
+        .metric-value.positive { color: var(--good); }
+        .metric-value.negative { color: var(--bad); }
 
-        .data-table {{
+        .views {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .view {
+            display: none;
+            gap: 18px;
+        }
+
+        .view.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .grid-2,
+        .grid-3 {
+            display: grid;
+            gap: 18px;
+        }
+
+        .grid-2 {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .grid-3 {
+            grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr);
+        }
+
+        .card {
+            padding: 18px 20px 20px;
+            min-height: 180px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 14px;
+            align-items: flex-start;
+            margin-bottom: 14px;
+        }
+
+        .card-header h3 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .card-header p {
+            margin: 5px 0 0;
+            color: var(--ink-soft);
+            font-size: 0.88rem;
+            line-height: 1.45;
+        }
+
+        .chart {
+            width: 100%;
+            min-height: 360px;
+        }
+
+        .chart.tall {
+            min-height: 430px;
+        }
+
+        .search-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .search-input {
+            min-width: min(26rem, 100%);
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,0.72);
+            color: var(--ink);
+            border-radius: 999px;
+            padding: 11px 16px;
+            font: 500 13px/1 var(--font-mono);
+            outline: none;
+        }
+
+        .search-input::placeholder {
+            color: rgba(77, 90, 108, 0.76);
+        }
+
+        .table-wrap {
+            overflow: auto;
+            border-top: 1px solid var(--line);
+            margin-top: 14px;
+            padding-top: 10px;
+        }
+
+        table {
             width: 100%;
             border-collapse: collapse;
-            font-family: var(--font-mono);
-            font-size: calc(12px * var(--ui-scale));
-        }}
+            font-size: 13px;
+        }
 
-        .data-table thead th {{
+        th,
+        td {
             text-align: left;
-            color: var(--text-muted);
-            padding: calc(8px * var(--ui-scale)) calc(6px * var(--ui-scale));
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border-subtle);
-        }}
+            padding: 11px 10px;
+            border-bottom: 1px solid var(--line);
+            vertical-align: top;
+        }
 
-        .data-table tbody td {{
-            padding: calc(8px * var(--ui-scale)) calc(6px * var(--ui-scale));
-            border-bottom: 1px solid var(--border-subtle);
-            color: var(--text-secondary);
-        }}
-
-        .data-table tbody tr:hover td {{
-            color: var(--text);
-            background: var(--surface);
-        }}
-
-        .mermaid-card {{
-            background: var(--deep);
-            border: 1px solid var(--border-subtle);
-            border-radius: calc(16px * var(--ui-scale));
-            padding: calc(18px * var(--ui-scale));
-            overflow: auto;
-        }}
-
-        .mermaid {{
-            font-family: var(--font-mono);
-            color: var(--text-secondary);
-        }}
-
-        /* Stats Bar */
-        .stats-bar {{
-            display: flex;
-            gap: calc(20px * var(--ui-scale));
-            padding: calc(20px * var(--ui-scale)) calc(28px * var(--ui-scale));
-            background: var(--deep);
-            border-bottom: 1px solid var(--border-subtle);
-            overflow-x: auto;
-            flex-shrink: 0;
-        }}
-
-        .filter-bar {{
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: calc(10px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale)) calc(28px * var(--ui-scale));
-            background: var(--deep);
-            border-bottom: 1px solid var(--border-subtle);
-        }}
-
-        .filter-label {{
-            font-family: var(--font-mono);
-            font-size: calc(11px * var(--ui-scale));
+        th {
+            font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: var(--text-muted);
-            margin-right: calc(6px * var(--ui-scale));
-        }}
+            color: var(--ink-soft);
+        }
 
-        .filter-pill {{
+        td:first-child,
+        th:first-child {
+            padding-left: 0;
+        }
+
+        td:last-child,
+        th:last-child {
+            padding-right: 0;
+        }
+
+        .mono {
+            font-family: var(--font-mono);
+        }
+
+        .dim {
+            color: var(--ink-soft);
+        }
+
+        .tag-list,
+        .legend-list,
+        .commit-list {
             display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .tag-pill {
+            display: inline-flex;
             align-items: center;
-            gap: calc(6px * var(--ui-scale));
-            padding: calc(6px * var(--ui-scale)) calc(12px * var(--ui-scale));
-            border-radius: calc(999px * var(--ui-scale));
-            border: 1px solid var(--border);
-            background: var(--surface);
-            font-family: var(--font-mono);
-            font-size: calc(12px * var(--ui-scale));
-            color: var(--text-secondary);
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }}
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.72);
+            border: 1px solid var(--line);
+            font: 500 12px/1 var(--font-mono);
+            width: fit-content;
+        }
 
-        .filter-pill.active {{
-            color: var(--text);
-            border-color: var(--phosphor-dim);
-            box-shadow: 0 0 calc(16px * var(--ui-scale)) rgba(74, 222, 128, 0.15);
-        }}
+        .tag-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            background: var(--accent-3);
+        }
 
-        .filter-pill.inactive {{
-            opacity: 0.5;
-            text-decoration: line-through;
-        }}
+        .commit-entry {
+            padding: 14px 15px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,0.72);
+        }
 
-        .filter-pill::before {{
-            content: '';
-            width: calc(8px * var(--ui-scale));
-            height: calc(8px * var(--ui-scale));
-            border-radius: 50%;
-            background: var(--pill-color, var(--text-muted));
-        }}
-
-        .filter-pill span {{
-            font-size: calc(10px * var(--ui-scale));
-            color: var(--text-muted);
-        }}
-
-        .stat-card {{
-            background: linear-gradient(135deg, var(--surface) 0%, var(--elevated) 100%);
-            border: 1px solid var(--border);
-            border-radius: calc(14px * var(--ui-scale));
-            padding: calc(20px * var(--ui-scale)) calc(24px * var(--ui-scale));
-            min-width: calc(180px * var(--ui-scale));
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-            animation: fadeIn 0.5s ease backwards;
-        }}
-
-        .stat-card:nth-child(1) {{ animation-delay: 0.05s; }}
-        .stat-card:nth-child(2) {{ animation-delay: 0.1s; }}
-        .stat-card:nth-child(3) {{ animation-delay: 0.15s; }}
-        .stat-card:nth-child(4) {{ animation-delay: 0.2s; }}
-        .stat-card:nth-child(5) {{ animation-delay: 0.25s; }}
-
-        .stat-card:hover {{
-            border-color: var(--phosphor-dim);
-            transform: translateY(-2px);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }}
-
-        .stat-card::before {{
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, var(--phosphor), var(--cyan));
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }}
-
-        .stat-card:hover::before {{
-            opacity: 1;
-        }}
-
-        .stat-label {{
-            font-size: calc(13px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: calc(10px * var(--ui-scale));
-        }}
-
-        .stat-value {{
-            font-size: calc(36px * var(--ui-scale));
-            font-weight: 600;
-            font-family: var(--font-mono);
-            color: var(--text);
-            line-height: 1;
-            letter-spacing: -0.02em;
-        }}
-
-        .stat-value.positive {{
-            color: var(--phosphor);
-        }}
-
-        .stat-value.negative {{
-            color: var(--rose);
-        }}
-
-        .stat-detail {{
-            font-size: calc(14px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            margin-top: calc(8px * var(--ui-scale));
-        }}
-
-        .stat-sparkline {{
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: calc(40px * var(--ui-scale));
-            opacity: 0.15;
-        }}
-
-        /* Charts Area */
-        .charts-area {{
-            flex: 1;
+        .commit-top {
             display: flex;
-            flex-direction: column;
-            padding: calc(20px * var(--ui-scale));
-            gap: calc(16px * var(--ui-scale));
-            min-width: 0;
-            overflow: hidden;
-        }}
+            justify-content: space-between;
+            gap: 12px;
+            align-items: flex-start;
+        }
 
-        .chart-container {{
-            background: var(--deep);
-            border: 1px solid var(--border-subtle);
-            border-radius: calc(16px * var(--ui-scale));
-            flex: 1;
-            min-height: 0;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-        }}
-
-        .chart-container:hover {{
-            border-color: var(--border);
-        }}
-
-        .chart-container::before {{
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: radial-gradient(ellipse at 50% 0%, rgba(74, 222, 128, 0.03) 0%, transparent 70%);
-            pointer-events: none;
-        }}
-
-        #churn-chart {{
-            flex: 0.5;
-        }}
-
-        /* Inspector Panel */
-        .inspector {{
-            width: calc(420px * var(--ui-scale));
-            background: var(--deep);
-            border-left: 1px solid var(--border-subtle);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            flex-shrink: 0;
-        }}
-
-        .inspector-header {{
-            padding: calc(24px * var(--ui-scale));
-            background: linear-gradient(180deg, var(--surface) 0%, var(--deep) 100%);
-            border-bottom: 1px solid var(--border-subtle);
-        }}
-
-        .inspector-title {{
-            font-size: calc(14px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            margin-bottom: calc(10px * var(--ui-scale));
-        }}
-
-        .inspector-date {{
-            font-size: calc(26px * var(--ui-scale));
+        .commit-title {
+            font-size: 0.95rem;
             font-weight: 600;
-            font-family: var(--font-mono);
-            color: var(--text);
-            letter-spacing: -0.02em;
-        }}
+            line-height: 1.45;
+        }
 
-        .inspector-legend {{
+        .commit-meta,
+        .commit-files,
+        .empty-state {
+            margin-top: 8px;
+            color: var(--ink-soft);
+            font-size: 0.83rem;
+            line-height: 1.55;
+        }
+
+        .chips {
             display: flex;
             flex-wrap: wrap;
-            gap: calc(14px * var(--ui-scale));
-            padding: calc(14px * var(--ui-scale)) calc(24px * var(--ui-scale));
-            background: var(--abyss);
-            border-bottom: 1px solid var(--border-subtle);
-        }}
+            gap: 8px;
+            margin-top: 10px;
+        }
 
-        .legend-controls {{
-            display: flex;
-            gap: calc(8px * var(--ui-scale));
-            width: 100%;
-        }}
+        .chip {
+            padding: 6px 9px;
+            border-radius: 999px;
+            background: rgba(24,34,48,0.06);
+            font: 500 11px/1 var(--font-mono);
+        }
 
-        .legend-action {{
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            font-family: var(--font-mono);
-            font-size: calc(12px * var(--ui-scale));
-            border-radius: calc(999px * var(--ui-scale));
-            padding: calc(4px * var(--ui-scale)) calc(10px * var(--ui-scale));
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }}
+        .chip.colorized {
+            color: white;
+        }
 
-        .legend-action:hover {{
-            border-color: var(--phosphor-dim);
-            color: var(--text);
-        }}
-
-        .legend-item {{
-            display: flex;
-            align-items: center;
-            gap: calc(8px * var(--ui-scale));
-            font-size: calc(14px * var(--ui-scale));
-            font-family: var(--font-mono);
-            color: var(--text-secondary);
-            cursor: pointer;
-            user-select: none;
-        }}
-
-        .legend-text {{
+        .side-stack {
             display: flex;
             flex-direction: column;
-            gap: calc(2px * var(--ui-scale));
-        }}
+            gap: 18px;
+        }
 
-        .legend-name {{
-            font-weight: 500;
-        }}
-
-        .legend-meta {{
-            font-size: calc(11px * var(--ui-scale));
-            color: var(--text-muted);
-            letter-spacing: 0.02em;
-        }}
-
-        .legend-item.inactive {{
-            opacity: 0.4;
-            text-decoration: line-through;
-        }}
-
-        .legend-dot {{
-            width: calc(10px * var(--ui-scale));
-            height: calc(10px * var(--ui-scale));
-            border-radius: calc(3px * var(--ui-scale));
-        }}
-
-        .event-list {{
-            flex: 1;
-            overflow-y: auto;
-            padding: 0;
-            margin: 0;
-            list-style: none;
-        }}
-
-        .event-list::-webkit-scrollbar {{
-            width: calc(6px * var(--ui-scale));
-        }}
-
-        .event-list::-webkit-scrollbar-track {{
-            background: var(--abyss);
-        }}
-
-        .event-list::-webkit-scrollbar-thumb {{
-            background: var(--border);
-            border-radius: 3px;
-        }}
-
-        .event-list::-webkit-scrollbar-thumb:hover {{
-            background: var(--text-muted);
-        }}
-
-        .event-item {{
-            padding: calc(18px * var(--ui-scale)) calc(24px * var(--ui-scale));
-            border-bottom: 1px solid var(--border-subtle);
-            transition: all 0.2s ease;
-            animation: slideIn 0.3s ease backwards;
-            cursor: default;
-        }}
-
-        .event-item:hover {{
-            background: var(--surface);
-        }}
-
-        .event-header {{
-            display: flex;
-            align-items: center;
-            gap: calc(12px * var(--ui-scale));
-            margin-bottom: calc(10px * var(--ui-scale));
-        }}
-
-        .event-hash {{
-            font-family: var(--font-mono);
-            font-size: calc(14px * var(--ui-scale));
-            font-weight: 500;
-            color: var(--cyan);
-            background: rgba(34, 211, 238, 0.1);
-            padding: calc(4px * var(--ui-scale)) calc(10px * var(--ui-scale));
-            border-radius: calc(5px * var(--ui-scale));
-        }}
-
-        .event-author {{
-            font-size: calc(14px * var(--ui-scale));
-            color: var(--text-muted);
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }}
-
-        .event-message {{
-            font-size: calc(16px * var(--ui-scale));
-            color: var(--text);
+        .small-note {
+            color: var(--ink-soft);
+            font-size: 0.82rem;
             line-height: 1.5;
-            margin-bottom: calc(12px * var(--ui-scale));
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }}
+        }
 
-        .event-stats {{
-            display: flex;
-            gap: calc(14px * var(--ui-scale));
-            margin-bottom: calc(12px * var(--ui-scale));
-        }}
+        .empty-state {
+            padding: 14px 0 2px;
+        }
 
-        .event-stat {{
-            font-family: var(--font-mono);
-            font-size: calc(15px * var(--ui-scale));
-            font-weight: 500;
-        }}
+        @media (max-width: 1180px) {
+            .hero,
+            .overview-banner,
+            .grid-2,
+            .grid-3 {
+                grid-template-columns: 1fr;
+            }
+        }
 
-        .event-stat.add {{
-            color: var(--phosphor);
-        }}
+        @media (max-width: 780px) {
+            body {
+                padding: 20px 14px 40px;
+            }
 
-        .event-stat.del {{
-            color: var(--rose);
-        }}
+            .hero,
+            .feature-card,
+            .card {
+                padding: 18px;
+            }
 
-        .event-categories {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: calc(6px * var(--ui-scale));
-        }}
+            .banner-grid,
+            .metric-grid {
+                grid-template-columns: 1fr 1fr;
+            }
 
-        .cat-badge {{
-            font-family: var(--font-mono);
-            font-size: calc(13px * var(--ui-scale));
-            font-weight: 500;
-            padding: calc(5px * var(--ui-scale)) calc(10px * var(--ui-scale));
-            border-radius: calc(5px * var(--ui-scale));
-            border: 1px solid;
-            transition: all 0.2s ease;
-        }}
-
-        .cat-badge:hover {{
-            transform: scale(1.05);
-        }}
-
-        .event-files {{
-            margin-top: calc(12px * var(--ui-scale));
-            padding: calc(12px * var(--ui-scale));
-            background: var(--abyss);
-            border-radius: calc(8px * var(--ui-scale));
-            font-family: var(--font-mono);
-            font-size: calc(13px * var(--ui-scale));
-            color: var(--text-muted);
-        }}
-
-        .file-entry {{
-            display: block;
-            padding: calc(2px * var(--ui-scale)) 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }}
-
-        .file-entry:hover {{
-            color: var(--text-secondary);
-        }}
-
-        .empty-state {{
-            padding: calc(48px * var(--ui-scale)) calc(24px * var(--ui-scale));
-            text-align: center;
-            color: var(--text-muted);
-            font-size: calc(16px * var(--ui-scale));
-        }}
-
-        .empty-state-icon {{
-            font-size: calc(40px * var(--ui-scale));
-            margin-bottom: calc(14px * var(--ui-scale));
-            opacity: 0.5;
-        }}
-
-        /* Range indicator */
-        .range-indicator {{
-            display: flex;
-            align-items: center;
-            gap: calc(10px * var(--ui-scale));
-            font-family: var(--font-mono);
-            font-size: calc(14px * var(--ui-scale));
-            color: var(--text-muted);
-            padding: calc(14px * var(--ui-scale)) calc(24px * var(--ui-scale));
-            background: var(--abyss);
-            border-bottom: 1px solid var(--border-subtle);
-        }}
-
-        .range-indicator span {{
-            color: var(--text-secondary);
-        }}
-
-        /* Loading state */
-        .loading {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100%;
-            color: var(--text-muted);
-        }}
-
-        @media (max-width: 1200px) {{
-            .inspector {{
-                width: calc(360px * var(--ui-scale));
-            }}
-            .section {{
-                padding: calc(22px * var(--ui-scale));
-            }}
-            .section-grid {{
-                grid-template-columns: repeat(6, minmax(0, 1fr));
-            }}
-            .panel.span-12,
-            .panel.span-8,
-            .panel.span-7,
-            .panel.span-6,
-            .panel.span-5,
-            .panel.span-4 {{
-                grid-column: span 6;
-            }}
-            .stats-bar {{
-                padding: calc(16px * var(--ui-scale)) calc(20px * var(--ui-scale));
-                gap: calc(14px * var(--ui-scale));
-            }}
-            .stat-card {{
-                min-width: calc(160px * var(--ui-scale));
-                padding: calc(16px * var(--ui-scale)) calc(20px * var(--ui-scale));
-            }}
-            .stat-value {{
-                font-size: calc(30px * var(--ui-scale));
-            }}
-        }}
-
-        @media (max-width: 900px) {{
-            .section-nav {{
-                position: static;
-            }}
-            .section-grid {{
-                grid-template-columns: repeat(1, minmax(0, 1fr));
-            }}
-            .panel.span-12,
-            .panel.span-8,
-            .panel.span-7,
-            .panel.span-6,
-            .panel.span-5,
-            .panel.span-4 {{
-                grid-column: span 1;
-            }}
-            .main {{
-                flex-direction: column;
-            }}
-            .inspector {{
-                width: 100%;
-                border-left: none;
-                border-top: 1px solid var(--border-subtle);
-            }}
-        }}
+            .chart,
+            .chart.tall {
+                min-height: 300px;
+            }
+        }
     </style>
 </head>
 <body>
-    <header class="header">
-        <div class="logo">
-            <div class="logo-icon">V</div>
+    <div class="shell">
+        <section class="hero">
             <div>
-                <div class="logo-text">Velocity Observatory</div>
-                <div class="logo-sub">Realm Development Metrics</div>
-            </div>
-        </div>
-        <div class="header-meta">
-            <div class="project-selector">
-                <select id="project-select"></select>
-            </div>
-            <div class="scale-selector">
-                <select id="scale-select"></select>
-            </div>
-            <div class="timestamp">
-                {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
-            </div>
-        </div>
-    </header>
-
-    <nav class="section-nav">
-        <a href="#overview">Overview</a>
-        <a href="#activity">Activity</a>
-        <a href="#rhythm">Rhythm</a>
-        <a href="#history">History</a>
-        <a href="#mix">Mix</a>
-        <a href="#people">People</a>
-        <a href="#compare">Compare</a>
-        <a href="#system">System</a>
-    </nav>
-
-    <section id="overview" class="section">
-        <div class="section-header">
-            <div class="section-title">Overview</div>
-            <div class="section-subtitle">Velocity = LoC growth + churn over time, with commit-level inspection.</div>
-        </div>
-        <div class="filter-bar" id="filter-bar"></div>
-        <div class="stats-bar" id="stats-bar"></div>
-
-        <div class="main">
-            <div class="charts-area">
-                <div id="growth-chart" class="chart-container"></div>
-                <div id="churn-chart" class="chart-container"></div>
-            </div>
-
-            <div class="inspector">
-                <div class="inspector-header">
-                    <div class="inspector-title">Activity Inspector</div>
-                    <div class="inspector-date" id="inspector-date">Select a date</div>
+                <p class="eyebrow">Repository velocity atlas</p>
+                <h1>Velocity</h1>
+                <p class="lede">Cross-repo growth, churn, authorship, and co-change rendered from git history. The dashboard is static HTML, but it behaves like an exploratory control panel rather than a screenshot.</p>
+                <div class="hero-meta">
+                    <span class="meta-pill">Generated __GENERATED_AT__</span>
+                    <span class="meta-pill">Static HTML + ECharts</span>
+                    <span class="meta-pill">Range-aware commit inspector</span>
+                    <span class="meta-pill">Hotspots, authors, topology</span>
                 </div>
-                <div class="range-indicator" id="range-indicator"></div>
-                <div class="inspector-legend" id="inspector-legend"></div>
-                <ul class="event-list" id="event-list">
-                    <li class="empty-state">
-                        <div class="empty-state-icon">o</div>
-                        Hover over the charts to inspect daily activity
-                    </li>
-                </ul>
             </div>
-        </div>
-    </section>
+            <div class="project-panel">
+                <div>
+                    <div class="section-title">Project focus</div>
+                    <div class="section-subtitle">Switch repositories instantly. The aggregate view stacks all included repos together, but the other views stay repo-specific.</div>
+                </div>
+                <div id="project-strip" class="project-strip"></div>
+                <div class="segmented" id="view-tabs"></div>
+                <div class="segmented" id="range-tabs"></div>
+            </div>
+        </section>
 
-    <section id="activity" class="section">
-        <div class="section-header">
-            <div class="section-title">Activity Pulse</div>
-            <div class="section-subtitle">Daily net flow, cadence, and highlight windows.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-8">
-                <div class="panel-title">Net Momentum</div>
-                <div class="panel-subtitle">Daily net lines with 7/30-day smoothing.</div>
-                <div id="net-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-4">
-                <div class="panel-title">Key Signals</div>
-                <div class="panel-subtitle">Fast read on intensity and stability.</div>
-                <div class="insight-grid" id="insight-cards"></div>
-            </div>
-            <div class="panel span-8">
-                <div class="panel-title">Commit Cadence</div>
-                <div class="panel-subtitle">Daily commits and 7-day average.</div>
-                <div id="commit-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-4">
-                <div class="panel-title">Top Burst Days</div>
-                <div class="panel-subtitle">Highest churn days in the window.</div>
-                <table class="data-table" id="top-days-table"></table>
-            </div>
-        </div>
-    </section>
+        <section class="overview-banner">
+            <div id="overview-copy" class="feature-card"></div>
+            <div id="summary-metrics" class="metric-grid"></div>
+        </section>
 
-    <section id="rhythm" class="section">
-        <div class="section-header">
-            <div class="section-title">Rhythm & Streaks</div>
-            <div class="section-subtitle">Calendar view plus weekly and streak-based signals.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-7">
-                <div class="panel-title">Activity Calendar</div>
-                <div class="panel-subtitle">Daily churn heatmap.</div>
-                <div id="heatmap-chart" class="panel-chart"></div>
+        <section class="views">
+            <div id="view-pulse" class="view active">
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Growth silhouette</h3>
+                                <p>Stacked cumulative code growth by category. Release tags are listed separately so the chart stays readable.</p>
+                            </div>
+                        </div>
+                        <div id="growth-chart" class="chart tall"></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Flow pulse</h3>
+                                <p>Daily churn bars and net delta line. Click a day to inspect the underlying commits on the right.</p>
+                            </div>
+                        </div>
+                        <div id="flow-chart" class="chart tall"></div>
+                    </div>
+                </div>
+                <div class="grid-3">
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Category share</h3>
+                                <p>Current footprint and momentum by category over the selected range.</p>
+                            </div>
+                        </div>
+                        <div id="share-chart" class="chart"></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Category ledger</h3>
+                                <p>Dominant categories, footprint, and range net changes.</p>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="category-table"></table>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Commit inspector</h3>
+                                <p id="commit-heading">Select a day on the flow chart to inspect the commit stack.</p>
+                            </div>
+                        </div>
+                        <div id="commit-list" class="commit-list"></div>
+                    </div>
+                </div>
             </div>
-            <div class="panel span-5">
-                <div class="panel-title">Weekday Profile</div>
-                <div class="panel-subtitle">Average commits and churn by weekday.</div>
-                <div id="weekday-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-12">
-                <div class="panel-title">Streak Signals</div>
-                <div class="panel-subtitle">Consistency, recency, and stability metrics.</div>
-                <div class="insight-grid" id="rhythm-cards"></div>
-            </div>
-        </div>
-    </section>
 
-    <section id="history" class="section">
-        <div class="section-header">
-            <div class="section-title">History Lab</div>
-            <div class="section-subtitle">Commit size, cadence, topology, and hotspots.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-6">
-                <div class="panel-title">Commit Size Distribution</div>
-                <div class="panel-subtitle">Histogram of lines changed per commit.</div>
-                <div id="size-chart" class="panel-chart"></div>
+            <div id="view-hotspots" class="view">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3>Hotspot explorer</h3>
+                            <p>All-time hotspots by files or modules. Search narrows the ranked list without recomputing the underlying git history.</p>
+                        </div>
+                        <div class="search-row">
+                            <div id="hotspot-mode" class="mode-toggle"></div>
+                            <input id="hotspot-search" class="search-input" type="search" placeholder="Filter files or modules by path fragment">
+                        </div>
+                    </div>
+                    <div class="grid-2">
+                        <div id="hotspot-chart" class="chart"></div>
+                        <div class="table-wrap">
+                            <table id="hotspot-table"></table>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="panel span-6">
-                <div class="panel-title">Time-of-Day Heatmap</div>
-                <div class="panel-subtitle">Commit density by weekday and hour.</div>
-                <div id="timeofday-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-7">
-                <div class="panel-title">Merge Topology</div>
-                <div class="panel-subtitle">Merge volume, ratio, and fan-in.</div>
-                <div id="merge-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-5">
-                <div class="panel-title">Tag Cadence</div>
-                <div class="panel-subtitle">Release marker frequency over time.</div>
-                <div id="tag-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-6">
-                <div class="panel-title">File Hotspots</div>
-                <div class="panel-subtitle">Highest churn files.</div>
-                <table class="data-table" id="file-hotspot-table"></table>
-            </div>
-            <div class="panel span-6">
-                <div class="panel-title">Module Hotspots</div>
-                <div class="panel-subtitle">Highest churn modules.</div>
-                <table class="data-table" id="module-hotspot-table"></table>
-            </div>
-            <div class="panel span-7">
-                <div class="panel-title">Co-change Network</div>
-                <div class="panel-subtitle">Modules that move together.</div>
-                <div id="cochange-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-5">
-                <div class="panel-title">Ownership / Bus Factor</div>
-                <div class="panel-subtitle">Top author share per module.</div>
-                <table class="data-table" id="ownership-table"></table>
-            </div>
-        </div>
-    </section>
 
-    <section id="mix" class="section">
-        <div class="section-header">
-            <div class="section-title">Category Mix</div>
-            <div class="section-subtitle">Share and momentum across selected categories/projects.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-6">
-                <div class="panel-title">Share Map</div>
-                <div class="panel-subtitle">Total LOC vs 30-day churn mix.</div>
-                <div id="share-chart" class="panel-chart"></div>
+            <div id="view-people" class="view">
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Authors in range</h3>
+                                <p>Real author aggregation from commit events in the selected window, not inferred ownership.</p>
+                            </div>
+                        </div>
+                        <div id="author-chart" class="chart"></div>
+                    </div>
+                    <div class="side-stack">
+                        <div class="card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Author ledger</h3>
+                                    <p>Commit counts, churn, and net deltas for the selected range.</p>
+                                </div>
+                            </div>
+                            <div class="table-wrap">
+                                <table id="author-table"></table>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Module owners</h3>
+                                    <p>Top owners by module share across the whole repository history.</p>
+                                </div>
+                            </div>
+                            <div class="table-wrap">
+                                <table id="ownership-table"></table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="panel span-6">
-                <div class="panel-title">Momentum Matrix</div>
-                <div class="panel-subtitle">30-day net and churn per category.</div>
-                <div id="momentum-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-12">
-                <div class="panel-title">Churn Treemap</div>
-                <div class="panel-subtitle">Module churn distribution.</div>
-                <div id="treemap-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-12">
-                <div class="panel-title">Category Ranking</div>
-                <div class="panel-subtitle">Snapshot of totals and recent movement.</div>
-                <table class="data-table" id="mix-table"></table>
-            </div>
-        </div>
-    </section>
 
-    <section id="people" class="section">
-        <div class="section-header">
-            <div class="section-title">People & Authors</div>
-            <div class="section-subtitle">Commit share and change impact by author.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-6">
-                <div class="panel-title">Top Authors</div>
-                <div class="panel-subtitle">Commit volume by author.</div>
-                <div id="author-chart" class="panel-chart"></div>
+            <div id="view-topology" class="view">
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Co-change topology</h3>
+                                <p>Modules that repeatedly move together across commits. Heavier edges mean more shared change activity.</p>
+                            </div>
+                        </div>
+                        <div id="cochange-chart" class="chart tall"></div>
+                    </div>
+                    <div class="side-stack">
+                        <div class="card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Release tags</h3>
+                                    <p>Latest tags, if the repo exposes them. Useful for correlating velocity bursts with release cadence.</p>
+                                </div>
+                            </div>
+                            <div id="tag-list" class="tag-list"></div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Project notes</h3>
+                                    <p>Interpret the numbers before overfitting them.</p>
+                                </div>
+                            </div>
+                            <div class="legend-list small-note">
+                                <div>Growth is clamped at zero after cumulative net changes, so historical delete-heavy windows do not make the chart go negative.</div>
+                                <div>Hotspots and module ownership are full-history views. Range selection only affects activity, authors, and category momentum.</div>
+                                <div>The aggregate project stacks repositories rather than categories. Its “category” values are really repo names.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="panel span-6">
-                <div class="panel-title">Author Breakdown</div>
-                <div class="panel-subtitle">Commits, net, churn, active days.</div>
-                <table class="data-table" id="author-table"></table>
-            </div>
-        </div>
-    </section>
-
-    <section id="compare" class="section">
-        <div class="section-header">
-            <div class="section-title">Compare & Rank</div>
-            <div class="section-subtitle">Project-level or category-level ranking.</div>
-        </div>
-        <div class="section-grid">
-            <div class="panel span-12">
-                <div class="panel-title">Ranked Overview</div>
-                <div class="panel-subtitle">Total scale vs recent acceleration.</div>
-                <div id="compare-chart" class="panel-chart"></div>
-            </div>
-            <div class="panel span-12">
-                <div class="panel-title">Rank Table</div>
-                <div class="panel-subtitle">Totals, 30-day net, and churn.</div>
-                <table class="data-table" id="compare-table"></table>
-            </div>
-        </div>
-    </section>
-
-    <section id="system" class="section">
-        <div class="section-header">
-            <div class="section-title">System Map</div>
-            <div class="section-subtitle">Velocity pipeline and signal flow.</div>
-        </div>
-        <div class="mermaid-card">
-            <pre class="mermaid">
-graph LR
-    Git[Git History] --> Classifier[Per-Repo Classifier]
-    Classifier --> Daily[Daily Aggregates]
-    Daily --> Charts[ECharts Dashboards]
-    Charts --> Review[Velocity Narratives]
-    Review --> Iteration[Next Iteration Decisions]
-            </pre>
-        </div>
-    </section>
+        </section>
+    </div>
 
     <script>
-        const dates = {json.dumps(sorted_dates)};
-        const projectData = {json.dumps(js_projects)};
-        const projectSummaries = {json.dumps(project_summaries)};
+        const dashboard = __PAYLOAD__;
+        const dates = dashboard.dates;
+        const projectData = dashboard.projectData;
+        const projectSummaries = dashboard.projectSummaries;
         const projects = Object.keys(projectData);
-        const selectionByProject = {{}};
-        let lastInspectorIndex = null;
-        let renderedInspectorIndex = null;
-        let inspectorFrame = null;
-        let suppressLegendEvents = false;
+        const chartInstances = {};
+        const rangeOptions = [
+            { id: "30", label: "30D", days: 30 },
+            { id: "90", label: "90D", days: 90 },
+            { id: "180", label: "180D", days: 180 },
+            { id: "all", label: "All", days: null },
+        ];
+        const viewOptions = [
+            { id: "pulse", label: "Pulse" },
+            { id: "hotspots", label: "Hotspots" },
+            { id: "people", label: "People" },
+            { id: "topology", label: "Topology" },
+        ];
+        let currentProject = projects.includes(dashboard.aggregateProject) ? dashboard.aggregateProject : projects[0];
+        let currentView = "pulse";
+        let currentRange = "180";
+        let currentHotspotMode = "modules";
+        let currentHotspotQuery = "";
+        let selectedDate = null;
 
-        const params = new URLSearchParams(window.location.search);
-        const rendererParam = (params.get('renderer') || 'canvas').toLowerCase();
-        const renderer = rendererParam === 'svg' ? 'svg' : 'canvas';
-        const scaleOptions = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-        const maxDpr = 2.5;
+        function formatProjectName(name) {
+            if (name === dashboard.aggregateProject) return "All Projects";
+            return name;
+        }
 
-        function normalizeScale(raw) {{
-            const value = Number.parseFloat(raw);
-            if (!Number.isFinite(value)) return null;
-            if (value < 0.5 || value > 3.0) return null;
-            return Math.round(value * 100) / 100;
-        }}
+        function formatNumber(value) {
+            return Number(value || 0).toLocaleString();
+        }
 
-        function safeStorageGet(key) {{
-            try {{
-                return localStorage.getItem(key);
-            }} catch (_) {{
-                return null;
-            }}
-        }}
+        function formatSigned(value) {
+            const number = Number(value || 0);
+            const prefix = number > 0 ? "+" : "";
+            return `${prefix}${number.toLocaleString()}`;
+        }
 
-        function safeStorageSet(key, value) {{
-            try {{
-                localStorage.setItem(key, value);
-            }} catch (_) {{
-                // ignore storage failures (file:// permissions, etc.)
-            }}
-        }}
-
-        let uiScale = 2.0;
-        const paramScale = normalizeScale(params.get('scale'));
-        const storedScale = normalizeScale(safeStorageGet('velocityScale'));
-        if (paramScale !== null) {{
-            uiScale = paramScale;
-            safeStorageSet('velocityScale', String(uiScale));
-        }} else if (storedScale !== null) {{
-            uiScale = storedScale;
-        }}
-        document.documentElement.style.setProperty('--ui-scale', String(uiScale));
-
-        const scaled = (value) => Math.round(value * uiScale);
-        const scaledArray = (values) => values.map((value) => Math.round(value * uiScale));
-
-        let currentDpr = 0;
-        const charts = {{}};
-        const chartIds = {{
-            growth: 'growth-chart',
-            churn: 'churn-chart',
-            net: 'net-chart',
-            commit: 'commit-chart',
-            heatmap: 'heatmap-chart',
-            weekday: 'weekday-chart',
-            size: 'size-chart',
-            timeofday: 'timeofday-chart',
-            merge: 'merge-chart',
-            tag: 'tag-chart',
-            share: 'share-chart',
-            momentum: 'momentum-chart',
-            treemap: 'treemap-chart',
-            author: 'author-chart',
-            compare: 'compare-chart',
-            cochange: 'cochange-chart'
-        }};
-
-        function computeDpr() {{
-            const base = window.devicePixelRatio || 1;
-            const scaled = base * uiScale;
-            const capped = Math.min(maxDpr, scaled);
-            return Math.max(1, Math.round(capped * 10) / 10);
-        }}
-
-        function initCharts() {{
-            const nextDpr = computeDpr();
-            currentDpr = nextDpr;
-            Object.entries(chartIds).forEach(([key, id]) => {{
-                if (charts[key]) {{
-                    charts[key].dispose();
-                }}
-                const el = document.getElementById(id);
-                if (!el) {{
-                    return;
-                }}
-                charts[key] = echarts.init(
-                    el,
-                    null,
-                    {{ renderer: renderer, devicePixelRatio: nextDpr }}
-                );
-            }});
-            bindChartEvents();
-        }}
-
-        // Populate project selector
-        const projectSelect = document.getElementById('project-select');
-        const scaleSelect = document.getElementById('scale-select');
-        projects.forEach((p, i) => {{
-            const opt = document.createElement('option');
-            opt.value = p;
-            opt.textContent = p;
-            projectSelect.appendChild(opt);
-        }});
-
-        scaleOptions.forEach((value) => {{
-            const opt = document.createElement('option');
-            opt.value = String(value);
-            opt.textContent = `${{Math.round(value * 100)}}%`;
-            scaleSelect.appendChild(opt);
-        }});
-        scaleSelect.value = String(uiScale);
-
-        let currentProject = projects.includes('{AGGREGATE_PROJECT}')
-            ? '{AGGREGATE_PROJECT}'
-            : projects[0];
-
-        function setScale(rawValue, persist = true) {{
-            const next = normalizeScale(rawValue);
-            if (next === null) {{
-                return;
-            }}
-            uiScale = next;
-            document.documentElement.style.setProperty('--ui-scale', String(uiScale));
-            if (persist) {{
-                safeStorageSet('velocityScale', String(uiScale));
-            }}
-            scaleSelect.value = String(uiScale);
-            initCharts();
-            updateCharts(currentProject);
-            if (lastInspectorIndex !== null) {{
-                updateInspector(lastInspectorIndex);
-            }}
-        }}
-
-        function ensureSelection(projectName) {{
-            if (!selectionByProject[projectName]) {{
-                selectionByProject[projectName] = new Set(projectData[projectName].categoryList);
-            }}
-            return selectionByProject[projectName];
-        }}
-
-        function selectionMap(projectName, selectedSet) {{
-            const map = {{}};
-            projectData[projectName].categoryList.forEach((cat) => {{
-                map[cat] = selectedSet.has(cat);
-            }});
-            return map;
-        }}
-
-        function formatNumber(n) {{
-            const sign = n < 0 ? '-' : '';
-            const abs = Math.abs(n);
-            if (abs >= 1000000) return sign + (abs / 1000000).toFixed(1) + 'M';
-            if (abs >= 1000) return sign + (abs / 1000).toFixed(1) + 'K';
-            return sign + abs.toString();
-        }}
-
-        function parseDate(value) {{
-            if (typeof value === 'string') {{
-                const match = value.match(/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})$/);
-                if (match) {{
-                    const year = Number(match[1]);
-                    const month = Number(match[2]);
-                    const day = Number(match[3]);
-                    if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {{
-                        return new Date(year, month - 1, day);
-                    }}
-                }}
-            }}
-            return new Date(value);
-        }}
-
-        function formatAxisValue(value) {{
-            const abs = Math.abs(value);
-            const formatted = formatNumber(abs);
-            return value < 0 ? '-' + formatted : formatted;
-        }}
-
-        function formatDecimal(value, digits = 1) {{
-            if (!Number.isFinite(value)) return 'n/a';
-            return value.toFixed(digits);
-        }}
-
-        function escapeHtml(value) {{
+        function escapeHtml(value) {
             return String(value)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }}
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
 
-        function movingAverage(series, window) {{
-            const out = [];
-            let sum = 0;
-            for (let i = 0; i < series.length; i++) {{
-                sum += series[i];
-                if (i >= window) {{
-                    sum -= series[i - window];
-                }}
-                const denom = Math.min(window, i + 1);
-                out.push(sum / denom);
-            }}
-            return out;
-        }}
+        function currentData() {
+            return projectData[currentProject];
+        }
 
-        function median(series) {{
-            if (!series.length) return 0;
-            const sorted = [...series].sort((a, b) => a - b);
-            const mid = Math.floor(sorted.length / 2);
-            if (sorted.length % 2 === 0) {{
-                return (sorted[mid - 1] + sorted[mid]) / 2;
-            }}
-            return sorted[mid];
-        }}
+        function currentSummary() {
+            return projectSummaries[currentProject];
+        }
 
-        function eventMatchesSelection(event, selectedSet) {{
-            const cats = event.cats ? Object.keys(event.cats) : [];
-            return cats.some((cat) => selectedSet.has(cat));
-        }}
+        function rangeDays() {
+            return rangeOptions.find((option) => option.id === currentRange)?.days ?? null;
+        }
 
-        function computeDailyMetrics(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const netSeries = [];
-            const churnSeries = [];
-            const commitSeries = [];
-            const activeSeries = [];
+        function rangeStartIndex() {
+            const days = rangeDays();
+            if (!days || dates.length <= days) return 0;
+            return Math.max(0, dates.length - days);
+        }
 
-            for (let i = 0; i < dates.length; i++) {{
-                let dayNet = 0;
-                let dayChurn = 0;
-                for (const cat of data.categoryList) {{
-                    if (!selectedSet.has(cat)) {{
-                        continue;
-                    }}
-                    const series = data.categories[cat];
-                    const net = series.net || [];
-                    dayNet += net[i] || 0;
-                    dayChurn += series.churn[i] || 0;
-                }}
+        function visibleDates() {
+            return dates.slice(rangeStartIndex());
+        }
 
-                const events = data.events[dates[i]] || [];
-                let commits = 0;
-                for (const ev of events) {{
-                    if (eventMatchesSelection(ev, selectedSet)) {{
-                        commits += 1;
-                    }}
-                }}
-                netSeries.push(dayNet);
-                churnSeries.push(dayChurn);
-                commitSeries.push(commits);
-                activeSeries.push(commits > 0 ? 1 : 0);
-            }}
+        function sliceSeries(series) {
+            return series.slice(rangeStartIndex());
+        }
 
-            return {{ netSeries, churnSeries, commitSeries, activeSeries }};
-        }}
+        function sum(values) {
+            return values.reduce((acc, value) => acc + value, 0);
+        }
 
-        function computeMix(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const categories = data.categoryList.filter((cat) => selectedSet.has(cat));
-            const rows = categories.map((cat) => {{
-                const summary = categorySummary(data, cat);
-                return {{
-                    name: cat,
-                    totalLoc: summary.totalLoc,
-                    net30: summary.net30,
-                    churn30: summary.churn30
-                }};
-            }});
-            rows.sort((a, b) => b.totalLoc - a.totalLoc);
-            return {{ categories, rows }};
-        }}
+        function categoryRows(data) {
+            const start = rangeStartIndex();
+            const totals = data.categoryList.map((category) => {
+                const growth = data.categories[category].growth;
+                const net = data.categories[category].net;
+                const total = growth.length ? growth[growth.length - 1] : 0;
+                const rangeNet = sum(net.slice(start));
+                return {
+                    category,
+                    total,
+                    rangeNet,
+                    color: data.colors[category],
+                };
+            });
+            const totalLoc = sum(totals.map((row) => row.total));
+            return totals
+                .map((row) => ({
+                    ...row,
+                    share: totalLoc ? row.total / totalLoc : 0,
+                }))
+                .sort((left, right) => right.total - left.total);
+        }
 
-        function computeWeekdayProfile(metrics) {{
-            const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-            const counts = Array(7).fill(0);
-            const commitSum = Array(7).fill(0);
-            const churnSum = Array(7).fill(0);
-            const netSum = Array(7).fill(0);
+        function authorRowsInRange(data) {
+            const start = rangeStartIndex();
+            const scopedDates = dates.slice(start);
+            const authors = new Map();
+            scopedDates.forEach((date) => {
+                (data.events[date] || []).forEach((event) => {
+                    const existing = authors.get(event.a) || {
+                        name: event.a,
+                        commits: 0,
+                        churn: 0,
+                        net: 0,
+                        mergeCommits: 0,
+                        lastSeen: event.t || date,
+                    };
+                    existing.commits += 1;
+                    existing.churn += event["+"] + event["-"];
+                    existing.net += event["+"] - event["-"];
+                    existing.mergeCommits += event.p > 1 ? 1 : 0;
+                    existing.lastSeen = event.t && event.t > existing.lastSeen ? event.t : existing.lastSeen;
+                    authors.set(event.a, existing);
+                });
+            });
+            return Array.from(authors.values()).sort((left, right) => {
+                if (right.churn !== left.churn) return right.churn - left.churn;
+                return right.commits - left.commits;
+            });
+        }
 
-            for (let i = 0; i < dates.length; i++) {{
-                const dayIndex = (parseDate(dates[i]).getDay() + 6) % 7;
-                counts[dayIndex] += 1;
-                commitSum[dayIndex] += metrics.commitSeries[i];
-                churnSum[dayIndex] += metrics.churnSeries[i];
-                netSum[dayIndex] += metrics.netSeries[i];
-            }}
+        function latestActiveDate(data) {
+            const scopedDates = visibleDates().filter((date) => (data.events[date] || []).length > 0);
+            return scopedDates.length ? scopedDates[scopedDates.length - 1] : visibleDates()[visibleDates().length - 1] || null;
+        }
 
-            const avgCommits = commitSum.map((value, i) => counts[i] ? value / counts[i] : 0);
-            const avgChurn = churnSum.map((value, i) => counts[i] ? value / counts[i] : 0);
-            const avgNet = netSum.map((value, i) => counts[i] ? value / counts[i] : 0);
-            return {{ labels, avgCommits, avgChurn, avgNet }};
-        }}
+        function ensureSelectedDate(data) {
+            const scoped = new Set(visibleDates());
+            if (!selectedDate || !scoped.has(selectedDate) || !(data.events[selectedDate] || []).length) {
+                selectedDate = latestActiveDate(data);
+            }
+        }
 
-        function computeAuthorStats(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const byAuthor = {{}};
+        function hotspotRows(data) {
+            const baseRows = currentHotspotMode === "files" ? data.files : data.modules;
+            if (!currentHotspotQuery.trim()) return baseRows;
+            const needle = currentHotspotQuery.trim().toLowerCase();
+            return baseRows.filter((row) => row.name.toLowerCase().includes(needle));
+        }
 
-            for (const day of dates) {{
-                const events = data.events[day] || [];
-                for (const ev of events) {{
-                    if (!eventMatchesSelection(ev, selectedSet)) {{
-                        continue;
-                    }}
-                    const author = ev.a || 'unknown';
-                    if (!byAuthor[author]) {{
-                        byAuthor[author] = {{ commits: 0, net: 0, churn: 0, days: new Set() }};
-                    }}
-                    byAuthor[author].commits += 1;
-                    byAuthor[author].days.add(day);
-                    let net = 0;
-                    let churn = 0;
-                    if (ev.cats) {{
-                        for (const [cat, stats] of Object.entries(ev.cats)) {{
-                            if (!selectedSet.has(cat)) {{
-                                continue;
-                            }}
-                            net += stats.a - stats.r;
-                            churn += stats.a + stats.r;
-                        }}
-                    }}
-                    byAuthor[author].net += net;
-                    byAuthor[author].churn += churn;
-                }}
-            }}
-
-            const list = Object.entries(byAuthor).map(([name, stats]) => ({{
-                name,
-                commits: stats.commits,
-                net: stats.net,
-                churn: stats.churn,
-                activeDays: stats.days.size
-            }}));
-            list.sort((a, b) => b.commits - a.commits);
-            return list;
-        }}
-
-        function computeStreaks(commitSeries) {{
-            let longest = 0;
-            let current = 0;
-            for (const value of commitSeries) {{
-                if (value > 0) {{
-                    current += 1;
-                    longest = Math.max(longest, current);
-                }} else {{
-                    current = 0;
-                }}
-            }}
-
-            let tail = 0;
-            for (let i = commitSeries.length - 1; i >= 0; i--) {{
-                if (commitSeries[i] > 0) {{
-                    tail += 1;
-                }} else {{
-                    break;
-                }}
-            }}
-            return {{ longest, current: tail }};
-        }}
-
-        function computeTopDays(metrics, limit = 8) {{
-            const rows = dates.map((date, i) => ({{
-                date,
-                churn: metrics.churnSeries[i],
-                net: metrics.netSeries[i],
-                commits: metrics.commitSeries[i]
-            }}));
-            const sorted = rows
-                .filter((row) => row.churn > 0 || row.net !== 0 || row.commits > 0)
-                .sort((a, b) => b.churn - a.churn);
-            return sorted.slice(0, limit);
-        }}
-
-        function renderTable(tableEl, headers, rows) {{
-            if (!tableEl) {{
-                return;
-            }}
-            const headerHtml = `<thead><tr>${{headers.map((h) => `<th>${{escapeHtml(h)}}</th>`).join('')}}</tr></thead>`;
-            if (!rows.length) {{
-                tableEl.innerHTML = headerHtml + `<tbody><tr><td colspan="${{headers.length}}">No data</td></tr></tbody>`;
-                return;
-            }}
-            const bodyHtml = rows.map((row) => {{
-                const cells = row.map((cell) => `<td>${{escapeHtml(cell)}}</td>`).join('');
-                return `<tr>${{cells}}</tr>`;
-            }}).join('');
-            tableEl.innerHTML = headerHtml + `<tbody>${{bodyHtml}}</tbody>`;
-        }}
-
-        function computeSummary(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const categories = data.categoryList.filter((cat) => selectedSet.has(cat));
-            let totalLoc = 0;
-            let recentNet = 0;
-            let recentChurn = 0;
-            let weekNet = 0;
-            let peakChurn = 0;
-            let peakDate = null;
-            let peakNet = 0;
-            let peakNetDate = null;
-            let recentCommits = 0;
-            let recentActiveDays = 0;
-            const categoryTotals = [];
-            const recentDates = new Set(dates.slice(-30));
-            const recentWindow = Math.min(30, dates.length);
-
-            for (const cat of categories) {{
-                const series = data.categories[cat];
-                const growth = series.growth;
-                const churn = series.churn;
-                const net = series.net || [];
-                const catTotal = growth.length ? growth[growth.length - 1] : 0;
-                categoryTotals.push({{ name: cat, totalLoc: catTotal }});
-                if (growth.length) {{
-                    totalLoc += catTotal;
-                    recentNet += net.slice(-30).reduce((a, b) => a + b, 0);
-                    weekNet += net.slice(-7).reduce((a, b) => a + b, 0);
-                }}
-                if (churn.length) {{
-                    recentChurn += churn.slice(-30).reduce((a, b) => a + b, 0);
-                    churn.forEach((value, i) => {{
-                        if (value > peakChurn) {{
-                            peakChurn = value;
-                            peakDate = dates[i];
-                        }}
-                    }});
-                }}
-            }}
-
-            for (let i = 0; i < dates.length; i++) {{
-                let dayNet = 0;
-                for (const cat of categories) {{
-                    const net = data.categories[cat].net || [];
-                    dayNet += net[i] || 0;
-                }}
-                if (Math.abs(dayNet) > Math.abs(peakNet)) {{
-                    peakNet = dayNet;
-                    peakNetDate = dates[i];
-                }}
-            }}
-
-            categoryTotals.sort((a, b) => b.totalLoc - a.totalLoc);
-            const topCategories = categoryTotals.slice(0, 3);
-
-            let totalCommits = 0;
-            let activeDays = 0;
-            let activityStart = null;
-            let activityEnd = null;
-            for (const day of dates) {{
-                const events = data.events[day] || [];
-                let dayCommits = 0;
-                let dayMatches = false;
-                for (const ev of events) {{
-                    const cats = ev.cats ? Object.keys(ev.cats) : [];
-                    if (cats.some((cat) => selectedSet.has(cat))) {{
-                        totalCommits += 1;
-                        dayCommits += 1;
-                        dayMatches = true;
-                        if (recentDates.has(day)) {{
-                            recentCommits += 1;
-                        }}
-                    }}
-                }}
-                if (dayCommits > 0) {{
-                    activeDays += 1;
-                    if (recentDates.has(day)) {{
-                        recentActiveDays += 1;
-                    }}
-                }}
-                if (dayMatches) {{
-                    if (!activityStart) {{
-                        activityStart = day;
-                    }}
-                    activityEnd = day;
-                }}
-            }}
-
-            const recentDays = Math.max(1, recentWindow);
-            return {{
-                totalLoc,
-                totalCommits,
+        function summaryState(data, summary) {
+            const rows = categoryRows(data);
+            const authors = authorRowsInRange(data);
+            const scopedDates = visibleDates();
+            const commits = sum(sliceSeries(data.activity.commits));
+            const churn = sum(sliceSeries(data.activity.churn));
+            const net = sum(sliceSeries(data.activity.net));
+            const activeDays = sliceSeries(data.activity.commits).filter((value) => value > 0).length;
+            return {
+                rows,
+                authors,
+                commits,
+                churn,
+                net,
                 activeDays,
-                recentNet,
-                recentChurn,
-                weekNet,
-                peakChurn,
-                peakDate,
-                peakNet,
-                peakNetDate,
-                recentCommits,
-                recentActiveDays,
-                recentNetDaily: recentNet / recentDays,
-                recentChurnDaily: recentChurn / recentDays,
-                recentCommitDaily: recentCommits / recentDays,
-                recentDays,
-                categoriesCount: categories.length,
-                categoriesTotal: data.categoryList.length,
-                topCategories,
-                activityStart,
-                activityEnd,
-            }};
-        }}
+                firstVisibleDate: scopedDates[0] || summary.firstDate,
+                lastVisibleDate: scopedDates[scopedDates.length - 1] || summary.lastDate,
+                dominant: rows[0] || null,
+                totalLoc: summary.totalLoc,
+                tagCount: summary.tagCount,
+                fullActiveDays: summary.activeDays,
+            };
+        }
 
-        function updateStatsBar(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            if (!data) return;
-            const summary = computeSummary(projectName, selectedSet);
-            const statsBar = document.getElementById('stats-bar');
-            const recentSign = summary.recentNet >= 0 ? '+' : '';
-            const weekSign = summary.weekNet >= 0 ? '+' : '';
-            const peakLabel = summary.peakDate ? summary.peakDate : 'n/a';
-            const peakNetSign = summary.peakNet >= 0 ? '+' : '';
-            const peakNetLabel = summary.peakNetDate ? summary.peakNetDate : 'n/a';
-            const hiddenCount = summary.categoriesTotal - summary.categoriesCount;
-            const isAggregate = projectName === '{AGGREGATE_PROJECT}';
-            const categoryLabel = isAggregate ? 'Projects' : 'Categories';
-            const topLabel = isAggregate ? 'Top Projects' : 'Top Mix';
-            const selectedNames = data.categoryList.filter((cat) => selectedSet.has(cat));
-            const selectedLabel = selectedNames.length <= 4
-                ? selectedNames.join(', ')
-                : `${{selectedNames.slice(0, 4).join(', ')}} +${{selectedNames.length - 4}} more`;
-            const topDetails = summary.topCategories.length
-                ? summary.topCategories.map((item) => `${{item.name}} ${{formatNumber(item.totalLoc)}}`).join(' | ')
-                : 'n/a';
+        function renderProjectStrip() {
+            document.getElementById("project-strip").innerHTML = projects
+                .map((name) => `
+                    <button
+                        class="project-pill ${name === currentProject ? "active" : ""} ${name === dashboard.aggregateProject ? "aggregate" : ""}"
+                        data-project="${name}"
+                    >${escapeHtml(formatProjectName(name))}</button>
+                `)
+                .join("");
+            document.querySelectorAll(".project-pill").forEach((button) => {
+                button.addEventListener("click", () => {
+                    currentProject = button.dataset.project;
+                    selectedDate = null;
+                    render();
+                });
+            });
+        }
 
-            statsBar.innerHTML = `
-                <div class="stat-card">
-                    <div class="stat-label">Total Lines</div>
-                    <div class="stat-value">${{formatNumber(summary.totalLoc)}}</div>
-                    <div class="stat-detail">${{summary.categoriesCount}} selected | ${{hiddenCount}} hidden</div>
+        function renderViewTabs() {
+            document.getElementById("view-tabs").innerHTML = viewOptions
+                .map((view) => `<button class="${view.id === currentView ? "active" : ""}" data-view="${view.id}">${view.label}</button>`)
+                .join("");
+            document.querySelectorAll("#view-tabs button").forEach((button) => {
+                button.addEventListener("click", () => {
+                    currentView = button.dataset.view;
+                    renderViewState();
+                    resizeCharts();
+                });
+            });
+        }
+
+        function renderRangeTabs() {
+            document.getElementById("range-tabs").innerHTML = rangeOptions
+                .map((range) => `<button class="${range.id === currentRange ? "active" : ""}" data-range="${range.id}">${range.label}</button>`)
+                .join("");
+            document.querySelectorAll("#range-tabs button").forEach((button) => {
+                button.addEventListener("click", () => {
+                    currentRange = button.dataset.range;
+                    selectedDate = null;
+                    render();
+                });
+            });
+        }
+
+        function renderViewState() {
+            document.querySelectorAll(".view").forEach((view) => {
+                view.classList.toggle("active", view.id === `view-${currentView}`);
+            });
+        }
+
+        function renderOverview(summary, state, data) {
+            const tagPreview = data.tags.length ? escapeHtml(data.tags[data.tags.length - 1].name) : "no tags";
+            document.getElementById("overview-copy").innerHTML = `
+                <div class="feature-title">
+                    <div>
+                        <h2>${escapeHtml(formatProjectName(currentProject))}</h2>
+                        <p>${escapeHtml(state.firstVisibleDate || "n/a")} to ${escapeHtml(state.lastVisibleDate || "n/a")} · ${formatNumber(state.activeDays)} active day(s) in range · ${formatNumber(summary.authorCount)} author(s) observed overall.</p>
+                    </div>
+                    <span class="meta-pill">${currentRange === "all" ? "Full history" : `${currentRange} day window`}</span>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">30-Day Net</div>
-                    <div class="stat-value ${{summary.recentNet >= 0 ? 'positive' : 'negative'}}">${{recentSign}}${{formatNumber(summary.recentNet)}}</div>
-                    <div class="stat-detail">${{formatNumber(summary.recentNetDaily)}}/day | ${{summary.recentDays}}d window</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">30-Day Churn</div>
-                    <div class="stat-value">${{formatNumber(summary.recentChurn)}}</div>
-                    <div class="stat-detail">${{formatNumber(summary.recentChurnDaily)}}/day | ${{summary.recentDays}}d window</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">7-Day Net</div>
-                    <div class="stat-value ${{summary.weekNet >= 0 ? 'positive' : 'negative'}}">${{weekSign}}${{formatNumber(summary.weekNet)}}</div>
-                    <div class="stat-detail">${{formatNumber(summary.weekNet / 7)}}/day</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Peak Churn</div>
-                    <div class="stat-value">${{formatNumber(summary.peakChurn)}}</div>
-                    <div class="stat-detail">${{peakLabel}}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Peak Net Day</div>
-                    <div class="stat-value ${{summary.peakNet >= 0 ? 'positive' : 'negative'}}">${{peakNetSign}}${{formatNumber(summary.peakNet)}}</div>
-                    <div class="stat-detail">${{peakNetLabel}}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">${{categoryLabel}}</div>
-                    <div class="stat-value">${{summary.categoriesCount}} / ${{summary.categoriesTotal}}</div>
-                    <div class="stat-detail">${{selectedLabel || 'none selected'}}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">${{topLabel}}</div>
-                    <div class="stat-value">${{summary.topCategories[0] ? summary.topCategories[0].name : 'n/a'}}</div>
-                    <div class="stat-detail">${{topDetails}}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">30-Day Commits</div>
-                    <div class="stat-value">${{formatNumber(summary.recentCommits)}}</div>
-                    <div class="stat-detail">${{formatNumber(summary.recentCommitDaily)}}/day | ${{summary.recentActiveDays}} active days</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Total Commits</div>
-                    <div class="stat-value">${{formatNumber(summary.totalCommits)}}</div>
-                    <div class="stat-detail">${{summary.activeDays}} active days</div>
+                <div class="banner-grid">
+                    <div class="banner-item">
+                        <span>Dominant category</span>
+                        <strong>${state.dominant ? escapeHtml(state.dominant.category) : "n/a"}</strong>
+                    </div>
+                    <div class="banner-item">
+                        <span>Latest visible tag</span>
+                        <strong>${tagPreview}</strong>
+                    </div>
+                    <div class="banner-item">
+                        <span>Tracked tags</span>
+                        <strong>${formatNumber(summary.tagCount)}</strong>
+                    </div>
                 </div>
             `;
-        }}
 
-        function categorySummary(data, cat) {{
-            const series = data.categories[cat];
-            const growth = series.growth;
-            const churn = series.churn;
-            const totalLoc = growth.length ? growth[growth.length - 1] : 0;
-            const net = series.net || [];
-            const net30 = net.length ? net.slice(-30).reduce((a, b) => a + b, 0) : 0;
-            const churn30 = churn.length ? churn.slice(-30).reduce((a, b) => a + b, 0) : 0;
-            return {{ totalLoc, net30, churn30 }};
-        }}
+            const metrics = [
+                { label: "Total LOC", value: formatNumber(state.totalLoc), tone: "" },
+                { label: `${currentRange === "all" ? "History" : currentRange + "d"} Net`, value: formatSigned(state.net), tone: state.net >= 0 ? "positive" : "negative" },
+                { label: `${currentRange === "all" ? "History" : currentRange + "d"} Churn`, value: formatNumber(state.churn), tone: "" },
+                { label: "Commits In Range", value: formatNumber(state.commits), tone: "" },
+                { label: "Active Days In Range", value: formatNumber(state.activeDays), tone: "" },
+                { label: "Authors In Range", value: formatNumber(state.authors.length), tone: "" },
+            ];
 
-        function updateLegend(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const legend = document.getElementById('inspector-legend');
-            const controls = `
-                <div class="legend-controls">
-                    <button class="legend-action" data-action="all">All</button>
-                    <button class="legend-action" data-action="none">None</button>
-                </div>
+            document.getElementById("summary-metrics").innerHTML = metrics
+                .map((metric) => `
+                    <div class="card metric-card">
+                        <div class="metric-label">${metric.label}</div>
+                        <div class="metric-value ${metric.tone}">${metric.value}</div>
+                    </div>
+                `)
+                .join("");
+        }
+
+        function baseChartOption(title) {
+            return {
+                backgroundColor: "transparent",
+                animationDuration: 260,
+                title: {
+                    text: title,
+                    left: 4,
+                    top: 0,
+                    textStyle: {
+                        color: "#182230",
+                        fontFamily: "Space Grotesk",
+                        fontWeight: 700,
+                        fontSize: 15,
+                    },
+                },
+                tooltip: {
+                    trigger: "axis",
+                    backgroundColor: "rgba(255,255,255,0.94)",
+                    borderColor: "rgba(24,34,48,0.12)",
+                    borderWidth: 1,
+                    textStyle: {
+                        color: "#182230",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 12,
+                    },
+                },
+                legend: {
+                    top: 28,
+                    left: 6,
+                    textStyle: {
+                        color: "#4d5a6c",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                    },
+                },
+                grid: {
+                    left: 56,
+                    right: 24,
+                    top: 72,
+                    bottom: 46,
+                },
+                xAxis: {
+                    type: "category",
+                    axisLine: { lineStyle: { color: "rgba(24,34,48,0.16)" } },
+                    axisLabel: {
+                        color: "#4d5a6c",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                    },
+                },
+                yAxis: {
+                    type: "value",
+                    splitLine: { lineStyle: { color: "rgba(24,34,48,0.08)" } },
+                    axisLine: { show: false },
+                    axisLabel: {
+                        color: "#4d5a6c",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                    },
+                },
+            };
+        }
+
+        function renderGrowthChart(data) {
+            const chart = echarts.init(document.getElementById("growth-chart"), null, { renderer: "canvas" });
+            chartInstances.growth = chart;
+            const scopedDates = visibleDates();
+            const series = data.categoryList.map((category) => ({
+                name: category,
+                type: "line",
+                smooth: true,
+                stack: "growth",
+                symbol: "none",
+                emphasis: { focus: "series" },
+                areaStyle: { opacity: 0.2 },
+                lineStyle: { width: 2 },
+                itemStyle: { color: data.colors[category] },
+                data: sliceSeries(data.categories[category].growth),
+            }));
+            const option = baseChartOption("Growth silhouette");
+            option.xAxis.data = scopedDates;
+            option.series = series;
+            chart.setOption(option);
+        }
+
+        function renderFlowChart(data) {
+            const chart = echarts.init(document.getElementById("flow-chart"), null, { renderer: "canvas" });
+            chartInstances.flow = chart;
+            const scopedDates = visibleDates();
+            const churn = sliceSeries(data.activity.churn);
+            const net = sliceSeries(data.activity.net);
+            const commits = sliceSeries(data.activity.commits);
+            const option = baseChartOption("Daily churn and net");
+            option.legend.data = ["Churn", "Net", "Commits"];
+            option.xAxis.data = scopedDates;
+            option.series = [
+                {
+                    name: "Churn",
+                    type: "bar",
+                    barMaxWidth: 18,
+                    itemStyle: { color: "rgba(197, 82, 61, 0.48)", borderRadius: [6, 6, 0, 0] },
+                    data: churn,
+                },
+                {
+                    name: "Net",
+                    type: "line",
+                    smooth: true,
+                    symbol: "none",
+                    lineStyle: { width: 2, color: "#1f7a8c" },
+                    areaStyle: { opacity: 0.08, color: "#1f7a8c" },
+                    data: net,
+                },
+                {
+                    name: "Commits",
+                    type: "line",
+                    smooth: true,
+                    symbol: "none",
+                    lineStyle: { width: 1.6, type: "dashed", color: "#d19a2d" },
+                    data: commits,
+                },
+            ];
+            chart.setOption(option);
+            chart.off("click");
+            chart.on("click", (params) => {
+                const date = scopedDates[params.dataIndex];
+                if (date) {
+                    selectedDate = date;
+                    renderCommitInspector(data);
+                }
+            });
+        }
+
+        function renderShareChart(data, rows) {
+            const chart = echarts.init(document.getElementById("share-chart"), null, { renderer: "canvas" });
+            chartInstances.share = chart;
+            chart.setOption({
+                title: {
+                    text: "Footprint share",
+                    left: "center",
+                    top: 6,
+                    textStyle: { color: "#182230", fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15 },
+                },
+                tooltip: {
+                    trigger: "item",
+                    formatter: (params) => `${params.name}<br>${formatNumber(params.value)} LOC`,
+                    backgroundColor: "rgba(255,255,255,0.94)",
+                    borderColor: "rgba(24,34,48,0.12)",
+                    borderWidth: 1,
+                    textStyle: { color: "#182230", fontFamily: "IBM Plex Mono", fontSize: 12 },
+                },
+                series: [
+                    {
+                        type: "pie",
+                        radius: ["46%", "74%"],
+                        center: ["50%", "56%"],
+                        padAngle: 2,
+                        label: {
+                            color: "#182230",
+                            fontFamily: "IBM Plex Mono",
+                            formatter: ({ name, percent }) => `${name}\n${percent.toFixed(1)}%`,
+                        },
+                        labelLine: { length: 14, length2: 10 },
+                        data: rows.map((row) => ({
+                            name: row.category,
+                            value: row.total,
+                            itemStyle: { color: row.color },
+                        })),
+                    },
+                ],
+            });
+        }
+
+        function renderCategoryTable(rows) {
+            document.getElementById("category-table").innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Footprint</th>
+                        <th>Share</th>
+                        <th>Range Net</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map((row) => `
+                        <tr>
+                            <td>
+                                <span class="chip colorized" style="background:${row.color}">${escapeHtml(row.category)}</span>
+                            </td>
+                            <td class="mono">${formatNumber(row.total)}</td>
+                            <td class="mono">${(row.share * 100).toFixed(1)}%</td>
+                            <td class="mono ${row.rangeNet >= 0 ? "positive" : "negative"}">${formatSigned(row.rangeNet)}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
             `;
-            const items = data.categoryList.map(cat => {{
-                const active = selectedSet.has(cat);
-                const metrics = categorySummary(data, cat);
-                const netSign = metrics.net30 >= 0 ? '+' : '';
-                return `
-                <div class="legend-item ${{active ? 'active' : 'inactive'}}" data-cat="${{cat}}">
-                    <div class="legend-dot" style="background: ${{data.colors[cat]}}"></div>
-                    <div class="legend-text">
-                        <span class="legend-name">${{cat}}</span>
-                        <span class="legend-meta">${{formatNumber(metrics.totalLoc)}} | ${{netSign}}${{formatNumber(metrics.net30)}} (30d) | ${{formatNumber(metrics.churn30)}} churn</span>
-                    </div>
-                </div>
-                `;
-            }}).join('');
-            legend.innerHTML = controls + items;
-
-            legend.querySelectorAll('[data-action]').forEach((btn) => {{
-                btn.addEventListener('click', () => {{
-                    const action = btn.getAttribute('data-action');
-                    if (action === 'all') {{
-                        selectionByProject[projectName] = new Set(data.categoryList);
-                    }} else if (action === 'none') {{
-                        selectionByProject[projectName] = new Set();
-                    }}
-                    applySelection(projectName);
-                }});
-            }});
-
-            legend.querySelectorAll('[data-cat]').forEach((item) => {{
-                item.addEventListener('click', () => {{
-                    const cat = item.getAttribute('data-cat');
-                    if (!cat) return;
-                    const selected = ensureSelection(projectName);
-                    if (selected.has(cat)) {{
-                        selected.delete(cat);
-                    }} else {{
-                        selected.add(cat);
-                    }}
-                    applySelection(projectName);
-                }});
-            }});
-        }}
-
-        function updateFilterBar(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            const filterBar = document.getElementById('filter-bar');
-            if (!data || !filterBar) return;
-            const label = projectName === '{AGGREGATE_PROJECT}' ? 'Projects' : 'Categories';
-
-            const controls = `
-                <span class="filter-label">${{label}}</span>
-                <button class="filter-pill active" data-action="all">All</button>
-                <button class="filter-pill" data-action="none">None</button>
-            `;
-
-            const items = data.categoryList.map(cat => {{
-                const active = selectedSet.has(cat);
-                const metrics = categorySummary(data, cat);
-                const netSign = metrics.net30 >= 0 ? '+' : '';
-                return `
-                <button class="filter-pill ${{active ? 'active' : 'inactive'}}" data-cat="${{cat}}" style="--pill-color: ${{data.colors[cat]}}">
-                    ${{cat}}
-                    <span>${{netSign}}${{formatNumber(metrics.net30)}} | ${{formatNumber(metrics.churn30)}} churn</span>
-                </button>
-                `;
-            }}).join('');
-
-            filterBar.innerHTML = controls + items;
-
-            filterBar.querySelectorAll('[data-action]').forEach((btn) => {{
-                btn.addEventListener('click', () => {{
-                    const action = btn.getAttribute('data-action');
-                    if (action === 'all') {{
-                        selectionByProject[projectName] = new Set(data.categoryList);
-                    }} else if (action === 'none') {{
-                        selectionByProject[projectName] = new Set();
-                    }}
-                    applySelection(projectName);
-                }});
-            }});
-
-            filterBar.querySelectorAll('[data-cat]').forEach((item) => {{
-                item.addEventListener('click', () => {{
-                    const cat = item.getAttribute('data-cat');
-                    if (!cat) return;
-                    const selected = ensureSelection(projectName);
-                    if (selected.has(cat)) {{
-                        selected.delete(cat);
-                    }} else {{
-                        selected.add(cat);
-                    }}
-                    applySelection(projectName);
-                }});
-            }});
-        }}
-
-        function updateRangeIndicator(projectName, selectedSet) {{
-            const summary = computeSummary(projectName, selectedSet);
-            const fallback = projectSummaries[projectName];
-            const indicator = document.getElementById('range-indicator');
-            const start = summary.activityStart || fallback.firstDate;
-            const end = summary.activityEnd || fallback.lastDate;
-            if (start && end) {{
-                const scope = summary.categoriesCount === summary.categoriesTotal ? 'full' : 'selection';
-                indicator.innerHTML = `<span>${{start}}</span> -> <span>${{end}}</span> | ${{scope}}`;
-            }} else {{
-                indicator.textContent = 'No activity range available';
-            }}
-        }}
-
-        function syncLegendSelection(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            if (!data) return;
-            suppressLegendEvents = true;
-            data.categoryList.forEach((cat) => {{
-                const action = selectedSet.has(cat) ? 'legendSelect' : 'legendUnSelect';
-                if (charts.growth) {{
-                    charts.growth.dispatchAction({{ type: action, name: cat }});
-                }}
-                if (charts.churn) {{
-                    charts.churn.dispatchAction({{ type: action, name: cat }});
-                }}
-            }});
-            suppressLegendEvents = false;
-        }}
-
-        function updateInsightPanels(projectName, selectedSet, dailyMetrics, summary, weekdayProfile) {{
-            const insightEl = document.getElementById('insight-cards');
-            const rhythmEl = document.getElementById('rhythm-cards');
-
-            const totalDays = dates.length;
-            const activeDays = dailyMetrics.activeSeries.reduce((a, b) => a + b, 0);
-            const totalNet = dailyMetrics.netSeries.reduce((a, b) => a + b, 0);
-            const totalChurn = dailyMetrics.churnSeries.reduce((a, b) => a + b, 0);
-            const streaks = computeStreaks(dailyMetrics.commitSeries);
-
-            let lastActiveIndex = -1;
-            for (let i = dailyMetrics.commitSeries.length - 1; i >= 0; i--) {{
-                if (dailyMetrics.commitSeries[i] > 0) {{
-                    lastActiveIndex = i;
-                    break;
-                }}
-            }}
-            let daysSince = null;
-            if (lastActiveIndex >= 0) {{
-                const lastDate = parseDate(dates[dates.length - 1]);
-                const activeDate = parseDate(dates[lastActiveIndex]);
-                daysSince = Math.round((lastDate - activeDate) / 86400000);
-            }}
-
-            const activeRatio = totalDays ? (activeDays / totalDays) * 100 : 0;
-            const avgNetActive = activeDays ? totalNet / activeDays : 0;
-            const avgChurnActive = activeDays ? totalChurn / activeDays : 0;
-            const churnRatio = summary.recentNet !== 0
-                ? summary.recentChurn / Math.abs(summary.recentNet)
-                : null;
-
-            if (insightEl) {{
-                insightEl.innerHTML = `
-                    <div class="insight-card">
-                        <div class="insight-label">Current Streak</div>
-                        <div class="insight-value">${{streaks.current}}d</div>
-                        <div class="insight-meta">Longest: ${{streaks.longest}}d</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Days Since Active</div>
-                        <div class="insight-value">${{daysSince === null ? 'n/a' : daysSince + 'd'}}</div>
-                        <div class="insight-meta">Last active: ${{lastActiveIndex >= 0 ? dates[lastActiveIndex] : 'n/a'}}</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Active Ratio</div>
-                        <div class="insight-value">${{formatDecimal(activeRatio, 1)}}%</div>
-                        <div class="insight-meta">${{activeDays}} active days</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Net / Active Day</div>
-                        <div class="insight-value">${{formatAxisValue(avgNetActive)}}</div>
-                        <div class="insight-meta">All-time average</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Churn / Active Day</div>
-                        <div class="insight-value">${{formatNumber(Math.round(avgChurnActive))}}</div>
-                        <div class="insight-meta">All-time average</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Churn:Net (30d)</div>
-                        <div class="insight-value">${{churnRatio === null ? 'n/a' : formatDecimal(churnRatio, 2)}}</div>
-                        <div class="insight-meta">${{summary.recentDays}}-day window</div>
-                    </div>
-                `;
-            }}
-
-            if (rhythmEl) {{
-                const maxCommits = Math.max(...weekdayProfile.avgCommits, 0);
-                const peakIndex = weekdayProfile.avgCommits.indexOf(maxCommits);
-                const peakLabel = peakIndex >= 0 ? weekdayProfile.labels[peakIndex] : 'n/a';
-                const medianChurn = median(dailyMetrics.churnSeries);
-                const medianNet = median(dailyMetrics.netSeries);
-                const avgCommits = totalDays ? dailyMetrics.commitSeries.reduce((a, b) => a + b, 0) / totalDays : 0;
-
-                rhythmEl.innerHTML = `
-                    <div class="insight-card">
-                        <div class="insight-label">Peak Weekday</div>
-                        <div class="insight-value">${{peakLabel}}</div>
-                        <div class="insight-meta">${{formatDecimal(maxCommits, 2)}} commits avg</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Avg Commits / Day</div>
-                        <div class="insight-value">${{formatDecimal(avgCommits, 2)}}</div>
-                        <div class="insight-meta">All days in range</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Median Daily Net</div>
-                        <div class="insight-value">${{formatAxisValue(medianNet)}}</div>
-                        <div class="insight-meta">Daily net median</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Median Daily Churn</div>
-                        <div class="insight-value">${{formatNumber(Math.round(medianChurn))}}</div>
-                        <div class="insight-meta">Daily churn median</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Active Days (30d)</div>
-                        <div class="insight-value">${{summary.recentActiveDays}}</div>
-                        <div class="insight-meta">${{summary.recentDays}}-day window</div>
-                    </div>
-                    <div class="insight-card">
-                        <div class="insight-label">Span</div>
-                        <div class="insight-value">${{summary.activityStart || 'n/a'}}</div>
-                        <div class="insight-meta">-> ${{summary.activityEnd || 'n/a'}}</div>
-                    </div>
-                `;
-            }}
-        }}
-
-        function updateDeepDive(projectName, selectedSet) {{
-            const data = projectData[projectName];
-            if (!data) return;
-
-            const dailyMetrics = computeDailyMetrics(projectName, selectedSet);
-            const netAvg7 = movingAverage(dailyMetrics.netSeries, 7);
-            const netAvg30 = movingAverage(dailyMetrics.netSeries, 30);
-            const commitAvg7 = movingAverage(dailyMetrics.commitSeries, 7);
-            const weekdayProfile = computeWeekdayProfile(dailyMetrics);
-            const mix = computeMix(projectName, selectedSet);
-            const authorStats = computeAuthorStats(projectName, selectedSet);
-            const summary = computeSummary(projectName, selectedSet);
-
-            const selectedEvents = [];
-            for (const day of dates) {{
-                const events = data.events[day] || [];
-                for (const ev of events) {{
-                    if (eventMatchesSelection(ev, selectedSet)) {{
-                        selectedEvents.push(ev);
-                    }}
-                }}
-            }}
-
-            updateInsightPanels(projectName, selectedSet, dailyMetrics, summary, weekdayProfile);
-
-            const topDays = computeTopDays(dailyMetrics, 8);
-            renderTable(
-                document.getElementById('top-days-table'),
-                ['Date', 'Churn', 'Net', 'Commits'],
-                topDays.map((row) => [
-                    row.date,
-                    formatNumber(row.churn),
-                    formatAxisValue(row.net),
-                    String(row.commits)
-                ])
-            );
-
-            renderTable(
-                document.getElementById('mix-table'),
-                ['Category', 'Total LOC', 'Net (30d)', 'Churn (30d)'],
-                mix.rows.map((row) => [
-                    row.name,
-                    formatNumber(row.totalLoc),
-                    formatAxisValue(row.net30),
-                    formatNumber(row.churn30)
-                ])
-            );
-
-            renderTable(
-                document.getElementById('author-table'),
-                ['Author', 'Commits', 'Net', 'Churn', 'Active Days'],
-                authorStats.slice(0, 10).map((row) => [
-                    row.name,
-                    String(row.commits),
-                    formatAxisValue(row.net),
-                    formatNumber(row.churn),
-                    String(row.activeDays)
-                ])
-            );
-
-            const rankRows = [...mix.rows].sort((a, b) => b.net30 - a.net30);
-            renderTable(
-                document.getElementById('compare-table'),
-                ['Category', 'Total LOC', 'Net (30d)', 'Churn (30d)'],
-                rankRows.map((row) => [
-                    row.name,
-                    formatNumber(row.totalLoc),
-                    formatAxisValue(row.net30),
-                    formatNumber(row.churn30)
-                ])
-            );
-
-            const fileRows = (data.files || []).slice(0, 12);
-            renderTable(
-                document.getElementById('file-hotspot-table'),
-                ['File', 'Churn', 'Net', 'Volatility'],
-                fileRows.map((row) => [
-                    row.name,
-                    formatNumber(row.churn),
-                    formatAxisValue(row.net),
-                    formatDecimal(row.volatility, 2)
-                ])
-            );
-
-            const moduleRows = (data.modules || []).slice(0, 12);
-            renderTable(
-                document.getElementById('module-hotspot-table'),
-                ['Module', 'Churn', 'Net', 'Volatility'],
-                moduleRows.map((row) => [
-                    row.name,
-                    formatNumber(row.churn),
-                    formatAxisValue(row.net),
-                    formatDecimal(row.volatility, 2)
-                ])
-            );
-
-            const ownerRows = (data.owners || []).slice(0, 12);
-            renderTable(
-                document.getElementById('ownership-table'),
-                ['Module', 'Top Author', 'Share', 'Commits'],
-                ownerRows.map((row) => [
-                    row.module,
-                    row.author,
-                    `${{Math.round(row.share * 100)}}%`,
-                    String(row.commits)
-                ])
-            );
-
-            if (charts.net) {{
-                charts.net.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        padding: scaledArray([10, 12]),
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }},
-                        extraCssText: 'border-radius: 8px;'
-                    }},
-                    legend: {{
-                        data: ['Net', 'Net 7d', 'Net 30d'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(10)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(16),
-                        top: scaled(40),
-                        bottom: scaled(24),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: dates,
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9),
-                            formatter: formatAxisValue
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Net',
-                            type: 'bar',
-                            data: dailyMetrics.netSeries,
-                            barMaxWidth: scaled(6),
-                            itemStyle: {{
-                                color: (params) => params.value >= 0 ? '#22c55e' : '#fb7185'
-                            }}
-                        }},
-                        {{
-                            name: 'Net 7d',
-                            type: 'line',
-                            data: netAvg7,
-                            smooth: 0.4,
-                            symbol: 'none',
-                            lineStyle: {{
-                                color: '#22d3ee',
-                                width: scaled(2)
-                            }}
-                        }},
-                        {{
-                            name: 'Net 30d',
-                            type: 'line',
-                            data: netAvg30,
-                            smooth: 0.4,
-                            symbol: 'none',
-                            lineStyle: {{
-                                color: '#fbbf24',
-                                width: scaled(2)
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.commit) {{
-                charts.commit.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        padding: scaledArray([10, 12]),
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }},
-                        extraCssText: 'border-radius: 8px;'
-                    }},
-                    legend: {{
-                        data: ['Commits', 'Commits 7d'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(10)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(16),
-                        top: scaled(40),
-                        bottom: scaled(24),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: dates,
-                        axisLabel: {{ show: false }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Commits',
-                            type: 'bar',
-                            data: dailyMetrics.commitSeries,
-                            barMaxWidth: scaled(6),
-                            itemStyle: {{
-                                color: '#4ade80'
-                            }}
-                        }},
-                        {{
-                            name: 'Commits 7d',
-                            type: 'line',
-                            data: commitAvg7,
-                            smooth: 0.35,
-                            symbol: 'none',
-                            lineStyle: {{
-                                color: '#22d3ee',
-                                width: scaled(2)
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.heatmap) {{
-                const heatData = dates.map((date, i) => [date, dailyMetrics.churnSeries[i]]);
-                const maxHeat = Math.max(...dailyMetrics.churnSeries, 0);
-                charts.heatmap.setOption({{
-                    tooltip: {{
-                        position: 'top',
-                        formatter: (params) => {{
-                            const value = params.value ? params.value[1] : 0;
-                            return `${{params.value[0]}}<br/>Churn: ${{formatNumber(value)}}`;
-                        }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    visualMap: {{
-                        min: 0,
-                        max: maxHeat || 1,
-                        orient: 'horizontal',
-                        left: 'center',
-                        bottom: 0,
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        inRange: {{
-                            color: ['#0f172a', '#22c55e']
-                        }}
-                    }},
-                    calendar: {{
-                        top: scaled(20),
-                        left: scaled(20),
-                        right: scaled(20),
-                        cellSize: [scaled(14), scaled(14)],
-                        range: [dates[0], dates[dates.length - 1]],
-                        yearLabel: {{ show: false }},
-                        dayLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        monthLabel: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        itemStyle: {{
-                            color: '#10141c',
-                            borderColor: '#1f2937'
-                        }}
-                    }},
-                    series: [
-                        {{
-                            type: 'heatmap',
-                            coordinateSystem: 'calendar',
-                            data: heatData
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.weekday) {{
-                charts.weekday.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    legend: {{
-                        data: ['Commits', 'Churn'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(10)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(8),
-                        right: scaled(10),
-                        top: scaled(40),
-                        bottom: scaled(24),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: weekdayProfile.labels,
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: [
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9)
-                            }},
-                            splitLine: {{
-                                lineStyle: {{
-                                    color: '#1a1e28',
-                                    type: 'dashed'
-                                }}
-                            }}
-                        }},
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9)
-                            }},
-                            splitLine: {{ show: false }}
-                        }}
-                    ],
-                    series: [
-                        {{
-                            name: 'Commits',
-                            type: 'bar',
-                            data: weekdayProfile.avgCommits,
-                            barMaxWidth: scaled(12),
-                            itemStyle: {{ color: '#4ade80' }}
-                        }},
-                        {{
-                            name: 'Churn',
-                            type: 'line',
-                            yAxisIndex: 1,
-                            data: weekdayProfile.avgChurn,
-                            smooth: 0.4,
-                            symbol: 'none',
-                            lineStyle: {{ color: '#f97316', width: scaled(2) }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.share) {{
-                const totalLocData = mix.rows.map((row) => ({{
-                    name: row.name,
-                    value: row.totalLoc,
-                    itemStyle: {{ color: data.colors[row.name] }}
-                }}));
-                const churnData = mix.rows.map((row) => ({{
-                    name: row.name,
-                    value: row.churn30,
-                    itemStyle: {{ color: data.colors[row.name] }}
-                }}));
-                charts.share.setOption({{
-                    tooltip: {{
-                        trigger: 'item',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    legend: {{
-                        type: 'scroll',
-                        bottom: 0,
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Total LOC',
-                            type: 'pie',
-                            radius: ['40%', '62%'],
-                            center: ['30%', '45%'],
-                            label: {{ show: false }},
-                            data: totalLocData
-                        }},
-                        {{
-                            name: '30d Churn',
-                            type: 'pie',
-                            radius: ['40%', '62%'],
-                            center: ['72%', '45%'],
-                            label: {{ show: false }},
-                            data: churnData
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.momentum) {{
-                const momentumRows = mix.rows;
-                const categories = momentumRows.map((row) => row.name).reverse();
-                const netData = momentumRows.map((row) => row.net30).reverse();
-                const churnData = momentumRows.map((row) => row.churn30).reverse();
-                charts.momentum.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        axisPointer: {{ type: 'shadow' }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    legend: {{
-                        data: ['Net (30d)', 'Churn (30d)'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(12),
-                        right: scaled(16),
-                        top: scaled(40),
-                        bottom: scaled(20),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9),
-                            formatter: formatAxisValue
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    yAxis: {{
-                        type: 'category',
-                        data: categories,
-                        axisLabel: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Net (30d)',
-                            type: 'bar',
-                            data: netData,
-                            itemStyle: {{
-                                color: (params) => params.value >= 0 ? '#22c55e' : '#fb7185'
-                            }}
-                        }},
-                        {{
-                            name: 'Churn (30d)',
-                            type: 'bar',
-                            data: churnData,
-                            itemStyle: {{
-                                color: '#38bdf8'
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.author) {{
-                const topAuthors = authorStats.slice(0, 8);
-                charts.author.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        axisPointer: {{ type: 'shadow' }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(12),
-                        right: scaled(12),
-                        top: scaled(20),
-                        bottom: scaled(20),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    yAxis: {{
-                        type: 'category',
-                        data: topAuthors.map((row) => row.name).reverse(),
-                        axisLabel: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Commits',
-                            type: 'bar',
-                            data: topAuthors.map((row) => row.commits).reverse(),
-                            itemStyle: {{
-                                color: '#f97316'
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.compare) {{
-                const compareRows = mix.rows.slice(0, 12);
-                const categories = compareRows.map((row) => row.name).reverse();
-                const totalLocData = compareRows.map((row) => row.totalLoc).reverse();
-                const net30Data = compareRows.map((row) => row.net30).reverse();
-                charts.compare.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        axisPointer: {{ type: 'shadow' }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }},
-                        formatter: (params) => {{
-                            const total = params.find((p) => p.seriesName === 'Total LOC');
-                            const net = params.find((p) => p.seriesName === 'Net (30d)');
-                            return `${{params[0].name}}<br/>Total: ${{formatNumber(total.value)}}<br/>Net 30d: ${{formatAxisValue(net.value)}}`;
-                        }}
-                    }},
-                    legend: {{
-                        data: ['Total LOC', 'Net (30d)'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(12),
-                        right: scaled(16),
-                        top: scaled(40),
-                        bottom: scaled(20),
-                        containLabel: true
-                    }},
-                    xAxis: [
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9),
-                                formatter: formatAxisValue
-                            }},
-                            splitLine: {{
-                                lineStyle: {{
-                                    color: '#1a1e28',
-                                    type: 'dashed'
-                                }}
-                            }}
-                        }},
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9),
-                                formatter: formatAxisValue
-                            }},
-                            splitLine: {{ show: false }}
-                        }}
-                    ],
-                    yAxis: {{
-                        type: 'category',
-                        data: categories,
-                        axisLabel: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    series: [
-                        {{
-                            name: 'Total LOC',
-                            type: 'bar',
-                            data: totalLocData,
-                            itemStyle: {{ color: '#38bdf8' }}
-                        }},
-                        {{
-                            name: 'Net (30d)',
-                            type: 'bar',
-                            xAxisIndex: 1,
-                            data: net30Data,
-                            itemStyle: {{
-                                color: (params) => params.value >= 0 ? '#22c55e' : '#fb7185'
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.size) {{
-                const sizeBuckets = [
-                    {{ label: '0-9', min: 0, max: 9 }},
-                    {{ label: '10-49', min: 10, max: 49 }},
-                    {{ label: '50-199', min: 50, max: 199 }},
-                    {{ label: '200-499', min: 200, max: 499 }},
-                    {{ label: '500-999', min: 500, max: 999 }},
-                    {{ label: '1k-2k', min: 1000, max: 1999 }},
-                    {{ label: '2k+', min: 2000, max: Infinity }}
-                ];
-                const sizeCounts = new Array(sizeBuckets.length).fill(0);
-                for (const ev of selectedEvents) {{
-                    const size = (ev['+'] || 0) + (ev['-'] || 0);
-                    for (let i = 0; i < sizeBuckets.length; i++) {{
-                        const bucket = sizeBuckets[i];
-                        if (size >= bucket.min && size <= bucket.max) {{
-                            sizeCounts[i] += 1;
-                            break;
-                        }}
-                    }}
-                }}
-                charts.size.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(12),
-                        top: scaled(20),
-                        bottom: scaled(30),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: sizeBuckets.map((b) => b.label),
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    series: [
-                        {{
-                            type: 'bar',
-                            data: sizeCounts,
-                            barMaxWidth: scaled(18),
-                            itemStyle: {{
-                                color: '#38bdf8'
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.timeofday) {{
-                const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-                const hourLabels = Array.from({{ length: 24 }}, (_, i) => String(i).padStart(2, '0'));
-                const heat = Array.from({{ length: 7 }}, () => Array(24).fill(0));
-
-                for (const ev of selectedEvents) {{
-                    if (!ev.t) continue;
-                    const d = new Date(ev.t);
-                    if (Number.isNaN(d.getTime())) continue;
-                    const hour = d.getHours();
-                    const dayIndex = (d.getDay() + 6) % 7;
-                    heat[dayIndex][hour] += 1;
-                }}
-
-                const heatData = [];
-                let maxHeat = 0;
-                for (let day = 0; day < 7; day++) {{
-                    for (let hour = 0; hour < 24; hour++) {{
-                        const value = heat[day][hour];
-                        maxHeat = Math.max(maxHeat, value);
-                        heatData.push([hour, day, value]);
-                    }}
-                }}
-
-                charts.timeofday.setOption({{
-                    tooltip: {{
-                        position: 'top',
-                        formatter: (params) => {{
-                            const hour = hourLabels[params.value[0]];
-                            const day = weekdayLabels[params.value[1]];
-                            return `${{day}} ${{hour}}:00<br/>Commits: ${{params.value[2]}}`;
-                        }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(10),
-                        top: scaled(20),
-                        bottom: scaled(10),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: hourLabels,
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(8)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: {{
-                        type: 'category',
-                        data: weekdayLabels,
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    visualMap: {{
-                        min: 0,
-                        max: maxHeat || 1,
-                        calculable: false,
-                        orient: 'horizontal',
-                        left: 'center',
-                        bottom: 0,
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        inRange: {{
-                            color: ['#0f172a', '#22c55e']
-                        }}
-                    }},
-                    series: [
-                        {{
-                            type: 'heatmap',
-                            data: heatData,
-                            emphasis: {{
-                                itemStyle: {{
-                                    borderColor: '#22d3ee',
-                                    borderWidth: 1
-                                }}
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.merge) {{
-                const mergeCounts = [];
-                const mergeRatio = [];
-                const mergeFanIn = [];
-                for (const day of dates) {{
-                    const events = data.events[day] || [];
-                    let merges = 0;
-                    let parentTotal = 0;
-                    for (const ev of events) {{
-                        const parents = ev.p || 1;
-                        if (parents > 1) {{
-                            merges += 1;
-                            parentTotal += parents;
-                        }}
-                    }}
-                    mergeCounts.push(merges);
-                    mergeRatio.push(events.length ? merges / events.length : 0);
-                    mergeFanIn.push(merges ? parentTotal / merges : 0);
-                }}
-
-                charts.merge.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    legend: {{
-                        data: ['Merges', 'Merge Ratio', 'Avg Parents'],
-                        top: scaled(6),
-                        right: scaled(12),
-                        textStyle: {{
-                            color: '#9ba3b8',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(20),
-                        top: scaled(40),
-                        bottom: scaled(24),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: dates,
-                        axisLabel: {{ show: false }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: [
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9)
-                            }},
-                            splitLine: {{
-                                lineStyle: {{
-                                    color: '#1a1e28',
-                                    type: 'dashed'
-                                }}
-                            }}
-                        }},
-                        {{
-                            type: 'value',
-                            axisLabel: {{
-                                color: '#6b7280',
-                                fontFamily: 'JetBrains Mono',
-                                fontSize: scaled(9),
-                                formatter: (value) => `${{Math.round(value * 100)}}%`
-                            }},
-                            splitLine: {{ show: false }}
-                        }}
-                    ],
-                    series: [
-                        {{
-                            name: 'Merges',
-                            type: 'bar',
-                            data: mergeCounts,
-                            barMaxWidth: scaled(8),
-                            itemStyle: {{ color: '#a78bfa' }}
-                        }},
-                        {{
-                            name: 'Merge Ratio',
-                            type: 'line',
-                            yAxisIndex: 1,
-                            data: mergeRatio,
-                            smooth: 0.4,
-                            symbol: 'none',
-                            lineStyle: {{ color: '#fbbf24', width: scaled(2) }}
-                        }},
-                        {{
-                            name: 'Avg Parents',
-                            type: 'line',
-                            yAxisIndex: 1,
-                            data: mergeFanIn,
-                            smooth: 0.4,
-                            symbol: 'none',
-                            lineStyle: {{ color: '#22d3ee', width: scaled(2) }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.tag) {{
-                const tags = data.tags || [];
-                const tagCounts = {{}};
-                for (const tag of tags) {{
-                    if (!tag.date) continue;
-                    const date = parseDate(tag.date);
-                    if (Number.isNaN(date.getTime())) continue;
-                    const month = `${{date.getFullYear()}}-${{String(date.getMonth() + 1).padStart(2, '0')}}`;
-                    tagCounts[month] = (tagCounts[month] || 0) + 1;
-                }}
-                const months = Object.keys(tagCounts).sort();
-                const values = months.map((m) => tagCounts[m]);
-
-                charts.tag.setOption({{
-                    tooltip: {{
-                        trigger: 'axis',
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    grid: {{
-                        left: scaled(10),
-                        right: scaled(10),
-                        top: scaled(20),
-                        bottom: scaled(24),
-                        containLabel: true
-                    }},
-                    xAxis: {{
-                        type: 'category',
-                        data: months,
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(8)
-                        }},
-                        axisLine: {{ lineStyle: {{ color: '#2d3344' }} }},
-                        axisTick: {{ show: false }}
-                    }},
-                    yAxis: {{
-                        type: 'value',
-                        axisLabel: {{
-                            color: '#6b7280',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(9)
-                        }},
-                        splitLine: {{
-                            lineStyle: {{
-                                color: '#1a1e28',
-                                type: 'dashed'
-                            }}
-                        }}
-                    }},
-                    series: [
-                        {{
-                            type: 'bar',
-                            data: values,
-                            barMaxWidth: scaled(14),
-                            itemStyle: {{ color: '#fbbf24' }}
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.treemap) {{
-                const treemapData = (data.modules || []).slice(0, 60).map((row) => ({{
-                    name: row.name,
-                    value: row.churn
-                }}));
-                charts.treemap.setOption({{
-                    tooltip: {{
-                        formatter: (params) => `${{params.name}}<br/>Churn: ${{formatNumber(params.value)}}`
-                    }},
-                    series: [
-                        {{
-                            type: 'treemap',
-                            roam: false,
-                            breadcrumb: {{ show: false }},
-                            label: {{
-                                show: true,
-                                fontFamily: 'JetBrains Mono',
-                                color: '#e4e8f1',
-                                fontSize: scaled(10)
-                            }},
-                            upperLabel: {{
-                                show: true,
-                                height: scaled(18)
-                            }},
-                            itemStyle: {{
-                                borderColor: '#12151c',
-                                borderWidth: 1,
-                                gapWidth: 2
-                            }},
-                            data: treemapData
-                        }}
-                    ]
-                }}, true);
-            }}
-
-            if (charts.cochange) {{
-                const cochange = data.cochange || {{ nodes: [], edges: [] }};
-                charts.cochange.setOption({{
-                    tooltip: {{
-                        formatter: (params) => {{
-                            if (params.dataType === 'edge') {{
-                                return `${{params.data.source}} <-> ${{params.data.target}}<br/>Co-change: ${{params.data.value}}`;
-                            }}
-                            return `${{params.data.name}}<br/>Churn: ${{formatNumber(params.data.value || 0)}}`;
-                        }},
-                        backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                        borderColor: '#2d3344',
-                        borderWidth: 1,
-                        textStyle: {{
-                            color: '#e4e8f1',
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: scaled(11)
-                        }}
-                    }},
-                    series: [
-                        {{
-                            type: 'graph',
-                            layout: 'force',
-                            roam: true,
-                            data: cochange.nodes,
-                            links: cochange.edges,
-                            emphasis: {{
-                                focus: 'adjacency'
-                            }},
-                            label: {{
-                                show: true,
-                                position: 'right',
-                                fontFamily: 'JetBrains Mono',
-                                color: '#e4e8f1',
-                                fontSize: scaled(9)
-                            }},
-                            lineStyle: {{
-                                color: '#38bdf8',
-                                opacity: 0.4
-                            }},
-                            force: {{
-                                repulsion: 120,
-                                edgeLength: [30, 140]
-                            }}
-                        }}
-                    ]
-                }}, true);
-            }}
-        }}
-
-        function applySelection(projectName) {{
-            const selected = ensureSelection(projectName);
-            const selectedMap = selectionMap(projectName, selected);
-            if (charts.growth) {{
-                charts.growth.setOption({{ legend: {{ selected: selectedMap }} }}, false);
-            }}
-            if (charts.churn) {{
-                charts.churn.setOption({{ legend: {{ selected: selectedMap }} }}, false);
-            }}
-            syncLegendSelection(projectName, selected);
-            updateStatsBar(projectName, selected);
-            updateLegend(projectName, selected);
-            updateFilterBar(projectName, selected);
-            updateRangeIndicator(projectName, selected);
-            updateDeepDive(projectName, selected);
-            if (lastInspectorIndex !== null) {{
-                renderedInspectorIndex = null;
-                updateInspector(lastInspectorIndex);
-            }}
-        }}
-
-        function updateCharts(projectName) {{
-            const data = projectData[projectName];
-            if (!data) return;
-
-            const categories = data.categoryList;
-            const catColors = data.colors;
-            const selected = ensureSelection(projectName);
-            const selectedMap = selectionMap(projectName, selected);
-            renderedInspectorIndex = null;
-
-            updateStatsBar(projectName, selected);
-            updateLegend(projectName, selected);
-            updateFilterBar(projectName, selected);
-            updateRangeIndicator(projectName, selected);
-
-            // Growth series (stacked area by category)
-            const growthSeries = categories.map((cat, i) => ({{
-                name: cat,
-                type: 'line',
-                stack: 'Total',
-                smooth: 0.4,
-                symbol: 'none',
-                lineStyle: {{
-                    width: 0
-                }},
-                areaStyle: {{
-                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                        {{ offset: 0, color: catColors[cat] + 'aa' }},
-                        {{ offset: 1, color: catColors[cat] + '22' }}
-                    ])
-                }},
-                emphasis: {{
-                    focus: 'series',
-                    areaStyle: {{
-                        opacity: 0.8
-                    }}
-                }},
-                data: data.categories[cat].growth
-            }}));
-
-            const tags = data.tags || [];
-            if (tags.length && projectName !== '{AGGREGATE_PROJECT}' && growthSeries.length) {{
-                const tagLines = tags.slice(-12).map((tag) => ({{
-                    xAxis: tag.date.split('T')[0],
-                    label: {{ formatter: tag.name }}
-                }}));
-                growthSeries[0].markLine = {{
-                    symbol: 'none',
-                    label: {{
-                        color: '#9ba3b8',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(9),
-                        formatter: (params) => params?.data?.label?.formatter || ''
-                    }},
-                    lineStyle: {{
-                        color: '#fbbf24',
-                        type: 'dashed',
-                        width: 1
-                    }},
-                    data: tagLines
-                }};
-            }}
-
-            // Churn series (stacked bar by category)
-            const churnSeries = categories.map((cat, i) => ({{
-                name: cat,
-                type: 'bar',
-                stack: 'Total',
-                barMaxWidth: scaled(8),
-                emphasis: {{
-                    focus: 'series'
-                }},
-                itemStyle: {{
-                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                        {{ offset: 0, color: catColors[cat] }},
-                        {{ offset: 1, color: catColors[cat] + '66' }}
-                    ]),
-                    borderRadius: [2, 2, 0, 0]
-                }},
-                data: data.categories[cat].churn
-            }}));
-
-            const tooltipConf = {{
-                trigger: 'axis',
-                axisPointer: {{
-                    type: 'cross',
-                    crossStyle: {{
-                        color: '#4ade8044'
-                    }},
-                    lineStyle: {{
-                        color: '#4ade8044'
-                    }},
-                    label: {{
-                        backgroundColor: '#1a1e28',
-                        borderColor: '#2d3344',
-                        color: '#e4e8f1',
-                        fontFamily: 'JetBrains Mono'
-                    }}
-                }},
-                backgroundColor: 'rgba(13, 15, 20, 0.95)',
-                borderColor: '#2d3344',
-                borderWidth: 1,
-                    padding: scaledArray([12, 16]),
-                    textStyle: {{
-                        color: '#e4e8f1',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(12)
-                    }},
-                    extraCssText: 'border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);'
-            }};
-
-            charts.growth.setOption({{
-                title: {{
-                    text: 'Cumulative Growth',
-                    subtext: 'Lines of code by category',
-                    left: scaled(20),
-                    top: scaled(16),
-                    textStyle: {{
-                        color: '#e4e8f1',
-                        fontSize: scaled(16),
-                        fontWeight: 600,
-                        fontFamily: 'Outfit'
-                    }},
-                    subtextStyle: {{
-                        color: '#6b7280',
-                        fontSize: scaled(12),
-                        fontFamily: 'JetBrains Mono'
-                    }}
-                }},
-                tooltip: tooltipConf,
-                legend: {{
-                    type: 'scroll',
-                    data: categories,
-                    selected: selectedMap,
-                    selectedMode: 'multiple',
-                    top: scaled(16),
-                    right: scaled(20),
-                    textStyle: {{
-                        color: '#9ba3b8',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(11)
-                    }},
-                    itemWidth: scaled(12),
-                    itemHeight: scaled(8),
-                    itemGap: scaled(16)
-                }},
-                grid: {{
-                    left: scaled(20),
-                    right: scaled(20),
-                    top: scaled(70),
-                    bottom: scaled(40),
-                    containLabel: true
-                }},
-                xAxis: {{
-                    type: 'category',
-                    boundaryGap: false,
-                    data: dates,
-                    axisLine: {{
-                        lineStyle: {{ color: '#2d3344' }}
-                    }},
-                    axisLabel: {{
-                        color: '#6b7280',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(10),
-                        formatter: (value) => {{
-                            const d = parseDate(value);
-                            return d.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric' }});
-                        }}
-                    }},
-                    axisTick: {{ show: false }},
-                    splitLine: {{ show: false }}
-                }},
-                yAxis: {{
-                    type: 'value',
-                    axisLine: {{ show: false }},
-                    axisLabel: {{
-                        color: '#6b7280',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(10),
-                        formatter: (value) => {{
-                            if (value >= 1000) return (value / 1000).toFixed(0) + 'k';
-                            return value;
-                        }}
-                    }},
-                    splitLine: {{
-                        lineStyle: {{
-                            color: '#1a1e28',
-                            type: 'dashed'
-                        }}
-                    }}
-                }},
-                series: growthSeries,
-                backgroundColor: 'transparent',
-                dataZoom: [{{
-                    type: 'inside',
-                    xAxisIndex: 0,
-                    filterMode: 'filter'
-                }}],
-                animationDuration: 800,
-                animationEasing: 'cubicOut'
-            }}, true);
-
-            charts.churn.setOption({{
-                title: {{
-                    text: 'Daily Activity',
-                    subtext: 'Lines changed per day',
-                    left: scaled(20),
-                    top: scaled(12),
-                    textStyle: {{
-                        color: '#e4e8f1',
-                        fontSize: scaled(14),
-                        fontWeight: 600,
-                        fontFamily: 'Outfit'
-                    }},
-                    subtextStyle: {{
-                        color: '#6b7280',
-                        fontSize: scaled(11),
-                        fontFamily: 'JetBrains Mono'
-                    }}
-                }},
-                tooltip: tooltipConf,
-                legend: {{ show: false, selected: selectedMap, selectedMode: 'multiple' }},
-                grid: {{
-                    left: scaled(20),
-                    right: scaled(20),
-                    top: scaled(50),
-                    bottom: scaled(24),
-                    containLabel: true
-                }},
-                xAxis: {{
-                    type: 'category',
-                    data: dates,
-                    axisLine: {{
-                        lineStyle: {{ color: '#2d3344' }}
-                    }},
-                    axisLabel: {{ show: false }},
-                    axisTick: {{ show: false }},
-                    splitLine: {{ show: false }}
-                }},
-                yAxis: {{
-                    type: 'value',
-                    axisLine: {{ show: false }},
-                    axisLabel: {{
-                        color: '#6b7280',
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: scaled(10),
-                        formatter: (value) => {{
-                            if (value >= 1000) return (value / 1000).toFixed(0) + 'k';
-                            return value;
-                        }}
-                    }},
-                    splitLine: {{
-                        lineStyle: {{
-                            color: '#1a1e28',
-                            type: 'dashed'
-                        }}
-                    }}
-                }},
-                series: churnSeries,
-                backgroundColor: 'transparent',
-                dataZoom: [{{
-                    type: 'inside',
-                    xAxisIndex: 0,
-                    filterMode: 'filter'
-                }}],
-                animationDuration: 600,
-                animationEasing: 'cubicOut'
-            }}, true);
-
-            echarts.connect([charts.growth, charts.churn].filter(Boolean));
-            syncLegendSelection(projectName, selected);
-            updateDeepDive(projectName, selected);
-        }}
-
-        function updateInspector(dateIndex) {{
-            if (dateIndex === renderedInspectorIndex) {{
-                return;
-            }}
-            renderedInspectorIndex = dateIndex;
-            const dateStr = dates[dateIndex];
-            if (!dateStr) return;
-
-            const list = document.getElementById('event-list');
-            const header = document.getElementById('inspector-date');
-
-            const d = parseDate(dateStr);
-            const formatted = d.toLocaleDateString('en-US', {{
-                weekday: 'short',
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric'
-            }});
-            header.textContent = formatted;
-
-            const data = projectData[currentProject];
-            const catColors = data.colors;
-            const selected = ensureSelection(currentProject);
-            const evs = (data.events[dateStr] || []).filter((event) => eventMatchesSelection(event, selected));
-
-            if (evs.length === 0) {{
-                list.innerHTML = `
-                    <li class="empty-state">
-                    <div class="empty-state-icon">o</div>
-                        No commits on this day
-                    </li>
-                `;
-                return;
-            }}
-
-            list.innerHTML = evs.map((e, i) => {{
-                const filesHtml = e.f.map(f => `<span class="file-entry">${{f}}</span>`).join('');
-                const moreFiles = e.fc > e.f.length
-                    ? `<span class="file-entry" style="opacity: 0.6">+${{e.fc - e.f.length}} more files</span>`
-                    : '';
-
-                const catsHtml = e.cats
-                    ? Object.entries(e.cats).filter(([cat]) => selected.has(cat)).map(([cat, stats]) => {{
-                        const color = catColors[cat] || '#888';
-                        return `<span class="cat-badge" style="background: ${{color}}15; border-color: ${{color}}40; color: ${{color}}">
-                            ${{cat}} +${{stats.a}} -${{stats.r}}
-                        </span>`;
-                    }}).join('')
-                    : '';
-
-                return `
-                    <li class="event-item" style="animation-delay: ${{i * 0.05}}s">
-                        <div class="event-header">
-                            <span class="event-hash">${{e.h}}</span>
-                            <span class="event-author">${{e.a}}</span>
+        }
+
+        function renderCommitInspector(data) {
+            ensureSelectedDate(data);
+            const heading = document.getElementById("commit-heading");
+            const commits = selectedDate ? (data.events[selectedDate] || []) : [];
+            heading.textContent = selectedDate
+                ? `${selectedDate} · ${commits.length} commit(s) in the visible range`
+                : "No commit data available in the current range.";
+            document.getElementById("commit-list").innerHTML = commits.length
+                ? commits.map((event) => {
+                    const categoryChips = Object.entries(event.cats || {}).map(([name, stats]) => {
+                        const tone = projectData[currentProject].colors?.[name] || "#182230";
+                        return `<span class="chip colorized" style="background:${tone}">${escapeHtml(name)} ${formatSigned(stats.a - stats.r)}</span>`;
+                    }).join("");
+                    return `
+                        <div class="commit-entry">
+                            <div class="commit-top">
+                                <div>
+                                    <div class="commit-title">${escapeHtml(event.m)}</div>
+                                    <div class="commit-meta">${escapeHtml(event.a)} · <span class="mono">${escapeHtml(event.h)}</span> · ${formatNumber(event.fc)} file(s)</div>
+                                </div>
+                                <div class="mono ${event["+"] - event["-"] >= 0 ? "positive" : "negative"}">${formatSigned(event["+"] - event["-"])}</div>
+                            </div>
+                            <div class="chips">${categoryChips}</div>
+                            <div class="commit-files">${event.f.length ? `Top files: ${event.f.map(escapeHtml).join(", ")}` : "No file highlights recorded."}</div>
                         </div>
-                        <div class="event-message">${{e.m}}</div>
-                        <div class="event-stats">
-                            <span class="event-stat add">+${{e['+']}}</span>
-                            <span class="event-stat del">-${{e['-']}}</span>
-                        </div>
-                        ${{catsHtml ? `<div class="event-categories">${{catsHtml}}</div>` : ''}}
-                        ${{e.f.length > 0 ? `<div class="event-files">${{filesHtml}}${{moreFiles}}</div>` : ''}}
-                    </li>
-                `;
-            }}).join('');
-        }}
+                    `;
+                }).join("")
+                : `<div class="empty-state">No commits recorded for the selected day in the current range.</div>`;
+        }
 
-        function bindChartEvents() {{
-            if (!charts.growth || !charts.churn) {{
-                return;
-            }}
+        function renderHotspotControls() {
+            document.getElementById("hotspot-mode").innerHTML = ["modules", "files"]
+                .map((mode) => `<button class="${mode === currentHotspotMode ? "active" : ""}" data-mode="${mode}">${mode}</button>`)
+                .join("");
+            document.querySelectorAll("#hotspot-mode button").forEach((button) => {
+                button.addEventListener("click", () => {
+                    currentHotspotMode = button.dataset.mode;
+                    renderHotspots(currentData());
+                });
+            });
+            const input = document.getElementById("hotspot-search");
+            input.value = currentHotspotQuery;
+            input.oninput = (event) => {
+                currentHotspotQuery = event.target.value;
+                renderHotspots(currentData());
+            };
+        }
 
-            charts.growth.on('legendselectchanged', function (event) {{
-                if (suppressLegendEvents) {{
-                    return;
-                }}
-                const selected = Object.entries(event.selected || {{}})
-                    .filter(([_, enabled]) => enabled)
-                    .map(([name]) => name);
-                selectionByProject[currentProject] = new Set(selected);
-                applySelection(currentProject);
-            }});
+        function renderHotspots(data) {
+            renderHotspotControls();
+            const rows = hotspotRows(data).slice(0, 40);
+            const chart = echarts.init(document.getElementById("hotspot-chart"), null, { renderer: "canvas" });
+            chartInstances.hotspots = chart;
+            chart.setOption({
+                title: {
+                    text: currentHotspotMode === "files" ? "Top files by churn" : "Top modules by churn",
+                    left: 4,
+                    top: 0,
+                    textStyle: { color: "#182230", fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15 },
+                },
+                tooltip: {
+                    trigger: "axis",
+                    axisPointer: { type: "shadow" },
+                    backgroundColor: "rgba(255,255,255,0.94)",
+                    borderColor: "rgba(24,34,48,0.12)",
+                    borderWidth: 1,
+                    textStyle: { color: "#182230", fontFamily: "IBM Plex Mono", fontSize: 12 },
+                },
+                grid: { left: 190, right: 24, top: 58, bottom: 24 },
+                xAxis: {
+                    type: "value",
+                    splitLine: { lineStyle: { color: "rgba(24,34,48,0.08)" } },
+                    axisLabel: { color: "#4d5a6c", fontFamily: "IBM Plex Mono", fontSize: 11 },
+                },
+                yAxis: {
+                    type: "category",
+                    data: rows.map((row) => row.name).reverse(),
+                    axisLabel: {
+                        color: "#182230",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                        width: 180,
+                        overflow: "truncate",
+                    },
+                },
+                series: [
+                    {
+                        type: "bar",
+                        data: rows.map((row) => row.churn).reverse(),
+                        itemStyle: {
+                            color: "rgba(31,122,140,0.78)",
+                            borderRadius: [0, 8, 8, 0],
+                        },
+                    },
+                ],
+            });
 
-            charts.growth.on('updateAxisPointer', function (event) {{
-                if (event.dataIndex != null) {{
-                    scheduleInspector(event.dataIndex);
-                }}
-            }});
+            document.getElementById("hotspot-table").innerHTML = `
+                <thead>
+                    <tr>
+                        <th>${currentHotspotMode === "files" ? "File" : "Module"}</th>
+                        <th>Churn</th>
+                        <th>Net</th>
+                        <th>Live LOC</th>
+                        <th>Volatility</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map((row) => `
+                        <tr>
+                            <td class="mono">${escapeHtml(row.name)}</td>
+                            <td class="mono">${formatNumber(row.churn)}</td>
+                            <td class="mono ${row.net >= 0 ? "positive" : "negative"}">${formatSigned(row.net)}</td>
+                            <td class="mono">${formatNumber(row.loc)}</td>
+                            <td class="mono">${row.volatility}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            `;
+        }
 
-            charts.churn.on('updateAxisPointer', function (event) {{
-                if (event.dataIndex != null) {{
-                    scheduleInspector(event.dataIndex);
-                }}
-            }});
-        }}
+        function renderPeople(data, state) {
+            const authors = state.authors.slice(0, 16);
+            const chart = echarts.init(document.getElementById("author-chart"), null, { renderer: "canvas" });
+            chartInstances.authors = chart;
+            chart.setOption({
+                title: {
+                    text: "Author churn in range",
+                    left: 4,
+                    top: 0,
+                    textStyle: { color: "#182230", fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15 },
+                },
+                tooltip: {
+                    trigger: "axis",
+                    axisPointer: { type: "shadow" },
+                    backgroundColor: "rgba(255,255,255,0.94)",
+                    borderColor: "rgba(24,34,48,0.12)",
+                    borderWidth: 1,
+                    textStyle: { color: "#182230", fontFamily: "IBM Plex Mono", fontSize: 12 },
+                },
+                grid: { left: 160, right: 24, top: 58, bottom: 24 },
+                xAxis: {
+                    type: "value",
+                    splitLine: { lineStyle: { color: "rgba(24,34,48,0.08)" } },
+                    axisLabel: { color: "#4d5a6c", fontFamily: "IBM Plex Mono", fontSize: 11 },
+                },
+                yAxis: {
+                    type: "category",
+                    data: authors.map((author) => author.name).reverse(),
+                    axisLabel: {
+                        color: "#182230",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                        width: 150,
+                        overflow: "truncate",
+                    },
+                },
+                series: [
+                    {
+                        type: "bar",
+                        data: authors.map((author) => author.churn).reverse(),
+                        itemStyle: {
+                            color: "rgba(197,82,61,0.76)",
+                            borderRadius: [0, 8, 8, 0],
+                        },
+                    },
+                ],
+            });
 
-        function scheduleInspector(index) {{
-            lastInspectorIndex = index;
-            if (inspectorFrame) {{
-                return;
-            }}
-            inspectorFrame = requestAnimationFrame(() => {{
-                inspectorFrame = null;
-                if (lastInspectorIndex !== null) {{
-                    updateInspector(lastInspectorIndex);
-                }}
-            }});
-        }}
+            document.getElementById("author-table").innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Author</th>
+                        <th>Commits</th>
+                        <th>Churn</th>
+                        <th>Net</th>
+                        <th>Merges</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${state.authors.slice(0, 30).map((author) => `
+                        <tr>
+                            <td class="mono">${escapeHtml(author.name)}</td>
+                            <td class="mono">${formatNumber(author.commits)}</td>
+                            <td class="mono">${formatNumber(author.churn)}</td>
+                            <td class="mono ${author.net >= 0 ? "positive" : "negative"}">${formatSigned(author.net)}</td>
+                            <td class="mono">${formatNumber(author.mergeCommits)}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            `;
 
-        // Event handlers
-        projectSelect.addEventListener('change', (e) => {{
-            currentProject = e.target.value;
-            ensureSelection(currentProject);
-            lastInspectorIndex = null;
-            renderedInspectorIndex = null;
-            updateCharts(currentProject);
-        }});
+            document.getElementById("ownership-table").innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Module</th>
+                        <th>Owner</th>
+                        <th>Share</th>
+                        <th>Commits</th>
+                        <th>Churn</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.owners.slice(0, 24).map((owner) => `
+                        <tr>
+                            <td class="mono">${escapeHtml(owner.module)}</td>
+                            <td>${escapeHtml(owner.author)}</td>
+                            <td class="mono">${(owner.share * 100).toFixed(1)}%</td>
+                            <td class="mono">${formatNumber(owner.commits)}</td>
+                            <td class="mono">${formatNumber(owner.churn)}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            `;
+        }
 
-        scaleSelect.addEventListener('change', (e) => {{
-            setScale(e.target.value);
-        }});
+        function renderTopology(data) {
+            const chart = echarts.init(document.getElementById("cochange-chart"), null, { renderer: "canvas" });
+            chartInstances.cochange = chart;
+            const hasGraph = data.cochange.nodes.length > 0;
+            chart.setOption({
+                title: {
+                    text: hasGraph ? "Co-change network" : "Co-change network unavailable",
+                    left: 4,
+                    top: 0,
+                    textStyle: { color: "#182230", fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15 },
+                },
+                tooltip: {
+                    formatter: (params) => {
+                        if (params.dataType === "edge") {
+                            return `${params.data.source} ↔ ${params.data.target}<br>${params.data.value} shared commit(s)`;
+                        }
+                        return `${params.data.name}<br>${formatNumber(params.data.value)} churn`;
+                    },
+                    backgroundColor: "rgba(255,255,255,0.94)",
+                    borderColor: "rgba(24,34,48,0.12)",
+                    borderWidth: 1,
+                    textStyle: { color: "#182230", fontFamily: "IBM Plex Mono", fontSize: 12 },
+                },
+                series: hasGraph ? [{
+                    type: "graph",
+                    layout: "force",
+                    roam: true,
+                    draggable: true,
+                    label: {
+                        show: true,
+                        color: "#182230",
+                        fontFamily: "IBM Plex Mono",
+                        fontSize: 11,
+                    },
+                    force: {
+                        repulsion: 180,
+                        edgeLength: [50, 150],
+                    },
+                    data: data.cochange.nodes.map((node) => ({
+                        ...node,
+                        itemStyle: { color: "rgba(31,122,140,0.78)" },
+                    })),
+                    links: data.cochange.edges,
+                    lineStyle: {
+                        color: "rgba(24,34,48,0.18)",
+                        curveness: 0.16,
+                    },
+                }] : [],
+            });
 
-        window.addEventListener('resize', () => {{
-            const nextDpr = computeDpr();
-            if (nextDpr !== currentDpr) {{
-                initCharts();
-                updateCharts(currentProject);
-                if (lastInspectorIndex !== null) {{
-                    renderedInspectorIndex = null;
-                    updateInspector(lastInspectorIndex);
-                }}
-                return;
-            }}
-            Object.values(charts).forEach((chart) => {{
-                if (chart) {{
-                    chart.resize();
-                }}
-            }});
-        }});
+            const tags = data.tags.slice(-10).reverse();
+            document.getElementById("tag-list").innerHTML = tags.length
+                ? tags.map((tag) => `
+                    <div class="tag-pill">
+                        <span class="tag-dot"></span>
+                        <span>${escapeHtml(tag.name)}</span>
+                        <span class="dim mono">${escapeHtml(tag.date.split("T")[0])}</span>
+                    </div>
+                `).join("")
+                : `<div class="empty-state">No tags found for this repository.</div>`;
+        }
 
-        // Initial render
-        initCharts();
-        projectSelect.value = currentProject;
-        updateCharts(currentProject);
+        function resizeCharts() {
+            Object.values(chartInstances).forEach((chart) => {
+                if (chart && !chart.isDisposed()) chart.resize();
+            });
+        }
 
-        if (window.mermaid) {{
-            mermaid.initialize({{
-                startOnLoad: true,
-                theme: 'base',
-                themeVariables: {{
-                    primaryColor: '#1a1e28',
-                    primaryTextColor: '#e4e8f1',
-                    lineColor: '#2d3344',
-                    fontFamily: 'JetBrains Mono'
-                }}
-            }});
-            mermaid.init(undefined, document.querySelectorAll('.mermaid'));
-        }}
+        function disposeCharts() {
+            Object.keys(chartInstances).forEach((key) => {
+                if (chartInstances[key] && !chartInstances[key].isDisposed()) {
+                    chartInstances[key].dispose();
+                }
+                delete chartInstances[key];
+            });
+        }
+
+        function render() {
+            const data = currentData();
+            const summary = currentSummary();
+            ensureSelectedDate(data);
+            const state = summaryState(data, summary);
+
+            renderProjectStrip();
+            renderViewTabs();
+            renderRangeTabs();
+            renderViewState();
+            renderOverview(summary, state, data);
+
+            disposeCharts();
+            renderGrowthChart(data);
+            renderFlowChart(data);
+            renderShareChart(data, state.rows);
+            renderCategoryTable(state.rows);
+            renderCommitInspector(data);
+            renderHotspots(data);
+            renderPeople(data, state);
+            renderTopology(data);
+            resizeCharts();
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+            render();
+            window.addEventListener("resize", resizeCharts);
+        });
     </script>
 </body>
 </html>
-    """
+"""
+
+    html = (
+        html_template
+        .replace("__PAYLOAD__", json.dumps(dashboard_payload))
+        .replace("__GENERATED_AT__", dashboard_payload["generatedAt"])
+    )
 
     wrote = write_text_if_changed(output_path, html)
     if wrote:
@@ -4435,7 +2231,9 @@ graph LR
 
 
 def build(
-    output: Path = typer.Option(DEFAULT_OUTPUT, "--output", "-o", help="Destination HTML path"),
+    output: Path = typer.Option(
+        DEFAULT_OUTPUT, "--output", "-o", help="Destination HTML path"
+    ),
     project: Optional[List[str]] = typer.Option(
         None,
         "--project",
@@ -4455,23 +2253,31 @@ def build(
     ),
 ) -> None:
     """Render the velocity dashboard for the configured repositories."""
-    selected_specs: Dict[str, dict] = PROJECT_SPECS
+    selected_specs: Dict[str, ProjectProfile] = PROJECT_SPECS
     if project:
         requested = [name.strip() for name in project if name.strip()]
         if not requested:
-            raise typer.BadParameter("At least one non-empty --project value is required.")
+            raise typer.BadParameter(
+                "At least one non-empty --project value is required."
+            )
         missing = [name for name in requested if name not in PROJECT_SPECS]
         if missing:
-            raise typer.BadParameter(f"Unknown project(s): {', '.join(sorted(missing))}")
+            raise typer.BadParameter(
+                f"Unknown project(s): {', '.join(sorted(missing))}"
+            )
         selected_specs = {name: PROJECT_SPECS[name] for name in requested}
 
     if exclude:
         excluded = [name.strip() for name in exclude if name.strip()]
         if not excluded:
-            raise typer.BadParameter("At least one non-empty --exclude value is required.")
+            raise typer.BadParameter(
+                "At least one non-empty --exclude value is required."
+            )
         missing = [name for name in excluded if name not in PROJECT_SPECS]
         if missing:
-            raise typer.BadParameter(f"Unknown project(s): {', '.join(sorted(missing))}")
+            raise typer.BadParameter(
+                f"Unknown project(s): {', '.join(sorted(missing))}"
+            )
         for name in excluded:
             selected_specs.pop(name, None)
 
@@ -4480,7 +2286,10 @@ def build(
 
     stats = analyze_projects(selected_specs)
     if not stats:
-        typer.secho("No repositories produced git history; nothing to render.", fg=typer.colors.YELLOW)
+        typer.secho(
+            "No repositories produced git history; nothing to render.",
+            fg=typer.colors.YELLOW,
+        )
         return
     if aggregate and len(stats) > 1:
         aggregate_stats = _aggregate_stats(stats)

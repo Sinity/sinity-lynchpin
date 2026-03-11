@@ -12,7 +12,7 @@ from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape as html_unescape
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 MONTHS = {
@@ -730,7 +730,6 @@ def parse_semantic_location_history_from_takeout(
         "FEBRUARY": 2,
         "MARCH": 3,
         "APRIL": 4,
-        "MAY": 5,
         "JUNE": 6,
         "JULY": 7,
         "AUGUST": 8,

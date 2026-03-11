@@ -1,44 +1,87 @@
 #!/usr/bin/env python3
 """Export data for artifacts dashboard."""
 import json
-import sys
-from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from pathlib import Path
+from collections import defaultdict
+from typing import Any, Dict, List
 
-from ..core.config import get_config
-
-CFG = get_config()
-REPO_ROOT = CFG.repo_root
-
-
-def load_activity_timeline() -> List[Dict[str, Any]]:
-    """Load activity timeline from baseline artifacts."""
-    timeline_path = REPO_ROOT / "artefacts/core/baseline/latest/activity_timeline.json"
-    if not timeline_path.exists():
-        return []
-    with timeline_path.open() as f:
-        return json.load(f)
+from ..sources.captures import activitywatch, atuin
+from ..sources.indices import gitstats, sessions
+from .calendar_summary import _afk_split, _focus_minutes, _git_summary
 
 
-def load_recent_calendar(days: int = 7) -> List[Dict[str, Any]]:
-    """Load recent calendar day summaries."""
-    calendar_dir = REPO_ROOT / "artefacts/calendar/views"
-    if not calendar_dir.exists():
-        return []
+def _build_history(days: int) -> List[Dict[str, Any]]:
+    today = datetime.now().date()
+    start_date = today - timedelta(days=days - 1)
+    session_map = defaultdict(list)
+    for record in sessions.iter_sessions():
+        if start_date <= record.date <= today:
+            session_map[record.date].append(record)
+    git_map = defaultdict(list)
+    for commit in gitstats.iter_commits():
+        if start_date <= commit.date <= today:
+            git_map[commit.date].append(commit)
+    records: List[Dict[str, Any]] = []
+    for offset in range(days - 1, -1, -1):
+        target = today - timedelta(days=offset)
+        day_metrics = _day_metrics(
+            target,
+            session_records=session_map.get(target, []),
+            git_commits=git_map.get(target, []),
+        )
+        records.append(
+            {
+                "date": target.isoformat(),
+                "active_hours": day_metrics["active_hours"],
+                "afk_hours": day_metrics["afk_hours"],
+                "window_hours": day_metrics["window_hours"],
+                "command_total": day_metrics["command_total"],
+                "codex_sessions": day_metrics["codex_sessions"],
+                "git_commits": day_metrics["git_commits"],
+                "focus_minutes": day_metrics["focus_minutes"],
+                "top_apps": day_metrics["top_apps"],
+            }
+        )
+    return records
 
-    recent_days = []
-    for i in range(days):
-        date = datetime.now().date() - timedelta(days=i)
-        day_file = calendar_dir / f"day-{date.isoformat()}.md"
-        if day_file.exists():
-            content = day_file.read_text()
-            recent_days.append({
-                "date": date.isoformat(),
-                "content": content
-            })
 
-    return sorted(recent_days, key=lambda x: x["date"], reverse=True)
+def _build_recent_calendar(history: List[Dict[str, Any]], days: int) -> List[Dict[str, Any]]:
+    recent_days: List[Dict[str, Any]] = []
+    for day_metrics in reversed(history[-days:]):
+        recent_days.append(
+            {
+                "date": day_metrics["date"],
+                "focus_minutes": day_metrics["focus_minutes"],
+                "command_total": day_metrics["command_total"],
+                "git_commits": day_metrics["git_commits"],
+                "active_hours": day_metrics["active_hours"],
+                "top_apps": day_metrics["top_apps"],
+            }
+        )
+    return recent_days
+
+
+def _day_metrics(target, *, session_records, git_commits) -> Dict[str, Any]:
+    start = datetime.combine(target, datetime.min.time(), tzinfo=datetime.now().astimezone().tzinfo)
+    end = start + timedelta(days=1)
+    windows = list(activitywatch.window_events(day=target))
+    afk = list(activitywatch.afk_events(day=target))
+    commands = list(atuin.iter_commands(start=start, end=end))
+    focus_counter = _focus_minutes(windows)
+    active_hours, afk_hours = _afk_split(afk, windows)
+    git_summary = _git_summary(list(git_commits))
+    return {
+        "date": target.isoformat(),
+        "active_hours": round(active_hours, 2),
+        "afk_hours": round(afk_hours, 2),
+        "window_hours": round(sum(focus_counter.values()) / 60.0, 2),
+        "command_total": len(commands),
+        "codex_sessions": sum(1 for record in session_records if "codex" in record.provider.lower()),
+        "git_commits": git_summary.commits,
+        "focus_minutes": round(sum(focus_counter.values()), 1),
+        "top_apps": [name for name, _minutes in focus_counter.most_common(3)],
+    }
 
 
 def get_summary_stats(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -70,20 +113,22 @@ def get_summary_stats(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def export_dashboard_data(output_path: Path) -> None:
+def export_dashboard_data(
+    output_path: Path,
+    *,
+    timeline_days: int = 90,
+    recent_days: int = 7,
+) -> None:
     """Export all dashboard data to a single JSON file."""
-    timeline = load_activity_timeline()
-    recent_calendar = load_recent_calendar(days=7)
+    timeline = _build_history(timeline_days)
+    recent_calendar = _build_recent_calendar(timeline, days=recent_days)
     stats = get_summary_stats(timeline)
-
-    # Last 90 days for charts
-    recent_timeline = timeline[-90:] if len(timeline) >= 90 else timeline
 
     data = {
         "generated": datetime.now().isoformat(),
         "stats": stats,
-        "timeline": recent_timeline,
-        "recent_calendar": recent_calendar
+        "timeline": timeline,
+        "recent_calendar": recent_calendar,
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,13 +136,13 @@ def export_dashboard_data(output_path: Path) -> None:
         json.dump(data, f, indent=2)
 
     print(f"Exported dashboard data to {output_path}")
-    print(f"  Timeline: {len(timeline)} days ({len(recent_timeline)} in export)")
+    print(f"  Timeline: {len(timeline)} days")
     print(f"  Calendar: {len(recent_calendar)} days")
     print(f"  Stats: {stats}")
 
 
 def main():
-    output_path = REPO_ROOT / "artefacts/assets/dashboard-data.json"
+    output_path = Path(__file__).resolve().parents[2] / "artefacts/assets/dashboard-data.json"
     export_dashboard_data(output_path)
 
 

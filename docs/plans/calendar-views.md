@@ -86,7 +86,7 @@ Steps:
   sources:
     baseline: artefacts/core/baseline/latest/activity_timeline.json
     life_timeline: artefacts/lifelog/life-timeline/monthly_life_latest.json
-    instrumentation: artefacts/ingest/instrumentation/asciinema_metadata.jsonl
+    instrumentation: artefacts/ingest/instrumentation/terminal_sessions.jsonl
   ---
   ```
 - Body uses consistent headings (`## Overview`, `## Timeline`, `## Work`, `## Chats`, `## Life & Health`, `## Captures`, `## Notes`).

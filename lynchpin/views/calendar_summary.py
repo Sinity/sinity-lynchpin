@@ -10,13 +10,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from ..sources.exports import chatlog
+from ..sources.exports.chatlog import ChatTranscript
+from ..sources.exports.sleep import SleepEntry
+from ..sources.indices.sessions import SessionRecord
+from .calendar import DaySnapshot
 
 FALSE_ACTIVE_APPS = {"gcr-prompter"}
-
-from ..sources.exports.chatlog import ChatTranscript
-from ..sources.indices.sessions import SessionRecord
-from ..sources.exports.sleep import SleepEntry
-from .calendar import DaySnapshot
 
 
 @dataclass

@@ -3,6 +3,16 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+test:
+    pytest -q
+
+lint:
+    ruff check lynchpin tests
+
+validate:
+    python -m lynchpin.system.validate lynchpin --quick --progress
+    python -m lynchpin.system.validate hpi --quick --progress
+
 # --- Core baselines & ledgers -------------------------------------------------------
 
 baseline session_root="/realm/data/sinity-lynchpin/baseline-inputs/latest" health_root="/realm/data/exports/health/processed" output_dir="artefacts/core/baseline/latest" mode="auto" full="true" since="" until="" window_days="90" web_bucket="":
@@ -18,7 +28,6 @@ artefact-index output="artefacts/knowledge/ledgers/artefact_index.csv":
     python -m lynchpin.views.ledgers artefact --catalog "docs/reference/ledgers/artefact_catalog.json" --output "{{output}}"
 
 refresh-ledgers:
-    just session-index
     just artefact-index
 
 ledgers target="session" output="":

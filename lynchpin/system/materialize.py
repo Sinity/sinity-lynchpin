@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 from typing import Optional
 
 import typer
@@ -34,7 +33,7 @@ def run(
     ledgers_enabled: bool = typer.Option(
         True,
         "--ledgers/--no-ledgers",
-        help="Refresh session + artefact ledgers.",
+        help="Refresh optional ledger exports.",
     ),
     warehouse_enabled: bool = typer.Option(
         True,
@@ -86,11 +85,7 @@ def run(
             )
 
     if ledgers_enabled:
-        typer.secho("→ Ledgers (sessions + artefacts)", fg=typer.colors.CYAN)
-        ledgers.session(
-            sessions_dir=cfg.repo_root / "docs/reference/sessions",
-            output=cfg.repo_root / "artefacts/knowledge/ledgers/session_index.csv",
-        )
+        typer.secho("→ Ledger export (artefacts)", fg=typer.colors.CYAN)
         ledgers.artefact(
             catalog=cfg.repo_root / "docs/reference/ledgers/artefact_catalog.json",
             output=cfg.repo_root / "artefacts/knowledge/ledgers/artefact_index.csv",

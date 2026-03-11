@@ -4,7 +4,7 @@
 experimental
 
 ## Purpose
-Meta-analysis of the development process itself across the realm's project ecosystem. Provides velocity tracking (LoC growth and churn) via an interactive HTML dashboard with per-project categorization.
+Meta-analysis of development activity across the realm's code repos. Provides a static HTML dashboard for LoC growth, churn, hotspots, authorship, and co-change using project-aware categorization.
 
 ## Inputs
 - Local git repos for configured projects (defined in `lynchpin/views/velocity.py`)
@@ -20,16 +20,13 @@ Written under `artefacts/meta/velocity/` (ignored):
 Each project has bespoke file classification to show meaningful breakdowns:
 
 **sinex** (Rust):
-- src, tests, docs, config, generated
+- src, tests, docs, config
 
 **sinnix** (NixOS config):
 - module, host, flake, docs, other
 
-**sinity-lynchpin** (Python analysis):
+**sinity-lynchpin / _analysis** (Python analysis):
 - pipelines, docs, config, other
-
-**knowledgebase**:
-- intentionally excluded from velocity dashboards (content vault, not code)
 
 **Simple Rust projects** (polylogue, intercept-bounce, etc.):
 - src, tests, docs, config
@@ -37,37 +34,18 @@ Each project has bespoke file classification to show meaningful breakdowns:
 This reveals patterns that aggregate LoC would hide (e.g., "src shrinking while tests grow").
 
 ### Interactive features
-- Project selector dropdown (defaults to `all-projects` aggregate view)
-- Stacked area chart for cumulative growth + stacked churn bars
-- Daily net momentum + commit cadence panels with rolling averages
-- Calendar heatmap + weekday profile for rhythm analysis
-- Commit size distribution + time-of-day heatmap
-- Merge topology (merge count, ratio, fan-in) + tag cadence
-- Category mix (total LOC vs 30-day churn) with ranking tables
-- File/module hotspots, co-change network, and bus-factor table
-- Churn treemap for module-level activity
-- Author contribution chart + author breakdown table
-- Compare/rank section for cross-project or cross-category snapshots
-- Commit inspector with per-category breakdown (filters to selected series)
-- Filter bar pills for quick include/exclude of categories/projects
-- Zoom/pan support
+- Project strip with aggregate view and per-repo switching
+- Range controls for `30d`, `90d`, `180d`, or full history
+- Pulse view with cumulative growth, daily churn/net, category share, and a date-click commit inspector
+- Hotspot explorer with module/file toggle plus path search
+- People view with real author aggregation from commit events and a module-ownership ledger
+- Topology view with co-change graph and recent release tags
+- Static single-file output: no backend required after generation
 
 ### Aggregated view
 The default `all-projects` view stacks each repository as its own category so
 you get a single cross-repo timeline. This is intentionally uniform: each repo
 is treated as a single category regardless of its internal classifier.
-Use the legend or inspector toggles to include/exclude repositories and the
-stats bar will recompute for the selection.
-
-### UI scale
-Use the header scale selector or set a base UI scale via `?scale=` in the URL
-(e.g., `velocity.html?scale=1.4`). The dashboard defaults to a larger scale
-(`2.0`) and reinitializes charts using `devicePixelRatio * uiScale` so the
-canvas stays crisp without relying on browser zoom. Scale changes persist in
-local storage unless overridden by the URL parameter.
-
-Optional: add `?renderer=svg` for a fully vector ECharts render (slower but
-always crisp in static exports).
 
 ## Run
 ```bash

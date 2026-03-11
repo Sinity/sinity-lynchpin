@@ -23,7 +23,7 @@ class LynchpinConfig:
     webhistory_ndjson: Optional[Path]
     sleep_jsonl: Path
     codex_sessions_root: Path
-    sessions_csv: Path
+    session_docs_dir: Path
     reddit_export_dir: Optional[Path]
     spotify_root: Path
     finance_journal: Path
@@ -103,10 +103,10 @@ class LynchpinConfig:
                 exports_root / "health/processed/sleep_merged.jsonl",
             )
         )
-        sessions_csv = Path(
+        session_docs_dir = Path(
             os.environ.get(
-                "LYNCHPIN_SESSIONS_CSV",
-                repo_root / "artefacts/knowledge/ledgers/session_index.csv",
+                "LYNCHPIN_SESSION_DOCS_DIR",
+                repo_root / "docs/reference/sessions",
             )
         )
         codex_sessions_root = Path(
@@ -221,7 +221,7 @@ class LynchpinConfig:
             webhistory_ndjson=webhistory_ndjson,
             sleep_jsonl=sleep_jsonl,
             codex_sessions_root=codex_sessions_root,
-            sessions_csv=sessions_csv,
+            session_docs_dir=session_docs_dir,
             reddit_export_dir=reddit_export_dir,
             spotify_root=spotify_root,
             finance_journal=finance_journal,

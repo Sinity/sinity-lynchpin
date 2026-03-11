@@ -67,8 +67,8 @@ These modules write artefacts/exports and should never run implicitly from
 - `lynchpin.views.calendar_narratives` → `artefacts/calendar/narratives/**` (skips if output exists unless `--force`; prompt/output writes are change-aware).
 - `lynchpin.views.ledgers` → CSV ledgers under `artefacts/knowledge/ledgers/`.
 - `lynchpin.views.knowledge_graph` → DuckDB snapshot + optional Parquet.
-- `lynchpin.views.project_bundles` → context bundles under
-  `artefacts/context/project-bundles/`.
+- `lynchpin.views.project_bundles` → repomix-backed context bundles under
+  `/realm/project/_context-project-bundles/`.
 - `lynchpin.views.velocity` → `artefacts/meta/velocity/velocity.html`.
 - `lynchpin.views.warehouse` → DuckDB under `artefacts/lynchpin/warehouse.duckdb`.
 

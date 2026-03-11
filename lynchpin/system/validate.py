@@ -13,6 +13,7 @@ import typer
 
 from ..core.config import get_config
 from ..core.vendor import add_vendor_paths
+from ..ingest.fbmessenger_export import ensure_export_db_compatibility
 from ..sources.captures import (
     activitywatch,
     atuin,
@@ -159,7 +160,7 @@ def _run_checks(
     label: str,
     quick: bool,
     limit: Optional[int],
-) -> None:
+) -> list[CheckResult]:
     started = time.perf_counter()
     _log(f"start label={label} checks={len(checks)} quick={quick} limit={limit}", progress)
     results: list[CheckResult] = []
@@ -171,6 +172,7 @@ def _run_checks(
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     _log_summary(results, elapsed_ms, progress, label, quick, limit)
     _emit(results, output)
+    return results
 
 
 def _emit(results: list[CheckResult], output: Optional[Path]) -> None:
@@ -180,6 +182,12 @@ def _emit(results: list[CheckResult], output: Optional[Path]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         payload = "\n".join(json.dumps(asdict(result), ensure_ascii=False) for result in results) + "\n"
         output.write_text(payload, encoding="utf-8")
+
+
+def _exit_on_failures(results: list[CheckResult]) -> None:
+    failures = [result for result in results if result.status in {"missing", "error"}]
+    if failures:
+        raise typer.Exit(code=1)
 
 
 def _latest_takeout_archive(root: Path) -> Optional[Path]:
@@ -435,7 +443,7 @@ def lynchpin(
 
     def _sessions_records() -> Tuple[Optional[int], str]:
         count, truncated = _count_iter(sessions.iter_sessions(), sample_limit)
-        detail = f"csv={cfg.sessions_csv}"
+        detail = f"docs={cfg.session_docs_dir}"
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -547,7 +555,7 @@ def lynchpin(
         ("lynchpin.wykop.link_comments", _wykop_link_comments),
     ]
 
-    _run_checks(
+    results = _run_checks(
         checks,
         output=output,
         progress=progress,
@@ -555,6 +563,7 @@ def lynchpin(
         quick=quick,
         limit=sample_limit,
     )
+    _exit_on_failures(results)
 
 
 @app.command()
@@ -578,6 +587,8 @@ def hpi(
     ),
 ) -> None:
     """Validate vendored upstream HPI modules against local data/config."""
+    cfg = get_config()
+    ensure_export_db_compatibility(cfg.fbmessenger_db)
     add_vendor_paths()
     sample_limit = limit if quick else None
 
@@ -893,7 +904,7 @@ def hpi(
     ]
 
     progress = progress or verbose
-    _run_checks(
+    results = _run_checks(
         checks,
         output=output,
         progress=progress,
@@ -901,6 +912,7 @@ def hpi(
         quick=quick,
         limit=sample_limit,
     )
+    _exit_on_failures(results)
 
 
 if __name__ == "__main__":
