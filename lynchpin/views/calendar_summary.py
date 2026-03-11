@@ -135,6 +135,7 @@ def _focus_minutes(events: Sequence) -> Counter:
 def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Sequence) -> Dict[str, Any]:
     session_count = len(terminal_sessions)
     event_count = len(terminal_events)
+    duration_seconds = 0.0
     active_seconds = 0.0
     idle_seconds = 0.0
     repo_counter: Counter = Counter()
@@ -150,16 +151,31 @@ def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Seque
     new_model_sessions = 0
     legacy_sessions = 0
     header_only_sessions = 0
+    degraded_sessions = 0
+    damaged_sessions = 0
+    estimated_timing_sessions = 0
+    unknown_activity_sessions = 0
+    unknown_activity_seconds = 0.0
 
     for session in terminal_sessions:
-        active_seconds += float(session.active_seconds or session.duration_seconds or 0.0)
+        duration_seconds += float(session.duration_seconds or 0.0)
+        active_seconds += float(session.active_seconds or 0.0)
         idle_seconds += float(session.idle_seconds or 0.0)
+        if session.active_seconds is None and session.duration_seconds is not None:
+            unknown_activity_sessions += 1
+            unknown_activity_seconds += float(session.duration_seconds)
         if session.manifest_path:
             new_model_sessions += 1
         elif session.schema_generation == "legacy-meta":
             legacy_sessions += 1
         else:
             header_only_sessions += 1
+        if session.quality_status == "degraded":
+            degraded_sessions += 1
+        elif session.quality_status == "damaged":
+            damaged_sessions += 1
+        if "timing_estimated" in session.quality_flags:
+            estimated_timing_sessions += 1
         if not session.manifest_path:
             sessions_missing_manifests += 1
         if not session.has_events:
@@ -203,8 +219,11 @@ def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Seque
     return {
         "terminal_sessions": session_count,
         "terminal_events": event_count,
+        "terminal_duration_hours": round(duration_seconds / 3600.0, 2),
         "terminal_active_hours": round(active_seconds / 3600.0, 2),
         "terminal_idle_hours": round(idle_seconds / 3600.0, 2),
+        "terminal_unknown_activity_sessions": unknown_activity_sessions,
+        "terminal_unknown_activity_hours": round(unknown_activity_seconds / 3600.0, 2),
         "terminal_command_count": command_count,
         "terminal_command_failures": command_failures,
         "terminal_session_failures": session_failures,
@@ -214,6 +233,9 @@ def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Seque
         "terminal_new_model_sessions": new_model_sessions,
         "terminal_legacy_sessions": legacy_sessions,
         "terminal_header_only_sessions": header_only_sessions,
+        "terminal_degraded_sessions": degraded_sessions,
+        "terminal_damaged_sessions": damaged_sessions,
+        "terminal_estimated_timing_sessions": estimated_timing_sessions,
         "terminal_capture_mode": capture_mode,
         "terminal_repos": dict(repo_counter.most_common(5)),
         "terminal_commands": dict(command_counter.most_common(5)),

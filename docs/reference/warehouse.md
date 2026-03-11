@@ -38,7 +38,8 @@ If a module exists and can be expressed as a stable table, it should have a tabl
 - gitstats: `gitstats_commits`
 - goodreads: `goodreads_library`
 - health: `health_samsung_sleep`, `health_samsung_weight`
-- instrumentation: `instrumentation_asciinema`, `instrumentation_audio`, `instrumentation_screen`
+- instrumentation: `instrumentation_terminal_sessions`, `instrumentation_terminal_events`, `instrumentation_audio`, `instrumentation_screen`
+  `instrumentation_terminal_sessions` now includes `timing_source`, `quality_status`, and `quality_flags_json` so mixed old/new terminal capture rows can be queried without re-reading raw sidecars.
 - polylogue: `polylogue_markdown`, `polylogue_runs`
 - raindrop: `raindrop_bookmarks`
 - reddit: `reddit_comments`, `reddit_posts`, `reddit_message_headers`, `reddit_saved`, `reddit_votes`

@@ -40,12 +40,11 @@ terminal-sessions root="/realm/data/captures/asciinema" output="artefacts/ingest
 terminal-events root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_session_events.jsonl":
     python -m lynchpin.ingest.instrumentation terminal-events --root {{root}} --output {{output}}
 
-terminal-metadata root="/realm/data/captures/asciinema" sessions_output="artefacts/ingest/instrumentation/terminal_sessions.jsonl" events_output="artefacts/ingest/instrumentation/terminal_session_events.jsonl":
-    python -m lynchpin.ingest.instrumentation terminal-sessions --root {{root}} --output {{sessions_output}}
-    python -m lynchpin.ingest.instrumentation terminal-events --root {{root}} --output {{events_output}}
+terminal-metadata root="/realm/data/captures/asciinema" sessions_output="artefacts/ingest/instrumentation/terminal_sessions.jsonl" events_output="artefacts/ingest/instrumentation/terminal_session_events.jsonl" audit_output="artefacts/ingest/instrumentation/terminal_capture_audit.json" audit_detail_output="artefacts/ingest/instrumentation/terminal_capture_audit.jsonl" quarantine_output="artefacts/ingest/instrumentation/terminal_capture_quarantine.jsonl":
+    python -m lynchpin.ingest.instrumentation terminal-metadata --root {{root}} --sessions-output {{sessions_output}} --events-output {{events_output}} --audit-output {{audit_output}} --audit-detail-output {{audit_detail_output}} --quarantine-output {{quarantine_output}}
 
-terminal-audit root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_capture_audit.json" detail_output="artefacts/ingest/instrumentation/terminal_capture_audit.jsonl":
-    python -m lynchpin.ingest.instrumentation audit-terminal --root {{root}} --output {{output}} --detail-output {{detail_output}}
+terminal-audit root="/realm/data/captures/asciinema" output="artefacts/ingest/instrumentation/terminal_capture_audit.json" detail_output="artefacts/ingest/instrumentation/terminal_capture_audit.jsonl" quarantine_output="artefacts/ingest/instrumentation/terminal_capture_quarantine.jsonl":
+    python -m lynchpin.ingest.instrumentation audit-terminal --root {{root}} --output {{output}} --detail-output {{detail_output}} --quarantine-output {{quarantine_output}}
 
 audio-metadata root="/realm/data/captures/audio/raw" output="artefacts/ingest/instrumentation/audio_metadata.jsonl":
     python -m lynchpin.ingest.instrumentation audio --root {{root}} --output {{output}}

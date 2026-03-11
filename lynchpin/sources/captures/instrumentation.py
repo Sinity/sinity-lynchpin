@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from ...core.cache import file_signature, persistent_cache
 from ...core.config import get_config
 
 _REALM_PROJECT_ROOT = Path("/realm/project")
 _LEGACY_PATH_RE = re.compile(r"/realm/data/asciinema_recording/")
 _LEGACY_TTY_RE = re.compile(r"^(?P<host>.+)-(?P<tty>_[A-Za-z0-9_]+)-(?P<stamp>\d{8}T\d{6}Z)$")
 ACTIVE_GAP_SECONDS = 2.0
+FULL_CAST_TIMING_SCAN_BYTES = 16 * 1024 * 1024
+TAIL_CHUNK_BYTES = 256 * 1024
+_CACHE_LOGGER = logging.getLogger(__name__ + ".cachew")
+if _CACHE_LOGGER.level == logging.NOTSET:
+    _CACHE_LOGGER.setLevel(logging.WARNING)
 
 
 @dataclass
@@ -60,7 +67,10 @@ class TerminalSessionMetadata:
     recorder_exit_code: Optional[int]
     cleanup_escalated: Optional[bool]
     has_events: bool
+    timing_source: Optional[str]
     schema_generation: str
+    quality_status: str
+    quality_flags: list[str] = field(default_factory=list)
     field_sources: dict[str, str] = field(default_factory=dict)
     legacy_meta_parse_errors: list[str] = field(default_factory=list)
 
@@ -90,6 +100,7 @@ class TerminalAuditEntry:
     path: str
     session_id: str
     schema_generation: str
+    readable_header: bool
     header_version: Optional[int]
     has_manifest: bool
     has_events: bool
@@ -99,6 +110,11 @@ class TerminalAuditEntry:
     legacy_path_references: int
     has_command: bool
     has_geometry: bool
+    has_activity_estimate: bool
+    duration_seconds: Optional[float]
+    timing_source: Optional[str]
+    status: str
+    issues: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,14 +123,22 @@ class TerminalAuditSummary:
     manifest_count: int = 0
     events_count: int = 0
     legacy_meta_count: int = 0
+    unreadable_header_count: int = 0
     counts_by_generation: dict[str, int] = field(default_factory=dict)
     counts_by_header_version: dict[str, int] = field(default_factory=dict)
+    counts_by_status: dict[str, int] = field(default_factory=dict)
+    counts_by_timing_source: dict[str, int] = field(default_factory=dict)
     missing_manifest_count: int = 0
     missing_events_count: int = 0
     malformed_legacy_meta_count: int = 0
     legacy_path_reference_count: int = 0
     sessions_with_command_count: int = 0
     sessions_with_geometry_count: int = 0
+    missing_activity_estimate_count: int = 0
+    header_only_count: int = 0
+    degraded_count: int = 0
+    damaged_count: int = 0
+    quarantine_candidate_count: int = 0
     date_range_start: Optional[str] = None
     date_range_end: Optional[str] = None
 
@@ -162,11 +186,31 @@ class _LegacyMetaSummary:
     command_count: Optional[int] = None
     event_count: Optional[int] = None
     first_command: Optional[str] = None
+    active_seconds: Optional[float] = None
+    idle_seconds: Optional[float] = None
     valid_lines: int = 0
     invalid_lines: int = 0
     legacy_path_references: int = 0
+    first_event_time: Optional[str] = None
+    last_event_time: Optional[str] = None
     errors: list[str] = field(default_factory=list)
     events: list[TerminalSessionEvent] = field(default_factory=list)
+
+
+@dataclass
+class _CastHeaderSummary:
+    header_json: str
+    duration_seconds: float
+    active_seconds: Optional[float]
+    idle_seconds: Optional[float]
+    timing_source: str
+
+
+@dataclass
+class _CastTimingSummary:
+    duration_seconds: float
+    active_seconds: Optional[float]
+    idle_seconds: Optional[float]
 
 
 def iter_terminal_sessions(root: Path | None = None) -> Iterator[TerminalSessionMetadata]:
@@ -257,6 +301,8 @@ def summarize_terminal_audit(entries: Iterator[TerminalAuditEntry]) -> TerminalA
     summary = TerminalAuditSummary()
     for entry in entries:
         summary.cast_count += 1
+        if not entry.readable_header:
+            summary.unreadable_header_count += 1
         if entry.has_manifest:
             summary.manifest_count += 1
         else:
@@ -274,13 +320,25 @@ def summarize_terminal_audit(entries: Iterator[TerminalAuditEntry]) -> TerminalA
             summary.sessions_with_command_count += 1
         if entry.has_geometry:
             summary.sessions_with_geometry_count += 1
+        if not entry.has_activity_estimate:
+            summary.missing_activity_estimate_count += 1
         summary.counts_by_generation[entry.schema_generation] = (
             summary.counts_by_generation.get(entry.schema_generation, 0) + 1
         )
+        summary.counts_by_status[entry.status] = summary.counts_by_status.get(entry.status, 0) + 1
+        timing_key = entry.timing_source or "unknown"
+        summary.counts_by_timing_source[timing_key] = summary.counts_by_timing_source.get(timing_key, 0) + 1
         version_key = "unknown" if entry.header_version is None else str(entry.header_version)
         summary.counts_by_header_version[version_key] = (
             summary.counts_by_header_version.get(version_key, 0) + 1
         )
+        if entry.status == "header-only":
+            summary.header_only_count += 1
+        elif entry.status == "degraded":
+            summary.degraded_count += 1
+        elif entry.status == "damaged":
+            summary.damaged_count += 1
+            summary.quarantine_candidate_count += 1
 
         session_time = _session_time_from_id(entry.session_id)
         if session_time:
@@ -335,7 +393,7 @@ def _iter_cast_paths(scan_root: Path) -> Iterator[Path]:
 
 
 def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata]:
-    header, duration_seconds, active_seconds, idle_seconds = _read_cast_header(cast_path)
+    header, duration_seconds, active_seconds, idle_seconds, timing_source = _read_cast_header(cast_path)
     if header is None:
         return None
 
@@ -412,6 +470,7 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         assign("idle_seconds", _ms_to_seconds(manifest.get("idle_ms")), "manifest")
         assign("command_count", _to_int(manifest.get("command_count")), "manifest")
         assign("event_count", _to_int(manifest.get("event_count")), "manifest")
+        assign("command", _to_text(manifest.get("command")), "manifest")
         assign("title", _to_text(manifest.get("title")), "manifest")
         assign("shell", _to_text(manifest.get("shell")), "manifest")
         assign("host", _to_text(manifest.get("host")), "manifest")
@@ -437,15 +496,15 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
 
     start_ts = _to_float(header.get("timestamp"))
     created_at = _local_iso_from_epoch_seconds(start_ts)
-    finished_at = _local_iso_from_epoch_seconds(start_ts + duration_seconds) if start_ts is not None and duration_seconds > 0 else None
+    finished_at = _local_iso_from_epoch_seconds(start_ts + duration_seconds) if start_ts is not None else None
     env = header.get("env") or {}
     term = header.get("term") or {}
 
     assign("created_at", created_at, "cast_header")
     assign("finished_at", finished_at, "cast_header")
-    assign("duration_seconds", duration_seconds if duration_seconds > 0 else None, "cast_header")
-    assign("active_seconds", active_seconds if active_seconds > 0 else None, "cast_header")
-    assign("idle_seconds", idle_seconds if idle_seconds > 0 else None, "cast_header")
+    assign("duration_seconds", duration_seconds, "cast_header")
+    assign("active_seconds", active_seconds, "cast_header")
+    assign("idle_seconds", idle_seconds, "cast_header")
     assign("command", _to_text(header.get("command")), "cast_header")
     assign("title", _to_text(header.get("title")), "cast_header")
     assign("shell", _to_text(env.get("SHELL")), "cast_header")
@@ -458,13 +517,19 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
     assign("tty", _to_text(env.get("SINNIX_CAPTURE_TTY")), "cast_header")
     assign("terminal", _to_text(env.get("SINNIX_CAPTURE_TERMINAL")), "cast_header")
     assign("start_cwd", _to_text(env.get("SINNIX_CAPTURE_START_CWD")), "cast_header")
+    assign("project_root", _to_text(env.get("SINNIX_CAPTURE_PROJECT_ROOT")), "cast_header")
     assign("repo_root", _to_text(env.get("SINNIX_CAPTURE_START_REPO_ROOT") or env.get("SINNIX_CAPTURE_REPO_ROOT")), "cast_header")
+    assign("repo_branch", _to_text(env.get("SINNIX_CAPTURE_START_REPO_BRANCH")), "cast_header")
+    assign("repo_commit", _to_text(env.get("SINNIX_CAPTURE_START_REPO_COMMIT")), "cast_header")
+    assign("repo_dirty", _to_bool(env.get("SINNIX_CAPTURE_START_REPO_DIRTY")), "cast_header")
     assign("session_id", _to_text(env.get("SINNIX_CAPTURE_SESSION_ID")), "cast_header")
 
     assign("created_at", event_summary.started_at, "events")
     assign("finished_at", event_summary.finished_at, "events")
     assign("command_count", event_summary.command_count, "events")
     assign("event_count", event_summary.event_count, "events")
+    assign("active_seconds", event_summary.active_seconds, "events")
+    assign("idle_seconds", event_summary.idle_seconds, "events")
     assign("command", event_summary.first_command, "events")
     assign("start_cwd", event_summary.start_cwd, "events")
     assign("final_cwd", event_summary.final_cwd, "events")
@@ -497,6 +562,8 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
     assign("finished_at", legacy.finished_at, "legacy_meta")
     assign("command_count", legacy.command_count, "legacy_meta")
     assign("event_count", legacy.event_count, "legacy_meta")
+    assign("active_seconds", legacy.active_seconds, "legacy_meta")
+    assign("idle_seconds", legacy.idle_seconds, "legacy_meta")
     assign("command", legacy.first_command, "legacy_meta")
     assign("start_cwd", legacy.start_cwd, "legacy_meta")
     assign("final_cwd", legacy.final_cwd, "legacy_meta")
@@ -513,6 +580,44 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
     assign("exit_code", legacy.exit_code, "legacy_meta")
 
     schema_generation = _schema_generation(manifest, legacy, header)
+    has_events = events_path.exists() or (legacy.event_count or 0) > 0
+
+    if values["finished_at"] is None and values["created_at"] is not None and values["duration_seconds"] is not None:
+        created_dt = _parse_iso_datetime(values["created_at"])
+        if created_dt is not None:
+            derived_finished = (created_dt + timedelta(seconds=float(values["duration_seconds"]))).isoformat()
+            assign("finished_at", derived_finished, "derived")
+
+    if values["duration_seconds"] is None:
+        assign(
+            "duration_seconds",
+            _duration_between(values["created_at"], values["finished_at"]),
+            "derived",
+        )
+
+    if values["active_seconds"] is None and timing_source in {"tail", "full-fallback"}:
+        full_timing = _read_cast_full_timing(cast_path)
+        if full_timing.active_seconds is not None:
+            values["duration_seconds"] = full_timing.duration_seconds
+            values["active_seconds"] = full_timing.active_seconds
+            values["idle_seconds"] = full_timing.idle_seconds
+            field_sources["duration_seconds"] = "cast_full_timing"
+            field_sources["active_seconds"] = "cast_full_timing"
+            field_sources["idle_seconds"] = "cast_full_timing"
+            timing_source = "full-backfill"
+
+    quality_status, quality_flags = _assess_session_quality(
+        manifest_exists=manifest_path.exists(),
+        has_events=has_events,
+        schema_generation=schema_generation,
+        created_at=values["created_at"],
+        finished_at=values["finished_at"],
+        duration_seconds=values["duration_seconds"],
+        active_seconds=values["active_seconds"],
+        command=values["command"],
+        timing_source=timing_source,
+        legacy=legacy,
+    )
 
     return TerminalSessionMetadata(
         session_id=str(values["session_id"] or session_id),
@@ -554,8 +659,11 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         exit_reason=values["exit_reason"],
         recorder_exit_code=values["recorder_exit_code"],
         cleanup_escalated=values["cleanup_escalated"],
-        has_events=events_path.exists() or (legacy.event_count or 0) > 0,
+        has_events=has_events,
+        timing_source=timing_source,
         schema_generation=schema_generation,
+        quality_status=quality_status,
+        quality_flags=quality_flags,
         field_sources=field_sources,
         legacy_meta_parse_errors=legacy.errors,
     )
@@ -614,10 +722,6 @@ def _parse_terminal_session_events(cast_path: Path) -> Iterator[TerminalSessionE
 
 
 def _audit_terminal_session(cast_path: Path) -> Optional[TerminalAuditEntry]:
-    header, _, _, _ = _read_cast_header(cast_path)
-    if header is None:
-        return None
-
     session_id = _session_id(cast_path)
     manifest_path, events_path, legacy_meta_path = _sidecar_paths(cast_path)
     legacy = (
@@ -625,35 +729,132 @@ def _audit_terminal_session(cast_path: Path) -> Optional[TerminalAuditEntry]:
         if legacy_meta_path.exists()
         else _LegacyMetaSummary()
     )
+    header, duration_seconds, _, _, timing_source = _read_cast_header(cast_path)
+    if header is None:
+        return TerminalAuditEntry(
+            path=str(cast_path),
+            session_id=session_id,
+            schema_generation=_schema_generation(_load_json_file(manifest_path), legacy, None),
+            readable_header=False,
+            header_version=None,
+            has_manifest=manifest_path.exists(),
+            has_events=events_path.exists() or (legacy.event_count or 0) > 0,
+            has_legacy_meta=legacy_meta_path.exists(),
+            valid_legacy_meta_lines=legacy.valid_lines,
+            invalid_legacy_meta_lines=legacy.invalid_lines,
+            legacy_path_references=legacy.legacy_path_references,
+            has_command=False,
+            has_geometry=False,
+            has_activity_estimate=False,
+            duration_seconds=None,
+            timing_source=None,
+            status="damaged",
+            issues=["unreadable_header"],
+        )
+
+    session = _parse_terminal_session(cast_path)
     term = header.get("term") or {}
 
     return TerminalAuditEntry(
         path=str(cast_path),
         session_id=session_id,
-        schema_generation=_schema_generation(_load_json_file(manifest_path), legacy, header),
+        schema_generation=(session.schema_generation if session else _schema_generation(_load_json_file(manifest_path), legacy, header)),
+        readable_header=True,
         header_version=_to_int(header.get("version")),
         has_manifest=manifest_path.exists(),
-        has_events=events_path.exists(),
+        has_events=events_path.exists() or (legacy.event_count or 0) > 0,
         has_legacy_meta=legacy_meta_path.exists(),
         valid_legacy_meta_lines=legacy.valid_lines,
         invalid_legacy_meta_lines=legacy.invalid_lines,
         legacy_path_references=legacy.legacy_path_references,
-        has_command=_to_text(header.get("command")) is not None,
+        has_command=(session.command is not None) if session else (_to_text(header.get("command")) is not None),
         has_geometry=_to_int(term.get("cols") or header.get("width")) is not None and _to_int(term.get("rows") or header.get("height")) is not None,
+        has_activity_estimate=session.active_seconds is not None if session else False,
+        duration_seconds=session.duration_seconds if session else duration_seconds,
+        timing_source=session.timing_source if session else timing_source,
+        status=session.quality_status if session else "ok",
+        issues=list(session.quality_flags) if session else [],
     )
 
 
-def _read_cast_header(path: Path) -> tuple[Optional[dict[str, Any]], float, float, float]:
+@persistent_cache(
+    "terminal_cast_summaries",
+    depends_on=lambda path: file_signature(path),
+    logger=_CACHE_LOGGER,
+)
+def _read_cast_summary(path: Path) -> Optional[_CastHeaderSummary]:
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as fh:
             header_line = fh.readline()
             if not header_line:
-                return None, 0.0, 0.0, 0.0
-            header = json.loads(header_line)
+                return None
+    except OSError:
+        return None
 
+    try:
+        header = json.loads(header_line)
+    except json.JSONDecodeError:
+        return None
+
+    stat = path.stat()
+    duration_seconds: float = 0.0
+    active_seconds: Optional[float] = None
+    idle_seconds: Optional[float] = None
+    timing_source = "tail"
+
+    if stat.st_size <= FULL_CAST_TIMING_SCAN_BYTES:
+        duration_seconds, active_seconds, idle_seconds = _scan_cast_timings(path)
+        timing_source = "full"
+    else:
+        last_time = _read_last_cast_timestamp(path)
+        if last_time is None:
+            duration_seconds, active_seconds, idle_seconds = _scan_cast_timings(path)
+            timing_source = "full-fallback"
+        else:
+            duration_seconds = last_time
+
+    return _CastHeaderSummary(
+        header_json=json.dumps(header, ensure_ascii=False, sort_keys=True),
+        duration_seconds=duration_seconds,
+        active_seconds=active_seconds,
+        idle_seconds=idle_seconds,
+        timing_source=timing_source,
+    )
+
+
+def _read_cast_header(path: Path) -> tuple[Optional[dict[str, Any]], float, Optional[float], Optional[float], Optional[str]]:
+    summary = _read_cast_summary(path)
+    if summary is None:
+        return None, 0.0, None, None, None
+    try:
+        header = json.loads(summary.header_json)
+    except json.JSONDecodeError:
+        return None, 0.0, None, None, None
+    return header, summary.duration_seconds, summary.active_seconds, summary.idle_seconds, summary.timing_source
+
+
+@persistent_cache(
+    "terminal_cast_full_timing",
+    depends_on=lambda path: file_signature(path),
+    logger=_CACHE_LOGGER,
+)
+def _read_cast_full_timing(path: Path) -> _CastTimingSummary:
+    duration_seconds, active_seconds, idle_seconds = _scan_cast_timings(path)
+    return _CastTimingSummary(
+        duration_seconds=duration_seconds,
+        active_seconds=active_seconds,
+        idle_seconds=idle_seconds,
+    )
+
+
+def _scan_cast_timings(path: Path) -> tuple[float, Optional[float], Optional[float]]:
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as fh:
+            next(fh, None)
             duration_seconds = 0.0
             active_seconds = 0.0
             idle_seconds = 0.0
+            previous_time = 0.0
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -663,19 +864,56 @@ def _read_cast_header(path: Path) -> tuple[Optional[dict[str, Any]], float, floa
                 except json.JSONDecodeError:
                     continue
                 if isinstance(event, list) and event:
-                    delay = _to_float(event[0])
-                    if delay is None or delay < 0:
+                    timestamp = _to_float(event[0])
+                    if timestamp is None or timestamp < 0:
                         continue
-                    duration_seconds += delay
-                    active_seconds += min(delay, ACTIVE_GAP_SECONDS)
-                    idle_seconds += max(delay - ACTIVE_GAP_SECONDS, 0.0)
-            return header, duration_seconds, active_seconds, idle_seconds
-    except (OSError, json.JSONDecodeError):
-        return None, 0.0, 0.0, 0.0
+                    delta = max(timestamp - previous_time, 0.0)
+                    duration_seconds = max(duration_seconds, timestamp)
+                    active_seconds += min(delta, ACTIVE_GAP_SECONDS)
+                    idle_seconds += max(delta - ACTIVE_GAP_SECONDS, 0.0)
+                    previous_time = max(previous_time, timestamp)
+            return duration_seconds, active_seconds, idle_seconds
+    except OSError:
+        return 0.0, None, None
+
+
+def _read_last_cast_timestamp(path: Path) -> Optional[float]:
+    try:
+        file_size = path.stat().st_size
+        if file_size <= 0:
+            return None
+
+        with path.open("rb") as fh:
+            buffer = b""
+            offset = file_size
+            while offset > 0:
+                read_size = min(TAIL_CHUNK_BYTES, offset)
+                offset -= read_size
+                fh.seek(offset)
+                buffer = fh.read(read_size) + buffer
+                lines = [line.strip() for line in buffer.splitlines() if line.strip()]
+                if offset > 0 and len(lines) < 2:
+                    continue
+                for raw in reversed(lines):
+                    try:
+                        event = json.loads(raw.decode("utf-8", errors="ignore"))
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, list) and event:
+                        timestamp = _to_float(event[0])
+                        if timestamp is not None and timestamp >= 0:
+                            return timestamp
+            return None
+    except OSError:
+        return None
 
 
 def _parse_legacy_meta(path: Path, cast_path: Path, session_id: str, *, include_events: bool) -> _LegacyMetaSummary:
     summary = _LegacyMetaSummary()
+    previous_event_dt: Optional[datetime] = None
+    active_seconds = 0.0
+    idle_seconds = 0.0
+    saw_activity_time = False
 
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as fh:
@@ -697,6 +935,17 @@ def _parse_legacy_meta(path: Path, cast_path: Path, session_id: str, *, include_
                 summary.event_count = (summary.event_count or 0) + 1
                 event_type = _to_text(record.get("type")) or "legacy"
                 event_time = _to_text(record.get("time"))
+                if event_time:
+                    summary.first_event_time = summary.first_event_time or event_time
+                    summary.last_event_time = event_time
+                event_dt = _parse_iso_datetime(event_time)
+                if event_dt is not None:
+                    saw_activity_time = True
+                    if previous_event_dt is not None:
+                        delta = max((event_dt - previous_event_dt).total_seconds(), 0.0)
+                        active_seconds += min(delta, ACTIVE_GAP_SECONDS)
+                        idle_seconds += max(delta - ACTIVE_GAP_SECONDS, 0.0)
+                    previous_event_dt = event_dt
                 pwd = _to_text(record.get("pwd") or record.get("cwd"))
                 repo_root = _to_text(record.get("repo_root"))
                 project_root = _to_text(record.get("project_root")) or _guess_project_root(pwd or repo_root)
@@ -767,6 +1016,12 @@ def _parse_legacy_meta(path: Path, cast_path: Path, session_id: str, *, include_
     except OSError as exc:
         summary.errors.append(str(exc))
 
+    if saw_activity_time:
+        summary.active_seconds = active_seconds
+        summary.idle_seconds = idle_seconds
+    summary.started_at = summary.started_at or summary.first_event_time
+    summary.finished_at = summary.finished_at or summary.last_event_time
+
     return summary
 
 
@@ -774,6 +1029,8 @@ def _parse_legacy_meta(path: Path, cast_path: Path, session_id: str, *, include_
 class _SessionEventSummary:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    first_event_time: Optional[str] = None
+    last_event_time: Optional[str] = None
     start_cwd: Optional[str] = None
     final_cwd: Optional[str] = None
     project_root: Optional[str] = None
@@ -790,13 +1047,30 @@ class _SessionEventSummary:
     event_count: Optional[int] = None
     first_command: Optional[str] = None
     exit_code: Optional[int] = None
+    active_seconds: Optional[float] = None
+    idle_seconds: Optional[float] = None
 
 
 def _summarize_session_events(events: Iterator[TerminalSessionEvent]) -> _SessionEventSummary:
     summary = _SessionEventSummary(command_count=0, event_count=0)
+    previous_event_dt: Optional[datetime] = None
+    active_seconds = 0.0
+    idle_seconds = 0.0
+    saw_activity_time = False
 
     for event in events:
         summary.event_count = (summary.event_count or 0) + 1
+        if event.time:
+            summary.first_event_time = summary.first_event_time or event.time
+            summary.last_event_time = event.time
+        event_dt = _parse_iso_datetime(event.time)
+        if event_dt is not None:
+            saw_activity_time = True
+            if previous_event_dt is not None:
+                delta = max((event_dt - previous_event_dt).total_seconds(), 0.0)
+                active_seconds += min(delta, ACTIVE_GAP_SECONDS)
+                idle_seconds += max(delta - ACTIVE_GAP_SECONDS, 0.0)
+            previous_event_dt = event_dt
         if event.type == "session_start":
             summary.started_at = summary.started_at or event.time
             summary.start_cwd = summary.start_cwd or event.pwd
@@ -845,6 +1119,12 @@ def _summarize_session_events(events: Iterator[TerminalSessionEvent]) -> _Sessio
             summary.exit_code = event.exit_code if event.exit_code is not None else summary.exit_code
         elif event.type == "command_end":
             summary.exit_code = event.exit_code if event.exit_code is not None else summary.exit_code
+
+    if saw_activity_time:
+        summary.active_seconds = active_seconds
+        summary.idle_seconds = idle_seconds
+    summary.started_at = summary.started_at or summary.first_event_time
+    summary.finished_at = summary.finished_at or summary.last_event_time
 
     return summary
 
@@ -935,11 +1215,11 @@ def _parse_legacy_meta_line(line: str) -> Optional[dict[str, Any]]:
 
 
 def _extract_legacy_field(line: str, key: str) -> Optional[str]:
-    quoted = re.search(rf'"{re.escape(key)}":"((?:[^"\\]|\\.)*)"', line)
+    quoted = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:[^"\\]|\\.)*)"', line)
     if quoted:
         return _decode_json_fragment(quoted.group(1))
 
-    bare = re.search(rf'"{re.escape(key)}":([^,}}]+)', line)
+    bare = re.search(rf'"{re.escape(key)}"\s*:\s*([^,}}]+)', line)
     if bare:
         return _clean_legacy_token(bare.group(1))
 
@@ -1012,6 +1292,13 @@ def _session_time_from_id(session_id: str) -> Optional[str]:
     match = re.search(r"(\d{13})$", session_id)
     if match:
         return _local_iso_from_epoch_ms(match.group(1))
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", session_id)
+    if match:
+        try:
+            stamp = f"{match.group(1)}T{match.group(2).replace('-', ':')}"
+            return datetime.fromisoformat(stamp).astimezone().isoformat()
+        except ValueError:
+            return None
     match = re.search(r"(\d{8}T\d{6}Z)$", session_id)
     if match:
         try:
@@ -1019,6 +1306,77 @@ def _session_time_from_id(session_id: str) -> Optional[str]:
         except ValueError:
             return None
     return None
+
+
+def _duration_between(start_value: Any, end_value: Any) -> Optional[float]:
+    start = _parse_iso_datetime(_to_text(start_value))
+    end = _parse_iso_datetime(_to_text(end_value))
+    if start is None or end is None:
+        return None
+    return max((end - start).total_seconds(), 0.0)
+
+
+def _assess_session_quality(
+    *,
+    manifest_exists: bool,
+    has_events: bool,
+    schema_generation: str,
+    created_at: Optional[str],
+    finished_at: Optional[str],
+    duration_seconds: Optional[float],
+    active_seconds: Optional[float],
+    command: Optional[str],
+    timing_source: Optional[str],
+    legacy: _LegacyMetaSummary,
+) -> tuple[str, list[str]]:
+    flags: list[str] = []
+
+    if not manifest_exists:
+        flags.append("missing_manifest")
+    if not has_events:
+        flags.append("missing_events")
+    if not created_at:
+        flags.append("missing_created_at")
+    if not finished_at:
+        flags.append("missing_finished_at")
+    if duration_seconds is None:
+        flags.append("missing_duration")
+    if active_seconds is None:
+        flags.append("missing_activity_estimate")
+    if not command:
+        flags.append("missing_command")
+    if timing_source in {"tail", "full-fallback"}:
+        flags.append("timing_estimated")
+    if timing_source is None:
+        flags.append("timing_unavailable")
+    if legacy.invalid_lines > 0:
+        flags.append("invalid_legacy_meta")
+    if schema_generation == "legacy-meta" and legacy.valid_lines > 0 and legacy.started_at is None and legacy.finished_at is None:
+        flags.append("legacy_sparse_events")
+    if not has_events and not manifest_exists and schema_generation in {"asciicast-v2", "asciicast-v3"}:
+        flags.append("header_only")
+    if manifest_exists and not has_events:
+        flags.append("broken_new_model")
+
+    status = "ok"
+    if "broken_new_model" in flags or "invalid_legacy_meta" in flags:
+        status = "damaged"
+    elif "header_only" in flags:
+        status = "header-only"
+    elif any(
+        flag in flags
+        for flag in (
+            "missing_created_at",
+            "missing_finished_at",
+            "missing_duration",
+            "missing_activity_estimate",
+            "legacy_sparse_events",
+            "timing_unavailable",
+        )
+    ):
+        status = "degraded"
+
+    return status, flags
 
 
 def _read_json_lines(path: Path) -> Iterator[dict[str, Any]]:

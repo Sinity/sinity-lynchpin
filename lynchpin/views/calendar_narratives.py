@@ -227,12 +227,18 @@ def _instrumentation_line(instrumentation: Dict[str, Any]) -> str:
     capture_mode = str(instrumentation.get("terminal_capture_mode") or "unknown")
     event_count = int(instrumentation.get("terminal_events", 0) or 0)
     command_count = int(instrumentation.get("terminal_command_count", 0) or 0)
+    duration_hours = float(instrumentation.get("terminal_duration_hours", 0.0) or 0.0)
     active_hours = float(instrumentation.get("terminal_active_hours", 0.0) or 0.0)
     idle_hours = float(instrumentation.get("terminal_idle_hours", 0.0) or 0.0)
     command_failures = int(instrumentation.get("terminal_command_failures", 0) or 0)
     session_failures = int(instrumentation.get("terminal_session_failures", 0) or 0)
     manifest_gaps = int(instrumentation.get("terminal_sessions_missing_manifest", 0) or 0)
     event_gaps = int(instrumentation.get("terminal_sessions_missing_events", 0) or 0)
+    degraded_sessions = int(instrumentation.get("terminal_degraded_sessions", 0) or 0)
+    damaged_sessions = int(instrumentation.get("terminal_damaged_sessions", 0) or 0)
+    estimated_timing_sessions = int(instrumentation.get("terminal_estimated_timing_sessions", 0) or 0)
+    unknown_activity_sessions = int(instrumentation.get("terminal_unknown_activity_sessions", 0) or 0)
+    unknown_activity_hours = float(instrumentation.get("terminal_unknown_activity_hours", 0.0) or 0.0)
     repo_map = instrumentation.get("terminal_repos") or {}
     repo_text = ", ".join(f"{name} ({count})" for name, count in list(repo_map.items())[:3]) or "none"
     parts = [
@@ -242,12 +248,19 @@ def _instrumentation_line(instrumentation: Dict[str, Any]) -> str:
         f"{command_count} command(s)",
         f"{active_hours:.2f}h active",
         f"{idle_hours:.2f}h idle",
+        f"{duration_hours:.2f}h duration",
         f"repos: {repo_text}",
     ]
     if command_failures or session_failures:
         parts.append(f"failures: {command_failures} cmd / {session_failures} session")
+    if degraded_sessions or damaged_sessions:
+        parts.append(f"quality: {degraded_sessions} degraded / {damaged_sessions} damaged")
     if manifest_gaps or event_gaps:
         parts.append(f"gaps: {manifest_gaps} manifestless / {event_gaps} eventless")
+    if estimated_timing_sessions:
+        parts.append(f"timing estimates: {estimated_timing_sessions}")
+    if unknown_activity_sessions:
+        parts.append(f"activity unknown: {unknown_activity_sessions} session(s) / {unknown_activity_hours:.2f}h")
     return ", ".join(parts)
 
 

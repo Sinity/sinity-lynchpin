@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Callable, Iterable, ParamSpec, Tuple, TypeVar
 
@@ -17,6 +18,7 @@ def persistent_cache(
     *,
     depends_on: Callable[P, object] | None = None,
     chunk_by: int | None = None,
+    logger: logging.Logger | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Thin wrapper over cachew that stores sqlite caches under artefacts/lynchpin/cache."""
 
@@ -30,6 +32,8 @@ def persistent_cache(
             kwargs["depends_on"] = depends_on
         if chunk_by is not None:
             kwargs["chunk_by"] = chunk_by
+        if logger is not None:
+            kwargs["logger"] = logger
 
         return _cachew(**kwargs)(func)
 

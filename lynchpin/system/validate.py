@@ -320,10 +320,13 @@ def lynchpin(
         detail = (
             f"root={cfg.asciinema_root} "
             f"generation={summary.counts_by_generation} "
+            f"status={summary.counts_by_status} "
             f"manifest={summary.manifest_count}/{summary.cast_count} "
             f"events={summary.events_count}/{summary.cast_count} "
             f"legacy={summary.legacy_meta_count} "
-            f"malformed_legacy={summary.malformed_legacy_meta_count}"
+            f"activity_missing={summary.missing_activity_estimate_count} "
+            f"malformed_legacy={summary.malformed_legacy_meta_count} "
+            f"quarantine={summary.quarantine_candidate_count}"
         )
         if truncated:
             detail += f" (sample {sample_limit})"
