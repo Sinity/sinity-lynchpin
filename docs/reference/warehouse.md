@@ -11,10 +11,10 @@ The warehouse is a query surface, not a primary store. Raw exports stay under `/
 `parquet` is the recommended default for portable views. DuckDB per-source outputs are still supported, but view definitions that use `ATTACH` require re-attaching on each new connection.
 
 ## Commands
-- Build views only (fast): `just lynchpin-warehouse`
-- Materialize per-source outputs: `just lynchpin-warehouse mode=materialize format=parquet`
-- Refresh both outputs + views: `just lynchpin-warehouse mode=refresh format=parquet`
-- One-shot bundle: `just materialize` (runs webhistory, ledgers, warehouse, optional velocity/baseline)
+- Build views only (fast): `python -m lynchpin.views.warehouse build`
+- Materialize per-source outputs: `python -m lynchpin.views.warehouse materialize --format parquet`
+- Refresh both outputs + views: `python -m lynchpin.views.warehouse refresh --format parquet`
+- One-shot bundle: `python -m lynchpin.system.materialize` (runs webhistory, ledgers, warehouse, optional velocity, and canonical baseline/life_timeline rebuilds)
 
 Config overrides:
 - `LYNCHPIN_WAREHOUSE_ROOT` for the per-source output root.

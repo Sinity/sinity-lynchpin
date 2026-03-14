@@ -7,38 +7,49 @@ Goal: turn the repository into a “lynchpin” layer of lazy, cacheable Python 
 - Many upstream modules (Reddit, Telegram, ActivityWatch, Taskwarrior, Last.fm, LinkedIn exports, etc.) already exist; we can vendor/adapt them instead of rewriting.
 - Public APIs (e.g., Reddit live data, GitHub REST, Spotify) complement GDPR exports so we always have a “most recent” view even before a takeout lands locally.
 
-## Candidate modules (in addition to existing canonical exports)
+## Active configured modules
+
+These are the vendored HPI modules that currently have a stable local config plus an active validation contract:
 
 | Source / module | Repo reference | Notes / local mapping |
 | --- | --- | --- |
-| `my.coding.commits` | HPI core | Complements `lynchpin.sources.indices.gitstats` + calendar dashboards. |
-| `my.calendar.holidays` | HPI core | Annotate focus reports with public holidays. |
+| `my.coding.commits` | HPI core | Raw commit feed over local repos; complements `lynchpin.sources.indices.gitstats`. |
+| `my.calendar.holidays` | HPI core | Holiday metadata for future overlays. |
+| `my.fbmessenger` | HPI core | Messenger chat surface over the processed `fbmessengerexport` SQLite export. |
+| `my.smscalls` | HPI core | Reads the local SMS/call export tree. |
+| `my.sleep.manual` | hpi-sinity | Adapter over the merged sleep JSONL already used by Lynchpin. |
+| `my.money` | hpi-sinity | Adapter over the local ledger journal. |
+| `my.webhistory` | hpi-sinity | Adapter over the canonical merged webhistory NDJSON. |
+| `my.browser` | HPI core | Secondary browserexport-compatible view over filtered Gestalt raw exports plus the live Chrome profile DB. |
+| `my.google.takeout.parser` | HPI core | Secondary parser surface over the local Takeout archive set. |
+| `my.goodreads` | HPI core | Goodreads export support where the expected export exists. |
+| `my.spotify.gdpr` | purarue fork | Secondary parser over Spotify GDPR exports. |
+| `my.activitywatch`, `my.activitywatch.active_window` | madelinecameron, purarue | ActivityWatch companion surface. |
+| `my.atuin` | hpi-sinity | HPI-style view over the same Atuin DB Lynchpin reads directly. |
+
+## Dormant vendored modules
+
+These stay vendored as source material, but they are out of the default contract until a concrete local use-case reactivates them:
+
+| Source / module | Repo reference | Notes / local mapping |
+| --- | --- | --- |
 | `my.body.weight`, `my.body.exercise.all`, `my.sleep.manual` | HPI core | Map to `/realm/data/exports/health/processed/` plus manual logs. |
-| `my.fbmessenger` | HPI core | Live/GDPR connector for Messenger chat history. |
 | `my.github.*` (`all`, `gdpr`, `ghexport`) | HPI core | Merge GDPR data with live API pulls. |
 | `my.lastfm` | HPI core | Already partly represented via life timeline; integrate for richer stats. |
 | `my.location.google` | HPI core | Feed location overlays from Takeout exports. |
-| `my.photos.main` | HPI core | Index Takeout photos; tie into life timeline. |
+| `my.photos.main` | HPI core | Dormant until a stable canonical photo root exists under `/realm/data/...`. |
 | `my.reddit` | HPI core + API | Use GDPR exports + live API to keep recency. |
-| `my.smscalls` | HPI core | Once call/SMS exports are stabilized locally. |
 | `my.twitter.*` (`all`, `archive`, `twint`) | HPI core | Merge GDPR/Twint data with live API. |
-| `my.money` | HPI core | Stitch finance exports into ledger dashboards. |
-| `my.webhistory`, `my.browser`, `my.google.takeout.parser` | HPI core | Replace bespoke parsers for Chrome/Takeout data. |
-| `my.goodreads` | HPI core | Hook into reading stats already surfaced in life timeline. |
-| `my.spotify.gdpr` | purarue fork | Alternative to the local `lynchpin.sources.exports.spotify` parser. |
-| `my.activitywatch`, `my.activitywatch.active_window` | HPI core + https://github.com/madelinecameron/hpi | Slot into the ActivityWatch DB we already mirror. |
-| `my.taskwarrior` / `my.atuin` / `my.zsh` / `my.bash` | https://github.com/purarue/HPI | Expose CLI history + task data (Atuin DB lives under `/realm/data/` already). |
+| `my.taskwarrior` / `my.zsh` / `my.bash` | https://github.com/purarue/HPI | Extra CLI history/task surfaces not needed in the current contract. |
 | `my.linkedin.privacy_export` | Fork variant | Useful once LinkedIn privacy exports are captured. |
 | `my.steam.scraper` | Fork variant | Sync Steam library/play history when needed. |
 
-> Also keep local modules for: `my.coding.commits`, `my.github.all`, `my.photos.main`, `my.messenger`, `my.activitywatch`, `my.datasette` queries, etc.—basically every “my.*” label in the user’s list can map to an HPI-style provider inside `lynchpin/`.
-
 ## Integration plan (stopgap-friendly)
 1. **Vendor once, keep in-tree.** Keep the upstream HPI snapshots (plus madelinecameron/purarue forks) under `external/` without tying our Git history to upstream. This keeps things lightweight and makes selective pruning easy.
-2. **Strip down to what we need.** Delete unused providers only when we’re confident they’re redundant; keep the remaining modules as scaffolding we can reshape into `lynchpin/`.
+2. **Strip down the active contract.** Keep vendored snapshots available for archaeology or future reuse, but default docs, validation, and runbooks stay limited to the modules with stable local inputs and active consumers.
 3. **Adapt paths + caching.** Point `my.config` at `/realm/data/...` via `config/my/config.py` (loaded through `MY_CONFIG`). `lynchpin.cache` now wraps `cachew` and all core lazy modules use it.
 4. **Expose a consistent API.** Keep `lynchpin.*` as the local export-facing surface, and use vendored `my.*` modules for live/API or upstream exports. Calendar dossiers (if we keep them) should become thin wrappers around these functions; otherwise, HTML generation can read directly from the DuckDB/Parquet cache that the modules maintain.
-5. **Datasette + DuckDB.** After modules populate the DuckDB warehouse, add a `just datasette` command for local browsing. Use DuckDB as the memoized backing store by default; mirror to SQLite only when Datasette or other tools need it. *(Status: `just lynchpin-warehouse` builds `artefacts/lynchpin/warehouse.duckdb`; `just lynchpin-datasette` launches Datasette on top of it.)*
+5. **Datasette + DuckDB.** After modules populate the DuckDB warehouse, use direct CLI entrypoints for local browsing. Use DuckDB as the memoized backing store by default; mirror to SQLite only when Datasette or other tools need it. *(Status: `python -m lynchpin.views.warehouse build` builds `artefacts/lynchpin/warehouse.duckdb`; `datasette artefacts/lynchpin/warehouse.duckdb` browses it.)*
 6. **Document and move on.** Update `AGENTS.md`/`repo-organization` to point assistants at the new API, but keep reminding ourselves that this is still a stopgap: invest only where it unblocks current work, avoid over-polishing, and leave room for Sinex to replace it later.
 
 ## Datasette
@@ -62,9 +73,9 @@ Goal: turn the repository into a “lynchpin” layer of lazy, cacheable Python 
 - Ledger journal (`lynchpin.sources.libraries.finance`)
 - Sinevec embedding state/token usage (`lynchpin.sinevec`)
 - Calendar snapshots that stitch the above (`lynchpin.views.calendar`)
-- DuckDB builder + Datasette helper (now covering Reddit, Spotify, finance, Polylogue, Sinevec) (`lynchpin.views.warehouse`, `just lynchpin-warehouse`, `just lynchpin-datasette`)
+- DuckDB builder + Datasette helper (now covering Reddit, Spotify, finance, Polylogue, Sinevec) (`lynchpin.views.warehouse`, `python -m lynchpin.views.warehouse build`, `datasette artefacts/lynchpin/warehouse.duckdb`)
 
-Upcoming modules will hook directly into ChatGPT/Claude webapps via the logged-in Chrome profile (share cookies/session tokens) so we can scrape conversations even when Polylogue hasn’t rendered Markdown yet.
+Upcoming modules will hook directly into ChatGPT/Claude webapps via the logged-in Chrome profile (share cookies/session tokens) so we can scrape conversations even when Polylogue hasn’t rendered Markdown yet. For GitHub/Twitter/LinkedIn/Steam, the current vendored HPI modules still require exported files or scraper outputs; see [hpi-service-bootstrap.md](/realm/project/sinity-lynchpin/docs/reference/hpi-service-bootstrap.md).
 
 ## Naming reminder
 - Repo now lives at `sinity-lynchpin`; the API/package remains “Lynchpin” (rename again only if we eventually align with a broader `sin*` naming scheme such as `sinchpin` or `sintrum-lynchpin`).

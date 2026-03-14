@@ -8,17 +8,19 @@ the live data mirror.
 
 ### Render Day Views
 ```
-direnv exec /realm/project/sinity-lynchpin just calendar-refresh start=2025-12-28 end=2025-12-31
+direnv exec /realm/project/sinity-lynchpin \
+  python -m lynchpin.views.calendar_views 2025-12-28 2025-12-31
 ```
-This runs `lynchpin.views.calendar_views`, calling
+This runs the `lynchpin.views.calendar_views` CLI, calling
 `lynchpin.views.calendar.load_day()` for each date. By default it writes Markdown under
 `artefacts/calendar/views/day-YYYY-MM-DD.md`, but you can stream results instead:
 
 ```
-direnv exec /realm/project/sinity-lynchpin just calendar-refresh start=2025-12-28 end=2025-12-31 write_files=false json=true
+direnv exec /realm/project/sinity-lynchpin \
+  python -m lynchpin.views.calendar_views 2025-12-28 2025-12-31 --no-write-files --json
 ```
 
-Set `write_files=false` to skip disk writes, and `json=true` to emit one JSON object per line (the `DaySummary.to_dict()` payload) for downstream tooling.
+Set `--no-write-files` to skip disk writes, and `--json` to emit one JSON object per line (the `DaySummary.to_dict()` payload) for downstream tooling.
 
 Each generated view (or streamed payload) includes:
 - Focus/AFK hour totals and top applications/domains from ActivityWatch.
@@ -30,21 +32,16 @@ Each generated view (or streamed payload) includes:
 
 ### Generate Narratives
 ```
-direnv exec /realm/project/sinity-lynchpin just calendar-narrative 2025-12-28 2025-12-31 mode=reflective
+direnv exec /realm/project/sinity-lynchpin \
+  python -m lynchpin.views.calendar_narratives 2025-12-28 2025-12-31 --mode reflective
 ```
 `lynchpin.views.calendar_narratives` reads directly from `lynchpin.views.calendar`, so narratives
 always reflect the same data the view builder
 produces. Prompts and outputs live under `artefacts/calendar/narratives/`.
 
-## Chat Scraping
-`lynchpin.chat_scraper` is the staging point for the upcoming
-Chrome-profile collectors (ChatGPT, Claude, etc.). Once the scraper lands, the
-view builder will automatically include scraped transcripts without reworking
-any other pipeline code.
-
 ## Next Steps
-1. Integrate the chat scraper so live web-app conversations appear beside the
-   Lynchpin summaries.
-2. Add week/month aggregations on top of the view builder output.
-3. Replace the last references to the deprecated HTML site with lightweight
-   Markdown → static HTML converters once the new view is stable.
+1. Add week/month aggregations on top of the view builder output.
+2. Replace the last references to the deprecated HTML site with lightweight
+   Markdown to static HTML converters once the new view is stable.
+3. Extend the calendar summaries with more warehouse-backed source slices where
+   the current per-day dossier is still thin.

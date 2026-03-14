@@ -263,6 +263,7 @@ EOF
               paho-mqtt
             ];
             doCheck = false;
+            dontCheckRuntimeDeps = true;
           };
 
           endoapi = prev.buildPythonPackage rec {
@@ -325,7 +326,7 @@ EOF
               hatch-vcs
             ];
             propagatedBuildInputs = with final; [
-              PyGithub
+              pygithub
               orjson
               colorlog
               ijson
@@ -471,7 +472,7 @@ EOF
               owner = "purarue";
               repo = "active_window";
               rev = "main";
-              hash = "sha256-wT7vz7ONhGETPuT31pe3jI2MmU6Vnz+2be/Tdv5oTbg=";
+              hash = "sha256-jlZCAckEsc1RSgsFC4FdQYg5qoL7Mk497xBBF4IWW10=";
             };
             nativeBuildInputs = with prev; [
               setuptools
@@ -572,7 +573,7 @@ EOF
             taskwarrior
             aw-watcher-window
             active_window
-            PyGithub
+            pygithub
             praw
           ]
         );
@@ -588,9 +589,102 @@ EOF
             remotes
           ];
         };
+        lynchpinPackage = python.pkgs.buildPythonPackage {
+          pname = "lynchpin";
+          version = "0.1.0";
+          pyproject = true;
+          src = self;
+
+          build-system = with python.pkgs; [
+            setuptools
+          ];
+
+          dependencies = with python.pkgs; [
+            requests
+            click
+            cachew
+            plotly
+            beautifulsoup4
+            decorator
+            lxml
+            networkx
+            openpyxl
+            pillow
+            dulwich
+            more-itertools
+            kompress
+            platformdirs
+            typing-extensions
+            gitpython
+            workalendar
+            orgparse
+            geopy
+            ijson
+            python-magic
+            dateparser
+            timezonefinder
+            pytz
+            python-dateutil
+            websockets
+            convertdate
+            lunardate
+            pyluach
+            logzero
+            backoff
+            colorlog
+            orjson
+            simplejson
+            six
+            aenum
+            attrs
+            paho-mqtt
+            python-xlib
+            fbchat
+            browserexport
+            browser-cookie3
+            sqlite-backup
+            python-tcxparser
+            google-takeout-parser
+            pushshift-comment-export
+            endoapi
+            endoexport
+            ghexport
+            rexport
+            goodrexport
+            fbmessengerexport
+            activitywatch
+            taskwarrior
+            aw-watcher-window
+            active_window
+            pygithub
+            praw
+            duckdb
+            datasette
+            pandas
+            pyyaml
+            typer
+          ];
+
+          pythonImportsCheck = [ "lynchpin" ];
+          doCheck = false;
+          dontCheckRuntimeDeps = true;
+
+          meta = {
+            description = "Lynchpin analysis/control-plane Python package";
+            mainProgram = "python";
+          };
+        };
+
+        lynchpinApiPython = python.withPackages (_: [ lynchpinPackage ]);
       in
       {
         formatter = pkgs.nixfmt-rfc-style;
+
+        packages = {
+          default = lynchpinPackage;
+          lynchpin = lynchpinPackage;
+          api-python = lynchpinApiPython;
+        };
 
         devShells.default = pkgs.mkShell {
           name = "sinity-lynchpin";

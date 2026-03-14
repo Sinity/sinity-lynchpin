@@ -43,7 +43,7 @@
 
 1. **Materialize ALL sources into warehouse**
    ```bash
-   python -m lynchpin.views.warehouse --mode materialize \
+   python -m lynchpin.views.warehouse materialize \
      --sources activitywatch,atuin,codex,gitstats,reddit,spotify,finance,goodreads,webhistory
    ```
 
@@ -91,11 +91,12 @@
    - Codex session details
    - Project correlations
 
-### Phase 3: Deprecate Intermediate Artifacts
-**Goal**: Remove redundancy
+### Phase 3: Consolidate Analysis Artifacts
+**Goal**: Remove redundancy and centralize analysis output
 
-1. **Mark as deprecated:**
-   - `artefacts/calendar/` → replaced by activity dashboard
+1. **Consolidate analysis artifacts:**
+   - `artefacts/analysis/derived/` now hosts all processed analysis outputs (formerly scattered across multiple directories)
+   - `artefacts/calendar/` → activity dashboard (sourced from lynchpin modules)
    - `artefacts/core/baseline/` → data now in warehouse
    - `artefacts/knowledge/ledgers/` → query warehouse instead
 
@@ -106,7 +107,7 @@
    - Validation results (metadata)
 
 3. **Update pipelines:**
-   - Remove `just calendar-refresh` → use warehouse + dashboard
+   - Remove direct calendar wrapper surfaces in favor of warehouse + dashboard
    - Remove `just baseline` → use warehouse + dashboard
    - Keep `just artifacts-dashboard` but read from warehouse
 
@@ -128,15 +129,14 @@
 - Document any gaps or issues
 
 ### Step 2: Dashboard Rewrite
-- Update `export_dashboard_data.py` to query warehouse
-- Add missing data sources to dashboard
+- Build replacement views directly from `lynchpin.views.calendar_views` and warehouse-backed summaries
+- Add missing data sources to the surviving dashboards
 - Create new dashboard pages for consumption/finance/health/social
 
-### Step 3: Gradual Migration
-- Keep old artifacts during transition
-- Add deprecation notices
-- Update documentation
-- Remove old artifacts after validation
+### Step 3: Surface Consolidation
+- Delete superseded artifact exporters once replacements are live
+- Update documentation to point only at canonical views
+- Keep one output path per user-facing surface
 
 ### Step 4: Maintenance
 - Regular warehouse refresh (cron/systemd)
@@ -154,7 +154,6 @@
 
 ## Migration Safety
 
-- Keep old artifacts until new system validated
-- Parallel operation during transition
-- Easy rollback if issues found
-- Gradual deprecation, not sudden removal
+- Validate replacement views before removing any producer
+- Keep cutovers atomic so there is one canonical surface after each change
+- Regenerate surviving outputs from source modules instead of copying stale artefacts

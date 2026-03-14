@@ -25,8 +25,11 @@ Each project has bespoke file classification to show meaningful breakdowns:
 **sinnix** (NixOS config):
 - module, host, flake, docs, other
 
-**sinity-lynchpin / _analysis** (Python analysis):
-- pipelines, docs, config, other
+**sinity-lynchpin** (Python analysis):
+- analysis, tests, docs, config, other
+
+**knowledgebase** (Markdown vault):
+- docs, config, other
 
 **Simple Rust projects** (polylogue, intercept-bounce, etc.):
 - src, tests, docs, config
@@ -49,7 +52,7 @@ is treated as a single category regardless of its internal classifier.
 
 ## Run
 ```bash
-just velocity
+python -m lynchpin.views.velocity
 ```
 
 Or directly:

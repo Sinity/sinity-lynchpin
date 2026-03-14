@@ -40,6 +40,23 @@ from ..sources.libraries import dendron, finance, substack
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
+ACTIVE_HPI_MODULES: tuple[str, ...] = (
+    "my.coding.commits",
+    "my.calendar.holidays",
+    "my.fbmessenger",
+    "my.smscalls",
+    "my.sleep.manual",
+    "my.money",
+    "my.webhistory",
+    "my.browser",
+    "my.google.takeout.parser",
+    "my.goodreads",
+    "my.spotify.gdpr",
+    "my.activitywatch",
+    "my.activitywatch.active_window",
+    "my.atuin",
+)
+
 
 @dataclass
 class CheckResult:
@@ -114,6 +131,45 @@ def _run_check(name: str, fn: Callable[[], Tuple[Optional[int], str]]) -> CheckR
 def _log(message: str, enabled: bool) -> None:
     if enabled:
         typer.echo(message, err=True)
+
+
+def _format_terminal_audit_detail(summary: object, root: Path) -> str:
+    return (
+        f"root={root} "
+        f"generation={summary.counts_by_generation} "
+        f"status={summary.counts_by_status} "
+        f"manifest={summary.manifest_count}/{summary.cast_count} "
+        f"events={summary.events_count}/{summary.cast_count} "
+        f"unreadable={summary.unreadable_header_count} "
+        f"activity_missing={summary.missing_activity_estimate_count} "
+        f"header_only={summary.header_only_count} "
+        f"degraded={summary.degraded_count} "
+        f"damaged={summary.damaged_count} "
+        f"quarantine={summary.quarantine_candidate_count}"
+    )
+
+
+def _select_hpi_modules(
+    *,
+    profile: str,
+    modules: list[str],
+    registry: dict[str, Callable[[], Tuple[Optional[int], str]]],
+) -> list[str]:
+    normalised_profile = profile.strip().lower()
+    if modules:
+        selected = list(dict.fromkeys(modules))
+    elif normalised_profile == "active":
+        selected = list(ACTIVE_HPI_MODULES)
+    elif normalised_profile == "all":
+        selected = list(registry)
+    else:
+        raise typer.BadParameter("Unknown HPI validation profile. Use 'active' or 'all'.", param_hint="--profile")
+
+    unknown = [name for name in selected if name not in registry]
+    if unknown:
+        joined = ", ".join(sorted(unknown))
+        raise typer.BadParameter(f"Unknown HPI module(s): {joined}", param_hint="--module")
+    return selected
 
 
 def _format_result_line(result: CheckResult) -> str:
@@ -325,17 +381,7 @@ def lynchpin(
     def _instrumentation_terminal_sessions() -> Tuple[Optional[int], str]:
         entries, truncated = _sample_iter(instrumentation.iter_terminal_audit(), sample_limit)
         summary = instrumentation.summarize_terminal_audit(iter(entries))
-        detail = (
-            f"root={cfg.asciinema_root} "
-            f"generation={summary.counts_by_generation} "
-            f"status={summary.counts_by_status} "
-            f"manifest={summary.manifest_count}/{summary.cast_count} "
-            f"events={summary.events_count}/{summary.cast_count} "
-            f"legacy={summary.legacy_meta_count} "
-            f"activity_missing={summary.missing_activity_estimate_count} "
-            f"malformed_legacy={summary.malformed_legacy_meta_count} "
-            f"quarantine={summary.quarantine_candidate_count}"
-        )
+        detail = _format_terminal_audit_detail(summary, cfg.asciinema_root)
         if truncated:
             detail += f" (sample {sample_limit})"
         return summary.cast_count, detail
@@ -568,6 +614,16 @@ def lynchpin(
 
 @app.command()
 def hpi(
+    profile: str = typer.Option(
+        "active",
+        "--profile",
+        help="Validation profile: 'active' for the supported set, 'all' for every vendored check.",
+    ),
+    modules: list[str] = typer.Option(
+        [],
+        "--module",
+        help="Explicit HPI module(s) to validate; overrides --profile.",
+    ),
     quick: bool = typer.Option(
         True,
         "--quick/--no-quick",
@@ -633,7 +689,7 @@ def hpi(
         from my.fbmessenger import all as fb_all
 
         count, truncated = _count_iter(fb_all.messages(), sample_limit)
-        detail = "source=my.fbmessenger.all.messages"
+        detail = f"source=my.fbmessenger.all.messages db={cfg.fbmessenger_db}"
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -641,28 +697,40 @@ def hpi(
     def _check_github_gdpr() -> Tuple[Optional[int], str]:
         from my.github import gdpr
 
-        if not gdpr.inputs():
-            return 0, "source=my.github.gdpr.inputs (empty)"
+        inputs = gdpr.inputs()
+        gdpr_root = gdpr.make_config().gdpr_dir
+        if not inputs:
+            return 0, f"source=my.github.gdpr.inputs (empty) root={gdpr_root}"
         stats = gdpr.stats()
-        return len(stats), "source=my.github.gdpr.stats"
+        return len(stats), f"source=my.github.gdpr.stats root={gdpr_root}"
 
     def _check_github_ghexport() -> Tuple[Optional[int], str]:
         from my.github import ghexport
 
-        if not ghexport.inputs():
-            return 0, "source=my.github.ghexport.inputs (empty)"
+        inputs = ghexport.inputs()
+        if not inputs:
+            return 0, f"source=my.github.ghexport.inputs (empty) root={ghexport.config.export_path}"
         stats = ghexport.stats()
-        return len(stats), "source=my.github.ghexport.stats"
+        return len(stats), f"source=my.github.ghexport.stats root={ghexport.config.export_path}"
 
     def _check_github_all() -> Tuple[Optional[int], str]:
         from my.github import all as gh_all
         from my.github import gdpr, ghexport
 
-        if not gdpr.inputs() and not ghexport.inputs():
-            return 0, "source=my.github.{gdpr,ghexport}.inputs (empty)"
+        gdpr_inputs = gdpr.inputs()
+        ghexport_inputs = ghexport.inputs()
+        if not gdpr_inputs and not ghexport_inputs:
+            return (
+                0,
+                "source=my.github.{gdpr,ghexport}.inputs (empty) "
+                f"gdpr={gdpr.make_config().gdpr_dir} ghexport={ghexport.config.export_path}",
+            )
 
         count, truncated = _count_iter(gh_all.events(), sample_limit)
-        detail = "source=my.github.all.events"
+        detail = (
+            "source=my.github.all.events "
+            f"gdpr={len(gdpr_inputs)} ghexport={len(ghexport_inputs)}"
+        )
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -727,29 +795,41 @@ def hpi(
     def _check_twitter_archive() -> Tuple[Optional[int], str]:
         from my.twitter import archive
 
-        if not archive.inputs():
-            return 0, "source=my.twitter.archive.inputs (empty)"
+        inputs = archive.inputs()
+        archive_root = archive.make_config().export_path
+        if not inputs:
+            return 0, f"source=my.twitter.archive.inputs (empty) root={archive_root}"
         stats = archive.stats()
-        return len(stats), "source=my.twitter.archive.stats"
+        return len(stats), f"source=my.twitter.archive.stats root={archive_root}"
 
     def _check_twitter_twint() -> Tuple[Optional[int], str]:
         from my.twitter import twint as twitter_twint
         from my.core import get_files
 
-        if not get_files(twitter_twint.config.export_path):
-            return 0, "source=my.twitter.twint.export_path (empty)"
+        inputs = get_files(twitter_twint.config.export_path)
+        if not inputs:
+            return 0, f"source=my.twitter.twint.export_path (empty) root={twitter_twint.config.export_path}"
         stats = twitter_twint.stats()
-        return len(stats), "source=my.twitter.twint.stats"
+        return len(stats), f"source=my.twitter.twint.stats root={twitter_twint.config.export_path}"
 
     def _check_twitter_all() -> Tuple[Optional[int], str]:
         from my.twitter import all as twitter_all
         from my.twitter import archive, twint as twitter_twint
         from my.core import get_files
 
-        if not archive.inputs() and not get_files(twitter_twint.config.export_path):
-            return 0, "source=my.twitter.{archive,twint}.export_path (empty)"
+        archive_inputs = archive.inputs()
+        twint_inputs = get_files(twitter_twint.config.export_path)
+        if not archive_inputs and not twint_inputs:
+            return (
+                0,
+                "source=my.twitter.{archive,twint}.export_path (empty) "
+                f"archive={archive.make_config().export_path} twint={twitter_twint.config.export_path}",
+            )
         count, truncated = _count_iter(twitter_all.tweets(), sample_limit)
-        detail = "source=my.twitter.all.tweets"
+        detail = (
+            "source=my.twitter.all.tweets "
+            f"archive={len(archive_inputs)} twint={len(twint_inputs)}"
+        )
         if truncated:
             detail += f" (sample {sample_limit})"
         return count, detail
@@ -780,10 +860,18 @@ def hpi(
 
     def _check_browser() -> Tuple[Optional[int], str]:
         if quick:
+            from my.browser import active_browser
             from my.browser import export as browser_export
 
-            inputs = browser_export.inputs()
-            return len(inputs), "source=my.browser.export.inputs"
+            export_inputs = browser_export.inputs()
+            active_inputs = active_browser.inputs()
+            total_inputs = len(export_inputs) + len(active_inputs)
+            detail = (
+                "source=my.browser.{export,active_browser}.inputs "
+                f"export={len(export_inputs)} active={len(active_inputs)} "
+                f"export_path={browser_export.config.export_path} active_path={active_browser.config.export_path}"
+            )
+            return total_inputs, detail
         from my.browser import all as browser_all
 
         count, truncated = _count_iter(browser_all.history(), sample_limit)
@@ -833,14 +921,16 @@ def hpi(
     def _check_linkedin() -> Tuple[Optional[int], str]:
         from my.linkedin import privacy_export
 
+        if not privacy_export.config.gdpr_dir:
+            return 0, "source=my.linkedin.privacy_export.input root="
         path = privacy_export.input()
-        return 1 if path.exists() else 0, "source=my.linkedin.privacy_export.input"
+        return 1 if path.exists() else 0, f"source=my.linkedin.privacy_export.input root={path}"
 
     def _check_steam_scraper() -> Tuple[Optional[int], str]:
         from my.steam import scraper
 
         inputs = scraper.inputs()
-        return len(inputs), "source=my.steam.scraper.inputs"
+        return len(inputs), f"source=my.steam.scraper.inputs root={scraper.config.export_path}"
 
     def _check_zsh() -> Tuple[Optional[int], str]:
         from my import zsh
@@ -869,39 +959,41 @@ def hpi(
             detail += f" (sample {sample_limit})"
         return count, detail
 
-    checks = [
-        ("my.coding.commits", _check_commits),
-        ("my.calendar.holidays", _check_holidays),
-        ("my.body.weight", _check_body_weight),
-        ("my.body.exercise.all", _check_body_exercise),
-        ("my.fbmessenger", _check_fbmessenger),
-        ("my.github.all", _check_github_all),
-        ("my.github.gdpr", _check_github_gdpr),
-        ("my.github.ghexport", _check_github_ghexport),
-        ("my.lastfm", _check_lastfm),
-        ("my.location.google", _check_location_google),
-        ("my.photos.main", _check_photos_main),
-        ("my.reddit", _check_reddit),
-        ("my.smscalls", _check_smscalls),
-        ("my.twitter.all", _check_twitter_all),
-        ("my.twitter.archive", _check_twitter_archive),
-        ("my.twitter.twint", _check_twitter_twint),
-        ("my.sleep.manual", _check_sleep_manual),
-        ("my.money", _check_money),
-        ("my.webhistory", _check_webhistory),
-        ("my.browser", _check_browser),
-        ("my.google.takeout.parser", _check_takeout_parser),
-        ("my.goodreads", _check_goodreads),
-        ("my.spotify.gdpr", _check_spotify_gdpr),
-        ("my.activitywatch", _check_activitywatch),
-        ("my.activitywatch.active_window", _check_activitywatch_active_window),
-        ("my.taskwarrior", _check_taskwarrior),
-        ("my.linkedin.privacy_export", _check_linkedin),
-        ("my.steam.scraper", _check_steam_scraper),
-        ("my.zsh", _check_zsh),
-        ("my.bash", _check_bash),
-        ("my.atuin", _check_atuin),
-    ]
+    registry = {
+        "my.coding.commits": _check_commits,
+        "my.calendar.holidays": _check_holidays,
+        "my.body.weight": _check_body_weight,
+        "my.body.exercise.all": _check_body_exercise,
+        "my.fbmessenger": _check_fbmessenger,
+        "my.github.all": _check_github_all,
+        "my.github.gdpr": _check_github_gdpr,
+        "my.github.ghexport": _check_github_ghexport,
+        "my.lastfm": _check_lastfm,
+        "my.location.google": _check_location_google,
+        "my.photos.main": _check_photos_main,
+        "my.reddit": _check_reddit,
+        "my.smscalls": _check_smscalls,
+        "my.twitter.all": _check_twitter_all,
+        "my.twitter.archive": _check_twitter_archive,
+        "my.twitter.twint": _check_twitter_twint,
+        "my.sleep.manual": _check_sleep_manual,
+        "my.money": _check_money,
+        "my.webhistory": _check_webhistory,
+        "my.browser": _check_browser,
+        "my.google.takeout.parser": _check_takeout_parser,
+        "my.goodreads": _check_goodreads,
+        "my.spotify.gdpr": _check_spotify_gdpr,
+        "my.activitywatch": _check_activitywatch,
+        "my.activitywatch.active_window": _check_activitywatch_active_window,
+        "my.taskwarrior": _check_taskwarrior,
+        "my.linkedin.privacy_export": _check_linkedin,
+        "my.steam.scraper": _check_steam_scraper,
+        "my.zsh": _check_zsh,
+        "my.bash": _check_bash,
+        "my.atuin": _check_atuin,
+    }
+    selected = _select_hpi_modules(profile=profile, modules=modules, registry=registry)
+    checks = [(name, registry[name]) for name in selected]
 
     progress = progress or verbose
     results = _run_checks(

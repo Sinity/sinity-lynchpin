@@ -15,9 +15,23 @@ from ..sources.exports.sleep import SleepEntry
 from ..sources.indices.sessions import SessionRecord
 from ..sources.indices import gitstats, sessions
 from ..sources.captures import activitywatch, atuin
+from ..metrics.focus import (
+    afk_split as _afk_split,
+    duration_minutes as _duration_minutes,
+    focus_minutes as _focus_minutes,
+    window_label as _window_label,
+    FALSE_ACTIVE_APPS,
+)
+from ..metrics.git import GitMetrics as GitSummary, git_summary as _git_summary
+from ..metrics.health import SleepMetrics as SleepSummary, sleep_summary as _sleep_summary
+from ..metrics.analysis import CodeHealthMetrics, code_health_summary as _code_health_summary
+from ..metrics.productivity import (
+    commands_by_category as _commands_by_category,
+    categorise_command as _categorise_command,
+)
+from ..sources.indices.analysis import iter_crate_metrics as _iter_crate_metrics, latest_snapshot as _latest_snapshot
+from ..sources.indices.coding_sessions import CodingSession, iter_coding_sessions as _iter_coding_sessions
 from .calendar import DaySnapshot, load_day
-
-FALSE_ACTIVE_APPS = {"gcr-prompter"}
 
 
 @dataclass
@@ -31,21 +45,6 @@ class Overview:
 class FocusSummary:
     total_focus_minutes: float
     categories: Dict[str, float]
-
-
-@dataclass
-class GitSummary:
-    commits: int
-    lines_added: int
-    lines_deleted: int
-    repos: Dict[str, int]
-
-
-@dataclass
-class SleepSummary:
-    total_hours: float
-    segments: int
-    avg_score: Optional[float]
 
 
 @dataclass
@@ -65,6 +64,8 @@ class DaySummary:
     instrumentation: Dict[str, Any] = field(default_factory=dict)
     top_apps: List[Tuple[str, float]] = field(default_factory=list)
     top_web_domains: List[Tuple[str, int]] = field(default_factory=list)
+    code_health: Optional[CodeHealthMetrics] = None
+    coding_sessions: List[CodingSession] = field(default_factory=list)
     window_event_count: int = 0
     afk_event_count: int = 0
 
@@ -107,6 +108,9 @@ class NarrativeRangeSummary:
     total_focus_minutes: float
     average_sleep_hours: Optional[float]
     total_sleep_segments: int
+    code_health: Optional[CodeHealthMetrics]
+    coding_session_count: int
+    coding_session_hours: float
     top_insights: str
     top_sessions: str
 
@@ -117,7 +121,7 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
     focus_minutes_total = sum(focus_counter.values())
 
     active_hours, afk_hours = _afk_split(snapshot.afk, snapshot.windows)
-    window_hours = _minutes_to_hours(sum(focus_counter.values()))
+    window_hours = sum(focus_counter.values()) / 60.0
 
     command_categories = _commands_by_category(snapshot.atuin_commands)
     sessions = [_session_to_dict(record) for record in snapshot.session_records]
@@ -128,6 +132,19 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
 
     git_summary = _git_summary(snapshot.git_commits)
     sleep_summary = _sleep_summary(snapshot.sleep)
+
+    code_health = None
+    snap = _latest_snapshot()
+    if snap:
+        crates = list(_iter_crate_metrics())
+        if crates:
+            code_health = _code_health_summary(snap, crates)
+
+    target_iso = snapshot.date.isoformat()
+    day_coding_sessions = [
+        s for s in _iter_coding_sessions() if s.start[:10] == target_iso
+    ]
+
     top_apps = list(focus_counter.most_common(5))
     web_domains = _top_web_domains(snapshot.webhistory)
     instrumentation_summary = _instrumentation_summary(snapshot.terminal_sessions, snapshot.terminal_events)
@@ -155,6 +172,8 @@ def summarize_day(snapshot: DaySnapshot) -> DaySummary:
         instrumentation=instrumentation_summary,
         top_apps=[(name, round(minutes, 1)) for name, minutes in top_apps],
         top_web_domains=web_domains,
+        code_health=code_health,
+        coding_sessions=day_coding_sessions,
         window_event_count=len(snapshot.windows),
         afk_event_count=len(snapshot.afk),
     )
@@ -275,6 +294,19 @@ def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
         else "No recorded sessions."
     )
 
+    # Coding session rollups
+    coding_session_count = sum(len(summary.coding_sessions) for summary in summaries)
+    coding_session_hours = round(
+        sum(s.duration_hours for summary in summaries for s in summary.coding_sessions), 2
+    )
+
+    # Use the last available code_health from any day summary
+    range_code_health = None
+    for summary in reversed(summaries):
+        if summary.code_health is not None:
+            range_code_health = summary.code_health
+            break
+
     return NarrativeRangeSummary(
         total_days=total_days,
         total_focus_hours=total_focus_hours,
@@ -295,6 +327,9 @@ def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
             sum(sleep_hours_samples) / len(sleep_hours_samples) if sleep_hours_samples else None
         ),
         total_sleep_segments=total_sleep_segments,
+        code_health=range_code_health,
+        coding_session_count=coding_session_count,
+        coding_session_hours=coding_session_hours,
         top_insights=top_insights,
         top_sessions=top_sessions,
     )
@@ -353,18 +388,6 @@ def terminal_capture_gaps_line(instrumentation: Dict[str, Any]) -> str:
         f"{int(instrumentation.get('terminal_command_failures', 0) or 0)} non-zero command(s), "
         f"{int(instrumentation.get('terminal_session_failures', 0) or 0)} non-zero session(s)"
     )
-
-
-def _focus_minutes(events: Sequence) -> Counter:
-    counter: Counter = Counter()
-    for event in events:
-        minutes = _duration_minutes(event)
-        if minutes <= 0:
-            continue
-        data = getattr(event, "data", {}) or {}
-        label = _window_label(data) or "unknown"
-        counter[label] += minutes
-    return counter
 
 
 def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Sequence) -> Dict[str, Any]:
@@ -485,130 +508,6 @@ def _terminal_command_label(value: Optional[str]) -> Optional[str]:
     return head or None
 
 
-def _window_label(data: Dict[str, object]) -> str:
-    for key in ("app", "application", "appname", "bundle"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    title = data.get("title")
-    if isinstance(title, str) and title.strip():
-        return title.strip()[:80]
-    return "unknown"
-
-
-def _duration_minutes(event) -> float:
-    start = getattr(event, "start", None)
-    end = getattr(event, "end", None)
-    if not start or not end:
-        return 0.0
-    delta = end - start
-    if not isinstance(delta, timedelta):
-        return 0.0
-    return max(delta.total_seconds() / 60.0, 0.0)
-
-
-def _minutes_to_hours(minutes: float) -> float:
-    return minutes / 60.0
-
-
-def _afk_split(events: Sequence, windows: Sequence = ()) -> Tuple[float, float]:
-    active_minutes = 0.0
-    afk_minutes = 0.0
-    active_intervals = []
-
-    for event in events:
-        minutes = _duration_minutes(event)
-        data = getattr(event, "data", {}) or {}
-        status = str(data.get("status") or "").lower()
-
-        is_afk = False
-        if status in {"afk", "away"}:
-            is_afk = True
-        elif status in {"not-afk", "active", "present"}:
-            is_afk = False
-        else:
-            flag = data.get("afk")
-            if isinstance(flag, bool):
-                is_afk = flag
-            elif isinstance(flag, str):
-                is_afk = flag.lower() == "true"
-
-        if is_afk:
-            afk_minutes += minutes
-        else:
-            active_minutes += minutes
-            # Collect active interval
-            start = getattr(event, "start", None)
-            end = getattr(event, "end", None)
-            if start and end:
-                active_intervals.append((start, end))
-
-    if windows and active_intervals:
-        false_active = _calculate_false_active_minutes(active_intervals, windows)
-        # Cap false active at total active?
-        false_active = min(false_active, active_minutes)
-        active_minutes -= false_active
-        afk_minutes += false_active
-
-    return _minutes_to_hours(active_minutes), _minutes_to_hours(afk_minutes)
-
-
-def _calculate_false_active_minutes(active_intervals: List[Tuple[datetime, datetime]], windows: Sequence) -> float:
-    total_false_active = 0.0
-
-    # We only care about windows that are "bad".
-    bad_windows = [
-        w for w in windows
-        if (_window_label(w.data or {}) in FALSE_ACTIVE_APPS or (w.data or {}).get("app") in FALSE_ACTIVE_APPS)
-    ]
-
-    if not bad_windows:
-        return 0.0
-
-    for w in bad_windows:
-        w_start = getattr(w, "start", None)
-        w_end = getattr(w, "end", None)
-        if not w_start or not w_end:
-            continue
-
-        # Check against all active intervals
-        for (a_start, a_end) in active_intervals:
-            # Overlap?
-            latest_start = max(w_start, a_start)
-            earliest_end = min(w_end, a_end)
-            if earliest_end > latest_start:
-                duration = (earliest_end - latest_start).total_seconds() / 60.0
-                total_false_active += duration
-
-    return total_false_active
-
-
-def _commands_by_category(commands: Sequence) -> Dict[str, int]:
-    bucket: Counter = Counter()
-    for command in commands:
-        cwd = getattr(command, "cwd", None)
-        cmd = getattr(command, "command", "")
-        category = _categorise_command(cwd, cmd)
-        bucket[category] += 1
-    return dict(sorted(bucket.items()))
-
-
-def _categorise_command(cwd: Optional[str], command: str) -> str:
-    if not cwd or not isinstance(cwd, str):
-        return "misc"
-    path = cwd.strip()
-    lowered = path.lower()
-    if "project/sinex" in lowered or lowered.rstrip("/").endswith("sinex"):
-        return "development:sinex"
-    if "sinnix" in lowered:
-        return "infrastructure:sinnix"
-    if "/realm/project/" in lowered:
-        return "development:other"
-    if lowered.startswith("/realm/home") or lowered.startswith("/home"):
-        return "home"
-    return "misc"
-
-
 def _session_to_dict(record: SessionRecord) -> Dict[str, str]:
     return {
         "date": record.date.isoformat(),
@@ -631,28 +530,6 @@ def _transcript_to_dict(record: ChatTranscript) -> Dict[str, object]:
         "attachment_count": record.attachment_count,
         "attachment_bytes": record.attachment_bytes,
     }
-
-
-def _git_summary(commits: Sequence) -> GitSummary:
-    total = len(commits)
-    added = sum(getattr(commit, "lines_added", 0) for commit in commits)
-    deleted = sum(getattr(commit, "lines_deleted", 0) for commit in commits)
-    repos: Counter = Counter(getattr(commit, "repo", "") or "" for commit in commits)
-    return GitSummary(
-        commits=total,
-        lines_added=int(added),
-        lines_deleted=int(deleted),
-        repos={name: count for name, count in repos.items() if name},
-    )
-
-
-def _sleep_summary(entry: Optional[SleepEntry]) -> Optional[SleepSummary]:
-    if entry is None:
-        return None
-    total_hours = (entry.total_minutes or 0.0) / 60.0
-    segments = len(entry.segments)
-    score = entry.avg_score
-    return SleepSummary(total_hours=round(total_hours, 2), segments=segments, avg_score=score)
 
 
 def _top_web_domains(entries: Iterable[Dict[str, object]], limit: int = 5) -> List[Tuple[str, int]]:

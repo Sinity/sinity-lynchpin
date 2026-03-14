@@ -91,8 +91,8 @@ class _PolylogueRunRow:
     run_id: str
     timestamp: datetime
     path: str
-    counts: dict
-    drift: dict
+    counts_json: str
+    drift_json: str
     indexed: Optional[bool]
     index_error: Optional[str]
     duration_ms: Optional[int]
@@ -155,8 +155,8 @@ def _load_runs() -> List[_PolylogueRunRow]:
                 run_id=run_id,
                 timestamp=timestamp,
                 path=str(path),
-                counts=counts,
-                drift=drift,
+                counts_json=json.dumps(counts, sort_keys=True),
+                drift_json=json.dumps(drift, sort_keys=True),
                 indexed=payload.get("indexed") if isinstance(payload.get("indexed"), bool) else None,
                 index_error=payload.get("index_error") if isinstance(payload.get("index_error"), str) else None,
                 duration_ms=payload.get("duration_ms") if isinstance(payload.get("duration_ms"), int) else None,
@@ -182,8 +182,8 @@ def iter_runs() -> Iterator[PolylogueRun]:
             run_id=row.run_id,
             timestamp=row.timestamp,
             path=Path(row.path),
-            counts=row.counts,
-            drift=row.drift,
+            counts=json.loads(row.counts_json),
+            drift=json.loads(row.drift_json),
             indexed=row.indexed,
             index_error=row.index_error,
             duration_ms=row.duration_ms,

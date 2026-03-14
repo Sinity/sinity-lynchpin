@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 from typing import Optional
 
 import typer
 
 from ..core.config import get_config
+from . import baseline as baseline_module
 from ..ingest import webhistory as webhistory_ingest
 from ..views import ledgers, warehouse, velocity
 
@@ -112,21 +111,17 @@ def run(
 
 
 def _run_baseline(cfg) -> None:
-    script = cfg.repo_root / "pipelines/core/baseline/build_baseline.py"
-    cmd = [
-        sys.executable,
-        str(script),
-        "--session-root",
-        "/realm/data/sinity-lynchpin/baseline-inputs/latest",
-        "--health-root",
-        str(cfg.sleep_jsonl.parent),
-        "--output-dir",
-        str(cfg.repo_root / "artefacts/core/baseline/latest"),
-        "--mode",
-        "auto",
-        "--full",
-    ]
-    subprocess.run(cmd, check=True)
+    baseline_root = cfg.data_root / "sinity-lynchpin/baseline-inputs/latest"
+    baseline_module.run_baseline(
+        session_root=baseline_root,
+        health_root=cfg.sleep_jsonl.parent,
+        output_dir=cfg.baseline_dir,
+        mode="auto",
+        full=True,
+        activitywatch_db=cfg.activitywatch_db,
+        atuin_db=cfg.atuin_db,
+        codex_sessions_root=cfg.codex_sessions_root,
+    )
 
 
 if __name__ == "__main__":

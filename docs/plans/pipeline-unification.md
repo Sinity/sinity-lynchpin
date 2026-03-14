@@ -6,21 +6,21 @@ Goal: collapse the current pipeline zoo into a cohesive “sinity-flow” stack 
 
 | Family | Entrypoints | Primary Inputs | Outputs / Consumers |
 | --- | --- | --- | --- |
-| Baseline rollups | `just baseline` | ActivityWatch, Atuin, Codex sessions, git, wearables (sleep) | `artefacts/core/baseline/latest/*`, provides timeline JSON to focus reports |
-| Ledgers & knowledge graph | `just ledgers session|artefact`, `just knowledge-graph` | Docs (`docs/reference/sessions`, `artefact_catalog.json`, Markdown corpora) | CSV ledgers + DuckDB manifest powering lookup, polyglot agents |
-| Focus dashboards | `just focus-portal`, `just calendar-refresh`, `just calendar-narrative` | Baseline timeline + ActivityWatch DB + Atuin | Calendar dossiers (Markdown/HTML/JSON), raw bundles, legacy portal mirror |
-| Life logging | `just life-*`, `just youtube-oembed`, `just life-auto-narrative`, `just wykop-export` | Google Takeouts, Reddit/Wykop, finance, Samsung Health | Monthly JSON, drilldowns, narratives, digests, oEmbed cache |
-| Instrumentation ingest | `just instrumentation target=*` | Asciinema/audio/screen raw capture dirs | Metadata JSONL for searches + future embeddings |
-| Context bundles & meta | `just project-bundles`, `just velocity` | Git repos, artefact catalog | Repo-specific context packs, cross-project velocity dashboards |
+| Baseline rollups | `python -m lynchpin.system.baseline` | ActivityWatch, Atuin, Codex sessions, git, wearables (sleep) | `artefacts/core/baseline/latest/*`, provides timeline JSON to focus reports |
+| Ledgers & knowledge graph | `python -m lynchpin.views.ledgers`, `python -m lynchpin.views.knowledge_graph` | Docs (`docs/reference/sessions`, `artefact_catalog.json`, Markdown corpora) | CSV ledgers + DuckDB manifest powering lookup, polyglot agents |
+| Focus dashboards | `python -m lynchpin.views.calendar_views`, `python -m lynchpin.views.calendar_narratives` | ActivityWatch DB + Atuin + Lynchpin sources | Calendar dossiers, narratives, and raw bundles |
+| Life logging | `python -m lynchpin.system.life_timeline*`, `python -m lynchpin.ingest.wykop_export` | Google Takeouts, Reddit/Wykop, finance, Samsung Health | Monthly JSON, drilldowns, narratives, digests, oEmbed cache |
+| Instrumentation ingest | `python -m lynchpin.ingest.instrumentation ...` | Asciinema/audio/screen raw capture dirs | Metadata JSONL for searches + future embeddings |
+| Context bundles & meta | `python -m lynchpin.views.project_bundles`, `python -m lynchpin.views.velocity` | Git repos, artefact catalog | Repo-specific context packs, cross-project velocity dashboards |
 
 Strengths:
 - Domain coverage is broad; most longitudinal sources have at least one regeneration path.
 - Outputs model “write to artefacts/” convention, so regenerations are safe.
-- Just recipes exist for every pipeline, enabling scripted runs.
+- The main workflows already have direct Python module entrypoints, so agents can compose them without shell wrappers.
 
 Pain points:
 1. **Parallel silos** – each family touches raw sources directly with bespoke schemas; there is no shared warehouse, so every new analysis repeats parsing logic (ActivityWatch, Atuin, git, chat transcripts, etc.).
-2. **No dependency graph** – assistants must remember to refresh baseline before focus dashboards, or life timeline before narratives; Just recipes don’t encode DAGs or versioned manifests.
+2. **No dependency graph** – assistants must remember to refresh baseline before focus dashboards, or life timeline JSON before digest/narratives; the direct CLIs still do not encode DAGs or versioned manifests.
 3. **Limited incrementalism** – baseline offers `--since/--until`, but downstream consumers (dashboards, narratives) can’t request “delta since last run”; LEDGER outputs always overwrite entire CSVs.
 4. **Insights remain document-centric** – narrative generation hinges on Markdown outputs instead of structured stores that Sinevec/Sinex could consume directly.
 5. **Instrumentation & wearable streams are detached** – metadata JSONL exists, but nothing connects them to focus/baseline analytics, leaving multi-modal correlations manual.
@@ -28,7 +28,7 @@ Pain points:
 ## 2. Design Goals
 
 1. **Single ingestion + normalization pass** per data source that materializes canonical tables (DuckDB + Parquet) under `artefacts/warehouse/`.
-2. **Composable DAG** describing how downstream artefacts derive from normalized tables, so re-running `focus-portal`/`calendar-refresh` automatically ensures `baseline` + `warehouse` nodes are current.
+2. **Composable DAG** describing how downstream artefacts derive from normalized tables, so re-running `calendar-refresh` automatically ensures `baseline` + `warehouse` nodes are current.
 3. **Time-sliced execution** – support `--range <start:end>` token that flows through the DAG, enabling day/week/month refreshes without editing scripts.
 4. **Metadata manifest** capturing data lineage (inputs, schema version, run ID, git SHA, notes) to feed `docs/analysis-log.md` and future automated retrospectives.
 5. **Unified metrics layer** – provide a small library (Python module + SQL view pack) that exposes standard measures (focus_minutes, afk_adjusted_span, command_density, git_net_loc, chat_tokens, sleep_quality, instrumentation_presence) so dashboards/narratives share definitions.
@@ -97,7 +97,7 @@ Pain points:
    - Connect to the manifest so each ledger row references the run ID that produced it.
    - Provide CLI flag `--manifest-run latest` to embed metadata in CSV headers.
 4. **Artefact Catalog**:
-   - Extend `docs/reference/ledgers/artefact_catalog.json` to include dependencies on warehouse tables; `just ledgers` verifies upstream run freshness before writing.
+   - Extend `docs/reference/ledgers/artefact_catalog.json` to include dependencies on warehouse tables; `python -m lynchpin.views.ledgers ...` verifies upstream run freshness before writing.
 
 ## 4. Migration Approach
 
@@ -127,7 +127,7 @@ Pain points:
 
 ### Phase 5 – Sinex Integration
 1. Expose the DAG + manifests via API/CLI so Sinex can orchestrate runs remotely.
-2. Archive older standalone scripts once Sinex takes ownership; keep `just` as the stable command surface (no extra wrapper scripts).
+2. Archive older standalone scripts once Sinex takes ownership; keep direct module entrypoints or skills as the stable command surface.
 
 ## 5. Immediate Actions
 

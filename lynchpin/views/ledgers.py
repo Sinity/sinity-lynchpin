@@ -1,8 +1,7 @@
 """Ledger builders for sessions and artefacts.
 
 These helpers keep lightweight CSV indexes in sync with the Markdown session
-notes and the curated artefact catalog. They replace the previous
-`pipelines/knowledge/ledgers` scripts so other tooling can simply run
+notes and the curated artefact catalog so other tooling can simply run
 `python -m lynchpin.views.ledgers <command>`.
 """
 

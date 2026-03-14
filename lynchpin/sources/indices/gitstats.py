@@ -11,6 +11,7 @@ from typing import Dict, Iterator, List, Optional, Sequence
 
 from ...core.cache import file_signature, persistent_cache
 from ...core.config import get_config
+from ...core.projects import ALL_PROJECTS
 from .repos import GitRepository
 
 
@@ -417,123 +418,10 @@ def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
 # === Classification helpers ===
 
 
-SKIP_EXTENSIONS = {"lock", "svg", "map", "min.js", "png", "jpg", "pdf", "gif", "ico", "woff", "woff2", "ttf", "eot"}
-SKIP_PATHS = {"reports/", "pipelines/artefacts/", "artefacts/", "data/"}
-
-
-def _skip_common(filename: str) -> bool:
-    for ext in SKIP_EXTENSIONS:
-        if filename.endswith(f".{ext}"):
-            return True
-    for path in SKIP_PATHS:
-        if filename.startswith(path):
-            return True
-    return False
-
-
-def _classify_sinex(filename: str) -> Optional[str]:
-    if _skip_common(filename):
-        return None
-    if filename.startswith(".sqlx/"):
-        return "generated"
-    basename = Path(filename).name.lower()
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if "/tests/" in filename or "/test/" in filename:
-        return "tests"
-    if filename.startswith(("tests/", "test/")):
-        return "tests"
-    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
-        return "tests"
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-    if ext in {"nix", "toml", "yaml", "yml"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-    return "src"
-
-
-def _classify_sinnix(filename: str) -> Optional[str]:
-    if _skip_common(filename):
-        return None
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-    if filename.startswith("host/") or "/host/" in filename:
-        return "host"
-    if filename.startswith("flake/") or filename in {"flake.nix", "flake.lock"}:
-        return "flake"
-    if filename.startswith("module/") or "/module/" in filename:
-        return "module"
-    return "other"
-
-
-def _classify_sinity_analysis(filename: str) -> Optional[str]:
-    if _skip_common(filename):
-        return None
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    basename = Path(filename).name.lower()
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-    if filename.startswith("pipelines/"):
-        return "pipelines"
-    if ext in {"nix", "toml", "yaml", "yml", "json"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-    return "other"
-
-
-def _classify_knowledgebase(filename: str) -> Optional[str]:
-    if _skip_common(filename):
-        return None
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    basename = Path(filename).name.lower()
-    if ext in {"nix", "toml", "yaml", "yml", "json"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-    return "docs"
-
-
-def _classify_rust_simple(filename: str) -> Optional[str]:
-    if _skip_common(filename):
-        return None
-    basename = Path(filename).name.lower()
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if "/tests/" in filename or "/test/" in filename:
-        return "tests"
-    if filename.startswith(("tests/", "test/")):
-        return "tests"
-    if basename.endswith("_test.rs") or basename.endswith("_tests.rs"):
-        return "tests"
-    if "/docs/" in filename or filename.startswith("docs/"):
-        return "docs"
-    if ext in {"md", "mdx", "rst", "txt"}:
-        return "docs"
-    if ext in {"nix", "toml", "yaml", "yml"}:
-        return "config"
-    if basename in {"justfile", ".gitignore", ".envrc"}:
-        return "config"
-    return "src"
-
-
 PROJECT_SPECS: Dict[str, dict] = {
-    "sinity-lynchpin": {"path": "/realm/project/sinity-lynchpin", "classify": _classify_sinity_analysis},
-    "sinex": {"path": "/realm/project/sinex", "classify": _classify_sinex},
-    "polylogue": {"path": "/realm/project/polylogue", "classify": _classify_rust_simple},
-    "intercept-bounce": {"path": "/realm/project/intercept-bounce", "classify": _classify_rust_simple},
-    "scribe-tap": {"path": "/realm/project/scribe-tap", "classify": _classify_rust_simple},
-    "pwrank": {"path": "/realm/project/pwrank", "classify": _classify_rust_simple},
-    "knowledge-extract": {"path": "/realm/project/knowledge-extract", "classify": _classify_rust_simple},
-    "sinnix": {"path": "/realm/project/sinnix", "classify": _classify_sinnix},
-    "knowledgebase": {"path": "/realm/project/knowledgebase", "classify": _classify_knowledgebase},
+    name: {"path": p.path, "classify": p.classify}
+    for name, p in ALL_PROJECTS.items()
+    if p.active and p.classify
 }
 
 

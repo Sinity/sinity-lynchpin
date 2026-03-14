@@ -13,8 +13,6 @@ from ...core.cache import file_signature, persistent_cache
 from ...core.config import get_config
 
 _REALM_PROJECT_ROOT = Path("/realm/project")
-_LEGACY_PATH_RE = re.compile(r"/realm/data/asciinema_recording/")
-_LEGACY_TTY_RE = re.compile(r"^(?P<host>.+)-(?P<tty>_[A-Za-z0-9_]+)-(?P<stamp>\d{8}T\d{6}Z)$")
 ACTIVE_GAP_SECONDS = 2.0
 FULL_CAST_TIMING_SCAN_BYTES = 16 * 1024 * 1024
 TAIL_CHUNK_BYTES = 256 * 1024
@@ -72,12 +70,11 @@ class TerminalSessionMetadata:
     quality_status: str
     quality_flags: list[str] = field(default_factory=list)
     field_sources: dict[str, str] = field(default_factory=dict)
-    legacy_meta_parse_errors: list[str] = field(default_factory=list)
 
 
 @dataclass
 class TerminalSessionEvent:
-    """Low-frequency terminal session events from events.jsonl or legacy salvage."""
+    """Low-frequency terminal session events from events.jsonl."""
 
     session_id: str
     cast_path: str
@@ -104,10 +101,6 @@ class TerminalAuditEntry:
     header_version: Optional[int]
     has_manifest: bool
     has_events: bool
-    has_legacy_meta: bool
-    valid_legacy_meta_lines: int
-    invalid_legacy_meta_lines: int
-    legacy_path_references: int
     has_command: bool
     has_geometry: bool
     has_activity_estimate: bool
@@ -122,7 +115,6 @@ class TerminalAuditSummary:
     cast_count: int = 0
     manifest_count: int = 0
     events_count: int = 0
-    legacy_meta_count: int = 0
     unreadable_header_count: int = 0
     counts_by_generation: dict[str, int] = field(default_factory=dict)
     counts_by_header_version: dict[str, int] = field(default_factory=dict)
@@ -130,8 +122,6 @@ class TerminalAuditSummary:
     counts_by_timing_source: dict[str, int] = field(default_factory=dict)
     missing_manifest_count: int = 0
     missing_events_count: int = 0
-    malformed_legacy_meta_count: int = 0
-    legacy_path_reference_count: int = 0
     sessions_with_command_count: int = 0
     sessions_with_geometry_count: int = 0
     missing_activity_estimate_count: int = 0
@@ -164,37 +154,6 @@ class ScreenMetadata:
     width: Optional[int]
     height: Optional[int]
     format: Optional[str]
-
-
-@dataclass
-class _LegacyMetaSummary:
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    start_cwd: Optional[str] = None
-    final_cwd: Optional[str] = None
-    project_root: Optional[str] = None
-    final_project_root: Optional[str] = None
-    repo_root: Optional[str] = None
-    final_repo_root: Optional[str] = None
-    repo_branch: Optional[str] = None
-    final_repo_branch: Optional[str] = None
-    repo_commit: Optional[str] = None
-    final_repo_commit: Optional[str] = None
-    repo_dirty: Optional[bool] = None
-    final_repo_dirty: Optional[bool] = None
-    exit_code: Optional[int] = None
-    command_count: Optional[int] = None
-    event_count: Optional[int] = None
-    first_command: Optional[str] = None
-    active_seconds: Optional[float] = None
-    idle_seconds: Optional[float] = None
-    valid_lines: int = 0
-    invalid_lines: int = 0
-    legacy_path_references: int = 0
-    first_event_time: Optional[str] = None
-    last_event_time: Optional[str] = None
-    errors: list[str] = field(default_factory=list)
-    events: list[TerminalSessionEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -311,11 +270,6 @@ def summarize_terminal_audit(entries: Iterator[TerminalAuditEntry]) -> TerminalA
             summary.events_count += 1
         else:
             summary.missing_events_count += 1
-        if entry.has_legacy_meta:
-            summary.legacy_meta_count += 1
-        if entry.invalid_legacy_meta_lines > 0:
-            summary.malformed_legacy_meta_count += 1
-        summary.legacy_path_reference_count += entry.legacy_path_references
         if entry.has_command:
             summary.sessions_with_command_count += 1
         if entry.has_geometry:
@@ -387,7 +341,7 @@ def iter_screenshots(root: Path | None = None) -> Iterator[ScreenMetadata]:
 
 
 def _iter_cast_paths(scan_root: Path) -> Iterator[Path]:
-    for cast_path in sorted(scan_root.rglob("*.cast")):
+    for cast_path in sorted(scan_root.rglob("session.cast")):
         if cast_path.is_file():
             yield cast_path
 
@@ -398,13 +352,8 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         return None
 
     session_id = _session_id(cast_path)
-    manifest_path, events_path, legacy_meta_path = _sidecar_paths(cast_path)
+    manifest_path, events_path = _sidecar_paths(cast_path)
     manifest = _load_json_file(manifest_path)
-    legacy = (
-        _parse_legacy_meta(legacy_meta_path, cast_path, session_id, include_events=False)
-        if legacy_meta_path.exists()
-        else _LegacyMetaSummary()
-    )
     event_summary = (
         _summarize_session_events(_parse_terminal_session_events(cast_path))
         if events_path.exists()
@@ -553,34 +502,9 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         assign("repo_root", _guess_project_root(values["start_cwd"]), "derived")
     if values["final_repo_root"] is None:
         assign("final_repo_root", _guess_project_root(values["final_cwd"]), "derived")
-    if values["host"] is None or values["tty"] is None:
-        legacy_host, legacy_tty = _legacy_identity(cast_path)
-        assign("host", legacy_host, "filename")
-        assign("tty", legacy_tty, "filename")
 
-    assign("created_at", legacy.started_at, "legacy_meta")
-    assign("finished_at", legacy.finished_at, "legacy_meta")
-    assign("command_count", legacy.command_count, "legacy_meta")
-    assign("event_count", legacy.event_count, "legacy_meta")
-    assign("active_seconds", legacy.active_seconds, "legacy_meta")
-    assign("idle_seconds", legacy.idle_seconds, "legacy_meta")
-    assign("command", legacy.first_command, "legacy_meta")
-    assign("start_cwd", legacy.start_cwd, "legacy_meta")
-    assign("final_cwd", legacy.final_cwd, "legacy_meta")
-    assign("project_root", legacy.project_root, "legacy_meta")
-    assign("final_project_root", legacy.final_project_root, "legacy_meta")
-    assign("repo_root", legacy.repo_root, "legacy_meta")
-    assign("final_repo_root", legacy.final_repo_root, "legacy_meta")
-    assign("repo_branch", legacy.repo_branch, "legacy_meta")
-    assign("final_repo_branch", legacy.final_repo_branch, "legacy_meta")
-    assign("repo_commit", legacy.repo_commit, "legacy_meta")
-    assign("final_repo_commit", legacy.final_repo_commit, "legacy_meta")
-    assign("repo_dirty", legacy.repo_dirty, "legacy_meta")
-    assign("final_repo_dirty", legacy.final_repo_dirty, "legacy_meta")
-    assign("exit_code", legacy.exit_code, "legacy_meta")
-
-    schema_generation = _schema_generation(manifest, legacy, header)
-    has_events = events_path.exists() or (legacy.event_count or 0) > 0
+    schema_generation = _schema_generation(manifest, header)
+    has_events = events_path.exists()
 
     if values["finished_at"] is None and values["created_at"] is not None and values["duration_seconds"] is not None:
         created_dt = _parse_iso_datetime(values["created_at"])
@@ -616,7 +540,6 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         active_seconds=values["active_seconds"],
         command=values["command"],
         timing_source=timing_source,
-        legacy=legacy,
     )
 
     return TerminalSessionMetadata(
@@ -665,15 +588,14 @@ def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata
         quality_status=quality_status,
         quality_flags=quality_flags,
         field_sources=field_sources,
-        legacy_meta_parse_errors=legacy.errors,
     )
 
 
 def _parse_terminal_session_events(cast_path: Path) -> Iterator[TerminalSessionEvent]:
     session_id = _session_id(cast_path)
-    manifest_path, events_path, legacy_meta_path = _sidecar_paths(cast_path)
+    manifest_path, events_path = _sidecar_paths(cast_path)
     manifest = _load_json_file(manifest_path)
-    schema_generation = _schema_generation(manifest, None, None)
+    schema_generation = _schema_generation(manifest, None)
 
     if events_path.exists():
         try:
@@ -714,35 +636,22 @@ def _parse_terminal_session_events(cast_path: Path) -> Iterator[TerminalSessionE
                     )
         except OSError:
             return
-        return
-
-    if legacy_meta_path.exists():
-        legacy = _parse_legacy_meta(legacy_meta_path, cast_path, session_id, include_events=True)
-        yield from legacy.events
 
 
 def _audit_terminal_session(cast_path: Path) -> Optional[TerminalAuditEntry]:
     session_id = _session_id(cast_path)
-    manifest_path, events_path, legacy_meta_path = _sidecar_paths(cast_path)
-    legacy = (
-        _parse_legacy_meta(legacy_meta_path, cast_path, session_id, include_events=False)
-        if legacy_meta_path.exists()
-        else _LegacyMetaSummary()
-    )
+    manifest_path, events_path = _sidecar_paths(cast_path)
+    manifest = _load_json_file(manifest_path)
     header, duration_seconds, _, _, timing_source = _read_cast_header(cast_path)
     if header is None:
         return TerminalAuditEntry(
             path=str(cast_path),
             session_id=session_id,
-            schema_generation=_schema_generation(_load_json_file(manifest_path), legacy, None),
+            schema_generation=_schema_generation(manifest, None),
             readable_header=False,
             header_version=None,
             has_manifest=manifest_path.exists(),
-            has_events=events_path.exists() or (legacy.event_count or 0) > 0,
-            has_legacy_meta=legacy_meta_path.exists(),
-            valid_legacy_meta_lines=legacy.valid_lines,
-            invalid_legacy_meta_lines=legacy.invalid_lines,
-            legacy_path_references=legacy.legacy_path_references,
+            has_events=events_path.exists(),
             has_command=False,
             has_geometry=False,
             has_activity_estimate=False,
@@ -758,15 +667,11 @@ def _audit_terminal_session(cast_path: Path) -> Optional[TerminalAuditEntry]:
     return TerminalAuditEntry(
         path=str(cast_path),
         session_id=session_id,
-        schema_generation=(session.schema_generation if session else _schema_generation(_load_json_file(manifest_path), legacy, header)),
+        schema_generation=(session.schema_generation if session else _schema_generation(manifest, header)),
         readable_header=True,
         header_version=_to_int(header.get("version")),
         has_manifest=manifest_path.exists(),
-        has_events=events_path.exists() or (legacy.event_count or 0) > 0,
-        has_legacy_meta=legacy_meta_path.exists(),
-        valid_legacy_meta_lines=legacy.valid_lines,
-        invalid_legacy_meta_lines=legacy.invalid_lines,
-        legacy_path_references=legacy.legacy_path_references,
+        has_events=events_path.exists(),
         has_command=(session.command is not None) if session else (_to_text(header.get("command")) is not None),
         has_geometry=_to_int(term.get("cols") or header.get("width")) is not None and _to_int(term.get("rows") or header.get("height")) is not None,
         has_activity_estimate=session.active_seconds is not None if session else False,
@@ -908,123 +813,6 @@ def _read_last_cast_timestamp(path: Path) -> Optional[float]:
         return None
 
 
-def _parse_legacy_meta(path: Path, cast_path: Path, session_id: str, *, include_events: bool) -> _LegacyMetaSummary:
-    summary = _LegacyMetaSummary()
-    previous_event_dt: Optional[datetime] = None
-    active_seconds = 0.0
-    idle_seconds = 0.0
-    saw_activity_time = False
-
-    try:
-        with path.open("r", encoding="utf-8", errors="ignore") as fh:
-            for lineno, line in enumerate(fh, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-
-                if _LEGACY_PATH_RE.search(line):
-                    summary.legacy_path_references += 1
-
-                record = _parse_legacy_meta_line(line)
-                if record is None:
-                    summary.invalid_lines += 1
-                    summary.errors.append(f"line {lineno}: invalid legacy record")
-                    continue
-
-                summary.valid_lines += 1
-                summary.event_count = (summary.event_count or 0) + 1
-                event_type = _to_text(record.get("type")) or "legacy"
-                event_time = _to_text(record.get("time"))
-                if event_time:
-                    summary.first_event_time = summary.first_event_time or event_time
-                    summary.last_event_time = event_time
-                event_dt = _parse_iso_datetime(event_time)
-                if event_dt is not None:
-                    saw_activity_time = True
-                    if previous_event_dt is not None:
-                        delta = max((event_dt - previous_event_dt).total_seconds(), 0.0)
-                        active_seconds += min(delta, ACTIVE_GAP_SECONDS)
-                        idle_seconds += max(delta - ACTIVE_GAP_SECONDS, 0.0)
-                    previous_event_dt = event_dt
-                pwd = _to_text(record.get("pwd") or record.get("cwd"))
-                repo_root = _to_text(record.get("repo_root"))
-                project_root = _to_text(record.get("project_root")) or _guess_project_root(pwd or repo_root)
-                repo_branch = _to_text(record.get("repo_branch"))
-                repo_commit = _to_text(record.get("repo_commit"))
-                repo_dirty = _to_bool(record.get("repo_dirty"))
-                exit_code = _to_int(
-                    record.get("exit_code")
-                    if record.get("exit_code") is not None
-                    else record.get("status")
-                )
-
-                if event_type == "session_start":
-                    summary.started_at = summary.started_at or event_time
-                    summary.start_cwd = summary.start_cwd or pwd
-                    summary.project_root = summary.project_root or project_root
-                    summary.repo_root = summary.repo_root or repo_root
-                    summary.repo_branch = summary.repo_branch or repo_branch
-                    summary.repo_commit = summary.repo_commit or repo_commit
-                    summary.repo_dirty = summary.repo_dirty if summary.repo_dirty is not None else repo_dirty
-                elif event_type == "command_start":
-                    summary.command_count = (summary.command_count or 0) + 1
-                    command_text = _to_text(record.get("command") or record.get("cmd"))
-                    summary.first_command = summary.first_command or command_text
-                    summary.start_cwd = summary.start_cwd or pwd
-                    summary.final_cwd = pwd or summary.final_cwd
-                    summary.project_root = summary.project_root or project_root
-                    summary.final_project_root = project_root or summary.final_project_root
-                    summary.repo_root = summary.repo_root or repo_root
-                    summary.final_repo_root = repo_root or summary.final_repo_root
-                    summary.repo_branch = summary.repo_branch or repo_branch
-                    summary.final_repo_branch = repo_branch or summary.final_repo_branch
-                    summary.repo_commit = summary.repo_commit or repo_commit
-                    summary.final_repo_commit = repo_commit or summary.final_repo_commit
-                    summary.repo_dirty = summary.repo_dirty if summary.repo_dirty is not None else repo_dirty
-                    summary.final_repo_dirty = repo_dirty if repo_dirty is not None else summary.final_repo_dirty
-                elif event_type == "session_end":
-                    summary.finished_at = event_time or summary.finished_at
-                    summary.final_cwd = pwd or summary.final_cwd
-                    summary.final_project_root = project_root or summary.final_project_root
-                    summary.final_repo_root = repo_root or summary.final_repo_root
-                    summary.final_repo_branch = repo_branch or summary.final_repo_branch
-                    summary.final_repo_commit = repo_commit or summary.final_repo_commit
-                    summary.final_repo_dirty = repo_dirty if repo_dirty is not None else summary.final_repo_dirty
-                    summary.exit_code = exit_code if exit_code is not None else summary.exit_code
-                elif event_type == "command_end":
-                    summary.exit_code = exit_code if exit_code is not None else summary.exit_code
-
-                if include_events:
-                    summary.events.append(
-                        TerminalSessionEvent(
-                            session_id=session_id,
-                            cast_path=str(cast_path),
-                            schema_generation="legacy-meta",
-                            source="legacy_meta",
-                            time=event_time,
-                            type=event_type,
-                            pwd=pwd,
-                            project_root=project_root,
-                            repo_root=repo_root,
-                            repo_branch=repo_branch,
-                            repo_commit=repo_commit,
-                            repo_dirty=repo_dirty,
-                            exit_code=exit_code,
-                            payload=record,
-                        )
-                    )
-    except OSError as exc:
-        summary.errors.append(str(exc))
-
-    if saw_activity_time:
-        summary.active_seconds = active_seconds
-        summary.idle_seconds = idle_seconds
-    summary.started_at = summary.started_at or summary.first_event_time
-    summary.finished_at = summary.finished_at or summary.last_event_time
-
-    return summary
-
-
 @dataclass
 class _SessionEventSummary:
     started_at: Optional[str] = None
@@ -1130,125 +918,26 @@ def _summarize_session_events(events: Iterator[TerminalSessionEvent]) -> _Sessio
 
 
 def _session_id(cast_path: Path) -> str:
-    if cast_path.name == "session.cast":
-        return cast_path.parent.name
-    return cast_path.stem
+    return cast_path.parent.name
 
 
-def _sidecar_paths(cast_path: Path) -> tuple[Path, Path, Path]:
-    if cast_path.name == "session.cast":
-        return (
-            cast_path.with_name("session.json"),
-            cast_path.with_name("events.jsonl"),
-            cast_path.with_suffix(cast_path.suffix + ".meta"),
-        )
-
+def _sidecar_paths(cast_path: Path) -> tuple[Path, Path]:
     return (
-        cast_path.with_suffix(".session.json"),
-        cast_path.with_suffix(".events.jsonl"),
-        cast_path.with_suffix(cast_path.suffix + ".meta"),
+        cast_path.with_name("session.json"),
+        cast_path.with_name("events.jsonl"),
     )
 
 
 def _schema_generation(
     manifest: Optional[dict[str, Any]],
-    legacy: Optional[_LegacyMetaSummary],
     header: Optional[dict[str, Any]],
 ) -> str:
     if manifest:
         return str(manifest.get("schema_generation") or manifest.get("schema") or "terminal-session-v1")
-    if legacy and ((legacy.event_count or 0) > 0 or legacy.valid_lines > 0):
-        return "legacy-meta"
     version = _to_int((header or {}).get("version"))
     if version is not None:
         return f"asciicast-v{version}"
     return "cast-header"
-
-
-def _parse_legacy_meta_line(line: str) -> Optional[dict[str, Any]]:
-    event_type = _extract_legacy_field(line, "type")
-    if event_type is None:
-        return None
-
-    record: dict[str, Any] = {
-        "type": event_type,
-        "time": _extract_legacy_field(line, "time"),
-    }
-
-    for key in (
-        "pwd",
-        "cwd",
-        "project_root",
-        "flake",
-        "repo_root",
-        "repo_branch",
-        "repo_commit",
-        "repo_dirty",
-        "status",
-        "exit_code",
-        "command",
-        "cmd",
-        "duration_ms",
-    ):
-        value = _extract_legacy_field(line, key)
-        if value is not None:
-            record[key] = value
-
-    if "repo_root" not in record:
-        legacy_root = _extract_legacy_field(line, "root")
-        if legacy_root is not None:
-            record["repo_root"] = legacy_root
-    if "repo_branch" not in record:
-        legacy_branch = _extract_legacy_field(line, "branch")
-        if legacy_branch is not None:
-            record["repo_branch"] = legacy_branch
-    if "repo_commit" not in record:
-        legacy_commit = _extract_legacy_field(line, "commit")
-        if legacy_commit is not None:
-            record["repo_commit"] = legacy_commit
-    if "repo_dirty" not in record:
-        legacy_dirty = _extract_legacy_field(line, "dirty")
-        if legacy_dirty is not None:
-            record["repo_dirty"] = legacy_dirty
-
-    return record
-
-
-def _extract_legacy_field(line: str, key: str) -> Optional[str]:
-    quoted = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:[^"\\]|\\.)*)"', line)
-    if quoted:
-        return _decode_json_fragment(quoted.group(1))
-
-    bare = re.search(rf'"{re.escape(key)}"\s*:\s*([^,}}]+)', line)
-    if bare:
-        return _clean_legacy_token(bare.group(1))
-
-    return None
-
-
-def _decode_json_fragment(text: str) -> str:
-    try:
-        return json.loads(f'"{text}"')
-    except json.JSONDecodeError:
-        return text
-
-
-def _clean_legacy_token(token: str) -> Optional[str]:
-    text = token.strip()
-    if not text or text in {"null", "''", '""'}:
-        return None
-    if text.startswith("'") and text.endswith("'") and len(text) >= 2:
-        text = text[1:-1]
-    if text.startswith("$'") and text.endswith("'") and len(text) >= 3:
-        text = bytes(text[2:-1], "utf-8").decode("unicode_escape")
-    text = (
-        text.replace("\\ ", " ")
-        .replace("\\(", "(")
-        .replace("\\)", ")")
-        .replace("\\!", "!")
-        .replace("\\'", "'")
-    )
-    return text or None
 
 
 def _manifest_time(manifest: dict[str, Any], iso_key: str, ms_key: str) -> Optional[str]:
@@ -1277,13 +966,6 @@ def _guess_project_root(value: Any) -> Optional[str]:
         return None
 
     return str(_REALM_PROJECT_ROOT / relative.parts[0])
-
-
-def _legacy_identity(cast_path: Path) -> tuple[Optional[str], Optional[str]]:
-    match = _LEGACY_TTY_RE.match(cast_path.stem)
-    if not match:
-        return None, None
-    return match.group("host"), match.group("tty").replace("_", "/")
 
 
 def _session_time_from_id(session_id: str) -> Optional[str]:
@@ -1327,7 +1009,6 @@ def _assess_session_quality(
     active_seconds: Optional[float],
     command: Optional[str],
     timing_source: Optional[str],
-    legacy: _LegacyMetaSummary,
 ) -> tuple[str, list[str]]:
     flags: list[str] = []
 
@@ -1349,17 +1030,13 @@ def _assess_session_quality(
         flags.append("timing_estimated")
     if timing_source is None:
         flags.append("timing_unavailable")
-    if legacy.invalid_lines > 0:
-        flags.append("invalid_legacy_meta")
-    if schema_generation == "legacy-meta" and legacy.valid_lines > 0 and legacy.started_at is None and legacy.finished_at is None:
-        flags.append("legacy_sparse_events")
     if not has_events and not manifest_exists and schema_generation in {"asciicast-v2", "asciicast-v3"}:
         flags.append("header_only")
     if manifest_exists and not has_events:
         flags.append("broken_new_model")
 
     status = "ok"
-    if "broken_new_model" in flags or "invalid_legacy_meta" in flags:
+    if "broken_new_model" in flags:
         status = "damaged"
     elif "header_only" in flags:
         status = "header-only"
@@ -1370,7 +1047,6 @@ def _assess_session_quality(
             "missing_finished_at",
             "missing_duration",
             "missing_activity_estimate",
-            "legacy_sparse_events",
             "timing_unavailable",
         )
     ):
