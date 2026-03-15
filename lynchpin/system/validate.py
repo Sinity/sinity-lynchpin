@@ -151,19 +151,13 @@ def _format_terminal_audit_detail(summary: object, root: Path) -> str:
 
 def _select_hpi_modules(
     *,
-    profile: str,
     modules: list[str],
     registry: dict[str, Callable[[], Tuple[Optional[int], str]]],
 ) -> list[str]:
-    normalised_profile = profile.strip().lower()
     if modules:
         selected = list(dict.fromkeys(modules))
-    elif normalised_profile == "active":
-        selected = list(ACTIVE_HPI_MODULES)
-    elif normalised_profile == "all":
-        selected = list(registry)
     else:
-        raise typer.BadParameter("Unknown HPI validation profile. Use 'active' or 'all'.", param_hint="--profile")
+        selected = list(ACTIVE_HPI_MODULES)
 
     unknown = [name for name in selected if name not in registry]
     if unknown:
@@ -614,15 +608,10 @@ def lynchpin(
 
 @app.command()
 def hpi(
-    profile: str = typer.Option(
-        "active",
-        "--profile",
-        help="Validation profile: 'active' for the supported set, 'all' for every vendored check.",
-    ),
     modules: list[str] = typer.Option(
         [],
         "--module",
-        help="Explicit HPI module(s) to validate; overrides --profile.",
+        help="Explicit supported HPI module(s) to validate; defaults to the full supported set.",
     ),
     quick: bool = typer.Option(
         True,
@@ -642,7 +631,7 @@ def hpi(
         help="Optional JSONL output path.",
     ),
 ) -> None:
-    """Validate vendored upstream HPI modules against local data/config."""
+    """Validate the supported vendored HPI modules against local data/config."""
     cfg = get_config()
     ensure_export_db_compatibility(cfg.fbmessenger_db)
     add_vendor_paths()
@@ -666,25 +655,6 @@ def hpi(
             detail += f" (sample {sample_limit})"
         return count, detail
 
-    def _check_body_weight() -> Tuple[Optional[int], str]:
-        from my.body import weight
-
-        count, truncated = _count_iter(weight.from_orgmode(), sample_limit)
-        detail = "source=orgmode"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_body_exercise() -> Tuple[Optional[int], str]:
-        from my.body.exercise import all as exercise_all
-        from my import endomondo, runnerup
-        from my.core import get_files
-
-        if not endomondo.inputs() and not get_files(runnerup.config.export_path):
-            return 0, "source=my.body.exercise.all (empty inputs)"
-        df = exercise_all.dataframe()
-        return int(df.shape[0]), f"rows={df.shape[0]}"
-
     def _check_fbmessenger() -> Tuple[Optional[int], str]:
         from my.fbmessenger import all as fb_all
 
@@ -694,145 +664,11 @@ def hpi(
             detail += f" (sample {sample_limit})"
         return count, detail
 
-    def _check_github_gdpr() -> Tuple[Optional[int], str]:
-        from my.github import gdpr
-
-        inputs = gdpr.inputs()
-        gdpr_root = gdpr.make_config().gdpr_dir
-        if not inputs:
-            return 0, f"source=my.github.gdpr.inputs (empty) root={gdpr_root}"
-        stats = gdpr.stats()
-        return len(stats), f"source=my.github.gdpr.stats root={gdpr_root}"
-
-    def _check_github_ghexport() -> Tuple[Optional[int], str]:
-        from my.github import ghexport
-
-        inputs = ghexport.inputs()
-        if not inputs:
-            return 0, f"source=my.github.ghexport.inputs (empty) root={ghexport.config.export_path}"
-        stats = ghexport.stats()
-        return len(stats), f"source=my.github.ghexport.stats root={ghexport.config.export_path}"
-
-    def _check_github_all() -> Tuple[Optional[int], str]:
-        from my.github import all as gh_all
-        from my.github import gdpr, ghexport
-
-        gdpr_inputs = gdpr.inputs()
-        ghexport_inputs = ghexport.inputs()
-        if not gdpr_inputs and not ghexport_inputs:
-            return (
-                0,
-                "source=my.github.{gdpr,ghexport}.inputs (empty) "
-                f"gdpr={gdpr.make_config().gdpr_dir} ghexport={ghexport.config.export_path}",
-            )
-
-        count, truncated = _count_iter(gh_all.events(), sample_limit)
-        detail = (
-            "source=my.github.all.events "
-            f"gdpr={len(gdpr_inputs)} ghexport={len(ghexport_inputs)}"
-        )
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_lastfm() -> Tuple[Optional[int], str]:
-        from my import lastfm
-
-        if not lastfm.inputs():
-            return 0, "source=my.lastfm.inputs (empty)"
-        count, truncated = _count_iter(lastfm.scrobbles(), sample_limit)
-        detail = "source=my.lastfm.scrobbles"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_location_google() -> Tuple[Optional[int], str]:
-        if quick:
-            from my.google.takeout import paths as takeout_paths
-
-            last = takeout_paths.get_last_takeout(
-                path="Takeout/Location History/Location History.json"
-            )
-            detail = f"quick=presence latest={last}" if last else "quick=presence none"
-            return (1 if last else 0), detail
-        from my.location import google as loc_google
-
-        count, truncated = _count_iter(loc_google.locations(), sample_limit)
-        detail = "source=my.location.google.locations"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_photos_main() -> Tuple[Optional[int], str]:
-        from my.photos import main as photos_main
-
-        if sample_limit is not None:
-            roots = [Path(p) for p in photos_main.config.paths]
-            existing = [root for root in roots if root.exists()]
-            detail = f"source=my.photos.main.config.paths roots={len(existing)}"
-            return len(existing), detail
-        count, truncated = _count_iter(photos_main.photos(), sample_limit)
-        detail = "source=my.photos.main.photos"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_reddit() -> Tuple[Optional[int], str]:
-        from my.reddit import all as reddit_all
-
-        count, truncated = _count_iter(reddit_all.comments(), sample_limit)
-        detail = "source=my.reddit.all.comments"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
     def _check_smscalls() -> Tuple[Optional[int], str]:
         from my import smscalls
 
         stats = smscalls.stats()
         return len(stats), "source=my.smscalls.stats"
-
-    def _check_twitter_archive() -> Tuple[Optional[int], str]:
-        from my.twitter import archive
-
-        inputs = archive.inputs()
-        archive_root = archive.make_config().export_path
-        if not inputs:
-            return 0, f"source=my.twitter.archive.inputs (empty) root={archive_root}"
-        stats = archive.stats()
-        return len(stats), f"source=my.twitter.archive.stats root={archive_root}"
-
-    def _check_twitter_twint() -> Tuple[Optional[int], str]:
-        from my.twitter import twint as twitter_twint
-        from my.core import get_files
-
-        inputs = get_files(twitter_twint.config.export_path)
-        if not inputs:
-            return 0, f"source=my.twitter.twint.export_path (empty) root={twitter_twint.config.export_path}"
-        stats = twitter_twint.stats()
-        return len(stats), f"source=my.twitter.twint.stats root={twitter_twint.config.export_path}"
-
-    def _check_twitter_all() -> Tuple[Optional[int], str]:
-        from my.twitter import all as twitter_all
-        from my.twitter import archive, twint as twitter_twint
-        from my.core import get_files
-
-        archive_inputs = archive.inputs()
-        twint_inputs = get_files(twitter_twint.config.export_path)
-        if not archive_inputs and not twint_inputs:
-            return (
-                0,
-                "source=my.twitter.{archive,twint}.export_path (empty) "
-                f"archive={archive.make_config().export_path} twint={twitter_twint.config.export_path}",
-            )
-        count, truncated = _count_iter(twitter_all.tweets(), sample_limit)
-        detail = (
-            "source=my.twitter.all.tweets "
-            f"archive={len(archive_inputs)} twint={len(twint_inputs)}"
-        )
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
 
     def _check_sleep_manual() -> Tuple[Optional[int], str]:
         from my.sleep import manual
@@ -912,44 +748,6 @@ def hpi(
         inputs = active_window.inputs()
         return len(inputs), "source=my.activitywatch.active_window.inputs"
 
-    def _check_taskwarrior() -> Tuple[Optional[int], str]:
-        from my import taskwarrior
-
-        inputs = taskwarrior.inputs()
-        return len(inputs), "source=my.taskwarrior.inputs"
-
-    def _check_linkedin() -> Tuple[Optional[int], str]:
-        from my.linkedin import privacy_export
-
-        if not privacy_export.config.gdpr_dir:
-            return 0, "source=my.linkedin.privacy_export.input root="
-        path = privacy_export.input()
-        return 1 if path.exists() else 0, f"source=my.linkedin.privacy_export.input root={path}"
-
-    def _check_steam_scraper() -> Tuple[Optional[int], str]:
-        from my.steam import scraper
-
-        inputs = scraper.inputs()
-        return len(inputs), f"source=my.steam.scraper.inputs root={scraper.config.export_path}"
-
-    def _check_zsh() -> Tuple[Optional[int], str]:
-        from my import zsh
-
-        count, truncated = _count_iter(zsh.history(), sample_limit)
-        detail = "source=my.zsh.history"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
-    def _check_bash() -> Tuple[Optional[int], str]:
-        from my import bash
-
-        count, truncated = _count_iter(bash.history(), sample_limit)
-        detail = "source=my.bash.history"
-        if truncated:
-            detail += f" (sample {sample_limit})"
-        return count, detail
-
     def _check_atuin() -> Tuple[Optional[int], str]:
         from my import atuin
 
@@ -962,20 +760,8 @@ def hpi(
     registry = {
         "my.coding.commits": _check_commits,
         "my.calendar.holidays": _check_holidays,
-        "my.body.weight": _check_body_weight,
-        "my.body.exercise.all": _check_body_exercise,
         "my.fbmessenger": _check_fbmessenger,
-        "my.github.all": _check_github_all,
-        "my.github.gdpr": _check_github_gdpr,
-        "my.github.ghexport": _check_github_ghexport,
-        "my.lastfm": _check_lastfm,
-        "my.location.google": _check_location_google,
-        "my.photos.main": _check_photos_main,
-        "my.reddit": _check_reddit,
         "my.smscalls": _check_smscalls,
-        "my.twitter.all": _check_twitter_all,
-        "my.twitter.archive": _check_twitter_archive,
-        "my.twitter.twint": _check_twitter_twint,
         "my.sleep.manual": _check_sleep_manual,
         "my.money": _check_money,
         "my.webhistory": _check_webhistory,
@@ -985,14 +771,9 @@ def hpi(
         "my.spotify.gdpr": _check_spotify_gdpr,
         "my.activitywatch": _check_activitywatch,
         "my.activitywatch.active_window": _check_activitywatch_active_window,
-        "my.taskwarrior": _check_taskwarrior,
-        "my.linkedin.privacy_export": _check_linkedin,
-        "my.steam.scraper": _check_steam_scraper,
-        "my.zsh": _check_zsh,
-        "my.bash": _check_bash,
         "my.atuin": _check_atuin,
     }
-    selected = _select_hpi_modules(profile=profile, modules=modules, registry=registry)
+    selected = _select_hpi_modules(modules=modules, registry=registry)
     checks = [(name, registry[name]) for name in selected]
 
     progress = progress or verbose

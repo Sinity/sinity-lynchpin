@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -135,6 +136,27 @@ def iter_commit_activity(
         _, stderr = proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(f"git log failed for {repo}: {stderr.strip()}")
+
+
+def active_repo_paths(names: Optional[Sequence[str]] = None) -> List[Path]:
+    return [repo.path for repo in iter_repos(names=names) if repo.exists and (repo.path / ".git").is_dir()]
+
+
+def summarize_commit_activity(
+    *,
+    start_month: str,
+    end_month: str,
+    repos: Optional[Sequence[Path]] = None,
+) -> tuple[Dict[str, int], Dict[str, Counter[str]]]:
+    counts: Dict[str, int] = defaultdict(int)
+    per_month_repos: Dict[str, Counter[str]] = defaultdict(Counter)
+    repo_paths = list(repos) if repos is not None else active_repo_paths()
+    for event in iter_commit_activity(repo_paths, start_month=start_month, end_month=end_month):
+        month = f"{event.timestamp.year:04d}-{event.timestamp.month:02d}"
+        if start_month <= month <= end_month:
+            counts[month] += 1
+            per_month_repos[month][event.repo] += 1
+    return dict(counts), dict(per_month_repos)
 
 
 def _month_after(month: str) -> str:

@@ -12,7 +12,7 @@ from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape as html_unescape
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 MONTHS = {
@@ -868,3 +868,80 @@ def expand_takeout_parts(path: Path) -> List[Path]:
             parts = sorted(path.parent.glob(f"{prefix}-*.tgz"))
             return [p for p in parts if p.exists()]
     return [path]
+
+
+def discover_seed_archives(root: Path) -> List[Path]:
+    if not root.exists():
+        return []
+    seeds = sorted(root.glob("takeout*-001.tgz"))
+    if seeds:
+        return seeds
+    return sorted(root.glob("takeout*.tgz"))
+
+
+def resolve_archives(*, explicit_seeds: List[Path], root: Path) -> List[Path]:
+    expanded_takeouts: List[Path] = []
+    for seed in explicit_seeds or discover_seed_archives(root):
+        expanded_takeouts.extend(expand_takeout_parts(seed))
+
+    seen_takeouts: set[str] = set()
+    takeout_paths: List[Path] = []
+    for path in sorted(expanded_takeouts, key=lambda p: p.name):
+        if not path.exists():
+            continue
+        key = str(path.resolve())
+        if key in seen_takeouts:
+            continue
+        seen_takeouts.add(key)
+        takeout_paths.append(path)
+    return takeout_paths
+
+
+def select_archive_with_member(takeouts: List[TarReader], member_path: str) -> TarReader | None:
+    matching = [tar for tar in takeouts if tar.has_member(member_path)]
+    if not matching:
+        return None
+    return max(matching, key=lambda tar: tar.member_size(member_path) or 0)
+
+
+def load_youtube_oembed_cache(cache_path: Path) -> Dict[str, dict[str, Any]]:
+    if not cache_path.exists():
+        return {}
+    out: Dict[str, dict[str, Any]] = {}
+    with cache_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            video_id = payload.get("video_id")
+            if not isinstance(video_id, str) or not video_id:
+                continue
+            out[video_id] = payload
+    return out
+
+
+def resolve_youtube_video_meta(
+    video_id: str,
+    *,
+    takeout_titles: Dict[str, str],
+    oembed_cache: Dict[str, dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    title = takeout_titles.get(video_id)
+    channel: str | None = None
+
+    cached = oembed_cache.get(video_id)
+    if isinstance(cached, dict) and cached.get("ok") is True:
+        if not title:
+            cached_title = cached.get("title")
+            if isinstance(cached_title, str) and cached_title.strip():
+                title = cached_title.strip()
+        cached_author = cached.get("author_name")
+        if isinstance(cached_author, str) and cached_author.strip():
+            channel = cached_author.strip()
+    return title, channel

@@ -15,6 +15,10 @@ from typing import Any, Iterable, List, Tuple
 
 import typer
 
+from lynchpin.system.life_timeline_paths import (
+    LATEST_LIFE_TIMELINE_JSON,
+    LIFE_TIMELINE_DIGEST_OUTPUT,
+)
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -88,12 +92,12 @@ def _fmt_pairs(
 @app.command()
 def main(
     life_json: Path = typer.Option(
-        Path("artefacts/lifelog/life-timeline/monthly_life_latest.json"),
+        LATEST_LIFE_TIMELINE_JSON,
         help="Life timeline JSON (output of python -m lynchpin.system.life_timeline).",
     ),
     start: str | None = typer.Option(None, help="Start month (YYYY-MM). Defaults to the life-json range start."),
     end: str | None = typer.Option(None, help="End month (YYYY-MM). Defaults to the life-json range end."),
-    output: Path = typer.Option(..., help="Output markdown file."),
+    output: Path = typer.Option(LIFE_TIMELINE_DIGEST_OUTPUT, help="Output markdown file."),
     title: str = typer.Option(
         "Month-by-month (chronological)",
         help="Top-level markdown header title.",

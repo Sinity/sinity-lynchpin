@@ -16,6 +16,10 @@ import requests
 import typer
 
 from lynchpin.system import life_timeline as lt
+from lynchpin.system.life_timeline_paths import (
+    LATEST_LIFE_TIMELINE_JSON,
+    YOUTUBE_OEMBED_CACHE,
+)
 
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -256,11 +260,11 @@ def _fetch_oembed(
 @app.command()
 def enrich(
     life_json: Path = typer.Option(
-        Path("artefacts/lifelog/life-timeline/monthly_life_2020-04_to_2023-04.json"),
+        LATEST_LIFE_TIMELINE_JSON,
         help="Derived life timeline JSON (used to discover takeouts and/or video IDs).",
     ),
     cache: Path = typer.Option(
-        Path("artefacts/lifelog/life-timeline/youtube_oembed_cache.jsonl"),
+        YOUTUBE_OEMBED_CACHE,
         help="Output JSONL cache (appended; resumable).",
     ),
     start: str | None = typer.Option(None, help="Optional start month filter (YYYY-MM)."),

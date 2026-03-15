@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +100,22 @@ def iter_bookmarks_all(root: Optional[Path] = None) -> Iterator[Tuple[RaindropEx
     for export in list_exports(root):
         for bookmark in iter_bookmarks(export.path):
             yield export, bookmark
+
+
+def summarize_bookmarks(
+    start_month: str,
+    end_month: str,
+    *,
+    csv_path: Optional[Path] = None,
+) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for bookmark in iter_bookmarks(csv_path):
+        if bookmark.created is None:
+            continue
+        month = f"{bookmark.created.year:04d}-{bookmark.created.month:02d}"
+        if start_month <= month <= end_month:
+            counts[month] += 1
+    return dict(counts)
 
 
 def _parse_tags(raw: Optional[str]) -> List[str]:

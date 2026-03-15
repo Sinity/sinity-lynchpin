@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from ...core.cache import files_signature, persistent_cache
 from ...core.config import get_config
@@ -19,6 +20,13 @@ class SpotifyStream:
     platform: Optional[str]
     context: Optional[str]
     source_file: str
+
+
+@dataclass(frozen=True)
+class SpotifyStreamingSummary:
+    hours: dict[str, float]
+    artists: dict[str, Counter[str]]
+    tracks: dict[str, Counter[str]]
 
 
 def _stream_files(root: Optional[Path] = None) -> List[Path]:
@@ -65,6 +73,35 @@ def _load_streams(root: Optional[Path]) -> List[SpotifyStream]:
 
 def iter_streams(root: Optional[Path] = None) -> Iterator[SpotifyStream]:
     yield from _load_streams(root)
+
+
+def summarize_streaming(
+    start_month: str,
+    end_month: str,
+    *,
+    root: Optional[Path] = None,
+) -> SpotifyStreamingSummary:
+    hours: Dict[str, float] = defaultdict(float)
+    per_month_artists: Dict[str, Counter[str]] = defaultdict(Counter)
+    per_month_tracks: Dict[str, Counter[str]] = defaultdict(Counter)
+
+    for stream in iter_streams(root=root):
+        if stream.end_time is None:
+            continue
+        month = f"{stream.end_time.year:04d}-{stream.end_time.month:02d}"
+        if not (start_month <= month <= end_month):
+            continue
+        hours[month] += stream.ms_played / 3_600_000
+        if stream.artist:
+            per_month_artists[month][stream.artist] += stream.ms_played
+        if stream.track:
+            per_month_tracks[month][stream.track] += stream.ms_played
+
+    return SpotifyStreamingSummary(
+        hours=dict(hours),
+        artists=dict(per_month_artists),
+        tracks=dict(per_month_tracks),
+    )
 
 
 def _parse_time(entry: dict) -> Optional[datetime]:

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import csv
 import logging
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from ...core.cache import files_signature, persistent_cache
 from ...core.config import get_config
 
 logger = logging.getLogger(__name__)
+TextTokenizer = Callable[[str], Iterable[str]]
 
 
 @dataclass
@@ -63,6 +65,67 @@ class RedditMessageHeader:
     recipient: str
     permalink: str
     source: str
+
+
+@dataclass(frozen=True)
+class RedditActivitySummary:
+    comment_counts: dict[str, int]
+    comment_subreddits: dict[str, Counter[str]]
+    comment_tokens: dict[str, Counter[str]]
+    post_counts: dict[str, int]
+    message_counts: dict[str, int]
+
+
+def summarize_activity(
+    start_month: str,
+    end_month: str,
+    *,
+    comments_paths: Optional[Sequence[Path]] = None,
+    posts_paths: Optional[Sequence[Path]] = None,
+    message_paths: Optional[Sequence[Path]] = None,
+    tokenize_text: TextTokenizer | None = None,
+) -> RedditActivitySummary:
+    comment_counts: dict[str, int] = defaultdict(int)
+    comment_subreddits: dict[str, Counter[str]] = defaultdict(Counter)
+    comment_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+    post_counts: dict[str, int] = defaultdict(int)
+    message_counts: dict[str, int] = defaultdict(int)
+
+    for comment in iter_comments(paths=comments_paths):
+        if comment.created is None:
+            continue
+        month = _month_key(comment.created)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        comment_counts[month] += 1
+        comment_subreddits[month][comment.subreddit.strip() or "<unknown>"] += 1
+        if tokenize_text and comment.body:
+            for token in tokenize_text(comment.body):
+                comment_tokens[month][token] += 1
+
+    for post in iter_posts(paths=posts_paths):
+        if post.created is None:
+            continue
+        month = _month_key(post.created)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        post_counts[month] += 1
+
+    for message in iter_message_headers(paths=message_paths):
+        if message.created is None:
+            continue
+        month = _month_key(message.created)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        message_counts[month] += 1
+
+    return RedditActivitySummary(
+        comment_counts=dict(comment_counts),
+        comment_subreddits=dict(comment_subreddits),
+        comment_tokens=dict(comment_tokens),
+        post_counts=dict(post_counts),
+        message_counts=dict(message_counts),
+    )
 
 
 def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> List[Path]:
@@ -262,6 +325,14 @@ def _read_comment_csv(path: Path) -> Iterator[RedditComment]:
                 gildings=_safe_int(row.get("gildings")),
                 source=str(path),
             )
+
+
+def _month_key(moment: datetime) -> str:
+    return f"{moment.year:04d}-{moment.month:02d}"
+
+
+def _month_in_range(month: str, start_month: str, end_month: str) -> bool:
+    return start_month <= month <= end_month
 
 
 def _read_saved_csv(path: Path, kind: str) -> Iterator[RedditSavedItem]:

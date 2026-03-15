@@ -14,7 +14,6 @@ The warehouse is a query surface, not a primary store. Raw exports stay under `/
 - Build views only (fast): `python -m lynchpin.views.warehouse build`
 - Materialize per-source outputs: `python -m lynchpin.views.warehouse materialize --format parquet`
 - Refresh both outputs + views: `python -m lynchpin.views.warehouse refresh --format parquet`
-- One-shot bundle: `python -m lynchpin.system.materialize` (runs webhistory, ledgers, warehouse, optional velocity, and canonical baseline/life_timeline rebuilds)
 
 Config overrides:
 - `LYNCHPIN_WAREHOUSE_ROOT` for the per-source output root.

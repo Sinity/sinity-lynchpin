@@ -11,6 +11,11 @@ from typing import Dict, Iterable, List, Tuple
 
 import typer
 
+from lynchpin.system.life_timeline_paths import (
+    LATEST_LIFE_TIMELINE_JSON,
+    LIFE_TIMELINE_NARRATIVE_OUTPUT,
+)
+
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
 NUMERIC_FIELDS = {
@@ -208,11 +213,11 @@ def render_section(title: str, buckets: List[Tuple[object, Dict[str, object]]], 
 @app.command()
 def main(
     life_json: Path = typer.Option(
-        Path("artefacts/lifelog/life-timeline/monthly_life_latest.json"),
+        LATEST_LIFE_TIMELINE_JSON,
         help="Path to the monthly life timeline JSON.",
     ),
     output: Path = typer.Option(
-        Path("artefacts/lifelog/life-timeline/narratives/life_auto_summary.md"),
+        LIFE_TIMELINE_NARRATIVE_OUTPUT,
         help="Where to write the generated Markdown narrative.",
     ),
     quarter_limit: int = typer.Option(8, help="How many most recent quarters to include."),

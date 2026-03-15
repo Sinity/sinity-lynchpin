@@ -1,8 +1,7 @@
-# Calendar Views (Lynchpin-first)
+# Calendar Views Workflow
 
-The legacy calendar batch pipeline has been retired. Calendar dossiers are now
-rendered directly from the Lynchpin modules so every view stays consistent with
-the live data mirror.
+Calendar dossiers are rendered directly from the current `lynchpin.views.*`
+surface so every view stays consistent with the live data mirror.
 
 ## Commands
 
@@ -38,10 +37,3 @@ direnv exec /realm/project/sinity-lynchpin \
 `lynchpin.views.calendar_narratives` reads directly from `lynchpin.views.calendar`, so narratives
 always reflect the same data the view builder
 produces. Prompts and outputs live under `artefacts/calendar/narratives/`.
-
-## Next Steps
-1. Add week/month aggregations on top of the view builder output.
-2. Replace the last references to the deprecated HTML site with lightweight
-   Markdown to static HTML converters once the new view is stable.
-3. Extend the calendar summaries with more warehouse-backed source slices where
-   the current per-day dossier is still thin.

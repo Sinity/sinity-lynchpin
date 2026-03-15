@@ -18,15 +18,15 @@ direnv exec /realm/project/sinity-lynchpin \
 ### Open-Ended “Latest” Refresh
 
 ```bash
-END="$(date +%Y-%m)"
-
 direnv exec /realm/project/sinity-lynchpin \
   python -m lynchpin.system.life_timeline \
-  --start 2013-10 \
-  --end "$END" \
-  --output artefacts/lifelog/life-timeline/monthly_life_latest.json \
   --markdown-output-dir artefacts/lifelog/life-timeline/life_drilldowns_latest
 ```
+
+Defaults:
+- Start month: `2013-10`
+- End month: current month
+- JSON output: `artefacts/lifelog/life-timeline/monthly_life_latest.json`
 
 Use a dated JSON filename instead of `monthly_life_latest.json` when you want a pinned snapshot.
 
@@ -34,63 +34,42 @@ Use a dated JSON filename instead of `monthly_life_latest.json` when you want a 
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_digest \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --output artefacts/lifelog/life-timeline/digests/life_earliest_to_now.monthly.md
+  python -m lynchpin.system.life_timeline_digest
 ```
 
 ## Quarterly / Annual Narrative
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_narrative \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --output artefacts/lifelog/life-timeline/narratives/life_auto_summary.md
+  python -m lynchpin.system.life_timeline_narrative
 ```
 
 ## YouTube oEmbed Enrichment
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_oembed enrich \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --cache artefacts/lifelog/life-timeline/youtube_oembed_cache.jsonl \
-  --start 2013-10 \
-  --end "$END"
+  python -m lynchpin.system.life_timeline_oembed enrich
 ```
 
-This appends to the JSONL cache and is safe to re-run.
+This appends to the JSONL cache, infers the range from `monthly_life_latest.json`, and is safe to re-run.
 
 ## Full Refresh Sequence
 
 ```bash
-END="$(date +%Y-%m)"
-
 direnv exec /realm/project/sinity-lynchpin \
   python -m lynchpin.system.life_timeline \
-  --start 2013-10 \
-  --end "$END" \
-  --output artefacts/lifelog/life-timeline/monthly_life_latest.json \
   --markdown-output-dir artefacts/lifelog/life-timeline/life_drilldowns_latest
 
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_digest \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --output artefacts/lifelog/life-timeline/digests/life_earliest_to_now.monthly.md
+  python -m lynchpin.system.life_timeline_digest
 
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_narrative \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --output artefacts/lifelog/life-timeline/narratives/life_auto_summary.md
+  python -m lynchpin.system.life_timeline_narrative
 ```
 
 Optional fourth step:
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_oembed enrich \
-  --life-json artefacts/lifelog/life-timeline/monthly_life_latest.json \
-  --cache artefacts/lifelog/life-timeline/youtube_oembed_cache.jsonl \
-  --start 2013-10 \
-  --end "$END"
+  python -m lynchpin.system.life_timeline_oembed enrich
 ```

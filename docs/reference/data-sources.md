@@ -26,7 +26,7 @@ This repo is a read-model workspace: it should not accumulate large raw datasets
 | Bookmarks | Raindrop CSV export | Raindrop | `/realm/data/exports/raindrop/raw/raindrop_bookmarks_*.csv` | Drop new exports here; update pipeline default if filename changes. | `lynchpin.system.life_timeline`, `lynchpin.sources.exports.raindrop` |
 | Reading | Goodreads library export | Goodreads | `/realm/data/exports/goodreads/raw/library_export.csv` | Replace with latest export. | `lynchpin.sources.exports.goodreads`, `lynchpin.system.life_timeline` |
 | Substack archives | sbstck-dl exports + manual rips | Substack | `/realm/data/libraries/substack/` | Keep raw HTML/Markdown (`sbstck-dl`, manual downloads). | `lynchpin.sources.libraries.substack` |
-| Photos | Personal photo archive | Manual dumps | Unconfigured | No stable canonical photo root is configured currently. Keep `my.photos.main` dormant until a real `/realm/data/...` photo library lands. | dormant vendored HPI only |
+| Photos | Personal photo archive | Manual dumps | Unconfigured | No stable canonical photo root is configured currently. | none |
 | Documents (personal) | Scans/cards | Manual dumps | `/realm/data/libraries/doc/personal` | Migrated from legacy `personal-data/my_docs`. | (planned) |
 | Music | Spotify exports (Account Data + Extended Streaming) | Spotify | `/realm/data/exports/spotify/processed/<date>/` | Replace with latest Account Data / Extended Streaming dumps. | `lynchpin.system.life_timeline` |
 | Health | Processed sleep merge | health pipeline | `/realm/data/exports/health/processed/sleep_merged.jsonl` | Regenerate via your health merge pipeline (outside this repo). The older in-repo sleep merge script is obsolete. | `lynchpin.system.baseline`, `lynchpin.sources.exports.sleep` |
@@ -45,21 +45,6 @@ This repo is a read-model workspace: it should not accumulate large raw datasets
 | Finance journal | Ledger CLI | Personal ledger workflow | `/realm/data/libraries/finance/journal_clean` | Keep ledger updated; lynchpin ingests postings for DuckDB. | `lynchpin.sources.libraries.finance`, `lynchpin.views.warehouse` |
 | Polylogue Markdown transcripts | Polylogue render output | Polylogue | `/realm/data/exports/chatlog/processed/markdown/<provider>/**/conversation.md` | Run Polylogue renderers to refresh Markdown; `lynchpin.sources.exports.polylogue` inventories files. | `lynchpin.sources.exports.polylogue`, `lynchpin.views.warehouse` |
 | Qdrant export archive (decommissioned) | One-time migration export | local qdrant export utility | `/realm/data/exports/vector-index/qdrant/20260306T180309Z/` | Archived NDJSON + collection metadata after qdrant decommission; includes vectors in `collections/*.points.jsonl` (see `VERIFICATION.md`). | ad-hoc DuckDB analysis (`read_ndjson_auto`) |
-
-## Staged HPI export roots
-
-These are the dormant service/account roots that the current HPI config already points at. They are intentionally empty until you land the corresponding export or scraper output.
-
-| Module | Canonical root |
-|---|---|
-| `my.github.gdpr` | `/realm/data/exports/github/gdpr/` |
-| `my.github.ghexport` | `/realm/data/exports/github/ghexport/` |
-| `my.twitter.archive` | `/realm/data/exports/twitter/archive/` |
-| `my.twitter.twint` | `/realm/data/exports/twitter/twint/` |
-| `my.linkedin.privacy_export` | `/realm/data/exports/linkedin/privacy-export/` |
-| `my.steam.scraper` | `/realm/data/exports/steam/steamscraper/` |
-
-See [hpi-service-bootstrap.md](/realm/project/sinity-lynchpin/docs/reference/hpi-service-bootstrap.md) for the exact expected export shapes, validation commands, and the current Chrome-profile/auth limits.
 
 ## Curated bundles (manual exports)
 

@@ -286,7 +286,7 @@ def _resolve_reddit_export(
     return fallback[0]
 
 
-def _resolve_latest_dated_dir(
+def resolve_latest_dated_dir(
     root: Path, ignore: Optional[set[str]] = None
 ) -> Optional[Path]:
     if not root.exists():
@@ -318,7 +318,7 @@ def _resolve_spotify_export(root: Path) -> Path:
         root / "Spotify Extended Streaming History"
     ).exists():
         return root
-    candidate = _resolve_latest_dated_dir(
+    candidate = resolve_latest_dated_dir(
         root,
         ignore={"raw", "archive", "legacy", "derived", "derivative"},
     )

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Callable, Dict, Iterable, Iterator, List, Optional
 
 from ...core.cache import file_signature, persistent_cache
 from ...core.config import get_config
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+TextTokenizer = Callable[[str], Iterable[str]]
 
 
 @dataclass
@@ -44,6 +46,86 @@ class WykopEntryComment:
     url: str
     content: str
     rating: Optional[int]
+
+
+@dataclass(frozen=True)
+class WykopActivitySummary:
+    link_comment_counts: dict[str, int]
+    link_comment_tags: dict[str, Counter[str]]
+    link_comment_tokens: dict[str, Counter[str]]
+    entry_counts: dict[str, int]
+    entry_tags: dict[str, Counter[str]]
+    entry_tokens: dict[str, Counter[str]]
+    entry_comment_counts: dict[str, int]
+    entry_comment_tokens: dict[str, Counter[str]]
+
+
+def summarize_activity(
+    start_month: str,
+    end_month: str,
+    *,
+    username: Optional[str] = None,
+    link_comments_path: Optional[Path] = None,
+    entries_path: Optional[Path] = None,
+    entry_comments_path: Optional[Path] = None,
+    tokenize_text: TextTokenizer | None = None,
+) -> WykopActivitySummary:
+    link_comment_counts: dict[str, int] = defaultdict(int)
+    link_comment_tags: dict[str, Counter[str]] = defaultdict(Counter)
+    link_comment_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+    entry_counts: dict[str, int] = defaultdict(int)
+    entry_tags: dict[str, Counter[str]] = defaultdict(Counter)
+    entry_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+    entry_comment_counts: dict[str, int] = defaultdict(int)
+    entry_comment_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+
+    for comment in iter_link_comments(username=username, path=link_comments_path):
+        if comment.created_at is None:
+            continue
+        month = _month_key(comment.created_at)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        link_comment_counts[month] += 1
+        for tag in comment.tags:
+            link_comment_tags[month][tag] += 1
+        if tokenize_text and comment.content:
+            for token in tokenize_text(comment.content):
+                link_comment_tokens[month][token] += 1
+
+    for entry in iter_entries(username=username, path=entries_path):
+        if entry.created_at is None:
+            continue
+        month = _month_key(entry.created_at)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        entry_counts[month] += 1
+        for tag in entry.tags:
+            entry_tags[month][tag] += 1
+        if tokenize_text and entry.content:
+            for token in tokenize_text(entry.content):
+                entry_tokens[month][token] += 1
+
+    for comment in iter_entry_comments(username=username, path=entry_comments_path):
+        if comment.created_at is None:
+            continue
+        month = _month_key(comment.created_at)
+        if not _month_in_range(month, start_month, end_month):
+            continue
+        entry_comment_counts[month] += 1
+        if tokenize_text and comment.content:
+            for token in tokenize_text(comment.content):
+                entry_comment_tokens[month][token] += 1
+
+    return WykopActivitySummary(
+        link_comment_counts=dict(link_comment_counts),
+        link_comment_tags=dict(link_comment_tags),
+        link_comment_tokens=dict(link_comment_tokens),
+        entry_counts=dict(entry_counts),
+        entry_tags=dict(entry_tags),
+        entry_tokens=dict(entry_tokens),
+        entry_comment_counts=dict(entry_comment_counts),
+        entry_comment_tokens=dict(entry_comment_tokens),
+    )
 
 
 def iter_link_comments(
@@ -163,6 +245,14 @@ def _profile_file(name: str, username: Optional[str]) -> Optional[Path]:
         return None
     profile_dir = cfg.wykop_root / user
     return profile_dir / name
+
+
+def _month_key(moment: datetime) -> str:
+    return f"{moment.year:04d}-{moment.month:02d}"
+
+
+def _month_in_range(month: str, start_month: str, end_month: str) -> bool:
+    return start_month <= month <= end_month
 
 
 def _parse_datetime(raw: object) -> Optional[datetime]:
