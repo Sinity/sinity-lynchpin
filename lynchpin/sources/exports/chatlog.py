@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -112,17 +112,20 @@ def iter_transcripts(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
 ) -> Iterator[ChatTranscript]:
+    start_bound = _normalize_datetime(start) if start else None
+    end_bound = _normalize_datetime(end) if end else None
     for row in _load_transcripts(providers):
-        if start and row.started_at < start:
+        started_at = _normalize_datetime(row.started_at)
+        if start_bound and started_at < start_bound:
             continue
-        if end and row.started_at >= end:
+        if end_bound and started_at >= end_bound:
             continue
         yield ChatTranscript(
             provider=row.provider,
             slug=row.slug,
             title=row.title,
             path=Path(row.path),
-            started_at=row.started_at,
+            started_at=started_at,
             tokens=row.tokens,
             words=row.words,
             attachment_count=row.attachment_count,
@@ -131,7 +134,8 @@ def iter_transcripts(
 
 
 def transcripts_by_date(target: date, provider: Optional[str] = None) -> List[ChatTranscript]:
-    day_start = datetime.combine(target, datetime.min.time())
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    day_start = datetime.combine(target, datetime.min.time(), tzinfo=local_tz)
     day_end = day_start + timedelta(days=1)
     providers = [provider] if provider else None
     return list(iter_transcripts(providers=providers, start=day_start, end=day_end))
@@ -141,7 +145,9 @@ def _build_transcript(provider: str, convo_path: Path) -> Optional[ChatTranscrip
     metadata = _read_front_matter(convo_path)
     slug = _slug_from_metadata(metadata) or convo_path.parent.name
     title = metadata.get("title") or slug
-    started_at = _infer_timestamp(metadata, slug) or datetime.fromtimestamp(convo_path.stat().st_mtime)
+    started_at = _normalize_datetime(
+        _infer_timestamp(metadata, slug) or datetime.fromtimestamp(convo_path.stat().st_mtime)
+    )
     tokens = _coerce_int(
         metadata.get("totalTokensApprox")
         or metadata.get("inputTokensApprox")
@@ -217,6 +223,13 @@ def _infer_timestamp(metadata: Dict[str, object], slug: Optional[str]) -> Option
         except ValueError:
             continue
     return None
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    if value.tzinfo is None:
+        return value.replace(tzinfo=local_tz)
+    return value.astimezone(local_tz)
 
 
 def _coerce_int(value: object, default: Optional[int] = None) -> Optional[int]:

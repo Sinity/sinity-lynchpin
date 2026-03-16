@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Generate a narrative for a date range directly from Lynchpin day snapshots.
+Generate a narrative for a date range directly from trajectory-backed calendar
+day summaries.
 
-Each day is loaded via `lynchpin.views.calendar.load_day` and summarised with
-`lynchpin.views.calendar_summary`. Prompts and outputs are written under
-`artefacts/calendar/narratives/`, and `codex prompt` handles the LLM call.
+Prompts and outputs are written under `artefacts/calendar/narratives/`, and
+`codex prompt` handles the LLM call.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import typer
 
 from ..core.io import write_text_if_changed
 
-from .calendar_summary import DaySummary, load_day_summary, summarize_range, terminal_capture_overview_line
+from ..context.calendar import DaySummary, load_day_summaries, summarize_range, terminal_capture_overview_line
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -149,10 +149,19 @@ class DayRecord:
             f"{record.get('title') or record.get('slug')} ({record.get('provider')})"
             for record in summary.transcripts[:3]
         ) or "No Polylogue transcripts."
+        top_modes = ", ".join(
+            f"{name}: {minutes:.1f}m"
+            for name, minutes in summary.top_modes[:4]
+        ) or "No trajectory modes."
+        top_projects = ", ".join(
+            f"{name}: {minutes:.1f}m"
+            for name, minutes in summary.top_projects[:4]
+        ) or "No project attribution."
         return dedent(
             f"""
             ### {self.dt.isoformat()} ({self.weekday})
-            - Focus: {summary.overview.active_hours:.2f}h active / {summary.overview.afk_hours:.2f}h afk / {summary.overview.window_hours:.2f}h focused windows
+            - Trajectory: {summary.overview.active_hours:.2f}h active / {summary.overview.afk_hours:.2f}h recovery / {summary.overview.window_hours:.2f}h focused windows
+            - Dominant mode/project: {summary.dominant_mode or 'n/a'} / {summary.dominant_project or 'n/a'} — modes {top_modes} — projects {top_projects}
             - Commands: {summary.command_total} total (Atuin logged {summary.atuin_commands}) — {categories}
             - Git: {commits} commits, +{lines_added:,} / -{lines_deleted:,} lines, repos: {repo_text}
             - Codex sessions: {summary.codex_sessions}
@@ -195,8 +204,7 @@ def _percentage(value: float, total: float) -> str:
         return "0.0"
     return f"{(value / total) * 100:.1f}"
 
-def _load_day_record(dt: date, calendar_dir: Path) -> DayRecord:
-    summary = load_day_summary(dt)
+def _load_day_record(dt: date, summary: DaySummary, calendar_dir: Path) -> DayRecord:
     view_path = calendar_dir / "views" / f"day-{dt.isoformat()}.md"
     return DayRecord(
         dt=dt,
@@ -230,14 +238,16 @@ You are Sinity's retrospective co-author. Write a cohesive narrative that covers
 Tone guidance: {profile['tone']}
 
 Range overview:
-- Total days: {total_days}
-- Focused hours: {range_summary.total_focus_hours:.2f}h (AFK {range_summary.total_afk_hours:.2f}h)
+- Total days: {range_summary.total_days}
+- Active hours: {range_summary.total_focus_hours:.2f}h (Recovery {range_summary.total_afk_hours:.2f}h)
 - Shell commands: {range_summary.total_commands:,}
 - Git commits: {range_summary.total_commits}
 - Codex sessions: {range_summary.total_codex_sessions}
 - Sessions logged: {range_summary.total_session_records} (Top: {range_summary.top_sessions})
 - Terminal recording sessions: {range_summary.total_terminal_sessions} ({range_summary.total_terminal_active_hours:.2f}h active, {range_summary.total_terminal_events} events, {range_summary.total_terminal_commands} commands, {range_summary.total_terminal_failures} failures, new={range_summary.total_terminal_new_model_sessions}, legacy={range_summary.total_terminal_legacy_sessions})
 - ActivityWatch minutes tracked: {range_summary.total_focus_minutes:.1f}
+- Dominant modes: {', '.join(f'{name} ({minutes:.1f}m)' for name, minutes in range_summary.top_modes) or 'n/a'}
+- Dominant projects: {', '.join(f'{name} ({minutes:.1f}m)' for name, minutes in range_summary.top_projects) or 'n/a'}
 - Sleep logged: {sleep_line}
 - Top highlights: {range_summary.top_insights}
 
@@ -378,7 +388,8 @@ def narrative(
 
     dates = _daterange(start_date, end_date)
     calendar_dir = calendar_dir.expanduser()
-    day_records = [_load_day_record(dt, calendar_dir) for dt in dates]
+    summaries = {date.fromisoformat(summary.date): summary for summary in load_day_summaries(start_date, end_date)}
+    day_records = [_load_day_record(dt, summaries[dt], calendar_dir) for dt in dates]
 
     mode_tokens = [token.strip() for token in mode.split(",") if token.strip()]
     if not mode_tokens:

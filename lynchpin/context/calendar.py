@@ -1,37 +1,25 @@
-"""Shared helpers for summarising Lynchpin day snapshots."""
-
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass, field, asdict
-from datetime import date, datetime, timedelta
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from ..sources.exports import chatlog
-from ..sources.exports.chatlog import ChatTranscript
-from ..sources.exports.sleep import SleepEntry
-from ..sources.indices.sessions import SessionRecord
-from ..sources.indices import gitstats, sessions
-from ..sources.captures import activitywatch, atuin
-from ..metrics.focus import (
-    afk_split as _afk_split,
-    duration_minutes as _duration_minutes,
-    focus_minutes as _focus_minutes,
-    window_label as _window_label,
-    FALSE_ACTIVE_APPS,
-)
+from ..metrics.analysis import CodeHealthMetrics, code_health_summary as _code_health_summary
 from ..metrics.git import GitMetrics as GitSummary, git_summary as _git_summary
 from ..metrics.health import SleepMetrics as SleepSummary, sleep_summary as _sleep_summary
-from ..metrics.analysis import CodeHealthMetrics, code_health_summary as _code_health_summary
-from ..metrics.productivity import (
-    commands_by_category as _commands_by_category,
-    categorise_command as _categorise_command,
-)
+from ..metrics.productivity import commands_by_category as _commands_by_category
+from ..sources.captures import instrumentation, webhistory
+from ..sources.exports import chatlog, sleep
+from ..sources.exports.chatlog import ChatTranscript
+from ..sources.indices import sessions
 from ..sources.indices.analysis import iter_crate_metrics as _iter_crate_metrics, latest_snapshot as _latest_snapshot
 from ..sources.indices.coding_sessions import CodingSession, iter_coding_sessions as _iter_coding_sessions
-from .calendar import DaySnapshot, load_day
+from ..sources.indices.sessions import SessionRecord
+from ..trajectory import chains as trajectory_chains, day as trajectory_day, signal as trajectory_signal
 
 
 @dataclass
@@ -68,22 +56,14 @@ class DaySummary:
     coding_sessions: List[CodingSession] = field(default_factory=list)
     window_event_count: int = 0
     afk_event_count: int = 0
-
-    def to_dict(self) -> Dict[str, object]:
-        return asdict(self)
-
-
-@dataclass
-class DashboardDayMetrics:
-    date: str
-    active_hours: float
-    afk_hours: float
-    window_hours: float
-    command_total: int
-    codex_sessions: int
-    git_commits: int
-    focus_minutes: float
-    top_apps: List[str]
+    dominant_mode: Optional[str] = None
+    dominant_project: Optional[str] = None
+    top_modes: List[Tuple[str, float]] = field(default_factory=list)
+    top_projects: List[Tuple[str, float]] = field(default_factory=list)
+    signal_count: int = 0
+    chain_count: int = 0
+    source_counts: Dict[str, int] = field(default_factory=dict)
+    coverage: Dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -113,131 +93,103 @@ class NarrativeRangeSummary:
     coding_session_hours: float
     top_insights: str
     top_sessions: str
-
-
-def summarize_day(snapshot: DaySnapshot) -> DaySummary:
-    focus_counter = _focus_minutes(snapshot.windows)
-    focus_categories = {name: round(minutes, 2) for name, minutes in focus_counter.items()}
-    focus_minutes_total = sum(focus_counter.values())
-
-    active_hours, afk_hours = _afk_split(snapshot.afk, snapshot.windows)
-    window_hours = sum(focus_counter.values()) / 60.0
-
-    command_categories = _commands_by_category(snapshot.atuin_commands)
-    sessions = [_session_to_dict(record) for record in snapshot.session_records]
-    transcripts = [_transcript_to_dict(item) for item in chatlog.transcripts_by_date(snapshot.date)]
-    codex_sessions = sum(
-        1 for record in sessions if "codex" in record.get("provider", "").lower()
-    ) + sum(1 for transcript in transcripts if transcript.get("provider") == "codex")
-
-    git_summary = _git_summary(snapshot.git_commits)
-    sleep_summary = _sleep_summary(snapshot.sleep)
-
-    code_health = None
-    snap = _latest_snapshot()
-    if snap:
-        crates = list(_iter_crate_metrics())
-        if crates:
-            code_health = _code_health_summary(snap, crates)
-
-    target_iso = snapshot.date.isoformat()
-    day_coding_sessions = [
-        s for s in _iter_coding_sessions() if s.start[:10] == target_iso
-    ]
-
-    top_apps = list(focus_counter.most_common(5))
-    web_domains = _top_web_domains(snapshot.webhistory)
-    instrumentation_summary = _instrumentation_summary(snapshot.terminal_sessions, snapshot.terminal_events)
-
-    return DaySummary(
-        date=snapshot.date.isoformat(),
-        overview=Overview(
-            active_hours=round(active_hours, 2),
-            afk_hours=round(afk_hours, 2),
-            window_hours=round(window_hours, 2),
-        ),
-        command_total=len(snapshot.atuin_commands),
-        command_categories=command_categories,
-        codex_sessions=codex_sessions,
-        atuin_commands=len(snapshot.atuin_commands),
-        git=git_summary,
-        sessions=sessions,
-        transcripts=transcripts,
-        sleep=sleep_summary,
-        focus=FocusSummary(
-            total_focus_minutes=round(focus_minutes_total, 2),
-            categories=focus_categories,
-        ),
-        insights=[],
-        instrumentation=instrumentation_summary,
-        top_apps=[(name, round(minutes, 1)) for name, minutes in top_apps],
-        top_web_domains=web_domains,
-        code_health=code_health,
-        coding_sessions=day_coding_sessions,
-        window_event_count=len(snapshot.windows),
-        afk_event_count=len(snapshot.afk),
-    )
+    top_modes: List[Tuple[str, float]] = field(default_factory=list)
+    top_projects: List[Tuple[str, float]] = field(default_factory=list)
 
 
 def load_day_summary(target: date) -> DaySummary:
-    return summarize_day(load_day(target))
+    return load_day_summaries(target, target)[0]
 
 
-def dashboard_day_metrics(summary: DaySummary) -> DashboardDayMetrics:
-    return DashboardDayMetrics(
-        date=summary.date,
-        active_hours=summary.overview.active_hours,
-        afk_hours=summary.overview.afk_hours,
-        window_hours=summary.overview.window_hours,
-        command_total=summary.command_total,
-        codex_sessions=summary.codex_sessions,
-        git_commits=summary.git.commits,
-        focus_minutes=round(summary.focus.total_focus_minutes, 1),
-        top_apps=[name for name, _minutes in summary.top_apps[:3]],
+def load_day_summaries(start: date, end: date) -> List[DaySummary]:
+    if end < start:
+        raise ValueError("end must be >= start")
+
+    local_tz = _local_tz()
+    window_start = datetime.combine(start, time.min, tzinfo=local_tz)
+    window_end = datetime.combine(end + timedelta(days=1), time.min, tzinfo=local_tz)
+    span_days = (end - start).days + 1
+
+    signals = trajectory_signal.load_signals(start=window_start, end=window_end, days=span_days)
+    chains = trajectory_chains.build_chains(signals)
+    trajectory_days = trajectory_day.summarize_days(
+        signals=signals,
+        chains=chains,
+        start=window_start,
+        end=window_end,
+        days=span_days,
     )
 
+    signal_by_day: dict[date, list[trajectory_signal.TrajectorySignal]] = defaultdict(list)
+    for signal in signals:
+        signal_by_day[signal.start.date()].append(signal)
 
-def dashboard_day_metrics_from_inputs(
-    target: date,
-    *,
-    windows: Sequence,
-    afk: Sequence,
-    commands: Sequence,
-    session_records: Sequence[SessionRecord],
-    git_commits: Sequence,
-) -> DashboardDayMetrics:
-    focus_counter = _focus_minutes(windows)
-    active_hours, afk_hours = _afk_split(afk, windows)
-    git_summary = _git_summary(list(git_commits))
-    codex_sessions = sum(1 for record in session_records if "codex" in record.provider.lower())
-    return DashboardDayMetrics(
-        date=target.isoformat(),
-        active_hours=round(active_hours, 2),
-        afk_hours=round(afk_hours, 2),
-        window_hours=round(sum(focus_counter.values()) / 60.0, 2),
-        command_total=len(commands),
-        codex_sessions=codex_sessions,
-        git_commits=git_summary.commits,
-        focus_minutes=round(sum(focus_counter.values()), 1),
-        top_apps=[name for name, _minutes in focus_counter.most_common(3)],
-    )
+    transcripts_by_day: dict[date, list[ChatTranscript]] = defaultdict(list)
+    for transcript in chatlog.iter_transcripts(start=window_start, end=window_end):
+        transcripts_by_day[transcript.started_at.date()].append(transcript)
 
+    web_domains_by_day = _top_web_domains_by_day(start, end)
 
-def load_dashboard_day_metrics(target: date) -> DashboardDayMetrics:
-    local_tz = datetime.now().astimezone().tzinfo
-    start = datetime.combine(target, datetime.min.time(), tzinfo=local_tz)
-    end = start + timedelta(days=1)
-    windows = list(activitywatch.window_events(day=target))
-    afk = list(activitywatch.afk_events(day=target))
-    commands = list(atuin.iter_commands(start=start, end=end))
-    return dashboard_day_metrics_from_inputs(
-        target,
-        windows=windows,
-        afk=afk,
-        commands=commands,
-        session_records=sessions.sessions_by_date(target),
-        git_commits=gitstats.commits_by_date(target),
-    )
+    coding_sessions_by_day: dict[str, list[CodingSession]] = defaultdict(list)
+    for session in _iter_coding_sessions():
+        if start.isoformat() <= session.start[:10] <= end.isoformat():
+            coding_sessions_by_day[session.start[:10]].append(session)
+
+    code_health = _load_code_health()
+    summaries: List[DaySummary] = []
+    for traj in trajectory_days:
+        day_signals = signal_by_day.get(traj.date, [])
+        command_signals = [signal for signal in day_signals if signal.source == "atuin.command"]
+        window_signals = [signal for signal in day_signals if signal.source == "activitywatch.window"]
+        afk_signals = [signal for signal in day_signals if signal.source == "activitywatch.afk"]
+        transcripts = [_transcript_to_dict(item) for item in transcripts_by_day.get(traj.date, [])]
+        session_records = [_session_to_dict(record) for record in sessions.sessions_by_date(traj.date)]
+        sleep_summary = _sleep_summary(sleep.sleep_by_date(traj.date.isoformat()))
+        top_apps, focus_categories, focus_minutes_total = _top_apps(window_signals), _focus_categories(traj), _focus_minutes(window_signals)
+        instrumentation_summary = _instrumentation_summary(
+            list(instrumentation.terminal_sessions_by_date(traj.date)),
+            list(instrumentation.terminal_session_events_by_date(traj.date)),
+        )
+        summary = DaySummary(
+            date=traj.date.isoformat(),
+            overview=Overview(
+                active_hours=round(traj.active_seconds / 3600.0, 2),
+                afk_hours=round(traj.recovery_seconds / 3600.0, 2),
+                window_hours=round(focus_minutes_total / 60.0, 2),
+            ),
+            command_total=len(command_signals),
+            command_categories=_command_categories(command_signals),
+            codex_sessions=sum(
+                1 for record in session_records if "codex" in record.get("provider", "").lower()
+            ) + sum(1 for transcript in transcripts if transcript.get("provider") == "codex"),
+            atuin_commands=len(command_signals),
+            git=_git_summary_from_signals(day_signals),
+            sessions=session_records,
+            transcripts=transcripts,
+            sleep=sleep_summary,
+            focus=FocusSummary(
+                total_focus_minutes=round(focus_minutes_total, 2),
+                categories=focus_categories,
+            ),
+            insights=list(traj.highlights),
+            instrumentation=instrumentation_summary,
+            top_apps=top_apps,
+            top_web_domains=web_domains_by_day.get(traj.date, []),
+            code_health=code_health,
+            coding_sessions=list(coding_sessions_by_day.get(traj.date.isoformat(), [])),
+            window_event_count=len(window_signals),
+            afk_event_count=len(afk_signals),
+            dominant_mode=traj.dominant_mode,
+            dominant_project=traj.dominant_project,
+            top_modes=[(mode, round(seconds / 60.0, 1)) for mode, seconds in traj.top_modes],
+            top_projects=[(project, round(seconds / 60.0, 1)) for project, seconds in traj.top_projects],
+            signal_count=traj.signal_count,
+            chain_count=traj.chain_count,
+            source_counts=dict(traj.source_counts),
+            coverage=dict(traj.coverage),
+        )
+        summaries.append(summary)
+    return summaries
 
 
 def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
@@ -275,14 +227,18 @@ def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
         sleep_hours_samples.append(float(summary.sleep.total_hours))
         total_sleep_segments += summary.sleep.segments
 
-    insight_counter: Counter = Counter()
-    session_counter: Counter = Counter()
+    insight_counter: Counter[str] = Counter()
+    session_counter: Counter[tuple[str, str]] = Counter()
+    mode_counter: Counter[str] = Counter()
+    project_counter: Counter[str] = Counter()
     for summary in summaries:
         insight_counter.update(summary.insights)
         session_counter.update(
             (session.get("label") or "Session", session.get("provider") or "")
             for session in summary.sessions
         )
+        mode_counter.update({mode: minutes for mode, minutes in summary.top_modes})
+        project_counter.update({project: minutes for project, minutes in summary.top_projects})
 
     top_insights = ", ".join(f"{text}×{count}" for text, count in insight_counter.most_common(6)) or "No notable highlights captured."
     top_sessions = (
@@ -294,13 +250,11 @@ def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
         else "No recorded sessions."
     )
 
-    # Coding session rollups
     coding_session_count = sum(len(summary.coding_sessions) for summary in summaries)
     coding_session_hours = round(
-        sum(s.duration_hours for summary in summaries for s in summary.coding_sessions), 2
+        sum(session.duration_hours for summary in summaries for session in summary.coding_sessions), 2
     )
 
-    # Use the last available code_health from any day summary
     range_code_health = None
     for summary in reversed(summaries):
         if summary.code_health is not None:
@@ -332,29 +286,31 @@ def summarize_range(summaries: Sequence[DaySummary]) -> NarrativeRangeSummary:
         coding_session_hours=coding_session_hours,
         top_insights=top_insights,
         top_sessions=top_sessions,
+        top_modes=[(mode, round(minutes, 1)) for mode, minutes in mode_counter.most_common(5)],
+        top_projects=[(project, round(minutes, 1)) for project, minutes in project_counter.most_common(5)],
     )
 
 
-def terminal_capture_overview_line(instrumentation: Dict[str, Any]) -> str:
-    session_count = int(instrumentation.get("terminal_sessions", 0) or 0)
+def terminal_capture_overview_line(instrumentation_payload: Dict[str, Any]) -> str:
+    session_count = int(instrumentation_payload.get("terminal_sessions", 0) or 0)
     if session_count <= 0:
         return "absent"
-    capture_mode = str(instrumentation.get("terminal_capture_mode") or "unknown")
-    event_count = int(instrumentation.get("terminal_events", 0) or 0)
-    command_count = int(instrumentation.get("terminal_command_count", 0) or 0)
-    duration_hours = float(instrumentation.get("terminal_duration_hours", 0.0) or 0.0)
-    active_hours = float(instrumentation.get("terminal_active_hours", 0.0) or 0.0)
-    idle_hours = float(instrumentation.get("terminal_idle_hours", 0.0) or 0.0)
-    command_failures = int(instrumentation.get("terminal_command_failures", 0) or 0)
-    session_failures = int(instrumentation.get("terminal_session_failures", 0) or 0)
-    manifest_gaps = int(instrumentation.get("terminal_sessions_missing_manifest", 0) or 0)
-    event_gaps = int(instrumentation.get("terminal_sessions_missing_events", 0) or 0)
-    degraded_sessions = int(instrumentation.get("terminal_degraded_sessions", 0) or 0)
-    damaged_sessions = int(instrumentation.get("terminal_damaged_sessions", 0) or 0)
-    estimated_timing_sessions = int(instrumentation.get("terminal_estimated_timing_sessions", 0) or 0)
-    unknown_activity_sessions = int(instrumentation.get("terminal_unknown_activity_sessions", 0) or 0)
-    unknown_activity_hours = float(instrumentation.get("terminal_unknown_activity_hours", 0.0) or 0.0)
-    repo_map = instrumentation.get("terminal_repos") or {}
+    capture_mode = str(instrumentation_payload.get("terminal_capture_mode") or "unknown")
+    event_count = int(instrumentation_payload.get("terminal_events", 0) or 0)
+    command_count = int(instrumentation_payload.get("terminal_command_count", 0) or 0)
+    duration_hours = float(instrumentation_payload.get("terminal_duration_hours", 0.0) or 0.0)
+    active_hours = float(instrumentation_payload.get("terminal_active_hours", 0.0) or 0.0)
+    idle_hours = float(instrumentation_payload.get("terminal_idle_hours", 0.0) or 0.0)
+    command_failures = int(instrumentation_payload.get("terminal_command_failures", 0) or 0)
+    session_failures = int(instrumentation_payload.get("terminal_session_failures", 0) or 0)
+    manifest_gaps = int(instrumentation_payload.get("terminal_sessions_missing_manifest", 0) or 0)
+    event_gaps = int(instrumentation_payload.get("terminal_sessions_missing_events", 0) or 0)
+    degraded_sessions = int(instrumentation_payload.get("terminal_degraded_sessions", 0) or 0)
+    damaged_sessions = int(instrumentation_payload.get("terminal_damaged_sessions", 0) or 0)
+    estimated_timing_sessions = int(instrumentation_payload.get("terminal_estimated_timing_sessions", 0) or 0)
+    unknown_activity_sessions = int(instrumentation_payload.get("terminal_unknown_activity_sessions", 0) or 0)
+    unknown_activity_hours = float(instrumentation_payload.get("terminal_unknown_activity_hours", 0.0) or 0.0)
+    repo_map = instrumentation_payload.get("terminal_repos") or {}
     repo_text = ", ".join(f"{name} ({count})" for name, count in list(repo_map.items())[:3]) or "none"
     parts = [
         capture_mode,
@@ -379,26 +335,103 @@ def terminal_capture_overview_line(instrumentation: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def terminal_capture_gaps_line(instrumentation: Dict[str, Any]) -> str:
+def terminal_capture_gaps_line(instrumentation_payload: Dict[str, Any]) -> str:
     return (
-        f"{int(instrumentation.get('terminal_sessions_missing_manifest', 0) or 0)} manifestless, "
-        f"{int(instrumentation.get('terminal_sessions_missing_events', 0) or 0)} eventless, "
-        f"{int(instrumentation.get('terminal_unknown_activity_sessions', 0) or 0)} without activity estimate, "
-        f"{float(instrumentation.get('terminal_unknown_activity_hours', 0.0) or 0.0):.2f}h uncertain duration, "
-        f"{int(instrumentation.get('terminal_command_failures', 0) or 0)} non-zero command(s), "
-        f"{int(instrumentation.get('terminal_session_failures', 0) or 0)} non-zero session(s)"
+        f"{int(instrumentation_payload.get('terminal_sessions_missing_manifest', 0) or 0)} manifestless, "
+        f"{int(instrumentation_payload.get('terminal_sessions_missing_events', 0) or 0)} eventless, "
+        f"{int(instrumentation_payload.get('terminal_unknown_activity_sessions', 0) or 0)} without activity estimate, "
+        f"{float(instrumentation_payload.get('terminal_unknown_activity_hours', 0.0) or 0.0):.2f}h uncertain duration, "
+        f"{int(instrumentation_payload.get('terminal_command_failures', 0) or 0)} non-zero command(s), "
+        f"{int(instrumentation_payload.get('terminal_session_failures', 0) or 0)} non-zero session(s)"
     )
 
 
-def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Sequence) -> Dict[str, Any]:
+def _focus_minutes(signals: Sequence[trajectory_signal.TrajectorySignal]) -> float:
+    return round(sum(signal.duration_seconds for signal in signals) / 60.0, 2)
+
+
+def _focus_categories(traj: trajectory_day.TrajectoryDay) -> Dict[str, float]:
+    return {mode: round(seconds / 60.0, 2) for mode, seconds in traj.top_modes}
+
+
+def _top_apps(signals: Sequence[trajectory_signal.TrajectorySignal]) -> List[Tuple[str, float]]:
+    totals: Counter[str] = Counter()
+    for signal in signals:
+        label = signal.app or signal.title or "unknown"
+        totals[label] += signal.duration_seconds / 60.0
+    return [(name, round(minutes, 1)) for name, minutes in totals.most_common(5)]
+
+
+def _top_web_domains_by_day(start: date, end: date) -> Dict[date, List[Tuple[str, int]]]:
+    domains_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    for entry in webhistory.iter_entries(start_date=start.isoformat(), end_date=end.isoformat()):
+        entry_date = str(entry.get("date") or "")[:10]
+        if not entry_date:
+            iso_time = entry.get("iso_time")
+            if isinstance(iso_time, str) and iso_time:
+                entry_date = iso_time[:10]
+        if not entry_date:
+            continue
+        url = str(entry.get("url") or "")
+        parsed = urlparse(url)
+        domain = parsed.netloc.strip().lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if domain:
+            domains_by_day[date.fromisoformat(entry_date)][domain] += 1
+    return {
+        target: counter.most_common(5)
+        for target, counter in domains_by_day.items()
+    }
+
+
+def _command_categories(signals: Sequence[trajectory_signal.TrajectorySignal]) -> Dict[str, int]:
+    commands = [
+        SimpleNamespace(cwd=signal.cwd, command=signal.detail or "")
+        for signal in signals
+    ]
+    return _commands_by_category(commands)
+
+
+def _git_summary_from_signals(signals: Sequence[trajectory_signal.TrajectorySignal]) -> GitSummary:
+    commits = []
+    for signal in signals:
+        if signal.source != "git.commit":
+            continue
+        repo_path = str(signal.evidence.get("repo") or "")
+        repo = Path(repo_path).name if repo_path else ""
+        commits.append(
+            SimpleNamespace(
+                repo=repo,
+                lines_added=int(signal.evidence.get("lines_added") or 0),
+                lines_deleted=int(signal.evidence.get("lines_deleted") or 0),
+            )
+        )
+    return _git_summary(commits)
+
+
+def _load_code_health() -> Optional[CodeHealthMetrics]:
+    snapshot = _latest_snapshot()
+    if not snapshot:
+        return None
+    crate_metrics = list(_iter_crate_metrics())
+    if not crate_metrics:
+        return None
+    return _code_health_summary(snapshot, crate_metrics)
+
+
+def _instrumentation_summary(
+    terminal_sessions: Sequence[instrumentation.TerminalSessionMetadata],
+    terminal_events: Sequence[instrumentation.TerminalSessionEvent],
+) -> Dict[str, Any]:
     session_count = len(terminal_sessions)
     event_count = len(terminal_events)
     duration_seconds = 0.0
     active_seconds = 0.0
     idle_seconds = 0.0
-    repo_counter: Counter = Counter()
-    command_counter: Counter = Counter()
-    event_type_counter: Counter = Counter()
+    repo_counter: Counter[str] = Counter()
+    command_counter: Counter[str] = Counter()
+    event_type_counter: Counter[str] = Counter()
     command_sessions_with_events: set[str] = set()
     command_count = 0
     command_failures = 0
@@ -442,8 +475,8 @@ def _instrumentation_summary(terminal_sessions: Sequence, terminal_events: Seque
             session_failures += 1
         repo = session.final_repo_root or session.repo_root
         if repo:
-            repo_label = Path(repo).name or repo
-            repo_counter[repo_label] += 1
+            repo_counter[Path(repo).name or repo] += 1
+
     for event in terminal_events:
         event_type_counter[event.type] += 1
         if event.type == "command_start":
@@ -518,26 +551,19 @@ def _session_to_dict(record: SessionRecord) -> Dict[str, str]:
     }
 
 
-def _transcript_to_dict(record: ChatTranscript) -> Dict[str, object]:
+def _transcript_to_dict(item: ChatTranscript) -> Dict[str, object]:
     return {
-        "provider": record.provider,
-        "slug": record.slug,
-        "title": record.title,
-        "path": str(record.path),
-        "started_at": record.started_at.isoformat(),
-        "tokens": record.tokens,
-        "words": record.words,
-        "attachment_count": record.attachment_count,
-        "attachment_bytes": record.attachment_bytes,
+        "provider": item.provider,
+        "slug": item.slug,
+        "title": item.title,
+        "path": str(item.path),
+        "started_at": item.started_at.isoformat(),
+        "tokens": item.tokens,
+        "words": item.words,
+        "attachment_count": item.attachment_count,
+        "attachment_bytes": item.attachment_bytes,
     }
 
 
-def _top_web_domains(entries: Iterable[Dict[str, object]], limit: int = 5) -> List[Tuple[str, int]]:
-    counter: Counter = Counter()
-    for record in entries:
-        url = record.get("url") or record.get("pageUrl")
-        if not isinstance(url, str) or not url.strip():
-            continue
-        domain = urlparse(url).netloc or "unknown"
-        counter[domain.lower()] += 1
-    return counter.most_common(limit)
+def _local_tz():
+    return datetime.now().astimezone().tzinfo or timezone.utc

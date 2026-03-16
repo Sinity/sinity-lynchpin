@@ -104,6 +104,10 @@ def summarize_streaming(
     )
 
 
+def top_names(per_month_counts: Dict[str, Counter[str]], month: str, *, limit: int = 3) -> list[str]:
+    return [name for name, _ in per_month_counts.get(month, Counter()).most_common(limit)]
+
+
 def _parse_time(entry: dict) -> Optional[datetime]:
     if "endTime" in entry:
         raw = entry["endTime"]

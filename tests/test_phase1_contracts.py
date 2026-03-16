@@ -69,6 +69,50 @@ def test_build_views_drops_stale_managed_relation_for_selected_source() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_build_views_preserves_manifest_rows_for_unselected_sources() -> None:
+    script = textwrap.dedent(
+        """
+        import tempfile
+        from pathlib import Path
+        from lynchpin.views import warehouse
+
+        selected = warehouse.SOURCE_SPECS[0]
+        untouched = warehouse.SOURCE_SPECS[1]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "warehouse.duckdb"
+            conn = warehouse.duckdb.connect(str(db_path))
+            conn.execute(
+                "CREATE TABLE warehouse_manifest ("
+                "source TEXT, format TEXT, source_path TEXT, present_tables BIGINT, "
+                "expected_tables BIGINT, updated_at TIMESTAMP)"
+            )
+            conn.execute(
+                "INSERT INTO warehouse_manifest VALUES (?, ?, ?, ?, ?, now())",
+                [untouched.name, "parquet", "/tmp/existing", 1, 1],
+            )
+            conn.close()
+
+            warehouse.build_views(
+                output=db_path,
+                root=tmp_path / "missing-root",
+                output_format="parquet",
+                sources=[selected.name],
+            )
+
+            conn = warehouse.duckdb.connect(str(db_path))
+            rows = conn.execute(
+                "SELECT source FROM warehouse_manifest ORDER BY source"
+            ).fetchall()
+            conn.close()
+            assert rows == sorted([(selected.name,), (untouched.name,)]), rows
+        """
+    )
+    result = _run_repo_python(script)
+    assert result.returncode == 0, result.stderr
+
+
 def test_project_registry_exposes_shared_profiles() -> None:
     script = textwrap.dedent(
         """
@@ -103,12 +147,14 @@ def test_sessions_source_reads_markdown_docs_directly() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_calendar_views_and_narratives_use_summary_helpers() -> None:
+def test_calendar_views_and_narratives_use_context_calendar() -> None:
     views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
     narratives_text = (REPO_ROOT / "lynchpin/views/calendar_narratives.py").read_text(encoding="utf-8")
-    assert "load_day_summary" in views_text
+    assert "from ..context.calendar import" in views_text
+    assert "load_day_summaries" in views_text
     assert "terminal_capture_overview_line" in views_text
-    assert "load_day_summary" in narratives_text
+    assert "from ..context.calendar import" in narratives_text
+    assert "load_day_summaries" in narratives_text
     assert "summarize_range" in narratives_text
 
 
@@ -298,9 +344,111 @@ def test_life_timeline_uses_source_aggregation_helpers() -> None:
     assert "lp_raindrop.summarize_bookmarks(" in text
     assert "lp_gitstats.summarize_commit_activity(" in text
     assert "lp_spotify.summarize_streaming(" in text
+    assert "lp_spotify.top_names(" in text
+    assert "life_context.build_recent_trajectory_summaries(" in text
+    assert "life_context.build_month_summary(" in text
+    assert "life_context.build_output_summary(" in text
+    assert "life_context.build_work_summary(" in text
+    assert "life_context.build_intake_summary(" in text
+    assert "life_context.build_mail_summary(" in text
+    assert "life_context.build_location_summary(" in text
+    assert "life_context.build_money_summary(" in text
+    assert "life_context.build_health_summary(" in text
+    assert "life_context.build_notes_summary(" in text
+    assert "life_context.render_markdown(" in text
+    assert "lp_takeout.tokenize_topic" in text
+    assert "lp_takeout.summarize_youtube_watch_history_month(" in text
+    assert "lp_takeout.phrase_topic_tokens(" in text
+    assert "lp_takeout.parse_life_timeline_takeouts(" in text
     assert "lp_knowledgebase.summarize_onenote_journal_entries(" in text
     assert "lp_takeout.resolve_archives(" in text
     assert "lp_takeout.load_youtube_oembed_cache(" in text
+    assert "def tokenize_topic(" not in text
+
+
+def test_takeout_life_timeline_bundle_parser_handles_sparse_archive() -> None:
+    script = textwrap.dedent(
+        """
+        import io
+        import tarfile
+        import tempfile
+        from pathlib import Path
+
+        from lynchpin.sources.exports import takeout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "takeout-20260101-001.tgz"
+            with tarfile.open(archive, "w:gz") as tf:
+                data = b"not relevant"
+                info = tarfile.TarInfo("Takeout/Archive Browser.html")
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+            bundle = takeout.parse_life_timeline_takeouts(
+                [archive],
+                start_month="2026-01",
+                end_month="2026-03",
+            )
+
+            assert bundle.google_search_counts == {}
+            assert bundle.youtube_video_titles == {}
+            assert bundle.chrome_history_counts == {}
+            assert bundle.location_takeout_path is None
+            assert bundle.gmail_takeout_path is None
+        """
+    )
+    result = _run_repo_python(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_takeout_youtube_watch_history_month_helper_resolves_oembed_fallbacks() -> None:
+    script = textwrap.dedent(
+        """
+        from collections import Counter
+
+        from lynchpin.sources.exports import takeout
+
+        video_ids = Counter({"abc123xyz00": 2, "bad": 9})
+        titles = Counter()
+        channels = Counter()
+        cache = {"abc123xyz00": {"ok": True, "title": "DuckDB Deep Dive", "author_name": "Data Channel"}}
+
+        top_ids, resolved_titles, resolved_channels, title_tokens = takeout.summarize_youtube_watch_history_month(
+            video_ids,
+            titles,
+            channels,
+            takeout_titles={},
+            oembed_cache=cache,
+        )
+
+        assert top_ids[0] == ("bad", 9)
+        assert resolved_titles["DuckDB Deep Dive"] == 2
+        assert resolved_channels["Data Channel"] == 2
+        assert title_tokens["duckdb"] == 2
+        """
+    )
+    result = _run_repo_python(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_takeout_phrase_topic_tokens_and_spotify_top_names() -> None:
+    script = textwrap.dedent(
+        """
+        from collections import Counter
+
+        from lynchpin.sources.exports import spotify, takeout
+
+        tokens = takeout.phrase_topic_tokens(Counter({"DuckDB json": 2, "the and": 5}))
+        top = spotify.top_names({"2026-03": Counter({"Autechre": 30, "Biosphere": 20})}, "2026-03", limit=1)
+
+        assert tokens["duckdb"] == 2
+        assert tokens["json"] == 2
+        assert "the" not in tokens
+        assert top == ["Autechre"]
+        """
+    )
+    result = _run_repo_python(script)
+    assert result.returncode == 0, result.stderr
 
 
 def test_reddit_source_summarize_activity() -> None:
