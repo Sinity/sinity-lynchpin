@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 from .chains import TrajectoryChain, build_chains
 from .signal import TrajectorySignal, load_signals, resolve_window
+
+if TYPE_CHECKING:
+    from .coverage import SignalCoverage
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,10 @@ class TrajectoryDay:
     coverage: dict[str, object]
     highlights: tuple[str, ...]
     projects: tuple[TrajectoryDayProject, ...]
+    top_topics: tuple[tuple[str, float], ...] = ()
+    dominant_topic: Optional[str] = None
+    signal_coverage: Optional[SignalCoverage] = None
+    anomalies: tuple[str, ...] = ()
 
     @property
     def observed_seconds(self) -> float:
@@ -69,6 +76,10 @@ class TrajectoryDay:
             "coverage": self.coverage,
             "highlights": list(self.highlights),
             "projects": [project.to_dict() for project in self.projects],
+            "top_topics": [[topic, round(seconds, 3)] for topic, seconds in self.top_topics],
+            "dominant_topic": self.dominant_topic,
+            "signal_coverage": self.signal_coverage.to_dict() if self.signal_coverage else None,
+            "anomalies": list(self.anomalies),
         }
 
 
@@ -92,6 +103,7 @@ def summarize_days(
     source_counts: dict[date, Counter[str]] = {target: Counter() for target in dates}
     mode_seconds: dict[date, Counter[str]] = {target: Counter() for target in dates}
     project_seconds: dict[date, Counter[str]] = {target: Counter() for target in dates}
+    topic_seconds: dict[date, Counter[str]] = {target: Counter() for target in dates}
     active_seconds = {target: 0.0 for target in dates}
     recovery_seconds = {target: 0.0 for target in dates}
     chain_ids: dict[date, set[str]] = {target: set() for target in dates}
@@ -106,7 +118,7 @@ def summarize_days(
         source_counts[target][signal.source] += 1
         if signal.source == "atuin.command":
             command_counts[target] += 1
-        elif signal.source == "chatlog.transcript":
+        elif signal.source in ("chatlog.transcript", "polylogue.session"):
             transcript_counts[target] += 1
         elif signal.source == "git.commit":
             commit_counts[target] += 1
@@ -121,21 +133,27 @@ def summarize_days(
                 project_seconds[target][chain.project] += seconds
                 day_project_chain_ids[target][chain.project].add(chain.chain_id)
                 day_project_modes[target][chain.project][chain.mode] += seconds
+            if chain.topic:
+                topic_seconds[target][chain.topic] += seconds
             if chain.mode == "recovery":
                 recovery_seconds[target] += seconds
             else:
                 active_seconds[target] += seconds
 
+    from .coverage import compute_coverage
+
     summaries: list[TrajectoryDay] = []
     for target in dates:
         top_modes = tuple(sorted(mode_seconds[target].items(), key=lambda item: (-item[1], item[0]))[:5])
         top_projects = tuple(sorted(project_seconds[target].items(), key=lambda item: (-item[1], item[0]))[:5])
+        top_topics = tuple(sorted(topic_seconds[target].items(), key=lambda item: (-item[1], item[0]))[:5])
         dominant_mode = top_modes[0][0] if top_modes else None
         dominant_project = top_projects[0][0] if top_projects else None
+        dominant_topic = top_topics[0][0] if top_topics else None
         coverage = {
             "has_activitywatch": any(source.startswith("activitywatch.") for source in source_counts[target]),
             "has_terminal": any(source.startswith("instrumentation.") for source in source_counts[target]),
-            "has_chatlog": "chatlog.transcript" in source_counts[target],
+            "has_chatlog": "chatlog.transcript" in source_counts[target] or "polylogue.session" in source_counts[target],
             "has_git": "git.commit" in source_counts[target],
             "observed_hours": round((active_seconds[target] + recovery_seconds[target]) / 3600.0, 2),
             "sources": sorted(source_counts[target]),
@@ -180,7 +198,32 @@ def summarize_days(
                     )
                     for project, seconds in top_projects
                 ),
+                top_topics=top_topics,
+                dominant_topic=dominant_topic,
             )
+        )
+        # Attach signal coverage (computed from the just-built day)
+        day = summaries[-1]
+        summaries[-1] = TrajectoryDay(
+            date=day.date,
+            active_seconds=day.active_seconds,
+            recovery_seconds=day.recovery_seconds,
+            chain_count=day.chain_count,
+            signal_count=day.signal_count,
+            command_count=day.command_count,
+            transcript_count=day.transcript_count,
+            commit_count=day.commit_count,
+            dominant_mode=day.dominant_mode,
+            dominant_project=day.dominant_project,
+            top_modes=day.top_modes,
+            top_projects=day.top_projects,
+            source_counts=day.source_counts,
+            coverage=day.coverage,
+            highlights=day.highlights,
+            projects=day.projects,
+            top_topics=day.top_topics,
+            dominant_topic=day.dominant_topic,
+            signal_coverage=compute_coverage(day),
         )
     return summaries
 

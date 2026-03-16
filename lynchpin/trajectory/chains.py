@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from .rules import AttributedSignal, classify_signals, mode_family
+from .rules import AttributedSignal, classify_chain_topics, classify_signals, mode_family
 from .signal import TrajectorySignal
 
 _CHAIN_GAP = timedelta(minutes=5)
@@ -30,6 +30,11 @@ class TrajectoryChain:
     titles: tuple[str, ...]
     reasons: tuple[str, ...]
     signals: tuple[AttributedSignal, ...]
+    topic: Optional[str] = None
+    topic_confidence: float = 0.0
+    topic_seconds: tuple[tuple[str, float], ...] = ()
+    quality_flags: tuple[str, ...] = ()
+    thread_ids: frozenset[str] = frozenset()
 
     @property
     def duration_seconds(self) -> float:
@@ -53,6 +58,10 @@ class TrajectoryChain:
             "titles": list(self.titles),
             "reasons": list(self.reasons),
             "signals": [signal.to_dict() for signal in self.signals],
+            "topic": self.topic,
+            "topic_confidence": self.topic_confidence,
+            "topic_seconds": [[t, s] for t, s in self.topic_seconds],
+            "quality_flags": list(self.quality_flags),
         }
 
 
@@ -89,8 +98,10 @@ class _ChainAccumulator:
         self.end = first.end
         self.mode_counter: Counter[str] = Counter()
         self.project_counter: Counter[str] = Counter()
+        self.topic_counter: Counter[str] = Counter()
         self.mode_conf_weight = 0.0
         self.project_conf_weight = 0.0
+        self.thread_ids: set[str] = set()
         self.add(first)
 
     def add(self, signal: AttributedSignal) -> None:
@@ -106,6 +117,11 @@ class _ChainAccumulator:
             self.project_counter[signal.project] += weight
             self.project_conf_weight += weight * signal.project_confidence
         self.mode_conf_weight += weight * signal.mode_confidence
+        if signal.topic:
+            self.topic_counter[signal.topic] += weight
+        tid = signal.evidence.get("thread_id") if isinstance(signal.evidence, dict) else None
+        if tid:
+            self.thread_ids.add(str(tid))
 
     @property
     def mode(self) -> str:
@@ -144,6 +160,20 @@ class _ChainAccumulator:
         if self.project:
             project_weight = self.project_counter[self.project]
             project_confidence = round(self.project_conf_weight / project_weight if project_weight else 0.0, 3)
+        topic, topic_confidence, ranked_topics = classify_chain_topics(self.signals)
+        topic_seconds = tuple(ranked_topics)
+        duration_seconds = max((self.end - self.start).total_seconds(), 0.0)
+        quality_flags: list[str] = []
+        if source_count <= 1:
+            quality_flags.append("single_source")
+        if mode_confidence < 0.5:
+            quality_flags.append("low_confidence")
+        if duration_seconds > 0:
+            signal_coverage = total_weight / duration_seconds
+            if signal_coverage < 0.5:
+                quality_flags.append("gap_heavy")
+        if duration_seconds < 60:
+            quality_flags.append("short")
         return TrajectoryChain(
             chain_id=chain_id,
             start=self.start,
@@ -160,6 +190,11 @@ class _ChainAccumulator:
             titles=title_set,
             reasons=reasons,
             signals=tuple(sorted(self.signals, key=lambda signal: (signal.start, signal.signal_id))),
+            topic=topic,
+            topic_confidence=topic_confidence,
+            topic_seconds=topic_seconds,
+            quality_flags=tuple(quality_flags),
+            thread_ids=frozenset(self.thread_ids),
         )
 
     def truncate(self, new_end: datetime) -> None:

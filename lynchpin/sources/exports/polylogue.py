@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterator, List, Optional
 
 from ...core.cache import files_signature, persistent_cache
 from ...core.config import get_config
+
+if TYPE_CHECKING:
+    from polylogue.lib.coverage import ArchiveCoverage
+    from polylogue.lib.session_profile import SessionProfile
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -188,3 +195,64 @@ def iter_runs() -> Iterator[PolylogueRun]:
             index_error=row.index_error,
             duration_ms=row.duration_ms,
         )
+
+
+def iter_session_profiles(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    provider: Optional[str] = None,
+) -> Iterator[SessionProfile]:
+    """Yield rich SessionProfile objects from the Polylogue archive.
+
+    Uses SyncPolylogue to query the archive database, then builds
+    a SessionProfile for each conversation in the time window.
+    """
+    from polylogue.lib.session_profile import SessionProfile, build_session_profile
+    from polylogue.sync import SyncPolylogue
+
+    try:
+        poly = SyncPolylogue()
+    except Exception:
+        logger.warning("Failed to initialize SyncPolylogue — no session profiles", exc_info=True)
+        return
+
+    try:
+        filt = poly.filter()
+        if provider:
+            filt = filt.provider(provider)
+        if start:
+            filt = filt.since(start.isoformat())
+        if end:
+            filt = filt.until(end.isoformat())
+
+        from polylogue.sync import _run
+
+        summaries = _run(filt.list_summaries())
+
+        # Fetch full conversations in batches for session profiling
+        batch_size = 20
+        ids = [str(s.id) for s in summaries]
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i : i + batch_size]
+            conversations = poly.get_conversations(batch_ids)
+            for conv in conversations:
+                try:
+                    yield build_session_profile(conv)
+                except Exception:
+                    logger.debug("Failed to build session profile for %s", conv.id, exc_info=True)
+    finally:
+        poly.close()
+
+
+def get_coverage() -> ArchiveCoverage:
+    """Get archive coverage diagnostics from Polylogue."""
+    from polylogue.lib.coverage import ArchiveCoverage, analyze_coverage
+    from polylogue.sync import SyncPolylogue
+
+    poly = SyncPolylogue()
+    try:
+        summaries = poly.list_summaries()
+        return analyze_coverage(summaries)
+    finally:
+        poly.close()

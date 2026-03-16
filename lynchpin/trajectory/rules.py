@@ -54,6 +54,8 @@ class AttributedSignal:
     project: Optional[str]
     project_confidence: float
     reasons: tuple[str, ...]
+    topic: Optional[str] = None
+    topic_confidence: float = 0.0
 
     @property
     def signal_id(self) -> str:
@@ -116,9 +118,150 @@ class AttributedSignal:
                 "project": self.project,
                 "project_confidence": self.project_confidence,
                 "reasons": list(self.reasons),
+                "topic": self.topic,
+                "topic_confidence": self.topic_confidence,
             }
         )
         return payload
+
+
+_POLYLOGUE_WORK_EVENT_MODE_MAP = {
+    "planning": "planning",
+    "implementation": "coding",
+    "debugging": "coding",
+    "review": "coding",
+    "testing": "coding",
+    "research": "research",
+    "configuration": "coding",
+    "documentation": "writing",
+    "refactoring": "coding",
+    "data_analysis": "research",
+    "conversation": "chat",
+}
+
+_TOPIC_DOMAIN: dict[str, list[tuple[str, float]]] = {
+    "nix": [("nix", 2.0), ("nixos", 2.5), ("flake", 2.5), ("devshell", 3.0), ("home-manager", 3.0), ("nixpkgs", 3.0), ("nix-shell", 3.0)],
+    "rust": [("cargo", 2.5), ("rustc", 2.5), (".rs", 1.5), ("crate", 2.5), ("tokio", 3.0), ("serde", 3.0), ("rustup", 2.5), ("clippy", 2.5)],
+    "python": [("python", 1.0), ("pytest", 2.5), ("pip", 1.5), (".py", 1.5), ("pandas", 2.5), ("polars", 3.0), ("mypy", 2.5), ("ruff", 2.0), ("uv", 1.5)],
+    "typescript": [("typescript", 2.0), (".ts", 1.0), (".tsx", 1.5), ("npm", 1.5), ("deno", 2.5), ("node", 1.0), ("bun", 2.0), ("eslint", 2.0)],
+    "duckdb": [("duckdb", 3.0), ("parquet", 2.5), ("warehouse", 2.0), ("arrow", 2.0)],
+    "docker": [("docker", 2.5), ("container", 1.5), ("dockerfile", 3.0), ("podman", 2.5), ("compose", 1.5)],
+    "web": [("html", 1.5), ("css", 1.5), ("browser", 1.0), ("http", 1.0), ("api", 1.0), ("rest", 1.5), ("graphql", 2.5), ("fetch", 1.0)],
+    "infra": [("deploy", 2.0), ("ci", 1.5), ("terraform", 3.0), ("ansible", 3.0), ("k8s", 3.0), ("kubernetes", 3.0), ("systemd", 2.0)],
+}
+
+_TOPIC_ACTIVITY: dict[str, list[tuple[str, float]]] = {
+    "ai": [("llm", 2.5), ("claude", 2.0), ("gpt", 2.0), ("openai", 2.0), ("anthropic", 2.5), ("model", 1.0), ("prompt", 1.5), ("embedding", 2.5), ("agent", 1.5)],
+    "data": [("analysis", 1.0), ("csv", 1.5), ("sql", 1.5), ("query", 1.0), ("pipeline", 1.0), ("etl", 2.5), ("dataset", 2.0)],
+    "testing": [("test", 1.0), ("spec", 1.5), ("assert", 2.0), ("mock", 2.0), ("fixture", 2.5), ("coverage", 1.5)],
+    "git": [("git", 1.0), ("commit", 1.5), ("branch", 1.0), ("merge", 1.5), ("rebase", 2.0), ("stash", 1.5)],
+    "writing": [("draft", 1.5), ("essay", 2.0), ("note", 1.0), ("journal", 1.5), ("narrative", 2.0), ("doc", 1.0), ("readme", 1.5)],
+    "planning": [("todo", 1.5), ("plan", 1.5), ("roadmap", 2.0), ("backlog", 2.0), ("agenda", 1.5), ("design", 1.5)],
+    "research": [("arxiv", 3.0), ("paper", 1.5), ("survey", 2.0), ("benchmark", 2.0), ("explore", 1.0), ("investigate", 1.5)],
+}
+
+_TOPIC_KEYWORDS: dict[str, list[tuple[str, float]]] = {**_TOPIC_DOMAIN, **_TOPIC_ACTIVITY}
+
+_TOPIC_VARIANTS: dict[str, str] = {
+    "nixos": "nix", "nixpkgs": "nix", "nix-shell": "nix", "home-manager": "nix",
+    "cargo": "rust", "rustc": "rust", "clippy": "rust", "rustup": "rust",
+    "pytest": "python", "mypy": "python", "ruff": "python",
+    "npm": "typescript", "deno": "typescript", "bun": "typescript", "eslint": "typescript",
+    "parquet": "duckdb", "arrow": "duckdb",
+    "dockerfile": "docker", "podman": "docker", "compose": "docker",
+    "terraform": "infra", "ansible": "infra", "k8s": "infra", "kubernetes": "infra",
+    "claude": "ai", "gpt": "ai", "openai": "ai", "anthropic": "ai", "embedding": "ai",
+    "sql": "data", "csv": "data", "etl": "data",
+    "draft": "writing", "essay": "writing", "narrative": "writing",
+    "roadmap": "planning", "backlog": "planning",
+}
+
+
+def normalize_topic(raw: str) -> str:
+    """Fold variant names to canonical topic keys."""
+    lower = raw.strip().lower()
+    return _TOPIC_VARIANTS.get(lower, lower)
+
+
+def _extract_topics_multi(signal: TrajectorySignal) -> list[tuple[str, float]]:
+    """Return all matching topics with scores, ranked by confidence descending."""
+    text = " ".join(
+        part for part in [signal.title, signal.detail, signal.cwd, signal.url, signal.domain]
+        if part
+    ).lower()
+    if not text:
+        return []
+
+    evidence = signal.evidence or {}
+    file_paths = evidence.get("file_paths")
+    if isinstance(file_paths, (list, tuple)):
+        text += " " + " ".join(str(p) for p in file_paths)
+
+    we_kind = evidence.get("work_event_kind")
+    we_topic_boost: Optional[str] = None
+    if we_kind == "data_analysis":
+        we_topic_boost = "data"
+
+    candidates: list[tuple[str, float]] = []
+    for topic, keywords in _TOPIC_KEYWORDS.items():
+        score = sum(weight for kw, weight in keywords if kw in text)
+        if topic == we_topic_boost:
+            score += 2.0
+        if score >= 1.0:
+            confidence = min(0.3 + score * 0.15, 0.95)
+            candidates.append((topic, round(confidence, 2)))
+
+    candidates.sort(key=lambda item: (-item[1], item[0]))
+    return candidates
+
+
+def classify_chain_topics(
+    signals: list["AttributedSignal"],
+) -> tuple[Optional[str], float, list[tuple[str, float]]]:
+    """Aggregate topic attribution across chain signals with source-diversity boost.
+
+    Returns (dominant_topic, topic_confidence, ranked_topics).
+    ranked_topics is a list of (topic, seconds) for all detected topics.
+    """
+    from collections import Counter as _Counter
+
+    topic_seconds: _Counter[str] = _Counter()
+    topic_source_sets: dict[str, set[str]] = {}
+
+    for signal in signals:
+        weight = max(signal.duration_seconds, 1.0)
+        # Use multi-extraction for richer attribution
+        topics = _extract_topics_multi(signal.signal)
+        if not topics:
+            if signal.topic:
+                topic_seconds[signal.topic] += weight
+                topic_source_sets.setdefault(signal.topic, set()).add(signal.source)
+            continue
+        for topic, _conf in topics:
+            topic_seconds[topic] += weight
+            topic_source_sets.setdefault(topic, set()).add(signal.source)
+
+    if not topic_seconds:
+        return None, 0.0, []
+
+    # Source-diversity confidence boost: topics seen from 2+ sources get 1.2x weight
+    for topic in list(topic_seconds):
+        if len(topic_source_sets.get(topic, set())) >= 2:
+            topic_seconds[topic] *= 1.2
+
+    ranked = sorted(topic_seconds.items(), key=lambda item: (-item[1], item[0]))
+    dominant = ranked[0][0]
+    total_weight = sum(topic_seconds.values())
+    confidence = min(ranked[0][1] / total_weight + 0.3, 0.95) if total_weight > 0 else 0.0
+    return dominant, round(confidence, 2), [(t, round(s, 3)) for t, s in ranked]
+
+
+def _classify_topic(signal: TrajectorySignal) -> tuple[Optional[str], float]:
+    """Derive a topic from signal text content via weighted keyword scoring."""
+    candidates = _extract_topics_multi(signal)
+    if candidates:
+        return candidates[0]
+    return None, 0.0
 
 
 def classify_signals(signals: Iterable[TrajectorySignal]) -> list[AttributedSignal]:
@@ -148,13 +291,25 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
     app = (signal.app or "").lower()
     text = " ".join(part for part in [signal.title, signal.detail, signal.cwd, signal.url] if part).lower()
 
+    # Definitive source-based classification
     if signal.kind == "afk":
         mode, mode_confidence = "recovery", 1.0
         reasons.append("afk_status")
     elif signal.source == "git.commit":
         mode, mode_confidence = "coding", 1.0
         reasons.append("git_commit")
-    elif _matches_domain(domain, _AI_DOMAINS) or signal.source == "chatlog.transcript":
+    # Polylogue work event evidence — highest-confidence semantic extraction
+    elif signal.source == "polylogue.session" and signal.evidence.get("work_event_kind"):
+        we_kind = str(signal.evidence["work_event_kind"])
+        mode = _POLYLOGUE_WORK_EVENT_MODE_MAP.get(we_kind, "chat")
+        mode_confidence = 0.9
+        reasons.append(f"work_event_{we_kind}")
+    # mode_hint from signal source (polylogue sessions without work events, or other hints)
+    elif signal.mode_hint and signal.mode_hint not in {"unknown", None}:
+        mode = signal.mode_hint
+        mode_confidence = 0.85
+        reasons.append("signal_mode_hint")
+    elif _matches_domain(domain, _AI_DOMAINS) or signal.source in {"chatlog.transcript", "polylogue.session"}:
         mode, mode_confidence = "chat", 0.95
         reasons.append("ai_chat")
     elif _matches_domain(domain, _MEDIA_DOMAINS) or app in _MEDIA_APPS:
@@ -195,6 +350,8 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
         mode, mode_confidence = "web", 0.4
         reasons.append("surface_fallback")
 
+    topic, topic_confidence = _classify_topic(signal)
+
     return AttributedSignal(
         signal=signal,
         mode=mode,
@@ -202,6 +359,8 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
         project=project,
         project_confidence=round(project_confidence, 3),
         reasons=tuple(dict.fromkeys(reasons)),
+        topic=topic,
+        topic_confidence=topic_confidence,
     )
 
 

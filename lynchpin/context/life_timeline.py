@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
 
 from ..trajectory import day as trajectory_day
-from ..trajectory import period as trajectory_period
 
 
 RECENT_TRAJECTORY_LOOKBACK_DAYS = 62
@@ -16,6 +15,12 @@ RECENT_TRAJECTORY_LOOKBACK_DAYS = 62
 class LifeMonthWorkSummary:
     git_commits: int
     git_top_repos: list[tuple[str, int]]
+    chat_session_count: int = 0
+    chat_work_events: dict[str, int] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.chat_work_events is None:
+            object.__setattr__(self, "chat_work_events", {})
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -48,9 +53,21 @@ class LifeMonthTrajectorySummary:
     commit_count: int
     dominant_modes: list[tuple[str, float]]
     dominant_projects: list[tuple[str, float]]
+    dominant_topics: list[tuple[str, float]]
     source_counts: dict[str, int]
     coverage: dict[str, object]
     highlights: list[str]
+    chat_session_count: int = 0
+    chat_work_events: dict[str, int] = None  # type: ignore[assignment]
+    chat_cost_usd: float = 0.0
+    episode_count: int = 0
+    episode_labels: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.chat_work_events is None:
+            object.__setattr__(self, "chat_work_events", {})
+        if self.episode_labels is None:
+            object.__setattr__(self, "episode_labels", [])
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -67,6 +84,7 @@ class LifeMonthSummary:
     health: LifeMonthHealthSummary
     notes: "LifeMonthNotesSummary"
     trajectory: Optional[LifeMonthTrajectorySummary] = None
+    narrative: Optional[str] = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -79,6 +97,7 @@ class LifeMonthSummary:
             "health": self.health.to_dict(),
             "trajectory": self.trajectory.to_dict() if self.trajectory is not None else {},
             "notes": self.notes.to_dict(),
+            "narrative": self.narrative,
         }
 
 
@@ -233,10 +252,14 @@ def build_work_summary(
     *,
     git_commit_counts: Mapping[str, int],
     git_commit_repos: Mapping[str, Counter[str]],
+    chat_session_count: int = 0,
+    chat_work_events: Optional[Mapping[str, int]] = None,
 ) -> LifeMonthWorkSummary:
     return LifeMonthWorkSummary(
         git_commits=git_commit_counts.get(month, 0),
         git_top_repos=list(git_commit_repos.get(month, Counter()).most_common(10)),
+        chat_session_count=chat_session_count,
+        chat_work_events=dict(chat_work_events) if chat_work_events else {},
     )
 
 
@@ -473,6 +496,9 @@ def build_recent_trajectory_summaries(
     lookback_days: int = RECENT_TRAJECTORY_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
 ) -> tuple[dict[str, LifeMonthTrajectorySummary], dict[str, object]]:
+    from ..trajectory.month import summarize_months as trajectory_summarize_months
+    from ..trajectory.signal import load_signals
+
     if not months:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
 
@@ -488,39 +514,48 @@ def build_recent_trajectory_summaries(
     if start_dt >= end_dt:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
 
+    signals = load_signals(start=start_dt, end=end_dt)
     trajectory_days = trajectory_day.summarize_days(start=start_dt, end=end_dt)
-    summaries = trajectory_period.summarize_months(trajectory_days)
+    trajectory_months = trajectory_summarize_months(trajectory_days, signals=signals)
+
     return (
         {
-            month: build_trajectory_summary(summary)
-            for month, summary in summaries.items()
+            tm.month: _trajectory_month_to_summary(tm)
+            for tm in trajectory_months
         },
         {
             "lookback_days": lookback_days,
             "start": start_dt.isoformat(),
             "end": end_dt.isoformat(),
-            "month_count": len(summaries),
+            "month_count": len(trajectory_months),
         },
     )
 
 
-def build_trajectory_summary(summary: trajectory_period.TrajectoryPeriodSummary) -> LifeMonthTrajectorySummary:
+def _trajectory_month_to_summary(tm) -> LifeMonthTrajectorySummary:
+    """Convert a TrajectoryMonth to a LifeMonthTrajectorySummary."""
     return LifeMonthTrajectorySummary(
-        start_date=summary.start_date,
-        end_date=summary.end_date,
-        days=summary.total_days,
-        active_hours=round(summary.active_seconds / 3600.0, 2),
-        recovery_hours=round(summary.recovery_seconds / 3600.0, 2),
-        chain_count=summary.chain_count,
-        signal_count=summary.signal_count,
-        command_count=summary.command_count,
-        transcript_count=summary.transcript_count,
-        commit_count=summary.commit_count,
-        dominant_modes=[(mode, round(seconds / 3600.0, 2)) for mode, seconds in summary.dominant_modes],
-        dominant_projects=[(project, round(seconds / 3600.0, 2)) for project, seconds in summary.dominant_projects],
-        source_counts=dict(summary.source_counts),
-        coverage=dict(summary.coverage),
-        highlights=list(summary.highlights),
+        start_date=tm.start_date.isoformat(),
+        end_date=tm.end_date.isoformat(),
+        days=tm.total_days,
+        active_hours=round(tm.active_seconds / 3600.0, 2),
+        recovery_hours=round(tm.recovery_seconds / 3600.0, 2),
+        chain_count=tm.chain_count,
+        signal_count=tm.signal_count,
+        command_count=tm.command_count,
+        transcript_count=tm.transcript_count,
+        commit_count=tm.commit_count,
+        dominant_modes=[(mode, round(seconds / 3600.0, 2)) for mode, seconds in tm.top_modes],
+        dominant_projects=[(project, round(seconds / 3600.0, 2)) for project, seconds in tm.top_projects],
+        dominant_topics=[(topic, round(seconds / 3600.0, 2)) for topic, seconds in tm.top_topics],
+        source_counts=dict(tm.source_counts),
+        coverage=dict(tm.coverage_summary),
+        highlights=list(tm.highlights),
+        chat_session_count=tm.chat_session_count,
+        chat_work_events=dict(tm.chat_work_events),
+        chat_cost_usd=tm.chat_cost_usd,
+        episode_count=tm.episode_count,
+        episode_labels=list(tm.episode_labels),
     )
 
 
@@ -557,6 +592,10 @@ def render_markdown(payload: Mapping[str, object]) -> str:
 
         lines.append(f"## {month}")
         lines.append("")
+        narrative = m.get("narrative")
+        if narrative:
+            lines.append(f"> {narrative}")
+            lines.append("")
         lines.append("**Snapshot**")
         lines.append("")
         lines.append(
@@ -564,7 +603,15 @@ def render_markdown(payload: Mapping[str, object]) -> str:
             f"Reddit comments {out.get('reddit_comments', 0)}, posts {out.get('reddit_posts', 0)}, messages {out.get('reddit_messages', 0)}; "
             f"Wykop link-comments {out.get('wykop_link_comments', 0)}, entries {out.get('wykop_entries', 0)}, entry-comments {out.get('wykop_entry_comments', 0)}."
         )
-        lines.append(f"- Work: git commits {work.get('git_commits', 0)}.")
+        chat_sessions = work.get("chat_session_count", 0)
+        chat_we = work.get("chat_work_events") or {}
+        if chat_sessions:
+            lines.append(
+                f"- Work: git commits {work.get('git_commits', 0)}; "
+                f"chat sessions {chat_sessions}, work events: {_render_counter(list(chat_we.items()))}."
+            )
+        else:
+            lines.append(f"- Work: git commits {work.get('git_commits', 0)}.")
         lines.append(
             "- Intake: "
             f"Google searches {intake.get('google_searches', 0)}; "
@@ -610,11 +657,18 @@ def render_markdown(payload: Mapping[str, object]) -> str:
                 f"Weight {health.get('weight_min')}–{health.get('weight_max')} kg (n={health.get('weight_n')})."
             )
         if trajectory.get("days"):
-            lines.append(
-                "- Trajectory: "
+            traj_line = (
+                f"- Trajectory: "
                 f"{trajectory.get('active_hours', 0)}h active / {trajectory.get('recovery_hours', 0)}h recovery across "
                 f"{trajectory.get('days', 0)} day(s), {trajectory.get('chain_count', 0)} chains, {trajectory.get('signal_count', 0)} signals."
             )
+            traj_chat = trajectory.get("chat_session_count", 0)
+            if traj_chat:
+                traj_line += f" Chat sessions: {traj_chat}, cost: ${trajectory.get('chat_cost_usd', 0):.2f}."
+            lines.append(traj_line)
+            episode_labels = trajectory.get("episode_labels") or []
+            if episode_labels:
+                lines.append(f"- Episodes: {', '.join(str(l) for l in episode_labels)}.")
         lines.append(
             "- Notes: "
             f"OneNote journal entries {notes.get('onenote_journal_entries', 0)}; "

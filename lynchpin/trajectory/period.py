@@ -24,6 +24,7 @@ class TrajectoryPeriodSummary:
     source_counts: dict[str, int]
     coverage: dict[str, object]
     highlights: tuple[str, ...]
+    dominant_topics: tuple[tuple[str, float], ...] = ()
 
     @property
     def observed_seconds(self) -> float:
@@ -44,6 +45,7 @@ class TrajectoryPeriodSummary:
             "commit_count": self.commit_count,
             "dominant_modes": [[mode, round(seconds, 3)] for mode, seconds in self.dominant_modes],
             "dominant_projects": [[project, round(seconds, 3)] for project, seconds in self.dominant_projects],
+            "dominant_topics": [[topic, round(seconds, 3)] for topic, seconds in self.dominant_topics],
             "source_counts": self.source_counts,
             "coverage": self.coverage,
             "highlights": list(self.highlights),
@@ -72,6 +74,7 @@ def summarize_period(days: Sequence[TrajectoryDay]) -> TrajectoryPeriodSummary:
 
     mode_counter: Counter[str] = Counter()
     project_counter: Counter[str] = Counter()
+    topic_counter: Counter[str] = Counter()
     source_counter: Counter[str] = Counter()
     active_seconds = 0.0
     recovery_seconds = 0.0
@@ -99,6 +102,8 @@ def summarize_period(days: Sequence[TrajectoryDay]) -> TrajectoryPeriodSummary:
             mode_counter[mode] += seconds
         for project, seconds in day.top_projects:
             project_counter[project] += seconds
+        for topic, seconds in day.top_topics:
+            topic_counter[topic] += seconds
         source_counter.update(day.source_counts)
         if day.coverage.get("has_activitywatch"):
             coverage["days_with_activitywatch"] += 1
@@ -111,6 +116,7 @@ def summarize_period(days: Sequence[TrajectoryDay]) -> TrajectoryPeriodSummary:
 
     dominant_modes = tuple(sorted(mode_counter.items(), key=lambda item: (-item[1], item[0]))[:5])
     dominant_projects = tuple(sorted(project_counter.items(), key=lambda item: (-item[1], item[0]))[:5])
+    dominant_topics = tuple(sorted(topic_counter.items(), key=lambda item: (-item[1], item[0]))[:5])
     highlights: list[str] = []
     if dominant_modes:
         highlights.append(f"mode:{dominant_modes[0][0]} {dominant_modes[0][1] / 3600.0:.1f}h")
@@ -136,6 +142,7 @@ def summarize_period(days: Sequence[TrajectoryDay]) -> TrajectoryPeriodSummary:
         commit_count=commit_count,
         dominant_modes=dominant_modes,
         dominant_projects=dominant_projects,
+        dominant_topics=dominant_topics,
         source_counts=dict(source_counter),
         coverage=coverage,
         highlights=tuple(highlights[:5]),

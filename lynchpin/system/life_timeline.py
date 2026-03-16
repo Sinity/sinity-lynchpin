@@ -77,6 +77,137 @@ def iter_months(start_month: str, end_month: str) -> Iterator[str]:
 
 
 @app.command()
+def narrative(
+    keys: List[str] = typer.Argument(..., help="Keys to generate narratives for (scale-dependent format)."),
+    scale: str = typer.Option("month", help="Scale: day | week | episode | quarter | month"),
+    batch: bool = typer.Option(False, "--batch/--no-batch", help="Generate all keys concurrently (max 3)."),
+) -> None:
+    """Generate prose retrospective narratives at day/week/episode/quarter/month scale."""
+    import asyncio
+    from lynchpin.context.narrative import (
+        NarrativeKind,
+        build_day_prompt,
+        build_week_prompt,
+        build_episode_prompt,
+        build_quarter_prompt,
+        build_month_prompt,
+        generate_narrative,
+        generate_batch,
+    )
+
+    _VALID_SCALES = {"day", "week", "episode", "quarter", "month"}
+    if scale not in _VALID_SCALES:
+        typer.echo(f"[narrative] Unknown scale '{scale}'. Choose from: {', '.join(sorted(_VALID_SCALES))}", err=True)
+        raise typer.Exit(1)
+
+    kind = NarrativeKind(scale)
+
+    if scale == "month":
+        from lynchpin.context.life_timeline import build_recent_trajectory_summaries
+
+        trajectory_months, _ = build_recent_trajectory_summaries(
+            keys,
+            lookback_days=365 * 10,
+        )
+        prompts = []
+        for key in sorted(keys):
+            traj = trajectory_months.get(key)
+            if traj is None:
+                typer.echo(f"[narrative] No trajectory data for {key}, skipping.", err=True)
+                continue
+            prompts.append((build_month_prompt(traj, month_key=key), kind, key))
+
+    elif scale == "quarter":
+        from lynchpin.trajectory import summarize_quarters, summarize_trajectory_months
+        from lynchpin.trajectory.day import summarize_days
+
+        days = summarize_days()
+        months = summarize_trajectory_months(days)
+        quarters = summarize_quarters(months)
+        q_by_key = {q.quarter: q for q in quarters}
+        prompts = []
+        for key in sorted(keys):
+            q = q_by_key.get(key)
+            if q is None:
+                typer.echo(f"[narrative] No trajectory data for {key}, skipping.", err=True)
+                continue
+            prompts.append((build_quarter_prompt(q), kind, key))
+
+    elif scale == "week":
+        from lynchpin.trajectory import summarize_weeks
+        from lynchpin.trajectory.day import summarize_days
+
+        days = summarize_days()
+        weeks = summarize_weeks(days)
+        w_by_key = {w.week: w for w in weeks}
+        d_by_w: dict[str, list] = {}
+        for d in days:
+            iso = d.date.isocalendar()
+            wk = f"{iso[0]}-W{iso[1]:02d}"
+            d_by_w.setdefault(wk, []).append(d)
+        prompts = []
+        for key in sorted(keys):
+            w = w_by_key.get(key)
+            if w is None:
+                typer.echo(f"[narrative] No trajectory data for {key}, skipping.", err=True)
+                continue
+            prompts.append((build_week_prompt(w, days=d_by_w.get(key, [])), kind, key))
+
+    elif scale == "day":
+        from lynchpin.trajectory.day import summarize_days
+
+        days = summarize_days()
+        d_by_key = {str(d.date): d for d in days}
+        prompts = []
+        for key in sorted(keys):
+            d = d_by_key.get(key)
+            if d is None:
+                typer.echo(f"[narrative] No trajectory data for {key}, skipping.", err=True)
+                continue
+            prompts.append((build_day_prompt(d), kind, key))
+
+    elif scale == "episode":
+        from lynchpin.trajectory.day import summarize_days
+        from lynchpin.trajectory.episode import detect_episodes
+
+        days = summarize_days()
+        episodes = detect_episodes(days)
+        ep_by_key = {ep.episode_id: ep for ep in episodes}
+        d_by_ep: dict[str, list] = {}
+        for ep in episodes:
+            d_by_ep[ep.episode_id] = [d for d in days if ep.start_date <= d.date <= ep.end_date]
+        prompts = []
+        for key in sorted(keys):
+            ep = ep_by_key.get(key)
+            if ep is None:
+                typer.echo(f"[narrative] No episode '{key}'.", err=True)
+                continue
+            prompts.append((build_episode_prompt(ep, days=d_by_ep.get(key, [])), kind, key))
+
+    else:
+        prompts = []
+
+    if not prompts:
+        typer.echo("[narrative] Nothing to generate.", err=True)
+        return
+
+    if batch and len(prompts) > 1:
+        typer.echo(f"[narrative] Batch generating {len(prompts)} {scale} narratives…", err=True)
+        results = asyncio.run(generate_batch(prompts))
+        for result in results:
+            typer.secho(f"\n## {result.key}\n", fg=typer.colors.CYAN)
+            typer.echo(result.text)
+            typer.echo(f"\n[tokens: in={result.input_tokens} out={result.output_tokens} cost=${result.cost_usd:.4f}]", err=True)
+    else:
+        for prompt_text, k, key in prompts:
+            typer.echo(f"[narrative] Generating {scale} for {key}…", err=True)
+            result = asyncio.run(generate_narrative(prompt_text, k, key))
+            typer.secho(f"\n## {key}\n", fg=typer.colors.CYAN)
+            typer.echo(result.text)
+            typer.echo(f"\n[tokens: in={result.input_tokens} out={result.output_tokens} cost=${result.cost_usd:.4f}]", err=True)
+
+
+@app.command()
 def build(
     start: str = typer.Option(DEFAULT_LIFE_TIMELINE_START, help="Start month (YYYY-MM)."),
     end: str = typer.Option(current_month_key(), help="End month (YYYY-MM). Defaults to the current month."),
@@ -180,6 +311,11 @@ def build(
         [],
         "--takeout",
         help="Optional explicit Google Takeout seed archive(s); defaults to takeout*-001.tgz under --takeout-root.",
+    ),
+    generate_narratives: bool = typer.Option(
+        False,
+        "--narrative/--no-narrative",
+        help="Generate LLM prose retrospectives for months with trajectory data (requires Claude Max).",
     ),
 ) -> LifeTimelineResult:
     start_month = start
@@ -435,6 +571,8 @@ def build(
                 month,
                 git_commit_counts=git_commit_counts,
                 git_commit_repos=git_commit_repos,
+                chat_session_count=trajectory_months[month].chat_session_count if month in trajectory_months else 0,
+                chat_work_events=dict(trajectory_months[month].chat_work_events) if month in trajectory_months else {},
             ),
             intake=life_context.build_intake_summary(
                 month,
@@ -586,6 +724,24 @@ def build(
         "output_path": str(output),
         "months": monthly,
     }
+
+    if generate_narratives:
+        import asyncio
+        from lynchpin.context.narrative import NarrativeKind, build_month_prompt, generate_narrative
+
+        with _stage("Generate LLM narratives"):
+            for month in months:
+                traj = trajectory_months.get(month)
+                if traj is None:
+                    continue
+                prompt = build_month_prompt(traj, month_key=month)
+                try:
+                    result = asyncio.run(generate_narrative(prompt, NarrativeKind.month, month))
+                    if result.text and month in monthly:
+                        monthly[month]["narrative"] = result.text
+                    payload["months"] = monthly
+                except Exception as exc:
+                    typer.echo(f"[narrative] {month} failed: {exc}", err=True)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

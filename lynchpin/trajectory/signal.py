@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 from ..core.projects import ALL_PROJECTS
 from ..sources.captures import activitywatch, atuin, instrumentation
-from ..sources.exports import chatlog
 from ..sources.indices import gitstats
 
 DEFAULT_LOOKBACK_DAYS = 14
@@ -105,7 +104,7 @@ def _iter_all_signals(start: datetime, end: datetime) -> Iterator[TrajectorySign
     yield from _atuin_signals(start, end)
     yield from _terminal_session_signals(start, end)
     yield from _terminal_command_signals(start, end)
-    yield from _chat_transcript_signals(start, end)
+    yield from _polylogue_session_signals(start, end)
     yield from _git_commit_signals(start, end)
 
 
@@ -325,30 +324,123 @@ def _terminal_command_signals(start: datetime, end: datetime) -> Iterator[Trajec
         )
 
 
-def _chat_transcript_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
-    for transcript in chatlog.iter_transcripts(start=start, end=end):
-        signal_start = _as_local(transcript.started_at)
-        signal_end = signal_start + _TRANSCRIPT_SIGNAL_SECONDS
-        yield TrajectorySignal(
-            signal_id=_signal_id("chatlog.transcript", signal_start, signal_end, transcript.provider, transcript.slug),
-            source="chatlog.transcript",
-            kind="transcript",
-            start=signal_start,
-            end=signal_end,
-            mode_hint="chat",
-            project_hint=_project_hint_from_paths(
-                _project_hint_from_text(transcript.title),
-                _project_hint_from_text(str(transcript.path)),
-            ),
-            title=transcript.title,
-            detail=transcript.slug,
-            evidence={
-                "provider": transcript.provider,
-                "path": str(transcript.path),
-                "tokens": transcript.tokens,
-                "words": transcript.words,
-            },
-        )
+_WORK_EVENT_MODE_MAP = {
+    "planning": "planning",
+    "implementation": "coding",
+    "debugging": "coding",
+    "review": "coding",
+    "testing": "coding",
+    "research": "research",
+    "configuration": "coding",
+    "documentation": "writing",
+    "refactoring": "coding",
+    "data_analysis": "research",
+    "conversation": "chat",
+}
+
+
+def _polylogue_session_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+    from ..sources.exports.polylogue import iter_session_profiles
+
+    for profile in iter_session_profiles(start=start, end=end):
+        if not profile.work_events:
+            # Session with no extractable work events — emit a single chat signal
+            signal_start = _as_local(profile.first_message_at or profile.created_at) if (profile.first_message_at or profile.created_at) else None
+            if signal_start is None:
+                continue
+            signal_end = _as_local(profile.last_message_at or profile.updated_at) if (profile.last_message_at or profile.updated_at) else signal_start + _TRANSCRIPT_SIGNAL_SECONDS
+            if signal_end <= signal_start:
+                signal_end = signal_start + _TRANSCRIPT_SIGNAL_SECONDS
+            yield TrajectorySignal(
+                signal_id=_signal_id("polylogue.session", signal_start, signal_end, profile.provider, profile.conversation_id),
+                source="polylogue.session",
+                kind="session",
+                start=signal_start,
+                end=signal_end,
+                mode_hint="chat",
+                project_hint=profile.canonical_projects[0] if profile.canonical_projects else _project_hint_from_paths(*profile.repo_paths),
+                title=profile.title,
+                detail=profile.conversation_id[:12],
+                evidence={
+                    "provider": profile.provider,
+                    "conversation_id": profile.conversation_id,
+                    "thread_id": profile.thread_id,
+                    "message_count": profile.message_count,
+                    "word_count": profile.word_count,
+                    "total_cost_usd": profile.total_cost_usd,
+                    "tool_categories": profile.tool_categories,
+                },
+            )
+            continue
+
+        # Emit one signal per work event, using phase timestamps for temporal span
+        phase_map: dict[int, object] = {}
+        for phase in profile.phases:
+            for idx in range(phase.message_range[0], phase.message_range[1]):
+                phase_map[idx] = phase
+
+        for event_idx, event in enumerate(profile.work_events):
+            # Determine temporal span from phase timestamps
+            phase = phase_map.get(event.start_index)
+            if phase is not None and hasattr(phase, "start_time") and phase.start_time:
+                signal_start = _as_local(phase.start_time)
+            elif profile.first_message_at:
+                signal_start = _as_local(profile.first_message_at)
+            elif profile.created_at:
+                signal_start = _as_local(profile.created_at)
+            else:
+                continue
+
+            end_phase = phase_map.get(max(event.end_index - 1, event.start_index))
+            if end_phase is not None and hasattr(end_phase, "end_time") and end_phase.end_time:
+                signal_end = _as_local(end_phase.end_time)
+            elif profile.last_message_at:
+                signal_end = _as_local(profile.last_message_at)
+            elif profile.updated_at:
+                signal_end = _as_local(profile.updated_at)
+            else:
+                signal_end = signal_start + _TRANSCRIPT_SIGNAL_SECONDS
+
+            if signal_end <= signal_start:
+                signal_end = signal_start + _TRANSCRIPT_SIGNAL_SECONDS
+
+            mode_hint = _WORK_EVENT_MODE_MAP.get(event.kind.value if hasattr(event.kind, "value") else str(event.kind), "chat")
+            project_hint = (
+                profile.canonical_projects[0]
+                if profile.canonical_projects
+                else _project_hint_from_paths(*event.file_paths, *profile.repo_paths)
+            )
+
+            yield TrajectorySignal(
+                signal_id=_signal_id(
+                    "polylogue.session",
+                    signal_start,
+                    signal_end,
+                    profile.provider,
+                    profile.conversation_id,
+                    str(event_idx),
+                    event.kind.value if hasattr(event.kind, "value") else str(event.kind),
+                ),
+                source="polylogue.session",
+                kind="session",
+                start=signal_start,
+                end=signal_end,
+                mode_hint=mode_hint,
+                project_hint=project_hint,
+                title=profile.title,
+                detail=event.summary[:120] if event.summary else profile.conversation_id[:12],
+                evidence={
+                    "provider": profile.provider,
+                    "conversation_id": profile.conversation_id,
+                    "thread_id": profile.thread_id,
+                    "work_event_kind": event.kind.value if hasattr(event.kind, "value") else str(event.kind),
+                    "work_event_confidence": event.confidence,
+                    "tool_categories": profile.tool_categories,
+                    "file_paths": list(event.file_paths)[:10],
+                    "message_count": profile.message_count,
+                    "total_cost_usd": profile.total_cost_usd,
+                },
+            )
 
 
 def _git_commit_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
