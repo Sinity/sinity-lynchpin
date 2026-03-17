@@ -8,9 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..trajectory.day import TrajectoryDay
 from ..trajectory.month import TrajectoryMonth
-from ..trajectory.quarter import TrajectoryQuarter
 from ..trajectory.week import TrajectoryWeek
 
 
@@ -73,6 +71,9 @@ def build_contrast(
     elif scale == "quarter":
         current_key = getattr(current_period, "quarter", "unknown")
         prior_key = getattr(prior_period, "quarter", "unknown")
+    elif scale == "year":
+        current_key = getattr(current_period, "year", "unknown")
+        prior_key = getattr(prior_period, "year", "unknown")
     else:
         current_key = "unknown"
         prior_key = "unknown"

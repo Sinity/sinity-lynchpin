@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 FALSE_ACTIVE_APPS = {"gcr-prompter"}
 

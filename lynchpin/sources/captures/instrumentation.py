@@ -172,16 +172,30 @@ class _CastTimingSummary:
     idle_seconds: Optional[float]
 
 
-def iter_terminal_sessions(root: Path | None = None) -> Iterator[TerminalSessionMetadata]:
-    """Scan for terminal session casts and yield normalized session metadata."""
+def iter_terminal_sessions(
+    root: Path | None = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[TerminalSessionMetadata]:
+    """Scan for terminal session casts and yield normalized session metadata.
 
+    When *start* and *end* are provided, only cast files stored in YYYY/MM/DD
+    directories that overlap the window are scanned, giving a large speedup for
+    short windows over a large corpus.
+    """
     cfg = get_config()
     scan_root = Path(root) if root else cfg.asciinema_root
     if not scan_root.exists():
         return iter(())
 
     def generator() -> Iterator[TerminalSessionMetadata]:
-        for cast_path in _iter_cast_paths(scan_root):
+        path_iter = (
+            _iter_cast_paths_for_window(scan_root, start, end)
+            if start is not None and end is not None
+            else _iter_cast_paths(scan_root)
+        )
+        for cast_path in path_iter:
             meta = _parse_terminal_session(cast_path)
             if meta:
                 yield meta
@@ -224,16 +238,29 @@ def terminal_session_events_by_date(target: date, root: Path | None = None) -> I
     return generator()
 
 
-def iter_terminal_session_events(root: Path | None = None) -> Iterator[TerminalSessionEvent]:
-    """Yield low-frequency terminal session events."""
+def iter_terminal_session_events(
+    root: Path | None = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[TerminalSessionEvent]:
+    """Yield low-frequency terminal session events.
 
+    When *start* and *end* are provided, only cast files stored in YYYY/MM/DD
+    directories that overlap the window are scanned.
+    """
     cfg = get_config()
     scan_root = Path(root) if root else cfg.asciinema_root
     if not scan_root.exists():
         return iter(())
 
     def generator() -> Iterator[TerminalSessionEvent]:
-        for cast_path in _iter_cast_paths(scan_root):
+        path_iter = (
+            _iter_cast_paths_for_window(scan_root, start, end)
+            if start is not None and end is not None
+            else _iter_cast_paths(scan_root)
+        )
+        for cast_path in path_iter:
             yield from _parse_terminal_session_events(cast_path)
 
     return generator()
@@ -254,6 +281,163 @@ def iter_terminal_audit(root: Path | None = None) -> Iterator[TerminalAuditEntry
                 yield entry
 
     return generator()
+
+
+def iter_terminal_sessions_fast(
+    root: Path | None = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[TerminalSessionMetadata]:
+    """Fast variant of iter_terminal_sessions that reads only the manifest JSON sidecar.
+
+    Skips the expensive cast-file timing scan (which can read megabytes of cast data).
+    All fields needed by the trajectory signal pipeline are present in the manifest;
+    sessions without a manifest fall back to a minimal parse of the cast header.
+    Use this in hot paths where timing accuracy is less critical than speed.
+    """
+    cfg = get_config()
+    scan_root = Path(root) if root else cfg.asciinema_root
+    if not scan_root.exists():
+        return iter(())
+
+    def generator() -> Iterator[TerminalSessionMetadata]:
+        path_iter = (
+            _iter_cast_paths_for_window(scan_root, start, end)
+            if start is not None and end is not None
+            else _iter_cast_paths(scan_root)
+        )
+        for cast_path in path_iter:
+            meta = _parse_session_fast(cast_path)
+            if meta:
+                yield meta
+
+    return generator()
+
+
+def _parse_session_fast(cast_path: Path) -> Optional[TerminalSessionMetadata]:
+    """Parse only the manifest sidecar (session.json), with a minimal cast-header fallback.
+
+    This avoids _scan_cast_timings on the (potentially large) cast file.
+    Suitable for the trajectory signal pipeline where timing precision is secondary.
+    """
+    manifest_path, events_path = _sidecar_paths(cast_path)
+    session_id = _session_id(cast_path)
+
+    manifest = _load_json_file(manifest_path)
+    if manifest is None:
+        # No manifest — fall back to reading just the cast header line (cheap)
+        try:
+            with cast_path.open("r", encoding="utf-8", errors="ignore") as fh:
+                header_line = fh.readline()
+            if not header_line:
+                return None
+            header = json.loads(header_line)
+        except (OSError, json.JSONDecodeError):
+            return None
+        start_ts = _to_float(header.get("timestamp"))
+        created_at = _local_iso_from_epoch_seconds(start_ts)
+        if not created_at:
+            return None
+        schema_gen = _schema_generation(None, header)
+        env = header.get("env") or {}
+        return TerminalSessionMetadata(
+            session_id=session_id,
+            path=str(cast_path),
+            manifest_path=None,
+            events_path=str(events_path) if events_path.exists() else None,
+            size_bytes=cast_path.stat().st_size,
+            created_at=created_at,
+            finished_at=None,
+            duration_seconds=None,
+            active_seconds=None,
+            idle_seconds=None,
+            command_count=None,
+            event_count=None,
+            command=_to_text(header.get("command")),
+            title=_to_text(header.get("title")),
+            shell=_to_text(env.get("SHELL")),
+            term=_to_text(env.get("TERM")),
+            term_type=None,
+            term_cols=None,
+            term_rows=None,
+            host=_to_text(env.get("SINNIX_CAPTURE_HOST") or env.get("HOSTNAME")),
+            user=_to_text(env.get("SINNIX_CAPTURE_USER")),
+            tty=_to_text(env.get("SINNIX_CAPTURE_TTY")),
+            terminal=_to_text(env.get("SINNIX_CAPTURE_TERMINAL")),
+            start_cwd=_to_text(env.get("SINNIX_CAPTURE_START_CWD")),
+            final_cwd=None,
+            project_root=_to_text(env.get("SINNIX_CAPTURE_PROJECT_ROOT")),
+            final_project_root=None,
+            repo_root=None,
+            final_repo_root=None,
+            repo_branch=None,
+            final_repo_branch=None,
+            repo_commit=None,
+            final_repo_commit=None,
+            repo_dirty=None,
+            final_repo_dirty=None,
+            exit_code=None,
+            exit_reason=None,
+            recorder_exit_code=None,
+            cleanup_escalated=None,
+            has_events=events_path.exists(),
+            timing_source="header_only",
+            schema_generation=schema_gen,
+            quality_status="unknown",
+        )
+
+    # Manifest path — read all fields from the JSON (fast, small file)
+    schema_gen = _schema_generation(manifest, None)
+    has_events = bool(manifest.get("has_events")) or events_path.exists()
+
+    return TerminalSessionMetadata(
+        session_id=_to_text(manifest.get("session_id")) or session_id,
+        path=str(cast_path),
+        manifest_path=str(manifest_path),
+        events_path=str(events_path) if events_path.exists() else None,
+        size_bytes=cast_path.stat().st_size,
+        created_at=_manifest_time(manifest, "started_at", "started_at_ms"),
+        finished_at=_manifest_time(manifest, "finished_at", "finished_at_ms"),
+        duration_seconds=_ms_to_seconds(manifest.get("duration_ms")),
+        active_seconds=_ms_to_seconds(manifest.get("active_ms")),
+        idle_seconds=_ms_to_seconds(manifest.get("idle_ms")),
+        command_count=_to_int(manifest.get("command_count")),
+        event_count=_to_int(manifest.get("event_count")),
+        command=_to_text(manifest.get("command")),
+        title=_to_text(manifest.get("title")),
+        shell=_to_text(manifest.get("shell")),
+        term=None,
+        term_type=None,
+        term_cols=None,
+        term_rows=None,
+        host=_to_text(manifest.get("host")),
+        user=_to_text(manifest.get("user")),
+        tty=_to_text(manifest.get("tty")),
+        terminal=_to_text(manifest.get("terminal")),
+        start_cwd=_to_text(manifest.get("start_cwd")),
+        final_cwd=_to_text(manifest.get("final_cwd")),
+        project_root=_to_text(manifest.get("project_root")),
+        final_project_root=_to_text(manifest.get("final_project_root")),
+        repo_root=_to_text(manifest.get("repo_root") or manifest.get("start_repo_root")),
+        final_repo_root=_to_text(manifest.get("final_repo_root")),
+        repo_branch=_to_text(manifest.get("repo_branch")),
+        final_repo_branch=_to_text(manifest.get("final_repo_branch")),
+        repo_commit=_to_text(manifest.get("repo_commit")),
+        final_repo_commit=_to_text(manifest.get("final_repo_commit")),
+        repo_dirty=_to_bool(manifest.get("repo_dirty")),
+        final_repo_dirty=_to_bool(manifest.get("final_repo_dirty")),
+        exit_code=_to_int(manifest.get("exit_code")),
+        exit_reason=_to_text(manifest.get("exit_reason")),
+        recorder_exit_code=_to_int(manifest.get("recorder_exit_code")),
+        cleanup_escalated=_to_bool(manifest.get("cleanup_escalated")),
+        has_events=has_events,
+        timing_source="manifest_fast",
+        schema_generation=schema_gen,
+        quality_status=_to_text(manifest.get("quality_status")) or "unknown",
+        quality_flags=manifest.get("quality_flags") or [],
+        field_sources={},
+    )
 
 
 def summarize_terminal_audit(entries: Iterator[TerminalAuditEntry]) -> TerminalAuditSummary:
@@ -344,6 +528,75 @@ def _iter_cast_paths(scan_root: Path) -> Iterator[Path]:
     for cast_path in sorted(scan_root.rglob("session.cast")):
         if cast_path.is_file():
             yield cast_path
+
+
+def _iter_cast_paths_for_window(
+    scan_root: Path,
+    start: datetime,
+    end: datetime,
+) -> Iterator[Path]:
+    """Yield cast paths only within YYYY/MM/DD directories that overlap [start, end].
+
+    The asciinema tree is organised as scan_root/YYYY/MM/DD/session-dir/session.cast.
+    Walking only the relevant day directories avoids stat()-ing the entire corpus
+    (typically 1 000+ files) for short time windows.
+    """
+    # Convert to local dates; extend by 1 day on each side to cover sessions
+    # that straddle midnight or span multiple days.
+    start_date = (start.astimezone().replace(tzinfo=None) - timedelta(days=1)).date()
+    end_date = (end.astimezone().replace(tzinfo=None) + timedelta(days=1)).date()
+
+    try:
+        year_dirs = sorted(scan_root.iterdir())
+    except OSError:
+        return
+
+    for year_dir in year_dirs:
+        if not year_dir.is_dir():
+            continue
+        try:
+            year = int(year_dir.name)
+        except ValueError:
+            continue
+        if year < start_date.year or year > end_date.year:
+            continue
+
+        try:
+            month_dirs = sorted(year_dir.iterdir())
+        except OSError:
+            continue
+
+        for month_dir in month_dirs:
+            if not month_dir.is_dir():
+                continue
+            try:
+                month = int(month_dir.name)
+            except ValueError:
+                continue
+            if (year, month) < (start_date.year, start_date.month):
+                continue
+            if (year, month) > (end_date.year, end_date.month):
+                continue
+
+            try:
+                day_dirs = sorted(month_dir.iterdir())
+            except OSError:
+                continue
+
+            for day_dir in day_dirs:
+                if not day_dir.is_dir():
+                    continue
+                try:
+                    day = int(day_dir.name)
+                    d = date(year, month, day)
+                except (ValueError, TypeError):
+                    continue
+                if d < start_date or d > end_date:
+                    continue
+
+                for cast_path in sorted(day_dir.rglob("session.cast")):
+                    if cast_path.is_file():
+                        yield cast_path
 
 
 def _parse_terminal_session(cast_path: Path) -> Optional[TerminalSessionMetadata]:

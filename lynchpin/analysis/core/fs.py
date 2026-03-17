@@ -1,5 +1,4 @@
 import os
-from collections import Counter
 
 def count_lines(filepath):
     """Safely count lines in a file."""

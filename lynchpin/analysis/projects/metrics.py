@@ -4,7 +4,7 @@ import json
 from collections import Counter
 from datetime import datetime
 
-from ..core.fs import count_lines, walk_files
+from ..core.fs import walk_files
 from ..core.git import get_log
 from ...core.projects import ALL_PROJECTS
 
@@ -22,7 +22,8 @@ def analyze_structural(base_dir):
     results = {}
     for proj, meta in PROJECTS_META.items():
         proj_dir = _project_dir(base_dir, proj, meta)
-        if not os.path.isdir(proj_dir): continue
+        if not os.path.isdir(proj_dir):
+            continue
         
         total_files = 0
         total_lines = 0
@@ -39,10 +40,12 @@ def analyze_structural(base_dir):
             try:
                 with open(fp, 'r', errors='ignore') as f_obj:
                     lines = f_obj.readlines()
-            except: continue
+            except Exception:
+                continue
             
             n = len(lines)
-            if n == 0: continue
+            if n == 0:
+                continue
             
             total_files += 1
             total_lines += n
@@ -52,10 +55,13 @@ def analyze_structural(base_dir):
             cmt_char = '//' if ext in ('.rs','.c','.cpp','.h','.hpp','.cs','.js') else '#' if ext in ('.py','.nix') else None
             for line in lines:
                 s = line.strip()
-                if not s: blank += 1
-                elif cmt_char and s.startswith(cmt_char): comments += 1
+                if not s:
+                    blank += 1
+                elif cmt_char and s.startswith(cmt_char):
+                    comments += 1
 
-        if not sizes: continue
+        if not sizes:
+            continue
         sizes.sort()
         results[proj] = {
             "era": meta["era"],
@@ -74,7 +80,8 @@ def analyze_productivity(base_dir, results):
     """Append Git usage stats, commits per day, etc. to existing structural results."""
     for proj, meta in PROJECTS_META.items():
         proj_dir = _project_dir(base_dir, proj, meta)
-        if not os.path.isdir(os.path.join(proj_dir, '.git')): continue
+        if not os.path.isdir(os.path.join(proj_dir, '.git')):
+            continue
         
         # log format config for generator parsing (this simplifies things)
         dates = set()
@@ -86,9 +93,11 @@ def analyze_productivity(base_dir, results):
         
         for line in get_log(proj_dir, branch="--all", params=['--pretty=format:COMMIT|%aI', '--numstat']):
             line = line.strip()
-            if not line: continue
+            if not line:
+                continue
             if line.startswith('COMMIT|'):
-                if cur_added > 0: commit_sizes.append(cur_added)
+                if cur_added > 0:
+                    commit_sizes.append(cur_added)
                 cur_added = 0
                 dates.add(line.split('|')[1][:10])
                 commits += 1
@@ -102,8 +111,9 @@ def analyze_productivity(base_dir, results):
                         total_added += a
                         total_deleted += d
                         cur_added += a
-                        
-        if cur_added > 0: commit_sizes.append(cur_added)
+
+        if cur_added > 0:
+            commit_sizes.append(cur_added)
         
         dates = sorted(dates)
         active_days = len(dates)
@@ -115,8 +125,9 @@ def analyze_productivity(base_dir, results):
             span_days = 1
             
         commit_sizes.sort()
-        
-        if proj not in results: results[proj] = {}
+
+        if proj not in results:
+            results[proj] = {}
         p = results[proj]
         
         p["commits"] = commits

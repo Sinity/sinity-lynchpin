@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -196,70 +197,73 @@ def _parse_git_shortstat(line: str) -> Dict[str, int]:
     }
 
 
+def _numstat_one_repo(
+    repo_path: Path,
+    since: Optional[datetime],
+    until: Optional[datetime],
+) -> List[Dict[str, object]]:
+    """Run git log --shortstat for one repo and return all parsed records."""
+    cmd = [
+        "git", "-C", str(repo_path), "log",
+        "--date=iso-strict",
+        "--pretty=format:%H%x09%ad%x09%an%x09%s",
+        "--shortstat",
+    ]
+    if until is not None:
+        cmd.append(f"--until={until.isoformat()}")
+    if since is not None:
+        cmd.append(f"--since={since.isoformat()}")
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+
+    records: List[Dict[str, object]] = []
+    current: Optional[Dict[str, object]] = None
+    for raw in proc.stdout:
+        line = raw.rstrip("\n")
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 4 and _GIT_SHA_RE.match(parts[0]):
+            if current:
+                records.append(current)
+            sha, date_str, author = parts[0], parts[1], parts[2]
+            subject = "\t".join(parts[3:])
+            current = {
+                "repo": str(repo_path),
+                "commit": sha,
+                "date": date_str,
+                "author": author,
+                "subject": subject,
+                "files_changed": 0,
+                "lines_added": 0,
+                "lines_deleted": 0,
+            }
+            continue
+        if current and ("file changed" in line or "files changed" in line):
+            current.update(_parse_git_shortstat(line))
+    if current:
+        records.append(current)
+
+    _, stderr = proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"git log failed for {repo_path}: {stderr.strip()}")
+    return records
+
+
 def iter_numstat(
     repos: Sequence[Path],
     *,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
 ) -> Iterator[Dict[str, object]]:
-    for repo_path in repos:
-        repo_path = repo_path.expanduser()
-        if not (repo_path / ".git").exists():
-            continue
-
-        cmd = [
-            "git",
-            "-C",
-            str(repo_path),
-            "log",
-            "--date=iso-strict",
-            "--pretty=format:%H%x09%ad%x09%an%x09%s",
-            "--shortstat",
-        ]
-        if until is not None:
-            cmd.append(f"--until={until.isoformat()}")
-        if since is not None:
-            cmd.append(f"--since={since.isoformat()}")
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        assert proc.stdout is not None
-
-        current: Optional[Dict[str, object]] = None
-        for raw in proc.stdout:
-            line = raw.rstrip("\n")
-            if not line.strip():
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 4 and _GIT_SHA_RE.match(parts[0]):
-                if current:
-                    yield current
-                sha, date_str, author = parts[0], parts[1], parts[2]
-                subject = "\t".join(parts[3:])
-                current = {
-                    "repo": str(repo_path),
-                    "commit": sha,
-                    "date": date_str,
-                    "author": author,
-                    "subject": subject,
-                    "files_changed": 0,
-                    "lines_added": 0,
-                    "lines_deleted": 0,
-                }
-                continue
-            if current and ("file changed" in line or "files changed" in line):
-                current.update(_parse_git_shortstat(line))
-
-        if current:
-            yield current
-
-        _, stderr = proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(f"git log failed for {repo_path}: {stderr.strip()}")
+    valid_repos = [p.expanduser() for p in repos if (p.expanduser() / ".git").exists()]
+    if not valid_repos:
+        return
+    with ThreadPoolExecutor(max_workers=min(len(valid_repos), 8)) as pool:
+        futures = {pool.submit(_numstat_one_repo, r, since, until): r for r in valid_repos}
+        for fut in as_completed(futures):
+            yield from fut.result()
 
 
 # === Repository coverage ===

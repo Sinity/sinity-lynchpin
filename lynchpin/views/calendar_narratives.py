@@ -8,11 +8,10 @@ replacing the old codex prompt subprocess approach.
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from textwrap import dedent
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import typer
 
@@ -21,7 +20,7 @@ from ..trajectory.chains import build_chains_from_attributed
 from ..trajectory.day import TrajectoryDay, summarize_days
 from ..trajectory.rules import classify_signals
 from ..trajectory.signal import load_signals, resolve_window
-from ..trajectory.week import TrajectoryWeek, summarize_weeks
+from ..trajectory.week import TrajectoryWeek
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 

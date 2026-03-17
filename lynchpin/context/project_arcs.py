@@ -67,6 +67,15 @@ def build_project_arcs(
             if month.dominant_project and month.dominant_project in project_data:
                 project_data[month.dominant_project]["cost"] += month.chat_cost_usd
 
+    # Per-project: accumulate weekly hours from most recent 4 weeks
+    recent_week_hours: dict[str, list[float]] = {}
+    if weeks:
+        sorted_weeks = sorted(weeks, key=lambda w: w.iso_week)
+        recent_4 = sorted_weeks[-4:]
+        for week in recent_4:
+            for name, seconds in week.top_projects[:5]:
+                recent_week_hours.setdefault(name, []).append(seconds / 3600)
+
     # Sort by total hours, take top 5
     ranked = sorted(
         project_data.items(),
@@ -91,6 +100,21 @@ def build_project_arcs(
         else:
             trend = "steady"
 
+        # Weekly momentum: compare last 2 weeks vs prior 2 weeks
+        week_hrs = recent_week_hours.get(name, [])
+        if len(week_hrs) >= 3:
+            half = len(week_hrs) // 2
+            prior_avg = sum(week_hrs[:half]) / half
+            recent_avg = sum(week_hrs[half:]) / (len(week_hrs) - half)
+            if recent_avg > prior_avg * 1.25:
+                momentum = "accelerating"
+            elif recent_avg < prior_avg * 0.75:
+                momentum = "stalling"
+            else:
+                momentum = "steady"
+        else:
+            momentum = trend  # fall back to velocity_trend when not enough weekly data
+
         arcs.append(
             ProjectArc(
                 project=name,
@@ -99,7 +123,7 @@ def build_project_arcs(
                 velocity_trend=trend,
                 cost_usd=data["cost"],
                 active_episodes=data["episodes"],
-                momentum=trend,
+                momentum=momentum,
             )
         )
 

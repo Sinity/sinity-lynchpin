@@ -208,7 +208,7 @@ def iter_session_profiles(
     Uses SyncPolylogue to query the archive database, then builds
     a SessionProfile for each conversation in the time window.
     """
-    from polylogue.lib.session_profile import SessionProfile, build_session_profile
+    from polylogue.lib.session_profile import build_session_profile
     from polylogue.sync import SyncPolylogue
 
     try:
@@ -247,7 +247,7 @@ def iter_session_profiles(
 
 def get_coverage() -> ArchiveCoverage:
     """Get archive coverage diagnostics from Polylogue."""
-    from polylogue.lib.coverage import ArchiveCoverage, analyze_coverage
+    from polylogue.lib.coverage import analyze_coverage
     from polylogue.sync import SyncPolylogue
 
     poly = SyncPolylogue()

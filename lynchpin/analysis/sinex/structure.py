@@ -7,9 +7,6 @@ import os
 import re
 import json
 import subprocess
-from collections import defaultdict, Counter
-from datetime import datetime
-from ..core import git
 
 
 SINEX_DIR_DEFAULT = '/realm/project/sinex'
@@ -43,7 +40,7 @@ def run_tokei(path):
             'comments': rust.get('comments', 0),
             'blanks': rust.get('blanks', 0),
         }
-    except:
+    except Exception:
         return {'code': 0, 'comments': 0, 'blanks': 0}
 
 
@@ -61,7 +58,7 @@ def run_tokei_multi(paths):
             'comments': rust.get('comments', 0),
             'blanks': rust.get('blanks', 0),
         }
-    except:
+    except Exception:
         return {'code': 0, 'comments': 0, 'blanks': 0}
 
 
@@ -97,7 +94,7 @@ def analyze_crate(sinex_dir, crate_path):
             try:
                 with open(fp, 'r', errors='ignore') as fh:
                     lines = fh.readlines()
-            except:
+            except Exception:
                 continue
 
             file_count += 1
@@ -163,7 +160,7 @@ def analyze_crate(sinex_dir, crate_path):
                 if m:
                     crate_name = m.group(1)
                     break
-    except:
+    except Exception:
         pass
 
     total_lines = tokei_all['code'] + tokei_all['comments'] + tokei_all['blanks']
@@ -212,7 +209,7 @@ def compute_crate_timeline(sinex_dir):
             dates = out.strip().split('\n')
             if dates and dates[-1]:
                 timeline[crate] = dates[-1][:10]
-        except:
+        except Exception:
             pass
 
     return dict(sorted(timeline.items(), key=lambda x: x[1]))

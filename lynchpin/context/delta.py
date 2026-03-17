@@ -6,7 +6,7 @@ Surfaces what changed between prior and current, rather than absolute state.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -116,10 +116,20 @@ def build_delta(
 
     new_claims = sorted(list(current_claims - prior_claims))
 
-    # Anomaly count delta (if present)
-    anomaly_count_delta = 0
-    # Note: anomalies are typically in day summaries; this is a placeholder
-    # that could be enhanced if anomaly counts appear at the top level
+    # Anomaly count delta from coverage packet
+    prior_anomaly_count = 0
+    current_anomaly_count = 0
+    prior_cov = prior_state.get("coverage", {})
+    if isinstance(prior_cov, dict):
+        val = prior_cov.get("anomaly_count")
+        if isinstance(val, int):
+            prior_anomaly_count = val
+    current_cov = current_state.get("coverage", {})
+    if isinstance(current_cov, dict):
+        val = current_cov.get("anomaly_count")
+        if isinstance(val, int):
+            current_anomaly_count = val
+    anomaly_count_delta = current_anomaly_count - prior_anomaly_count
 
     # Active hours delta from period
     prior_active_hours = 0.0
@@ -129,11 +139,15 @@ def build_delta(
         val = prior_period.get("active_hours")
         if isinstance(val, (int, float)):
             prior_active_hours = float(val)
+        elif isinstance(prior_period.get("active_seconds"), (int, float)):
+            prior_active_hours = float(prior_period["active_seconds"]) / 3600.0
 
     if isinstance(current_period, dict):
         val = current_period.get("active_hours")
         if isinstance(val, (int, float)):
             current_active_hours = float(val)
+        elif isinstance(current_period.get("active_seconds"), (int, float)):
+            current_active_hours = float(current_period["active_seconds"]) / 3600.0
 
     active_hours_delta = current_active_hours - prior_active_hours
 

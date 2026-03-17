@@ -490,6 +490,34 @@ EOF
             doCheck = false;
             dontCheckRuntimeDeps = true;
           };
+
+          mcp = prev.buildPythonPackage rec {
+            pname = "mcp";
+            version = "1.7.1";
+            format = "wheel";
+            src = pkgs.fetchurl {
+              url = "https://files.pythonhosted.org/packages/ae/79/fe0e20c3358997a80911af51bad927b5ea2f343ef95ab092b19c9cc48b59/mcp-1.7.1-py3-none-any.whl";
+              sha256 = "0yh563yrqvzr4y3py6bm3csa4nq8rrx6qhlmhi0h6vfvfy4i1rpp";
+            };
+            propagatedBuildInputs = with prev; [
+              anyio httpx httpx-sse pydantic starlette sse-starlette pydantic-settings uvicorn
+            ];
+            doCheck = false;
+          };
+
+          claude-agent-sdk = prev.buildPythonPackage rec {
+            pname = "claude_agent_sdk";
+            version = "0.1.48";
+            pyproject = true;
+            src = prev.fetchPypi {
+              inherit pname version;
+              sha256 = "sha256-7ilNPwKTbAuCYRn/vvz4jGdzHPjC0stxEczJf3Y0QnI=";
+            };
+            nativeBuildInputs = with prev; [ hatchling ];
+            # mcp defined in the same overlay — must reference via final, not prev
+            propagatedBuildInputs = [ prev.anyio final.mcp ];
+            doCheck = false;
+          };
         };
 
         python = pkgs.python312.override {
@@ -575,6 +603,10 @@ EOF
             active_window
             pygithub
             praw
+            structlog
+            pydantic
+            aiosqlite
+            claude-agent-sdk
           ]
         );
 
@@ -723,7 +755,7 @@ EOF
             export JUPYTER_PATH=$PWD/.jupyter
             export R_LIBS_USER=$PWD/.rlib
             export MY_CONFIG=$PWD/config
-            export PYTHONPATH=$PWD:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
+            export PYTHONPATH=$PWD:/realm/project/polylogue:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
             export PATH=$PWD/.bin:$PATH
             if command -v fd >/dev/null && ! command -v fdfind >/dev/null; then
               mkdir -p "$PWD/.bin"

@@ -68,13 +68,14 @@ def _score_packet(packet_type: str, packet_dict: dict[str, Any], query_terms: se
                 evidence_count += val
     evidence_density = min(evidence_count / 500.0, 1.0)
 
-    # type_priority: bonus if query matches known project/topic names in the packet
+    # type_priority: bonus if query matches a known project name found in the packet
+    from ..core.projects import ALL_PROJECTS
     type_priority = 0.0
+    known_project_names = set(ALL_PROJECTS)
     for term in query_terms:
-        if term in ["sinex", "sinnix", "polylogue", "knowledgebase", "scribe", "intercept"]:
-            if term in packet_str:
-                type_priority = 0.3
-                break
+        if term in known_project_names and term in packet_str:
+            type_priority = 0.3
+            break
 
     return (topic_match * 0.5) + (recency_score * 0.3) + (evidence_density * 0.1) + type_priority
 
@@ -129,7 +130,7 @@ def select_context(
             packets_with_scores.append((key, packet, score, tokens))
 
     # List-of-dicts sections
-    for key in ["days", "weeks", "months", "quarters", "years", "episodes", "themes", "project_arcs"]:
+    for key in ["days", "weeks", "months", "quarters", "years", "episodes", "themes", "project_arcs", "memory", "threads"]:
         if key in state and state[key]:
             for packet in state[key]:
                 score = _score_packet(key, packet, set(query.lower().split()))

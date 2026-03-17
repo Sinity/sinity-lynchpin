@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -35,6 +36,24 @@ _PROJECT_PATTERNS = [
     (name, re.compile(rf"(?<![a-z0-9]){re.escape(name.lower())}(?![a-z0-9])"))
     for name in sorted(ALL_PROJECTS, key=len, reverse=True)
 ]
+# Pre-resolved project paths — computed once at import, reused for every signal
+_PROJECT_RESOLVED_PATHS: list[tuple[str, Path]] = [
+    (entry.name, Path(entry.path).expanduser().resolve(strict=False))
+    for entry in ALL_PROJECTS.values()
+]
+
+_WORK_EVENT_TOPIC_BOOSTS: dict[str, tuple[str, float]] = {
+    "implementation": ("coding", 1.5),
+    "debugging":      ("testing", 2.0),
+    "documentation":  ("writing", 2.0),
+    "research":       ("research", 2.5),
+    "configuration":  ("infra", 2.0),
+    "review":         ("coding", 1.0),
+    "refactoring":    ("coding", 1.5),
+    "data_analysis":  ("data", 2.0),
+    "conversation":   ("ai", 1.5),
+}
+_LANGUAGE_DOMAIN_TOPICS: frozenset[str] = frozenset({"nix", "rust", "python", "typescript", "duckdb", "docker", "web", "infra"})
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,7 @@ class AttributedSignal:
     reasons: tuple[str, ...]
     topic: Optional[str] = None
     topic_confidence: float = 0.0
+    topic_scores: tuple[tuple[str, float], ...] = ()  # cached multi-topic scores
 
     @property
     def signal_id(self) -> str:
@@ -183,6 +203,24 @@ def normalize_topic(raw: str) -> str:
     return _TOPIC_VARIANTS.get(lower, lower)
 
 
+@functools.lru_cache(maxsize=16384)
+def _extract_topics_for_text(text: str, we_kind: Optional[str]) -> tuple[tuple[str, float], ...]:
+    """Pure cached kernel: score all topics for a given (text, we_kind) pair."""
+    we_boost_target, we_boost_amount = _WORK_EVENT_TOPIC_BOOSTS.get(we_kind or "", (None, 0.0))
+    candidates: list[tuple[str, float]] = []
+    for topic, keywords in _TOPIC_KEYWORDS.items():
+        score = sum(weight for kw, weight in keywords if kw in text)
+        if we_boost_target == "coding" and topic in _LANGUAGE_DOMAIN_TOPICS and score >= 1.0:
+            score += we_boost_amount
+        elif we_boost_target == topic:
+            score += we_boost_amount
+        if score >= 1.0:
+            confidence = min(0.3 + score * 0.15, 0.95)
+            candidates.append((topic, round(confidence, 2)))
+    candidates.sort(key=lambda item: (-item[1], item[0]))
+    return tuple(candidates)
+
+
 def _extract_topics_multi(signal: TrajectorySignal) -> list[tuple[str, float]]:
     """Return all matching topics with scores, ranked by confidence descending."""
     text = " ".join(
@@ -198,21 +236,7 @@ def _extract_topics_multi(signal: TrajectorySignal) -> list[tuple[str, float]]:
         text += " " + " ".join(str(p) for p in file_paths)
 
     we_kind = evidence.get("work_event_kind")
-    we_topic_boost: Optional[str] = None
-    if we_kind == "data_analysis":
-        we_topic_boost = "data"
-
-    candidates: list[tuple[str, float]] = []
-    for topic, keywords in _TOPIC_KEYWORDS.items():
-        score = sum(weight for kw, weight in keywords if kw in text)
-        if topic == we_topic_boost:
-            score += 2.0
-        if score >= 1.0:
-            confidence = min(0.3 + score * 0.15, 0.95)
-            candidates.append((topic, round(confidence, 2)))
-
-    candidates.sort(key=lambda item: (-item[1], item[0]))
-    return candidates
+    return list(_extract_topics_for_text(text, we_kind if isinstance(we_kind, str) else None))
 
 
 def classify_chain_topics(
@@ -230,8 +254,9 @@ def classify_chain_topics(
 
     for signal in signals:
         weight = max(signal.duration_seconds, 1.0)
-        # Use multi-extraction for richer attribution
-        topics = _extract_topics_multi(signal.signal)
+        # All signals go through classify_signal, so topic_scores is always set.
+        # Empty tuple () means "no topics" — do not fall back to _extract_topics_multi.
+        topics = signal.topic_scores
         if not topics:
             if signal.topic:
                 topic_seconds[signal.topic] += weight
@@ -350,7 +375,8 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
         mode, mode_confidence = "web", 0.4
         reasons.append("surface_fallback")
 
-    topic, topic_confidence = _classify_topic(signal)
+    topic_scores = tuple(_extract_topics_multi(signal))
+    topic, topic_confidence = (topic_scores[0] if topic_scores else (None, 0.0))
 
     return AttributedSignal(
         signal=signal,
@@ -361,6 +387,7 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
         reasons=tuple(dict.fromkeys(reasons)),
         topic=topic,
         topic_confidence=topic_confidence,
+        topic_scores=topic_scores,
     )
 
 
@@ -372,6 +399,7 @@ def mode_family(mode: str) -> str:
     return mode
 
 
+@functools.lru_cache(maxsize=8192)
 def _project_from_values(*values: object) -> Optional[tuple[str, float, str]]:
     for value in values:
         project = _project_from_path(value)
@@ -384,10 +412,8 @@ def _project_from_values(*values: object) -> Optional[tuple[str, float, str]]:
     return None
 
 
-def _project_from_path(value: object) -> Optional[str]:
-    if value is None:
-        return None
-    text = str(value).strip()
+@functools.lru_cache(maxsize=4096)
+def _project_from_path_str(text: str) -> Optional[str]:
     if not text:
         return None
     if "://" in text and not text.startswith("file://"):
@@ -396,7 +422,7 @@ def _project_from_path(value: object) -> Optional[str]:
         return None
     normalized = text.replace("\\", "/")
     if normalized.startswith("/realm/project/"):
-        project_name = normalized[len("/realm/project/") :].split("/", 1)[0]
+        project_name = normalized[len("/realm/project/"):].split("/", 1)[0]
         if project_name in ALL_PROJECTS:
             return project_name
     try:
@@ -407,13 +433,20 @@ def _project_from_path(value: object) -> Optional[str]:
         path = path.resolve(strict=False)
     except OSError:
         return None
-    for entry in ALL_PROJECTS.values():
-        project_path = Path(entry.path).expanduser().resolve(strict=False)
+    # Use pre-resolved project paths — no per-call Path.resolve() overhead
+    for name, project_path in _PROJECT_RESOLVED_PATHS:
         if path == project_path or project_path in path.parents:
-            return entry.name
+            return name
     return None
 
 
+def _project_from_path(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    return _project_from_path_str(str(value).strip())
+
+
+@functools.lru_cache(maxsize=4096)
 def _project_from_text(value: object) -> Optional[str]:
     if value is None:
         return None

@@ -1,6 +1,5 @@
 """Sinex temporal analysis and growth metrics."""
 import os
-import subprocess
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -69,7 +68,7 @@ def compute_crate_growth(sinex_dir):
                         if m:
                             crate_dirs[rel] = m.group(1)
                             break
-            except:
+            except Exception:
                 crate_dirs[rel] = rel
 
     # Parse log
@@ -103,8 +102,8 @@ def compute_crate_growth(sinex_dir):
         if not months:
             continue
         result[crate_name] = [
-            {'month': m, 'lines': l}
-            for m, l in sorted(months.items())
+            {'month': m, 'lines': line_count}
+            for m, line_count in sorted(months.items())
         ]
     return result
 

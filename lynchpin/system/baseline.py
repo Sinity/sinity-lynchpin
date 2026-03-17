@@ -35,7 +35,6 @@ import math
 import shutil
 from dataclasses import dataclass
 from collections import Counter, defaultdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -1054,8 +1053,11 @@ def run_baseline(
     log: Optional[Callable[[str], None]] = None,
 ) -> BaselineResult:
     """Rebuild the baseline analytics suite and return a typed result manifest."""
+    def _noop(_message: str) -> None:
+        pass
+
     if log is None:
-        log = lambda _message: None
+        log = _noop
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

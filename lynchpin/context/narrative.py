@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..context.life_timeline import LifeMonthTrajectorySummary
@@ -90,7 +90,7 @@ def build_month_prompt(traj: LifeMonthTrajectorySummary, *, month_key: str) -> s
             lines.append(f"Work event breakdown: {we_str}")
 
     if traj.episode_count:
-        labels_str = ", ".join(str(l) for l in traj.episode_labels[:5])
+        labels_str = ", ".join(str(label) for label in traj.episode_labels[:5])
         lines.append(f"Episodes ({traj.episode_count}): {labels_str}")
 
     return "\n".join(lines)
@@ -200,7 +200,7 @@ def build_quarter_prompt(quarter) -> str:
 def build_contrast_prompt(current, prior, scale: str) -> str:
     """Build a prompt contrasting current vs prior period at a given scale."""
     def _fmt(period):
-        key = getattr(period, "iso_week", None) or getattr(period, "month", None) or getattr(period, "quarter", None) or "unknown"
+        key = getattr(period, "iso_week", None) or getattr(period, "month", None) or getattr(period, "quarter", None) or getattr(period, "year", None) or "unknown"
         modes = ", ".join(f"{m}({s / 3600:.1f}h)" for m, s in period.top_modes[:3])
         projects = ", ".join(f"{p}({s / 3600:.1f}h)" for p, s in period.top_projects[:3])
         return (

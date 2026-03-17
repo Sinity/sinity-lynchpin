@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional, Sequence
 
 from .day import TrajectoryDay
@@ -36,6 +36,18 @@ class TrajectoryWeek:
     active_delta_vs_prior: Optional[float]  # seconds
 
     @property
+    def dominant_mode(self) -> Optional[str]:
+        return self.top_modes[0][0] if self.top_modes else None
+
+    @property
+    def dominant_project(self) -> Optional[str]:
+        return self.top_projects[0][0] if self.top_projects else None
+
+    @property
+    def dominant_topic(self) -> Optional[str]:
+        return self.top_topics[0][0] if self.top_topics else None
+
+    @property
     def observed_seconds(self) -> float:
         return self.active_seconds + self.recovery_seconds
 
@@ -53,6 +65,9 @@ class TrajectoryWeek:
             "command_count": self.command_count,
             "transcript_count": self.transcript_count,
             "commit_count": self.commit_count,
+            "dominant_mode": self.dominant_mode,
+            "dominant_project": self.dominant_project,
+            "dominant_topic": self.dominant_topic,
             "top_modes": [[mode, round(seconds, 3)] for mode, seconds in self.top_modes],
             "top_projects": [[project, round(seconds, 3)] for project, seconds in self.top_projects],
             "top_topics": [[topic, round(seconds, 3)] for topic, seconds in self.top_topics],

@@ -668,7 +668,7 @@ def render_markdown(payload: Mapping[str, object]) -> str:
             lines.append(traj_line)
             episode_labels = trajectory.get("episode_labels") or []
             if episode_labels:
-                lines.append(f"- Episodes: {', '.join(str(l) for l in episode_labels)}.")
+                lines.append(f"- Episodes: {', '.join(str(label) for label in episode_labels)}.")
         lines.append(
             "- Notes: "
             f"OneNote journal entries {notes.get('onenote_journal_entries', 0)}; "

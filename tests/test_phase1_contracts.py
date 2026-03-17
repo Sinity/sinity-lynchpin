@@ -147,15 +147,16 @@ def test_sessions_source_reads_markdown_docs_directly() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_calendar_views_and_narratives_use_context_calendar() -> None:
+def test_calendar_views_and_narratives_use_trajectory_layer() -> None:
     views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
     narratives_text = (REPO_ROOT / "lynchpin/views/calendar_narratives.py").read_text(encoding="utf-8")
-    assert "from ..context.calendar import" in views_text
-    assert "load_day_summaries" in views_text
-    assert "terminal_capture_overview_line" in views_text
-    assert "from ..context.calendar import" in narratives_text
-    assert "load_day_summaries" in narratives_text
-    assert "summarize_range" in narratives_text
+    # Both views now use the trajectory layer directly (refactored in Sprint 2-4)
+    assert "from ..trajectory.signal import" in views_text
+    assert "from ..trajectory.day import" in views_text
+    assert "summarize_days" in views_text
+    assert "from ..trajectory.signal import" in narratives_text
+    assert "from ..trajectory.day import" in narratives_text
+    assert "summarize_days" in narratives_text
 
 
 def test_baseline_module_writes_core_git_output() -> None:
@@ -289,7 +290,7 @@ def test_life_timeline_cli_defaults_to_latest_surface() -> None:
     assert script_result.returncode == 0, script_result.stderr
 
     result = subprocess.run(
-        ["nix", "develop", "--command", "python", "-m", "lynchpin.system.life_timeline", "--help"],
+        ["nix", "develop", "--command", "python", "-m", "lynchpin.system.life_timeline", "build", "--help"],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

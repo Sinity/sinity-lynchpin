@@ -15,6 +15,7 @@ from ..trajectory import chains as trajectory_chains
 from ..trajectory import day as trajectory_day
 from ..trajectory import period as trajectory_period
 from ..trajectory import signal as trajectory_signal
+from ..trajectory.anomaly import detect_anomalies
 from ..trajectory.episode import TrajectoryEpisode, detect_episodes
 from ..trajectory.month import summarize_months as trajectory_summarize_months
 from ..trajectory.quarter import TrajectoryQuarter, summarize_quarters
@@ -39,14 +40,7 @@ from .packet_types import (
 from .themes import detect_themes
 from .claims import generate_claims
 from .project_arcs import build_project_arcs
-from .selection import ContextAssembly, select_context
-from .delta import DeltaPacket, build_delta
-from .contrast import (
-    ContrastPacket,
-    build_contrast,
-    build_contrast_for_latest_week,
-    build_contrast_for_latest_month,
-)
+from .memory import load_memory, build_memory_packet
 
 _SCHEMA_VERSION = "lynchpin-context-state-v2"
 
@@ -100,6 +94,9 @@ def build_week_packet(
         end_date=week.end_date.isoformat(),
         active_hours=round(week.active_seconds / 3600.0, 2),
         recovery_hours=round(week.recovery_seconds / 3600.0, 2),
+        dominant_mode=week.dominant_mode,
+        dominant_project=week.dominant_project,
+        dominant_topic=week.dominant_topic,
         day_pattern=week.day_pattern,
         chain_count=week.chain_count,
         top_modes=_top_n(week.top_modes, tier),
@@ -275,6 +272,7 @@ def build_thread_packets(
 def build_coverage_packet(
     days: Sequence[trajectory_day.TrajectoryDay],
     tier: str = "standard",
+    anomaly_count: int = 0,
 ) -> CoveragePacket:
     source_counter: Counter[str] = Counter()
     total_signals = 0
@@ -307,6 +305,7 @@ def build_coverage_packet(
         days_with_terminal=term_days,
         days_with_chatlog=chat_days,
         days_with_git=git_days,
+        anomaly_count=anomaly_count,
     )
 
 
@@ -472,8 +471,9 @@ def build_current_state(
     trajectory_years = summarize_years(trajectory_quarters)
     year_packets = [build_year_packet(y, tier).to_dict() for y in trajectory_years[-2:]]
 
-    # Coverage
-    coverage_packet = build_coverage_packet(day_summaries, tier).to_dict()
+    # Coverage (includes anomaly count)
+    anomalies = detect_anomalies(day_summaries)
+    coverage_packet = build_coverage_packet(day_summaries, tier, anomaly_count=len(anomalies)).to_dict()
 
     # Chat work events from polylogue signals
     chat_work_events = _aggregate_chat_work_events(signals)
@@ -481,14 +481,33 @@ def build_current_state(
     # Work threads from polylogue session signals
     thread_packets = [t.to_dict() for t in build_thread_packets(signals, n=5, tier=tier)]
 
-    # Theme packets from trajectory months
+    # Theme packets from trajectory months; fall back to persistent memory store
+    # when the window is too short to detect themes (< 2 months of data)
     theme_packets = build_theme_packets(trajectory_months, weeks, tier=tier)
+    memory_store = load_memory()
+    if not theme_packets and memory_store.themes:
+        theme_packets = [
+            {
+                "name": t.name,
+                "kind": t.kind,
+                "total_hours": t.total_hours,
+                "trend": t.trend,
+                "first_seen": t.first_seen,
+                "last_seen": t.last_seen,
+                "months_active": t.months_active,
+                "source": "memory",
+            }
+            for t in sorted(memory_store.themes, key=lambda t: -t.total_hours)
+        ]
 
     # Claims packet from all trajectory data
     claims_packet = build_claims_packet(trajectory_months, weeks, day_summaries, tier=tier)
 
     # Project arc packets from trajectory months and episodes
     project_arc_packets = build_project_arc_packets(trajectory_months, weeks, episodes, tier=tier)
+
+    # Memory: persistent claims from prior runs
+    memory_packet = build_memory_packet(memory_store)
 
     return {
         "schema": _SCHEMA_VERSION,
@@ -514,6 +533,7 @@ def build_current_state(
         "themes": theme_packets,
         "claims": claims_packet,
         "project_arcs": project_arc_packets,
+        "memory": memory_packet,
     }
 
 

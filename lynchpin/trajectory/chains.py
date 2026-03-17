@@ -82,6 +82,11 @@ def build_chains_from_attributed(signals: Iterable[AttributedSignal]) -> list[Tr
             current.add(signal)
             continue
         if current.start < signal.start < current.end:
+            # Recovery (AFK) chains are authoritative inactivity markers.
+            # Other signals falling inside them are background noise; skip
+            # them rather than truncating the AFK chain.
+            if current.mode == "recovery":
+                continue
             current.truncate(signal.start)
         chains.append(current.finalize())
         current = _ChainAccumulator(signal)
@@ -94,6 +99,7 @@ def build_chains_from_attributed(signals: Iterable[AttributedSignal]) -> list[Tr
 class _ChainAccumulator:
     def __init__(self, first: AttributedSignal) -> None:
         self.signals: list[AttributedSignal] = [first]
+        self._signal_ids: set[str] = {first.signal_id}
         self.start = first.start
         self.end = first.end
         self.mode_counter: Counter[str] = Counter()
@@ -102,21 +108,44 @@ class _ChainAccumulator:
         self.mode_conf_weight = 0.0
         self.project_conf_weight = 0.0
         self.thread_ids: set[str] = set()
+        # Incrementally tracked dominants — avoids calling _dominant_label on every can_accept()
+        self._dominant_mode: str = "unknown"
+        self._dominant_project: Optional[str] = None
+        # Incrementally tracked sets — avoids re-iterating self.signals in finalize()
+        self._sources: set[str] = set()
+        self._apps: set[str] = set()
+        self._domains: set[str] = set()
+        self._total_weight: float = 0.0
         self.add(first)
 
     def add(self, signal: AttributedSignal) -> None:
-        if len(self.signals) == 1 and self.signals[0] is signal:
-            pass
-        elif signal not in self.signals:
+        sid = signal.signal_id
+        if sid not in self._signal_ids:
             self.signals.append(signal)
+            self._signal_ids.add(sid)
         self.start = min(self.start, signal.start)
         self.end = max(self.end, signal.end)
         weight = max(signal.duration_seconds, 1.0)
         self.mode_counter[signal.mode] += weight
+        # Incremental dominant update: check only if the updated mode can overtake current dominant
+        new_mw = self.mode_counter[signal.mode]
+        dom_mw = self.mode_counter.get(self._dominant_mode, 0)
+        if new_mw > dom_mw or (new_mw == dom_mw and signal.mode < self._dominant_mode):
+            self._dominant_mode = signal.mode
         if signal.project:
             self.project_counter[signal.project] += weight
             self.project_conf_weight += weight * signal.project_confidence
+            new_pw = self.project_counter[signal.project]
+            dom_pw = self.project_counter.get(self._dominant_project or "", 0)
+            if new_pw > dom_pw or (new_pw == dom_pw and (self._dominant_project is None or signal.project < self._dominant_project)):
+                self._dominant_project = signal.project
         self.mode_conf_weight += weight * signal.mode_confidence
+        self._total_weight += weight
+        self._sources.add(signal.source)
+        if signal.app:
+            self._apps.add(signal.app)
+        if signal.domain:
+            self._domains.add(signal.domain)
         if signal.topic:
             self.topic_counter[signal.topic] += weight
         tid = signal.evidence.get("thread_id") if isinstance(signal.evidence, dict) else None
@@ -125,13 +154,11 @@ class _ChainAccumulator:
 
     @property
     def mode(self) -> str:
-        return _dominant_label(self.mode_counter, fallback="unknown")
+        return self._dominant_mode
 
     @property
     def project(self) -> Optional[str]:
-        if not self.project_counter:
-            return None
-        return _dominant_label(self.project_counter, fallback=None)
+        return self._dominant_project
 
     def can_accept(self, signal: AttributedSignal) -> bool:
         gap = signal.start - self.end
@@ -146,15 +173,15 @@ class _ChainAccumulator:
         return True
 
     def finalize(self) -> TrajectoryChain:
-        source_set = tuple(sorted({signal.source for signal in self.signals}))
-        app_set = tuple(sorted({signal.app for signal in self.signals if signal.app}))
-        domain_set = tuple(sorted({signal.domain for signal in self.signals if signal.domain}))
+        source_set = tuple(sorted(self._sources))
+        app_set = tuple(sorted(self._apps))
+        domain_set = tuple(sorted(self._domains))
         title_set = tuple(sorted({signal.title for signal in self.signals if signal.title})[:5])
         reasons = tuple(dict.fromkeys(reason for signal in self.signals for reason in signal.reasons))
         chain_id = _chain_id(self.start, self.end, self.mode, self.project, self.signals)
         signal_count = len(self.signals)
-        source_count = len(source_set)
-        total_weight = sum(max(signal.duration_seconds, 1.0) for signal in self.signals)
+        source_count = len(self._sources)
+        total_weight = self._total_weight
         mode_confidence = round(self.mode_conf_weight / total_weight if total_weight else 0.0, 3)
         project_confidence = 0.0
         if self.project:
@@ -207,7 +234,9 @@ class _ChainAccumulator:
 def _dominant_label(counter: Counter[str], fallback):
     if not counter:
         return fallback
-    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    # O(n) via max+min; avoids sort allocation for 2-5 item counters (called ~130k times)
+    max_weight = max(counter.values())
+    return min(k for k, v in counter.items() if v == max_weight)
 
 
 def _chain_id(

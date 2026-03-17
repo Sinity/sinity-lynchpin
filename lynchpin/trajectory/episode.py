@@ -186,7 +186,6 @@ def detect_episodes(
 
     # Anomaly-cluster trigger: 3+ anomalies within 7 days
     if anomalies:
-        from .anomaly import TrajectoryAnomaly as _TA
         anomaly_dates = sorted(set(a.date for a in anomalies))
         i = 0
         while i < len(anomaly_dates):

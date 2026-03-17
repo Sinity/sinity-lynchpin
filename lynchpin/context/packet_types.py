@@ -7,8 +7,7 @@ standard (~500), and full (~2000).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -73,6 +72,9 @@ class WeekPacket:
     top_projects: list[tuple[str, float]]
     top_topics: list[tuple[str, float]]
     active_delta_vs_prior: Optional[float]
+    dominant_mode: Optional[str] = None
+    dominant_project: Optional[str] = None
+    dominant_topic: Optional[str] = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -82,6 +84,9 @@ class WeekPacket:
             "end_date": self.end_date,
             "active_hours": self.active_hours,
             "recovery_hours": self.recovery_hours,
+            "dominant_mode": self.dominant_mode,
+            "dominant_project": self.dominant_project,
+            "dominant_topic": self.dominant_topic,
             "day_pattern": self.day_pattern,
             "chain_count": self.chain_count,
             "top_modes": [[m, round(s, 2)] for m, s in self.top_modes],
@@ -165,7 +170,7 @@ class EpisodePacket:
             "dominant_project": self.dominant_project,
             "dominant_topic": self.dominant_topic,
             "trigger": self.trigger,
-            "confidence": self.confidence,
+            "confidence": round(self.confidence, 3),
         }
 
 
@@ -226,6 +231,7 @@ class CoveragePacket:
     days_with_terminal: int
     days_with_chatlog: int
     days_with_git: int
+    anomaly_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -238,6 +244,7 @@ class CoveragePacket:
             "days_with_terminal": self.days_with_terminal,
             "days_with_chatlog": self.days_with_chatlog,
             "days_with_git": self.days_with_git,
+            "anomaly_count": self.anomaly_count,
         }
 
 
@@ -367,7 +374,7 @@ class ClaimPacket:
     def to_dict(self) -> dict[str, object]:
         return {
             "statement": self.statement,
-            "confidence": self.confidence,
+            "confidence": round(self.confidence, 3),
             "evidence_refs": list(self.evidence_refs),
             "category": self.category,
         }

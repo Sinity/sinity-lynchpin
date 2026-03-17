@@ -8,10 +8,8 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
-import duckdb
-import pandas as pd
 import typer
 
 from ..core.io import write_text_if_changed
@@ -194,7 +192,8 @@ def parse_markdown(path: Path) -> Tuple[List[Node], List[Edge]]:
     return nodes, edges
 
 
-def nodes_to_df(nodes: List[Node]) -> pd.DataFrame:
+def nodes_to_df(nodes: List[Node]) -> Any:
+    import pandas as pd
     return pd.DataFrame(
         [
             {
@@ -211,7 +210,8 @@ def nodes_to_df(nodes: List[Node]) -> pd.DataFrame:
     )
 
 
-def edges_to_df(edges: List[Edge]) -> pd.DataFrame:
+def edges_to_df(edges: List[Edge]) -> Any:
+    import pandas as pd
     return pd.DataFrame(
         [
             {
@@ -226,14 +226,15 @@ def edges_to_df(edges: List[Edge]) -> pd.DataFrame:
     )
 
 
-def write_duckdb(db_path: Path, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> None:
+def write_duckdb(db_path: Path, nodes_df: Any, edges_df: Any) -> None:
+    import duckdb
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(db_path.as_posix()) as con:
         con.execute("CREATE OR REPLACE TABLE nodes AS SELECT * FROM nodes_df")
         con.execute("CREATE OR REPLACE TABLE edges AS SELECT * FROM edges_df")
 
 
-def write_parquet(parquet_dir: Path, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> None:
+def write_parquet(parquet_dir: Path, nodes_df: Any, edges_df: Any) -> None:
     parquet_dir.mkdir(parents=True, exist_ok=True)
     nodes_df.to_parquet(parquet_dir / "nodes.parquet", index=False)
     edges_df.to_parquet(parquet_dir / "edges.parquet", index=False)
@@ -280,6 +281,166 @@ def build(
 
     typer.echo(f"Processed {len(markdown_files)} Markdown files → {len(nodes_df)} nodes, {len(edges_df)} edges")
     typer.echo(f"DuckDB written to {output}")
+
+
+def _month_to_date_str(month_key: str) -> Optional[str]:
+    """Convert 'YYYY-MM' to ISO date string of the first day of that month."""
+    try:
+        year, month = month_key.split("-")
+        from datetime import date as _date
+        return _date(int(year), int(month), 1).isoformat()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _date_ranges_overlap(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
+    return a_start <= b_end and b_start <= a_end
+
+
+def build_episode_nodes_trajectory(days: Optional[int] = None) -> List[Dict]:
+    """Export TrajectoryEpisode objects as temporally-grounded KG nodes."""
+    from ..trajectory.day import summarize_days
+    from ..trajectory.episode import detect_episodes
+
+    day_list = summarize_days(days=days if days is not None else 90)
+    episodes = detect_episodes(day_list)
+    now = datetime.now(timezone.utc).isoformat()
+
+    nodes = []
+    for ep in episodes:
+        nodes.append({
+            "id": f"episode:{ep.episode_id}",
+            "kind": "episode",
+            "label": ep.label,
+            "valid_from": ep.start_date.isoformat(),
+            "valid_until": ep.end_date.isoformat(),
+            "confidence": ep.confidence,
+            "dominant_project": ep.dominant_project,
+            "dominant_topic": ep.dominant_topic,
+            "source_timestamp": now,
+            "evidence_count": ep.day_count_with_dominant,
+            "properties": {
+                "dominant_mode": ep.dominant_mode,
+                "trigger": ep.trigger,
+                "day_count": (ep.end_date - ep.start_date).days + 1,
+            },
+        })
+    return nodes
+
+
+def build_theme_nodes_trajectory(days: Optional[int] = None) -> List[Dict]:
+    """Export Theme objects as KG nodes with temporal validity spans."""
+    from ..trajectory.day import summarize_days
+    from ..trajectory.month import summarize_months as _summarize_months
+    from ..trajectory.week import summarize_weeks
+    from ..context.themes import detect_themes
+
+    day_list = summarize_days(days=days if days is not None else 90)
+    months = _summarize_months(day_list)
+    weeks = summarize_weeks(day_list)
+    themes = detect_themes(months, weeks)
+    now = datetime.now(timezone.utc).isoformat()
+
+    nodes = []
+    for theme in themes:
+        nodes.append({
+            "id": f"theme:{theme.kind}:{theme.name}",
+            "kind": "theme",
+            "label": theme.name,
+            "valid_from": _month_to_date_str(theme.first_seen),
+            "valid_until": _month_to_date_str(theme.last_seen),
+            "confidence": min(0.5 + theme.month_count * 0.1, 0.95),
+            "dominant_project": theme.name if theme.kind == "project" else None,
+            "dominant_topic": theme.name if theme.kind == "topic" else None,
+            "source_timestamp": now,
+            "evidence_count": theme.month_count,
+            "properties": {
+                "kind": theme.kind,
+                "total_hours": theme.total_hours,
+                "trend": theme.trend,
+                "months_active": theme.month_count,
+            },
+        })
+    return nodes
+
+
+def build_temporal_edges(
+    episode_nodes: List[Dict],
+    theme_nodes: List[Dict],
+) -> List[Dict]:
+    """Build temporal KG edges: precedes, overlaps, contains."""
+    edges = []
+    sorted_eps = sorted(episode_nodes, key=lambda n: n.get("valid_from") or "")
+
+    # precedes: consecutive episodes
+    for i in range(len(sorted_eps) - 1):
+        curr, nxt = sorted_eps[i], sorted_eps[i + 1]
+        edges.append({
+            "source": curr["id"],
+            "target": nxt["id"],
+            "kind": "precedes",
+            "confidence": round((curr["confidence"] + nxt["confidence"]) / 2, 3),
+            "evidence": f"{curr['valid_until']} → {nxt['valid_from']}",
+        })
+
+    # overlaps / contains: episodes × themes
+    for ep in episode_nodes:
+        ep_s, ep_e = ep.get("valid_from"), ep.get("valid_until")
+        if not ep_s or not ep_e:
+            continue
+        for theme in theme_nodes:
+            th_s, th_e = theme.get("valid_from"), theme.get("valid_until")
+            if not th_s or not th_e:
+                continue
+            if not _date_ranges_overlap(ep_s, ep_e, th_s, th_e):
+                continue
+            edge_kind = "contains" if ep_s <= th_s and ep_e >= th_e else "overlaps"
+            edges.append({
+                "source": ep["id"],
+                "target": theme["id"],
+                "kind": edge_kind,
+                "confidence": round(ep["confidence"] * theme["confidence"], 3),
+                "evidence": f"ep {ep_s}–{ep_e} {edge_kind} theme {th_s}–{th_e}",
+            })
+
+    return edges
+
+
+@app.command("build-trajectory")
+def build_trajectory(
+    days: Optional[int] = typer.Option(None, "--days", help="Lookback days (default: all)"),
+    output_dir: Path = typer.Option(
+        Path("artefacts/knowledge/graph"),
+        "--output-dir",
+        help="Directory for trajectory-nodes.json and trajectory-edges.json",
+    ),
+) -> None:
+    """Export trajectory episodes and themes as temporally-grounded KG nodes."""
+    episode_nodes = build_episode_nodes_trajectory(days=days)
+    theme_nodes = build_theme_nodes_trajectory(days=days)
+    all_nodes = episode_nodes + theme_nodes
+    edges = build_temporal_edges(episode_nodes, theme_nodes)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    nodes_path = output_dir / "trajectory-nodes.json"
+    edges_path = output_dir / "trajectory-edges.json"
+
+    nodes_path.write_text(
+        json.dumps(all_nodes, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    edges_path.write_text(
+        json.dumps(edges, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+
+    typer.echo(
+        f"Trajectory KG: {len(all_nodes)} nodes "
+        f"({len(episode_nodes)} episodes, {len(theme_nodes)} themes), "
+        f"{len(edges)} edges"
+    )
+    typer.echo(f"  → {nodes_path}")
+    typer.echo(f"  → {edges_path}")
 
 
 if __name__ == "__main__":

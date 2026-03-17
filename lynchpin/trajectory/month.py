@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Sequence
 
-from .coverage import SignalCoverage, compute_coverage
+from .coverage import compute_coverage
 from .day import TrajectoryDay
-from .episode import TrajectoryEpisode, detect_episodes
+from .episode import detect_episodes
 from .signal import TrajectorySignal
 from .week import summarize_weeks
 
@@ -105,30 +105,32 @@ def summarize_months(
     for day in days:
         grouped[day.date.strftime("%Y-%m")].append(day)
 
-    # Pre-compute chat metadata from signals if available
+    # Pre-compute chat metadata from signals if available (single pass O(signals))
     chat_by_month: dict[str, tuple[int, dict[str, int], float]] = {}
     if signals:
+        _month_sessions: dict[str, set[str]] = defaultdict(set)
+        _month_work_events: dict[str, Counter[str]] = defaultdict(Counter)
+        _month_cost: dict[str, float] = defaultdict(float)
+        for sig in signals:
+            if sig.source != "polylogue.session":
+                continue
+            sig_month = sig.start.strftime("%Y-%m")
+            ev = sig.evidence
+            conv_id = ev.get("conversation_id")
+            if conv_id:
+                _month_sessions[sig_month].add(str(conv_id))
+            kind = ev.get("work_event_kind")
+            if kind:
+                _month_work_events[sig_month][str(kind)] += 1
+            cost = ev.get("total_cost_usd")
+            if isinstance(cost, (int, float)):
+                _month_cost[sig_month] += cost
         for month_key in grouped:
-            session_ids: set[str] = set()
-            work_events: Counter[str] = Counter()
-            total_cost = 0.0
-            for sig in signals:
-                if sig.source != "polylogue.session":
-                    continue
-                sig_month = sig.start.strftime("%Y-%m")
-                if sig_month != month_key:
-                    continue
-                ev = sig.evidence
-                conv_id = ev.get("conversation_id")
-                if conv_id:
-                    session_ids.add(str(conv_id))
-                kind = ev.get("work_event_kind")
-                if kind:
-                    work_events[str(kind)] += 1
-                cost = ev.get("total_cost_usd")
-                if isinstance(cost, (int, float)):
-                    total_cost += cost
-            chat_by_month[month_key] = (len(session_ids), dict(work_events), total_cost)
+            chat_by_month[month_key] = (
+                len(_month_sessions.get(month_key, set())),
+                dict(_month_work_events.get(month_key, {})),
+                _month_cost.get(month_key, 0.0),
+            )
 
     months: list[TrajectoryMonth] = []
     for month_key in sorted(grouped):

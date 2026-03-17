@@ -51,15 +51,33 @@ def iter_repo_state() -> Iterator[SinexRepo]:
 
 
 def iter_connectors(root: Optional[Path] = None) -> Iterator[ConnectorSpec]:
-    default_root = Path("/realm/project/sinex/crate/satellites")
-    base = Path(root) if root else default_root
-    if not base.exists():
+    # nodes/ is the current layout; fall back to legacy satellites/ if absent
+    default_root = Path("/realm/project/sinex/crate/nodes")
+    legacy_root = Path("/realm/project/sinex/crate/satellites")
+    if root:
+        base = Path(root)
+    elif default_root.exists():
+        base = default_root
+    elif legacy_root.exists():
+        base = legacy_root
+    else:
         return iter(())
 
     def generator() -> Iterator[ConnectorSpec]:
-        for path in sorted(base.glob("**/*.rs")):
-            summary = _first_docstring(path.read_text(encoding="utf-8"))
-            yield ConnectorSpec(path=path, kind=path.stem, summary=summary)
+        for node_dir in sorted(base.iterdir()):
+            if not node_dir.is_dir():
+                continue
+            # Use crate-level main lib file for docstring, else first .rs
+            candidate = node_dir / "src" / "lib.rs"
+            if not candidate.exists():
+                candidate = node_dir / "src" / "main.rs"
+            if not candidate.exists():
+                rs_files = sorted(node_dir.rglob("*.rs"))
+                candidate = rs_files[0] if rs_files else None
+            if not candidate:
+                continue
+            summary = _first_docstring(candidate.read_text(encoding="utf-8"))
+            yield ConnectorSpec(path=node_dir, kind=node_dir.name, summary=summary)
 
     return generator()
 
