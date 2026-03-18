@@ -7,11 +7,15 @@ from pathlib import Path
 import pytest
 
 from lynchpin.views.knowledge_graph import (
+    Edge,
+    Node,
     _date_ranges_overlap,
     _digest,
     _month_to_date_str,
     build_temporal_edges,
+    edges_to_df,
     iter_markdown_files,
+    nodes_to_df,
     parse_markdown,
 )
 
@@ -266,3 +270,91 @@ class TestBuildTemporalEdges:
 
     def test_empty_inputs_yield_no_edges(self) -> None:
         assert build_temporal_edges([], []) == []
+
+
+# ---------------------------------------------------------------------------
+# nodes_to_df / edges_to_df
+# ---------------------------------------------------------------------------
+
+def _make_node(node_id: str, kind: str = "document") -> Node:
+    return Node(
+        node_id=node_id,
+        kind=kind,
+        title="Test Title",
+        content="Some content",
+        source_path="/test/doc.md",
+        parent_id=None,
+        metadata={"key": "value"},
+    )
+
+
+def _make_edge(edge_id: str, source_id: str, target_id: str) -> Edge:
+    return Edge(
+        edge_id=edge_id,
+        edge_type="contains",
+        source_id=source_id,
+        target_id=target_id,
+        metadata={"label": "test"},
+    )
+
+
+class TestNodesToDF:
+    def test_row_count_matches_input(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        nodes = [_make_node("n1"), _make_node("n2"), _make_node("n3")]
+        df = nodes_to_df(nodes)
+        assert len(df) == 3
+
+    def test_expected_columns_present(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = nodes_to_df([_make_node("n1")])
+        for col in ("node_id", "kind", "title", "content", "source_path", "parent_id", "metadata"):
+            assert col in df.columns
+
+    def test_metadata_serialized_to_json_string(self) -> None:
+        import json
+        pytest.importorskip("pandas", exc_type=ImportError)
+        node = _make_node("n1")
+        df = nodes_to_df([node])
+        meta_val = df.iloc[0]["metadata"]
+        assert isinstance(meta_val, str)
+        parsed = json.loads(meta_val)
+        assert parsed == {"key": "value"}
+
+    def test_empty_input_produces_empty_df(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = nodes_to_df([])
+        assert len(df) == 0
+
+    def test_node_id_preserved(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = nodes_to_df([_make_node("my-unique-id")])
+        assert df.iloc[0]["node_id"] == "my-unique-id"
+
+
+class TestEdgesToDF:
+    def test_row_count_matches_input(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        edges = [_make_edge("e1", "n1", "n2"), _make_edge("e2", "n2", "n3")]
+        df = edges_to_df(edges)
+        assert len(df) == 2
+
+    def test_expected_columns_present(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = edges_to_df([_make_edge("e1", "n1", "n2")])
+        for col in ("edge_id", "edge_type", "source_id", "target_id", "metadata"):
+            assert col in df.columns
+
+    def test_metadata_serialized_to_json_string(self) -> None:
+        import json
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = edges_to_df([_make_edge("e1", "n1", "n2")])
+        meta_val = df.iloc[0]["metadata"]
+        assert isinstance(meta_val, str)
+        parsed = json.loads(meta_val)
+        assert parsed == {"label": "test"}
+
+    def test_empty_input_produces_empty_df(self) -> None:
+        pytest.importorskip("pandas", exc_type=ImportError)
+        df = edges_to_df([])
+        assert len(df) == 0

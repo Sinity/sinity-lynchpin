@@ -24,6 +24,7 @@ class LynchpinConfig:
     sleep_jsonl: Path
     codex_sessions_root: Path
     session_docs_dir: Path
+    session_summaries_dir: Path
     reddit_export_dir: Optional[Path]
     spotify_root: Path
     finance_journal: Path
@@ -107,6 +108,12 @@ class LynchpinConfig:
             os.environ.get(
                 "LYNCHPIN_SESSION_DOCS_DIR",
                 repo_root / "docs/reference/sessions",
+            )
+        )
+        session_summaries_dir = Path(
+            os.environ.get(
+                "LYNCHPIN_SESSION_SUMMARIES_DIR",
+                repo_root / "artefacts/knowledge/sessions/summaries",
             )
         )
         codex_sessions_root = Path(
@@ -222,6 +229,7 @@ class LynchpinConfig:
             sleep_jsonl=sleep_jsonl,
             codex_sessions_root=codex_sessions_root,
             session_docs_dir=session_docs_dir,
+            session_summaries_dir=session_summaries_dir,
             reddit_export_dir=reddit_export_dir,
             spotify_root=spotify_root,
             finance_journal=finance_journal,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -16,8 +16,19 @@ from lynchpin.context.memory import (
     save_memory,
     update_memory,
 )
+from lynchpin.context.packet_builders import (
+    _aggregate_chat_work_events,
+    _top_n,
+    build_claims_packet,
+    build_coverage_packet,
+    build_project_arc_packets,
+    build_theme_packets,
+    build_thread_packets,
+)
+from lynchpin.context.project_arcs import build_project_arcs
 from lynchpin.trajectory.day import TrajectoryDay
 from lynchpin.trajectory.month import TrajectoryMonth
+from lynchpin.trajectory.signal import TrajectorySignal
 from lynchpin.trajectory.week import TrajectoryWeek
 
 
@@ -581,11 +592,19 @@ class TestDetectThemes:
         assert sinex_theme.trend == "declining"
 
     def test_stable_trend_between_bounds(self) -> None:
-        # second (15h) vs first (10h): 1.5x > 1.3x so actually rising...
-        # Use equal hours for stable
         m1 = _make_month("2026-01", top_projects=(("sinex", 36000.0),))   # 10h
         m2 = _make_month("2026-02", top_projects=(("sinex", 36000.0),))   # 10h
         themes = detect_themes([m1, m2])
+        sinex_theme = next(t for t in themes if t.name == "sinex")
+        assert sinex_theme.trend == "stable"
+
+    def test_stable_trend_three_months_equal_hours(self) -> None:
+        # Regression: 3 equal months should be "stable" not "rising".
+        # Bug: comparing sums (not averages) across unequal halves made flat activity appear rising.
+        m1 = _make_month("2026-01", top_projects=(("sinex", 36000.0),))   # 10h
+        m2 = _make_month("2026-02", top_projects=(("sinex", 36000.0),))   # 10h
+        m3 = _make_month("2026-03", top_projects=(("sinex", 36000.0),))   # 10h
+        themes = detect_themes([m1, m2, m3])
         sinex_theme = next(t for t in themes if t.name == "sinex")
         assert sinex_theme.trend == "stable"
 
@@ -677,3 +696,437 @@ class TestDetectThemes:
         ]
         themes = detect_themes([], weeks=weeks)
         assert not any(t.name == "sinex" for t in themes)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for packet_builders tests
+# ---------------------------------------------------------------------------
+
+def _polylogue_signal(
+    signal_id: str,
+    start: datetime,
+    end: datetime,
+    *,
+    conversation_id: str | None = None,
+    work_event_kind: str | None = None,
+    total_cost_usd: float | None = None,
+    thread_id: str | None = None,
+    project_hint: str | None = None,
+) -> TrajectorySignal:
+    evidence: dict[str, object] = {}
+    if conversation_id is not None:
+        evidence["conversation_id"] = conversation_id
+    if work_event_kind is not None:
+        evidence["work_event_kind"] = work_event_kind
+    if total_cost_usd is not None:
+        evidence["total_cost_usd"] = total_cost_usd
+    if thread_id is not None:
+        evidence["thread_id"] = thread_id
+    if project_hint is not None:
+        evidence["project_hint"] = project_hint
+    return TrajectorySignal(
+        signal_id=signal_id,
+        source="polylogue.session",
+        kind="chat_session",
+        start=start,
+        end=end,
+        evidence=evidence,
+    )
+
+
+_T0 = datetime(2026, 3, 10, 10, 0, tzinfo=timezone.utc)
+_T1 = datetime(2026, 3, 10, 11, 0, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# _top_n
+# ---------------------------------------------------------------------------
+
+class TestTopN:
+    def _items(self, n: int = 10) -> tuple[tuple[str, float], ...]:
+        return tuple((f"p{i}", float(i * 3600)) for i in range(1, n + 1))
+
+    def test_compact_limit_is_3(self) -> None:
+        assert len(_top_n(self._items(10), "compact")) == 3
+
+    def test_standard_limit_is_5(self) -> None:
+        assert len(_top_n(self._items(10), "standard")) == 5
+
+    def test_full_limit_is_10(self) -> None:
+        assert len(_top_n(self._items(15), "full")) == 10
+
+    def test_does_not_exceed_input_length(self) -> None:
+        assert len(_top_n(self._items(2), "full")) == 2
+
+    def test_converts_seconds_to_hours(self) -> None:
+        result = _top_n((("foo", 3600.0),), "standard")
+        assert result[0] == ("foo", pytest.approx(1.0))
+
+    def test_unknown_tier_defaults_to_5(self) -> None:
+        assert len(_top_n(self._items(10), "unknown_tier")) == 5
+
+    def test_preserves_input_order(self) -> None:
+        items = (("a", 7200.0), ("b", 3600.0), ("c", 1800.0))
+        result = _top_n(items, "full")
+        assert [name for name, _ in result] == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_chat_work_events
+# ---------------------------------------------------------------------------
+
+class TestAggregateWorkEvents:
+    def test_counts_unique_conversations(self) -> None:
+        sigs = [
+            _polylogue_signal("s1", _T0, _T1, conversation_id="c1"),
+            _polylogue_signal("s2", _T0, _T1, conversation_id="c1"),  # duplicate
+            _polylogue_signal("s3", _T0, _T1, conversation_id="c2"),
+        ]
+        assert _aggregate_chat_work_events(sigs)["session_count"] == 2
+
+    def test_sums_costs(self) -> None:
+        sigs = [
+            _polylogue_signal("s1", _T0, _T1, conversation_id="c1", total_cost_usd=1.5),
+            _polylogue_signal("s2", _T0, _T1, conversation_id="c2", total_cost_usd=0.25),
+        ]
+        assert _aggregate_chat_work_events(sigs)["total_cost_usd"] == pytest.approx(1.75)
+
+    def test_counts_work_event_kinds(self) -> None:
+        sigs = [
+            _polylogue_signal("s1", _T0, _T1, conversation_id="c1", work_event_kind="implementation"),
+            _polylogue_signal("s2", _T0, _T1, conversation_id="c2", work_event_kind="implementation"),
+            _polylogue_signal("s3", _T0, _T1, conversation_id="c3", work_event_kind="debugging"),
+        ]
+        breakdown = _aggregate_chat_work_events(sigs)["work_event_breakdown"]
+        assert breakdown["implementation"] == 2
+        assert breakdown["debugging"] == 1
+
+    def test_ignores_non_polylogue_signals(self) -> None:
+        non_poly = TrajectorySignal(
+            signal_id="x1", source="atuin.command", kind="command",
+            start=_T0, end=_T1,
+            evidence={"conversation_id": "c999", "total_cost_usd": 99.0},
+        )
+        result = _aggregate_chat_work_events([non_poly])
+        assert result["session_count"] == 0
+        assert result["total_cost_usd"] == 0.0
+
+    def test_empty_signals_returns_zeros(self) -> None:
+        result = _aggregate_chat_work_events([])
+        assert result == {"session_count": 0, "work_event_breakdown": {}, "total_cost_usd": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# build_thread_packets
+# ---------------------------------------------------------------------------
+
+class TestBuildThreadPackets:
+    def test_groups_signals_by_thread_id(self) -> None:
+        sigs = [
+            _polylogue_signal("s1", _T0, _T1, conversation_id="c1", thread_id="t1"),
+            _polylogue_signal("s2", _T0, _T1, conversation_id="c2", thread_id="t1"),
+            _polylogue_signal("s3", _T0, _T1, conversation_id="c3", thread_id="t2"),
+        ]
+        packets = build_thread_packets(sigs)
+        assert len(packets) == 2
+        t1 = next(p for p in packets if p.thread_id == "t1")
+        assert t1.session_count == 2
+
+    def test_n_limits_output(self) -> None:
+        sigs = [
+            _polylogue_signal(f"s{i}", _T0, _T1, conversation_id=f"c{i}", thread_id=f"t{i}")
+            for i in range(10)
+        ]
+        assert len(build_thread_packets(sigs, n=3)) == 3
+
+    def test_ignores_non_polylogue_signals(self) -> None:
+        sigs = [
+            TrajectorySignal(
+                signal_id="x1", source="atuin.command", kind="command",
+                start=_T0, end=_T1,
+                evidence={"thread_id": "t1", "conversation_id": "c1"},
+            ),
+        ]
+        assert build_thread_packets(sigs) == []
+
+    def test_falls_back_to_conversation_id_when_no_thread_id(self) -> None:
+        sigs = [_polylogue_signal("s1", _T0, _T1, conversation_id="c1")]
+        packets = build_thread_packets(sigs)
+        assert len(packets) == 1
+        assert packets[0].thread_id == "c1"
+
+    def test_accumulates_cost_per_thread(self) -> None:
+        sigs = [
+            _polylogue_signal("s1", _T0, _T1, conversation_id="c1", thread_id="t1", total_cost_usd=1.0),
+            _polylogue_signal("s2", _T0, _T1, conversation_id="c2", thread_id="t1", total_cost_usd=0.5),
+        ]
+        packets = build_thread_packets(sigs)
+        assert packets[0].total_cost_usd == pytest.approx(1.5)
+
+
+# ---------------------------------------------------------------------------
+# build_coverage_packet
+# ---------------------------------------------------------------------------
+
+def _day_with_coverage(
+    day_date: date,
+    *,
+    has_activitywatch: bool = False,
+    has_terminal: bool = False,
+    has_chatlog: bool = False,
+    has_git: bool = False,
+    signal_count: int = 50,
+    chain_count: int = 10,
+    source_counts: dict[str, int] | None = None,
+) -> TrajectoryDay:
+    return TrajectoryDay(
+        date=day_date,
+        active_seconds=36000.0,
+        recovery_seconds=28800.0,
+        chain_count=chain_count,
+        signal_count=signal_count,
+        command_count=5,
+        transcript_count=0,
+        commit_count=0,
+        dominant_mode="coding",
+        dominant_project="sinex",
+        dominant_topic=None,
+        top_modes=(("coding", 36000.0),),
+        top_projects=(("sinex", 36000.0),),
+        top_topics=(),
+        source_counts=source_counts or {"atuin.command": 20, "activitywatch.window": 30},
+        coverage={
+            "has_activitywatch": has_activitywatch,
+            "has_terminal": has_terminal,
+            "has_chatlog": has_chatlog,
+            "has_git": has_git,
+            "observed_hours": 18.0,
+            "sources": [],
+        },
+        highlights=(),
+        projects=(),
+    )
+
+
+class TestBuildCoveragePacket:
+    def test_counts_days_with_activitywatch(self) -> None:
+        days = [
+            _day_with_coverage(date(2026, 3, 1), has_activitywatch=True),
+            _day_with_coverage(date(2026, 3, 2), has_activitywatch=True),
+            _day_with_coverage(date(2026, 3, 3), has_activitywatch=False),
+        ]
+        assert build_coverage_packet(days).days_with_activitywatch == 2
+
+    def test_counts_days_with_chatlog(self) -> None:
+        days = [
+            _day_with_coverage(date(2026, 3, 1), has_chatlog=True),
+            _day_with_coverage(date(2026, 3, 2), has_chatlog=False),
+        ]
+        assert build_coverage_packet(days).days_with_chatlog == 1
+
+    def test_sums_signals_across_days(self) -> None:
+        days = [
+            _day_with_coverage(date(2026, 3, 1), signal_count=100, chain_count=15),
+            _day_with_coverage(date(2026, 3, 2), signal_count=200, chain_count=25),
+        ]
+        packet = build_coverage_packet(days)
+        assert packet.signal_count == 300
+        assert packet.chain_count == 40
+
+    def test_anomaly_count_is_passed_through(self) -> None:
+        days = [_day_with_coverage(date(2026, 3, 1))]
+        assert build_coverage_packet(days, anomaly_count=7).anomaly_count == 7
+
+    def test_source_breakdown_aggregates_across_days(self) -> None:
+        days = [
+            _day_with_coverage(date(2026, 3, 1)),
+            _day_with_coverage(date(2026, 3, 2)),
+        ]
+        # each day: {"atuin.command": 20, "activitywatch.window": 30}
+        packet = build_coverage_packet(days)
+        assert packet.source_breakdown["atuin.command"] == 40
+        assert packet.source_breakdown["activitywatch.window"] == 60
+
+    def test_empty_days_returns_zero_counts(self) -> None:
+        packet = build_coverage_packet([])
+        assert packet.day_count == 0
+        assert packet.signal_count == 0
+        assert packet.chain_count == 0
+
+
+# ---------------------------------------------------------------------------
+# build_project_arcs
+# ---------------------------------------------------------------------------
+
+class TestBuildProjectArcs:
+    def test_empty_months_returns_empty(self) -> None:
+        assert build_project_arcs([]) == []
+
+    def test_single_month_returns_arc(self) -> None:
+        months = [_make_month("2026-01", top_projects=(("sinex", 36000.0),))]
+        arcs = build_project_arcs(months)
+        assert len(arcs) == 1
+        assert arcs[0].project == "sinex"
+
+    def test_total_hours_accumulated_across_months(self) -> None:
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),   # 10h
+            _make_month("2026-02", top_projects=(("sinex", 72000.0),)),   # 20h
+        ]
+        arcs = build_project_arcs(months)
+        sinex = next(a for a in arcs if a.project == "sinex")
+        assert sinex.total_hours == pytest.approx(30.0)
+
+    def test_velocity_trend_accelerating(self) -> None:
+        # second half much higher than first half → accelerating
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 18000.0),)),   # 5h
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),   # 10h
+            _make_month("2026-03", top_projects=(("sinex", 54000.0),)),   # 15h → second avg 12.5h > 5h*1.3
+        ]
+        arcs = build_project_arcs(months)
+        sinex = next(a for a in arcs if a.project == "sinex")
+        assert sinex.velocity_trend == "accelerating"
+
+    def test_velocity_trend_stalling(self) -> None:
+        # second half much lower than first half → stalling
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 54000.0),)),   # 15h
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),   # 10h
+            _make_month("2026-03", top_projects=(("sinex", 7200.0),)),    # 2h → second avg 6h < 15h*0.7
+        ]
+        arcs = build_project_arcs(months)
+        sinex = next(a for a in arcs if a.project == "sinex")
+        assert sinex.velocity_trend == "stalling"
+
+    def test_velocity_trend_steady_for_equal_halves(self) -> None:
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-03", top_projects=(("sinex", 36000.0),)),
+        ]
+        arcs = build_project_arcs(months)
+        sinex = next(a for a in arcs if a.project == "sinex")
+        assert sinex.velocity_trend == "steady"
+
+    def test_top_5_projects_returned(self) -> None:
+        # 6 distinct projects — should return at most 5
+        projects = [(f"p{i}", float(i * 3600)) for i in range(1, 7)]
+        months = [_make_month("2026-01", top_projects=tuple(projects))]
+        arcs = build_project_arcs(months)
+        assert len(arcs) <= 5
+
+    def test_active_months_count(self) -> None:
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-03", top_projects=(("sinex", 36000.0),)),
+        ]
+        arcs = build_project_arcs(months)
+        sinex = next(a for a in arcs if a.project == "sinex")
+        assert sinex.active_months == 3
+
+    def test_momentum_falls_back_to_trend_without_enough_weeks(self) -> None:
+        months = [_make_month("2026-01", top_projects=(("sinex", 36000.0),))]
+        arcs = build_project_arcs(months, weeks=[])
+        assert arcs[0].momentum == arcs[0].velocity_trend
+
+
+# ---------------------------------------------------------------------------
+# build_theme_packets
+# ---------------------------------------------------------------------------
+
+class TestBuildThemePackets:
+    def test_empty_months_returns_empty(self) -> None:
+        assert build_theme_packets([], []) == []
+
+    def test_returns_list_of_dicts(self) -> None:
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+        ]
+        packets = build_theme_packets(months, [])
+        assert isinstance(packets, list)
+        for p in packets:
+            assert isinstance(p, dict)
+
+    def test_detected_theme_has_required_fields(self) -> None:
+        import json
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+        ]
+        packets = build_theme_packets(months, [])
+        assert len(packets) >= 1
+        sinex = next(p for p in packets if p["name"] == "sinex")
+        for key in ("name", "kind", "total_hours", "month_count", "trend", "first_seen", "last_seen"):
+            assert key in sinex
+        json.dumps(sinex)
+
+
+# ---------------------------------------------------------------------------
+# build_claims_packet
+# ---------------------------------------------------------------------------
+
+class TestBuildClaimsPacket:
+    def test_returns_dict_with_claims_key(self) -> None:
+        months = [_make_month("2026-01")]
+        result = build_claims_packet(months, [], [])
+        assert isinstance(result, dict)
+        assert "claims" in result
+
+    def test_claims_is_list_of_dicts(self) -> None:
+        months = [_make_month("2026-01")]
+        result = build_claims_packet(months, [], [])
+        assert isinstance(result["claims"], list)
+        for claim in result["claims"]:
+            assert isinstance(claim, dict)
+
+    def test_empty_returns_empty_claims(self) -> None:
+        result = build_claims_packet([], [], [])
+        assert result["claims"] == []
+
+    def test_claim_has_required_fields(self) -> None:
+        import json
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 108000.0),)),
+        ]
+        result = build_claims_packet(months, [], [])
+        if result["claims"]:
+            claim = result["claims"][0]
+            for key in ("statement", "confidence", "evidence_refs", "category"):
+                assert key in claim
+            json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# build_project_arc_packets
+# ---------------------------------------------------------------------------
+
+class TestBuildProjectArcPackets:
+    def test_empty_months_returns_empty(self) -> None:
+        assert build_project_arc_packets([], [], []) == []
+
+    def test_returns_list_of_dicts(self) -> None:
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+        ]
+        packets = build_project_arc_packets(months, [], [])
+        assert isinstance(packets, list)
+        for p in packets:
+            assert isinstance(p, dict)
+
+    def test_arc_has_required_fields(self) -> None:
+        import json
+        months = [
+            _make_month("2026-01", top_projects=(("sinex", 36000.0),)),
+            _make_month("2026-02", top_projects=(("sinex", 36000.0),)),
+        ]
+        packets = build_project_arc_packets(months, [], [])
+        assert len(packets) >= 1
+        arc = next(p for p in packets if p["project"] == "sinex")
+        for key in ("project", "total_hours", "active_months", "velocity_trend",
+                    "cost_usd", "active_episodes", "momentum"):
+            assert key in arc
+        json.dumps(arc)

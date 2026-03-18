@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from ...core.cache import files_digest, persistent_cache
 from ...core.config import get_config
+from .webhistory_common import WEBHISTORY_TIMESTAMP_FIELDS, payload_timestamp, parse_webhistory_timestamp
 
 try:
     csv.field_size_limit(sys.maxsize)
@@ -172,8 +173,7 @@ def _load_entries(root: Optional[Path], ndjson: Optional[Path]) -> List[WebHisto
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                ts_value = record.get("visitTime") or record.get("lastVisitTime") or record.get("iso_time")
-                ts = _to_datetime(ts_value)
+                ts = payload_timestamp(record)
                 if not ts:
                     continue
                 entries.append(
@@ -201,30 +201,7 @@ def iter_entries(
 
 
 def _to_datetime(value: object) -> Optional[datetime]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            return datetime.fromisoformat(text)
-        except ValueError:
-            return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if numeric > 10**16:
-        seconds = numeric / 1_000_000_000
-    elif numeric > 10**12:
-        seconds = numeric / 1_000
-    else:
-        seconds = numeric
-    try:
-        return datetime.fromtimestamp(seconds)
-    except (OSError, OverflowError, ValueError):
-        return None
+    return parse_webhistory_timestamp(value)
 
 
 @dataclass(frozen=True)
@@ -258,7 +235,7 @@ def iter_gestalt_events(root: Path) -> Iterator[WebHistoryVisit]:
             suffix = path.suffix.lower()
             if suffix == ".csv":
                 yield from _iter_gestalt_csv(path)
-            elif suffix == ".json":
+            elif suffix in {".json", ".jsonl", ".ndjson"}:
                 yield from _iter_gestalt_json(path)
 
     return generator()
@@ -331,10 +308,20 @@ def _iter_gestalt_csv(path: Path) -> Iterator[WebHistoryVisit]:
             if not row:
                 continue
             dt = _parse_webhistory_csv_dt(row.get("date", ""), row.get("time", ""))
+            if dt is None and row.get("DateTime"):
+                dt = parse_webhistory_timestamp(row["DateTime"])
+            if dt is None:
+                for field in WEBHISTORY_TIMESTAMP_FIELDS:
+                    value = row.get(field)
+                    if value in (None, ""):
+                        continue
+                    dt = parse_webhistory_timestamp(value)
+                    if dt is not None:
+                        break
             if dt is None:
                 continue
-            url = row.get("url", "") or ""
-            title = row.get("title", "") or ""
+            url = row.get("url") or row.get("NavigatedToUrl") or row.get("navigatedtourl") or ""
+            title = row.get("title") or row.get("PageTitle") or row.get("pagetitle") or ""
             yield WebHistoryVisit(timestamp=dt, url=url, title=title, source=str(path))
 
 
@@ -349,18 +336,37 @@ def _iter_gestalt_json(path: Path) -> Iterator[WebHistoryVisit]:
         if first_nonempty is None:
             return
 
-        if first_nonempty.startswith("["):
+        if first_nonempty.startswith("[") or first_nonempty.startswith("{"):
             fh.seek(0)
             try:
                 payload = json.load(fh)
             except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                payload = [payload]
+            if isinstance(payload, list):
+                for obj in payload:
+                    if not isinstance(obj, dict):
+                        continue
+                    dt = payload_timestamp(obj)
+                    if dt is None:
+                        continue
+                    url = obj.get("url") if isinstance(obj.get("url"), str) else ""
+                    title = obj.get("title") if isinstance(obj.get("title"), str) else ""
+                    yield WebHistoryVisit(timestamp=dt, url=url, title=title, source=str(path))
                 return
-            if not isinstance(payload, list):
-                return
-            for obj in payload:
+            fh.seek(0)
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
                 if not isinstance(obj, dict):
                     continue
-                dt = _parse_webhistory_json_dt(obj.get("visitTime") or obj.get("lastVisitTime") or obj.get("time"))
+                dt = payload_timestamp(obj)
                 if dt is None:
                     continue
                 url = obj.get("url") if isinstance(obj.get("url"), str) else ""
@@ -376,7 +382,7 @@ def _iter_gestalt_json(path: Path) -> Iterator[WebHistoryVisit]:
                 except json.JSONDecodeError:
                     obj = None
                 if isinstance(obj, dict):
-                    dt = _parse_webhistory_json_dt(obj.get("visitTime") or obj.get("lastVisitTime") or obj.get("time"))
+                    dt = payload_timestamp(obj)
                     if dt is not None:
                         url = obj.get("url") if isinstance(obj.get("url"), str) else ""
                         title = obj.get("title") if isinstance(obj.get("title"), str) else ""
@@ -392,7 +398,7 @@ def _iter_gestalt_json(path: Path) -> Iterator[WebHistoryVisit]:
                 continue
             if not isinstance(obj, dict):
                 continue
-            dt = _parse_webhistory_json_dt(obj.get("visitTime") or obj.get("lastVisitTime") or obj.get("time"))
+            dt = payload_timestamp(obj)
             if dt is None:
                 continue
             url = obj.get("url") if isinstance(obj.get("url"), str) else ""
@@ -415,23 +421,7 @@ def _parse_webhistory_csv_dt(date_raw: str, time_raw: str) -> datetime | None:
 
 
 def _parse_webhistory_json_dt(value: object) -> datetime | None:
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-        except (OSError, OverflowError, ValueError):
-            return None
-    if isinstance(value, str) and value.strip():
-        text = value.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    return None
+    return parse_webhistory_timestamp(value)
 
 
 def _month_key_from_dt(dt: datetime) -> str:

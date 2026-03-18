@@ -231,14 +231,6 @@ class _ChainAccumulator:
         self.end = min(self.end, new_end)
 
 
-def _dominant_label(counter: Counter[str], fallback):
-    if not counter:
-        return fallback
-    # O(n) via max+min; avoids sort allocation for 2-5 item counters (called ~130k times)
-    max_weight = max(counter.values())
-    return min(k for k, v in counter.items() if v == max_weight)
-
-
 def _chain_id(
     start: datetime,
     end: datetime,

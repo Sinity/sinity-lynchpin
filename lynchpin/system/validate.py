@@ -35,7 +35,7 @@ from ..sources.exports import (
     takeout,
     wykop,
 )
-from ..sources.indices import gitstats, repos, sessions
+from ..sources.indices import gitstats, repos, session_summaries, sessions
 from ..sources.libraries import dendron, finance, substack
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
@@ -488,6 +488,13 @@ def lynchpin(
             detail += f" (sample {sample_limit})"
         return count, detail
 
+    def _session_summary_records() -> Tuple[Optional[int], str]:
+        count, truncated = _count_iter(session_summaries.iter_session_summaries(), sample_limit)
+        detail = f"dir={cfg.session_summaries_dir}"
+        if truncated:
+            detail += f" (sample {sample_limit})"
+        return count, detail
+
     def _sleep_entries() -> Tuple[Optional[int], str]:
         count, truncated = _count_iter(sleep.iter_sleep(), sample_limit)
         detail = f"jsonl={cfg.sleep_jsonl}"
@@ -584,6 +591,7 @@ def lynchpin(
         ("lynchpin.reddit.message_headers", _reddit_message_headers),
         ("lynchpin.repos.recent_commit", _repos_recent_commit),
         ("lynchpin.sessions.records", _sessions_records),
+        ("lynchpin.sessions.summaries", _session_summary_records),
         ("lynchpin.sleep.entries", _sleep_entries),
         ("lynchpin.spotify.streams", _spotify_streams),
         ("lynchpin.substack.posts", _substack_posts),

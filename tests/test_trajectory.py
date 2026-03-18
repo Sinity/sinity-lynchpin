@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from lynchpin.sources.exports import chatlog
-from lynchpin.trajectory.chains import TrajectoryChain, build_chains
-from lynchpin.trajectory.day import TrajectoryDay, summarize_days
+from lynchpin.trajectory.chains import TrajectoryChain, _chain_id, build_chains, build_chains_from_attributed
+from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject, summarize_days
 from lynchpin.trajectory.period import summarize_months
-from lynchpin.trajectory.day import _date_range, _split_span_by_day
+from lynchpin.trajectory.day import _date_range, _highlights, _split_span_by_day
+from lynchpin.trajectory.rules import AttributedSignal
 from lynchpin.trajectory.signal import TrajectorySignal, resolve_window
 
 
@@ -433,3 +434,394 @@ class TestDateRange:
         assert len(result) == 4
         assert date(2026, 2, 28) in result
         assert date(2026, 3, 1) in result
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryChain quality flags and to_dict
+# ---------------------------------------------------------------------------
+
+def _attributed(
+    signal_id: str,
+    source: str,
+    start: datetime,
+    end: datetime,
+    mode: str = "coding",
+    mode_confidence: float = 0.9,
+    project: str | None = "polylogue",
+    project_confidence: float = 0.95,
+    topic: str | None = None,
+) -> AttributedSignal:
+    sig = TrajectorySignal(
+        signal_id=signal_id,
+        source=source,
+        kind="command",
+        start=start,
+        end=end,
+    )
+    return AttributedSignal(
+        signal=sig,
+        mode=mode,
+        mode_confidence=mode_confidence,
+        project=project,
+        project_confidence=project_confidence,
+        reasons=("test",),
+        topic=topic,
+        topic_confidence=0.0 if topic is None else 0.7,
+        topic_scores=(),
+    )
+
+
+def _chain_dt(h: int, m: int = 0, s: int = 0) -> datetime:
+    return datetime(2026, 3, 16, h, m, s, tzinfo=timezone.utc)
+
+
+class TestChainQualityFlags:
+    def test_short_flag_when_under_60s(self):
+        sigs = [_attributed("a", "atuin.command", _chain_dt(10, 0, 0), _chain_dt(10, 0, 30))]
+        chains = build_chains_from_attributed(sigs)
+        assert len(chains) == 1
+        assert "short" in chains[0].quality_flags
+
+    def test_no_short_flag_when_60s_or_more(self):
+        sigs = [_attributed("a", "atuin.command", _chain_dt(10, 0, 0), _chain_dt(10, 1, 0))]
+        chains = build_chains_from_attributed(sigs)
+        assert "short" not in chains[0].quality_flags
+
+    def test_single_source_flag_when_one_source(self):
+        sigs = [
+            _attributed("a", "atuin.command", _chain_dt(10, 0), _chain_dt(10, 5)),
+            _attributed("b", "atuin.command", _chain_dt(10, 5), _chain_dt(10, 10)),
+        ]
+        chains = build_chains_from_attributed(sigs)
+        assert len(chains) == 1
+        assert "single_source" in chains[0].quality_flags
+
+    def test_no_single_source_flag_with_multiple_sources(self):
+        sigs = [
+            _attributed("a", "atuin.command", _chain_dt(10, 0), _chain_dt(10, 5)),
+            _attributed("b", "instrumentation.terminal_session", _chain_dt(10, 5), _chain_dt(10, 10)),
+        ]
+        chains = build_chains_from_attributed(sigs)
+        assert len(chains) == 1
+        assert "single_source" not in chains[0].quality_flags
+
+    def test_gap_heavy_flag_when_low_signal_coverage(self):
+        # Two 60s signals with a 4m30s gap → chain duration = 6m30s = 390s
+        # total_weight = 60 + 60 = 120; coverage = 120/390 ≈ 0.31 → gap_heavy
+        sigs = [
+            _attributed("a", "atuin.command", _chain_dt(10, 0, 0), _chain_dt(10, 1, 0)),
+            _attributed("b", "atuin.command", _chain_dt(10, 5, 30), _chain_dt(10, 6, 30)),
+        ]
+        chains = build_chains_from_attributed(sigs)
+        assert len(chains) == 1
+        assert "gap_heavy" in chains[0].quality_flags
+
+    def test_no_gap_heavy_when_dense_coverage(self):
+        # Two adjacent 5min signals → coverage = 600/600 = 1.0
+        sigs = [
+            _attributed("a", "atuin.command", _chain_dt(10, 0), _chain_dt(10, 5)),
+            _attributed("b", "atuin.command", _chain_dt(10, 5), _chain_dt(10, 10)),
+        ]
+        chains = build_chains_from_attributed(sigs)
+        assert len(chains) == 1
+        assert "gap_heavy" not in chains[0].quality_flags
+
+    def test_to_dict_is_json_serializable(self):
+        import json
+        sigs = [_attributed("a", "atuin.command", _chain_dt(10, 0), _chain_dt(10, 5))]
+        chain = build_chains_from_attributed(sigs)[0]
+        d = chain.to_dict()
+        json.dumps(d)
+        assert "chain_id" in d
+        assert "quality_flags" in d
+        assert "topic_seconds" in d
+        assert d["mode"] == "coding"
+
+    def test_recovery_chain_rejects_contained_signals(self):
+        # AFK chain overlaps with a second signal that starts inside it — second chain should be dropped.
+        afk = _attributed(
+            "afk", "activitywatch.afk",
+            _chain_dt(10, 0), _chain_dt(10, 30),
+            mode="recovery", project=None, project_confidence=0.0,
+        )
+        web = _attributed(
+            "web", "activitywatch.web",
+            _chain_dt(10, 10), _chain_dt(10, 20),
+            mode="recovery", project=None, project_confidence=0.0,
+        )
+        chains = build_chains_from_attributed([afk, web])
+        # The web signal starts inside the AFK chain → should be absorbed, not create a new chain
+        assert len(chains) == 1
+        assert chains[0].mode == "recovery"
+
+    def test_chain_to_dict_includes_signals_list(self):
+        sigs = [
+            _attributed("a", "atuin.command", _chain_dt(10, 0), _chain_dt(10, 2)),
+            _attributed("b", "git.commit", _chain_dt(10, 2), _chain_dt(10, 5)),
+        ]
+        chain = build_chains_from_attributed(sigs)[0]
+        d = chain.to_dict()
+        assert isinstance(d["signals"], list)
+        assert len(d["signals"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryDay helpers and serialization
+# ---------------------------------------------------------------------------
+
+class TestHighlights:
+    def test_basic_highlights(self):
+        hl = _highlights(
+            dominant_mode="coding",
+            dominant_project="polylogue",
+            top_modes=(("coding", 7200.0),),
+            top_projects=(("polylogue", 5400.0),),
+            command_count=3,
+            transcript_count=0,
+            commit_count=2,
+        )
+        assert any("mode:coding" in h for h in hl)
+        assert any("project:polylogue" in h for h in hl)
+        assert any("commands:3" in h for h in hl)
+        assert any("commits:2" in h for h in hl)
+        assert len(hl) <= 5
+
+    def test_empty_when_no_activity(self):
+        hl = _highlights(
+            dominant_mode=None,
+            dominant_project=None,
+            top_modes=(),
+            top_projects=(),
+            command_count=0,
+            transcript_count=0,
+            commit_count=0,
+        )
+        assert hl == ()
+
+    def test_transcripts_included(self):
+        hl = _highlights(
+            dominant_mode=None,
+            dominant_project=None,
+            top_modes=(),
+            top_projects=(),
+            command_count=0,
+            transcript_count=5,
+            commit_count=0,
+        )
+        assert any("transcripts:5" in h for h in hl)
+
+    def test_hours_formatted_correctly(self):
+        # 3600 seconds = 1.0 h
+        hl = _highlights(
+            dominant_mode="research",
+            dominant_project=None,
+            top_modes=(("research", 3600.0),),
+            top_projects=(),
+            command_count=0,
+            transcript_count=0,
+            commit_count=0,
+        )
+        assert any("1.0h" in h for h in hl)
+
+    def test_capped_at_five(self):
+        # All five possible highlight slots populated
+        hl = _highlights(
+            dominant_mode="coding",
+            dominant_project="sinex",
+            top_modes=(("coding", 7200.0),),
+            top_projects=(("sinex", 5400.0),),
+            command_count=10,
+            transcript_count=2,
+            commit_count=5,
+        )
+        assert len(hl) == 5
+
+
+class TestTrajectoryDayToDict:
+    def _make_day(self) -> TrajectoryDay:
+        return TrajectoryDay(
+            date=date(2026, 3, 15),
+            active_seconds=7200.0,
+            recovery_seconds=1800.0,
+            chain_count=3,
+            signal_count=12,
+            command_count=5,
+            transcript_count=1,
+            commit_count=2,
+            dominant_mode="coding",
+            dominant_project="polylogue",
+            top_modes=(("coding", 7200.0),),
+            top_projects=(("polylogue", 5400.0),),
+            source_counts={"atuin.command": 5, "git.commit": 2},
+            coverage={"has_activitywatch": True, "has_git": True},
+            highlights=("mode:coding 2.0h",),
+            projects=(),
+        )
+
+    def test_to_dict_json_serializable(self):
+        import json
+        d = self._make_day().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_date_is_isoformat(self):
+        d = self._make_day().to_dict()
+        assert d["date"] == "2026-03-15"
+
+    def test_to_dict_observed_seconds(self):
+        d = self._make_day().to_dict()
+        assert d["observed_seconds"] == pytest.approx(9000.0)
+
+    def test_to_dict_top_modes_list_of_lists(self):
+        d = self._make_day().to_dict()
+        assert d["top_modes"] == [["coding", 7200.0]]
+
+    def test_to_dict_includes_all_required_keys(self):
+        d = self._make_day().to_dict()
+        for key in ("date", "active_seconds", "recovery_seconds", "chain_count",
+                    "signal_count", "command_count", "commit_count", "dominant_mode",
+                    "top_modes", "top_projects", "source_counts", "coverage", "highlights"):
+            assert key in d
+
+
+class TestSummarizeDaysTopics:
+    """Verify that chain-level topics flow into day top_topics via summarize_days."""
+
+    def test_chain_topic_reflected_in_day(self):
+        chain = TrajectoryChain(
+            chain_id="chain1",
+            start=_dt(2026, 3, 16, 10, 0),
+            end=_dt(2026, 3, 16, 11, 0),
+            mode="coding",
+            project="polylogue",
+            mode_confidence=0.9,
+            project_confidence=0.95,
+            signal_count=1,
+            source_count=1,
+            sources=("atuin.command",),
+            apps=(),
+            domains=(),
+            titles=(),
+            reasons=("test",),
+            signals=(),
+            topic="rust",
+            topic_confidence=0.8,
+        )
+        days = summarize_days(
+            signals=[],
+            chains=[chain],
+            start=_dt(2026, 3, 16, 0, 0),
+            end=_dt(2026, 3, 17, 0, 0),
+        )
+        day = next(d for d in days if d.date == date(2026, 3, 16))
+        assert day.dominant_topic == "rust"
+        assert any(t == "rust" for t, _ in day.top_topics)
+
+    def test_no_topic_chain_leaves_day_topic_none(self):
+        chain = TrajectoryChain(
+            chain_id="chain2",
+            start=_dt(2026, 3, 16, 10, 0),
+            end=_dt(2026, 3, 16, 11, 0),
+            mode="coding",
+            project="polylogue",
+            mode_confidence=0.9,
+            project_confidence=0.95,
+            signal_count=1,
+            source_count=1,
+            sources=("atuin.command",),
+            apps=(),
+            domains=(),
+            titles=(),
+            reasons=("test",),
+            signals=(),
+            topic=None,
+        )
+        days = summarize_days(
+            signals=[],
+            chains=[chain],
+            start=_dt(2026, 3, 16, 0, 0),
+            end=_dt(2026, 3, 17, 0, 0),
+        )
+        day = next(d for d in days if d.date == date(2026, 3, 16))
+        assert day.dominant_topic is None
+        assert day.top_topics == ()
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryDayProject.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryDayProjectToDict:
+    def _make_project(self) -> TrajectoryDayProject:
+        return TrajectoryDayProject(
+            date=date(2026, 3, 15),
+            project="sinex",
+            duration_seconds=7200.0,
+            chain_count=4,
+            top_modes=(("coding", 5400.0), ("research", 1800.0)),
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_project().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_project().to_dict()
+        for key in ("date", "project", "duration_seconds", "chain_count", "top_modes"):
+            assert key in d
+
+    def test_to_dict_date_is_isoformat(self) -> None:
+        d = self._make_project().to_dict()
+        assert d["date"] == "2026-03-15"
+
+    def test_top_modes_is_list_of_lists(self) -> None:
+        d = self._make_project().to_dict()
+        assert isinstance(d["top_modes"], list)
+        for entry in d["top_modes"]:
+            assert isinstance(entry, list)
+            assert len(entry) == 2
+
+
+# ---------------------------------------------------------------------------
+# _chain_id
+# ---------------------------------------------------------------------------
+
+class TestChainId:
+    _t0 = datetime(2026, 3, 17, 10, 0, 0, tzinfo=timezone.utc)
+    _t1 = datetime(2026, 3, 17, 11, 0, 0, tzinfo=timezone.utc)
+
+    def _sig(self, signal_id: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(signal_id=signal_id)
+
+    def test_returns_16_hex_chars(self) -> None:
+        result = _chain_id(self._t0, self._t1, "coding", "sinex", [])
+        assert len(result) == 16
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_same_inputs_same_output(self) -> None:
+        sigs = [self._sig("s1"), self._sig("s2")]
+        a = _chain_id(self._t0, self._t1, "coding", "sinex", sigs)
+        b = _chain_id(self._t0, self._t1, "coding", "sinex", sigs)
+        assert a == b
+
+    def test_different_mode_different_output(self) -> None:
+        a = _chain_id(self._t0, self._t1, "coding", "sinex", [])
+        b = _chain_id(self._t0, self._t1, "research", "sinex", [])
+        assert a != b
+
+    def test_none_project_becomes_empty_string(self) -> None:
+        # Should not raise; None project → "" in payload
+        result = _chain_id(self._t0, self._t1, "coding", None, [])
+        assert isinstance(result, str)
+        assert len(result) == 16
+
+    def test_signal_ids_affect_output(self) -> None:
+        a = _chain_id(self._t0, self._t1, "coding", None, [self._sig("s_a")])
+        b = _chain_id(self._t0, self._t1, "coding", None, [self._sig("s_b")])
+        assert a != b
+
+    def test_empty_signals_deterministic(self) -> None:
+        a = _chain_id(self._t0, self._t1, "misc", None, [])
+        b = _chain_id(self._t0, self._t1, "misc", None, [])
+        assert a == b

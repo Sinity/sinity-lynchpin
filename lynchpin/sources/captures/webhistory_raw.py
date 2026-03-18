@@ -10,6 +10,7 @@ from typing import Iterable, Iterator, List, Optional, Sequence
 
 from ...core.cache import file_digest, persistent_cache
 from ...core.config import get_config
+from .webhistory_common import WEBHISTORY_TIMESTAMP_FIELDS, parse_webhistory_timestamp
 
 try:
     csv.field_size_limit(sys.maxsize)
@@ -17,7 +18,13 @@ except OverflowError:
     csv.field_size_limit(2**31 - 1)
 
 
-TS_FIELDS = ("iso_time", "time", "visitTime", "lastVisitTime", "timestamp", "DateTime", "date")
+TS_FIELDS = WEBHISTORY_TIMESTAMP_FIELDS
+_RAW_SUFFIX_PRIORITY = {
+    ".jsonl": 0,
+    ".ndjson": 0,
+    ".json": 1,
+    ".csv": 2,
+}
 
 
 @dataclass(frozen=True)
@@ -58,7 +65,7 @@ def raw_files(
         if not suffixes.intersection({".csv", ".json", ".ndjson", ".jsonl"}):
             continue
         candidates.append(path)
-    return sorted(candidates, key=lambda p: p.name)
+    return sorted(candidates, key=lambda p: (p.stem, _RAW_SUFFIX_PRIORITY.get(p.suffix.lower(), 99), p.name))
 
 
 @persistent_cache("webhistory_raw_file", depends_on=lambda path, signature: signature)
@@ -160,8 +167,18 @@ def _load_raw_csv(path: Path) -> Iterable[WebHistoryRawEntry]:
                             break
             if not dt:
                 continue
-            url = row.get("url") or row.get("navigatedtourl", "") or ""
-            title = row.get("title") or row.get("pagetitle", "") or ""
+            url = (
+                row.get("url")
+                or row.get("navigatedtourl")
+                or row.get("NavigatedToUrl")
+                or ""
+            )
+            title = (
+                row.get("title")
+                or row.get("pagetitle")
+                or row.get("PageTitle")
+                or ""
+            )
             payload = dict(row)
             entries.append(_make_entry(dt, url, title, payload, path))
     return entries
@@ -222,42 +239,4 @@ def _make_entry(
 
 
 def _parse_ts(value: object) -> Optional[datetime]:
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-        except (OSError, OverflowError, ValueError):
-            try:
-                return datetime.fromtimestamp(float(value), tz=timezone.utc)
-            except (OSError, OverflowError, ValueError):
-                return None
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(text)
-        except ValueError:
-            dt = None
-        if dt is None:
-            for fmt in (
-                "%m/%d/%Y %H:%M:%S",
-                "%m/%d/%Y %H:%M",
-                "%m/%d/%y %H:%M:%S",
-                "%m/%d/%y %H:%M",
-            ):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    break
-                except ValueError:
-                    continue
-        if dt is None:
-            try:
-                return datetime.fromtimestamp(float(text) / 1000.0, tz=timezone.utc)
-            except (OSError, OverflowError, ValueError):
-                return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    return None
+    return parse_webhistory_timestamp(value)

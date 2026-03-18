@@ -5,9 +5,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
 
-from ..trajectory import day as trajectory_day
-
-
 RECENT_TRAJECTORY_LOOKBACK_DAYS = 62
 
 
@@ -496,8 +493,7 @@ def build_recent_trajectory_summaries(
     lookback_days: int = RECENT_TRAJECTORY_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
 ) -> tuple[dict[str, LifeMonthTrajectorySummary], dict[str, object]]:
-    from ..trajectory.month import summarize_months as trajectory_summarize_months
-    from ..trajectory.signal import load_signals
+    from ..trajectory.window import load_trajectory_window, summarize_window_months
 
     if not months:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
@@ -514,9 +510,8 @@ def build_recent_trajectory_summaries(
     if start_dt >= end_dt:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
 
-    signals = load_signals(start=start_dt, end=end_dt)
-    trajectory_days = trajectory_day.summarize_days(start=start_dt, end=end_dt)
-    trajectory_months = trajectory_summarize_months(trajectory_days, signals=signals)
+    window = load_trajectory_window(start=start_dt, end=end_dt)
+    trajectory_months = summarize_window_months(window)
 
     return (
         {

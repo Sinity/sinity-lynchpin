@@ -139,7 +139,7 @@ def narrative(
 
         days = summarize_days()
         weeks = summarize_weeks(days)
-        w_by_key = {w.week: w for w in weeks}
+        w_by_key = {w.iso_week: w for w in weeks}
         d_by_w: dict[str, list] = {}
         for d in days:
             iso = d.date.isocalendar()

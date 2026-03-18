@@ -51,17 +51,19 @@ def detect_themes(
             total_hours = sum(h for _, h in appearances)
             sorted_app = sorted(appearances, key=lambda x: x[0])
             mid = len(sorted_app) // 2
-            first_half = sum(h for _, h in sorted_app[:mid]) if mid > 0 else 0
-            second_half = sum(h for _, h in sorted_app[mid:])
+            second_count = len(sorted_app) - mid
 
             if mid == 0:
                 trend = "stable"
-            elif second_half > first_half * 1.3:
-                trend = "rising"
-            elif second_half < first_half * 0.7:
-                trend = "declining"
             else:
-                trend = "stable"
+                first_avg = sum(h for _, h in sorted_app[:mid]) / mid
+                second_avg = sum(h for _, h in sorted_app[mid:]) / second_count
+                if second_avg > first_avg * 1.3:
+                    trend = "rising"
+                elif second_avg < first_avg * 0.7:
+                    trend = "declining"
+                else:
+                    trend = "stable"
 
             themes.append(
                 Theme(
@@ -110,17 +112,19 @@ def detect_themes(
                 total_hours = sum(h for _, _, h in app_list)
                 sorted_app = sorted(app_list, key=lambda x: x[1])
                 mid = len(sorted_app) // 2
-                first_half = sum(h for _, _, h in sorted_app[:mid]) if mid > 0 else 0
-                second_half = sum(h for _, _, h in sorted_app[mid:])
+                second_count = len(sorted_app) - mid
 
                 if mid == 0:
                     trend = "stable"
-                elif second_half > first_half * 1.3:
-                    trend = "rising"
-                elif second_half < first_half * 0.7:
-                    trend = "declining"
                 else:
-                    trend = "stable"
+                    first_avg = sum(h for _, _, h in sorted_app[:mid]) / mid
+                    second_avg = sum(h for _, _, h in sorted_app[mid:]) / second_count
+                    if second_avg > first_avg * 1.3:
+                        trend = "rising"
+                    elif second_avg < first_avg * 0.7:
+                        trend = "declining"
+                    else:
+                        trend = "stable"
 
                 themes.append(
                     Theme(

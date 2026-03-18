@@ -7,13 +7,14 @@ from typing import Optional
 
 import pytest
 
-from lynchpin.trajectory.anomaly import TrajectoryAnomaly, detect_anomalies
+from lynchpin.trajectory.anomaly import TrajectoryAnomaly, _anomaly_id, detect_anomalies
 from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject
-from lynchpin.trajectory.episode import detect_episodes
-from lynchpin.trajectory.month import summarize_months
-from lynchpin.trajectory.quarter import summarize_quarters
-from lynchpin.trajectory.signal import TrajectorySignal
-from lynchpin.trajectory.week import _classify_day_pattern, summarize_weeks
+from lynchpin.trajectory.episode import TrajectoryEpisode, _compose_label, detect_episodes
+from lynchpin.trajectory.month import TrajectoryMonth, summarize_months
+from lynchpin.trajectory.quarter import TrajectoryQuarter, summarize_quarters
+from lynchpin.trajectory.year import TrajectoryYear
+from lynchpin.trajectory.signal import TrajectorySignal, _iter_months
+from lynchpin.trajectory.week import TrajectoryWeek, _classify_day_pattern, summarize_weeks
 
 
 def _make_day(
@@ -314,6 +315,48 @@ def test_detect_episodes_min_days_respected() -> None:
     days = [_make_day(date(2026, 1, 1), dominant_mode="coding")]
     episodes = detect_episodes(days, min_days=2)
     assert episodes == []
+
+
+def test_detect_episodes_mode_shift_trigger_without_project() -> None:
+    """Mode-shift trigger fires when dominant_mode is set but no dominant_project."""
+    days = [
+        _make_day(
+            date(2026, 1, 1 + i),
+            dominant_mode="research",
+            dominant_project=None,
+            top_modes=(("research", 36000.0),),
+            top_projects=(),
+        )
+        for i in range(3)
+    ]
+    episodes = detect_episodes(days, min_days=2)
+    research_eps = [ep for ep in episodes if ep.trigger == "mode_shift"]
+    assert len(research_eps) >= 1
+    assert research_eps[0].dominant_mode == "research"
+    assert research_eps[0].dominant_project is None
+
+
+def test_detect_episodes_intensity_change_trigger_when_mixed() -> None:
+    """intensity_change trigger fires when mode and project split evenly below threshold."""
+    # Alternate between two modes — neither will be dominant above threshold
+    days = []
+    for i in range(4):
+        mode = "coding" if i % 2 == 0 else "research"
+        days.append(
+            _make_day(
+                date(2026, 1, 1 + i),
+                dominant_mode=mode,
+                dominant_project=None,
+                dominant_topic=None,
+                top_modes=((mode, 36000.0),),
+                top_projects=(),
+                top_topics=(),
+            )
+        )
+    episodes = detect_episodes(days, min_days=2)
+    # Any produced episode should have intensity_change trigger
+    for ep in episodes:
+        assert ep.trigger in {"intensity_change", "mode_shift", "project_shift", "anomaly_cluster"}
 
 
 def test_detect_episodes_anomaly_cluster_trigger() -> None:
@@ -836,3 +879,612 @@ def test_compute_coverage_to_dict_is_serializable() -> None:
     assert "quality" in d
     assert isinstance(d["plane_count"], int)
     assert isinstance(serialized, str)
+
+
+# ---------------------------------------------------------------------------
+# _compose_label
+# ---------------------------------------------------------------------------
+
+class TestComposeLabel:
+    def test_project_only(self) -> None:
+        assert _compose_label("coding", "sinex") == "sinex coding"
+
+    def test_mode_only(self) -> None:
+        assert _compose_label("research", None) == "research"
+
+    def test_project_and_mode(self) -> None:
+        label = _compose_label("coding", "polylogue")
+        assert "polylogue" in label
+        assert "coding" in label
+
+    def test_topic_excluded_when_same_as_project(self) -> None:
+        # topic "sinex" == project "sinex" → should not be repeated
+        label = _compose_label("coding", "sinex", "sinex")
+        # "sinex" appears only once (as project)
+        assert label.count("sinex") == 1
+
+    def test_topic_included_when_different(self) -> None:
+        label = _compose_label("coding", "sinex", "rust")
+        assert "rust" in label
+
+    def test_no_activity_returns_mixed(self) -> None:
+        assert _compose_label(None, None) == "mixed activity"
+
+
+# ---------------------------------------------------------------------------
+# _iter_months
+# ---------------------------------------------------------------------------
+
+class TestIterMonths:
+    def _dt(self, year: int, month: int, day: int = 1) -> "datetime":
+        from datetime import datetime, timezone
+        return datetime(year, month, day, tzinfo=timezone.utc)
+
+    def test_single_month(self) -> None:
+        from datetime import datetime, timezone
+        start = datetime(2026, 3, 10, tzinfo=timezone.utc)
+        end = datetime(2026, 3, 25, tzinfo=timezone.utc)
+        months = list(_iter_months(start, end))
+        assert months == [(2026, 3)]
+
+    def test_two_months(self) -> None:
+        from datetime import datetime, timezone
+        start = datetime(2026, 3, 20, tzinfo=timezone.utc)
+        end = datetime(2026, 4, 5, tzinfo=timezone.utc)
+        months = list(_iter_months(start, end))
+        assert months == [(2026, 3), (2026, 4)]
+
+    def test_year_boundary(self) -> None:
+        from datetime import datetime, timezone
+        start = datetime(2025, 12, 20, tzinfo=timezone.utc)
+        end = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        months = list(_iter_months(start, end))
+        assert months == [(2025, 12), (2026, 1)]
+
+    def test_full_year(self) -> None:
+        from datetime import datetime, timezone
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 12, 31, tzinfo=timezone.utc)
+        months = list(_iter_months(start, end))
+        assert len(months) == 12
+        assert months[0] == (2026, 1)
+        assert months[-1] == (2026, 12)
+
+    def test_same_day_start_and_end(self) -> None:
+        from datetime import datetime, timezone
+        t = datetime(2026, 6, 15, tzinfo=timezone.utc)
+        months = list(_iter_months(t, t))
+        assert months == [(2026, 6)]
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryEpisode.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryEpisodeToDict:
+    def _make_episode(self) -> TrajectoryEpisode:
+        return TrajectoryEpisode(
+            episode_id="abc12345",
+            label="sinex coding",
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 10),
+            days=10,
+            active_seconds=72000.0,
+            dominant_mode="coding",
+            dominant_project="sinex",
+            dominant_topic="rust",
+            mode_distribution={"coding": 65000.0},
+            project_distribution={"sinex": 60000.0},
+            trigger="project_shift",
+            confidence=0.85,
+            day_count_with_dominant=8,
+        )
+
+    def test_to_dict_json_serializable(self) -> None:
+        import json
+        d = self._make_episode().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_dates_are_isoformat(self) -> None:
+        d = self._make_episode().to_dict()
+        assert d["start_date"] == "2026-03-01"
+        assert d["end_date"] == "2026-03-10"
+
+    def test_to_dict_confidence_rounded(self) -> None:
+        d = self._make_episode().to_dict()
+        assert d["confidence"] == pytest.approx(0.85)
+
+    def test_to_dict_includes_required_fields(self) -> None:
+        d = self._make_episode().to_dict()
+        for key in ("episode_id", "label", "start_date", "end_date", "days",
+                    "active_seconds", "dominant_mode", "dominant_project",
+                    "mode_distribution", "project_distribution", "trigger",
+                    "confidence", "day_count_with_dominant"):
+            assert key in d
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryAnomaly.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryAnomalyToDict:
+    def _make_anomaly(self) -> TrajectoryAnomaly:
+        return TrajectoryAnomaly(
+            anomaly_id="abc123def456",
+            date=date(2026, 3, 15),
+            kind="rhythm_anomaly",
+            severity=0.7523,
+            description="Active hours 1.5h is 2.3σ below rolling mean 8.0h",
+            baseline_value=8.0,
+            actual_value=1.5,
+            evidence={"stdev": 2.5, "direction": "below"},
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_anomaly().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_anomaly().to_dict()
+        for key in ("anomaly_id", "date", "kind", "severity", "description",
+                    "baseline_value", "actual_value", "evidence"):
+            assert key in d
+
+    def test_to_dict_rounds_numeric_fields(self) -> None:
+        d = self._make_anomaly().to_dict()
+        assert d["severity"] == pytest.approx(0.752)
+        assert d["baseline_value"] == pytest.approx(8.0)
+        assert d["actual_value"] == pytest.approx(1.5)
+
+    def test_to_dict_date_is_isoformat(self) -> None:
+        d = self._make_anomaly().to_dict()
+        assert d["date"] == "2026-03-15"
+
+    def test_to_dict_evidence_none_becomes_empty_dict(self) -> None:
+        anomaly = TrajectoryAnomaly(
+            anomaly_id="abc123def456",
+            date=date(2026, 3, 15),
+            kind="rhythm_anomaly",
+            severity=0.7,
+            description="test",
+            baseline_value=8.0,
+            actual_value=1.5,
+            evidence=None,
+        )
+        assert anomaly.to_dict()["evidence"] == {}
+
+
+# ---------------------------------------------------------------------------
+# _anomaly_id
+# ---------------------------------------------------------------------------
+
+class TestAnomalyId:
+    def test_returns_12_chars(self) -> None:
+        aid = _anomaly_id(date(2026, 3, 15), "rhythm_anomaly")
+        assert len(aid) == 12
+
+    def test_is_deterministic(self) -> None:
+        d = date(2026, 3, 15)
+        assert _anomaly_id(d, "rhythm_anomaly") == _anomaly_id(d, "rhythm_anomaly")
+
+    def test_differs_for_different_dates(self) -> None:
+        a = _anomaly_id(date(2026, 3, 15), "rhythm_anomaly")
+        b = _anomaly_id(date(2026, 3, 16), "rhythm_anomaly")
+        assert a != b
+
+    def test_differs_for_different_kinds(self) -> None:
+        d = date(2026, 3, 15)
+        a = _anomaly_id(d, "rhythm_anomaly")
+        b = _anomaly_id(d, "mode_shift")
+        assert a != b
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryWeek.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryWeekToDict:
+    def _make_week(self) -> TrajectoryWeek:
+        return TrajectoryWeek(
+            iso_week="2026-W11",
+            start_date=date(2026, 3, 9),
+            end_date=date(2026, 3, 15),
+            days=7,
+            active_seconds=72000.0,
+            recovery_seconds=28800.0,
+            chain_count=20,
+            signal_count=100,
+            command_count=10,
+            transcript_count=2,
+            commit_count=5,
+            top_modes=(("coding", 54000.0), ("research", 18000.0)),
+            top_projects=(("sinex", 54000.0),),
+            top_topics=(("rust", 36000.0),),
+            day_pattern="front_loaded",
+            busiest_day=date(2026, 3, 9),
+            quietest_day=date(2026, 3, 15),
+            active_delta_vs_prior=3600.0,
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_week().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_dates_are_isoformat(self) -> None:
+        d = self._make_week().to_dict()
+        assert d["start_date"] == "2026-03-09"
+        assert d["end_date"] == "2026-03-15"
+        assert d["busiest_day"] == "2026-03-09"
+        assert d["quietest_day"] == "2026-03-15"
+
+    def test_to_dict_none_dates_are_null(self) -> None:
+        week = TrajectoryWeek(
+            iso_week="2026-W11", start_date=date(2026, 3, 9), end_date=date(2026, 3, 15),
+            days=7, active_seconds=0.0, recovery_seconds=0.0, chain_count=0, signal_count=0,
+            command_count=0, transcript_count=0, commit_count=0,
+            top_modes=(), top_projects=(), top_topics=(),
+            day_pattern="uniform", busiest_day=None, quietest_day=None, active_delta_vs_prior=None,
+        )
+        d = week.to_dict()
+        assert d["busiest_day"] is None
+        assert d["quietest_day"] is None
+        assert d["active_delta_vs_prior"] is None
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_week().to_dict()
+        for key in ("iso_week", "start_date", "end_date", "days", "active_seconds",
+                    "recovery_seconds", "observed_seconds", "chain_count", "signal_count",
+                    "command_count", "commit_count", "dominant_mode", "dominant_project",
+                    "top_modes", "top_projects", "top_topics", "day_pattern"):
+            assert key in d
+
+    def test_observed_seconds_is_sum(self) -> None:
+        d = self._make_week().to_dict()
+        assert d["observed_seconds"] == pytest.approx(100800.0)
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryMonth.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryMonthToDict:
+    def _make_month(self) -> TrajectoryMonth:
+        return TrajectoryMonth(
+            month="2026-03",
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+            total_days=31,
+            active_days=22,
+            active_seconds=792000.0,
+            recovery_seconds=288000.0,
+            chain_count=200,
+            signal_count=1000,
+            command_count=100,
+            transcript_count=10,
+            commit_count=30,
+            dominant_mode="coding",
+            dominant_project="sinex",
+            dominant_topic="rust",
+            top_modes=(("coding", 720000.0),),
+            top_projects=(("sinex", 540000.0),),
+            top_topics=(("rust", 360000.0),),
+            source_counts={"atuin.command": 100},
+            coverage_summary={"full": 18, "partial": 4},
+            highlights=("mode:coding 220.0h",),
+            chat_session_count=15,
+            chat_work_events={"implementation": 8},
+            chat_cost_usd=2.5,
+            episode_count=2,
+            episode_labels=("sinex coding", "research sprint"),
+            week_count=5,
+            day_patterns=("front_loaded", "uniform"),
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_month().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_month().to_dict()
+        for key in ("month", "start_date", "end_date", "total_days", "active_days",
+                    "active_seconds", "recovery_seconds", "observed_seconds", "chain_count",
+                    "signal_count", "dominant_mode", "dominant_project", "top_modes",
+                    "top_projects", "top_topics", "highlights", "chat_session_count",
+                    "chat_work_events", "chat_cost_usd", "episode_count", "episode_labels",
+                    "week_count", "day_patterns"):
+            assert key in d
+
+    def test_to_dict_dates_are_isoformat(self) -> None:
+        d = self._make_month().to_dict()
+        assert d["start_date"] == "2026-03-01"
+        assert d["end_date"] == "2026-03-31"
+
+    def test_observed_seconds_is_sum(self) -> None:
+        d = self._make_month().to_dict()
+        assert d["observed_seconds"] == pytest.approx(1080000.0)
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryQuarter.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryQuarterToDict:
+    def _make_quarter(self) -> TrajectoryQuarter:
+        return TrajectoryQuarter(
+            quarter="2026-Q1",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 3, 31),
+            total_days=90,
+            active_days=60,
+            active_seconds=2160000.0,
+            recovery_seconds=720000.0,
+            chain_count=600,
+            signal_count=3000,
+            command_count=300,
+            transcript_count=30,
+            commit_count=90,
+            dominant_mode="coding",
+            dominant_project="sinex",
+            dominant_topic="rust",
+            top_modes=(("coding", 1800000.0),),
+            top_projects=(("sinex", 1440000.0),),
+            top_topics=(("rust", 1080000.0),),
+            coverage_summary={"full": 50, "partial": 10},
+            chat_session_count=45,
+            chat_cost_usd=7.5,
+            episode_count=6,
+            month_count=3,
+            month_active_trend=(720000.0, 720000.0, 720000.0),
+            active_delta_vs_prior=None,
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_quarter().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_quarter().to_dict()
+        for key in ("quarter", "start_date", "end_date", "total_days", "active_days",
+                    "active_seconds", "recovery_seconds", "observed_seconds", "chain_count",
+                    "signal_count", "dominant_mode", "dominant_project", "top_modes",
+                    "top_projects", "top_topics", "chat_session_count", "chat_cost_usd",
+                    "episode_count", "month_count", "month_active_trend"):
+            assert key in d
+
+    def test_observed_seconds_is_sum(self) -> None:
+        d = self._make_quarter().to_dict()
+        assert d["observed_seconds"] == pytest.approx(2880000.0)
+
+    def test_active_delta_none_when_absent(self) -> None:
+        d = self._make_quarter().to_dict()
+        assert d["active_delta_vs_prior"] is None
+
+    def test_month_active_trend_is_list(self) -> None:
+        d = self._make_quarter().to_dict()
+        assert isinstance(d["month_active_trend"], list)
+        assert len(d["month_active_trend"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryYear.to_dict
+# ---------------------------------------------------------------------------
+
+class TestTrajectoryYearToDict:
+    def _make_year(self) -> TrajectoryYear:
+        return TrajectoryYear(
+            year="2026",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            total_days=365,
+            active_days=220,
+            active_seconds=7920000.0,
+            recovery_seconds=2880000.0,
+            chain_count=2400,
+            signal_count=12000,
+            command_count=1200,
+            transcript_count=120,
+            commit_count=360,
+            dominant_mode="coding",
+            dominant_project="sinex",
+            dominant_topic="rust",
+            top_modes=(("coding", 7200000.0),),
+            top_projects=(("sinex", 5760000.0),),
+            top_topics=(("rust", 4320000.0),),
+            coverage_summary={"full": 180, "partial": 40},
+            chat_session_count=180,
+            chat_cost_usd=30.0,
+            episode_count=24,
+            quarter_count=4,
+            quarter_active_trend=(1980000.0, 1980000.0, 1980000.0, 1980000.0),
+            active_delta_vs_prior=360000.0,
+        )
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        d = self._make_year().to_dict()
+        json.dumps(d)
+
+    def test_to_dict_has_required_fields(self) -> None:
+        d = self._make_year().to_dict()
+        for key in ("year", "start_date", "end_date", "total_days", "active_days",
+                    "active_seconds", "recovery_seconds", "observed_seconds", "chain_count",
+                    "signal_count", "dominant_mode", "dominant_project", "top_modes",
+                    "top_projects", "top_topics", "chat_session_count", "chat_cost_usd",
+                    "episode_count", "quarter_count", "quarter_active_trend",
+                    "active_delta_vs_prior"):
+            assert key in d
+
+    def test_observed_seconds_is_sum(self) -> None:
+        d = self._make_year().to_dict()
+        assert d["observed_seconds"] == pytest.approx(10800000.0)
+
+    def test_active_delta_converted_when_present(self) -> None:
+        d = self._make_year().to_dict()
+        assert d["active_delta_vs_prior"] == pytest.approx(360000.0)
+
+    def test_quarter_active_trend_is_list_of_four(self) -> None:
+        d = self._make_year().to_dict()
+        assert isinstance(d["quarter_active_trend"], list)
+        assert len(d["quarter_active_trend"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# summarize_period / summarize_months
+# ---------------------------------------------------------------------------
+
+class TestSummarizePeriod:
+    def test_empty_input_returns_zero_filled(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        result = summarize_period([])
+        assert result.total_days == 0
+        assert result.active_seconds == 0.0
+        assert result.recovery_seconds == 0.0
+        assert result.chain_count == 0
+        assert result.signal_count == 0
+        assert result.dominant_modes == ()
+
+    def test_empty_input_has_empty_dates(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        result = summarize_period([])
+        assert result.start_date == ""
+        assert result.end_date == ""
+
+    def test_single_day_active_seconds_accumulated(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        day = _make_day(date(2026, 3, 10), active_seconds=7200.0, recovery_seconds=3600.0)
+        result = summarize_period([day])
+        assert result.active_seconds == pytest.approx(7200.0)
+        assert result.recovery_seconds == pytest.approx(3600.0)
+
+    def test_single_day_dates_match(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        day = _make_day(date(2026, 3, 10))
+        result = summarize_period([day])
+        assert result.start_date == "2026-03-10"
+        assert result.end_date == "2026-03-10"
+
+    def test_multiple_days_dates_are_first_and_last(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        days = [
+            _make_day(date(2026, 3, 1)),
+            _make_day(date(2026, 3, 5)),
+            _make_day(date(2026, 3, 10)),
+        ]
+        result = summarize_period(days)
+        assert result.start_date == "2026-03-01"
+        assert result.end_date == "2026-03-10"
+        assert result.total_days == 3
+
+    def test_active_seconds_sum_across_days(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        days = [
+            _make_day(date(2026, 3, 1), active_seconds=3600.0),
+            _make_day(date(2026, 3, 2), active_seconds=7200.0),
+        ]
+        result = summarize_period(days)
+        assert result.active_seconds == pytest.approx(10800.0)
+
+    def test_chain_and_signal_counts_accumulated(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        days = [
+            _make_day(date(2026, 3, 1), chain_count=5, signal_count=20),
+            _make_day(date(2026, 3, 2), chain_count=8, signal_count=30),
+        ]
+        result = summarize_period(days)
+        assert result.chain_count == 13
+        assert result.signal_count == 50
+
+    def test_dominant_modes_sorted_by_seconds(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        days = [
+            _make_day(date(2026, 3, 1), top_modes=(("coding", 7200.0), ("research", 1800.0))),
+            _make_day(date(2026, 3, 2), top_modes=(("coding", 3600.0),)),
+        ]
+        result = summarize_period(days)
+        mode_names = [m for m, _ in result.dominant_modes]
+        assert mode_names[0] == "coding"
+
+    def test_coverage_flags_tallied_per_day(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        cov_full = {"has_activitywatch": True, "has_terminal": True, "has_chatlog": True, "has_git": True}
+        cov_none = {"has_activitywatch": False, "has_terminal": False, "has_chatlog": False, "has_git": False}
+        days = [
+            _make_day(date(2026, 3, 1), coverage=cov_full),
+            _make_day(date(2026, 3, 2), coverage=cov_none),
+            _make_day(date(2026, 3, 3), coverage=cov_full),
+        ]
+        result = summarize_period(days)
+        assert result.coverage["days_with_activitywatch"] == 2
+        assert result.coverage["days_with_chatlog"] == 2
+        assert result.coverage["days_with_git"] == 2
+        assert result.coverage["days_with_terminal"] == 2
+
+    def test_highlights_generated_for_nonempty_counts(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        day = _make_day(date(2026, 3, 1), command_count=10, commit_count=3)
+        result = summarize_period([day])
+        joined = " ".join(result.highlights)
+        assert "commands:10" in joined
+        assert "commits:3" in joined
+
+    def test_to_dict_is_json_serializable(self) -> None:
+        import json
+        from lynchpin.trajectory.period import summarize_period
+        day = _make_day(date(2026, 3, 1), top_topics=(("rust", 3600.0),))
+        d = summarize_period([day]).to_dict()
+        json.dumps(d)
+        assert "dominant_topics" in d
+
+    def test_observed_seconds_property(self) -> None:
+        from lynchpin.trajectory.period import summarize_period
+        day = _make_day(date(2026, 3, 1), active_seconds=7200.0, recovery_seconds=3600.0)
+        result = summarize_period([day])
+        assert result.observed_seconds == pytest.approx(10800.0)
+
+
+class TestSummarizeMonths:
+    def test_empty_input_returns_empty_dict(self) -> None:
+        from lynchpin.trajectory.period import summarize_months
+        assert summarize_months([]) == {}
+
+    def test_single_month_keyed_by_year_month(self) -> None:
+        from lynchpin.trajectory.period import summarize_months
+        days = [_make_day(date(2026, 3, d)) for d in range(1, 4)]
+        result = summarize_months(days)
+        assert "2026-03" in result
+        assert len(result) == 1
+
+    def test_two_months_produces_two_keys(self) -> None:
+        from lynchpin.trajectory.period import summarize_months
+        march = [_make_day(date(2026, 3, d)) for d in range(1, 4)]
+        april = [_make_day(date(2026, 4, d)) for d in range(1, 4)]
+        result = summarize_months(march + april)
+        assert "2026-03" in result
+        assert "2026-04" in result
+        assert len(result) == 2
+
+    def test_result_keys_sorted_chronologically(self) -> None:
+        from lynchpin.trajectory.period import summarize_months
+        jan = [_make_day(date(2026, 1, 1))]
+        mar = [_make_day(date(2026, 3, 1))]
+        feb = [_make_day(date(2026, 2, 1))]
+        result = summarize_months(jan + mar + feb)
+        keys = list(result.keys())
+        assert keys == sorted(keys)
+
+    def test_each_value_is_period_summary(self) -> None:
+        from lynchpin.trajectory.period import summarize_months, TrajectoryPeriodSummary
+        result = summarize_months([_make_day(date(2026, 3, 1))])
+        assert isinstance(result["2026-03"], TrajectoryPeriodSummary)
+
+    def test_month_totals_correct(self) -> None:
+        from lynchpin.trajectory.period import summarize_months
+        days = [_make_day(date(2026, 3, d), active_seconds=3600.0) for d in range(1, 4)]
+        result = summarize_months(days)
+        march = result["2026-03"]
+        assert march.active_seconds == pytest.approx(10800.0)
+        assert march.total_days == 3

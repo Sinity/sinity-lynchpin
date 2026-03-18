@@ -159,6 +159,48 @@ def test_calendar_views_and_narratives_use_trajectory_layer() -> None:
     assert "summarize_days" in narratives_text
 
 
+def test_calendar_docs_track_trajectory_surface() -> None:
+    text = (REPO_ROOT / "docs/reference/calendar-views.md").read_text(encoding="utf-8")
+    assert "context.calendar" not in text
+    assert "TrajectoryDay.to_dict()" in text
+    assert "lynchpin.views.calendar_views" in text
+
+
+def test_warehouse_docs_list_trajectory_and_session_summary_tables() -> None:
+    text = (REPO_ROOT / "docs/reference/warehouse.md").read_text(encoding="utf-8")
+    assert "trajectory_day" in text
+    assert "trajectory_week" in text
+    assert "session_summaries" in text
+
+
+def test_personal_trajectory_program_no_longer_refers_to_deleted_calendar_bridge() -> None:
+    text = (REPO_ROOT / "docs/plans/personal-trajectory-program.md").read_text(encoding="utf-8")
+    assert "lynchpin.context.calendar" not in text
+    assert "TrajectoryDay" in text
+    assert "trajectory.week" in text
+
+
+def test_lynchpin_roadmap_frames_sinex_as_handoff_contracts() -> None:
+    text = (REPO_ROOT / "docs/plans/lynchpin-roadmap.md").read_text(encoding="utf-8")
+    assert "direct module imports or warehouse tables" not in text
+    assert "reference implementation" in text
+    assert "canonical inputs" in text
+
+
+def test_sinex_integration_plan_avoids_runtime_adapter_language() -> None:
+    text = (REPO_ROOT / "docs/plans/sinex-integration.md").read_text(encoding="utf-8")
+    assert "gateway" not in text
+    assert "Dual Run" not in text
+    assert "reference implementation" in text
+    assert "input contracts" in text
+
+
+def test_life_timeline_week_narrative_uses_iso_week_identifier() -> None:
+    text = (REPO_ROOT / "lynchpin/system/life_timeline.py").read_text(encoding="utf-8")
+    assert "w.iso_week" in text
+    assert "w.week" not in text
+
+
 def test_baseline_module_writes_core_git_output() -> None:
     baseline_text = (REPO_ROOT / "lynchpin/system/baseline.py").read_text(encoding="utf-8")
     assert "git_numstat.jsonl" in baseline_text

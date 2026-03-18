@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from lynchpin.trajectory.rules import (
+    _contains_any,
     _extract_topics_for_text,
+    _matches_domain,
+    _project_from_path,
+    _project_from_path_str,
+    _project_from_text,
+    _project_from_values,
     classify_chain_topics,
     classify_signal,
     mode_family,
+    normalize_topic,
 )
 from lynchpin.trajectory.signal import TrajectorySignal
 
@@ -111,6 +120,44 @@ class TestExtractTopicsForText:
         rust_no_boost = no_boost.get("rust", 0.0)
         rust_with_boost = with_boost.get("rust", 0.0)
         assert rust_with_boost >= rust_no_boost
+
+    def test_debugging_we_kind_boosts_testing_topic(self) -> None:
+        text = "running test assert coverage"
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "debugging"))
+        assert with_boost.get("testing", 0.0) >= no_boost.get("testing", 0.0)
+
+    def test_documentation_we_kind_boosts_writing_topic(self) -> None:
+        text = "writing doc readme note"
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "documentation"))
+        assert with_boost.get("writing", 0.0) >= no_boost.get("writing", 0.0)
+
+    def test_configuration_we_kind_boosts_infra_topic(self) -> None:
+        text = "deploy ci systemd"
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "configuration"))
+        assert with_boost.get("infra", 0.0) >= no_boost.get("infra", 0.0)
+
+    def test_review_we_kind_boosts_language_topics(self) -> None:
+        # review → "coding" boost path: amplifies language domain topics scoring ≥ 1.0
+        text = "cargo build rust"  # rust scores from cargo keyword
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "review"))
+        assert with_boost.get("rust", 0.0) >= no_boost.get("rust", 0.0)
+
+    def test_refactoring_we_kind_boosts_language_topics(self) -> None:
+        # refactoring → "coding" boost path: same fan-out as review/implementation
+        text = "python refactor module"
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "refactoring"))
+        assert with_boost.get("python", 0.0) >= no_boost.get("python", 0.0)
+
+    def test_conversation_we_kind_boosts_ai_topic(self) -> None:
+        text = "claude llm prompt agent"
+        no_boost = dict(_extract_topics_for_text(text, None))
+        with_boost = dict(_extract_topics_for_text(text, "conversation"))
+        assert with_boost.get("ai", 0.0) >= no_boost.get("ai", 0.0)
 
     def test_confidence_sorted_descending(self) -> None:
         results = _extract_topics_for_text("rust cargo testing pytest", None)
@@ -349,3 +396,185 @@ class TestClassifyChainTopics:
         if len(ranked) > 1:
             weights = [w for _, w in ranked]
             assert weights == sorted(weights, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# normalize_topic
+# ---------------------------------------------------------------------------
+
+class TestNormalizeTopic:
+    def test_known_variant_maps_to_canonical(self) -> None:
+        assert normalize_topic("cargo") == "rust"
+        assert normalize_topic("nixos") == "nix"
+        assert normalize_topic("pytest") == "python"
+        assert normalize_topic("claude") == "ai"
+
+    def test_unknown_variant_returned_as_is(self) -> None:
+        assert normalize_topic("rust") == "rust"
+        assert normalize_topic("python") == "python"
+
+    def test_strips_whitespace(self) -> None:
+        assert normalize_topic("  cargo  ") == "rust"
+
+    def test_case_insensitive(self) -> None:
+        assert normalize_topic("CARGO") == "rust"
+        assert normalize_topic("NixOS") == "nix"
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert normalize_topic("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _project_from_path_str
+# ---------------------------------------------------------------------------
+
+class TestProjectFromPathStr:
+    def test_empty_string_returns_none(self) -> None:
+        assert _project_from_path_str("") is None
+
+    def test_url_with_scheme_returns_none(self) -> None:
+        assert _project_from_path_str("https://github.com/foo") is None
+
+    def test_file_url_scheme_not_rejected(self) -> None:
+        # file:// is allowed through the URL guard
+        # Result depends on path resolution; just verify it doesn't crash
+        result = _project_from_path_str("file:///realm/project/sinex")
+        # No assertion on value — may or may not match — just no crash
+
+    def test_non_path_text_returns_none(self) -> None:
+        assert _project_from_path_str("sinex") is None  # no leading / ~ .
+
+    def test_realm_project_path_returns_name(self) -> None:
+        assert _project_from_path_str("/realm/project/sinex") == "sinex"
+
+    def test_nested_realm_project_path_returns_name(self) -> None:
+        assert _project_from_path_str("/realm/project/sinex/crate/nodes") == "sinex"
+
+    def test_unknown_project_name_returns_none(self) -> None:
+        assert _project_from_path_str("/realm/project/does-not-exist") is None
+
+    def test_polylogue_path_detected(self) -> None:
+        assert _project_from_path_str("/realm/project/polylogue") == "polylogue"
+
+
+# ---------------------------------------------------------------------------
+# _project_from_path
+# ---------------------------------------------------------------------------
+
+class TestProjectFromPath:
+    def test_none_returns_none(self) -> None:
+        assert _project_from_path(None) is None
+
+    def test_valid_project_path_returns_name(self) -> None:
+        assert _project_from_path("/realm/project/sinex") == "sinex"
+
+    def test_non_path_string_returns_none(self) -> None:
+        assert _project_from_path("random text") is None
+
+
+# ---------------------------------------------------------------------------
+# _project_from_text
+# ---------------------------------------------------------------------------
+
+class TestProjectFromText:
+    def test_none_returns_none(self) -> None:
+        assert _project_from_text(None) is None
+
+    def test_empty_returns_none(self) -> None:
+        assert _project_from_text("") is None
+
+    def test_sinex_in_text_detected(self) -> None:
+        result = _project_from_text("cargo build in sinex")
+        assert result == "sinex"
+
+    def test_polylogue_in_text_detected(self) -> None:
+        result = _project_from_text("polylogue export done")
+        assert result == "polylogue"
+
+    def test_no_project_name_returns_none(self) -> None:
+        assert _project_from_text("just a shell command") is None
+
+
+# ---------------------------------------------------------------------------
+# _project_from_values
+# ---------------------------------------------------------------------------
+
+class TestProjectFromValues:
+    def test_no_args_returns_none(self) -> None:
+        assert _project_from_values() is None
+
+    def test_all_none_returns_none(self) -> None:
+        assert _project_from_values(None, None) is None
+
+    def test_path_match_returns_with_confidence_1(self) -> None:
+        result = _project_from_values("/realm/project/sinex")
+        assert result is not None
+        name, confidence, reason = result
+        assert name == "sinex"
+        assert confidence == 1.0
+        assert reason == "project_path"
+
+    def test_text_match_returns_with_confidence_0_7(self) -> None:
+        # No path match, but text contains "polylogue"
+        result = _project_from_values("doing polylogue work", "misc text")
+        assert result is not None
+        name, confidence, reason = result
+        assert name == "polylogue"
+        assert confidence == pytest.approx(0.7)
+        assert reason == "project_text"
+
+    def test_path_match_wins_over_text_match(self) -> None:
+        # First value is a non-matching text; second is a path
+        result = _project_from_values("sinex text hint", "/realm/project/polylogue")
+        assert result is not None
+        _, _, reason = result
+        # Path checked first across all values, then text
+        assert reason == "project_path"
+
+
+# ---------------------------------------------------------------------------
+# _matches_domain
+# ---------------------------------------------------------------------------
+
+class TestMatchesDomain:
+    def test_empty_domain_returns_false(self) -> None:
+        assert _matches_domain("", {"github.com"}) is False
+
+    def test_exact_match_returns_true(self) -> None:
+        assert _matches_domain("github.com", {"github.com"}) is True
+
+    def test_subdomain_match_returns_true(self) -> None:
+        assert _matches_domain("api.github.com", {"github.com"}) is True
+
+    def test_partial_no_subdomain_returns_false(self) -> None:
+        # "notgithub.com" does not end with ".github.com" and is not exact
+        assert _matches_domain("notgithub.com", {"github.com"}) is False
+
+    def test_no_matching_candidate_returns_false(self) -> None:
+        assert _matches_domain("example.com", {"github.com", "gitlab.com"}) is False
+
+    def test_multiple_candidates_one_matches(self) -> None:
+        assert _matches_domain("gitlab.com", {"github.com", "gitlab.com"}) is True
+
+
+# ---------------------------------------------------------------------------
+# _contains_any
+# ---------------------------------------------------------------------------
+
+class TestContainsAny:
+    def test_no_candidates_returns_false(self) -> None:
+        assert _contains_any("hello world", set()) is False
+
+    def test_match_returns_true(self) -> None:
+        assert _contains_any("cargo build --release", {"cargo"}) is True
+
+    def test_no_match_returns_false(self) -> None:
+        assert _contains_any("python main.py", {"cargo", "rustc"}) is False
+
+    def test_multiple_candidates_one_matches(self) -> None:
+        assert _contains_any("running pytest", {"pytest", "cargo"}) is True
+
+    def test_case_sensitive(self) -> None:
+        # _contains_any doesn't lowercase — must match exactly
+        assert _contains_any("CARGO build", {"cargo"}) is False
+        assert _contains_any("CARGO build", {"CARGO"}) is True

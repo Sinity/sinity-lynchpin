@@ -8,7 +8,7 @@ replacing the old codex prompt subprocess approach.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import List, Optional
@@ -16,11 +16,9 @@ from typing import List, Optional
 import typer
 
 from ..core.io import write_text_if_changed
-from ..trajectory.chains import build_chains_from_attributed
-from ..trajectory.day import TrajectoryDay, summarize_days
-from ..trajectory.rules import classify_signals
-from ..trajectory.signal import load_signals, resolve_window
+from ..trajectory.day import TrajectoryDay
 from ..trajectory.week import TrajectoryWeek
+from ..trajectory.window import load_date_window
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -106,18 +104,7 @@ def _daterange(start: date, end: date) -> List[date]:
 
 def _load_trajectory_days(start_date: date, end_date: date) -> list[TrajectoryDay]:
     """Load trajectory days for a date range."""
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    win_start = datetime.combine(start_date, datetime.min.time(), tzinfo=local_tz)
-    win_end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=local_tz)
-    span = (end_date - start_date).days + 1
-    start, end = resolve_window(start=win_start, end=win_end, days=span)
-    signals = load_signals(start=start, end=end, days=span)
-    attributed = classify_signals(signals)
-    chains = build_chains_from_attributed(attributed)
-    return list(summarize_days(
-        signals=signals, chains=chains,
-        start=start, end=end, days=span,
-    ))
+    return list(load_date_window(start_date, end_date).days)
 
 
 def _fmt_top(items: tuple[tuple[str, float], ...]) -> str:
