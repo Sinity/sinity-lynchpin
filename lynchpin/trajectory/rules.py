@@ -43,17 +43,17 @@ _PROJECT_RESOLVED_PATHS: list[tuple[str, Path]] = [
 ]
 
 _WORK_EVENT_TOPIC_BOOSTS: dict[str, tuple[str, float]] = {
-    "implementation": ("coding", 1.5),
+    "implementation": ("coding", 2.5),
     "debugging":      ("testing", 2.0),
     "documentation":  ("writing", 2.0),
     "research":       ("research", 2.5),
     "configuration":  ("infra", 2.0),
-    "review":         ("coding", 1.0),
-    "refactoring":    ("coding", 1.5),
+    "review":         ("git", 1.5),
+    "refactoring":    ("coding", 2.0),
     "data_analysis":  ("data", 2.0),
     "conversation":   ("ai", 1.5),
 }
-_LANGUAGE_DOMAIN_TOPICS: frozenset[str] = frozenset({"nix", "rust", "python", "typescript", "duckdb", "docker", "web", "infra"})
+_WORK_EVENT_LANGUAGE_TOPICS: frozenset[str] = frozenset({"nix", "rust", "python", "typescript"})
 
 
 @dataclass(frozen=True)
@@ -161,7 +161,7 @@ _POLYLOGUE_WORK_EVENT_MODE_MAP = {
 
 _TOPIC_DOMAIN: dict[str, list[tuple[str, float]]] = {
     "nix": [("nix", 2.0), ("nixos", 2.5), ("flake", 2.5), ("devshell", 3.0), ("home-manager", 3.0), ("nixpkgs", 3.0), ("nix-shell", 3.0)],
-    "rust": [("cargo", 2.5), ("rustc", 2.5), (".rs", 1.5), ("crate", 2.5), ("tokio", 3.0), ("serde", 3.0), ("rustup", 2.5), ("clippy", 2.5)],
+    "rust": [("rust", 1.5), ("cargo", 2.5), ("rustc", 2.5), (".rs", 1.5), ("crate", 2.5), ("tokio", 3.0), ("serde", 3.0), ("rustup", 2.5), ("clippy", 2.5)],
     "python": [("python", 1.0), ("pytest", 2.5), ("pip", 1.5), (".py", 1.5), ("pandas", 2.5), ("polars", 3.0), ("mypy", 2.5), ("ruff", 2.0), ("uv", 1.5)],
     "typescript": [("typescript", 2.0), (".ts", 1.0), (".tsx", 1.5), ("npm", 1.5), ("deno", 2.5), ("node", 1.0), ("bun", 2.0), ("eslint", 2.0)],
     "duckdb": [("duckdb", 3.0), ("parquet", 2.5), ("warehouse", 2.0), ("arrow", 2.0)],
@@ -210,10 +210,12 @@ def _extract_topics_for_text(text: str, we_kind: Optional[str]) -> tuple[tuple[s
     candidates: list[tuple[str, float]] = []
     for topic, keywords in _TOPIC_KEYWORDS.items():
         score = sum(weight for kw, weight in keywords if kw in text)
-        if we_boost_target == "coding" and topic in _LANGUAGE_DOMAIN_TOPICS and score >= 1.0:
-            score += we_boost_amount
+        if we_boost_target == "coding" and topic in _WORK_EVENT_LANGUAGE_TOPICS and score >= 1.0:
+            score += 1.0
         elif we_boost_target == topic:
             score += we_boost_amount
+        if we_kind == "configuration" and topic == "nix" and "nix" in text:
+            score += 1.0
         if score >= 1.0:
             confidence = min(0.3 + score * 0.15, 0.95)
             candidates.append((topic, round(confidence, 2)))

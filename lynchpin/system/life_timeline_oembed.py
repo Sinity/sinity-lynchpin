@@ -15,7 +15,7 @@ from typing import Any
 import requests
 import typer
 
-from lynchpin.system import life_timeline as lt
+from lynchpin.sources.exports.takeout import TarReader, parse_youtube_watch_history_from_takeouts
 from lynchpin.system.life_timeline_paths import (
     LATEST_LIFE_TIMELINE_JSON,
     YOUTUBE_OEMBED_CACHE,
@@ -156,9 +156,6 @@ def _iter_video_ids_from_takeouts(
     start_month: str,
     end_month: str,
 ) -> Counter[str]:
-    TarReader = lt.TarReader
-    parse_youtube_watch_history_from_takeouts = lt.parse_youtube_watch_history_from_takeouts
-
     expanded = _expand_takeout_parts(takeout_paths)
     if not expanded:
         raise FileNotFoundError("No takeout archives found (expected .tgz paths).")

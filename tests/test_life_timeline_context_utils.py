@@ -1,12 +1,10 @@
-"""Tests for pure helper functions in context/life_timeline.py."""
+"""Tests for pure helper functions in retrospective/life_timeline.py."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
-from lynchpin.context.life_timeline import (
+from lynchpin.retrospective.life_timeline import (
     _month_after,
     _month_start,
     _render_counter,

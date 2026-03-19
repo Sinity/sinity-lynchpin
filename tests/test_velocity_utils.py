@@ -1,10 +1,8 @@
-"""Tests for pure helper functions in lynchpin/views/velocity.py."""
+"""Tests for pure helper functions in lynchpin.analysis.projects.velocity."""
 
 from __future__ import annotations
 
-import pytest
-
-from lynchpin.views.velocity import (
+from lynchpin.analysis.projects.velocity import (
     CategoryStats,
     CommitEvent,
     _collapse_commit,

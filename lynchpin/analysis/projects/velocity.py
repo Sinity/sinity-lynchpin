@@ -1,23 +1,16 @@
-#!/usr/bin/env python3
-"""
-Generate velocity plots (LoC growth and churn) for all bundled projects.
-Generates a rich, interactive HTML dashboard using Apache ECharts.
+"""Project-level git velocity analysis and dashboard rendering."""
 
-Each project has bespoke categorization to show meaningful breakdowns.
-"""
-
+from collections.abc import Callable, Mapping, Sequence
 import sys
 import json
 import datetime as dt
 import subprocess
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
-import typer
-
-from ..core.projects import ProjectProfile, project_profiles
-from ..core.io import write_text_if_changed
+from ...core.projects import ProjectProfile, project_profiles
+from ...core.io import write_text_if_changed
 
 DEFAULT_OUTPUT = Path("artefacts/meta/velocity/velocity.html")
 AGGREGATE_PROJECT = "all-projects"
@@ -99,6 +92,11 @@ def module_from_path(filename: str) -> str:
 
 
 PROJECT_SPECS: Dict[str, ProjectProfile] = project_profiles()
+LogFn = Callable[[str], None]
+
+
+def _noop(_message: str) -> None:
+    pass
 
 
 @dataclass
@@ -381,15 +379,21 @@ def parse_log(
     return stats
 
 
-def analyze_projects(project_specs: Dict[str, ProjectProfile]) -> Dict[str, ProjectStats]:
+def analyze_projects(
+    project_specs: Mapping[str, ProjectProfile],
+    *,
+    log: LogFn | None = None,
+) -> Dict[str, ProjectStats]:
+    if log is None:
+        log = _noop
     all_stats = {}
     for name, spec in project_specs.items():
         path = spec.path
         if not path.exists():
-            print(f"Path not found: {path}, skipping...", file=sys.stderr)
+            log(f"Path not found: {path}, skipping...")
             continue
 
-        print(f"Analyzing {name}...")
+        log(f"Analyzing {name}...")
         lines = run_git_log(path)
         classify_fn = spec.classify
         stats = parse_log(lines, name, classify_fn)
@@ -469,11 +473,16 @@ def _aggregate_stats(all_stats: Dict[str, ProjectStats]) -> ProjectStats:
     return aggregate
 
 
-def generate_html(
+def render_velocity_dashboard(
     all_stats: Dict[str, ProjectStats],
-    project_specs: Dict[str, ProjectProfile],
+    project_specs: Mapping[str, ProjectProfile],
     output_path: Path,
-):
+    *,
+    log: LogFn | None = None,
+) -> bool:
+    if log is None:
+        log = _noop
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     # Collect all dates
     all_dates = set()
     for p in all_stats.values():
@@ -481,8 +490,8 @@ def generate_html(
     sorted_dates = sorted(list(all_dates))
 
     if not sorted_dates:
-        print("No data found.")
-        return
+        log("No data found.")
+        return False
 
     # Build datasets per project per category
     js_projects = {}
@@ -2225,79 +2234,63 @@ def generate_html(
 
     wrote = write_text_if_changed(output_path, html)
     if wrote:
-        print(f"Rich report generated at {output_path.resolve()}")
+        log(f"Rich report generated at {output_path.resolve()}")
     else:
-        print(f"Velocity report unchanged at {output_path.resolve()}")
+        log(f"Velocity report unchanged at {output_path.resolve()}")
+    return wrote
 
 
-def build(
-    output: Path = typer.Option(
-        DEFAULT_OUTPUT, "--output", "-o", help="Destination HTML path"
-    ),
-    project: Optional[List[str]] = typer.Option(
-        None,
-        "--project",
-        "-p",
-        help="Limit to specific project names (default: all registered projects)",
-    ),
-    exclude: Optional[List[str]] = typer.Option(
-        None,
-        "--exclude",
-        "-x",
-        help="Exclude project names from the dashboard (repeatable).",
-    ),
-    aggregate: bool = typer.Option(
-        True,
-        "--aggregate/--no-aggregate",
-        help="Include an aggregated view that stacks repositories together.",
-    ),
-) -> None:
-    """Render the velocity dashboard for the configured repositories."""
-    selected_specs: Dict[str, ProjectProfile] = PROJECT_SPECS
-    if project:
-        requested = [name.strip() for name in project if name.strip()]
+def select_project_profiles(
+    *,
+    project_names: Sequence[str] | None = None,
+    exclude_names: Sequence[str] | None = None,
+) -> Dict[str, ProjectProfile]:
+    selected_specs: Dict[str, ProjectProfile] = dict(PROJECT_SPECS)
+    if project_names is not None:
+        requested = [name.strip() for name in project_names if name.strip()]
         if not requested:
-            raise typer.BadParameter(
-                "At least one non-empty --project value is required."
-            )
+            raise ValueError("At least one non-empty project name is required.")
         missing = [name for name in requested if name not in PROJECT_SPECS]
         if missing:
-            raise typer.BadParameter(
-                f"Unknown project(s): {', '.join(sorted(missing))}"
-            )
+            raise ValueError(f"Unknown project(s): {', '.join(sorted(missing))}")
         selected_specs = {name: PROJECT_SPECS[name] for name in requested}
 
-    if exclude:
-        excluded = [name.strip() for name in exclude if name.strip()]
+    if exclude_names is not None:
+        excluded = [name.strip() for name in exclude_names if name.strip()]
         if not excluded:
-            raise typer.BadParameter(
-                "At least one non-empty --exclude value is required."
-            )
+            raise ValueError("At least one non-empty excluded project name is required.")
         missing = [name for name in excluded if name not in PROJECT_SPECS]
         if missing:
-            raise typer.BadParameter(
-                f"Unknown project(s): {', '.join(sorted(missing))}"
-            )
+            raise ValueError(f"Unknown project(s): {', '.join(sorted(missing))}")
         for name in excluded:
             selected_specs.pop(name, None)
 
     if not selected_specs:
-        raise typer.BadParameter("No projects available to analyse.")
+        raise ValueError("No projects available to analyse.")
+    return selected_specs
 
-    stats = analyze_projects(selected_specs)
+
+def build_velocity_dashboard(
+    *,
+    output: Path = DEFAULT_OUTPUT,
+    project_names: Sequence[str] | None = None,
+    exclude_names: Sequence[str] | None = None,
+    aggregate: bool = True,
+    log: LogFn | None = None,
+) -> bool:
+    if log is None:
+        log = _noop
+    selected_specs = select_project_profiles(
+        project_names=project_names,
+        exclude_names=exclude_names,
+    )
+    stats = analyze_projects(selected_specs, log=log)
     if not stats:
-        typer.secho(
-            "No repositories produced git history; nothing to render.",
-            fg=typer.colors.YELLOW,
-        )
-        return
+        log("No repositories produced git history; nothing to render.")
+        return False
     if aggregate and len(stats) > 1:
         aggregate_stats = _aggregate_stats(stats)
         aggregate_spec = _aggregate_spec(list(stats.keys()))
         stats = {AGGREGATE_PROJECT: aggregate_stats, **stats}
         selected_specs = {AGGREGATE_PROJECT: aggregate_spec, **selected_specs}
-    generate_html(stats, selected_specs, output)
-
-
-if __name__ == "__main__":
-    typer.run(build)
+    return render_velocity_dashboard(stats, selected_specs, output, log=log)

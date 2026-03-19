@@ -308,6 +308,36 @@ class TestClassifySignalTopic:
             top_topic = result.topic_scores[0][0]
             assert top_topic == result.topic
 
+    def test_implementation_work_event_boosts_language_topic(self) -> None:
+        sig = _signal(
+            title="implement rust parser",
+            source="polylogue.session",
+            kind="session",
+            evidence={"work_event_kind": "implementation"},
+        )
+        result = classify_signal(sig)
+        assert result.topic == "rust"
+
+    def test_review_work_event_boosts_git_topic(self) -> None:
+        sig = _signal(
+            title="review merge strategy and branch cleanup",
+            source="polylogue.session",
+            kind="session",
+            evidence={"work_event_kind": "review"},
+        )
+        result = classify_signal(sig)
+        assert result.topic == "git"
+
+    def test_configuration_work_event_boosts_nix_when_text_mentions_nix(self) -> None:
+        sig = _signal(
+            title="configuration pass on nix flake and home-manager setup",
+            source="polylogue.session",
+            kind="session",
+            evidence={"work_event_kind": "configuration"},
+        )
+        result = classify_signal(sig)
+        assert result.topic == "nix"
+
 
 # ---------------------------------------------------------------------------
 # classify_chain_topics
@@ -438,7 +468,7 @@ class TestProjectFromPathStr:
     def test_file_url_scheme_not_rejected(self) -> None:
         # file:// is allowed through the URL guard
         # Result depends on path resolution; just verify it doesn't crash
-        result = _project_from_path_str("file:///realm/project/sinex")
+        _project_from_path_str("file:///realm/project/sinex")
         # No assertion on value — may or may not match — just no crash
 
     def test_non_path_text_returns_none(self) -> None:

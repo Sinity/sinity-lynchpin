@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, date
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import Sequence, Any
 
 
 _MEMORY_PATH = Path("artefacts/context/memory.json")
+_NORMALIZED_SPACE_RE = re.compile(r"\s+")
+_NORMALIZED_PUNCT_RE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass
@@ -125,6 +128,86 @@ def save_memory(store: MemoryStore) -> None:
     os.replace(tmp_path, _MEMORY_PATH)
 
 
+def _normalize_statement(statement: str) -> str:
+    lowered = _NORMALIZED_PUNCT_RE.sub(" ", statement.lower())
+    return _NORMALIZED_SPACE_RE.sub(" ", lowered).strip()
+
+
+def _match_claim(existing_claims: list[ClaimRecord], statement: str) -> ClaimRecord | None:
+    normalized = _normalize_statement(statement)
+    if not normalized:
+        return None
+
+    for claim in existing_claims:
+        if _normalize_statement(claim.statement) == normalized:
+            return claim
+
+    prefix_matches = [
+        claim
+        for claim in existing_claims
+        if (existing := _normalize_statement(claim.statement))
+        and (existing.startswith(normalized) or normalized.startswith(existing))
+    ]
+    if not prefix_matches:
+        return None
+    return max(prefix_matches, key=lambda claim: len(_normalize_statement(claim.statement)))
+
+
+def _merge_evidence_refs(existing: ClaimRecord, new_claim: Any) -> list[str]:
+    return sorted({*existing.evidence_refs, *map(str, getattr(new_claim, "evidence_refs", ()))})
+
+
+def _build_updated_claim(
+    existing: ClaimRecord,
+    new_claim: Any,
+    *,
+    today: str,
+    alpha: float,
+) -> ClaimRecord:
+    new_confidence = float(new_claim.confidence)
+    updated_confidence = alpha * new_confidence + (1 - alpha) * existing.confidence
+    revision_entry = None
+    if abs(updated_confidence - existing.confidence) > 0.05:
+        revision_entry = {
+            "date": today,
+            "old_conf": round(existing.confidence, 3),
+            "new_conf": round(updated_confidence, 3),
+        }
+
+    is_refutation = new_confidence < existing.confidence
+    return ClaimRecord(
+        statement=existing.statement,
+        confidence=updated_confidence,
+        category=getattr(new_claim, "category", existing.category),
+        first_seen=existing.first_seen,
+        last_seen=today,
+        support_count=existing.support_count + (0 if is_refutation else 1),
+        refutation_count=existing.refutation_count + (1 if is_refutation else 0),
+        evidence_refs=_merge_evidence_refs(existing, new_claim),
+        revisions=existing.revisions + ([revision_entry] if revision_entry else []),
+    )
+
+
+def _coerce_theme_month_count(theme: Any) -> int:
+    return int(getattr(theme, "month_count", getattr(theme, "months_active", 1)))
+
+
+def _build_updated_theme(existing: ThemeRecord, new_theme: Any) -> ThemeRecord:
+    new_hours = float(getattr(new_theme, "total_hours", existing.total_hours))
+    new_first_seen = str(getattr(new_theme, "first_seen", existing.first_seen))
+    new_last_seen = str(getattr(new_theme, "last_seen", existing.last_seen))
+    return ThemeRecord(
+        name=existing.name,
+        kind=existing.kind,
+        total_hours=max(existing.total_hours, new_hours),
+        first_seen=min(existing.first_seen or new_first_seen, new_first_seen),
+        last_seen=max(existing.last_seen or new_last_seen, new_last_seen),
+        trend=str(getattr(new_theme, "trend", existing.trend)),
+        months_active=max(existing.months_active, _coerce_theme_month_count(new_theme)),
+        peak_month=existing.peak_month or new_last_seen,
+    )
+
+
 def update_memory(
     new_claims: Sequence[Any],
     new_themes: Sequence[Any],
@@ -144,99 +227,67 @@ def update_memory(
     store = load_memory()
     today = datetime.now(timezone.utc).date().isoformat()
 
-    # Build index of existing claims by statement
-    existing_claims_index: dict[str, ClaimRecord] = {c.statement: c for c in store.claims}
-
-    # Process new claims
+    existing_claims = list(store.claims)
     updated_claims: list[ClaimRecord] = []
+    matched_claim_ids: set[int] = set()
     for new_claim in new_claims:
-        statement = new_claim.statement
-        new_confidence = new_claim.confidence
-
-        if statement in existing_claims_index:
-            existing = existing_claims_index[statement]
-            # Compute EMA
-            updated_confidence = alpha * new_confidence + (1 - alpha) * existing.confidence
-
-            # Track revision if delta > 0.05
-            revision_entry = {}
-            if abs(updated_confidence - existing.confidence) > 0.05:
-                revision_entry = {
-                    "date": today,
-                    "old": round(existing.confidence, 3),
-                    "new": round(updated_confidence, 3),
-                }
-
-            # Merge evidence_refs
-            merged_refs = list(set(existing.evidence_refs) | set(new_claim.evidence_refs))
-
-            updated_record = ClaimRecord(
-                statement=statement,
-                confidence=updated_confidence,
-                category=new_claim.category,
-                first_seen=existing.first_seen,
-                last_seen=today,
-                support_count=existing.support_count + 1,
-                refutation_count=existing.refutation_count,
-                evidence_refs=merged_refs,
-                revisions=existing.revisions + ([revision_entry] if revision_entry else []),
+        statement = str(new_claim.statement)
+        existing = _match_claim(existing_claims, statement)
+        if existing is None:
+            updated_claims.append(
+                ClaimRecord(
+                    statement=statement,
+                    confidence=float(new_claim.confidence),
+                    category=str(new_claim.category),
+                    first_seen=today,
+                    last_seen=today,
+                    support_count=1,
+                    refutation_count=0,
+                    evidence_refs=list(map(str, getattr(new_claim, "evidence_refs", ()))),
+                    revisions=[],
+                )
             )
-            updated_claims.append(updated_record)
-        else:
-            # New claim
-            new_record = ClaimRecord(
-                statement=statement,
-                confidence=new_confidence,
-                category=new_claim.category,
-                first_seen=today,
-                last_seen=today,
-                support_count=1,
-                refutation_count=0,
-                evidence_refs=list(new_claim.evidence_refs),
-                revisions=[],
-            )
-            updated_claims.append(new_record)
+            continue
 
-    # Build index of existing themes by (name, kind)
-    existing_themes_index: dict[tuple[str, str], ThemeRecord] = {
-        (t.name, t.kind): t for t in store.themes
-    }
+        matched_claim_ids.add(id(existing))
+        updated_claims.append(
+            _build_updated_claim(existing, new_claim, today=today, alpha=alpha)
+        )
 
-    # Process new themes
+    for existing in existing_claims:
+        if id(existing) not in matched_claim_ids:
+            updated_claims.append(existing)
+
+    existing_themes = list(store.themes)
+    existing_themes_index = {(t.name, t.kind): t for t in existing_themes}
     updated_themes: list[ThemeRecord] = []
+    matched_theme_keys: set[tuple[str, str]] = set()
     for new_theme in new_themes:
-        key = (new_theme.name, new_theme.kind)
-
-        if key in existing_themes_index:
-            existing = existing_themes_index[key]
-            updated_record = ThemeRecord(
-                name=new_theme.name,
-                kind=new_theme.kind,
-                total_hours=new_theme.total_hours,
-                first_seen=existing.first_seen,
-                last_seen=today,
-                trend=new_theme.trend,
-                months_active=new_theme.month_count,
-                peak_month=new_theme.first_seen,  # Could be enhanced to track actual peak
+        key = (str(new_theme.name), str(new_theme.kind))
+        matched_theme_keys.add(key)
+        existing = existing_themes_index.get(key)
+        if existing is None:
+            updated_themes.append(
+                ThemeRecord(
+                    name=key[0],
+                    kind=key[1],
+                    total_hours=float(new_theme.total_hours),
+                    first_seen=str(new_theme.first_seen),
+                    last_seen=str(new_theme.last_seen),
+                    trend=str(new_theme.trend),
+                    months_active=_coerce_theme_month_count(new_theme),
+                    peak_month=str(getattr(new_theme, "peak_month", getattr(new_theme, "last_seen", ""))),
+                )
             )
-            updated_themes.append(updated_record)
-        else:
-            # New theme
-            new_record = ThemeRecord(
-                name=new_theme.name,
-                kind=new_theme.kind,
-                total_hours=new_theme.total_hours,
-                first_seen=new_theme.first_seen,
-                last_seen=new_theme.last_seen,
-                trend=new_theme.trend,
-                months_active=new_theme.month_count,
-                peak_month=new_theme.first_seen,
-            )
-            updated_themes.append(new_record)
+            continue
+        updated_themes.append(_build_updated_theme(existing, new_theme))
 
-    # Update store
-    store.claims = updated_claims
-    store.themes = updated_themes
+    for existing in existing_themes:
+        if (existing.name, existing.kind) not in matched_theme_keys:
+            updated_themes.append(existing)
+
+    store.claims = sorted(updated_claims, key=lambda claim: (-claim.confidence, claim.statement))
+    store.themes = sorted(updated_themes, key=lambda theme: (-theme.total_hours, theme.kind, theme.name))
     store.last_updated = datetime.now(timezone.utc).isoformat()
 
     save_memory(store)

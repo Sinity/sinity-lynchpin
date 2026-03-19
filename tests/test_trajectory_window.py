@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from lynchpin.trajectory.day import TrajectoryDay
+from lynchpin.trajectory import window as trajectory_window
 from lynchpin.trajectory.window import load_date_window
 
 
@@ -38,13 +39,14 @@ def test_load_date_window_annotates_anomalies(monkeypatch) -> None:
         captured["days"] = days
         return ["signal"]
 
-    monkeypatch.setattr("lynchpin.trajectory.window.resolve_window", lambda **kwargs: (kwargs["start"], kwargs["end"]))
-    monkeypatch.setattr("lynchpin.trajectory.window.load_signals", fake_load_signals)
-    monkeypatch.setattr("lynchpin.trajectory.window.classify_signals", lambda signals: ("attributed",))
-    monkeypatch.setattr("lynchpin.trajectory.window.build_chains_from_attributed", lambda attributed: ("chain",))
-    monkeypatch.setattr("lynchpin.trajectory.window.summarize_days", lambda **kwargs: [_sample_day(target)])
+    monkeypatch.setattr(trajectory_window, "resolve_window", lambda **kwargs: (kwargs["start"], kwargs["end"]))
+    monkeypatch.setattr(trajectory_window, "load_signals", fake_load_signals)
+    monkeypatch.setattr(trajectory_window, "classify_signals", lambda signals: ("attributed",))
+    monkeypatch.setattr(trajectory_window, "build_chains_from_attributed", lambda attributed: ("chain",))
+    monkeypatch.setattr(trajectory_window, "summarize_days", lambda **kwargs: [_sample_day(target)])
     monkeypatch.setattr(
-        "lynchpin.trajectory.window.detect_anomalies",
+        trajectory_window,
+        "detect_anomalies",
         lambda days: [SimpleNamespace(date=target, description="timeline gap")],
     )
 

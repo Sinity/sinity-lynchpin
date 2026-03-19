@@ -1,22 +1,26 @@
-"""Tests for context narrative prompt builders.
+"""Tests for retrospective narrative prompt builders.
 
 Covers: build_day_prompt, build_week_prompt, build_episode_prompt,
 build_quarter_prompt, build_contrast_prompt, build_month_prompt, _log_narrative.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import date, datetime, timezone
-from pathlib import Path
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from lynchpin.context.narrative import (
+from lynchpin.retrospective.narrative import (
     Narrative,
+    NarrativeBackend,
     NarrativeKind,
+    _generate_via_codex_exec,
+    generate_date_range_narrative,
     _log_narrative,
+    _resolve_backend,
     build_contrast_prompt,
     build_day_prompt,
     build_episode_prompt,
@@ -38,6 +42,7 @@ def _make_day(**kwargs):
         chain_count=5,
         signal_count=80,
         command_count=30,
+        transcript_count=4,
         commit_count=3,
         dominant_mode="coding",
         dominant_project="sinex",
@@ -45,6 +50,8 @@ def _make_day(**kwargs):
         top_modes=[("coding", 10000.0), ("review", 4000.0)],
         top_projects=[("sinex", 10000.0), ("lynchpin", 4000.0)],
         top_topics=[("rust", 9000.0), ("nix", 3000.0)],
+        projects=[],
+        signal_coverage=None,
         highlights=["Implemented batch ingest", "Fixed replay logic"],
         anomalies=[],
     )
@@ -430,7 +437,7 @@ class TestLogNarrative:
             output_tokens=50,
             cost_usd=0.002,
         )
-        import lynchpin.context.narrative as nar_module
+        import lynchpin.retrospective.narrative as nar_module
         with patch.object(nar_module, "_NARRATIVE_LOG_DIR", tmp_path):
             _log_narrative(narrative)
 
@@ -446,7 +453,7 @@ class TestLogNarrative:
         n1 = Narrative("day", "2026-03-10", "Day one.", "2026-03-10T09:00:00Z", "m", 10, 5, 0.001)
         n2 = Narrative("day", "2026-03-10", "Day two.", "2026-03-10T10:00:00Z", "m", 12, 6, 0.001)
 
-        import lynchpin.context.narrative as nar_module
+        import lynchpin.retrospective.narrative as nar_module
         with patch.object(nar_module, "_NARRATIVE_LOG_DIR", tmp_path):
             _log_narrative(n1)
             _log_narrative(n2)
@@ -458,9 +465,95 @@ class TestLogNarrative:
     def test_log_ioerror_does_not_raise(self, tmp_path):
         """OSError during logging should not propagate — just log a warning."""
         n = Narrative("week", "2026-W11", "text", "2026-03-16T10:00:00Z", "m", 10, 5, 0.0)
-        import lynchpin.context.narrative as nar_module
+        import lynchpin.retrospective.narrative as nar_module
         # Point to a path that cannot be created (parent is a file)
         fake_dir = tmp_path / "not_a_dir.txt"
         fake_dir.write_text("block")
         with patch.object(nar_module, "_NARRATIVE_LOG_DIR", fake_dir / "subdir"):
             _log_narrative(n)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Backend helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNarrativeBackends:
+    def test_resolve_backend_defaults_to_codex_exec(self):
+        assert _resolve_backend(None) is NarrativeBackend.codex_exec
+
+    def test_resolve_backend_accepts_enum(self):
+        assert _resolve_backend(NarrativeBackend.codex_exec) is NarrativeBackend.codex_exec
+
+    def test_resolve_backend_rejects_unknown(self):
+        with pytest.raises(ValueError, match="Unknown narrative backend"):
+            _resolve_backend("nope")
+
+    def test_generate_via_codex_exec_uses_shared_helper(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_run(prompt: str, *, model=None, system_prompt=None, output_schema=None, cwd=None, codex_command="codex"):
+            captured["prompt"] = prompt
+            captured["model"] = model
+            captured["system_prompt"] = system_prompt
+            captured["output_schema"] = output_schema
+            captured["cwd"] = cwd
+            captured["codex_command"] = codex_command
+            return SimpleNamespace(model="codex-config-default", text="codex narrative")
+
+        monkeypatch.setattr("lynchpin.retrospective.narrative.run_codex_exec", fake_run)
+        monkeypatch.setattr("lynchpin.retrospective.narrative.NARRATIVE_SYSTEM_PROMPT", "system prompt")
+
+        model, text, input_tokens, output_tokens, cost_usd = _generate_via_codex_exec("write a summary", None)
+
+        assert model == "codex-config-default"
+        assert text == "codex narrative"
+        assert input_tokens == 0
+        assert output_tokens == 0
+        assert cost_usd == 0.0
+        assert captured["prompt"] == "write a summary"
+        assert captured["system_prompt"] == "system prompt"
+
+    def test_generate_date_range_narrative_uses_window_and_range_kind(self, monkeypatch):
+        fake_day = _make_day(date=date(2026, 3, 7))
+        captured: dict[str, object] = {}
+
+        async def fake_generate(prompt, kind, key, *, backend=None, model=None):
+            captured["prompt"] = prompt
+            captured["kind"] = kind
+            captured["key"] = key
+            captured["backend"] = backend
+            captured["model"] = model
+            return Narrative(
+                kind=kind.value,
+                key=key,
+                text="narrative",
+                generated_at="2026-03-10T10:00:00Z",
+                model="codex-config-default",
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=0.0,
+                backend="codex-exec",
+            )
+
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative.load_date_window",
+            lambda start, end: SimpleNamespace(days=[fake_day]),
+        )
+        monkeypatch.setattr("lynchpin.retrospective.narrative.generate_narrative", fake_generate)
+
+        result = asyncio.run(
+            generate_date_range_narrative(
+                date(2026, 3, 7),
+                date(2026, 3, 7),
+                mode="reflective",
+                backend="codex-exec",
+                model="test-model",
+            )
+        )
+
+        assert result.text == "narrative"
+        assert captured["kind"] == NarrativeKind.range
+        assert captured["backend"] == "codex-exec"
+        assert captured["model"] == "test-model"
+        assert "2026-03-07" in captured["prompt"]

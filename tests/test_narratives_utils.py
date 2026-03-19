@@ -1,4 +1,4 @@
-"""Tests for pure helper functions in views/calendar_narratives.py and views/session_summaries.py."""
+"""Tests for pure helper functions in retrospective.narrative and session summaries."""
 
 from __future__ import annotations
 
@@ -6,38 +6,39 @@ from datetime import date, timedelta
 
 import pytest
 
-from lynchpin.views.calendar_narratives import _daterange, _fmt_top
-from lynchpin.views.session_summaries import _estimate_cost
+from lynchpin.core.dates import iter_dates, parse_iso_dateish
+from lynchpin.retrospective.narrative import _fmt_top
+from lynchpin.analysis.knowledge.session_summaries import _estimate_cost
 
 
 # ---------------------------------------------------------------------------
-# _daterange (calendar_narratives.py)
+# core.dates
 # ---------------------------------------------------------------------------
 
-class TestDaterange:
+class TestDateHelpers:
     def test_same_start_end_returns_one_date(self) -> None:
         d = date(2026, 3, 17)
-        assert _daterange(d, d) == [d]
+        assert list(iter_dates(d, d)) == [d]
 
     def test_two_consecutive_days(self) -> None:
         start, end = date(2026, 3, 17), date(2026, 3, 18)
-        result = _daterange(start, end)
+        result = list(iter_dates(start, end))
         assert result == [start, end]
 
     def test_end_before_start_returns_empty(self) -> None:
-        result = _daterange(date(2026, 3, 18), date(2026, 3, 17))
+        result = list(iter_dates(date(2026, 3, 18), date(2026, 3, 17)))
         assert result == []
 
     def test_full_week(self) -> None:
         start = date(2026, 3, 16)  # Monday
         end = date(2026, 3, 22)    # Sunday
-        result = _daterange(start, end)
+        result = list(iter_dates(start, end))
         assert len(result) == 7
         assert result[0] == start
         assert result[-1] == end
 
     def test_month_boundary_crossed(self) -> None:
-        result = _daterange(date(2026, 1, 30), date(2026, 2, 1))
+        result = list(iter_dates(date(2026, 1, 30), date(2026, 2, 1)))
         assert len(result) == 3
         assert date(2026, 1, 31) in result
         assert date(2026, 2, 1) in result
@@ -45,18 +46,28 @@ class TestDaterange:
     def test_dates_are_consecutive(self) -> None:
         start = date(2026, 3, 10)
         end = date(2026, 3, 15)
-        result = _daterange(start, end)
+        result = list(iter_dates(start, end))
         for i in range(1, len(result)):
             assert (result[i] - result[i - 1]) == timedelta(days=1)
 
     def test_year_boundary(self) -> None:
-        result = _daterange(date(2025, 12, 30), date(2026, 1, 2))
+        result = list(iter_dates(date(2025, 12, 30), date(2026, 1, 2)))
         assert len(result) == 4
         assert date(2026, 1, 1) in result
 
+    def test_parse_iso_dateish_date(self) -> None:
+        assert parse_iso_dateish("2026-03-18") == date(2026, 3, 18)
+
+    def test_parse_iso_dateish_datetime(self) -> None:
+        assert parse_iso_dateish("2026-03-18T12:34:56Z") == date(2026, 3, 18)
+
+    def test_parse_iso_dateish_rejects_empty(self) -> None:
+        with pytest.raises(ValueError, match="cannot be empty"):
+            parse_iso_dateish("   ")
+
 
 # ---------------------------------------------------------------------------
-# _fmt_top (calendar_narratives.py)
+# _fmt_top (retrospective.narrative)
 # ---------------------------------------------------------------------------
 
 class TestFmtTop:

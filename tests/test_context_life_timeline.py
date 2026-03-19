@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 
-from lynchpin.context.life_timeline import (
+from lynchpin.retrospective.life_timeline import (
     build_month_summary,
     build_intake_summary,
     build_location_summary,

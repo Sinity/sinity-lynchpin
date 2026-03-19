@@ -30,7 +30,7 @@ see `docs/plans/personal-trajectory-program.md`.
 
 3. **Calendar views**
    - Build on the shipped day-view workflow with week/month aggregation and stronger summaries.
-   - Keep `lynchpin.views.calendar_views` and `lynchpin.views.calendar_narratives` reading the same trajectory-backed helpers.
+   - Keep `lynchpin.views.calendar_views` and the reusable `lynchpin.retrospective.narrative` API reading the same trajectory-backed helpers.
 
 4. **Session and transcript coverage**
    - Improve Polylogue-driven transcript availability and keep generated session summaries reproducible.

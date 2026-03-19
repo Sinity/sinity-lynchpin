@@ -6,7 +6,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-import lynchpin.views.project_bundles as project_bundles
+import lynchpin.analysis.projects.bundles as project_bundles
 
 
 def _init_git_repo(path: Path) -> None:
@@ -105,7 +105,7 @@ def test_build_repomix_command_switches_flags() -> None:
     assert "--include-diffs" in compressed_cmd
 
 
-def test_main_generates_project_bundle_outputs(tmp_path: Path, monkeypatch) -> None:
+def test_build_project_bundles_generates_outputs(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
@@ -124,11 +124,13 @@ def test_main_generates_project_bundle_outputs(tmp_path: Path, monkeypatch) -> N
     stale_dir.mkdir(parents=True)
     (stale_dir / "stale.txt").write_text("stale\n", encoding="utf-8")
 
-    exit_code = project_bundles.main(
-        ["--projects", "demo", "--output-root", str(output_root), "--logs-count", "5"]
+    index = project_bundles.build_project_bundles(
+        project_names=["demo"],
+        output_root=output_root,
+        logs_count=5,
     )
 
-    assert exit_code == 0
+    assert index["projects"][0]["project"] == "demo"
     bundle_dir = output_root / "demo"
     full_path = bundle_dir / "demo-bundle.md"
     compressed_path = bundle_dir / "demo-bundle-compressed.md"

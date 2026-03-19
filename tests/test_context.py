@@ -451,6 +451,13 @@ class TestMemory:
         store = update_memory([claim], [])
         assert store.claims[0].support_count == 2
 
+    def test_update_increments_refutation_count_when_new_confidence_drops(self) -> None:
+        claim_v1 = Claim("test claim", 0.9, (), "workflow")
+        update_memory([claim_v1], [])
+        claim_v2 = Claim("test claim", 0.4, (), "workflow")
+        store = update_memory([claim_v2], [])
+        assert store.claims[0].refutation_count == 1
+
     def test_update_records_revision_on_large_delta(self) -> None:
         # Initial confidence = 0.9; update with 0.5 → delta > 0.05
         claim_v1 = Claim("volatile claim", 0.9, (), "workflow")
@@ -544,6 +551,30 @@ class TestMemory:
 
         store2 = update_memory([claim], [])
         assert store2.claims[0].first_seen == first_seen
+
+    def test_update_matches_claims_by_prefix_similarity(self) -> None:
+        claim_v1 = Claim("Chat-heavy workflow with strong coding arc", 0.8, (), "workflow")
+        update_memory([claim_v1], [])
+        claim_v2 = Claim("Chat-heavy workflow with strong coding", 0.9, (), "workflow")
+        store = update_memory([claim_v2], [])
+        assert len(store.claims) == 1
+        assert store.claims[0].support_count == 2
+
+    def test_update_preserves_unmentioned_existing_claims(self) -> None:
+        claim_a = Claim("claim a", 0.8, (), "workflow")
+        claim_b = Claim("claim b", 0.7, (), "workflow")
+        update_memory([claim_a], [])
+        store = update_memory([claim_b], [])
+        statements = {claim.statement for claim in store.claims}
+        assert statements == {"claim a", "claim b"}
+
+    def test_update_preserves_unmentioned_existing_themes(self) -> None:
+        theme_a = Theme("sinex", "project", 80.0, 2, "rising", "2026-01", "2026-02")
+        theme_b = Theme("lynchpin", "project", 60.0, 2, "stable", "2026-01", "2026-02")
+        update_memory([], [theme_a])
+        store = update_memory([], [theme_b])
+        names = {theme.name for theme in store.themes}
+        assert names == {"sinex", "lynchpin"}
 
 
 # ---------------------------------------------------------------------------

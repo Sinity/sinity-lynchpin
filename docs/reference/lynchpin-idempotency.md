@@ -64,23 +64,24 @@ These modules write artefacts/exports and should never run implicitly from
 - `lynchpin.ingest.fbmessenger_export` → `/realm/data/exports/comms/facebook-messenger/processed/fbmessengerexport.sqlite` (API-backed export).
 - `lynchpin.ingest.wykop_export` → `/realm/data/exports/wykop/raw/<user>/` exports (network I/O).
 - `lynchpin.views.calendar_views` → `artefacts/calendar/views/` (writes only when content changes).
-- `lynchpin.views.calendar_narratives` → `artefacts/calendar/narratives/**` (skips if output exists unless `--force`; prompt/output writes are change-aware).
-- `lynchpin.views.ledgers` → CSV ledgers under `artefacts/knowledge/ledgers/`.
+- `lynchpin.retrospective.narrative` generation → `artefacts/retrospective/narratives/logs/` (append-only run logs; callers decide whether final rendered narrative files should be rewritten).
+- `lynchpin.analysis.knowledge` → CSV ledgers under `artefacts/knowledge/ledgers/` via `just session-index` / `just artefact-index`.
 - `lynchpin.views.knowledge_graph` → DuckDB snapshot + optional Parquet.
-- `lynchpin.views.project_bundles` → repomix-backed context bundles under
-  `/realm/project/_context-project-bundles/`.
-- `lynchpin.views.velocity` → `artefacts/meta/velocity/velocity.html`.
+- `lynchpin.analysis.projects` → repomix-backed context bundles under
+  `/realm/project/_context-project-bundles/` via `just project-bundles`.
+- `lynchpin.analysis.projects` → `artefacts/meta/velocity/velocity.html` via `just velocity`.
 - `lynchpin.views.warehouse` → DuckDB under `artefacts/lynchpin/warehouse.duckdb`.
 
 ## LLM outputs (non-deterministic)
-- `lynchpin.views.session_summaries` writes JSON summaries to
-  `artefacts/knowledge/sessions/summaries/` and logs every call (tokens + cost)
-  to `artefacts/knowledge/sessions/logs/session_summaries.jsonl`.
+- `lynchpin.analysis.knowledge` writes JSON summaries to
+  `artefacts/knowledge/sessions/summaries/` and logs every call (backend/model,
+  plus token/cost fields when available) to
+  `artefacts/knowledge/sessions/logs/session_summaries.jsonl`.
 - The command is **idempotent by default** (skips if output exists), but
   `--force` intentionally re-runs the model.
-- `lynchpin.views.calendar_narratives` logs every successful run to
-  `artefacts/calendar/narratives/logs/narrative_runs.jsonl` (model + timing +
-  token usage/cost when `codex prompt --verbose` reports it).
+- `lynchpin.retrospective.narrative` logs every successful run to
+  `artefacts/retrospective/narratives/logs/narrative_YYYY-MM-DD.jsonl`
+  (backend, model, text, and token usage/cost when the backend reports it).
 
 ## Practical guidance
 1. Use `lynchpin.sources.*` for reads; these are designed to be lazy and safe.

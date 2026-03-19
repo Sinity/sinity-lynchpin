@@ -31,6 +31,8 @@ docs/reference/filesystem-audit-*.html
 data/derived/
 reports/
 results/
+!docs/reference/codebase-analysis/reports/
+!docs/reference/codebase-analysis/reports/*.md
 
 # Data/analysis artifacts
 tmp/

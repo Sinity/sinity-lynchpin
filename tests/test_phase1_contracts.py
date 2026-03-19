@@ -147,16 +147,18 @@ def test_sessions_source_reads_markdown_docs_directly() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_calendar_views_and_narratives_use_trajectory_layer() -> None:
+def test_calendar_views_and_retrospective_api_use_shared_trajectory_layer() -> None:
     views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
-    narratives_text = (REPO_ROOT / "lynchpin/views/calendar_narratives.py").read_text(encoding="utf-8")
-    # Both views now use the trajectory layer directly (refactored in Sprint 2-4)
-    assert "from ..trajectory.signal import" in views_text
-    assert "from ..trajectory.day import" in views_text
-    assert "summarize_days" in views_text
-    assert "from ..trajectory.signal import" in narratives_text
-    assert "from ..trajectory.day import" in narratives_text
-    assert "summarize_days" in narratives_text
+    calendar_text = (REPO_ROOT / "lynchpin/retrospective/calendar.py").read_text(encoding="utf-8")
+    retrospective_text = (REPO_ROOT / "lynchpin/retrospective/narrative.py").read_text(encoding="utf-8")
+    assert not (REPO_ROOT / "lynchpin/views/calendar_narratives.py").exists()
+    assert "build_calendar_views" in views_text
+    assert "CalendarScale.day" in views_text
+    assert "load_date_window" in calendar_text
+    assert "summarize_window_months" in calendar_text
+    assert "generate_date_range_narrative" in retrospective_text
+    assert "load_date_window" in retrospective_text
+    assert "NarrativeKind.range" in retrospective_text
 
 
 def test_calendar_docs_track_trajectory_surface() -> None:
@@ -164,6 +166,75 @@ def test_calendar_docs_track_trajectory_surface() -> None:
     assert "context.calendar" not in text
     assert "TrajectoryDay.to_dict()" in text
     assert "lynchpin.views.calendar_views" in text
+
+
+def test_project_analysis_wrappers_are_thin_materializers() -> None:
+    velocity_api = (REPO_ROOT / "lynchpin/analysis/projects/velocity.py").read_text(encoding="utf-8")
+    bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/bundles.py").read_text(encoding="utf-8")
+    rich_bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/rich_bundles.py").read_text(encoding="utf-8")
+    justfile_text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+
+    assert not (REPO_ROOT / "lynchpin/views/velocity.py").exists()
+    assert not (REPO_ROOT / "lynchpin/views/project_bundles.py").exists()
+    assert "build_velocity_dashboard(" in velocity_api
+    assert "generate_project_bundle(" in bundles_api
+    assert "generate_rich_project_bundle(" in rich_bundles_api
+    assert "argparse" not in bundles_api
+    assert "argparse" not in rich_bundles_api
+    assert "\nvelocity " in justfile_text
+    assert "\nproject-bundles " in justfile_text
+    assert "\nproject-bundles-rich " in justfile_text
+
+
+def test_project_analysis_docs_point_at_reusable_apis() -> None:
+    velocity_text = (REPO_ROOT / "docs/reference/velocity.md").read_text(encoding="utf-8")
+    bundles_text = (REPO_ROOT / "docs/reference/project-bundles.md").read_text(encoding="utf-8")
+    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "lynchpin.analysis.projects.build_velocity_dashboard" in velocity_text
+    assert "lynchpin.analysis.projects.velocity" in velocity_text
+    assert "lynchpin.analysis.projects import build_project_bundles" in bundles_text
+    assert "lynchpin.analysis.projects import build_rich_project_bundles" in bundles_text
+    assert "lynchpin.analysis.projects.build_velocity_dashboard(...)" in readme_text
+    assert "just velocity" in velocity_text
+    assert "just project-bundles" in bundles_text
+    assert "just project-bundles-rich" in bundles_text
+
+
+def test_knowledge_materializers_use_api_plus_just() -> None:
+    justfile_text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    sessions_text = (REPO_ROOT / "docs/reference/sessions/README.md").read_text(encoding="utf-8")
+    ledgers_text = (REPO_ROOT / "docs/reference/ledgers/README.md").read_text(encoding="utf-8")
+
+    assert not (REPO_ROOT / "lynchpin/views/ledgers.py").exists()
+    assert not (REPO_ROOT / "lynchpin/views/session_summaries.py").exists()
+    assert "\nsession-index " in justfile_text
+    assert "\nartefact-index " in justfile_text
+    assert "\nsummarise-session " in justfile_text
+    assert "just summarise-session" in sessions_text
+    assert "just artefact-index" in ledgers_text
+
+
+def test_calendar_views_root_cli_still_builds_day_views_without_subcommand() -> None:
+    result = subprocess.run(
+        [
+            "nix",
+            "develop",
+            "--command",
+            "python",
+            "-m",
+            "lynchpin.views.calendar_views",
+            "2026-03-16",
+            "2026-03-17",
+            "--no-write-files",
+            "--json",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "\"date\": \"2026-03-16\"" in result.stdout
 
 
 def test_warehouse_docs_list_trajectory_and_session_summary_tables() -> None:
@@ -196,14 +267,21 @@ def test_sinex_integration_plan_avoids_runtime_adapter_language() -> None:
 
 
 def test_life_timeline_week_narrative_uses_iso_week_identifier() -> None:
-    text = (REPO_ROOT / "lynchpin/system/life_timeline.py").read_text(encoding="utf-8")
-    assert "w.iso_week" in text
+    text = (REPO_ROOT / "lynchpin/retrospective/narrative.py").read_text(encoding="utf-8")
+    assert "week.iso_week" in text
     assert "w.week" not in text
 
 
 def test_baseline_module_writes_core_git_output() -> None:
     baseline_text = (REPO_ROOT / "lynchpin/system/baseline.py").read_text(encoding="utf-8")
     assert "git_numstat.jsonl" in baseline_text
+
+
+def test_baseline_orchestration_uses_internal_subsystem_modules() -> None:
+    baseline_text = (REPO_ROOT / "lynchpin/system/baseline.py").read_text(encoding="utf-8")
+    assert "from ._baseline import" in baseline_text
+    assert (REPO_ROOT / "lynchpin/system/_baseline/activitywatch.py").exists()
+    assert (REPO_ROOT / "lynchpin/system/_baseline/git.py").exists()
 
 
 def test_analysis_governance_points_at_absorbed_artifact_layout() -> None:
@@ -382,31 +460,34 @@ def test_takeout_source_discovery_prefers_seed_archives() -> None:
 
 def test_life_timeline_uses_source_aggregation_helpers() -> None:
     text = (REPO_ROOT / "lynchpin/system/life_timeline.py").read_text(encoding="utf-8")
-    assert "lp_reddit.summarize_activity(" in text
-    assert "lp_wykop.summarize_activity(" in text
-    assert "lp_raindrop.summarize_bookmarks(" in text
-    assert "lp_gitstats.summarize_commit_activity(" in text
-    assert "lp_spotify.summarize_streaming(" in text
-    assert "lp_spotify.top_names(" in text
-    assert "life_context.build_recent_trajectory_summaries(" in text
-    assert "life_context.build_month_summary(" in text
-    assert "life_context.build_output_summary(" in text
-    assert "life_context.build_work_summary(" in text
-    assert "life_context.build_intake_summary(" in text
-    assert "life_context.build_mail_summary(" in text
-    assert "life_context.build_location_summary(" in text
-    assert "life_context.build_money_summary(" in text
-    assert "life_context.build_health_summary(" in text
-    assert "life_context.build_notes_summary(" in text
-    assert "life_context.render_markdown(" in text
-    assert "lp_takeout.tokenize_topic" in text
-    assert "lp_takeout.summarize_youtube_watch_history_month(" in text
-    assert "lp_takeout.phrase_topic_tokens(" in text
-    assert "lp_takeout.parse_life_timeline_takeouts(" in text
-    assert "lp_knowledgebase.summarize_onenote_journal_entries(" in text
-    assert "lp_takeout.resolve_archives(" in text
-    assert "lp_takeout.load_youtube_oembed_cache(" in text
-    assert "def tokenize_topic(" not in text
+    api_text = (REPO_ROOT / "lynchpin/retrospective/life_pipeline.py").read_text(encoding="utf-8")
+    assert "retrospective.run_life_timeline(" in text
+    assert "retrospective.generate_scale_narratives(" in text
+    assert "lp_reddit.summarize_activity(" in api_text
+    assert "lp_wykop.summarize_activity(" in api_text
+    assert "lp_raindrop.summarize_bookmarks(" in api_text
+    assert "lp_gitstats.summarize_commit_activity(" in api_text
+    assert "lp_spotify.summarize_streaming(" in api_text
+    assert "lp_spotify.top_names(" in api_text
+    assert "build_recent_trajectory_summaries(" in api_text
+    assert "build_month_summary(" in api_text
+    assert "build_output_summary(" in api_text
+    assert "build_work_summary(" in api_text
+    assert "build_intake_summary(" in api_text
+    assert "build_mail_summary(" in api_text
+    assert "build_location_summary(" in api_text
+    assert "build_money_summary(" in api_text
+    assert "build_health_summary(" in api_text
+    assert "build_notes_summary(" in api_text
+    assert "render_markdown(" in api_text
+    assert "lp_takeout.tokenize_topic" in api_text
+    assert "lp_takeout.summarize_youtube_watch_history_month(" in api_text
+    assert "lp_takeout.phrase_topic_tokens(" in api_text
+    assert "lp_takeout.parse_life_timeline_takeouts(" in api_text
+    assert "lp_knowledgebase.summarize_onenote_journal_entries(" in api_text
+    assert "lp_takeout.resolve_archives(" in api_text
+    assert "lp_takeout.load_youtube_oembed_cache(" in api_text
+    assert "def tokenize_topic(" not in api_text
 
 
 def test_takeout_life_timeline_bundle_parser_handles_sparse_archive() -> None:
