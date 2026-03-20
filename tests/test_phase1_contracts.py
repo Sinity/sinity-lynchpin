@@ -172,6 +172,7 @@ def test_project_analysis_wrappers_are_thin_materializers() -> None:
     velocity_api = (REPO_ROOT / "lynchpin/analysis/projects/velocity.py").read_text(encoding="utf-8")
     bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/bundles.py").read_text(encoding="utf-8")
     rich_bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/rich_bundles.py").read_text(encoding="utf-8")
+    projects_cli = (REPO_ROOT / "lynchpin/analysis/projects/cli.py").read_text(encoding="utf-8")
     justfile_text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
 
     assert not (REPO_ROOT / "lynchpin/views/velocity.py").exists()
@@ -181,9 +182,14 @@ def test_project_analysis_wrappers_are_thin_materializers() -> None:
     assert "generate_rich_project_bundle(" in rich_bundles_api
     assert "argparse" not in bundles_api
     assert "argparse" not in rich_bundles_api
+    assert "argparse" in projects_cli
     assert "\nvelocity " in justfile_text
     assert "\nproject-bundles " in justfile_text
     assert "\nproject-bundles-rich " in justfile_text
+    assert "python -m lynchpin.analysis.projects velocity" in justfile_text
+    assert "python -m lynchpin.analysis.projects bundles" in justfile_text
+    assert "python -m lynchpin.analysis.projects rich-bundles" in justfile_text
+    assert "python -c 'from pathlib import Path; from lynchpin.analysis.projects" not in justfile_text
 
 
 def test_project_analysis_docs_point_at_reusable_apis() -> None:
@@ -195,6 +201,9 @@ def test_project_analysis_docs_point_at_reusable_apis() -> None:
     assert "lynchpin.analysis.projects.velocity" in velocity_text
     assert "lynchpin.analysis.projects import build_project_bundles" in bundles_text
     assert "lynchpin.analysis.projects import build_rich_project_bundles" in bundles_text
+    assert "python -m lynchpin.analysis.projects velocity" in velocity_text
+    assert "python -m lynchpin.analysis.projects bundles" in bundles_text
+    assert "python -m lynchpin.analysis.projects rich-bundles" in bundles_text
     assert "lynchpin.analysis.projects.build_velocity_dashboard(...)" in readme_text
     assert "just velocity" in velocity_text
     assert "just project-bundles" in bundles_text
@@ -205,12 +214,20 @@ def test_knowledge_materializers_use_api_plus_just() -> None:
     justfile_text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     sessions_text = (REPO_ROOT / "docs/reference/sessions/README.md").read_text(encoding="utf-8")
     ledgers_text = (REPO_ROOT / "docs/reference/ledgers/README.md").read_text(encoding="utf-8")
+    knowledge_cli_text = (REPO_ROOT / "lynchpin/analysis/knowledge/cli.py").read_text(encoding="utf-8")
 
     assert not (REPO_ROOT / "lynchpin/views/ledgers.py").exists()
     assert not (REPO_ROOT / "lynchpin/views/session_summaries.py").exists()
+    assert "argparse" in knowledge_cli_text
     assert "\nsession-index " in justfile_text
     assert "\nartefact-index " in justfile_text
     assert "\nsummarise-session " in justfile_text
+    assert "python -m lynchpin.analysis.knowledge session-index" in justfile_text
+    assert "python -m lynchpin.analysis.knowledge artefact-index" in justfile_text
+    assert "python -m lynchpin.analysis.knowledge summarise-session" in justfile_text
+    assert "python -c 'from pathlib import Path; from lynchpin.analysis.knowledge" not in justfile_text
+    assert "python -m lynchpin.analysis.knowledge summarise-session" in sessions_text
+    assert "python -m lynchpin.analysis.knowledge artefact-index" in ledgers_text
     assert "just summarise-session" in sessions_text
     assert "just artefact-index" in ledgers_text
 

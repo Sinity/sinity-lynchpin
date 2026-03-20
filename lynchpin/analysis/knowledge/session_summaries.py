@@ -1,7 +1,8 @@
-"""Codex-backed session transcript summarisation helpers."""
+"""Session transcript summarisation helpers (codex-exec and claude-agent-sdk backends)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import textwrap
@@ -14,6 +15,7 @@ from ...core.codex_exec import run_codex_exec
 
 DEFAULT_MODEL = os.environ.get("LYNCHPIN_SESSION_MODEL", "")
 DEFAULT_CODEX_COMMAND = os.environ.get("LYNCHPIN_CODEX_COMMAND", "codex")
+DEFAULT_SESSION_BACKEND = os.environ.get("LYNCHPIN_SESSION_BACKEND", "codex-exec")
 SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -64,7 +66,6 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gpt-5-mini": {"input": 0.0000015, "output": 0.0000020},
 }
 SYSTEM_PROMPT = "You produce concise JSON summaries of assistant-mediated development sessions."
-BACKEND_NAME = "codex-exec"
 LogFn = Callable[[str], None]
 
 
@@ -84,6 +85,11 @@ class SessionSummaryResult:
 
 def _noop(_message: str) -> None:
     pass
+
+
+def _normalize_backend(backend: str | None) -> str:
+    normalized = (backend or DEFAULT_SESSION_BACKEND).strip().lower()
+    return normalized or DEFAULT_SESSION_BACKEND
 
 
 def load_transcript(path: Path, max_chars: int) -> tuple[str, bool]:
@@ -140,7 +146,7 @@ def _log_call(entry: dict[str, Any]) -> None:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _run_codex_exec(prompt: str, model: str | None) -> tuple[str, str]:
+def _run_codex_exec(prompt: str, model: str | None) -> tuple[str, str, int, int]:
     result = run_codex_exec(
         prompt,
         model=model,
@@ -148,7 +154,23 @@ def _run_codex_exec(prompt: str, model: str | None) -> tuple[str, str]:
         output_schema=SUMMARY_SCHEMA,
         codex_command=DEFAULT_CODEX_COMMAND,
     )
-    return result.model, result.text
+    return result.model, result.text, 0, 0
+
+
+def _run_claude_sdk(prompt: str, model: str | None) -> tuple[str, str, int, int]:
+    from ...core.claude_sdk import run_claude_sdk
+
+    result = asyncio.run(
+        run_claude_sdk(
+            prompt,
+            system_prompt=SYSTEM_PROMPT,
+            model=model,
+            output_schema=SUMMARY_SCHEMA,
+            allowed_tools=["Read"],
+            max_turns=5,
+        )
+    )
+    return result.model, result.text, result.input_tokens, result.output_tokens
 
 
 def summarise_session_transcript(
@@ -156,6 +178,7 @@ def summarise_session_transcript(
     *,
     output: Optional[Path] = None,
     model: str = DEFAULT_MODEL,
+    backend: str | None = DEFAULT_SESSION_BACKEND,
     max_chars: int = 20000,
     force: bool = False,
     log: LogFn | None = None,
@@ -165,6 +188,7 @@ def summarise_session_transcript(
     if not input_path.exists():
         raise ValueError(f"Input file not found: {input_path}")
 
+    resolved_backend = _normalize_backend(backend)
     destination = output or (DEFAULT_OUTPUT_DIR / f"{input_path.stem}.json")
     if destination.exists() and not force:
         log(
@@ -173,8 +197,8 @@ def summarise_session_transcript(
         return SessionSummaryResult(
             input_path=input_path,
             output_path=destination,
-            model=model or "codex-config-default",
-            backend=BACKEND_NAME,
+            model=model or "config-default",
+            backend=resolved_backend,
             wrote=False,
             skipped=True,
             prompt_tokens=0,
@@ -187,8 +211,15 @@ def summarise_session_transcript(
     if truncated:
         log(f"Transcript exceeds {max_chars} characters; truncating for prompt.")
     user_prompt = build_prompt(transcript, input_path)
-    log(f"Summarising {input_path} with {BACKEND_NAME}...")
-    resolved_model, raw_message = _run_codex_exec(user_prompt, model or None)
+    log(f"Summarising {input_path} with {resolved_backend}...")
+    if resolved_backend == "claude-agent-sdk":
+        resolved_model, raw_message, prompt_tokens, completion_tokens = _run_claude_sdk(
+            user_prompt, model or None,
+        )
+    else:
+        resolved_model, raw_message, prompt_tokens, completion_tokens = _run_codex_exec(
+            user_prompt, model or None,
+        )
 
     try:
         summary = json.loads(raw_message)
@@ -203,9 +234,7 @@ def summarise_session_transcript(
         encoding="utf-8",
     )
 
-    prompt_tokens = 0
-    completion_tokens = 0
-    total_tokens = 0
+    total_tokens = prompt_tokens + completion_tokens
     cost = _estimate_cost(resolved_model, prompt_tokens, completion_tokens)
     _log_call(
         {
@@ -213,7 +242,7 @@ def summarise_session_transcript(
             "input_path": str(input_path),
             "output_path": str(destination),
             "model": resolved_model,
-            "backend": BACKEND_NAME,
+            "backend": resolved_backend,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
@@ -225,7 +254,7 @@ def summarise_session_transcript(
         input_path=input_path,
         output_path=destination,
         model=resolved_model,
-        backend=BACKEND_NAME,
+        backend=resolved_backend,
         wrote=True,
         skipped=False,
         prompt_tokens=prompt_tokens,

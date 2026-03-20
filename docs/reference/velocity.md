@@ -61,6 +61,12 @@ build_velocity_dashboard(output=Path("artefacts/meta/velocity/velocity.html"))
 
 Canonical API symbol: `lynchpin.analysis.projects.build_velocity_dashboard(...)`.
 
+Canonical module entrypoint:
+```bash
+python -m lynchpin.analysis.projects velocity \
+  --output artefacts/meta/velocity/velocity.html
+```
+
 Default materializer:
 ```bash
 just velocity
@@ -68,6 +74,10 @@ just velocity
 
 Limit the render set (and aggregate view) with the `projects=...`, `exclude=...`, and `aggregate=...` recipe parameters:
 ```bash
+python -m lynchpin.analysis.projects velocity \
+  --output artefacts/meta/velocity/velocity.html \
+  --exclude "sinnix"
+
 just velocity artefacts/meta/velocity/velocity.html "" "sinnix"
 ```
 

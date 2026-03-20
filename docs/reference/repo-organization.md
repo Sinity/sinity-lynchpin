@@ -34,9 +34,9 @@ This is the quick map for the current repo shape. The project is centered on the
 | Range narratives | `lynchpin.retrospective.generate_date_range_narrative(...)` or the `lynchpin-ops` skill workflow | `artefacts/retrospective/narratives/logs/` |
 | Warehouse views | `python -m lynchpin.views.warehouse build` | `artefacts/lynchpin/warehouse.duckdb` |
 | Source materialization | `python -m lynchpin.views.warehouse materialize` or `refresh` | `artefacts/lynchpin/warehouse/{parquet,duckdb}/` |
-| Ledgers | `lynchpin.analysis.knowledge.write_session_ledger(...)`, `write_artefact_ledger(...)`, or `just session-index` / `just artefact-index` | `artefacts/knowledge/ledgers/` |
-| Velocity | `lynchpin.analysis.projects.build_velocity_dashboard(...)` or `just velocity` | `artefacts/meta/velocity/velocity.html` |
-| Session summaries | `lynchpin.analysis.knowledge.summarise_session_transcript(...)` or `just summarise-session <conversation.md>` | `artefacts/knowledge/sessions/` |
+| Ledgers | `python -m lynchpin.analysis.knowledge session-index` / `artefact-index`, the Python APIs, or `just session-index` / `just artefact-index` | `artefacts/knowledge/ledgers/` |
+| Velocity | `python -m lynchpin.analysis.projects velocity`, the Python API, or `just velocity` | `artefacts/meta/velocity/velocity.html` |
+| Session summaries | `python -m lynchpin.analysis.knowledge summarise-session --input ...`, the Python API, or `just summarise-session <conversation.md>` | `artefacts/knowledge/sessions/` |
 | Instrumentation metadata | `python -m lynchpin.ingest.instrumentation ...` | `artefacts/ingest/instrumentation/` |
 | Webhistory maintenance | `python -m lynchpin.ingest.webhistory ...` | `/realm/data/captures/webhistory/gestalt/...` plus `artefacts/webhistory/` |
 | Wykop export | `python -m lynchpin.ingest.wykop_export ...` | `/realm/data/exports/wykop/raw/<user>/` |

@@ -10,7 +10,7 @@ def test_summarise_session_transcript_writes_json(tmp_path: Path, monkeypatch) -
     transcript = tmp_path / "conversation.md"
     transcript.write_text("# Session\n\nWorked on baseline cleanup.\n", encoding="utf-8")
 
-    def fake_codex(prompt: str, model: str | None) -> tuple[str, str]:
+    def fake_codex(prompt: str, model: str | None) -> tuple[str, str, int, int]:
         assert "Worked on baseline cleanup." in prompt
         assert model == "gpt-5-mini"
         return (
@@ -23,6 +23,8 @@ def test_summarise_session_transcript_writes_json(tmp_path: Path, monkeypatch) -
                     "raw_references": [],
                 }
             ),
+            0,
+            0,
         )
 
     monkeypatch.setattr(session_summaries, "_run_codex_exec", fake_codex)
@@ -57,3 +59,34 @@ def test_summarise_session_transcript_skips_existing_output(tmp_path: Path) -> N
     assert result.wrote is False
     assert result.skipped is True
     assert result.output_path == output
+
+
+def test_summarise_session_transcript_normalizes_blank_backend(tmp_path: Path, monkeypatch) -> None:
+    transcript = tmp_path / "conversation.md"
+    transcript.write_text("# Session\n\nWorked on baseline cleanup.\n", encoding="utf-8")
+
+    def fake_codex(prompt: str, model: str | None) -> tuple[str, str, int, int]:
+        return (
+            "gpt-5-mini",
+            json.dumps(
+                {
+                    "source_path": str(transcript),
+                    "summary": "Condensed summary.",
+                    "highlights": [],
+                    "raw_references": [],
+                }
+            ),
+            0,
+            0,
+        )
+
+    monkeypatch.setattr(session_summaries, "_run_codex_exec", fake_codex)
+    output = tmp_path / "summary.json"
+
+    result = session_summaries.summarise_session_transcript(
+        transcript,
+        output=output,
+        backend="",
+    )
+
+    assert result.backend == "codex-exec"

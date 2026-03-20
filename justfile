@@ -19,27 +19,27 @@ analysis-dry-run spec="lynchpin/analysis/analysis_spec.json":
 
 # Materialize the default cross-project velocity dashboard.
 velocity output="artefacts/meta/velocity/velocity.html" projects="" exclude="" aggregate="true":
-    python -c 'from pathlib import Path; from lynchpin.analysis.projects import build_velocity_dashboard; projects = """{{projects}}""".split() or None; exclude = """{{exclude}}""".split() or None; aggregate = """{{aggregate}}""".strip().lower() in {"1", "true", "yes", "on"}; build_velocity_dashboard(output=Path("""{{output}}"""), project_names=projects, exclude_names=exclude, aggregate=aggregate, log=print)'
+    python -m lynchpin.analysis.projects velocity --output "{{output}}" --projects "{{projects}}" --exclude "{{exclude}}" --aggregate "{{aggregate}}"
 
 # Materialize repomix-backed project bundles.
 project-bundles output_root="/realm/project/_context-project-bundles" projects="" logs_count="30" include_diffs="false" include_compressed="true":
-    python -c 'from pathlib import Path; from lynchpin.analysis.projects import build_project_bundles; projects = """{{projects}}""".split() or None; include_diffs = """{{include_diffs}}""".strip().lower() in {"1", "true", "yes", "on"}; include_compressed = """{{include_compressed}}""".strip().lower() in {"1", "true", "yes", "on"}; build_project_bundles(output_root=Path("""{{output_root}}"""), project_names=projects, logs_count=int("""{{logs_count}}"""), include_diffs=include_diffs, include_compressed=include_compressed, log=print)'
+    python -m lynchpin.analysis.projects bundles --output-root "{{output_root}}" --projects "{{projects}}" --logs-count "{{logs_count}}" --include-diffs "{{include_diffs}}" --include-compressed "{{include_compressed}}"
 
 # Materialize richer structural project bundles with git-history shards.
 project-bundles-rich output_root="/realm/project/_context-project-bundles/rich" projects="" patch_window="10" summary_window="100" patch_commits="200" summary_commits="":
-    python -c 'from pathlib import Path; from lynchpin.analysis.projects import build_rich_project_bundles; projects = """{{projects}}""".split() or None; patch_commits = """{{patch_commits}}""".strip(); summary_commits = """{{summary_commits}}""".strip(); build_rich_project_bundles(output_root=Path("""{{output_root}}"""), project_names=projects, patch_window=int("""{{patch_window}}"""), summary_window=int("""{{summary_window}}"""), patch_commits=int(patch_commits) if patch_commits else None, summary_commits=int(summary_commits) if summary_commits else None, log=print)'
+    python -m lynchpin.analysis.projects rich-bundles --output-root "{{output_root}}" --projects "{{projects}}" --patch-window "{{patch_window}}" --summary-window "{{summary_window}}" --patch-commits "{{patch_commits}}" --summary-commits "{{summary_commits}}"
 
 # Write the session ledger CSV.
 session-index sessions_dir="docs/reference/sessions" output="artefacts/knowledge/ledgers/session_index.csv":
-    python -c 'from pathlib import Path; from lynchpin.analysis.knowledge import write_session_ledger; result = write_session_ledger(sessions_dir=Path("""{{sessions_dir}}"""), output=Path("""{{output}}""")); status = ("Wrote " + str(result.row_count) + " session rows to") if result.wrote else "Session ledger unchanged at"; print(status, result.output)'
+    python -m lynchpin.analysis.knowledge session-index --sessions-dir "{{sessions_dir}}" --output "{{output}}"
 
 # Write the artefact ledger CSV.
 artefact-index catalog="docs/reference/ledgers/artefact_catalog.json" output="artefacts/knowledge/ledgers/artefact_index.csv":
-    python -c 'from pathlib import Path; from lynchpin.analysis.knowledge import write_artefact_ledger; result = write_artefact_ledger(catalog=Path("""{{catalog}}"""), output=Path("""{{output}}"""), base_dir=Path(".").resolve()); missing_list = ", ".join(result.missing_artifacts); missing = f" (missing paths: {missing_list})" if missing_list else ""; action = "Wrote" if result.wrote else ("Reused" if result.missing_artifacts else "Artefact ledger unchanged at"); message = f"{action} {result.artefact_count} artefacts -> {result.output}{missing}" if action != "Artefact ledger unchanged at" else f"{action} {result.output}"; print(message)'
+    python -m lynchpin.analysis.knowledge artefact-index --catalog "{{catalog}}" --output "{{output}}" --base-dir .
 
 # Summarize a session transcript into artefacts/knowledge/sessions.
-summarise-session input output="" model="" max_chars="20000" force="false":
-    python -c 'from pathlib import Path; from lynchpin.analysis.knowledge import summarise_session_transcript; output = Path("""{{output}}""") if """{{output}}""".strip() else None; force = """{{force}}""".strip().lower() in {"1", "true", "yes", "on"}; result = summarise_session_transcript(Path("""{{input}}"""), output=output, model="""{{model}}""", max_chars=int("""{{max_chars}}"""), force=force, log=print); print(f"Summary already exists at {result.output_path}" if result.skipped else f"Summary written to {result.output_path}")'
+summarise-session input output="" model="" backend="" max_chars="20000" force="false":
+    python -m lynchpin.analysis.knowledge summarise-session --input "{{input}}" --output "{{output}}" --model "{{model}}" --backend "{{backend}}" --max-chars "{{max_chars}}" --force "{{force}}"
 
 # --- Ingest -------------------------------------------------------------------------
 

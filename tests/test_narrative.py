@@ -17,8 +17,10 @@ from lynchpin.retrospective.narrative import (
     Narrative,
     NarrativeBackend,
     NarrativeKind,
+    _enrich_prompt_for_sdk,
     _generate_via_codex_exec,
     generate_date_range_narrative,
+    generate_narrative,
     _log_narrative,
     _resolve_backend,
     build_contrast_prompt,
@@ -513,6 +515,59 @@ class TestNarrativeBackends:
         assert cost_usd == 0.0
         assert captured["prompt"] == "write a summary"
         assert captured["system_prompt"] == "system prompt"
+
+    def test_enrich_prompt_for_sdk_includes_prequeried_context(self, monkeypatch):
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._query_git_commits",
+            lambda start, end: "### sinex\nabc123 ship feature",
+        )
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._query_duckdb_context",
+            lambda start, end: "### Episodes\nfocus-sprint",
+        )
+
+        enriched = _enrich_prompt_for_sdk("base prompt", NarrativeKind.week, "2026-W11")
+
+        assert enriched.startswith("base prompt")
+        assert "## Git commits" in enriched
+        assert "abc123 ship feature" in enriched
+        assert "## Warehouse data" in enriched
+        assert "focus-sprint" in enriched
+
+    def test_generate_narrative_uses_claude_backend_enrichment(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._enrich_prompt_for_sdk",
+            lambda prompt, kind, key: f"enriched::{kind.value}::{key}::{prompt}",
+        )
+
+        async def fake_generate(prompt: str, model: str | None):
+            captured["prompt"] = prompt
+            captured["model"] = model
+            return "claude-sonnet", "claude narrative", 11, 7, 0.0
+
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._generate_via_claude_agent_sdk",
+            fake_generate,
+        )
+        monkeypatch.setattr("lynchpin.retrospective.narrative._log_narrative", lambda narrative: None)
+
+        result = asyncio.run(
+            generate_narrative(
+                "write a summary",
+                NarrativeKind.week,
+                "2026-W11",
+                backend="claude-agent-sdk",
+                model="claude-sonnet",
+            )
+        )
+
+        assert captured["prompt"] == "enriched::week::2026-W11::write a summary"
+        assert captured["model"] == "claude-sonnet"
+        assert result.backend == "claude-agent-sdk"
+        assert result.model == "claude-sonnet"
+        assert result.text == "claude narrative"
 
     def test_generate_date_range_narrative_uses_window_and_range_kind(self, monkeypatch):
         fake_day = _make_day(date=date(2026, 3, 7))

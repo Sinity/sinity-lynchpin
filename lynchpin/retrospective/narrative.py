@@ -6,8 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent
@@ -36,6 +37,51 @@ Rules:
 - Be specific about projects, modes, topics, or episodes when present.
 - Prefer concrete contrasts over vague praise.
 - Do not speculate beyond the data.
+"""
+
+ANALYTICAL_SYSTEM_PROMPT = """\
+You are Sinity's analytical retrospective agent. You receive pre-aggregated
+trajectory data as a rich starting context and have tools to deepen the
+analysis with targeted investigations.
+
+## Your approach
+The prompt already contains the core trajectory data (active hours, modes,
+projects, topics, per-day breakdowns). Do NOT re-query this baseline data —
+it's already in front of you. Instead, use your tools to:
+1. Check git commit messages for projects that show significant activity —
+   what was actually shipped/changed? Use `git -C /realm/project/<name> log
+   --oneline --after=YYYY-MM-DD --before=YYYY-MM-DD` for relevant repos.
+2. Investigate anomalies: unusual mode switches, activity spikes/dips,
+   high recovery following intense days.
+3. Cross-reference project time with commit density — high time + few commits
+   suggests deep work or debugging; low time + many commits suggests batch/AI work.
+4. Check the DuckDB warehouse for targeted queries only when the pre-aggregated
+   data raises questions you can't answer from context.
+
+## Data sources (for targeted follow-ups only)
+
+DuckDB warehouse: `duckdb artefacts/lynchpin/warehouse.duckdb -c "..."`
+- trajectory_day_project: per-project duration breakdown per day
+- trajectory_day_topic: per-topic breakdown per day
+- trajectory_episode: detected multi-day episodes
+- trajectory_signal: individual activity signals (timestamp, plane, duration)
+- webhistory_entries: browser history
+
+SQLite caches (under artefacts/lynchpin/cache/):
+- chatlog_transcripts.sqlite, session_records.sqlite, samsung_sleep_sessions.sqlite
+
+Git repos: /realm/project/{sinex,sinnix,polylogue,sinity-lynchpin,knowledgebase,...}
+
+## Analysis heuristics
+- Cross-reference trajectory project dominance with actual git commits
+- If recovery dominates, check what preceded it
+- Chat session counts often correlate with work complexity
+- AFK data in ActivityWatch only reflects last focus event — don't assume multitasking
+
+## Output
+Write a retrospective narrative in Markdown. Be specific — cite actual commits,
+project names, concrete time ranges. Prefer observations grounded in evidence
+over vague summaries. Structure with ## headings appropriate to the scale.
 """
 
 MODE_PROFILES = {
@@ -542,7 +588,8 @@ async def generate_narrative(
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     if backend_kind is NarrativeBackend.claude_agent_sdk:
-        resolved_model, text, input_tokens, output_tokens, cost_usd = await _generate_via_claude_agent_sdk(prompt)
+        enriched_prompt = _enrich_prompt_for_sdk(prompt, kind, key)
+        resolved_model, text, input_tokens, output_tokens, cost_usd = await _generate_via_claude_agent_sdk(enriched_prompt, model)
     else:
         resolved_model, text, input_tokens, output_tokens, cost_usd = await asyncio.to_thread(
             _generate_via_codex_exec,
@@ -601,31 +648,142 @@ def _resolve_backend(backend: str | NarrativeBackend | None) -> NarrativeBackend
     )
 
 
-async def _generate_via_claude_agent_sdk(prompt: str) -> tuple[str, str, int, int, float]:
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+_GIT_REPOS = [
+    "sinex", "sinnix", "polylogue", "sinity-lynchpin", "knowledgebase",
+    "scribe-tap", "intercept-bounce", "knowledge-extract",
+]
 
-    text = ""
-    input_tokens = 0
-    output_tokens = 0
-    cost_usd = 0.0
 
-    options = ClaudeAgentOptions(
-        system_prompt=NARRATIVE_SYSTEM_PROMPT,
-        allowed_tools=[],
-        env={"ANTHROPIC_API_KEY": ""},
+def _query_git_commits(start: date, end: date) -> str:
+    """Pre-query git commit logs for all active repos in a date range."""
+    after = (start - timedelta(days=1)).isoformat()
+    before = (end + timedelta(days=1)).isoformat()
+    sections: list[str] = []
+    for repo in _GIT_REPOS:
+        repo_path = Path(f"/realm/project/{repo}")
+        if not repo_path.exists():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "log", "--oneline",
+                 f"--after={after}", f"--before={before}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            commits = result.stdout.strip()
+            if commits:
+                sections.append(f"### {repo}\n{commits}")
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    return "\n\n".join(sections) if sections else "No commits found."
+
+
+def _query_duckdb_context(start: date, end: date) -> str:
+    """Pre-query DuckDB for per-project breakdowns and episodes."""
+    import shutil
+
+    duckdb_cli = shutil.which("duckdb")
+    if not duckdb_cli:
+        return ""
+    db = "artefacts/lynchpin/warehouse.duckdb"
+    sections: list[str] = []
+
+    # Per-project time per day
+    try:
+        result = subprocess.run(
+            [duckdb_cli, db, "-c",
+             f"SELECT date, project, round(duration_seconds/3600.0, 2) as hours "
+             f"FROM trajectory_day_project "
+             f"WHERE date BETWEEN '{start}' AND '{end}' "
+             f"AND duration_seconds > 300 "
+             f"ORDER BY date, duration_seconds DESC"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        if result.stdout.strip():
+            sections.append(f"### Per-project time (>5min)\n{result.stdout.strip()}")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Episodes overlapping the range
+    try:
+        result = subprocess.run(
+            [duckdb_cli, db, "-c",
+             f"SELECT label, start_date, end_date, trigger, confidence, "
+             f"dominant_mode, dominant_project "
+             f"FROM trajectory_episode "
+             f"WHERE end_date >= '{start}' AND start_date <= '{end}'"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        if result.stdout.strip():
+            sections.append(f"### Episodes\n{result.stdout.strip()}")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return "\n\n".join(sections)
+
+
+def _enrich_prompt_for_sdk(base_prompt: str, scale: NarrativeKind, key: str) -> str:
+    """Enrich a base prompt with pre-queried git commits and DuckDB context.
+
+    This eliminates the need for the agent to spend tool calls on basic data
+    collection — it starts with the full picture and only uses tools for
+    targeted follow-ups.
+    """
+    # Parse date range from the key/scale
+    start: date | None = None
+    end: date | None = None
+    try:
+        if scale is NarrativeKind.day:
+            start = end = date.fromisoformat(key)
+        elif scale is NarrativeKind.week:
+            # ISO week key like "2026-W10"
+            year, week_num = int(key[:4]), int(key.split("W")[1])
+            start = date.fromisocalendar(year, week_num, 1)
+            end = date.fromisocalendar(year, week_num, 7)
+        elif scale is NarrativeKind.month:
+            year, month = int(key[:4]), int(key[5:7])
+            start = date(year, month, 1)
+            next_month = date(year + (month // 12), (month % 12) + 1, 1)
+            end = next_month - timedelta(days=1)
+        elif scale is NarrativeKind.quarter:
+            year, q = int(key[:4]), int(key[-1])
+            start = date(year, (q - 1) * 3 + 1, 1)
+            end_month = q * 3
+            next_start = date(year + (end_month // 12), (end_month % 12) + 1, 1)
+            end = next_start - timedelta(days=1)
+    except (ValueError, IndexError):
+        pass
+
+    if start is None or end is None:
+        return base_prompt
+
+    enrichment_parts: list[str] = []
+
+    git_context = _query_git_commits(start, end)
+    if git_context and git_context != "No commits found.":
+        enrichment_parts.append(f"## Git commits ({start} to {end})\n\n{git_context}")
+
+    duckdb_context = _query_duckdb_context(start, end)
+    if duckdb_context:
+        enrichment_parts.append(f"## Warehouse data\n\n{duckdb_context}")
+
+    if not enrichment_parts:
+        return base_prompt
+
+    return base_prompt + "\n\n---\n\n" + "\n\n".join(enrichment_parts)
+
+
+async def _generate_via_claude_agent_sdk(
+    prompt: str, model: str | None = None,
+) -> tuple[str, str, int, int, float]:
+    from ..core.claude_sdk import run_claude_sdk
+
+    result = await run_claude_sdk(
+        prompt,
+        system_prompt=ANALYTICAL_SYSTEM_PROMPT,
+        model=model,
+        allowed_tools=["Read", "Bash", "Glob", "Grep"],
     )
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            text = message.result or ""
-            if message.total_cost_usd is not None:
-                cost_usd = float(message.total_cost_usd)
-            if message.usage:
-                fresh = message.usage.get("input_tokens", 0)
-                cached_create = message.usage.get("cache_creation_input_tokens", 0)
-                cached_read = message.usage.get("cache_read_input_tokens", 0)
-                input_tokens = fresh + cached_create + cached_read
-                output_tokens = message.usage.get("output_tokens", 0)
-    return "claude-agent-sdk", text, input_tokens, output_tokens, cost_usd
+    return result.model, result.text, result.input_tokens, result.output_tokens, result.cost_usd
 
 
 def _generate_via_codex_exec(prompt: str, model: str | None) -> tuple[str, str, int, int, float]:
