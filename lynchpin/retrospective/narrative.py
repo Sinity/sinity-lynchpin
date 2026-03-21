@@ -721,50 +721,239 @@ def _query_duckdb_context(start: date, end: date) -> str:
     return "\n\n".join(sections)
 
 
-def _enrich_prompt_for_sdk(base_prompt: str, scale: NarrativeKind, key: str) -> str:
-    """Enrich a base prompt with pre-queried git commits and DuckDB context.
-
-    This eliminates the need for the agent to spend tool calls on basic data
-    collection — it starts with the full picture and only uses tools for
-    targeted follow-ups.
-    """
-    # Parse date range from the key/scale
-    start: date | None = None
-    end: date | None = None
+def _parse_date_range(scale: NarrativeKind, key: str) -> tuple[date | None, date | None]:
+    """Extract start/end dates from a scale + key."""
     try:
         if scale is NarrativeKind.day:
-            start = end = date.fromisoformat(key)
-        elif scale is NarrativeKind.week:
-            # ISO week key like "2026-W10"
+            d = date.fromisoformat(key)
+            return d, d
+        if scale is NarrativeKind.week:
             year, week_num = int(key[:4]), int(key.split("W")[1])
-            start = date.fromisocalendar(year, week_num, 1)
-            end = date.fromisocalendar(year, week_num, 7)
-        elif scale is NarrativeKind.month:
+            return date.fromisocalendar(year, week_num, 1), date.fromisocalendar(year, week_num, 7)
+        if scale is NarrativeKind.month:
             year, month = int(key[:4]), int(key[5:7])
             start = date(year, month, 1)
-            next_month = date(year + (month // 12), (month % 12) + 1, 1)
-            end = next_month - timedelta(days=1)
-        elif scale is NarrativeKind.quarter:
+            end = date(year + (month // 12), (month % 12) + 1, 1) - timedelta(days=1)
+            return start, end
+        if scale is NarrativeKind.quarter:
             year, q = int(key[:4]), int(key[-1])
             start = date(year, (q - 1) * 3 + 1, 1)
             end_month = q * 3
-            next_start = date(year + (end_month // 12), (end_month % 12) + 1, 1)
-            end = next_start - timedelta(days=1)
+            end = date(year + (end_month // 12), (end_month % 12) + 1, 1) - timedelta(days=1)
+            return start, end
     except (ValueError, IndexError):
         pass
+    return None, None
 
+
+def _coalesce_aw_spans(start: date, end: date, min_seconds: float = 10) -> str:
+    """Coalesce raw ActivityWatch window events into meaningful focus spans.
+
+    Merges consecutive same-app-title point events into spans with computed
+    duration. Filters to spans > min_seconds. Returns formatted text.
+    """
+    from ..sources.captures.activitywatch import window_events
+
+    dt_start = datetime(start.year, start.month, start.day)
+    dt_end = datetime(end.year, end.month, end.day) + timedelta(days=1)
+
+    try:
+        events = list(window_events(start=dt_start, end=dt_end))
+    except Exception:
+        return ""
+
+    if not events:
+        return ""
+
+    # Build spans from consecutive same-app-title events
+    spans: list[dict] = []
+    for e in events:
+        app = e.data.get("app", "")
+        title = e.data.get("title", "")[:120]
+        if spans and spans[-1]["app"] == app and spans[-1]["title"] == title:
+            spans[-1]["end"] = e.start
+        else:
+            if spans:
+                spans[-1]["end"] = e.start
+            spans.append({"app": app, "title": title, "start": e.start, "end": e.start})
+
+    # Filter to meaningful spans
+    meaningful = [
+        s for s in spans
+        if (s["end"] - s["start"]).total_seconds() >= min_seconds
+    ]
+    if not meaningful:
+        return ""
+
+    # Format as timeline
+    lines = [f"### Activity spans ({len(meaningful)} spans from {len(events)} raw events)"]
+    for s in meaningful:
+        dur_m = (s["end"] - s["start"]).total_seconds() / 60
+        lines.append(
+            f"{s['start'].strftime('%H:%M')}–{s['end'].strftime('%H:%M')} "
+            f"({dur_m:.0f}m) {s['app']} | {s['title']}"
+        )
+    return "\n".join(lines)
+
+
+def _query_atuin_commands(start: date, end: date) -> str:
+    """Query Atuin shell commands for a date range."""
+    from ..sources.captures.atuin import iter_commands
+
+    dt_start = datetime(start.year, start.month, start.day)
+    dt_end = datetime(end.year, end.month, end.day) + timedelta(days=1)
+
+    try:
+        cmds = list(iter_commands(start=dt_start, end=dt_end))
+    except Exception:
+        return ""
+
+    if not cmds:
+        return ""
+
+    lines = [f"### Shell commands ({len(cmds)} commands)"]
+    for c in cmds:
+        exit_mark = "" if c.exit_code == 0 else f" [exit:{c.exit_code}]"
+        cwd_short = str(c.cwd).replace("/realm/project/", "")
+        lines.append(
+            f"{c.timestamp.strftime('%H:%M')} {cwd_short}$ {c.command[:120]}{exit_mark}"
+        )
+    return "\n".join(lines)
+
+
+def _query_git_detailed(start: date, end: date) -> str:
+    """Query git commits with full messages and stat summaries."""
+    after = (start - timedelta(days=1)).isoformat()
+    before = (end + timedelta(days=1)).isoformat()
+    sections: list[str] = []
+    for repo in _GIT_REPOS:
+        repo_path = Path(f"/realm/project/{repo}")
+        if not repo_path.exists():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "log",
+                 "--format=%h %ai %s%n%b",
+                 "--stat=80", "--stat-graph-width=10",
+                 f"--after={after}", f"--before={before}"],
+                capture_output=True, text=True, check=False, timeout=15,
+            )
+            output = result.stdout.strip()
+            if output:
+                sections.append(f"### {repo}\n{output}")
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    return "\n\n".join(sections) if sections else ""
+
+
+def _query_sleep_data(start: date, end: date) -> str:
+    """Query sleep data for a date range."""
+    sleep_path = Path("/realm/data/exports/health/processed/sleep_all_nights.csv")
+    if not sleep_path.exists():
+        return ""
+
+    try:
+        import csv
+        lines = ["### Sleep data"]
+        with sleep_path.open(encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                start_local = row.get("start_local", "")
+                if not start_local:
+                    continue
+                sleep_date = start_local[:10]
+                if sleep_date < str(start) or sleep_date > str(end + timedelta(days=1)):
+                    continue
+                dur = row.get("duration_minutes", "?")
+                score = row.get("sleep_score", "?")
+                source = row.get("source", "?")
+                lines.append(
+                    f"{start_local[:16]} → {row.get('end_local', '?')[:16]} "
+                    f"({dur}min, score:{score}, {source})"
+                )
+        return "\n".join(lines) if len(lines) > 1 else ""
+    except Exception:
+        return ""
+
+
+def _enrich_prompt_for_sdk(base_prompt: str, scale: NarrativeKind, key: str) -> str:
+    """Enrich a prompt with dense source data for the Agent SDK backend.
+
+    Layers data from most processed (orientation) to most raw (evidence):
+    1. Base prompt (trajectory summary — orientation)
+    2. Per-project time + episode context (structured processed)
+    3. Coalesced ActivityWatch spans (what was on screen)
+    4. Atuin shell commands (what was typed)
+    5. Git commits with messages + stats (what changed)
+    6. Sleep data (physiological context)
+    """
+    start, end = _parse_date_range(scale, key)
     if start is None or end is None:
         return base_prompt
 
     enrichment_parts: list[str] = []
 
-    git_context = _query_git_commits(start, end)
-    if git_context and git_context != "No commits found.":
-        enrichment_parts.append(f"## Git commits ({start} to {end})\n\n{git_context}")
-
+    # Structured processed data (DuckDB warehouse)
     duckdb_context = _query_duckdb_context(start, end)
     if duckdb_context:
-        enrichment_parts.append(f"## Warehouse data\n\n{duckdb_context}")
+        enrichment_parts.append(f"## Warehouse context\n\n{duckdb_context}")
+
+    # ActivityWatch focus spans (coalesced from raw events)
+    aw_spans = _coalesce_aw_spans(start, end)
+    if aw_spans:
+        enrichment_parts.append(f"## Desktop activity\n\n{aw_spans}")
+
+    # Shell commands
+    atuin_cmds = _query_atuin_commands(start, end)
+    if atuin_cmds:
+        enrichment_parts.append(f"## Shell history\n\n{atuin_cmds}")
+
+    # Git commits with full messages and stats
+    git_detailed = _query_git_detailed(start, end)
+    if git_detailed:
+        enrichment_parts.append(f"## Git commits ({start} to {end})\n\n{git_detailed}")
+
+    # Sleep data
+    sleep = _query_sleep_data(start, end)
+    if sleep:
+        enrichment_parts.append(f"## Health\n\n{sleep}")
+
+    # Temporal context: neighbor days + higher-scale narratives
+    if scale is NarrativeKind.day and start is not None:
+        from .synthesis import load_narratives
+
+        # Previous and next day narratives (sparse — just the text, agent already has its own full data)
+        prev_day = (start - timedelta(days=1)).isoformat()
+        next_day = (start + timedelta(days=1)).isoformat()
+        neighbors = load_narratives("day", [prev_day, next_day])
+        if prev_day in neighbors:
+            enrichment_parts.append(
+                f"## Previous day ({prev_day}) narrative\n\n{neighbors[prev_day][:3000]}"
+            )
+        if next_day in neighbors:
+            enrichment_parts.append(
+                f"## Next day ({next_day}) narrative\n\n{neighbors[next_day][:3000]}"
+            )
+
+        # Higher-scale context: week, month, quarter narratives if they exist
+        iso = start.isocalendar()
+        week_key = f"{iso[0]}-W{iso[1]:02d}"
+        month_key = start.strftime("%Y-%m")
+        quarter_key = f"{start.year}-Q{(start.month - 1) // 3 + 1}"
+
+        for label, kind_val, ctx_key in [
+            ("week", "week", week_key),
+            ("month", "month", month_key),
+            ("quarter", "quarter", quarter_key),
+        ]:
+            ctx_narratives = load_narratives(kind_val, [ctx_key])
+            if ctx_key in ctx_narratives:
+                # Truncate higher-scale context to keep budget reasonable
+                max_chars = {"week": 4000, "month": 3000, "quarter": 2000}[label]
+                enrichment_parts.append(
+                    f"## Current {label} ({ctx_key}) narrative (abbreviated)\n\n"
+                    f"{ctx_narratives[ctx_key][:max_chars]}..."
+                )
 
     if not enrichment_parts:
         return base_prompt

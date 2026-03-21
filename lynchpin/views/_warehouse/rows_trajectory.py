@@ -83,10 +83,10 @@ def _trajectory_months_dataset(
     since_text: Optional[str],
     until_text: Optional[str],
 ) -> tuple:
-    from ..trajectory.month import summarize_months as _summarize_months
-    from ..trajectory.quarter import summarize_quarters
-    from ..trajectory.year import summarize_years
-    from ..trajectory.week import summarize_weeks
+    from lynchpin.trajectory.month import summarize_months as _summarize_months
+    from lynchpin.trajectory.quarter import summarize_quarters
+    from lynchpin.trajectory.year import summarize_years
+    from lynchpin.trajectory.week import summarize_weeks
     _, _, days, _, raw_signals = _trajectory_dataset(since_text, until_text)
     months = tuple(_summarize_months(days, signals=raw_signals))
     quarters = tuple(summarize_quarters(months))
@@ -385,7 +385,7 @@ def _trajectory_day_topic_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
 
 
 def _trajectory_episode_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from ..trajectory.episode import detect_episodes
+    from lynchpin.trajectory.episode import detect_episodes
 
     _, _, days, _ = _trajectory_snapshot(ctx)
     episodes = detect_episodes(days)
@@ -409,7 +409,7 @@ def _trajectory_episode_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
 
 
 def _trajectory_anomaly_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from ..trajectory.anomaly import detect_anomalies
+    from lynchpin.trajectory.anomaly import detect_anomalies
 
     _, _, days, _ = _trajectory_snapshot(ctx)
     anomalies = detect_anomalies(days)
@@ -427,8 +427,8 @@ def _trajectory_anomaly_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
 
 
 def _trajectory_day_event_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from ..trajectory.anomaly import detect_anomalies
-    from ..trajectory.episode import detect_episodes
+    from lynchpin.trajectory.anomaly import detect_anomalies
+    from lynchpin.trajectory.episode import detect_episodes
 
     _, _, days, _ = _trajectory_snapshot(ctx)
 

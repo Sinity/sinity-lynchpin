@@ -518,21 +518,35 @@ class TestNarrativeBackends:
 
     def test_enrich_prompt_for_sdk_includes_prequeried_context(self, monkeypatch):
         monkeypatch.setattr(
-            "lynchpin.retrospective.narrative._query_git_commits",
-            lambda start, end: "### sinex\nabc123 ship feature",
-        )
-        monkeypatch.setattr(
             "lynchpin.retrospective.narrative._query_duckdb_context",
             lambda start, end: "### Episodes\nfocus-sprint",
+        )
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._coalesce_aw_spans",
+            lambda start, end, **kw: "### Activity spans\n10:00-11:00 kitty | coding",
+        )
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._query_atuin_commands",
+            lambda start, end: "### Shell commands\n10:05 sinex$ cargo test",
+        )
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._query_git_detailed",
+            lambda start, end: "### sinex\nabc123 2026-03-10 ship feature\n 2 files changed",
+        )
+        monkeypatch.setattr(
+            "lynchpin.retrospective.narrative._query_sleep_data",
+            lambda start, end: "",
         )
 
         enriched = _enrich_prompt_for_sdk("base prompt", NarrativeKind.week, "2026-W11")
 
         assert enriched.startswith("base prompt")
         assert "## Git commits" in enriched
-        assert "abc123 ship feature" in enriched
-        assert "## Warehouse data" in enriched
+        assert "abc123" in enriched
+        assert "## Warehouse context" in enriched
         assert "focus-sprint" in enriched
+        assert "## Desktop activity" in enriched
+        assert "## Shell history" in enriched
 
     def test_generate_narrative_uses_claude_backend_enrichment(self, monkeypatch):
         captured: dict[str, object] = {}

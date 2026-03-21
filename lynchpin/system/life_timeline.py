@@ -4,12 +4,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 import typer
 
 from lynchpin import retrospective
+
+# Suppress repetitive polylogue sqlite-vec warning that fires on every trajectory load
+logging.getLogger("polylogue.storage.search_providers").setLevel(logging.ERROR)
+try:
+    import structlog
+    _original_configure = structlog.is_configured
+    if not structlog.is_configured():
+        structlog.configure(
+            wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+        )
+except ImportError:
+    pass
 from lynchpin.system.life_timeline_paths import (
     DEFAULT_LIFE_TIMELINE_START,
     LATEST_LIFE_TIMELINE_DRILLDOWN_DIR,
@@ -65,6 +78,130 @@ def narrative(
             f"cost=${result.cost_usd:.4f}]",
             err=True,
         )
+
+
+@app.command()
+def synthesize(
+    key: str = typer.Argument(..., help="Target period key (e.g., 2026-W11, 2026-03, 2026-Q1)."),
+    scale: str = typer.Option("month", help="Scale: day | week | month | quarter"),
+    passes: int = typer.Option(1, "--passes", help="Synthesis passes (1=bottom-up, 2=+top-down, 3=+refinement)."),
+    force: bool = typer.Option(False, "--force/--no-force", help="Regenerate even if narratives exist."),
+    backend: str = typer.Option(
+        retrospective.DEFAULT_NARRATIVE_BACKEND,
+        "--backend",
+        help="Narrative backend: codex-exec | claude-agent-sdk.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional backend-specific model override.",
+    ),
+) -> None:
+    """Hierarchical narrative synthesis with bidirectional passes."""
+    from lynchpin.retrospective.synthesis import SynthesisConfig, synthesize_narrative
+
+    config = SynthesisConfig(passes=passes, force_regenerate=force)
+    try:
+        result = asyncio.run(
+            synthesize_narrative(
+                retrospective.NarrativeKind(scale),
+                key,
+                config=config,
+                backend=backend,
+                model=model,
+            )
+        )
+    except ValueError as exc:
+        typer.echo(f"[synthesize] {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.secho(f"\n## {result.key}\n", fg=typer.colors.CYAN)
+    typer.echo(result.text)
+    typer.echo(
+        f"\n[backend={result.backend} model={result.model} "
+        f"tokens: in={result.input_tokens} out={result.output_tokens} "
+        f"cost=${result.cost_usd:.4f}]",
+        err=True,
+    )
+
+
+@app.command()
+def workflow(
+    key: str = typer.Argument(..., help="Target period key (e.g., 2026-03, 2026-Q1)."),
+    name: str = typer.Option(
+        "comprehensive",
+        "--workflow",
+        help="Workflow: standard | bidirectional | analytical | comprehensive | quality | meta",
+    ),
+    scale: str = typer.Option("month", help="Scale: day | week | month | quarter"),
+    force: bool = typer.Option(False, "--force/--no-force", help="Regenerate even if narratives exist."),
+    backend: str = typer.Option(
+        retrospective.DEFAULT_NARRATIVE_BACKEND,
+        "--backend",
+        help="Narrative backend: codex-exec | claude-agent-sdk.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional backend-specific model override.",
+    ),
+) -> None:
+    """Run a named synthesis workflow with enhancement passes."""
+    from lynchpin.retrospective.synthesis import (
+        WORKFLOW_DEFINITIONS,
+        Workflow,
+        run_workflow,
+    )
+
+    try:
+        wf = Workflow(name)
+    except ValueError:
+        available = ", ".join(w.value for w in Workflow)
+        typer.echo(f"[workflow] Unknown workflow {name!r}. Available: {available}", err=True)
+        raise typer.Exit(1)
+
+    defn = WORKFLOW_DEFINITIONS[wf]
+    typer.echo(
+        f"[workflow] {wf.value}: {defn['description']}\n"
+        f"  passes={defn['passes']}, enhancements={[e.value for e in defn['enhancements']]}",
+        err=True,
+    )
+
+    try:
+        results = asyncio.run(
+            run_workflow(
+                wf,
+                retrospective.NarrativeKind(scale),
+                key,
+                backend=backend,
+                model=model,
+                force=force,
+            )
+        )
+    except ValueError as exc:
+        typer.echo(f"[workflow] {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    for pass_name, result in results.items():
+        typer.secho(f"\n{'='*60}", fg=typer.colors.BLUE)
+        typer.secho(f"  {pass_name.upper()}", fg=typer.colors.CYAN, bold=True)
+        typer.secho(f"{'='*60}\n", fg=typer.colors.BLUE)
+        typer.echo(result.text)
+        typer.echo(
+            f"\n[{pass_name} backend={result.backend} model={result.model} "
+            f"tokens: in={result.input_tokens} out={result.output_tokens} "
+            f"cost=${result.cost_usd:.4f}]",
+            err=True,
+        )
+
+    total_in = sum(r.input_tokens for r in results.values())
+    total_out = sum(r.output_tokens for r in results.values())
+    total_cost = sum(r.cost_usd for r in results.values())
+    typer.echo(
+        f"\n[workflow total: {len(results)} passes, "
+        f"tokens: in={total_in} out={total_out} cost=${total_cost:.4f}]",
+        err=True,
+    )
 
 
 @app.command()
