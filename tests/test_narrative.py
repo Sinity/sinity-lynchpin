@@ -570,14 +570,14 @@ class TestNarrativeBackends:
         result = asyncio.run(
             generate_narrative(
                 "write a summary",
-                NarrativeKind.week,
-                "2026-W11",
+                NarrativeKind.day,
+                "2026-03-15",
                 backend="claude-agent-sdk",
                 model="claude-sonnet",
             )
         )
 
-        assert captured["prompt"] == "enriched::week::2026-W11::write a summary"
+        assert captured["prompt"] == "enriched::day::2026-03-15::write a summary"
         assert captured["model"] == "claude-sonnet"
         assert result.backend == "claude-agent-sdk"
         assert result.model == "claude-sonnet"

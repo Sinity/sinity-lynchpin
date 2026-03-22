@@ -588,8 +588,13 @@ async def generate_narrative(
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     if backend_kind is NarrativeBackend.claude_agent_sdk:
-        enriched_prompt = _enrich_prompt_for_sdk(prompt, kind, key)
-        resolved_model, text, input_tokens, output_tokens, cost_usd = await _generate_via_claude_agent_sdk(enriched_prompt, model)
+        # Only enrich with raw source data at the day level.
+        # Higher scales (week/month/quarter) get their enrichment from
+        # _build_scale_enrichment in synthesis.py — adding raw AW/Atuin/git
+        # data for an entire month would blow past context limits.
+        if kind is NarrativeKind.day:
+            prompt = _enrich_prompt_for_sdk(prompt, kind, key)
+        resolved_model, text, input_tokens, output_tokens, cost_usd = await _generate_via_claude_agent_sdk(prompt, model)
     else:
         resolved_model, text, input_tokens, output_tokens, cost_usd = await asyncio.to_thread(
             _generate_via_codex_exec,
