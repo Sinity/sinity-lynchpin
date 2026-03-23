@@ -1,21 +1,17 @@
-"""Tests for hierarchical narrative synthesis (lynchpin.retrospective.synthesis)."""
+"""Tests for temporal scale utilities and narrative I/O (post-pipeline-pruning)."""
 from __future__ import annotations
 
 import json
-from datetime import date
 from pathlib import Path
 
 import pytest
 
-from lynchpin.retrospective.narrative import NarrativeKind
-from lynchpin.retrospective.synthesis import (
+from lynchpin.retrospective.narrative import NarrativeKind, load_narratives
+from lynchpin.retrospective.temporal import (
     SCALE_HIERARCHY,
-    SynthesisConfig,
-    _build_synthesis_prompt,
-    _prior_key,
     child_keys,
     child_scale,
-    load_narratives,
+    prior_key,
 )
 
 
@@ -69,35 +65,46 @@ class TestChildKeys:
     def test_day_returns_empty(self):
         assert child_keys(NarrativeKind.day, "2026-03-15") == []
 
+    def test_child_keys_month_boundary(self):
+        """Months that start/end mid-week should include all overlapping weeks."""
+        keys = child_keys(NarrativeKind.month, "2026-02")
+        assert len(keys) >= 4  # Feb 2026 spans at least 4 ISO weeks
+
 
 # ---------------------------------------------------------------------------
-# _prior_key
+# prior_key
 # ---------------------------------------------------------------------------
 
 
 class TestPriorKey:
     def test_week_prior(self):
-        assert _prior_key(NarrativeKind.week, "2026-W11") == "2026-W10"
+        assert prior_key(NarrativeKind.week, "2026-W11") == "2026-W10"
 
     def test_week_prior_year_boundary(self):
-        prior = _prior_key(NarrativeKind.week, "2026-W01")
-        assert prior is not None
-        assert "2025" in prior
+        result = prior_key(NarrativeKind.week, "2026-W01")
+        assert result is not None
+        assert "2025" in result
 
     def test_month_prior(self):
-        assert _prior_key(NarrativeKind.month, "2026-03") == "2026-02"
+        assert prior_key(NarrativeKind.month, "2026-03") == "2026-02"
 
     def test_month_prior_year_boundary(self):
-        assert _prior_key(NarrativeKind.month, "2026-01") == "2025-12"
+        assert prior_key(NarrativeKind.month, "2026-01") == "2025-12"
 
     def test_quarter_prior(self):
-        assert _prior_key(NarrativeKind.quarter, "2026-Q2") == "2026-Q1"
+        assert prior_key(NarrativeKind.quarter, "2026-Q2") == "2026-Q1"
 
     def test_quarter_prior_year_boundary(self):
-        assert _prior_key(NarrativeKind.quarter, "2026-Q1") == "2025-Q4"
+        assert prior_key(NarrativeKind.quarter, "2026-Q1") == "2025-Q4"
+
+    def test_prior_key_wraps_year_month(self):
+        assert prior_key(NarrativeKind.month, "2026-01") == "2025-12"
+
+    def test_prior_key_wraps_year_quarter(self):
+        assert prior_key(NarrativeKind.quarter, "2026-Q1") == "2025-Q4"
 
     def test_day_returns_none(self):
-        assert _prior_key(NarrativeKind.day, "2026-03-15") is None
+        assert prior_key(NarrativeKind.day, "2026-03-15") is None
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +114,12 @@ class TestPriorKey:
 
 class TestLoadNarratives:
     def test_loads_from_jsonl(self, tmp_path: Path, monkeypatch):
-        import lynchpin.retrospective.synthesis as synth_mod
+        import lynchpin.retrospective.narrative as narr_mod
 
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        monkeypatch.setattr(synth_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
 
         log_file = log_dir / "narrative_2026-03-20.jsonl"
         entries = [
@@ -131,11 +139,12 @@ class TestLoadNarratives:
         assert result["2026-03-14"] == "Day 14 narrative."
 
     def test_missing_keys_not_in_result(self, tmp_path: Path, monkeypatch):
-        import lynchpin.retrospective.synthesis as synth_mod
+        import lynchpin.retrospective.narrative as narr_mod
 
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        monkeypatch.setattr(synth_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
 
         log_file = log_dir / "narrative_2026-03-20.jsonl"
         log_file.write_text(
@@ -148,17 +157,19 @@ class TestLoadNarratives:
         assert "2026-03-16" not in result
 
     def test_empty_log_dir(self, tmp_path: Path, monkeypatch):
-        import lynchpin.retrospective.synthesis as synth_mod
+        import lynchpin.retrospective.narrative as narr_mod
 
-        monkeypatch.setattr(synth_mod, "_NARRATIVE_LOG_DIR", tmp_path / "nonexistent")
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", tmp_path / "nonexistent")
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
         assert load_narratives("day", ["2026-03-15"]) == {}
 
     def test_filters_by_kind(self, tmp_path: Path, monkeypatch):
-        import lynchpin.retrospective.synthesis as synth_mod
+        import lynchpin.retrospective.narrative as narr_mod
 
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        monkeypatch.setattr(synth_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
+        monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
 
         log_file = log_dir / "narrative_2026-03-20.jsonl"
         log_file.write_text(
@@ -169,35 +180,6 @@ class TestLoadNarratives:
         # Asking for "day" kind should not return the "week" entry
         assert load_narratives("day", ["2026-W11"]) == {}
         assert load_narratives("week", ["2026-W11"]) == {"2026-W11": "week text"}
-
-
-# ---------------------------------------------------------------------------
-# _build_synthesis_prompt
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSynthesisPrompt:
-    def test_includes_child_texts(self):
-        children = {
-            "2026-03-09": "Day 9 was intense.",
-            "2026-03-10": "Day 10 was quiet.",
-        }
-        prompt = _build_synthesis_prompt(NarrativeKind.week, "2026-W11", children)
-        assert "Day 9 was intense." in prompt
-        assert "Day 10 was quiet." in prompt
-        assert "2026-03-09" in prompt
-        assert "2026-03-10" in prompt
-
-    def test_includes_synthesis_instruction(self):
-        prompt = _build_synthesis_prompt(
-            NarrativeKind.week, "2026-W11", {"2026-03-09": "text"},
-        )
-        assert "Synthesize" in prompt
-        assert "cross-day" in prompt
-
-    def test_empty_children(self):
-        prompt = _build_synthesis_prompt(NarrativeKind.week, "2026-W11", {})
-        assert "Synthesize" in prompt
 
 
 # ---------------------------------------------------------------------------

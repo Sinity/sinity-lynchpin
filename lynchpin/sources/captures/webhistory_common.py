@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
+# Chrome CSV exports write timestamps in the user's local timezone without
+# any timezone indicator. This constant must match the timezone of the machine
+# where the browser history was exported.
+CHROME_CSV_LOCAL_TZ = ZoneInfo("Europe/Warsaw")
 
 WEBHISTORY_TIMESTAMP_FIELDS = (
     "iso_time",
@@ -80,6 +85,11 @@ def _parse_webhistory_iso_timestamp(value: str) -> datetime | None:
 
 
 def _parse_webhistory_slash_timestamp(value: str) -> datetime | None:
+    """Parse US-format date/time strings from Chrome CSV exports.
+
+    Chrome CSV exports write timestamps in local time without timezone info.
+    We treat them as local time (CHROME_CSV_LOCAL_TZ) and convert to UTC.
+    """
     for fmt in (
         "%m/%d/%Y %H:%M:%S",
         "%m/%d/%Y %H:%M",
@@ -87,7 +97,8 @@ def _parse_webhistory_slash_timestamp(value: str) -> datetime | None:
         "%m/%d/%y %H:%M",
     ):
         try:
-            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            naive = datetime.strptime(value, fmt)
+            return naive.replace(tzinfo=CHROME_CSV_LOCAL_TZ).astimezone(timezone.utc)
         except ValueError:
             continue
     return None

@@ -47,6 +47,13 @@ def _parse_dt(value: object) -> Optional[datetime]:
         return None
 
 
+def _normalize_ts(dt: Optional[datetime]) -> Optional[datetime]:
+    """Strip timezone info from datetime for consistent warehouse storage."""
+    if dt is not None and hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def _json_dumps(payload: object) -> str:
     return json.dumps(payload, default=str)
 

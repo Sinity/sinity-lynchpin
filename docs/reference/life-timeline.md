@@ -84,7 +84,7 @@ The digest renderer is reusable as `lynchpin.retrospective.render_life_timeline_
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_digest
+  python -m lynchpin.system.life_timeline.digest
 ```
 
 ## Quarterly / Annual Narrative
@@ -94,14 +94,14 @@ The quarterly/annual rollup renderer is reusable as
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_narrative
+  python -m lynchpin.system.life_timeline.narrative
 ```
 
 ## YouTube oEmbed Enrichment
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_oembed enrich
+  python -m lynchpin.system.life_timeline.oembed enrich
 ```
 
 This appends to the JSONL cache, infers the range from `monthly_life_latest.json`, and is safe to re-run.
@@ -114,15 +114,15 @@ direnv exec /realm/project/sinity-lynchpin \
   --markdown-output-dir artefacts/lifelog/life-timeline/life_drilldowns_latest
 
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_digest
+  python -m lynchpin.system.life_timeline.digest
 
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_narrative
+  python -m lynchpin.system.life_timeline.narrative
 ```
 
 Optional fourth step:
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
-  python -m lynchpin.system.life_timeline_oembed enrich
+  python -m lynchpin.system.life_timeline.oembed enrich
 ```

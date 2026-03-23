@@ -18,7 +18,8 @@ from typing import Iterator
 import typer
 
 from ..sources.captures import activitywatch
-from ..trajectory.signal import _collapse_window_like, _signal_id, _as_local, _text, TrajectorySignal
+from ..trajectory.signal import _signal_id, _as_local, _text, TrajectorySignal
+from ..trajectory.signal_sources import _collapse_window_like
 
 app = typer.Typer(help="ActivityWatch signal pre-computation")
 

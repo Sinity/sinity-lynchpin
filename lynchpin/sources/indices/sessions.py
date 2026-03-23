@@ -1,3 +1,8 @@
+"""Manual session tracking index.
+
+Note: Only 2 manually-recorded sessions exist. The session tracking concept
+has been largely superseded by the narrative system in ``lynchpin.retrospective``.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

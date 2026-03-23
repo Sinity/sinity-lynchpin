@@ -83,7 +83,7 @@ def test_detect_anomalies_returns_empty_for_short_window() -> None:
         _make_day(date(2026, 1, 1)),
         _make_day(date(2026, 1, 2)),
     ]
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
     assert anomalies == []
 
 
@@ -105,7 +105,7 @@ def test_detect_anomalies_rhythm_anomaly_fires() -> None:
     # 1 anomalous day at 1h (well beyond 2-sigma)
     days.append(_make_day(date(2026, 1, 15), active_seconds=3600.0))
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
 
     # Should detect rhythm_anomaly on 2026-01-15
     rhythm_anomalies = [a for a in anomalies if a.kind == "rhythm_anomaly"]
@@ -120,7 +120,7 @@ def test_detect_anomalies_no_spurious_anomalies_for_uniform_days() -> None:
     for i in range(20):
         days.append(_make_day(date(2026, 1, 1 + i), active_seconds=36000.0))
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
     assert anomalies == []
 
 
@@ -149,7 +149,7 @@ def test_detect_anomalies_project_attention_shift() -> None:
         )
     )
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
 
     project_shift = [a for a in anomalies if a.kind == "project_attention_shift"]
     assert len(project_shift) > 0
@@ -178,7 +178,7 @@ def test_detect_anomalies_recovery_anomaly_fires() -> None:
         )
     )
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
 
     recovery_anomalies = [a for a in anomalies if a.kind == "recovery_anomaly"]
     assert len(recovery_anomalies) > 0
@@ -208,7 +208,7 @@ def test_detect_anomalies_mode_shift_fires() -> None:
             )
         )
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
 
     mode_shifts = [a for a in anomalies if a.kind == "mode_shift"]
     assert len(mode_shifts) > 0
@@ -227,7 +227,7 @@ def test_detect_anomalies_severity_bounded() -> None:
     # Extreme outlier day
     days.append(_make_day(date(2026, 1, 15), active_seconds=100.0 * 3600))
 
-    anomalies = detect_anomalies(days, rolling_window=14)
+    anomalies = detect_anomalies(days, rolling_window=14, include_processed=False)
     for anomaly in anomalies:
         assert 0.0 <= anomaly.severity <= 1.0, f"Severity {anomaly.severity} out of range for {anomaly.kind}"
 

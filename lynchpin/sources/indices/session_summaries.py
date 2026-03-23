@@ -69,7 +69,7 @@ def iter_session_summaries_from(root: Path) -> Iterator[SessionSummaryRecord]:
 
 @persistent_cache(
     "session_summary_records",
-    depends_on=lambda root=None: files_signature(_summary_paths(_resolve_root(root))),
+    depends_on=lambda _root=None: files_signature(_summary_paths(_resolve_root(_root))),
 )
 def _load_session_summaries(root: Optional[Path] = None) -> List[_SessionSummaryRow]:
     summary_root = _resolve_root(root)

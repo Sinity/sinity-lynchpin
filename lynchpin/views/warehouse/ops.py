@@ -102,7 +102,7 @@ def _insert_table(conn: duckdb.DuckDBPyConnection, spec: TableSpec, ctx: Warehou
 
 
 _CREATE_TABLE_COL_RE = re.compile(r"\(\s*((?:[^,()]+(?:,\s*)?)+)\)", re.DOTALL)
-_COL_NAME_RE = re.compile(r"^\s*(\w+)\s+\w")
+_COL_NAME_RE = re.compile(r'^\s*"?(\w+)"?\s+\w')
 
 
 def _extract_col_names(create_sql: str) -> list[str]:

@@ -12,9 +12,9 @@ exists so agents can inspect the current typed contracts in one place.
   outputs).
 - Code layout:
   - public module/CLI: `lynchpin.views.warehouse`
-  - table/source specs: `lynchpin/views/_warehouse/specs.py`
-  - row extraction: `lynchpin/views/_warehouse/rows_{sources,trajectory,analysis}.py`
-  - materialization/build/CLI helpers: `lynchpin/views/_warehouse/ops.py`
+  - table/source specs: `lynchpin/views/warehouse/specs.py`
+  - row extraction: `lynchpin/views/warehouse/rows_{sources,trajectory,analysis}.py`
+  - materialization/build/CLI helpers: `lynchpin/views/warehouse/ops.py`
 
 `parquet` is the recommended default for portable views. DuckDB per-source outputs are still supported, but view definitions that use `ATTACH` require re-attaching on each new connection.
 
@@ -43,7 +43,7 @@ Exclude:
 - ephemeral caches that are not part of the inspectable contract.
 
 If a module exists and can be expressed as a stable table, it should have a
-table spec in `lynchpin/views/_warehouse/specs.py`.
+table spec in `lynchpin/views/warehouse/specs.py`.
 
 ## Tables
 

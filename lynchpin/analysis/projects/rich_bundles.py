@@ -213,7 +213,6 @@ RICH_PROJECT_PLANS: dict[str, RichProjectPlan] = {
             (
                 "analysis/README.md",
                 "analysis/collations/**",
-                "analysis/synthesis/**",
             ),
         ),
         SliceSpec(

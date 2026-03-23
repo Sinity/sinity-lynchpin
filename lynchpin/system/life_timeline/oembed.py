@@ -16,7 +16,7 @@ import requests
 import typer
 
 from lynchpin.sources.exports.takeout import TarReader, parse_youtube_watch_history_from_takeouts
-from lynchpin.system.life_timeline_paths import (
+from .paths import (
     LATEST_LIFE_TIMELINE_JSON,
     YOUTUBE_OEMBED_CACHE,
 )

@@ -150,15 +150,11 @@ def test_sessions_source_reads_markdown_docs_directly() -> None:
 def test_calendar_views_and_retrospective_api_use_shared_trajectory_layer() -> None:
     views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
     calendar_text = (REPO_ROOT / "lynchpin/retrospective/calendar.py").read_text(encoding="utf-8")
-    retrospective_text = (REPO_ROOT / "lynchpin/retrospective/narrative.py").read_text(encoding="utf-8")
     assert not (REPO_ROOT / "lynchpin/views/calendar_narratives.py").exists()
     assert "build_calendar_views" in views_text
     assert "CalendarScale.day" in views_text
     assert "load_date_window" in calendar_text
     assert "summarize_window_months" in calendar_text
-    assert "generate_date_range_narrative" in retrospective_text
-    assert "load_date_window" in retrospective_text
-    assert "NarrativeKind.range" in retrospective_text
 
 
 def test_calendar_docs_track_trajectory_surface() -> None:
@@ -281,12 +277,6 @@ def test_sinex_integration_plan_avoids_runtime_adapter_language() -> None:
     assert "Dual Run" not in text
     assert "reference implementation" in text
     assert "input contracts" in text
-
-
-def test_life_timeline_week_narrative_uses_iso_week_identifier() -> None:
-    text = (REPO_ROOT / "lynchpin/retrospective/narrative.py").read_text(encoding="utf-8")
-    assert "week.iso_week" in text
-    assert "w.week" not in text
 
 
 def test_baseline_module_writes_core_git_output() -> None:
@@ -414,7 +404,7 @@ def test_terminal_audit_detail_tracks_current_summary_fields() -> None:
 def test_life_timeline_cli_defaults_to_latest_surface() -> None:
     script = textwrap.dedent(
         """
-        from lynchpin.system.life_timeline_paths import (
+        from lynchpin.system.life_timeline.paths import (
             DEFAULT_LIFE_TIMELINE_START,
             LATEST_LIFE_TIMELINE_JSON,
         )
@@ -476,10 +466,9 @@ def test_takeout_source_discovery_prefers_seed_archives() -> None:
 
 
 def test_life_timeline_uses_source_aggregation_helpers() -> None:
-    text = (REPO_ROOT / "lynchpin/system/life_timeline.py").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "lynchpin/system/life_timeline/cli.py").read_text(encoding="utf-8")
     api_text = (REPO_ROOT / "lynchpin/retrospective/life_pipeline.py").read_text(encoding="utf-8")
     assert "retrospective.run_life_timeline(" in text
-    assert "retrospective.generate_scale_narratives(" in text
     assert "lp_reddit.summarize_activity(" in api_text
     assert "lp_wykop.summarize_activity(" in api_text
     assert "lp_raindrop.summarize_bookmarks(" in api_text

@@ -20,7 +20,7 @@ from ...sources.exports import (
 )
 from ...sources.indices import gitstats, session_summaries as session_summaries_source, sessions
 from ...sources.libraries import dendron, finance, substack
-from .core import WarehouseContext, _json_dumps, _maybe_limit, _parse_dt
+from .core import WarehouseContext, _json_dumps, _maybe_limit, _normalize_ts, _parse_dt
 
 
 def _activitywatch_rows(events: Iterable[activitywatch.ActivityWatchEvent], ctx: WarehouseContext) -> Iterator[Tuple]:
@@ -334,8 +334,8 @@ def _polylogue_session_profile_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             profile.is_continuation,
             profile.continuation_depth,
             profile.thread_id,
-            profile.first_message_at,
-            profile.last_message_at,
+            profile.first_message_at or profile.created_at,
+            profile.last_message_at or profile.created_at,
             profile.wall_duration_ms,
             _json_dumps(list(profile.auto_tags)),
         )
@@ -559,7 +559,7 @@ def _sleep_segments_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
 def _spotify_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
     for stream in _maybe_limit(spotify.iter_streams(), ctx.limit):
         yield (
-            stream.end_time,
+            _normalize_ts(stream.end_time),
             stream.artist,
             stream.track,
             stream.ms_played,

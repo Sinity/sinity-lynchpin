@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ from ...core.cache import file_signature, persistent_cache
 from ...core.config import get_config
 from ...core.projects import ALL_PROJECTS
 from .repos import GitRepository
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +45,13 @@ def iter_commits() -> Iterator[GitCommit]:
     path = cfg.baseline_dir / "git_numstat.jsonl"
     if not path.exists():
         return iter(())
+    import time
+    age_days = (time.time() - path.stat().st_mtime) / 86400
+    if age_days > 7:
+        log.warning(
+            "git_numstat.jsonl is %d days stale — run 'python -m lynchpin.system.baseline' to refresh",
+            int(age_days),
+        )
     def generator() -> Iterator[GitCommit]:
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:

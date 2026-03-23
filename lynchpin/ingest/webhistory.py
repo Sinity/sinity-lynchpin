@@ -41,9 +41,9 @@ def dedup(
         help="Directory to write deduped segments (defaults to the canonical webhistory dir).",
     ),
     tolerance_seconds: int = typer.Option(
-        5,
+        30,
         "--tolerance-seconds",
-        help="Timestamp tolerance (seconds) when identifying duplicates.",
+        help="Timestamp tolerance (seconds) when identifying duplicates. Default 30s catches Chrome's habit of recording the same page view multiple times within seconds.",
     ),
     files: List[str] = typer.Option(
         [],
@@ -199,27 +199,56 @@ def full_history(
         "--output",
         help="Output NDJSON path (defaults to the canonical webhistory derived directory).",
     ),
+    tolerance_seconds: int = typer.Option(
+        30,
+        "--tolerance-seconds",
+        help="Cross-file dedup tolerance in seconds (URL + timestamp window). Default 30s catches cross-export duplicates where the same visit was recorded with slightly different timestamps.",
+    ),
 ) -> None:
-    """Write merged NDJSON (url/title/norm/source/iso_time) from canonical segments."""
+    """Write merged, deduplicated, chronologically-sorted NDJSON from canonical segments."""
     cfg = get_config()
     resolved_root = root or cfg.webhistory_dir
     derived_dir = cfg.webhistory_dir.parent / "derived"
     resolved_output = output or (derived_dir / "full_history.ndjson")
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
 
+    # Collect all visits, then sort + dedup across files
+    visits: list[tuple[datetime, str, str, str]] = []
+    for visit in iter_gestalt_events(resolved_root):
+        visits.append((visit.timestamp, visit.url, visit.title, Path(visit.source).name))
+
+    visits.sort(key=lambda v: v[0])
+
+    seen: Dict[Tuple[str, datetime], bool] = {}
     count = 0
+    dedup_count = 0
     with resolved_output.open("w", encoding="utf-8") as fh:
-        for visit in iter_gestalt_events(resolved_root):
+        for ts, url, title, source in visits:
+            norm = normalize_url(url)
+            base = ts.replace(microsecond=0)
+            is_dup = False
+            for delta in range(-tolerance_seconds, tolerance_seconds + 1):
+                key = (norm, base + timedelta(seconds=delta))
+                if key in seen:
+                    is_dup = True
+                    dedup_count += 1
+                    break
+            if is_dup:
+                continue
+            seen[(norm, base)] = True
             record = {
-                "url": visit.url,
-                "title": visit.title,
-                "norm": normalize_url(visit.url),
-                "source": Path(visit.source).name,
-                "iso_time": visit.timestamp.isoformat(),
+                "url": url,
+                "title": title,
+                "norm": norm,
+                "source": source,
+                "iso_time": ts.isoformat(),
             }
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             count += 1
-    typer.secho(f"✓ Wrote {count} webhistory rows → {resolved_output}", fg=typer.colors.GREEN)
+    typer.secho(
+        f"✓ Wrote {count} webhistory rows → {resolved_output} ({dedup_count} cross-file duplicates removed)",
+        fg=typer.colors.GREEN,
+    )
 
 
 @app.command()

@@ -7,7 +7,6 @@ from datetime import date, timedelta
 import pytest
 
 from lynchpin.core.dates import iter_dates, parse_iso_dateish
-from lynchpin.retrospective.narrative import _fmt_top
 from lynchpin.analysis.knowledge.session_summaries import _estimate_cost
 
 
@@ -64,43 +63,6 @@ class TestDateHelpers:
     def test_parse_iso_dateish_rejects_empty(self) -> None:
         with pytest.raises(ValueError, match="cannot be empty"):
             parse_iso_dateish("   ")
-
-
-# ---------------------------------------------------------------------------
-# _fmt_top (retrospective.narrative)
-# ---------------------------------------------------------------------------
-
-class TestFmtTop:
-    def test_empty_returns_na(self) -> None:
-        assert _fmt_top(()) == "n/a"
-
-    def test_single_item_formatted(self) -> None:
-        result = _fmt_top((("nvim", 3600.0),))
-        assert "nvim" in result
-        assert "60.0m" in result
-
-    def test_multiple_items_comma_separated(self) -> None:
-        result = _fmt_top((("nvim", 3600.0), ("kitty", 1800.0)))
-        assert "nvim" in result
-        assert "kitty" in result
-        assert ", " in result
-
-    def test_truncated_at_four(self) -> None:
-        items = tuple((f"app{i}", float(i * 60)) for i in range(1, 10))
-        result = _fmt_top(items)
-        # Only first 4 items
-        assert "app5" not in result
-        assert "app1" in result
-
-    def test_seconds_converted_to_minutes(self) -> None:
-        # 90 seconds = 1.5 minutes
-        result = _fmt_top((("rust", 90.0),))
-        assert "1.5m" in result
-
-    def test_order_preserved(self) -> None:
-        items = (("alpha", 300.0), ("beta", 120.0))
-        result = _fmt_top(items)
-        assert result.index("alpha") < result.index("beta")
 
 
 # ---------------------------------------------------------------------------

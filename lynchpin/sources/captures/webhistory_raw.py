@@ -227,7 +227,9 @@ def _make_entry(
     dt: datetime, url: str, title: str, payload: dict[str, object], path: Path
 ) -> WebHistoryRawEntry:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        from .webhistory_common import CHROME_CSV_LOCAL_TZ
+
+        dt = dt.replace(tzinfo=CHROME_CSV_LOCAL_TZ)
     payload_json = json.dumps(payload, ensure_ascii=False)
     return WebHistoryRawEntry(
         timestamp=dt.astimezone(timezone.utc),

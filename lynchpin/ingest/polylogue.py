@@ -10,7 +10,7 @@ from pathlib import Path
 import typer
 
 from ..sources.exports.polylogue import iter_session_profiles
-from ..trajectory.signal import _profile_to_signals
+from ..trajectory.signal_sources import _profile_to_signals
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from ..sources.indices.gitstats import active_repo_paths, iter_numstat
-from ..trajectory.signal import _numstat_record_to_signal
+from ..trajectory.signal_sources import _numstat_record_to_signal
 
 app = typer.Typer(help="Git commit signal pre-computation")
 

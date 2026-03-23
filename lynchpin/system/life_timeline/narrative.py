@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from lynchpin import retrospective
-from lynchpin.system.life_timeline_paths import (
+from .paths import (
     LATEST_LIFE_TIMELINE_JSON,
     LIFE_TIMELINE_NARRATIVE_OUTPUT,
 )

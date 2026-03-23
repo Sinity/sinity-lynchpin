@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import time
@@ -23,7 +22,7 @@ from lynchpin.sources.exports import wykop as lp_wykop
 from lynchpin.sources.indices import gitstats as lp_gitstats
 from lynchpin.sources.libraries import finance as lp_finance
 from lynchpin.sources.libraries import knowledgebase as lp_knowledgebase
-from lynchpin.system.life_timeline_paths import (
+from lynchpin.system.life_timeline.paths import (
     YOUTUBE_OEMBED_CACHE,
     current_month_key,
 )
@@ -41,7 +40,6 @@ from .life_timeline import (
     build_work_summary,
     render_markdown,
 )
-from .narrative import DEFAULT_NARRATIVE_BACKEND, NarrativeKind, build_month_prompt, generate_narrative
 
 
 @dataclass(frozen=True)
@@ -117,9 +115,6 @@ def run_life_timeline(
     inputs: LifeTimelineInputs | None = None,
     markdown_output: Optional[Path] = None,
     markdown_output_dir: Optional[Path] = None,
-    generate_narratives: bool = False,
-    narrative_backend: str = DEFAULT_NARRATIVE_BACKEND,
-    narrative_model: Optional[str] = None,
 ) -> LifeTimelineResult:
     resolved_end_month = end_month or current_month_key()
     resolved_inputs = inputs or LifeTimelineInputs()
@@ -531,29 +526,6 @@ def run_life_timeline(
         "output_path": str(output),
         "months": monthly,
     }
-
-    if generate_narratives:
-        with _stage("Generate LLM narratives"):
-            for month in months:
-                traj = trajectory_months.get(month)
-                if traj is None:
-                    continue
-                prompt = build_month_prompt(traj, month_key=month)
-                try:
-                    result = asyncio.run(
-                        generate_narrative(
-                            prompt,
-                            NarrativeKind.month,
-                            month,
-                            backend=narrative_backend,
-                            model=narrative_model,
-                        )
-                    )
-                    if result.text and month in monthly:
-                        monthly[month]["narrative"] = result.text
-                    payload["months"] = monthly
-                except Exception as exc:
-                    print(f"[narrative] {month} failed: {exc}", file=sys.stderr, flush=True)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

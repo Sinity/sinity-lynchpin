@@ -1,4 +1,8 @@
-from .core import SourceSpec, TableSpec, WarehouseContext, _json_dumps, _maybe_limit, _parse_dt
+from __future__ import annotations
+
+import duckdb
+
+from .core import SourceSpec, TableSpec, WarehouseContext, _json_dumps, _maybe_limit, _normalize_ts, _parse_dt
 from .ops import (
     _extract_col_names,
     _parse_datetime_arg,
@@ -20,12 +24,14 @@ __all__ = [
     "_extract_col_names",
     "_json_dumps",
     "_maybe_limit",
+    "_normalize_ts",
     "_parse_datetime_arg",
     "_parse_dt",
     "_source_specs",
     "attach_sources",
     "build_views",
     "cli",
+    "duckdb",
     "materialize_sources",
     "refresh",
 ]

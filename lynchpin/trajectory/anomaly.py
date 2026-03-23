@@ -52,6 +52,7 @@ def detect_anomalies(
     days: Sequence[TrajectoryDay],
     *,
     rolling_window: int = 14,
+    include_processed: bool = True,
 ) -> list[TrajectoryAnomaly]:
     """Detect anomalies across daily trajectory data.
 
@@ -163,5 +164,216 @@ def detect_anomalies(
                         evidence={"from_mode": baseline_mode, "to_mode": new_mode, "run_days": 3},
                     ))
 
+    # --- Processed-source anomalies (require live data access) ---
+    if include_processed:
+        try:
+            anomalies.extend(_detect_deep_work_drought(sorted_days, rolling_window))
+        except Exception:
+            pass
+
+        try:
+            anomalies.extend(_detect_delegation_phase_shift(sorted_days, rolling_window))
+        except Exception:
+            pass
+
+        try:
+            anomalies.extend(_detect_fragmentation_spike(sorted_days, rolling_window))
+        except Exception:
+            pass
+
     anomalies.sort(key=lambda a: (a.date, a.kind))
+    return anomalies
+
+
+def _detect_deep_work_drought(
+    sorted_days: list[TrajectoryDay],
+    rolling_window: int,
+) -> list[TrajectoryAnomaly]:
+    """3+ consecutive days without any deep work block (>30min).
+
+    Uses the deep_work processed module to check each day for blocks.
+    """
+    from datetime import datetime, timedelta
+
+    anomalies: list[TrajectoryAnomaly] = []
+
+    try:
+        from ..sources.processed.deep_work import iter_deep_work
+    except ImportError:
+        return anomalies
+
+    if len(sorted_days) < 3:
+        return anomalies
+
+    # Check each day for deep work presence
+    days_with_deep_work: set[date] = set()
+    first_date = sorted_days[0].date
+    last_date = sorted_days[-1].date
+    total_blocks = 0
+    try:
+        dt_start = datetime(first_date.year, first_date.month, first_date.day)
+        dt_end = datetime(last_date.year, last_date.month, last_date.day) + timedelta(days=1)
+        for block in iter_deep_work(start=dt_start, end=dt_end):
+            total_blocks += 1
+            if block.duration_minutes >= 30:
+                days_with_deep_work.add(block.start.date())
+    except Exception:
+        return anomalies
+
+    # If deep work was found on fewer than 20% of active days, data coverage
+    # is too sparse to reliably detect droughts.
+    active_days = sum(1 for d in sorted_days if d.active_seconds >= 1800)
+    if active_days == 0 or len(days_with_deep_work) / active_days < 0.2:
+        return anomalies
+
+    # Find runs of 3+ consecutive active days without deep work
+    consecutive_drought = 0
+    drought_start: date | None = None
+
+    for day in sorted_days:
+        if day.active_seconds < 1800:  # skip inactive days
+            consecutive_drought = 0
+            drought_start = None
+            continue
+
+        if day.date not in days_with_deep_work:
+            if consecutive_drought == 0:
+                drought_start = day.date
+            consecutive_drought += 1
+
+            if consecutive_drought == 3 and drought_start is not None:
+                anomalies.append(TrajectoryAnomaly(
+                    anomaly_id=_anomaly_id(drought_start, "deep_work_drought"),
+                    date=drought_start,
+                    kind="deep_work_drought",
+                    severity=min(consecutive_drought / 7.0, 1.0),
+                    description=f"3+ consecutive active days without deep work (>30min) starting {drought_start}",
+                    baseline_value=1.0,  # expected: at least 1 block/day
+                    actual_value=0.0,
+                    evidence={"drought_days": consecutive_drought},
+                ))
+        else:
+            consecutive_drought = 0
+            drought_start = None
+
+    return anomalies
+
+
+def _detect_delegation_phase_shift(
+    sorted_days: list[TrajectoryDay],
+    rolling_window: int,
+) -> list[TrajectoryAnomaly]:
+    """Delegation mode changed from prior 7-day average."""
+    anomalies: list[TrajectoryAnomaly] = []
+
+    try:
+        from ..sources.processed.delegation import iter_delegation_metrics
+    except ImportError:
+        return anomalies
+
+    if len(sorted_days) < 8:
+        return anomalies
+
+    first_date = sorted_days[0].date
+    last_date = sorted_days[-1].date
+    try:
+        metrics = list(iter_delegation_metrics(start=first_date, end=last_date))
+    except Exception:
+        return anomalies
+
+    if not metrics or len(metrics) < 8:
+        return anomalies
+
+    for i in range(7, len(metrics)):
+        window = metrics[i - 7:i]
+        current = metrics[i]
+
+        # Count dominant mode in window
+        mode_counts: Counter[str] = Counter()
+        for m in window:
+            mode_counts[m.delegation_mode] += 1
+        if not mode_counts:
+            continue
+        baseline_mode = mode_counts.most_common(1)[0][0]
+        baseline_freq = mode_counts[baseline_mode] / len(window)
+
+        if current.delegation_mode != baseline_mode and baseline_freq >= 0.5:
+            anomalies.append(TrajectoryAnomaly(
+                anomaly_id=_anomaly_id(current.date, f"delegation_phase_shift_{current.delegation_mode}"),
+                date=current.date,
+                kind="delegation_phase_shift",
+                severity=min(baseline_freq, 1.0),
+                description=(
+                    f"Delegation mode shifted: {baseline_mode} → {current.delegation_mode} "
+                    f"(prior 7d was {baseline_freq:.0%} {baseline_mode})"
+                ),
+                baseline_value=baseline_freq,
+                actual_value=0.0,
+                evidence={
+                    "from_mode": baseline_mode,
+                    "to_mode": current.delegation_mode,
+                    "baseline_frequency": round(baseline_freq, 2),
+                },
+            ))
+
+    return anomalies
+
+
+def _detect_fragmentation_spike(
+    sorted_days: list[TrajectoryDay],
+    rolling_window: int,
+) -> list[TrajectoryAnomaly]:
+    """Context switch fragmentation_score >2 sigma from 14-day baseline."""
+    anomalies: list[TrajectoryAnomaly] = []
+
+    try:
+        from ..sources.processed.context_switches import iter_context_switch_metrics
+    except ImportError:
+        return anomalies
+
+    if len(sorted_days) < rolling_window + 1:
+        return anomalies
+
+    first_date = sorted_days[0].date
+    last_date = sorted_days[-1].date
+    try:
+        metrics = list(iter_context_switch_metrics(start=first_date, end=last_date))
+    except Exception:
+        return anomalies
+
+    if len(metrics) < rolling_window + 1:
+        return anomalies
+
+    for i in range(rolling_window, len(metrics)):
+        window_scores = [m.fragmentation_score for m in metrics[max(0, i - rolling_window):i]]
+        current = metrics[i]
+
+        if len(window_scores) < 5:
+            continue
+
+        mean_score = statistics.mean(window_scores)
+        stdev_score = statistics.stdev(window_scores) if len(window_scores) > 1 else 0
+        if stdev_score <= 0:
+            continue
+
+        z_score = (current.fragmentation_score - mean_score) / stdev_score
+        if z_score > 2.0:
+            anomalies.append(TrajectoryAnomaly(
+                anomaly_id=_anomaly_id(current.date, "fragmentation_spike"),
+                date=current.date,
+                kind="fragmentation_spike",
+                severity=min(z_score / 4.0, 1.0),
+                description=(
+                    f"Fragmentation score {current.fragmentation_score:.2f} is "
+                    f"{z_score:.1f}σ above {rolling_window}d baseline {mean_score:.2f}"
+                ),
+                baseline_value=mean_score,
+                actual_value=current.fragmentation_score,
+                evidence={
+                    "z_score": round(z_score, 2),
+                    "stdev": round(stdev_score, 3),
+                    "total_switches": current.total_switches,
+                },
+            ))
+
     return anomalies
