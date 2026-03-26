@@ -1,8 +1,4 @@
-"""Context packet entry point — delegates to packet_builders.
-
-Maintains the ``build_recent_state()`` API for backward compatibility
-while composing from the typed packet builder system.
-"""
+"""Context packet entry point built on shared evidence-window summaries."""
 
 from __future__ import annotations
 
@@ -17,9 +13,5 @@ def build_recent_state(
     days: int = 14,
     end: Optional[datetime] = None,
 ) -> dict[str, object]:
-    """Build a compact context packet for LLM consumption.
-
-    This is the original entry point. It now delegates to
-    ``packet_builders.build_current_state`` with "standard" tier.
-    """
+    """Build a standard-tier context packet for LLM consumption."""
     return build_current_state(days=days, end=end, tier="standard")

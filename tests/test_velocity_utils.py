@@ -1,8 +1,8 @@
-"""Tests for pure helper functions in lynchpin.analysis.projects.velocity."""
+"""Tests for pure helper functions in lynchpin.analysis.projects.velocity_analysis."""
 
 from __future__ import annotations
 
-from lynchpin.analysis.projects.velocity import (
+from lynchpin.analysis.projects.velocity_analysis import (
     CategoryStats,
     CommitEvent,
     _collapse_commit,
@@ -11,7 +11,7 @@ from lynchpin.analysis.projects.velocity import (
 
 
 # ---------------------------------------------------------------------------
-# _skip_common (velocity.py version — checks SKIP_EXTENSIONS + SKIP_PATHS)
+# _skip_common — checks SKIP_EXTENSIONS + SKIP_PATHS
 # ---------------------------------------------------------------------------
 
 class TestSkipCommon:

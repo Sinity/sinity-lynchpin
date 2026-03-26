@@ -63,8 +63,8 @@ These modules write artefacts/exports and should never run implicitly from
 - `lynchpin.ingest.webhistory` → `/realm/data/captures/webhistory/gestalt/{data,derived}` (dedup segments + canonical full_history + reports).
 - `lynchpin.ingest.fbmessenger_export` → `/realm/data/exports/comms/facebook-messenger/processed/fbmessengerexport.sqlite` (API-backed export).
 - `lynchpin.ingest.wykop_export` → `/realm/data/exports/wykop/raw/<user>/` exports (network I/O).
-- `lynchpin.views.calendar_views` → `artefacts/calendar/views/` (writes only when content changes).
-- `lynchpin.retrospective.narrative` generation → `artefacts/retrospective/narratives/logs/` (append-only run logs; callers decide whether final rendered narrative files should be rewritten).
+- `lynchpin.context.reports` → `artefacts/context/reports/` (writes only when content changes).
+- `lynchpin.retrospective.narrative` writes canonical markdown files under `artefacts/retrospective/narratives/YYYY/...`; rewrites preserve prior-version frontmatter instead of appending compatibility logs.
 - `lynchpin.analysis.knowledge` → CSV ledgers under `artefacts/knowledge/ledgers/` via `just session-index` / `just artefact-index`.
 - `lynchpin.views.knowledge_graph` → DuckDB snapshot + optional Parquet.
 - `lynchpin.analysis.projects` → repomix-backed context bundles under
@@ -79,9 +79,7 @@ These modules write artefacts/exports and should never run implicitly from
   `artefacts/knowledge/sessions/logs/session_summaries.jsonl`.
 - The command is **idempotent by default** (skips if output exists), but
   `--force` intentionally re-runs the model.
-- `lynchpin.retrospective.narrative` logs every successful run to
-  `artefacts/retrospective/narratives/logs/narrative_YYYY-MM-DD.jsonl`
-  (backend, model, text, and token usage/cost when the backend reports it).
+- `lynchpin.retrospective.narrative` is intentionally non-append-only: the canonical file for a period is rewritten in place, with prior passes preserved in frontmatter.
 
 ## Practical guidance
 1. Use `lynchpin.sources.*` for reads; these are designed to be lazy and safe.

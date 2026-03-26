@@ -35,6 +35,7 @@ class LynchpinConfig:
     asciinema_root: Path
     audio_root: Path
     screenshot_root: Path
+    keylog_root: Path
     cache_dir: Path
     warehouse_root: Path
     warehouse_db: Path
@@ -174,6 +175,9 @@ class LynchpinConfig:
         screenshot_root = Path(
             os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", captures_root / "screenshot")
         )
+        keylog_root = Path(
+            os.environ.get("LYNCHPIN_KEYLOG_ROOT", captures_root / "keylog")
+        )
         cache_dir = Path(
             os.environ.get("LYNCHPIN_CACHE_DIR", repo_root / "artefacts/lynchpin/cache")
         )
@@ -240,6 +244,7 @@ class LynchpinConfig:
             asciinema_root=asciinema_root,
             audio_root=audio_root,
             screenshot_root=screenshot_root,
+            keylog_root=keylog_root,
             cache_dir=cache_dir,
             warehouse_root=warehouse_root,
             warehouse_db=warehouse_db,

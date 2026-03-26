@@ -1,4 +1,4 @@
-"""Pre-compute polylogue trajectory signals for the fast-path artefact cache."""
+"""Pre-compute polylogue activity signals for the fast-path artefact cache."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import typer
 
 from ..sources.exports.polylogue import iter_session_profiles
-from ..trajectory.signal_sources import _profile_to_signals
+from ..signals.sources import _profile_to_signals
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,10 @@ _INGEST_START = datetime(2024, 1, 1, tzinfo=timezone.utc)
 def signals(
     output: Path = typer.Option(_DEFAULT_OUTPUT, "--output", help="Output JSONL path"),
 ) -> None:
-    """Pre-compute trajectory signals for all Polylogue sessions and write to JSONL.
+    """Pre-compute activity signals for all Polylogue sessions and write to JSONL.
 
     Run this periodically (e.g. via `just ingest-polylogue`) to keep the
-    artefact fresh so that trajectory signal loading uses the fast path.
+    artefact fresh so that activity-signal loading uses the fast path.
     """
     end = datetime.now(timezone.utc)
     output.parent.mkdir(parents=True, exist_ok=True)

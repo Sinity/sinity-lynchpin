@@ -1,12 +1,11 @@
-"""Tests for topic extraction and scoring functions in trajectory/rules.py,
+"""Tests for topic extraction and scoring functions in signals/rules.py,
 trajectory/quarter.py, and context/selection.py."""
 
 from __future__ import annotations
 
-import pytest
 
+from lynchpin.signals.rules import _extract_topics_for_text
 from lynchpin.trajectory.quarter import _quarter_key
-from lynchpin.trajectory.rules import _extract_topics_for_text
 from lynchpin.context.selection import _score_packet
 
 
@@ -50,7 +49,7 @@ class TestQuarterKeyFromMonth:
 
 
 # ---------------------------------------------------------------------------
-# _extract_topics_for_text (trajectory/rules.py)
+# _extract_topics_for_text (signals/rules.py)
 # ---------------------------------------------------------------------------
 
 class TestExtractTopicsForText:

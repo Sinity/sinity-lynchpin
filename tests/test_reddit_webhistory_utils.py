@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
-import pytest
 
 from lynchpin.sources.captures.webhistory import _tokenize_topic
 from lynchpin.sources.exports.reddit import _parse_datetime as _reddit_parse_dt

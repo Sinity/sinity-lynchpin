@@ -297,10 +297,10 @@ def _date_ranges_overlap(a_start: str, a_end: str, b_start: str, b_end: str) -> 
     return a_start <= b_end and b_start <= a_end
 
 
-def build_episode_nodes_trajectory(days: Optional[int] = None) -> List[Dict]:
-    """Export TrajectoryEpisode objects as temporally-grounded KG nodes."""
+def build_episode_nodes_temporal(days: Optional[int] = None) -> List[Dict]:
+    """Export derived episode rollups as temporally-grounded KG nodes."""
     from ..trajectory.day import summarize_days
-    from ..trajectory.episode import detect_episodes
+    from ..context.patterns import detect_episodes
 
     day_list = summarize_days(days=days if days is not None else 90)
     episodes = detect_episodes(day_list)
@@ -328,7 +328,7 @@ def build_episode_nodes_trajectory(days: Optional[int] = None) -> List[Dict]:
     return nodes
 
 
-def build_theme_nodes_trajectory(days: Optional[int] = None) -> List[Dict]:
+def build_theme_nodes_temporal(days: Optional[int] = None) -> List[Dict]:
     """Export Theme objects as KG nodes with temporal validity spans."""
     from ..trajectory.day import summarize_days
     from ..trajectory.month import summarize_months as _summarize_months
@@ -406,24 +406,24 @@ def build_temporal_edges(
     return edges
 
 
-@app.command("build-trajectory")
-def build_trajectory(
+@app.command("build-temporal")
+def build_temporal(
     days: Optional[int] = typer.Option(None, "--days", help="Lookback days (default: all)"),
     output_dir: Path = typer.Option(
         Path("artefacts/knowledge/graph"),
         "--output-dir",
-        help="Directory for trajectory-nodes.json and trajectory-edges.json",
+        help="Directory for temporal-nodes.json and temporal-edges.json",
     ),
 ) -> None:
-    """Export trajectory episodes and themes as temporally-grounded KG nodes."""
-    episode_nodes = build_episode_nodes_trajectory(days=days)
-    theme_nodes = build_theme_nodes_trajectory(days=days)
+    """Export derived episode and theme rollups as temporally-grounded KG nodes."""
+    episode_nodes = build_episode_nodes_temporal(days=days)
+    theme_nodes = build_theme_nodes_temporal(days=days)
     all_nodes = episode_nodes + theme_nodes
     edges = build_temporal_edges(episode_nodes, theme_nodes)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    nodes_path = output_dir / "trajectory-nodes.json"
-    edges_path = output_dir / "trajectory-edges.json"
+    nodes_path = output_dir / "temporal-nodes.json"
+    edges_path = output_dir / "temporal-edges.json"
 
     nodes_path.write_text(
         json.dumps(all_nodes, indent=2, ensure_ascii=False, default=str),
@@ -435,7 +435,7 @@ def build_trajectory(
     )
 
     typer.echo(
-        f"Trajectory KG: {len(all_nodes)} nodes "
+        f"Temporal KG: {len(all_nodes)} nodes "
         f"({len(episode_nodes)} episodes, {len(theme_nodes)} themes), "
         f"{len(edges)} edges"
     )

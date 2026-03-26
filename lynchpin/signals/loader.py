@@ -1,4 +1,4 @@
-"""JSONL artefact loading, binary search, and deduplication for trajectory signals."""
+"""JSONL artefact loading, binary search, and deduplication for shared signals."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from ..sources.captures.instrumentation import (
     TerminalSessionEvent,
     TerminalSessionMetadata,
 )
-from .signal import TrajectorySignal, _as_local, _parse_optional_dt
+from . import ActivitySignal, _as_local, _parse_optional_dt
 
 _AW_WINDOW_ARTEFACT_DIR = Path("artefacts/ingest/aw_window")
 _AW_WEB_ARTEFACT_DIR = Path("artefacts/ingest/aw_web")
@@ -106,7 +106,7 @@ def _iter_aw_signals_from_monthly_jsonl(
     end: datetime,
     *,
     seen_signal_ids: set[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Read pre-collapsed AW signals from monthly partitioned JSONL files.
 
     Files are written in chronological order. Binary search jumps past records
@@ -154,7 +154,7 @@ def _iter_aw_signals_from_monthly_jsonl(
                 sig_id = d.get("signal_id") or ""
                 if sig_id:
                     seen_signal_ids.add(sig_id)
-                yield TrajectorySignal(
+                yield ActivitySignal(
                     signal_id=sig_id,
                     source=d.get("source") or "",
                     kind=d.get("kind") or "",
@@ -183,7 +183,7 @@ def _aw_signals_mixed(
     app_key: Optional[str],
     title_key: Optional[str],
     url_key: Optional[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Yield AW signals, using monthly JSONL artefacts where available and DB for gaps.
 
     For months with an artefact file: read the pre-collapsed JSONL (fast, no DB hit).
@@ -192,7 +192,7 @@ def _aw_signals_mixed(
     pick up any events captured since the last `just ingest-aw` run.
     """
     from calendar import monthrange as _monthrange
-    from .signal_sources import _collapse_window_like
+    from .sources import _collapse_window_like
 
     seen_signal_ids: set[str] = set()
 
@@ -416,7 +416,7 @@ def _iter_polylogue_signals_from_jsonl(
     end: datetime,
     *,
     seen_conv_ids: set[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Read pre-computed polylogue signals from JSONL artefact, filtering to [start, end].
 
     File is in descending start-time order (newest first), but sessions can span
@@ -460,7 +460,7 @@ def _iter_polylogue_signals_from_jsonl(
             conv_id = (d.get("evidence") or {}).get("conversation_id", "")
             if conv_id:
                 seen_conv_ids.add(conv_id)
-            yield TrajectorySignal(
+            yield ActivitySignal(
                 signal_id=d.get("signal_id") or "",
                 source=d.get("source") or "polylogue.session",
                 kind=d.get("kind") or "session",
@@ -484,7 +484,7 @@ def _iter_git_signals_from_jsonl(
     end: datetime,
     *,
     seen_shas: set[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Read pre-computed git commit signals from JSONL artefact.
 
     File is chronologically sorted; breaks early when signal_start >= end.
@@ -518,7 +518,7 @@ def _iter_git_signals_from_jsonl(
             sha = (d.get("evidence") or {}).get("commit", "")
             if sha:
                 seen_shas.add(sha)
-            yield TrajectorySignal(
+            yield ActivitySignal(
                 signal_id=d.get("signal_id") or "",
                 source=d.get("source") or "git.commit",
                 kind=d.get("kind") or "git_commit",

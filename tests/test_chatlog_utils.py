@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.sources.exports.chatlog import (
     _coerce_int,

@@ -1,4 +1,4 @@
-"""Project arc analysis across trajectory periods.
+"""Project arc analysis across derived period rollups.
 
 Tracks individual project velocity trends, cost accumulation, and episode activity
 to identify acceleration, stalling, or steady momentum patterns.

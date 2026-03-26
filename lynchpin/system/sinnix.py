@@ -129,20 +129,12 @@ def instrumentation_modules() -> List[SinnixModule]:
 
 @dataclass
 class SinnixDocument:
-    """Thin wrapper for notable Sinnix documents (target plan, deployment notes, etc.)."""
+    """Structured record for notable Sinnix documents."""
 
     path: Path
     title: str
     body: str
     updated_at: datetime
-
-
-def load_target_doc(path: Optional[Path] = None) -> Optional[SinnixDocument]:
-    """Load Sinnix’s target/roadmap doc (legacy name: breakthrough)."""
-
-    if path is not None:
-        return load_doc(Path(path))
-    return load_doc("docs/target.md")
 
 
 def load_doc(relative_path: str | Path) -> Optional[SinnixDocument]:

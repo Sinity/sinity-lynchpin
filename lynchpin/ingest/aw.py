@@ -18,8 +18,8 @@ from typing import Iterator
 import typer
 
 from ..sources.captures import activitywatch
-from ..trajectory.signal import _signal_id, _as_local, _text, TrajectorySignal
-from ..trajectory.signal_sources import _collapse_window_like
+from ..signals import ActivitySignal, _signal_id, _as_local, _text
+from ..signals.sources import _collapse_window_like
 
 app = typer.Typer(help="ActivityWatch signal pre-computation")
 
@@ -53,15 +53,15 @@ def _since_months_ago(n: int, now: datetime) -> datetime:
 def _iter_afk_signals(
     month_start: datetime,
     month_end: datetime,
-) -> Iterator[TrajectorySignal]:
-    """Convert AFK events to TrajectorySignals (filter status == 'afk' only)."""
+) -> Iterator[ActivitySignal]:
+    """Convert AFK events to ActivitySignal rows (filter status == 'afk' only)."""
     for event in activitywatch.afk_events(start=month_start, end=month_end):
         status = _text((event.data or {}).get("status"))
         if status != "afk":
             continue
         signal_start = _as_local(event.start)
         signal_end = max(_as_local(event.end), signal_start)
-        yield TrajectorySignal(
+        yield ActivitySignal(
             signal_id=_signal_id("activitywatch.afk", signal_start, signal_end, status),
             source="activitywatch.afk",
             kind="afk",

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 import sys
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 from dataclasses import dataclass, field
 
 from ...core.projects import ProjectProfile, project_profiles
@@ -93,6 +93,36 @@ LogFn = Callable[[str], None]
 
 def _noop(_message: str) -> None:
     pass
+
+
+def select_project_profiles(
+    *,
+    project_names: Sequence[str] | None = None,
+    exclude_names: Sequence[str] | None = None,
+) -> Dict[str, ProjectProfile]:
+    selected_specs: Dict[str, ProjectProfile] = dict(PROJECT_SPECS)
+    if project_names is not None:
+        requested = [name.strip() for name in project_names if name.strip()]
+        if not requested:
+            raise ValueError("At least one non-empty project name is required.")
+        missing = [name for name in requested if name not in PROJECT_SPECS]
+        if missing:
+            raise ValueError(f"Unknown project(s): {', '.join(sorted(missing))}")
+        selected_specs = {name: PROJECT_SPECS[name] for name in requested}
+
+    if exclude_names is not None:
+        excluded = [name.strip() for name in exclude_names if name.strip()]
+        if not excluded:
+            raise ValueError("At least one non-empty excluded project name is required.")
+        missing = [name for name in excluded if name not in PROJECT_SPECS]
+        if missing:
+            raise ValueError(f"Unknown project(s): {', '.join(sorted(missing))}")
+        for name in excluded:
+            selected_specs.pop(name, None)
+
+    if not selected_specs:
+        raise ValueError("No projects available to analyse.")
+    return selected_specs
 
 
 @dataclass

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.sources.captures.instrumentation import (
     _assess_session_quality,

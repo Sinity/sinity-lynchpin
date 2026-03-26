@@ -14,7 +14,7 @@ from typing import Optional, Sequence
 from .coverage import compute_coverage
 from .day import TrajectoryDay
 from .episode import detect_episodes
-from .signal import TrajectorySignal
+from ..signals import ActivitySignal
 from .week import summarize_weeks
 
 
@@ -90,7 +90,7 @@ class TrajectoryMonth:
 def summarize_months(
     days: Sequence[TrajectoryDay],
     *,
-    signals: Optional[Sequence[TrajectorySignal]] = None,
+    signals: Optional[Sequence[ActivitySignal]] = None,
 ) -> list[TrajectoryMonth]:
     """Group days into calendar months and produce monthly summaries.
 

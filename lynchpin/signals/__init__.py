@@ -1,8 +1,9 @@
-"""TrajectorySignal dataclass and high-level loading API.
+"""Shared activity signal model and loading API.
 
-Per-source iterators live in signal_sources; JSONL artefact loading
-infrastructure lives in signal_loader. This module re-exports the
-constants and utilities that those submodules need.
+Per-source iterators live in :mod:`lynchpin.signals.sources`; JSONL artefact
+loading infrastructure lives in :mod:`lynchpin.signals.loader`. This package
+owns the low-level signal substrate used across ingest, processed views,
+derived rollups, and narrative enrichment.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ DEFAULT_LOOKBACK_DAYS = 14
 
 
 @dataclass(frozen=True)
-class TrajectorySignal:
+class ActivitySignal:
     signal_id: str
     source: str
     kind: str
@@ -79,7 +80,7 @@ def resolve_window(
     end_dt = _as_local(end or now or datetime.now(tz))
     start_dt = _as_local(start) if start else end_dt - timedelta(days=days)
     if start_dt >= end_dt:
-        raise ValueError(f"Invalid trajectory window: {start_dt.isoformat()} >= {end_dt.isoformat()}")
+        raise ValueError(f"Invalid activity window: {start_dt.isoformat()} >= {end_dt.isoformat()}")
     return start_dt, end_dt
 
 
@@ -88,8 +89,8 @@ def load_signals(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     days: int = DEFAULT_LOOKBACK_DAYS,
-) -> list[TrajectorySignal]:
-    from .signal_sources import _iter_all_signals
+) -> list[ActivitySignal]:
+    from .sources import _iter_all_signals
 
     window_start, window_end = resolve_window(start=start, end=end, days=days)
     signals = list(_iter_all_signals(window_start, window_end))
@@ -102,7 +103,7 @@ def iter_signals(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     days: int = DEFAULT_LOOKBACK_DAYS,
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     yield from load_signals(start=start, end=end, days=days)
 
 
@@ -216,7 +217,7 @@ def _local_tz():
     return datetime.now().astimezone().tzinfo or timezone.utc
 
 
-# Re-export _iter_months from signal_loader for callers that import it from here
+# Re-export _iter_months from loader for callers that import it from here.
 def _iter_months(start: datetime, end: datetime) -> Iterator[tuple[int, int]]:
-    from .signal_loader import _iter_months as _impl
+    from .loader import _iter_months as _impl
     yield from _impl(start, end)

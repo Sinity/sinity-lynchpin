@@ -7,7 +7,7 @@ experimental
 Meta-analysis of development activity across the realm's code repos. Provides a static HTML dashboard for LoC growth, churn, hotspots, authorship, and co-change using project-aware categorization.
 
 ## Inputs
-- Local git repos for configured projects (defined in `lynchpin.analysis.projects.velocity`)
+- Local git repos for configured projects (defined in `lynchpin.analysis.projects.velocity_analysis`)
 - Tools: `git`
 
 ## Outputs
@@ -83,4 +83,4 @@ just velocity artefacts/meta/velocity/velocity.html "" "sinnix"
 
 ## Adding a new project
 1. Add a classifier function (or reuse existing like `classify_rust_simple`)
-2. Add entry to `PROJECT_SPECS` within `lynchpin.analysis.projects.velocity` with path, classify function, categories, and colors
+2. Add entry to `PROJECT_SPECS` within `lynchpin.analysis.projects.velocity_analysis` with path, classify function, categories, and colors

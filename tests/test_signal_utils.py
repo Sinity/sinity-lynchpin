@@ -1,12 +1,11 @@
-"""Tests for lynchpin.trajectory.signal pure utility functions."""
+"""Tests for lynchpin.signals pure utility functions."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
 
-from lynchpin.trajectory.signal import (
+from lynchpin.signals import (
     _domain_from_url,
     _parse_optional_dt,
     _path_from_window_title,

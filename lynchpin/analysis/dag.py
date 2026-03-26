@@ -1,4 +1,4 @@
-"""Simple DAG execution engine with topological ordering."""
+"""Dependency-aware DAG execution for the codebase-analysis subsystem."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 import traceback
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 
 class StepStatus(enum.Enum):
@@ -24,16 +24,16 @@ class StepResult:
     status: StepStatus
     elapsed_seconds: float = 0.0
     result: Any = None
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
 class Step:
-    """A named unit of work in a DAG."""
+    """A named unit of work in an analysis DAG."""
 
     name: str
     fn: Callable[..., Any]
-    depends_on: List[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -45,15 +45,11 @@ class Step:
 
 
 class DAG:
-    """Dependency-aware pipeline runner.
-
-    Steps are executed in topological order.  If a step fails, downstream
-    dependents are automatically skipped.
-    """
+    """Dependency-aware pipeline runner for analysis refresh flows."""
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self._steps: Dict[str, Step] = {}
+        self._steps: dict[str, Step] = {}
 
     def add(self, step: Step) -> "DAG":
         if step.name in self._steps:
@@ -61,23 +57,19 @@ class DAG:
         self._steps[step.name] = step
         return self
 
-    def _topo_order(self) -> List[str]:
-        in_degree: Dict[str, int] = defaultdict(int)
-        dependents: Dict[str, List[str]] = defaultdict(list)
+    def _topo_order(self) -> list[str]:
+        in_degree: dict[str, int] = defaultdict(int)
+        dependents: dict[str, list[str]] = defaultdict(list)
         for step in self._steps.values():
             in_degree.setdefault(step.name, 0)
             for dep in step.depends_on:
                 if dep not in self._steps:
-                    raise ValueError(
-                        f"Step {step.name!r} depends on unknown step {dep!r}"
-                    )
+                    raise ValueError(f"Step {step.name!r} depends on unknown step {dep!r}")
                 dependents[dep].append(step.name)
                 in_degree[step.name] += 1
 
-        queue: deque[str] = deque(
-            name for name, degree in in_degree.items() if degree == 0
-        )
-        order: List[str] = []
+        queue: deque[str] = deque(name for name, degree in in_degree.items() if degree == 0)
+        order: list[str] = []
         while queue:
             current = queue.popleft()
             order.append(current)
@@ -95,24 +87,13 @@ class DAG:
         *,
         dry_run: bool = False,
         on_step: Optional[Callable[[StepResult], None]] = None,
-    ) -> List[StepResult]:
-        """Execute steps in topological order.
-
-        Args:
-            dry_run: If True, report the execution order without running.
-            on_step: Optional callback invoked after each step completes.
-
-        Returns:
-            List of StepResult in execution order.
-        """
+    ) -> list[StepResult]:
         order = self._topo_order()
-        results: List[StepResult] = []
+        results: list[StepResult] = []
         failed: set[str] = set()
 
         for name in order:
             step = self._steps[name]
-
-            # Skip if any dependency failed
             blocked_by = [dep for dep in step.depends_on if dep in failed]
             if blocked_by:
                 result = StepResult(
@@ -160,7 +141,6 @@ class DAG:
         return results
 
     def describe(self) -> str:
-        """Return a human-readable description of the DAG."""
         lines = [f"DAG: {self.name}", f"Steps: {len(self._steps)}"]
         for name in self._topo_order():
             step = self._steps[name]

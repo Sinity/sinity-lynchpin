@@ -6,13 +6,16 @@ and to_dict() serialization for each packet builder.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 
+from lynchpin.context.bundles import EvidenceQuery
+from lynchpin.context.memory import MemoryStore
 from lynchpin.context.packet_builders import (
     build_coverage_packet,
+    build_current_state,
     build_day_packet,
     build_episode_packet,
     build_month_packet,
@@ -436,3 +439,115 @@ class TestBuildCoveragePacket:
         assert "day_count" in d
         assert "anomaly_count" in d
         assert "days_with_activitywatch" in d
+
+
+def test_build_current_state_uses_evidence_queries_for_period_rollups(monkeypatch):
+    class _Conn:
+        def close(self):
+            return None
+
+    def _query(query_id: str, rows: list[dict[str, object]]) -> EvidenceQuery:
+        return EvidenceQuery(
+            query_id=query_id,
+            title=query_id,
+            sql=f"SELECT * FROM {query_id}",
+            params=[],
+            rows=rows,
+        )
+
+    monkeypatch.setattr(
+        "lynchpin.context.packet_builders.open_warehouse_read_only",
+        lambda: _Conn(),
+    )
+    monkeypatch.setattr(
+        "lynchpin.context.packet_builders._resolve_window_bounds",
+        lambda *, conn, days, end: (date(2026, 3, 1), date(2026, 3, 2)),
+    )
+    monkeypatch.setattr(
+        "lynchpin.context.packet_builders.query_evidence_range",
+        lambda conn, *, start, end, artifact_limits: [
+            _query(
+                "delivery_telemetry",
+                [
+                    {"date": "2026-03-01", "active_hours": 2.0, "total_commits": 1, "command_count": 8, "chat_sessions": 1, "chat_engaged_minutes": 15.0, "repos_json": '["sinity-lynchpin"]', "ai_models_json": '["gpt-5"]'},
+                    {"date": "2026-03-02", "active_hours": 3.0, "total_commits": 2, "command_count": 12, "chat_sessions": 0, "chat_engaged_minutes": 0.0, "repos_json": '["sinex"]', "ai_models_json": '["gpt-5"]'},
+                ],
+            ),
+            _query(
+                "project_attention",
+                [
+                    {"date": "2026-03-01", "top_project": "sinity-lynchpin", "entropy": 0.3, "rotation_speed": 0.2},
+                    {"date": "2026-03-02", "top_project": "sinex", "entropy": 0.4, "rotation_speed": 0.3},
+                ],
+            ),
+            _query(
+                "chat_activity",
+                [
+                    {"date": "2026-03-01", "provider": "codex", "session_count": 1, "total_messages": 10, "total_words": 100, "engaged_minutes": 15.0, "dominant_work_kind": "implementation", "projects_json": '["sinity-lynchpin"]'},
+                ],
+            ),
+            _query(
+                "git_daily",
+                [
+                    {"date": "2026-03-01", "repo": "/realm/project/sinity-lynchpin", "commit_count": 1, "churn": 12, "net_loc": 6},
+                    {"date": "2026-03-02", "repo": "/realm/project/sinex", "commit_count": 2, "churn": 30, "net_loc": 18},
+                ],
+            ),
+            _query(
+                "git_file_facts",
+                [
+                    {"date": "2026-03-01", "path_root": "lynchpin/context", "lines_changed": 12},
+                    {"date": "2026-03-02", "path_root": "crate/satellites", "lines_changed": 30},
+                ],
+            ),
+            _query(
+                "focus_spans",
+                [
+                    {"date": "2026-03-01", "project": "sinity-lynchpin", "mode": "coding", "duration_seconds": 3600.0},
+                    {"date": "2026-03-02", "project": "sinex", "mode": "coding", "duration_seconds": 5400.0},
+                ],
+            ),
+            _query(
+                "focus_loops",
+                [
+                    {"date": "2026-03-01", "start": "2026-03-01T09:00:00Z", "end_time": "2026-03-01T09:30:00Z", "context_a_app": "zed", "context_a_title": "packet_builders.py", "context_b_app": "browser", "context_b_title": "docs", "dominant_project": "sinity-lynchpin", "dominant_mode": "coding", "duration_minutes": 30.0, "span_count": 4, "switch_count": 3, "cycle_count": 2},
+                    {"date": "2026-03-02", "start": "2026-03-02T10:00:00Z", "end_time": "2026-03-02T10:45:00Z", "context_a_app": "zed", "context_a_title": "worker.rs", "context_b_app": "browser", "context_b_title": "crate docs", "dominant_project": "sinex", "dominant_mode": "coding", "duration_minutes": 45.0, "span_count": 6, "switch_count": 5, "cycle_count": 3},
+                ],
+            ),
+            _query(
+                "context_switches",
+                [
+                    {"date": "2026-03-01", "total_switches": 4, "project_switches": 2, "mode_switches": 1, "avg_focus_minutes": 30.0, "longest_focus_minutes": 60.0, "fragmentation_score": 0.2},
+                    {"date": "2026-03-02", "total_switches": 6, "project_switches": 3, "mode_switches": 2, "avg_focus_minutes": 25.0, "longest_focus_minutes": 55.0, "fragmentation_score": 0.3},
+                ],
+            ),
+            _query(
+                "circadian",
+                [
+                    {"date": "2026-03-01", "hour": 10, "active_minutes": 120.0, "recovery_minutes": 30.0, "dominant_mode": "coding", "dominant_project": "sinity-lynchpin"},
+                    {"date": "2026-03-02", "hour": 11, "active_minutes": 180.0, "recovery_minutes": 45.0, "dominant_mode": "coding", "dominant_project": "sinex"},
+                ],
+            ),
+            _query(
+                "polylogue_sessions",
+                [
+                    {"conversation_id": "c1", "created_at": "2026-03-01T12:00:00Z", "first_message_at": "2026-03-01T12:00:00Z", "last_message_at": "2026-03-01T13:00:00Z", "title": "Architecture pass", "work_event_count": 2, "dominant_work_kind": "implementation", "cost_usd": 0.5, "continuation_depth": 1, "thread_id": "t1", "canonical_projects_json": '["sinity-lynchpin"]'},
+                ],
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "lynchpin.context.packet_builders.inspect_core_surface_freshness",
+        lambda *, conn, reference_date: [SimpleNamespace(to_dict=lambda: {"surface": "processed_delivery_telemetry"})],
+    )
+    monkeypatch.setattr("lynchpin.context.packet_builders.load_memory", lambda: MemoryStore())
+
+    state = build_current_state(days=2, tier="standard")
+
+    assert state["current"]["dominant_project"] == "sinex"
+    assert state["months"][0]["month"] == "2026-03"
+    assert state["months"][0]["episode_count"] == 1
+    assert state["episodes"][0]["label"] == "sinity-lynchpin coding"
+    assert state["recent_focus_loops"][0]["dominant_project"] == "sinex"
+    assert state["anomalies"] == []
+    assert state["coverage"]["days_with_git"] == 2

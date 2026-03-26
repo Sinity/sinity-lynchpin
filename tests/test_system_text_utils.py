@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.system.meta import _first_heading
 from lynchpin.system.sinex import _first_docstring

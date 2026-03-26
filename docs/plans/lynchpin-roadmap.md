@@ -1,54 +1,61 @@
 # Lynchpin Roadmap
 
-This is the active near-term roadmap for the repository as it exists now: a
-Python read-model workspace centered on `lynchpin.*` modules and a small set of
-derived views.
+This roadmap is for the repository as it should become: one coherent personal
+understanding system over canonical local data.
 
-Lynchpin is an interim reference implementation over canonical inputs, not the
-future runtime substrate. The priority is to encode derivations and contracts
-that future Sinex work can port cleanly.
+Lynchpin should be treated as a reference implementation for that system:
+useful because it encodes canonical inputs, derived semantics, and narrative
+workflows concretely, but not because it should survive as a pile of parallel
+architectures.
 
-For the cross-cutting target of progressive multi-scale personal understanding,
-see `docs/plans/personal-trajectory-program.md`.
+The active target architecture is documented in
+[`docs/plans/personal-trajectory-program.md`](/realm/project/sinity-lynchpin/docs/plans/personal-trajectory-program.md).
 
 ## Scope
 
-- Keep the repo focused on canonical source readers, derived views, and operational docs.
-- Do not reintroduce a parallel top-level pipeline tree.
-- Prefer work that sharpens the current module surface over broad ecosystem expansion.
+- Keep the repo focused on canonical source readers, semantic evidence planes, warehouse contracts, context assembly, and retrospective outputs.
+- Do not preserve overlapping architectural worlds just because they already exist.
+- Prefer moving useful logic into coherent package boundaries over adding more wrappers around old ones.
 
 ## Active Priorities
 
-1. **Source and warehouse hardening**
-   - Extend `lynchpin.views.warehouse` coverage for already-supported sources.
-   - Keep module contracts, warehouse tables, and reference docs aligned.
+1. **Unify the architecture**
+   - Remove repo-level documentation that still treats `life_timeline` or `trajectory` as target architecture.
+   - Define the surviving package boundaries clearly: `sources`, `views.warehouse`, `context`, `retrospective`, and any new `periods` helpers.
 
-2. **Trajectory intelligence**
-   - Converge the current day-range calendar stack and the monthly life-timeline stack onto the shared `trajectory.*` substrate that already exists.
-   - Deepen daily facts, week/month rollups, and period/segment attribution before leaning harder on narrative generation.
-   - Treat `docs/plans/personal-trajectory-program.md` as the current target definition.
+2. **Strengthen semantic evidence planes**
+   - Make the focus, delivery, conversation, intake, body, and output planes explicit in code and warehouse docs.
+   - Keep table contracts, module contracts, and freshness expectations aligned.
 
-3. **Calendar views**
-   - Build on the shipped day-view workflow with week/month aggregation and stronger summaries.
-   - Keep `lynchpin.views.calendar_views` and the reusable `lynchpin.retrospective.narrative` API reading the same trajectory-backed helpers.
+3. **Build context orchestration as a first-class product layer**
+   - Add explicit evidence-bundle APIs.
+   - Add trust/freshness accounting.
+   - Persist the raw query inputs and outputs used for narrative work.
 
-4. **Session and transcript coverage**
-   - Improve Polylogue-driven transcript availability and keep generated session summaries reproducible.
-   - Keep the session ledger, Polylogue semantics, and warehouse `session_summaries` table aligned as the stable downstream index.
+4. **Absorb long-range functionality**
+   - Re-home the useful functionality currently trapped in `life_timeline` onto the shared evidence and context layers.
+   - Eliminate the separate long-range JSON/pipeline world once the logic has moved.
 
-5. **Sinex handoff contracts**
-   - Keep `lynchpin.system.sinex` honest about what exists today: repo and connector state, not a working runtime.
-   - Document the canonical inputs, derivations, and warehouse contracts that future Sinex implementation should reproduce, rather than planning runtime adapters inside lynchpin.
+5. **Dissolve trajectory as the architectural center**
+   - Move useful pieces of `trajectory.*` into the surviving layers.
+   - Keep derived tables only where they remain genuinely useful query surfaces.
+   - Do not design new understanding logic as trajectory-first by default.
 
-6. **Instrumentation metadata**
-   - Keep `lynchpin.ingest.instrumentation` aligned with Sinnix capture outputs.
-   - Extend metadata harvesters only where the upstream capture path is already real.
+6. **Narrative workflows**
+   - Make evidence-bundle-driven interactive narrative work the default path.
+   - Keep `_narratives` as style/reference only.
+   - Keep narrative files as the canonical output artifacts, with provenance and raw evidence links.
 
-## Deferred Ideas
+7. **Warehouse and transcript freshness**
+   - Improve freshness and visibility of chat/session-derived tables.
+   - Keep warehouse coverage, Polylogue semantics, and narrative-facing evidence surfaces in sync.
 
-These are legitimate future directions, but they are not the main path for current cleanup and delivery:
+## Deferred
 
+These are valid directions, but not ahead of the architecture cleanup above:
+
+- richer live dashboards and HTML surfaces,
 - live chat webapp scraping,
-- broader finance and social-source collectors,
-- richer calendar HTML surfaces beyond the current Markdown-first workflow,
-- deeper Sinevec integration beyond existing source compatibility.
+- broader finance and social ingestion,
+- deeper knowledge-graph and embedding layers,
+- Sinex runtime handoff beyond stable contracts and reproducible read models.

@@ -1,4 +1,4 @@
-"""Tests for trajectory signal attribution logic in rules.py."""
+"""Tests for activity-signal attribution logic in rules.py."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from lynchpin.trajectory.rules import (
+from lynchpin.signals import ActivitySignal
+from lynchpin.signals.rules import (
     _contains_any,
     _extract_topics_for_text,
     _matches_domain,
@@ -19,7 +20,6 @@ from lynchpin.trajectory.rules import (
     mode_family,
     normalize_topic,
 )
-from lynchpin.trajectory.signal import TrajectorySignal
 
 
 def _dt(hour: int = 10, minute: int = 0) -> datetime:
@@ -40,8 +40,8 @@ def _signal(
     cwd: str | None = None,
     detail: str | None = None,
     evidence: dict | None = None,
-) -> TrajectorySignal:
-    return TrajectorySignal(
+) -> ActivitySignal:
+    return ActivitySignal(
         signal_id=signal_id,
         source=source,
         kind=kind,
@@ -345,7 +345,7 @@ class TestClassifySignalTopic:
 
 
 class TestClassifyChainTopics:
-    def _attributed(self, sig: TrajectorySignal):
+    def _attributed(self, sig: ActivitySignal):
         """Classify a signal and return the AttributedSignal."""
         return classify_signal(sig)
 

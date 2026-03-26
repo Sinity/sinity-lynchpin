@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Thin CLI wrapper for high-sensitivity life timeline artefact builds."""
+"""CLI for long-range life summary artefact builds."""
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import typer
 
@@ -14,25 +13,25 @@ import structlog as _structlog
 if not _structlog.is_configured():
     _structlog.configure(wrapper_class=_structlog.make_filtering_bound_logger(40))
 
-from lynchpin import retrospective
-from .paths import (
-    DEFAULT_LIFE_TIMELINE_START,
-    LATEST_LIFE_TIMELINE_DRILLDOWN_DIR,
-    LATEST_LIFE_TIMELINE_JSON,
+from .life_paths import (
+    DEFAULT_LIFE_START,
+    LATEST_LIFE_DRILLDOWN_DIR,
+    LATEST_LIFE_JSON,
     YOUTUBE_OEMBED_CACHE,
     current_month_key,
 )
+from .life_pipeline import LifeRangeInputs, LifeRangeResult, build_life_range
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
 
 @app.command()
 def build(
-    start: str = typer.Option(DEFAULT_LIFE_TIMELINE_START, help="Start month (YYYY-MM)."),
+    start: str = typer.Option(DEFAULT_LIFE_START, help="Start month (YYYY-MM)."),
     end: str = typer.Option(current_month_key(), help="End month (YYYY-MM). Defaults to the current month."),
     output: Path = typer.Option(
-        LATEST_LIFE_TIMELINE_JSON,
-        help="Output JSON path (defaults to the canonical latest snapshot).",
+        LATEST_LIFE_JSON,
+        help="Output JSON path (defaults to the canonical latest life snapshot).",
     ),
     markdown_output: Optional[Path] = typer.Option(
         None,
@@ -40,7 +39,7 @@ def build(
     ),
     markdown_output_dir: Optional[Path] = typer.Option(
         None,
-        help=f"Optional directory for per-year Markdown drilldowns (canonical latest path: {LATEST_LIFE_TIMELINE_DRILLDOWN_DIR}).",
+        help=f"Optional directory for per-year Markdown drilldowns (canonical latest path: {LATEST_LIFE_DRILLDOWN_DIR}).",
     ),
     wykop_link_comments: Path = typer.Option(
         Path("/realm/data/exports/wykop/raw/Sinity/wykop_links_commented.jsonl"),
@@ -126,13 +125,13 @@ def build(
         None,
         help="Directory containing canonical Google Takeout .tgz archives (used when --takeout is omitted).",
     ),
-    takeout: List[Path] = typer.Option(
+    takeout: list[Path] = typer.Option(
         [],
         "--takeout",
         help="Optional explicit Google Takeout seed archive(s); defaults to takeout*-001.tgz under --takeout-root.",
     ),
-) -> retrospective.LifeTimelineResult:
-    inputs = retrospective.LifeTimelineInputs(
+) -> LifeRangeResult:
+    inputs = LifeRangeInputs(
         wykop_link_comments=wykop_link_comments,
         wykop_entries=wykop_entries,
         wykop_entry_comments=wykop_entry_comments,
@@ -156,7 +155,7 @@ def build(
         takeout_root=takeout_root,
         takeout_paths=tuple(takeout),
     )
-    return retrospective.run_life_timeline(
+    return build_life_range(
         start_month=start,
         end_month=end,
         output=output,

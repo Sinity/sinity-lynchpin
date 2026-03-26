@@ -141,7 +141,7 @@ def extract_month_metrics(month_data: Mapping[str, Mapping[str, object]]) -> dic
     return {"numeric": numeric, "tops": tops}
 
 
-def render_life_timeline_digest(
+def render_life_digest(
     payload: Mapping[str, object],
     *,
     start: str | None = None,
@@ -280,22 +280,22 @@ def render_life_timeline_digest(
         if notes_bits:
             lines.append("- Notes: " + "; ".join(notes_bits))
 
-        trajectory_rec = record.get("trajectory") if isinstance(record.get("trajectory"), dict) else {}
-        active_h = as_float(trajectory_rec.get("active_hours"))
-        recovery_h = as_float(trajectory_rec.get("recovery_hours"))
+        context_rec = record.get("context") if isinstance(record.get("context"), dict) else {}
+        active_h = as_float(context_rec.get("active_hours"))
+        recovery_h = as_float(context_rec.get("recovery_hours"))
         if active_h is not None or recovery_h is not None:
-            traj_bits = []
+            context_bits = []
             if active_h is not None:
-                traj_bits.append(f"active {active_h:.1f}h")
+                context_bits.append(f"active {active_h:.1f}h")
             if recovery_h is not None:
-                traj_bits.append(f"recovery {recovery_h:.1f}h")
-            dominant_projects = format_pairs(trajectory_rec.get("dominant_projects"), limit=3)
-            dominant_topics = format_pairs(trajectory_rec.get("dominant_topics"), limit=3)
+                context_bits.append(f"recovery {recovery_h:.1f}h")
+            dominant_projects = format_pairs(context_rec.get("dominant_projects"), limit=3)
+            dominant_topics = format_pairs(context_rec.get("dominant_topics"), limit=3)
             if dominant_projects:
-                traj_bits.append(f"projects {dominant_projects}")
+                context_bits.append(f"projects {dominant_projects}")
             if dominant_topics:
-                traj_bits.append(f"topics {dominant_topics}")
-            lines.append("- Trajectory: " + "; ".join(traj_bits))
+                context_bits.append(f"topics {dominant_topics}")
+            lines.append("- Context: " + "; ".join(context_bits))
 
         lines.append("")
 
@@ -411,7 +411,7 @@ def render_section(title: str, buckets: list[tuple[object, dict[str, object]]], 
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_life_timeline_rollups(
+def render_life_rollups(
     payload: Mapping[str, object],
     *,
     source_path: str | None = None,

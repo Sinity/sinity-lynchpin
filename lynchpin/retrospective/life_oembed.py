@@ -16,8 +16,8 @@ import requests
 import typer
 
 from lynchpin.sources.exports.takeout import TarReader, parse_youtube_watch_history_from_takeouts
-from .paths import (
-    LATEST_LIFE_TIMELINE_JSON,
+from .life_paths import (
+    LATEST_LIFE_JSON,
     YOUTUBE_OEMBED_CACHE,
 )
 
@@ -257,8 +257,8 @@ def _fetch_oembed(
 @app.command()
 def enrich(
     life_json: Path = typer.Option(
-        LATEST_LIFE_TIMELINE_JSON,
-        help="Derived life timeline JSON (used to discover takeouts and/or video IDs).",
+        LATEST_LIFE_JSON,
+        help="Derived life JSON (used to discover takeouts and/or video IDs).",
     ),
     cache: Path = typer.Option(
         YOUTUBE_OEMBED_CACHE,

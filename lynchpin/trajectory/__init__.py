@@ -8,11 +8,10 @@ from .coverage import SignalCoverage, compute_coverage
 from .day import TrajectoryDay, TrajectoryDayProject, summarize_days
 from .episode import TrajectoryEpisode, detect_episodes
 from .month import TrajectoryMonth
-from .month import summarize_months as summarize_trajectory_months
 from .period import TrajectoryPeriodSummary, summarize_months, summarize_period
 from .quarter import TrajectoryQuarter, summarize_quarters
-from .rules import AttributedSignal, SignalAttribution, classify_signal, classify_signals
-from .signal import TrajectorySignal, iter_signals, load_signals, resolve_window
+from ..signals import ActivitySignal, iter_signals, load_signals, resolve_window
+from ..signals.rules import AttributedSignal, SignalAttribution, classify_signal, classify_signals
 from .week import TrajectoryWeek, summarize_weeks
 from .window import (
     TrajectoryWindow,
@@ -37,7 +36,7 @@ __all__ = [
     "TrajectoryMonth",
     "TrajectoryPeriodSummary",
     "TrajectoryQuarter",
-    "TrajectorySignal",
+    "ActivitySignal",
     "TrajectoryWeek",
     "TrajectoryWindow",
     "TrajectoryYear",
@@ -57,7 +56,6 @@ __all__ = [
     "summarize_months",
     "summarize_period",
     "summarize_quarters",
-    "summarize_trajectory_months",
     "summarize_window_months",
     "summarize_window_quarters",
     "summarize_window_weeks",

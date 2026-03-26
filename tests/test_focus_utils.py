@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-import pytest
 
 from lynchpin.metrics.focus import (
     FALSE_ACTIVE_APPS,

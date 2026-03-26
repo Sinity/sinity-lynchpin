@@ -20,7 +20,7 @@ def persistent_cache(
     chunk_by: int | None = None,
     logger: logging.Logger | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Thin wrapper over cachew that stores sqlite caches under artefacts/lynchpin/cache."""
+    """Cachew adapter that stores sqlite caches under artefacts/lynchpin/cache."""
 
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         def cache_path(*args: P.args, **kwargs: P.kwargs) -> Path:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-import pytest
 
 from lynchpin.sources.indices.gitstats import (
     _month_after,

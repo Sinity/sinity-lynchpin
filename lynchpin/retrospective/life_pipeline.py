@@ -22,12 +22,11 @@ from lynchpin.sources.exports import wykop as lp_wykop
 from lynchpin.sources.indices import gitstats as lp_gitstats
 from lynchpin.sources.libraries import finance as lp_finance
 from lynchpin.sources.libraries import knowledgebase as lp_knowledgebase
-from lynchpin.system.life_timeline.paths import (
+from .life_paths import (
     YOUTUBE_OEMBED_CACHE,
     current_month_key,
 )
-
-from .life_timeline import (
+from .life_summary import (
     build_health_summary,
     build_intake_summary,
     build_location_summary,
@@ -36,14 +35,14 @@ from .life_timeline import (
     build_money_summary,
     build_notes_summary,
     build_output_summary,
-    build_recent_trajectory_summaries,
+    build_recent_context_summaries,
     build_work_summary,
     render_markdown,
 )
 
 
 @dataclass(frozen=True)
-class LifeTimelineInputs:
+class LifeRangeInputs:
     wykop_link_comments: Path = Path("/realm/data/exports/wykop/raw/Sinity/wykop_links_commented.jsonl")
     wykop_entries: Path = Path("/realm/data/exports/wykop/raw/Sinity/wykop_entries_added.jsonl")
     wykop_entry_comments: Path = Path("/realm/data/exports/wykop/raw/Sinity/wykop_entry_comments.jsonl")
@@ -77,7 +76,7 @@ class LifeTimelineInputs:
 
 
 @dataclass(frozen=True)
-class LifeTimelineResult:
+class LifeRangeResult:
     output: Path
     start_month: str
     end_month: str
@@ -99,25 +98,25 @@ def iter_months(start_month: str, end_month: str) -> Iterator[str]:
 @contextmanager
 def _stage(label: str) -> Iterator[None]:
     start = time.monotonic()
-    print(f"[life-timeline] {label}…", file=sys.stderr, flush=True)
+    print(f"[life-range] {label}…", file=sys.stderr, flush=True)
     try:
         yield
     finally:
         elapsed = time.monotonic() - start
-        print(f"[life-timeline] {label} done in {elapsed:.1f}s", file=sys.stderr, flush=True)
+        print(f"[life-range] {label} done in {elapsed:.1f}s", file=sys.stderr, flush=True)
 
 
-def run_life_timeline(
+def build_life_range(
     *,
     start_month: str,
     end_month: str | None = None,
     output: Path,
-    inputs: LifeTimelineInputs | None = None,
+    inputs: LifeRangeInputs | None = None,
     markdown_output: Optional[Path] = None,
     markdown_output_dir: Optional[Path] = None,
-) -> LifeTimelineResult:
+) -> LifeRangeResult:
     resolved_end_month = end_month or current_month_key()
-    resolved_inputs = inputs or LifeTimelineInputs()
+    resolved_inputs = inputs or LifeRangeInputs()
     if markdown_output is not None and markdown_output_dir is not None:
         raise ValueError("Pass at most one of markdown_output or markdown_output_dir.")
 
@@ -242,7 +241,7 @@ def run_life_timeline(
             )
 
     with _stage(f"Parse Google Takeout ({len(takeout_paths_used)} archives)"):
-        takeout_bundle = lp_takeout.parse_life_timeline_takeouts(
+        takeout_bundle = lp_takeout.parse_life_takeouts(
             takeout_paths_used,
             start_month=start_month,
             end_month=resolved_end_month,
@@ -301,7 +300,7 @@ def run_life_timeline(
     youtube_video_texts_takeout_path = takeout_bundle.youtube_video_texts_takeout_path
 
     youtube_oembed_by_id = lp_takeout.load_youtube_oembed_cache(resolved_inputs.youtube_oembed_cache)
-    trajectory_months, trajectory_window = build_recent_trajectory_summaries(months)
+    context_months, context_window = build_recent_context_summaries(months)
 
     monthly: dict[str, dict] = {}
     for month in months:
@@ -367,8 +366,8 @@ def run_life_timeline(
                 month,
                 git_commit_counts=git_commit_counts,
                 git_commit_repos=git_commit_repos,
-                chat_session_count=trajectory_months[month].chat_session_count if month in trajectory_months else 0,
-                chat_work_events=dict(trajectory_months[month].chat_work_events) if month in trajectory_months else {},
+                chat_session_count=context_months[month].chat_session_count if month in context_months else 0,
+                chat_work_events=dict(context_months[month].chat_work_events) if month in context_months else {},
             ),
             intake=build_intake_summary(
                 month,
@@ -462,7 +461,7 @@ def run_life_timeline(
                 onenote_counts=onenote_counts,
                 substance_headings=substance_headings,
             ),
-            trajectory=trajectory_months.get(month),
+            context=context_months.get(month),
         ).to_dict()
 
     payload = {
@@ -521,7 +520,7 @@ def run_life_timeline(
             "goodreads_library_csv": str(resolved_inputs.goodreads_library),
             "spotify_dir": str(resolved_spotify_dir),
             "git_repos": [str(path) for path in git_repos],
-            "recent_trajectory_window": trajectory_window if trajectory_window.get("month_count") else None,
+            "recent_context_window": context_window if context_window.get("month_count") else None,
         },
         "output_path": str(output),
         "months": monthly,
@@ -566,7 +565,7 @@ def run_life_timeline(
     if markdown_output_dir is not None:
         artifact_paths["markdown_output_dir"] = markdown_output_dir
 
-    return LifeTimelineResult(
+    return LifeRangeResult(
         output=output,
         start_month=start_month,
         end_month=resolved_end_month,

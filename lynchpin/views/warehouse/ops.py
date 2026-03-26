@@ -34,6 +34,38 @@ def _source_specs(selected: Optional[Sequence[str]]) -> List[SourceSpec]:
     return [available[name] for name in requested]
 
 
+def _filtered_source_specs(
+    *,
+    sources: Optional[Sequence[str]] = None,
+    tables: Optional[Sequence[str]] = None,
+) -> List[SourceSpec]:
+    specs = _source_specs(sources)
+    if not tables:
+        return specs
+
+    requested = [name.strip().lower() for name in tables if name.strip()]
+    table_names = {name for name in requested}
+    available: dict[str, TableSpec] = {}
+    for spec in specs:
+        for table in spec.tables:
+            key = table.name.lower()
+            available[key] = table
+
+    unknown = sorted(table_names - set(available))
+    if unknown:
+        available_text = ", ".join(sorted(table.name for spec in specs for table in spec.tables))
+        raise ValueError(
+            f"Unknown warehouse table(s): {', '.join(unknown)}. Available: {available_text}"
+        )
+
+    filtered: list[SourceSpec] = []
+    for spec in specs:
+        selected_tables = [table for table in spec.tables if table.name.lower() in table_names]
+        if selected_tables:
+            filtered.append(SourceSpec(name=spec.name, tables=selected_tables))
+    return filtered
+
+
 def _duckdb_source_path(root: Path, source: str) -> Path:
     return root / "duckdb" / f"{source}.duckdb"
 
@@ -51,9 +83,10 @@ def attach_sources(
     *,
     root: Optional[Path] = None,
     sources: Optional[Sequence[str]] = None,
+    tables: Optional[Sequence[str]] = None,
 ) -> List[str]:
     root_path = _warehouse_root(root)
-    specs = _source_specs(sources)
+    specs = _filtered_source_specs(sources=sources, tables=tables)
     existing = {
         row[0] for row in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
     }
@@ -138,6 +171,7 @@ def _write_table_parquet(
 def materialize_sources(
     *,
     sources: Optional[Sequence[str]] = None,
+    tables: Optional[Sequence[str]] = None,
     root: Optional[Path] = None,
     output_format: str = "parquet",
     limit: Optional[int] = None,
@@ -154,7 +188,7 @@ def materialize_sources(
         start_date=start_date,
         end_date=end_date,
     )
-    specs = _source_specs(sources)
+    specs = _filtered_source_specs(sources=sources, tables=tables)
 
     def _materialize_source(spec: SourceSpec) -> None:
         if output_format == "duckdb":
@@ -189,12 +223,13 @@ def build_views(
     root: Optional[Path] = None,
     output_format: str = "parquet",
     sources: Optional[Sequence[str]] = None,
+    tables: Optional[Sequence[str]] = None,
 ) -> Path:
     cfg = get_config()
     db_path = Path(output or cfg.warehouse_db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     root_path = _warehouse_root(root)
-    specs = _source_specs(sources)
+    specs = _filtered_source_specs(sources=sources, tables=tables)
 
     conn = duckdb.connect(str(db_path))
     try:
@@ -203,7 +238,7 @@ def build_views(
         now = datetime.now(timezone.utc)
         _drop_managed_relations(conn, specs)
         if output_format == "duckdb":
-            attached = set(attach_sources(conn, root=root_path, sources=sources))
+            attached = set(attach_sources(conn, root=root_path, sources=sources, tables=tables))
             if attached:
                 print(
                     "[warehouse] note: duckdb views require re-attaching per-source DBs "
@@ -291,7 +326,7 @@ def build_views(
             "source TEXT, format TEXT, source_path TEXT, present_tables BIGINT, "
             "expected_tables BIGINT, updated_at TIMESTAMP)"
         )
-        if sources is None:
+        if sources is None and tables is None:
             conn.execute("DELETE FROM warehouse_manifest")
         else:
             conn.executemany(
@@ -319,6 +354,7 @@ def refresh(
     root: Optional[Path] = None,
     output_format: str = "parquet",
     sources: Optional[Sequence[str]] = None,
+    tables: Optional[Sequence[str]] = None,
     limit: Optional[int] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
@@ -329,6 +365,7 @@ def refresh(
         "materialize sources",
         lambda: materialize_sources(
             sources=sources,
+            tables=tables,
             root=root,
             output_format=output_format,
             limit=limit,
@@ -338,7 +375,13 @@ def refresh(
             end_date=end_date,
         ),
     )
-    db_path = build_views(output=output, root=root, output_format=output_format, sources=sources)
+    db_path = build_views(
+        output=output,
+        root=root,
+        output_format=output_format,
+        sources=sources,
+        tables=tables,
+    )
     return db_path
 
 
@@ -370,6 +413,12 @@ def _add_common_args(parser: argparse.ArgumentParser, *, include_output: bool) -
         default=None,
         help="Comma-separated source list (default: all).",
     )
+    parser.add_argument(
+        "--tables",
+        type=str,
+        default=None,
+        help="Comma-separated table list (default: all tables in selected sources).",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Limit rows per table.")
     parser.add_argument("--since", type=_parse_datetime_arg, help="ISO timestamp lower bound.")
     parser.add_argument("--until", type=_parse_datetime_arg, help="ISO timestamp upper bound.")
@@ -398,10 +447,12 @@ def cli() -> None:
 
     args = parser.parse_args()
     sources = args.sources.split(",") if args.sources else None
+    tables = args.tables.split(",") if args.tables else None
 
     if args.command == "materialize":
         root_path = materialize_sources(
             sources=sources,
+            tables=tables,
             root=args.root,
             output_format=args.format,
             limit=args.limit,
@@ -419,6 +470,7 @@ def cli() -> None:
             root=args.root,
             output_format=args.format,
             sources=sources,
+            tables=tables,
             limit=args.limit,
             since=args.since,
             until=args.until,
@@ -428,7 +480,13 @@ def cli() -> None:
         print(f"Wrote {db_path}")
         return
 
-    db_path = build_views(output=args.output, root=args.root, output_format=args.format, sources=sources)
+    db_path = build_views(
+        output=args.output,
+        root=args.root,
+        output_format=args.format,
+        sources=sources,
+        tables=tables,
+    )
     print(f"Wrote {db_path}")
 
 

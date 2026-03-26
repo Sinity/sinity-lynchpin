@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Iterator, Tuple
 
 from .core import WarehouseContext, _json_dumps, _maybe_limit
@@ -54,6 +54,50 @@ def _processed_app_session_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
         )
 
 
+def _processed_focus_span_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
+    from ...sources.processed.focus_spans import iter_focus_spans
+
+    dt_start, dt_end = _resolve_datetime_range(ctx)
+    for span in _maybe_limit(iter_focus_spans(start=dt_start, end=dt_end), ctx.limit):
+        yield (
+            span.date,
+            span.start,
+            span.end,
+            span.span_kind,
+            span.source_kind,
+            span.app,
+            span.title,
+            span.mode,
+            span.project,
+            span.duration_seconds,
+            span.keypress_count,
+            span.changed_keypress_count,
+            span.keylog_state,
+        )
+
+
+def _processed_focus_loop_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
+    from ...sources.processed.focus_loops import iter_focus_loops
+
+    dt_start, dt_end = _resolve_datetime_range(ctx)
+    for loop in _maybe_limit(iter_focus_loops(start=dt_start, end=dt_end), ctx.limit):
+        yield (
+            loop.date,
+            loop.start,
+            loop.end,
+            loop.duration_minutes,
+            loop.span_count,
+            loop.switch_count,
+            loop.cycle_count,
+            loop.context_a_app,
+            loop.context_a_title,
+            loop.context_b_app,
+            loop.context_b_title,
+            loop.dominant_project,
+            loop.dominant_mode,
+        )
+
+
 def _processed_shell_session_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
     from ...sources.processed.shell_sessions import iter_shell_sessions
 
@@ -96,6 +140,53 @@ def _processed_git_daily_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
         )
 
 
+def _processed_git_commit_fact_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
+    from ...sources.processed.git_commit_facts import iter_git_commit_facts
+
+    start_d, end_d = _resolve_date_range(ctx)
+    if start_d is None:
+        start_d = date(2020, 1, 1)
+    if end_d is None:
+        end_d = date(2030, 1, 1)
+    for fact in _maybe_limit(iter_git_commit_facts(start=start_d, end=end_d), ctx.limit):
+        yield (
+            fact.date,
+            fact.repo,
+            fact.authored_at,
+            fact.commit,
+            fact.author,
+            fact.subject,
+            fact.lines_added,
+            fact.lines_deleted,
+            fact.lines_changed,
+            fact.files_changed,
+            _json_dumps(fact.path_roots),
+            _json_dumps(fact.paths),
+        )
+
+
+def _processed_git_file_fact_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
+    from ...sources.processed.git_commit_facts import iter_git_file_change_facts
+
+    start_d, end_d = _resolve_date_range(ctx)
+    if start_d is None:
+        start_d = date(2020, 1, 1)
+    if end_d is None:
+        end_d = date(2030, 1, 1)
+    for fact in _maybe_limit(iter_git_file_change_facts(start=start_d, end=end_d), ctx.limit):
+        yield (
+            fact.date,
+            fact.repo,
+            fact.authored_at,
+            fact.commit,
+            fact.path,
+            fact.path_root,
+            fact.lines_added,
+            fact.lines_deleted,
+            fact.lines_changed,
+        )
+
+
 def _processed_deep_work_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
     from ...sources.processed.deep_work import iter_deep_work
 
@@ -109,7 +200,8 @@ def _processed_deep_work_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             b.project,
             b.mode,
             b.app_switches,
-            b.commit_count,
+            b.git_lines_changed,
+            b.git_files_changed,
             b.command_count,
             b.focus_ratio,
         )
@@ -129,7 +221,8 @@ def _processed_circadian_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             p.hour,
             p.active_minutes,
             p.recovery_minutes,
-            p.commit_count,
+            p.git_lines_changed,
+            p.git_files_changed,
             p.command_count,
             p.app_switches,
             p.dominant_mode,
@@ -137,25 +230,30 @@ def _processed_circadian_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
         )
 
 
-def _processed_delegation_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from ...sources.processed.delegation import iter_delegation_metrics
+def _processed_delivery_telemetry_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
+    from ...sources.processed.delivery_telemetry import iter_delivery_telemetry
 
     start_d, end_d = _resolve_date_range(ctx)
     if start_d is None:
         start_d = date(2020, 1, 1)
     if end_d is None:
         end_d = date(2030, 1, 1)
-    for m in _maybe_limit(iter_delegation_metrics(start=start_d, end=end_d), ctx.limit):
+    for m in _maybe_limit(iter_delivery_telemetry(start=start_d, end=end_d), ctx.limit):
         yield (
             m.date,
+            m.active_hours,
             m.total_commits,
             m.ai_commits,
             m.human_commits,
             m.ai_ratio,
-            m.commits_per_tracked_hour,
-            m.delegation_mode,
+            m.commit_density_per_active_hour,
+            m.command_count,
+            m.command_density_per_active_hour,
             m.chat_sessions,
-            m.chat_minutes,
+            m.chat_engaged_minutes,
+            m.chat_minutes_per_active_hour,
+            _json_dumps(m.repos),
+            _json_dumps(m.ai_models_used),
         )
 
 
@@ -173,6 +271,10 @@ def _processed_context_switch_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             m.total_switches,
             m.project_switches,
             m.mode_switches,
+            m.alternation_loop_count,
+            m.alternation_switches,
+            m.alternation_minutes,
+            m.alternation_share,
             m.avg_focus_minutes,
             m.longest_focus_minutes,
             m.fragmentation_score,
@@ -214,6 +316,7 @@ def _processed_chat_activity_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             c.session_count,
             c.total_messages,
             c.total_words,
+            c.engaged_minutes,
             c.total_wall_minutes,
             c.dominant_work_kind,
             _json_dumps(c.projects),
@@ -234,10 +337,12 @@ def _processed_sleep_correlation_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             s.sleep_hours,
             s.sleep_score,
             s.sleep_quality,
-            s.next_day_active_hours,
-            s.next_day_commits,
-            s.next_day_dominant_mode,
-            s.next_day_deep_work_minutes,
+            s.segment_count,
+            s.workday_active_hours,
+            s.workday_lines_changed,
+            s.workday_files_changed,
+            s.workday_dominant_mode,
+            s.workday_deep_work_minutes,
             s.productivity_vs_baseline,
         )
 

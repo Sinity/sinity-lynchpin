@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
+from ..signals import ActivitySignal, DEFAULT_LOOKBACK_DAYS, load_signals, resolve_window
+from ..signals.rules import AttributedSignal, classify_signals
 from .anomaly import detect_anomalies
 from .chains import TrajectoryChain, build_chains_from_attributed
 from .day import TrajectoryDay, summarize_days
 from .month import TrajectoryMonth, summarize_months
 from .quarter import TrajectoryQuarter, summarize_quarters
-from .rules import AttributedSignal, classify_signals
-from .signal import DEFAULT_LOOKBACK_DAYS, TrajectorySignal, load_signals, resolve_window
 from .week import TrajectoryWeek, summarize_weeks
 from .year import TrajectoryYear, summarize_years
 
@@ -21,7 +21,7 @@ class TrajectoryWindow:
     start: datetime
     end: datetime
     span_days: int
-    signals: tuple[TrajectorySignal, ...]
+    signals: tuple[ActivitySignal, ...]
     attributed: tuple[AttributedSignal, ...]
     chains: tuple[TrajectoryChain, ...]
     days: tuple[TrajectoryDay, ...]

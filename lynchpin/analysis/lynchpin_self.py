@@ -57,10 +57,10 @@ _SUBPACKAGES = [
     "views",
     "metrics",
     "analysis",
-    "orchestration",
     "system",
     "core",
     "ingest",
+    "context",
 ]
 
 

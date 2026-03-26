@@ -1,15 +1,19 @@
-"""Deep work detection: identify sustained focus blocks from cross-source signals."""
+"""Deep work detection: sustained same-context focus blocks from app sessions."""
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Iterator, Optional
+from datetime import date, datetime
+from typing import Iterator, Sequence
 
-from .app_sessions import iter_app_sessions
-from .shell_sessions import iter_shell_sessions
-from ..indices.gitstats import iter_commits
+from .app_sessions import AppSession, iter_app_sessions
+from .git_commit_facts import GitCommitFact, iter_git_commit_facts
+from .shell_sessions import ShellSession, iter_shell_sessions
+
+_PRODUCTIVE_MODES = {"coding", "research", "writing", "planning", "chat"}
+_MAX_BLOCK_GAP_SECONDS = 600
+_MAX_INTERRUPTION_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -20,10 +24,11 @@ class DeepWorkBlock:
     project: str | None
     mode: str
     app_switches: int
-    commit_count: int
+    git_lines_changed: int
+    git_files_changed: int
     command_count: int
     interruption_minutes: float
-    focus_ratio: float  # (duration - interruption) / duration
+    focus_ratio: float
 
 
 def iter_deep_work(
@@ -33,218 +38,180 @@ def iter_deep_work(
     min_duration_minutes: float = 30,
     max_interruption_ratio: float = 0.15,
 ) -> Iterator[DeepWorkBlock]:
-    """Yield deep work blocks by merging app sessions, shell sessions, and git commits.
-
-    A deep work block is a continuous stretch where the same project or mode
-    persists, with only brief interruptions (<2 min) allowed and gaps >5 min
-    breaking the block.
-    """
-    # ---- collect timeline events ----
-    events = _build_timeline(start, end)
-    if not events:
+    """Yield per-day deep-work blocks from AFK-trimmed app sessions."""
+    app_sessions = list(
+        iter_app_sessions(
+            start=start,
+            end=end,
+            min_duration_seconds=60,
+        )
+    )
+    if not app_sessions:
         return
 
-    # ---- collect git commits in range for enrichment ----
-    commits_in_range = [
-        c for c in iter_commits()
-        if start.date() <= c.date <= end.date()
-    ]
+    shell_sessions = list(iter_shell_sessions(start=start, end=end))
+    shell_by_day: dict[date, list[ShellSession]] = defaultdict(list)
+    for session in shell_sessions:
+        shell_by_day[session.start.date()].append(session)
 
-    # ---- merge into candidate blocks ----
-    for block in _merge_blocks(events, commits_in_range, min_duration_minutes, max_interruption_ratio):
-        yield block
+    git_facts_by_day: dict[date, list[GitCommitFact]] = defaultdict(list)
+    for fact in iter_git_commit_facts(start=start.date(), end=end.date()):
+        git_facts_by_day[fact.authored_at.date()].append(fact)
 
+    sessions_by_day: dict[date, list[AppSession]] = defaultdict(list)
+    for session in app_sessions:
+        sessions_by_day[session.start.date()].append(session)
 
-# ---------------------------------------------------------------------------
-# Internal types and helpers
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _TimelineEvent:
-    start: datetime
-    end: datetime
-    project: str | None
-    mode: str | None
-    app: str | None
-    is_shell: bool
-    command_count: int
-
-
-def _build_timeline(start: datetime, end: datetime) -> list[_TimelineEvent]:
-    """Merge app sessions and shell sessions into a sorted timeline."""
-    events: list[_TimelineEvent] = []
-
-    for app_sess in iter_app_sessions(start=start, end=end, min_duration_seconds=10):
-        events.append(_TimelineEvent(
-            start=app_sess.start,
-            end=app_sess.end,
-            project=app_sess.project,
-            mode=app_sess.mode,
-            app=app_sess.app,
-            is_shell=False,
-            command_count=0,
-        ))
-
-    for sh_sess in iter_shell_sessions(start=start, end=end):
-        events.append(_TimelineEvent(
-            start=sh_sess.start,
-            end=sh_sess.end,
-            project=sh_sess.project,
-            mode="coding",
-            app=None,
-            is_shell=True,
-            command_count=sh_sess.command_count,
-        ))
-
-    events.sort(key=lambda e: e.start)
-    return events
-
-
-def _merge_blocks(
-    events: list[_TimelineEvent],
-    commits: list[object],
-    min_duration_minutes: float,
-    max_interruption_ratio: float,
-) -> Iterator[DeepWorkBlock]:
-    """Walk timeline events, coalescing into deep work blocks."""
-    acc: _BlockAccumulator | None = None
-
-    for event in events:
-        if acc is not None:
-            gap = (event.start - acc.end).total_seconds()
-            if gap > 300:  # >5 min gap breaks the block
-                block = acc.finalize(commits)
-                if block is not None and _passes_filter(block, min_duration_minutes, max_interruption_ratio):
-                    yield block
-                acc = None
-            elif _compatible(acc, event):
-                if gap > 0 and not _is_same_context(acc, event):
-                    # Brief switch to different context: count as interruption
-                    acc.interruption_seconds += min(gap, 120)
-                acc.add(event)
-                continue
-            else:
-                # Context switch: check if it's brief enough to be an interruption
-                switch_duration = (event.end - event.start).total_seconds()
-                if switch_duration < 120 and gap <= 300:
-                    acc.interruption_seconds += switch_duration
-                    acc.end = max(acc.end, event.end)
-                    acc.events.append(event)
-                    continue
-                else:
-                    block = acc.finalize(commits)
-                    if block is not None and _passes_filter(block, min_duration_minutes, max_interruption_ratio):
-                        yield block
-                    acc = None
-
-        if acc is None:
-            acc = _BlockAccumulator(event)
-
-    if acc is not None:
-        block = acc.finalize(commits)
-        if block is not None and _passes_filter(block, min_duration_minutes, max_interruption_ratio):
+    for day in sorted(sessions_by_day):
+        for block in _merge_day_blocks(
+            sessions=sessions_by_day[day],
+            shell_sessions=shell_by_day.get(day, ()),
+            git_facts=git_facts_by_day.get(day, ()),
+            min_duration_minutes=min_duration_minutes,
+            max_interruption_ratio=max_interruption_ratio,
+        ):
             yield block
 
 
-def _compatible(acc: _BlockAccumulator, event: _TimelineEvent) -> bool:
-    """Check if event continues the same deep work context."""
-    # Same project is the strongest signal
-    if acc.dominant_project and event.project and acc.dominant_project == event.project:
-        return True
-    # Same mode (e.g. both "coding") is acceptable
-    if acc.dominant_mode and event.mode and acc.dominant_mode == event.mode:
-        return True
-    # If the event has no project/mode, accept it as continuation
-    if not event.project and not event.mode:
-        return True
+def _merge_day_blocks(
+    *,
+    sessions: Sequence[AppSession],
+    shell_sessions: Sequence[ShellSession],
+    git_facts: Sequence[GitCommitFact],
+    min_duration_minutes: float,
+    max_interruption_ratio: float,
+) -> Iterator[DeepWorkBlock]:
+    ordered = sorted(sessions, key=lambda session: (session.start, session.end, session.app))
+    acc: _BlockAccumulator | None = None
+
+    for session in ordered:
+        productive = _is_productive(session)
+        if acc is None:
+            if productive:
+                acc = _BlockAccumulator(session)
+            continue
+
+        gap_seconds = max((session.start - acc.end).total_seconds(), 0.0)
+        if gap_seconds > _MAX_BLOCK_GAP_SECONDS:
+            block = acc.finalize(shell_sessions=shell_sessions, git_facts=git_facts)
+            if _passes_filter(block, min_duration_minutes, max_interruption_ratio):
+                yield block
+            acc = _BlockAccumulator(session) if productive else None
+            continue
+
+        if productive and _compatible(acc, session):
+            if gap_seconds > 0:
+                acc.interruption_seconds += gap_seconds
+                acc.end = max(acc.end, session.start)
+            acc.add_session(session)
+            continue
+
+        if gap_seconds + session.duration_seconds <= _MAX_INTERRUPTION_SECONDS:
+            acc.note_interruption(session, gap_seconds)
+            continue
+
+        block = acc.finalize(shell_sessions=shell_sessions, git_facts=git_facts)
+        if _passes_filter(block, min_duration_minutes, max_interruption_ratio):
+            yield block
+        acc = _BlockAccumulator(session) if productive else None
+
+    if acc is not None:
+        block = acc.finalize(shell_sessions=shell_sessions, git_facts=git_facts)
+        if _passes_filter(block, min_duration_minutes, max_interruption_ratio):
+            yield block
+
+
+def _is_productive(session: AppSession) -> bool:
+    return bool(session.project) or (session.mode or "") in _PRODUCTIVE_MODES
+
+
+def _compatible(acc: "_BlockAccumulator", session: AppSession) -> bool:
+    if acc.dominant_project and session.project:
+        return acc.dominant_project == session.project
+    if acc.dominant_mode and session.mode:
+        return acc.dominant_mode == session.mode and acc.dominant_mode in _PRODUCTIVE_MODES
     return False
 
 
-def _is_same_context(acc: _BlockAccumulator, event: _TimelineEvent) -> bool:
-    """Strict check: same project or same app."""
-    if acc.dominant_project and event.project == acc.dominant_project:
-        return True
-    if acc.last_app and event.app == acc.last_app:
-        return True
-    return False
-
-
-def _passes_filter(block: DeepWorkBlock, min_duration: float, max_interruption_ratio: float) -> bool:
-    if block.duration_minutes < min_duration:
+def _passes_filter(
+    block: DeepWorkBlock,
+    min_duration_minutes: float,
+    max_interruption_ratio: float,
+) -> bool:
+    if block.duration_minutes < min_duration_minutes:
         return False
-    if block.focus_ratio < (1.0 - max_interruption_ratio):
-        return False
-    return True
+    return block.focus_ratio >= (1.0 - max_interruption_ratio)
 
 
 class _BlockAccumulator:
     __slots__ = (
-        "start", "end", "events", "interruption_seconds",
-        "project_counter", "mode_counter", "app_counter",
-        "command_count", "last_app",
+        "start",
+        "end",
+        "sessions",
+        "interruption_seconds",
+        "mode_durations",
+        "project_durations",
+        "productive_seconds",
     )
 
-    def __init__(self, event: _TimelineEvent) -> None:
-        self.start = event.start
-        self.end = event.end
-        self.events: list[_TimelineEvent] = [event]
-        self.interruption_seconds: float = 0.0
-        self.project_counter: Counter[str] = Counter()
-        self.mode_counter: Counter[str] = Counter()
-        self.app_counter: Counter[str] = Counter()
-        self.command_count: int = 0
-        self.last_app: str | None = None
-        self._record(event)
-
-    def add(self, event: _TimelineEvent) -> None:
-        self.events.append(event)
-        if event.end > self.end:
-            self.end = event.end
-        self._record(event)
-
-    def _record(self, event: _TimelineEvent) -> None:
-        dur = max((event.end - event.start).total_seconds(), 1.0)
-        if event.project:
-            self.project_counter[event.project] += dur
-        if event.mode:
-            self.mode_counter[event.mode] += dur
-        if event.app:
-            self.app_counter[event.app] += dur
-            self.last_app = event.app
-        self.command_count += event.command_count
-
-    @property
-    def dominant_project(self) -> str | None:
-        return self.project_counter.most_common(1)[0][0] if self.project_counter else None
+    def __init__(self, session: AppSession) -> None:
+        self.start = session.start
+        self.end = session.end
+        self.sessions: list[AppSession] = [session]
+        self.interruption_seconds = 0.0
+        self.mode_durations: Counter[str] = Counter()
+        self.project_durations: Counter[str] = Counter()
+        self.productive_seconds = 0.0
+        self._record_session(session)
 
     @property
     def dominant_mode(self) -> str | None:
-        return self.mode_counter.most_common(1)[0][0] if self.mode_counter else None
+        return self.mode_durations.most_common(1)[0][0] if self.mode_durations else None
 
-    def finalize(self, commits: list[object]) -> DeepWorkBlock | None:
-        duration_seconds = max((self.end - self.start).total_seconds(), 0.0)
-        if duration_seconds <= 0:
-            return None
-        duration_minutes = duration_seconds / 60.0
-        interruption_minutes = self.interruption_seconds / 60.0
+    @property
+    def dominant_project(self) -> str | None:
+        return self.project_durations.most_common(1)[0][0] if self.project_durations else None
 
-        # Count app switches
-        app_switches = 0
-        prev_app: str | None = None
-        for ev in self.events:
-            if ev.app and ev.app != prev_app:
-                if prev_app is not None:
-                    app_switches += 1
-                prev_app = ev.app
+    def add_session(self, session: AppSession) -> None:
+        self.sessions.append(session)
+        self.end = max(self.end, session.end)
+        self._record_session(session)
 
-        # Count commits within the block time range
-        commit_count = 0
-        for c in commits:
-            # GitCommit has .date (date) — we compare against the block's date range
-            if hasattr(c, "date") and self.start.date() <= c.date <= self.end.date():
-                commit_count += 1
+    def note_interruption(self, session: AppSession, gap_seconds: float) -> None:
+        self.interruption_seconds += max(gap_seconds, 0.0) + session.duration_seconds
+        self.end = max(self.end, session.end)
 
-        focus_ratio = max(0.0, min(1.0, 1.0 - (interruption_minutes / duration_minutes))) if duration_minutes > 0 else 0.0
+    def finalize(
+        self,
+        *,
+        shell_sessions: Sequence[ShellSession],
+        git_facts: Sequence[GitCommitFact],
+    ) -> DeepWorkBlock:
+        wall_seconds = max((self.end - self.start).total_seconds(), 0.0)
+        duration_minutes = wall_seconds / 60.0
+        focus_ratio = (
+            max(0.0, min(1.0, self.productive_seconds / wall_seconds))
+            if wall_seconds > 0
+            else 0.0
+        )
+
+        command_count = sum(
+            session.command_count
+            for session in shell_sessions
+            if _overlaps(self.start, self.end, session.start, session.end)
+        )
+        overlapping_git_facts = [
+            fact
+            for fact in git_facts
+            if _contains_timestamp(self.start, self.end, fact.authored_at)
+        ]
+        git_lines_changed = sum(fact.lines_changed for fact in overlapping_git_facts)
+        git_files_changed = sum(fact.files_changed for fact in overlapping_git_facts)
+        app_switches = sum(
+            1
+            for left, right in zip(self.sessions, self.sessions[1:])
+            if left.app != right.app
+        )
 
         return DeepWorkBlock(
             start=self.start,
@@ -253,8 +220,33 @@ class _BlockAccumulator:
             project=self.dominant_project,
             mode=self.dominant_mode or "unknown",
             app_switches=app_switches,
-            commit_count=commit_count,
-            command_count=self.command_count,
-            interruption_minutes=round(interruption_minutes, 1),
+            git_lines_changed=git_lines_changed,
+            git_files_changed=git_files_changed,
+            command_count=command_count,
+            interruption_minutes=round(self.interruption_seconds / 60.0, 1),
             focus_ratio=round(focus_ratio, 3),
         )
+
+    def _record_session(self, session: AppSession) -> None:
+        self.productive_seconds += session.duration_seconds
+        if session.mode:
+            self.mode_durations[session.mode] += session.duration_seconds
+        if session.project:
+            self.project_durations[session.project] += session.duration_seconds
+
+
+def _overlaps(
+    left_start: datetime,
+    left_end: datetime,
+    right_start: datetime,
+    right_end: datetime,
+) -> bool:
+    return left_start < right_end and right_start < left_end
+
+
+def _contains_timestamp(
+    start: datetime,
+    end: datetime,
+    timestamp: datetime,
+) -> bool:
+    return start <= timestamp < end

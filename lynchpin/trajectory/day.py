@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Iterable, Optional
 
 from .chains import TrajectoryChain, build_chains
-from .signal import TrajectorySignal, load_signals, resolve_window
+from ..signals import ActivitySignal, load_signals, resolve_window
 
 if TYPE_CHECKING:
     from .coverage import SignalCoverage
@@ -85,7 +85,7 @@ class TrajectoryDay:
 
 def summarize_days(
     *,
-    signals: Optional[Iterable[TrajectorySignal]] = None,
+    signals: Optional[Iterable[ActivitySignal]] = None,
     chains: Optional[Iterable[TrajectoryChain]] = None,
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,

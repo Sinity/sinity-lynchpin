@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterator
 
 from ..exports.polylogue import iter_session_profiles
@@ -20,6 +20,7 @@ class ChatDayActivity:
     session_count: int
     total_messages: int
     total_words: int
+    engaged_minutes: float
     total_wall_minutes: float
     dominant_work_kind: str | None
     projects: tuple[str, ...]
@@ -27,25 +28,23 @@ class ChatDayActivity:
 
 def iter_chat_daily(*, start: date, end: date) -> Iterator[ChatDayActivity]:
     """Yield per-provider daily chat activity summaries."""
-    start_dt = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
-    end_dt = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc)
-
     groups: dict[tuple[date, str], list] = defaultdict(list)
 
+    start_dt = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
+    end_dt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc) + timedelta(days=1)
+
     for profile in iter_session_profiles(start=start_dt, end=end_dt):
-        # Determine the date for this session
-        session_dt = profile.first_message_at or profile.created_at
-        if session_dt is None:
-            continue
-        session_date = session_dt.date() if isinstance(session_dt, datetime) else session_dt
-        if not (start <= session_date <= end):
+        session_date = getattr(profile, "canonical_session_date", None)
+        if session_date is None or not (start <= session_date <= end):
             continue
         groups[(session_date, profile.provider)].append(profile)
 
     for (d, provider), profiles in sorted(groups.items()):
         total_messages = sum(p.message_count for p in profiles)
         total_words = sum(p.word_count for p in profiles)
+        total_engaged_ms = sum(int(getattr(p, "engaged_duration_ms", 0) or 0) for p in profiles)
         total_wall_ms = sum(p.wall_duration_ms for p in profiles)
+        engaged_minutes = total_engaged_ms / 60_000.0
         total_wall_minutes = total_wall_ms / 60_000.0
 
         # Dominant work kind: most common across all work events in the group
@@ -64,6 +63,7 @@ def iter_chat_daily(*, start: date, end: date) -> Iterator[ChatDayActivity]:
             session_count=len(profiles),
             total_messages=total_messages,
             total_words=total_words,
+            engaged_minutes=engaged_minutes,
             total_wall_minutes=total_wall_minutes,
             dominant_work_kind=dominant,
             projects=tuple(sorted(all_projects)),

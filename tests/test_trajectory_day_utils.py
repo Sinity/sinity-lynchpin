@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
-import pytest
 
 from lynchpin.trajectory.coverage import _classify_quality
 from lynchpin.trajectory.day import _date_range, _split_span_by_day

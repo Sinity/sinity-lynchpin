@@ -1,4 +1,4 @@
-"""Pre-compute git commit trajectory signals for the fast-path artefact cache."""
+"""Pre-compute git commit activity signals for the fast-path artefact cache."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from ..sources.indices.gitstats import active_repo_paths, iter_numstat
-from ..trajectory.signal_sources import _numstat_record_to_signal
+from ..signals.sources import _numstat_record_to_signal
 
 app = typer.Typer(help="Git commit signal pre-computation")
 
@@ -21,10 +21,10 @@ _INGEST_START = datetime(2022, 1, 1, tzinfo=timezone.utc)
 def signals(
     output: Path = typer.Option(_DEFAULT_OUTPUT, "--output", help="Output JSONL path"),
 ) -> None:
-    """Pre-compute trajectory signals for all git commits and write to JSONL.
+    """Pre-compute activity signals for all git commits and write to JSONL.
 
     Run periodically (e.g. via `just ingest-git`) to keep the artefact fresh
-    so that trajectory signal loading uses the fast path instead of spawning
+    so that activity-signal loading uses the fast path instead of spawning
     git subprocesses on every run.
     """
     end = datetime.now(timezone.utc)

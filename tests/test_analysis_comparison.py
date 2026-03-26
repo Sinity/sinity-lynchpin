@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
-import pytest
 
 from lynchpin.analysis.canonical import _is_skip_marker
 from lynchpin.analysis.comparison import _parse_date, _rolling_best

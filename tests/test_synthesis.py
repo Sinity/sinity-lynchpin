@@ -1,16 +1,15 @@
 """Tests for temporal scale utilities and narrative I/O (post-pipeline-pruning)."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
 
 from lynchpin.retrospective.narrative import NarrativeKind, load_narratives
 from lynchpin.retrospective.temporal import (
     SCALE_HIERARCHY,
     child_keys,
     child_scale,
+    next_key,
     prior_key,
 )
 
@@ -32,6 +31,12 @@ class TestChildScale:
 
     def test_quarter_child_is_month(self):
         assert child_scale(NarrativeKind.quarter) is NarrativeKind.month
+
+    def test_half_child_is_quarter(self):
+        assert child_scale(NarrativeKind.half) is NarrativeKind.quarter
+
+    def test_year_child_is_half(self):
+        assert child_scale(NarrativeKind.year) is NarrativeKind.half
 
     def test_episode_returns_none(self):
         assert child_scale(NarrativeKind.episode) is None
@@ -61,6 +66,12 @@ class TestChildKeys:
     def test_quarter_q4(self):
         keys = child_keys(NarrativeKind.quarter, "2026-Q4")
         assert keys == ["2026-10", "2026-11", "2026-12"]
+
+    def test_half_produces_quarters(self):
+        assert child_keys(NarrativeKind.half, "2026-H1") == ["2026-Q1", "2026-Q2"]
+
+    def test_year_produces_halves(self):
+        assert child_keys(NarrativeKind.year, "2026") == ["2026-H1", "2026-H2"]
 
     def test_day_returns_empty(self):
         assert child_keys(NarrativeKind.day, "2026-03-15") == []
@@ -97,6 +108,12 @@ class TestPriorKey:
     def test_quarter_prior_year_boundary(self):
         assert prior_key(NarrativeKind.quarter, "2026-Q1") == "2025-Q4"
 
+    def test_half_prior(self):
+        assert prior_key(NarrativeKind.half, "2026-H2") == "2026-H1"
+
+    def test_year_prior(self):
+        assert prior_key(NarrativeKind.year, "2026") == "2025"
+
     def test_prior_key_wraps_year_month(self):
         assert prior_key(NarrativeKind.month, "2026-01") == "2025-12"
 
@@ -104,7 +121,15 @@ class TestPriorKey:
         assert prior_key(NarrativeKind.quarter, "2026-Q1") == "2025-Q4"
 
     def test_day_returns_none(self):
-        assert prior_key(NarrativeKind.day, "2026-03-15") is None
+        assert prior_key(NarrativeKind.day, "2026-03-15") == "2026-03-14"
+
+
+class TestNextKey:
+    def test_half_next(self):
+        assert next_key(NarrativeKind.half, "2026-H1") == "2026-H2"
+
+    def test_year_next(self):
+        assert next_key(NarrativeKind.year, "2026") == "2027"
 
 
 # ---------------------------------------------------------------------------
@@ -113,71 +138,39 @@ class TestPriorKey:
 
 
 class TestLoadNarratives:
-    def test_loads_from_jsonl(self, tmp_path: Path, monkeypatch):
+    def test_loads_from_canonical_hierarchical_file(self, tmp_path: Path, monkeypatch):
         import lynchpin.retrospective.narrative as narr_mod
 
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
         monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
 
-        log_file = log_dir / "narrative_2026-03-20.jsonl"
-        entries = [
-            {"kind": "day", "key": "2026-03-15", "generated_at": "2026-03-20T10:00:00Z", "text": "First version."},
-            {"kind": "day", "key": "2026-03-15", "generated_at": "2026-03-20T12:00:00Z", "text": "Updated version."},
-            {"kind": "day", "key": "2026-03-14", "generated_at": "2026-03-20T10:00:00Z", "text": "Day 14 narrative."},
-            {"kind": "week", "key": "2026-W11", "generated_at": "2026-03-20T10:00:00Z", "text": "Week 11."},
-        ]
-        log_file.write_text(
-            "\n".join(json.dumps(e) for e in entries),
+        hier_path = tmp_path / "narratives" / "2026" / "H1" / "Q1" / "March" / "15th.md"
+        hier_path.parent.mkdir(parents=True, exist_ok=True)
+        hier_path.write_text(
+            "---\nkind: day\nkey: 2026-03-15\ngenerated_at: \"2026-03-15T00:00:00Z\"\n---\n\nHIER VERSION",
             encoding="utf-8",
         )
 
-        # Should get latest version for 2026-03-15
-        result = load_narratives("day", ["2026-03-15", "2026-03-14"])
-        assert result["2026-03-15"] == "Updated version."
-        assert result["2026-03-14"] == "Day 14 narrative."
+        result = load_narratives("day", ["2026-03-15"])
+        assert result["2026-03-15"] == "HIER VERSION"
 
-    def test_missing_keys_not_in_result(self, tmp_path: Path, monkeypatch):
+    def test_missing_file_is_not_returned(self, tmp_path: Path, monkeypatch):
         import lynchpin.retrospective.narrative as narr_mod
 
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
-        monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
-
-        log_file = log_dir / "narrative_2026-03-20.jsonl"
-        log_file.write_text(
-            json.dumps({"kind": "day", "key": "2026-03-15", "generated_at": "2026-03-20T10:00:00Z", "text": "exists."}),
-            encoding="utf-8",
-        )
-
-        result = load_narratives("day", ["2026-03-15", "2026-03-16"])
-        assert "2026-03-15" in result
-        assert "2026-03-16" not in result
-
-    def test_empty_log_dir(self, tmp_path: Path, monkeypatch):
-        import lynchpin.retrospective.narrative as narr_mod
-
-        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", tmp_path / "nonexistent")
         monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
         assert load_narratives("day", ["2026-03-15"]) == {}
 
     def test_filters_by_kind(self, tmp_path: Path, monkeypatch):
         import lynchpin.retrospective.narrative as narr_mod
 
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        monkeypatch.setattr(narr_mod, "_NARRATIVE_LOG_DIR", log_dir)
         monkeypatch.setattr(narr_mod, "_NARRATIVE_DIR", tmp_path / "narratives")
 
-        log_file = log_dir / "narrative_2026-03-20.jsonl"
-        log_file.write_text(
-            json.dumps({"kind": "week", "key": "2026-W11", "generated_at": "2026-03-20T10:00:00Z", "text": "week text"}),
+        week_path = tmp_path / "narratives" / "2026" / "H1" / "Q1" / "2026-W11.md"
+        week_path.parent.mkdir(parents=True, exist_ok=True)
+        week_path.write_text(
+            "---\nkind: week\nkey: 2026-W11\ngenerated_at: \"2026-03-20T10:00:00Z\"\n---\n\nweek text",
             encoding="utf-8",
         )
 
-        # Asking for "day" kind should not return the "week" entry
         assert load_narratives("day", ["2026-W11"]) == {}
         assert load_narratives("week", ["2026-W11"]) == {"2026-W11": "week text"}
 
@@ -194,6 +187,8 @@ class TestScaleHierarchy:
             NarrativeKind.week,
             NarrativeKind.month,
             NarrativeKind.quarter,
+            NarrativeKind.half,
+            NarrativeKind.year,
         ]
 
     def test_each_scale_can_produce_children(self):
@@ -202,6 +197,8 @@ class TestScaleHierarchy:
             NarrativeKind.week: "2026-W11",
             NarrativeKind.month: "2026-03",
             NarrativeKind.quarter: "2026-Q1",
+            NarrativeKind.half: "2026-H1",
+            NarrativeKind.year: "2026",
         }
         for scale, key in test_keys.items():
             keys = child_keys(scale, key)

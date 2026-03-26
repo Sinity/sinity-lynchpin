@@ -172,11 +172,6 @@ def detect_anomalies(
             pass
 
         try:
-            anomalies.extend(_detect_delegation_phase_shift(sorted_days, rolling_window))
-        except Exception:
-            pass
-
-        try:
             anomalies.extend(_detect_fragmentation_spike(sorted_days, rolling_window))
         except Exception:
             pass
@@ -255,66 +250,6 @@ def _detect_deep_work_drought(
         else:
             consecutive_drought = 0
             drought_start = None
-
-    return anomalies
-
-
-def _detect_delegation_phase_shift(
-    sorted_days: list[TrajectoryDay],
-    rolling_window: int,
-) -> list[TrajectoryAnomaly]:
-    """Delegation mode changed from prior 7-day average."""
-    anomalies: list[TrajectoryAnomaly] = []
-
-    try:
-        from ..sources.processed.delegation import iter_delegation_metrics
-    except ImportError:
-        return anomalies
-
-    if len(sorted_days) < 8:
-        return anomalies
-
-    first_date = sorted_days[0].date
-    last_date = sorted_days[-1].date
-    try:
-        metrics = list(iter_delegation_metrics(start=first_date, end=last_date))
-    except Exception:
-        return anomalies
-
-    if not metrics or len(metrics) < 8:
-        return anomalies
-
-    for i in range(7, len(metrics)):
-        window = metrics[i - 7:i]
-        current = metrics[i]
-
-        # Count dominant mode in window
-        mode_counts: Counter[str] = Counter()
-        for m in window:
-            mode_counts[m.delegation_mode] += 1
-        if not mode_counts:
-            continue
-        baseline_mode = mode_counts.most_common(1)[0][0]
-        baseline_freq = mode_counts[baseline_mode] / len(window)
-
-        if current.delegation_mode != baseline_mode and baseline_freq >= 0.5:
-            anomalies.append(TrajectoryAnomaly(
-                anomaly_id=_anomaly_id(current.date, f"delegation_phase_shift_{current.delegation_mode}"),
-                date=current.date,
-                kind="delegation_phase_shift",
-                severity=min(baseline_freq, 1.0),
-                description=(
-                    f"Delegation mode shifted: {baseline_mode} → {current.delegation_mode} "
-                    f"(prior 7d was {baseline_freq:.0%} {baseline_mode})"
-                ),
-                baseline_value=baseline_freq,
-                actual_value=0.0,
-                evidence={
-                    "from_mode": baseline_mode,
-                    "to_mode": current.delegation_mode,
-                    "baseline_frequency": round(baseline_freq, 2),
-                },
-            ))
 
     return anomalies
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.analysis.maps.dependency_map import (
     _compute_degrees,

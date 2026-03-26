@@ -8,17 +8,16 @@ from .bundles import (
     ProjectSpec,
     build_project_bundles,
 )
-from .velocity import (
+from .velocity_analysis import (
     AGGREGATE_PROJECT,
-    DEFAULT_OUTPUT,
     AuthorStats,
     CategoryStats,
     CommitEvent,
     DailyStats,
     ProjectStats,
-    build_velocity_dashboard,
     select_project_profiles,
 )
+from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
 from .rich_bundles import (
     DEFAULT_PATCH_COMMITS,
     DEFAULT_PATCH_WINDOW,

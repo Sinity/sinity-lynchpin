@@ -7,7 +7,7 @@ This is the quick map for the current repo shape. The project is centered on the
 - `lynchpin/`: canonical code surface.
 - `docs/reference/`: current operational docs and maps.
 - `docs/analysis/`: interpreted findings and narratives.
-- `docs/personal/`: high-sensitivity retrospectives.
+- `docs/personal/`: personal long-range materials and legacy narrative surfaces awaiting absorption into the unified system.
 - `docs/plans/`: active near-term plans.
 - `artefacts/`: regenerated output trees, ignored by Git.
 - `config/`: HPI-style config for vendored `my.*` modules.
@@ -19,19 +19,21 @@ This is the quick map for the current repo shape. The project is centered on the
 | --- | --- | --- |
 | Sources | `lynchpin.sources.*` | Lazy readers over canonical `/realm/data/...` and local app state. |
 | Ingest | `lynchpin.ingest.*` | Small operational CLIs for source-specific refresh or metadata extraction. |
-| Retrospective | `lynchpin.retrospective.*` | Shared prompt builders, calendar/life assemblers, and renderers over typed trajectory/source summaries. |
-| System workflows | `lynchpin.system.*` | Thin operational wrappers for heavyweight artefact builds plus baseline refreshes. |
-| Views | `lynchpin.views.*` | Thin materializers that still earn dedicated modules: warehouse, calendar views, knowledge graph. |
-| Analysis | `lynchpin.analysis.*` | Reusable project/code/knowledge analysis APIs. Prefer durable logic here over dedicated shells. |
+| Signals | `lynchpin.signals.*` | Shared activity-signal substrate: low-level event normalization, loaders, and attribution rules reused across ingest, processed views, and derived rollups. |
+| Retrospective | `lynchpin.retrospective.*` | Narrative file I/O, enrichment, provenance, and authored retrospective outputs over shared evidence surfaces. |
+| Context | `lynchpin.context.*` | Period-scoped evidence bundles, claims, and trust-aware orchestration surfaces for agents. |
+| System workflows | `lynchpin.system.*` | Operational entrypoints for heavyweight artefact builds, validation, and baseline refreshes. Pull reusable logic down into `sources`, `context`, or `retrospective` rather than growing shell layers here. |
+| Views | `lynchpin.views.*` | Materialized query surfaces such as warehouse and knowledge graph outputs. |
+| Analysis | `lynchpin.analysis.*` | Optional code/project/knowledge analysis sidecar. Keep its helpers inside the analysis boundary instead of promoting them to generic top-level infrastructure. |
 
 ## Primary Commands
 
 | Workflow | Command | Output |
 | --- | --- | --- |
 | Baseline | `python -m lynchpin.system.baseline` | `artefacts/core/baseline/latest/` |
-| Life timeline | `lynchpin.retrospective.run_life_timeline(...)` or `python -m lynchpin.system.life_timeline --start ... --end ...` | `artefacts/lifelog/life-timeline/` |
-| Calendar views | `lynchpin.retrospective.build_calendar_views(...)` or `python -m lynchpin.views.calendar_views START END` | `artefacts/calendar/views/` |
-| Range narratives | `lynchpin.retrospective.generate_date_range_narrative(...)` or the `lynchpin-ops` skill workflow | `artefacts/retrospective/narratives/logs/` |
+| Interactive narratives | `lynchpin.context.build_period_evidence_bundle(...)`, `lynchpin.context.reports.build_period_reports(...)`, and `lynchpin-ops` / `lynchpin-narrative-improvement` workflows over warehouse/source/Polylogue evidence | `artefacts/retrospective/narratives/YYYY/...` plus colocated `.evidence/` bundles |
+| Existing long-range artefacts | `lynchpin.retrospective.build_life_range(...)` or `python -m lynchpin.retrospective.life build --start ... --end ...` | `artefacts/retrospective/life-range/` |
+| Period reports | `lynchpin.context.reports.build_period_reports(...)` or `python -m lynchpin.context.reports START END --scale day` | `artefacts/context/reports/` |
 | Warehouse views | `python -m lynchpin.views.warehouse build` | `artefacts/lynchpin/warehouse.duckdb` |
 | Source materialization | `python -m lynchpin.views.warehouse materialize` or `refresh` | `artefacts/lynchpin/warehouse/{parquet,duckdb}/` |
 | Ledgers | `python -m lynchpin.analysis.knowledge session-index` / `artefact-index`, the Python APIs, or `just session-index` / `just artefact-index` | `artefacts/knowledge/ledgers/` |
@@ -45,8 +47,8 @@ This is the quick map for the current repo shape. The project is centered on the
 
 - `docs/reference/data-sources.md`: canonical raw-input paths.
 - `docs/reference/baseline.md`: direct baseline rebuild workflow.
-- `docs/reference/life-timeline.md`: direct life-timeline composition workflow.
-- `docs/reference/calendar-views.md`: day-view and narrative workflow.
+- `docs/reference/life-range.md`: current inherited long-range workflow to absorb, not the target architecture.
+- `docs/reference/period-reports.md`: generic period-report workflow over evidence bundles.
 - `docs/reference/hpi-modules.md`: curated supported vendored HPI surface.
 - `docs/reference/webhistory.md`: canonical webhistory maintenance commands.
 - `docs/reference/wykop-export.md`: Wykop export workflow.

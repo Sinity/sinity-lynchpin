@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
 
 from lynchpin.trajectory.anomaly import _anomaly_id
 from lynchpin.trajectory.episode import _compose_label, _episode_id

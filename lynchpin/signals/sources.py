@@ -1,4 +1,4 @@
-"""Per-source signal iterators and AW event coalescing logic."""
+"""Per-source shared signal iterators and AW event coalescing logic."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from ..sources.captures.instrumentation import (
     iter_terminal_sessions_fast,
 )
 from ..sources.indices import gitstats
-from .signal import (
-    TrajectorySignal,
+from . import (
+    ActivitySignal,
     _as_local,
     _domain_from_url,
     _parse_optional_dt,
@@ -24,7 +24,7 @@ from .signal import (
     _signal_id,
     _text,
 )
-from .signal_loader import (
+from .loader import (
     _AW_AFk_ARTEFACT_DIR,
     _AW_WEB_ARTEFACT_DIR,
     _AW_WINDOW_ARTEFACT_DIR,
@@ -51,7 +51,7 @@ _TRANSCRIPT_SIGNAL_SECONDS = timedelta(minutes=5)
 _TERMINAL_COMMAND_SECONDS = timedelta(seconds=5)
 
 
-def _iter_all_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _iter_all_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     yield from _window_signals(start, end)
     yield from _web_signals(start, end)
     yield from _afk_signals(start, end)
@@ -62,7 +62,7 @@ def _iter_all_signals(start: datetime, end: datetime) -> Iterator[TrajectorySign
     yield from _git_commit_signals(start, end)
 
 
-def _window_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _window_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     yield from _aw_signals_mixed(
         _AW_WINDOW_ARTEFACT_DIR,
         start,
@@ -76,7 +76,7 @@ def _window_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal
     )
 
 
-def _web_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _web_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     yield from _aw_signals_mixed(
         _AW_WEB_ARTEFACT_DIR,
         start,
@@ -98,8 +98,8 @@ def _collapse_window_like(
     app_key: Optional[str],
     title_key: Optional[str],
     url_key: Optional[str],
-) -> Iterator[TrajectorySignal]:
-    # Accumulate into mutable locals during a run; create TrajectorySignal only at yield.
+) -> Iterator[ActivitySignal]:
+    # Accumulate into mutable locals during a run; create ActivitySignal only at yield.
     cur_app: Optional[str] = None
     cur_title: Optional[str] = None
     cur_url: Optional[str] = None
@@ -111,11 +111,11 @@ def _collapse_window_like(
     cur_signal_id: Optional[str] = None
     sample_count = 0
 
-    def _emit() -> TrajectorySignal:
+    def _emit() -> ActivitySignal:
         assert cur_signal_id is not None
         assert cur_start is not None
         assert cur_end is not None
-        return TrajectorySignal(
+        return ActivitySignal(
             signal_id=cur_signal_id,
             source=source,
             kind=kind,
@@ -187,7 +187,7 @@ def _afk_db_signals(
     start: datetime,
     end: datetime,
     seen_ids: set[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Fetch AFK signals directly from the AW DB for [start, end]."""
     for event in activitywatch.afk_events(start=start, end=end):
         status = _text((event.data or {}).get("status"))
@@ -199,7 +199,7 @@ def _afk_db_signals(
         if sig_id in seen_ids:
             continue
         seen_ids.add(sig_id)
-        yield TrajectorySignal(
+        yield ActivitySignal(
             signal_id=sig_id,
             source="activitywatch.afk",
             kind="afk",
@@ -211,7 +211,7 @@ def _afk_db_signals(
         )
 
 
-def _afk_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _afk_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     from calendar import monthrange as _monthrange
 
     seen_ids: set[str] = set()
@@ -246,14 +246,14 @@ def _afk_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
                 yield from _afk_db_signals(live_start, end, seen_ids)
 
 
-def _atuin_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _atuin_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     for command in atuin.iter_commands(start=start, end=end):
         signal_start = _as_local(command.timestamp)
         duration_seconds = 1.0
         if command.duration_ns and command.duration_ns > 0:
             duration_seconds = max(min(command.duration_ns / 1_000_000_000, 900.0), 1.0)
         signal_end = signal_start + timedelta(seconds=duration_seconds)
-        yield TrajectorySignal(
+        yield ActivitySignal(
             signal_id=_signal_id("atuin.command", signal_start, signal_end, command.cwd, command.command),
             source="atuin.command",
             kind="command",
@@ -273,8 +273,8 @@ def _session_to_signal(
     session: TerminalSessionMetadata,
     start: datetime,
     end: datetime,
-) -> Iterator[TrajectorySignal]:
-    """Convert a TerminalSessionMetadata to a TrajectorySignal if it overlaps [start, end]."""
+) -> Iterator[ActivitySignal]:
+    """Convert a TerminalSessionMetadata to an ActivitySignal if it overlaps [start, end]."""
     session_start = _parse_optional_dt(session.created_at)
     if session_start is None:
         return
@@ -285,7 +285,7 @@ def _session_to_signal(
     session_end = _as_local(session_end)
     if session_end <= start or session_start >= end:
         return
-    yield TrajectorySignal(
+    yield ActivitySignal(
         signal_id=_signal_id("instrumentation.terminal_session", session_start, session_end, session.session_id),
         source="instrumentation.terminal_session",
         kind="terminal_session",
@@ -312,7 +312,7 @@ def _session_to_signal(
     )
 
 
-def _terminal_session_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _terminal_session_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     seen_ids: set[str] = set()
     # Fast path: historical sessions from pre-computed JSONL artefact (~5ms for 1000+ sessions)
     for session in _iter_sessions_from_jsonl(_SESSIONS_ARTEFACT, start, end, seen_ids=seen_ids):
@@ -326,8 +326,8 @@ def _terminal_session_signals(start: datetime, end: datetime) -> Iterator[Trajec
         yield from _session_to_signal(session, start, end)
 
 
-def _event_to_signal(event: TerminalSessionEvent, start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
-    """Convert a TerminalSessionEvent to a TrajectorySignal if it is a command_start in [start, end]."""
+def _event_to_signal(event: TerminalSessionEvent, start: datetime, end: datetime) -> Iterator[ActivitySignal]:
+    """Convert a TerminalSessionEvent to an ActivitySignal if it is a command_start in [start, end]."""
     if event.type != "command_start":
         return
     signal_start = _parse_optional_dt(event.time)
@@ -338,7 +338,7 @@ def _event_to_signal(event: TerminalSessionEvent, start: datetime, end: datetime
         return
     signal_end = signal_start + _TERMINAL_COMMAND_SECONDS
     command_text = _text(event.payload.get("command") or event.payload.get("cmd"))
-    yield TrajectorySignal(
+    yield ActivitySignal(
         signal_id=_signal_id("instrumentation.terminal_command", signal_start, signal_end, event.session_id, command_text),
         source="instrumentation.terminal_command",
         kind="terminal_command",
@@ -357,7 +357,7 @@ def _event_to_signal(event: TerminalSessionEvent, start: datetime, end: datetime
     )
 
 
-def _terminal_command_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _terminal_command_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     # Fast path: pre-computed JSONL artefact
     seen_event_ids: set[str] = set()
     for event in _iter_events_from_jsonl(_SESSION_EVENTS_ARTEFACT, start, end):
@@ -389,8 +389,8 @@ _WORK_EVENT_MODE_MAP = {
 }
 
 
-def _profile_to_signals(profile: object) -> Iterator[TrajectorySignal]:
-    """Convert a SessionProfile to TrajectorySignals (one per work event, or one chat signal)."""
+def _profile_to_signals(profile: object) -> Iterator[ActivitySignal]:
+    """Convert a SessionProfile to ActivitySignal rows (one per work event, or one chat signal)."""
     if not profile.work_events:  # type: ignore[union-attr]
         signal_start = _as_local(profile.first_message_at or profile.created_at) if (profile.first_message_at or profile.created_at) else None  # type: ignore[union-attr]
         if signal_start is None:
@@ -398,7 +398,7 @@ def _profile_to_signals(profile: object) -> Iterator[TrajectorySignal]:
         signal_end = _as_local(profile.last_message_at or profile.updated_at) if (profile.last_message_at or profile.updated_at) else signal_start + _TRANSCRIPT_SIGNAL_SECONDS  # type: ignore[union-attr]
         if signal_end <= signal_start:
             signal_end = signal_start + _TRANSCRIPT_SIGNAL_SECONDS
-        yield TrajectorySignal(
+        yield ActivitySignal(
             signal_id=_signal_id("polylogue.session", signal_start, signal_end, profile.provider, profile.conversation_id),  # type: ignore[union-attr]
             source="polylogue.session",
             kind="session",
@@ -456,7 +456,7 @@ def _profile_to_signals(profile: object) -> Iterator[TrajectorySignal]:
             else _project_hint_from_paths(*event.file_paths, *profile.repo_paths)  # type: ignore[union-attr]
         )
 
-        yield TrajectorySignal(
+        yield ActivitySignal(
             signal_id=_signal_id(
                 "polylogue.session",
                 signal_start,
@@ -488,7 +488,7 @@ def _profile_to_signals(profile: object) -> Iterator[TrajectorySignal]:
         )
 
 
-def _polylogue_session_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _polylogue_session_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     seen_conv_ids: set[str] = set()
     # Fast path: pre-computed JSONL artefact (ms instead of 20+ seconds)
     yield from _iter_polylogue_signals_from_jsonl(_POLYLOGUE_ARTEFACT, start, end, seen_conv_ids=seen_conv_ids)
@@ -510,7 +510,7 @@ def _polylogue_live_signals(
     start: datetime,
     end: datetime,
     seen_conv_ids: set[str],
-) -> Iterator[TrajectorySignal]:
+) -> Iterator[ActivitySignal]:
     """Fetch only conversations NOT in seen_conv_ids from the polylogue DB."""
     try:
         from polylogue.lib.session_profile import build_session_profile
@@ -543,8 +543,8 @@ def _polylogue_live_signals(
         poly.close()
 
 
-def _numstat_record_to_signal(record: dict[str, object]) -> Optional[TrajectorySignal]:
-    """Convert a single iter_numstat record to a TrajectorySignal, or None if invalid."""
+def _numstat_record_to_signal(record: dict[str, object]) -> Optional[ActivitySignal]:
+    """Convert a single iter_numstat record to an ActivitySignal, or None if invalid."""
     stamp = record.get("date")
     if not isinstance(stamp, str):
         return None
@@ -558,7 +558,7 @@ def _numstat_record_to_signal(record: dict[str, object]) -> Optional[TrajectoryS
     project_hint = _project_hint_from_paths(repo_path)
     if not project_hint and repo_path:
         project_hint = Path(repo_path).name
-    return TrajectorySignal(
+    return ActivitySignal(
         signal_id=_signal_id("git.commit", signal_start, signal_end, repo_path, record.get("commit")),
         source="git.commit",
         kind="git_commit",
@@ -576,7 +576,7 @@ def _numstat_record_to_signal(record: dict[str, object]) -> Optional[TrajectoryS
     )
 
 
-def _git_commit_signals(start: datetime, end: datetime) -> Iterator[TrajectorySignal]:
+def _git_commit_signals(start: datetime, end: datetime) -> Iterator[ActivitySignal]:
     seen_shas: set[str] = set()
     # Fast path: pre-computed JSONL artefact (ms instead of 3-5s git subprocesses)
     yield from _iter_git_signals_from_jsonl(_GIT_ARTEFACT, start, end, seen_shas=seen_shas)

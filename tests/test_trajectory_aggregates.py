@@ -7,13 +7,13 @@ from typing import Optional
 
 import pytest
 
+from lynchpin.signals import ActivitySignal, _iter_months
 from lynchpin.trajectory.anomaly import TrajectoryAnomaly, _anomaly_id, detect_anomalies
 from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject
 from lynchpin.trajectory.episode import TrajectoryEpisode, _compose_label, detect_episodes
 from lynchpin.trajectory.month import TrajectoryMonth, summarize_months
 from lynchpin.trajectory.quarter import TrajectoryQuarter, summarize_quarters
 from lynchpin.trajectory.year import TrajectoryYear
-from lynchpin.trajectory.signal import TrajectorySignal, _iter_months
 from lynchpin.trajectory.week import TrajectoryWeek, _classify_day_pattern, summarize_weeks
 
 
@@ -591,7 +591,7 @@ def test_summarize_months_chat_metadata_from_polylogue_signals() -> None:
 
     # 3 polylogue signals for March, each with a different conversation_id
     signals = [
-        TrajectorySignal(
+        ActivitySignal(
             signal_id=f"p{i}",
             source="polylogue.session",
             kind="session",
@@ -607,7 +607,7 @@ def test_summarize_months_chat_metadata_from_polylogue_signals() -> None:
     ]
     # One non-polylogue signal that should be ignored
     signals.append(
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="g1",
             source="git.commit",
             kind="git_commit",
@@ -635,7 +635,7 @@ def test_summarize_months_chat_deduplicates_by_conversation_id() -> None:
         return datetime(2026, 3, day, hour, 0, 0, tzinfo=timezone.utc)
 
     signals = [
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="p1",
             source="polylogue.session",
             kind="session",
@@ -643,7 +643,7 @@ def test_summarize_months_chat_deduplicates_by_conversation_id() -> None:
             end=_dt(1, 11),
             evidence={"conversation_id": "same-conv", "work_event_kind": "review", "total_cost_usd": 0.05},
         ),
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="p2",
             source="polylogue.session",
             kind="session",
@@ -916,7 +916,7 @@ class TestComposeLabel:
 # ---------------------------------------------------------------------------
 
 class TestIterMonths:
-    def _dt(self, year: int, month: int, day: int = 1) -> "datetime":
+    def _dt(self, year: int, month: int, day: int = 1):
         from datetime import datetime, timezone
         return datetime(year, month, day, tzinfo=timezone.utc)
 

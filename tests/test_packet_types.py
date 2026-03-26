@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from lynchpin.context.packet_types import (
     ClaimPacket,

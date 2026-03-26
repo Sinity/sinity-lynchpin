@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.sources.indices.sessions import (
     _clean_inline,

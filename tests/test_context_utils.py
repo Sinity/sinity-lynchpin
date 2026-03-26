@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.context.packet_builders import _top_n
 from lynchpin.context.selection import _estimate_tokens

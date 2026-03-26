@@ -292,7 +292,7 @@ def iter_terminal_sessions_fast(
     """Fast variant of iter_terminal_sessions that reads only the manifest JSON sidecar.
 
     Skips the expensive cast-file timing scan (which can read megabytes of cast data).
-    All fields needed by the trajectory signal pipeline are present in the manifest;
+    All fields needed by the activity-signal pipeline are present in the manifest;
     sessions without a manifest fall back to a minimal parse of the cast header.
     Use this in hot paths where timing accuracy is less critical than speed.
     """
@@ -319,7 +319,7 @@ def _parse_session_fast(cast_path: Path) -> Optional[TerminalSessionMetadata]:
     """Parse only the manifest sidecar (session.json), with a minimal cast-header fallback.
 
     This avoids _scan_cast_timings on the (potentially large) cast file.
-    Suitable for the trajectory signal pipeline where timing precision is secondary.
+    Suitable for the activity-signal pipeline where timing precision is secondary.
     """
     manifest_path, events_path = _sidecar_paths(cast_path)
     session_id = _session_id(cast_path)

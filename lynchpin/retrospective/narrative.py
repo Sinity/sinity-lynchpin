@@ -1,29 +1,16 @@
-"""Narrative data types and I/O for trajectory retrospectives.
-
-Narratives are stored in two formats:
-1. **Files**: Markdown with YAML frontmatter under artefacts/retrospective/narratives/
-   - days/YYYY-MM-DD.md, weeks/YYYY-WNN.md, months/YYYY-MM.md, quarters/YYYY-QN.md
-   - Primary source; includes metadata (session_id, tokens, pass number, prior_versions)
-
-2. **JSONL Logs**: Legacy format in artefacts/retrospective/narratives/logs/ (for warehouse)
-   - Written alongside files by _log_narrative()
-
-Use _write_narrative_file() to create/update narrative files.
-Use load_narratives() to read narratives (checks files first, falls back to JSONL).
-Use migrate_jsonl_to_files() to backfill files from existing JSONL logs.
-"""
+"""Narrative data types and canonical file I/O for retrospective artifacts."""
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import logging
+
+from ..periods import hierarchical_relpath
 
 log = logging.getLogger(__name__)
 
-_NARRATIVE_LOG_DIR = Path("artefacts/retrospective/narratives/logs")
 _NARRATIVE_DIR = Path("artefacts/retrospective/narratives")
 
 
@@ -34,6 +21,8 @@ class NarrativeKind(str, Enum):
     month = "month"
     episode = "episode"
     quarter = "quarter"
+    half = "half"
+    year = "year"
     contrast = "contrast"
 
 
@@ -51,247 +40,126 @@ class Narrative:
     session_id: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Narrative file I/O
-# ---------------------------------------------------------------------------
-
-
 def _write_narrative_file(
     narrative: Narrative,
     session_id: str | None = None,
     pass_num: int = 1,
     enrichment_sources: list[str] | None = None,
+    evidence_bundle: str | None = None,
 ) -> None:
-    """Write narrative as a Markdown file with YAML frontmatter.
+    """Write a narrative as canonical Markdown with YAML frontmatter."""
+    path = _narrative_path(narrative.kind, narrative.key)
 
-    Determines subdirectory from narrative.kind: "day" -> "days/", "week" -> "weeks/",
-    "month" -> "months/", "quarter" -> "quarters/", or "enhancement:X" -> "enhancements/X/".
-    """
+    prior_versions = []
+    prior_fm = _read_frontmatter(path) if path.exists() else None
+    if prior_fm:
+        existing_prior = prior_fm.get("prior_versions")
+        if isinstance(existing_prior, list):
+            prior_versions = existing_prior
+        prior_versions.append(
+            {
+                "generated_at": prior_fm.get("generated_at"),
+                "pass": prior_fm.get("pass", 1),
+                "session_id": prior_fm.get("session_id"),
+            },
+        )
+
+    frontmatter = {
+        "kind": narrative.kind,
+        "key": narrative.key,
+        "generated_at": narrative.generated_at,
+        "model": narrative.model,
+        "backend": narrative.backend,
+        "session_id": session_id or narrative.session_id,
+        "input_tokens": narrative.input_tokens,
+        "output_tokens": narrative.output_tokens,
+        "cost_usd": narrative.cost_usd,
+        "pass": pass_num,
+    }
+    if enrichment_sources:
+        frontmatter["enrichment_sources"] = enrichment_sources
+    if evidence_bundle:
+        frontmatter["evidence_bundle"] = evidence_bundle
+    if prior_versions:
+        frontmatter["prior_versions"] = prior_versions
+
     try:
-        # Determine subdirectory
-        if narrative.kind.startswith("enhancement:"):
-            pass_type = narrative.kind.split(":", 1)[1]
-            subdir = _NARRATIVE_DIR / "enhancements" / pass_type
-        else:
-            kind_map = {"day": "days", "week": "weeks", "month": "months", "quarter": "quarters"}
-            subdir = _NARRATIVE_DIR / kind_map.get(narrative.kind, narrative.kind)
-
-        subdir.mkdir(parents=True, exist_ok=True)
-        file_path = subdir / f"{narrative.key}.md"
-
-        # Build frontmatter
-        frontmatter = {
-            "kind": narrative.kind,
-            "key": narrative.key,
-            "generated_at": narrative.generated_at,
-            "model": narrative.model,
-            "backend": narrative.backend,
-            "session_id": session_id or narrative.session_id,
-            "input_tokens": narrative.input_tokens,
-            "output_tokens": narrative.output_tokens,
-            "cost_usd": narrative.cost_usd,
-            "pass": pass_num,
-        }
-        if enrichment_sources:
-            frontmatter["enrichment_sources"] = enrichment_sources
-
-        # Check for existing file to preserve prior versions
-        prior_versions = []
-        if file_path.exists():
-            try:
-                with file_path.open("r", encoding="utf-8") as f:
-                    content = f.read()
-                    # Extract existing frontmatter
-                    if content.startswith("---"):
-                        end_idx = content.find("\n---\n", 4)
-                        if end_idx > 0:
-                            import yaml
-                            existing_fm = yaml.safe_load(content[4:end_idx])
-                            if existing_fm and "prior_versions" in existing_fm:
-                                prior_versions = existing_fm["prior_versions"]
-                            # Add current version to prior_versions
-                            prior_versions.append({
-                                "generated_at": existing_fm.get("generated_at"),
-                                "pass": existing_fm.get("pass", 1),
-                                "session_id": existing_fm.get("session_id"),
-                            })
-            except Exception as exc:
-                log.warning("Could not read prior versions from %s: %s", file_path, exc)
-
-        if prior_versions:
-            frontmatter["prior_versions"] = prior_versions
-
-        # Write file
         import yaml
-        with file_path.open("w", encoding="utf-8") as f:
-            f.write("---\n")
-            yaml.dump(frontmatter, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-            f.write("---\n\n")
-            f.write(narrative.text)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write("---\n")
+            yaml.dump(frontmatter, handle, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            handle.write("---\n\n")
+            handle.write(narrative.text)
             if not narrative.text.endswith("\n"):
-                f.write("\n")
+                handle.write("\n")
     except Exception as exc:
-        log.warning("Failed to write narrative file: %s", exc)
+        log.warning("Failed to write narrative file %s: %s", path, exc)
 
 
-def _log_narrative(narrative: Narrative) -> None:
-    # Write file
-    _write_narrative_file(narrative, pass_num=1)
-
-    # Also write to JSONL log for warehouse compatibility
-    log_dir = _NARRATIVE_LOG_DIR
+def _read_frontmatter(file_path: Path) -> dict[str, object]:
+    """Extract YAML frontmatter from a narrative file."""
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"narrative_{narrative.generated_at[:10]}.jsonl"
-        entry = {
-            "kind": narrative.kind,
-            "key": narrative.key,
-            "generated_at": narrative.generated_at,
-            "backend": narrative.backend,
-            "model": narrative.model,
-            "input_tokens": narrative.input_tokens,
-            "output_tokens": narrative.output_tokens,
-            "cost_usd": narrative.cost_usd,
-            "text": narrative.text,
-            "session_id": narrative.session_id,
-        }
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with file_path.open("r", encoding="utf-8") as handle:
+            content = handle.read()
     except OSError as exc:
-        log.warning("Failed to write narrative log: %s", exc)
+        log.warning("Could not read narrative frontmatter from %s: %s", file_path, exc)
+        return {}
+    if not content.startswith("---"):
+        return {}
+    end_idx = content.find("\n---\n", 4)
+    if end_idx <= 0:
+        return {}
+    try:
+        import yaml
+
+        parsed = yaml.safe_load(content[4:end_idx])
+    except Exception as exc:
+        log.warning("Could not parse narrative frontmatter from %s: %s", file_path, exc)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-# ---------------------------------------------------------------------------
-# Narrative loading / migration
-# ---------------------------------------------------------------------------
+def _read_narrative_body(file_path: Path) -> str | None:
+    try:
+        with file_path.open("r", encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError as exc:
+        log.warning("Failed to read narrative file %s: %s", file_path, exc)
+        return None
+    if not content.startswith("---"):
+        return None
+    end_idx = content.find("\n---\n", 4)
+    if end_idx <= 0:
+        return None
+    return content[end_idx + 5:]
+
+
+def _narrative_path(kind: str, key: str) -> Path:
+    if kind.startswith("enhancement:"):
+        pass_type = kind.split(":", 1)[1]
+        return _NARRATIVE_DIR / "enhancements" / pass_type / f"{key}.md"
+    path = _narrative_hierarchical_path(kind, key)
+    if path is None:
+        raise ValueError(f"No canonical narrative path for kind={kind!r} key={key!r}")
+    return path
+
+
+def _narrative_hierarchical_path(kind: str, key: str) -> Path | None:
+    rel = hierarchical_relpath(kind, key)
+    return (_NARRATIVE_DIR / rel) if rel is not None else None
 
 
 def load_narratives(kind: str, keys: list[str]) -> dict[str, str]:
-    """Load the most recent narrative text for each *(kind, key)* pair.
-
-    First checks for narrative files in the file tree. Falls back to JSONL logs
-    for keys not found as files. For duplicate JSONL entries the latest by
-    ``generated_at`` wins.
-    """
-    if not keys:
-        return {}
-    target_keys = set(keys)
+    """Load narrative text from the canonical hierarchical file tree."""
     results: dict[str, str] = {}
-
-    # Map kind to subdirectory
-    kind_map = {"day": "days", "week": "weeks", "month": "months", "quarter": "quarters"}
-    subdir_name = kind_map.get(kind)
-
-    # Try to load from files first
-    if subdir_name:
-        subdir = _NARRATIVE_DIR / subdir_name
-        for key in list(target_keys):
-            file_path = subdir / f"{key}.md"
-            if file_path.exists():
-                try:
-                    with file_path.open("r", encoding="utf-8") as f:
-                        content = f.read()
-                        # Skip YAML frontmatter
-                        if content.startswith("---"):
-                            end_idx = content.find("\n---\n", 4)
-                            if end_idx > 0:
-                                body = content[end_idx + 5:]  # Skip second ---\n
-                                results[key] = body.lstrip("\n")
-                                target_keys.discard(key)
-                except Exception as exc:
-                    log.warning("Failed to read narrative file %s: %s", file_path, exc)
-
-    # Fall back to JSONL log for remaining keys
-    log_dir = _NARRATIVE_LOG_DIR
-    if log_dir.exists() and target_keys:
-        jsonl_results: dict[str, tuple[str, str]] = {}  # key -> (generated_at, text)
-        for log_path in sorted(log_dir.glob("narrative_*.jsonl")):
-            try:
-                with log_path.open(encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if entry.get("kind") != kind:
-                            continue
-                        entry_key = entry.get("key", "")
-                        if entry_key not in target_keys:
-                            continue
-                        gen_at = entry.get("generated_at", "")
-                        text = entry.get("text", "")
-                        if not text:
-                            continue
-                        prev = jsonl_results.get(entry_key)
-                        if prev is None or gen_at > prev[0]:
-                            jsonl_results[entry_key] = (gen_at, text)
-            except OSError:
-                continue
-        results.update({k: v[1] for k, v in jsonl_results.items()})
-
-    return results
-
-
-def migrate_jsonl_to_files() -> None:
-    """Migrate narratives from JSONL logs to Markdown files.
-
-    Reads all JSONL log entries and writes them as files. Only writes a file
-    if it doesn't already exist (preserves newer file versions).
-    """
-    log_dir = _NARRATIVE_LOG_DIR
-    if not log_dir.exists():
-        return
-
-    migrated_count = 0
-    skipped_count = 0
-
-    for log_path in sorted(log_dir.glob("narrative_*.jsonl")):
+    for key in keys:
         try:
-            with log_path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    # Check if file already exists
-                    kind = entry.get("kind", "")
-                    key = entry.get("key", "")
-                    if not kind or not key:
-                        continue
-
-                    kind_map = {"day": "days", "week": "weeks", "month": "months", "quarter": "quarters"}
-                    subdir_name = kind_map.get(kind)
-                    if not subdir_name:
-                        continue
-
-                    file_path = _NARRATIVE_DIR / subdir_name / f"{key}.md"
-                    if file_path.exists():
-                        skipped_count += 1
-                        continue
-
-                    # Create Narrative and write file
-                    narrative = Narrative(
-                        kind=kind,
-                        key=key,
-                        text=entry.get("text", ""),
-                        generated_at=entry.get("generated_at", ""),
-                        model=entry.get("model", ""),
-                        input_tokens=entry.get("input_tokens", 0),
-                        output_tokens=entry.get("output_tokens", 0),
-                        cost_usd=entry.get("cost_usd", 0.0),
-                        backend=entry.get("backend", "unknown"),
-                        session_id=entry.get("session_id"),
-                    )
-                    _write_narrative_file(narrative, pass_num=1)
-                    migrated_count += 1
-        except OSError as exc:
-            log.warning("Failed to read JSONL log %s: %s", log_path, exc)
-
-    log.info("Migration complete: %d migrated, %d skipped (already exist)", migrated_count, skipped_count)
+            path = _narrative_path(kind, key)
+        except ValueError:
+            continue
+        body = _read_narrative_body(path)
+        if body is not None:
+            results[key] = body.lstrip("\n")
+    return results

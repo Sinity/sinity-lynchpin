@@ -57,6 +57,8 @@ def _score_packet(packet_type: str, packet_dict: dict[str, Any], query_terms: se
         "coverage": 0.5,
         "period": 0.7,
         "claims": 0.6,
+        "anomalies": 0.7,
+        "recent_focus_loops": 0.8,
     }.get(packet_type, 0.5)
 
     # evidence_density: normalize by 500 as max meaningful count
@@ -130,7 +132,7 @@ def select_context(
             packets_with_scores.append((key, packet, score, tokens))
 
     # List-of-dicts sections
-    for key in ["days", "weeks", "months", "quarters", "years", "episodes", "themes", "project_arcs", "memory", "threads"]:
+    for key in ["days", "weeks", "months", "quarters", "years", "episodes", "anomalies", "themes", "project_arcs", "memory", "threads", "recent_focus_loops"]:
         if key in state and state[key]:
             for packet in state[key]:
                 score = _score_packet(key, packet, set(query.lower().split()))

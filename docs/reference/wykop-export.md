@@ -46,8 +46,8 @@ If discovery fails, pass `--refresh-token` explicitly.
 
 ## Downstream Consumers
 
-- `lynchpin.system.life_timeline`
 - `lynchpin.sources.exports.wykop`
+- long-range retrospective evidence gathering
 
 ## Notes
 

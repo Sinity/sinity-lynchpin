@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI wrapper for the data-dense life timeline digest renderer."""
+"""CLI for the data-dense long-range life digest renderer."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from pathlib import Path
 
 import typer
 
-from lynchpin import retrospective
-from .paths import (
-    LATEST_LIFE_TIMELINE_JSON,
-    LIFE_TIMELINE_DIGEST_OUTPUT,
+from .life_outputs import render_life_digest
+from .life_paths import (
+    LIFE_DIGEST_OUTPUT,
+    LATEST_LIFE_JSON,
 )
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
@@ -20,19 +20,19 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 @app.command()
 def main(
     life_json: Path = typer.Option(
-        LATEST_LIFE_TIMELINE_JSON,
-        help="Life timeline JSON (output of python -m lynchpin.system.life_timeline).",
+        LATEST_LIFE_JSON,
+        help="Long-range life JSON (output of python -m lynchpin.retrospective.life build).",
     ),
     start: str | None = typer.Option(None, help="Start month (YYYY-MM). Defaults to the life-json range start."),
     end: str | None = typer.Option(None, help="End month (YYYY-MM). Defaults to the life-json range end."),
-    output: Path = typer.Option(LIFE_TIMELINE_DIGEST_OUTPUT, help="Output markdown file."),
+    output: Path = typer.Option(LIFE_DIGEST_OUTPUT, help="Output markdown file."),
     title: str = typer.Option(
         "Month-by-month (chronological)",
         help="Top-level markdown header title.",
     ),
 ) -> None:
     payload = json.loads(life_json.read_text(encoding="utf-8"))
-    rendered = retrospective.render_life_timeline_digest(
+    rendered = render_life_digest(
         payload,
         start=start,
         end=end,

@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
-RECENT_TRAJECTORY_LOOKBACK_DAYS = 62
+from ..context.reports import build_period_report
+
+RECENT_CONTEXT_LOOKBACK_DAYS = 62
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,7 @@ class LifeMonthHealthSummary:
 
 
 @dataclass(frozen=True)
-class LifeMonthTrajectorySummary:
+class LifeMonthContextSummary:
     start_date: str
     end_date: str
     days: int
@@ -59,12 +61,27 @@ class LifeMonthTrajectorySummary:
     chat_cost_usd: float = 0.0
     episode_count: int = 0
     episode_labels: list[str] = None  # type: ignore[assignment]
+    anomaly_count: int = 0
+    anomaly_kinds: list[str] = None  # type: ignore[assignment]
+    top_repos: list[tuple[str, int]] = None  # type: ignore[assignment]
+    top_paths: list[tuple[str, int]] = None  # type: ignore[assignment]
+    top_session_titles: list[tuple[str, int]] = None  # type: ignore[assignment]
+    avg_fragmentation: Optional[float] = None
+    evidence_bundle: str | None = None
 
     def __post_init__(self):
         if self.chat_work_events is None:
             object.__setattr__(self, "chat_work_events", {})
         if self.episode_labels is None:
             object.__setattr__(self, "episode_labels", [])
+        if self.anomaly_kinds is None:
+            object.__setattr__(self, "anomaly_kinds", [])
+        if self.top_repos is None:
+            object.__setattr__(self, "top_repos", [])
+        if self.top_paths is None:
+            object.__setattr__(self, "top_paths", [])
+        if self.top_session_titles is None:
+            object.__setattr__(self, "top_session_titles", [])
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -80,7 +97,7 @@ class LifeMonthSummary:
     money: "LifeMonthMoneySummary"
     health: LifeMonthHealthSummary
     notes: "LifeMonthNotesSummary"
-    trajectory: Optional[LifeMonthTrajectorySummary] = None
+    context: Optional[LifeMonthContextSummary] = None
     narrative: Optional[str] = None
 
     def to_dict(self) -> dict[str, object]:
@@ -92,7 +109,7 @@ class LifeMonthSummary:
             "location": self.location.to_dict(),
             "money": self.money.to_dict(),
             "health": self.health.to_dict(),
-            "trajectory": self.trajectory.to_dict() if self.trajectory is not None else {},
+            "context": self.context.to_dict() if self.context is not None else {},
             "notes": self.notes.to_dict(),
             "narrative": self.narrative,
         }
@@ -229,7 +246,7 @@ def build_month_summary(
     money: LifeMonthMoneySummary,
     health: LifeMonthHealthSummary,
     notes: LifeMonthNotesSummary,
-    trajectory: Optional[LifeMonthTrajectorySummary],
+    context: Optional[LifeMonthContextSummary],
 ) -> LifeMonthSummary:
     return LifeMonthSummary(
         output=output,
@@ -240,7 +257,7 @@ def build_month_summary(
         money=money,
         health=health,
         notes=notes,
-        trajectory=trajectory,
+        context=context,
     )
 
 
@@ -487,14 +504,12 @@ def build_health_summary(
     )
 
 
-def build_recent_trajectory_summaries(
+def build_recent_context_summaries(
     months: Sequence[str],
     *,
-    lookback_days: int = RECENT_TRAJECTORY_LOOKBACK_DAYS,
+    lookback_days: int = RECENT_CONTEXT_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
-) -> tuple[dict[str, LifeMonthTrajectorySummary], dict[str, object]]:
-    from ..trajectory.window import load_trajectory_window, summarize_window_months
-
+) -> tuple[dict[str, LifeMonthContextSummary], dict[str, object]]:
     if not months:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
 
@@ -510,47 +525,87 @@ def build_recent_trajectory_summaries(
     if start_dt >= end_dt:
         return {}, {"lookback_days": lookback_days, "month_count": 0}
 
-    window = load_trajectory_window(start=start_dt, end=end_dt)
-    trajectory_months = summarize_window_months(window)
+    reports = {
+        month: build_period_report("month", month, output_root=None, write_files=False)
+        for month in sorted(target_months)
+    }
 
     return (
-        {
-            tm.month: _trajectory_month_to_summary(tm)
-            for tm in trajectory_months
-        },
+        {month: _report_to_context_summary(report) for month, report in reports.items()},
         {
             "lookback_days": lookback_days,
             "start": start_dt.isoformat(),
             "end": end_dt.isoformat(),
-            "month_count": len(trajectory_months),
+            "month_count": len(reports),
+            "source": "context-reports",
         },
     )
 
 
-def _trajectory_month_to_summary(tm) -> LifeMonthTrajectorySummary:
-    """Convert a TrajectoryMonth to a LifeMonthTrajectorySummary."""
-    return LifeMonthTrajectorySummary(
-        start_date=tm.start_date.isoformat(),
-        end_date=tm.end_date.isoformat(),
-        days=tm.total_days,
-        active_hours=round(tm.active_seconds / 3600.0, 2),
-        recovery_hours=round(tm.recovery_seconds / 3600.0, 2),
-        chain_count=tm.chain_count,
-        signal_count=tm.signal_count,
-        command_count=tm.command_count,
-        transcript_count=tm.transcript_count,
-        commit_count=tm.commit_count,
-        dominant_modes=[(mode, round(seconds / 3600.0, 2)) for mode, seconds in tm.top_modes],
-        dominant_projects=[(project, round(seconds / 3600.0, 2)) for project, seconds in tm.top_projects],
-        dominant_topics=[(topic, round(seconds / 3600.0, 2)) for topic, seconds in tm.top_topics],
-        source_counts=dict(tm.source_counts),
-        coverage=dict(tm.coverage_summary),
-        highlights=list(tm.highlights),
-        chat_session_count=tm.chat_session_count,
-        chat_work_events=dict(tm.chat_work_events),
-        chat_cost_usd=tm.chat_cost_usd,
-        episode_count=tm.episode_count,
-        episode_labels=list(tm.episode_labels),
+def _report_to_context_summary(report: Any) -> LifeMonthContextSummary:
+    payload = report.payload if isinstance(getattr(report, "payload", None), Mapping) else {}
+    period = payload.get("period") if isinstance(payload, Mapping) else {}
+    summary = payload.get("summary") if isinstance(payload, Mapping) else {}
+    evidence = summary.get("evidence") if isinstance(summary, Mapping) else {}
+    delivery = summary.get("delivery") if isinstance(summary, Mapping) else {}
+    focus = summary.get("focus") if isinstance(summary, Mapping) else {}
+    chat = summary.get("chat") if isinstance(summary, Mapping) else {}
+    git = summary.get("git") if isinstance(summary, Mapping) else {}
+    circadian = summary.get("circadian") if isinstance(summary, Mapping) else {}
+    patterns = summary.get("patterns") if isinstance(summary, Mapping) else {}
+    if not isinstance(patterns, Mapping):
+        patterns = {}
+    query_rows = evidence.get("query_rows") if isinstance(evidence, Mapping) else {}
+    if not isinstance(query_rows, Mapping):
+        query_rows = {}
+    highlights: list[str] = []
+    if delivery.get("top_repos"):
+        highlights.append(f"Repos: {_render_counter(delivery.get('top_repos') or [], limit=3)}")
+    if git.get("top_paths"):
+        highlights.append(f"Paths: {_render_counter(git.get('top_paths') or [], limit=3)}")
+    if chat.get("top_session_titles"):
+        highlights.append(f"Sessions: {_render_counter(chat.get('top_session_titles') or [], limit=3)}")
+    if patterns.get("episode_count"):
+        labels = patterns.get("episode_labels") or []
+        highlights.append(f"Episodes: {int(patterns.get('episode_count') or 0)} ({', '.join(labels[:3]) or 'n/a'})")
+    if patterns.get("anomaly_count"):
+        kinds = patterns.get("anomaly_kinds") or []
+        highlights.append(f"Anomalies: {int(patterns.get('anomaly_count') or 0)} ({', '.join(kinds[:3]) or 'n/a'})")
+    return LifeMonthContextSummary(
+        start_date=str(period.get("start") or ""),
+        end_date=str(period.get("end") or ""),
+        days=int(evidence.get("days_with_evidence") or evidence.get("period_days") or 0),
+        active_hours=float(delivery.get("active_hours") or 0.0),
+        recovery_hours=round(float(circadian.get("recovery_minutes_total") or 0.0) / 60.0, 2),
+        chain_count=int(query_rows.get("focus_loops") or 0),
+        signal_count=int(query_rows.get("focus_spans") or 0),
+        command_count=int(delivery.get("command_count") or 0),
+        transcript_count=int(query_rows.get("polylogue_sessions") or 0),
+        commit_count=int(delivery.get("total_commits") or 0),
+        dominant_modes=_counter_pairs(focus.get("top_modes") or circadian.get("dominant_modes") or [], divisor=60.0),
+        dominant_projects=_counter_pairs(focus.get("top_projects") or circadian.get("dominant_projects") or [], divisor=60.0),
+        dominant_topics=_counter_pairs(chat.get("work_kinds") or [], divisor=1.0),
+        source_counts={str(key): int(value) for key, value in query_rows.items()},
+        coverage={
+            surface: {
+                "present": surface in (evidence.get("surfaces_present") or []),
+                "rows": int(query_rows.get(surface) or 0),
+            }
+            for surface in sorted(query_rows)
+        },
+        highlights=highlights,
+        chat_session_count=int(delivery.get("chat_sessions") or 0),
+        chat_work_events=_counter_mapping(chat.get("work_kinds") or []),
+        chat_cost_usd=float(chat.get("total_cost_usd") or 0.0),
+        episode_count=int(patterns.get("episode_count") or 0),
+        episode_labels=[str(label) for label in (patterns.get("episode_labels") or [])],
+        anomaly_count=int(patterns.get("anomaly_count") or 0),
+        anomaly_kinds=[str(kind) for kind in (patterns.get("anomaly_kinds") or [])],
+        top_repos=_counter_pairs(delivery.get("top_repos") or [], divisor=1.0),
+        top_paths=_counter_pairs(git.get("top_paths") or [], divisor=1.0),
+        top_session_titles=_counter_pairs(chat.get("top_session_titles") or [], divisor=1.0),
+        avg_fragmentation=float(focus.get("avg_fragmentation")) if focus.get("avg_fragmentation") is not None else None,
+        evidence_bundle=payload.get("bundle_ref"),
     )
 
 
@@ -582,7 +637,7 @@ def render_markdown(payload: Mapping[str, object]) -> str:
         location = m.get("location") or {}
         money = m.get("money") or {}
         health = m.get("health") or {}
-        trajectory = m.get("trajectory") or {}
+        context = m.get("context") or {}
         notes = m.get("notes") or {}
 
         lines.append(f"## {month}")
@@ -651,19 +706,27 @@ def render_markdown(payload: Mapping[str, object]) -> str:
                 "- Health: "
                 f"Weight {health.get('weight_min')}–{health.get('weight_max')} kg (n={health.get('weight_n')})."
             )
-        if trajectory.get("days"):
-            traj_line = (
-                f"- Trajectory: "
-                f"{trajectory.get('active_hours', 0)}h active / {trajectory.get('recovery_hours', 0)}h recovery across "
-                f"{trajectory.get('days', 0)} day(s), {trajectory.get('chain_count', 0)} chains, {trajectory.get('signal_count', 0)} signals."
+        if context.get("days"):
+            context_line = (
+                f"- Context: "
+                f"{context.get('active_hours', 0)}h active / {context.get('recovery_hours', 0)}h recovery across "
+                f"{context.get('days', 0)} day(s), {context.get('chain_count', 0)} focus loops, {context.get('signal_count', 0)} focus spans."
             )
-            traj_chat = trajectory.get("chat_session_count", 0)
-            if traj_chat:
-                traj_line += f" Chat sessions: {traj_chat}, cost: ${trajectory.get('chat_cost_usd', 0):.2f}."
-            lines.append(traj_line)
-            episode_labels = trajectory.get("episode_labels") or []
-            if episode_labels:
-                lines.append(f"- Episodes: {', '.join(str(label) for label in episode_labels)}.")
+            context_chat = context.get("chat_session_count", 0)
+            if context_chat:
+                context_line += f" Chat sessions: {context_chat}"
+                chat_cost = float(context.get("chat_cost_usd") or 0.0)
+                if chat_cost > 0:
+                    context_line += f", cost: ${chat_cost:.2f}"
+                context_line += "."
+            if context.get("episode_count"):
+                context_line += f" Episodes: {context.get('episode_count')}."
+            if context.get("anomaly_count"):
+                context_line += f" Anomalies: {context.get('anomaly_count')}."
+            bundle_ref = context.get("evidence_bundle")
+            if bundle_ref:
+                context_line += f" Evidence: `{bundle_ref}`."
+            lines.append(context_line)
         lines.append(
             "- Notes: "
             f"OneNote journal entries {notes.get('onenote_journal_entries', 0)}; "
@@ -684,12 +747,28 @@ def render_markdown(payload: Mapping[str, object]) -> str:
         lines.append(f"- Git top repos: {_render_counter(work.get('git_top_repos') or [])}")
         lines.append("")
 
-        if trajectory.get("days"):
-            lines.append("**Trajectory (recent window)**")
+        if context.get("days"):
+            lines.append("**Recent Context**")
             lines.append("")
-            lines.append(f"- Dominant modes: {_render_counter(trajectory.get('dominant_modes') or [])}")
-            lines.append(f"- Dominant projects: {_render_counter(trajectory.get('dominant_projects') or [])}")
-            lines.append(f"- Highlights: {', '.join(trajectory.get('highlights') or []) or 'n/a'}")
+            lines.append(f"- Dominant modes: {_render_counter(context.get('dominant_modes') or [])}")
+            lines.append(f"- Dominant projects: {_render_counter(context.get('dominant_projects') or [])}")
+            if context.get("top_repos"):
+                lines.append(f"- Top repos: {_render_counter(context.get('top_repos') or [])}")
+            if context.get("top_paths"):
+                lines.append(f"- Top paths: {_render_counter(context.get('top_paths') or [])}")
+            if context.get("top_session_titles"):
+                lines.append(f"- Session titles: {_render_counter(context.get('top_session_titles') or [])}")
+            if context.get("avg_fragmentation") is not None:
+                lines.append(f"- Avg fragmentation: {context.get('avg_fragmentation')}")
+            if context.get("episode_count"):
+                lines.append(
+                    f"- Episodes: {context.get('episode_count')} ({', '.join(context.get('episode_labels') or []) or 'n/a'})"
+                )
+            if context.get("anomaly_count"):
+                lines.append(
+                    f"- Anomalies: {context.get('anomaly_count')} ({', '.join(context.get('anomaly_kinds') or []) or 'n/a'})"
+                )
+            lines.append(f"- Highlights: {', '.join(context.get('highlights') or []) or 'n/a'}")
             lines.append("")
 
         lines.append("**Intake (top)**")
@@ -753,3 +832,26 @@ def _month_after(month_key: str, tzinfo) -> datetime:
     if month == 12:
         return datetime(year + 1, 1, 1, tzinfo=tzinfo)
     return datetime(year, month + 1, 1, tzinfo=tzinfo)
+
+
+def _counter_pairs(counter: Sequence[Sequence[object]], *, divisor: float) -> list[tuple[str, float | int]]:
+    pairs: list[tuple[str, float | int]] = []
+    for item in counter:
+        if len(item) < 2:
+            continue
+        label = str(item[0])
+        value = float(item[1] or 0.0)
+        if divisor == 1.0:
+            pairs.append((label, int(value)))
+        else:
+            pairs.append((label, round(value / divisor, 2)))
+    return pairs
+
+
+def _counter_mapping(counter: Sequence[Sequence[object]]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for item in counter:
+        if len(item) < 2:
+            continue
+        mapping[str(item[0])] = int(item[1] or 0)
+    return mapping

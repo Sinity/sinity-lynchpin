@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.sources.exports.raindrop import _parse_datetime, _parse_tags, _strip
 from lynchpin.sources.exports.spotify import _extract_artist, _extract_track, _parse_time

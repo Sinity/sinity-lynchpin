@@ -1,3 +1,5 @@
+"""Signal attribution and topic extraction rules."""
+
 from __future__ import annotations
 
 import functools
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..core.projects import ALL_PROJECTS
-from .signal import TrajectorySignal
+from . import ActivitySignal
 
 _TERMINAL_APPS = {"kitty", "foot", "wezterm", "alacritty"}
 _EDITOR_APPS = _TERMINAL_APPS | {"code", "codium", "emacs", "nvim", "vim", "zed", "cursor", "pycharm"}
@@ -67,7 +69,7 @@ class SignalAttribution:
 
 @dataclass(frozen=True)
 class AttributedSignal:
-    signal: TrajectorySignal
+    signal: ActivitySignal
     mode: str
     mode_confidence: float
     project: Optional[str]
@@ -223,7 +225,7 @@ def _extract_topics_for_text(text: str, we_kind: Optional[str]) -> tuple[tuple[s
     return tuple(candidates)
 
 
-def _extract_topics_multi(signal: TrajectorySignal) -> list[tuple[str, float]]:
+def _extract_topics_multi(signal: ActivitySignal) -> list[tuple[str, float]]:
     """Return all matching topics with scores, ranked by confidence descending."""
     text = " ".join(
         part for part in [signal.title, signal.detail, signal.cwd, signal.url, signal.domain]
@@ -283,7 +285,7 @@ def classify_chain_topics(
     return dominant, round(confidence, 2), [(t, round(s, 3)) for t, s in ranked]
 
 
-def _classify_topic(signal: TrajectorySignal) -> tuple[Optional[str], float]:
+def _classify_topic(signal: ActivitySignal) -> tuple[Optional[str], float]:
     """Derive a topic from signal text content via weighted keyword scoring."""
     candidates = _extract_topics_multi(signal)
     if candidates:
@@ -291,11 +293,11 @@ def _classify_topic(signal: TrajectorySignal) -> tuple[Optional[str], float]:
     return None, 0.0
 
 
-def classify_signals(signals: Iterable[TrajectorySignal]) -> list[AttributedSignal]:
+def classify_signals(signals: Iterable[ActivitySignal]) -> list[AttributedSignal]:
     return [classify_signal(signal) for signal in signals]
 
 
-def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
+def classify_signal(signal: ActivitySignal) -> AttributedSignal:
     reasons: list[str] = []
     project = None
     project_confidence = 0.0
@@ -336,16 +338,16 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
         mode = signal.mode_hint
         mode_confidence = 0.85
         reasons.append("signal_mode_hint")
-    elif _matches_domain(domain, _AI_DOMAINS) or signal.source in {"chatlog.transcript", "polylogue.session"}:
+    elif _matches_domain_or_text(domain, text, _AI_DOMAINS) or signal.source in {"chatlog.transcript", "polylogue.session"}:
         mode, mode_confidence = "chat", 0.95
         reasons.append("ai_chat")
-    elif _matches_domain(domain, _MEDIA_DOMAINS) or app in _MEDIA_APPS:
+    elif _matches_domain_or_text(domain, text, _MEDIA_DOMAINS) or app in _MEDIA_APPS:
         mode, mode_confidence = "media", 0.9
         reasons.append("media_surface")
-    elif _matches_domain(domain, _SOCIAL_DOMAINS):
+    elif _matches_domain_or_text(domain, text, _SOCIAL_DOMAINS):
         mode, mode_confidence = "social", 0.85
         reasons.append("social_surface")
-    elif _matches_domain(domain, _ADMIN_DOMAINS):
+    elif _matches_domain_or_text(domain, text, _ADMIN_DOMAINS):
         mode, mode_confidence = "admin", 0.85
         reasons.append("admin_surface")
     elif app in _WRITING_APPS or _contains_any(text, _WRITING_TERMS):
@@ -354,7 +356,7 @@ def classify_signal(signal: TrajectorySignal) -> AttributedSignal:
     elif _contains_any(text, _PLANNING_TERMS):
         mode, mode_confidence = "planning", 0.75
         reasons.append("planning_terms")
-    elif _matches_domain(domain, _RESEARCH_DOMAINS) or signal.kind == "web":
+    elif _matches_domain_or_text(domain, text, _RESEARCH_DOMAINS) or signal.kind == "web":
         mode, mode_confidence = "research", 0.75
         reasons.append("research_surface")
     elif project and (signal.source.startswith("instrumentation.") or signal.source == "atuin.command"):
@@ -465,6 +467,12 @@ def _matches_domain(domain: str, candidates: set[str]) -> bool:
     if not domain:
         return False
     return any(domain == candidate or domain.endswith(f".{candidate}") for candidate in candidates)
+
+
+def _matches_domain_or_text(domain: str, text: str, candidates: set[str]) -> bool:
+    if _matches_domain(domain, candidates):
+        return True
+    return any(candidate in text for candidate in candidates)
 
 
 def _contains_any(text: str, candidates: set[str]) -> bool:

@@ -257,7 +257,6 @@ def _iter_json_visits(path: Path) -> Iterator[WebHistoryVisit]:
 
 
 def _iter_jsonl_visits(path: Path, source: str) -> Iterator[WebHistoryVisit]:
-    parse_errors = 0
     with path.open("r", encoding="utf-8", errors="ignore") as fh:
         yield from _iter_jsonl_from_handle(fh, source)
 
@@ -326,7 +325,7 @@ def _parse_csv_dt(row: dict) -> Optional[datetime]:
 
 
 # ---------------------------------------------------------------------------
-# Summarization (used by calendar views and trajectory)
+# Summarization (used by period reports and other derived read models)
 # ---------------------------------------------------------------------------
 
 

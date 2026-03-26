@@ -10,7 +10,7 @@ import pytest
 # warehouse.py imports duckdb at module level; skip entire file if unavailable
 pytest.importorskip("duckdb", exc_type=ImportError)
 
-from lynchpin.views.warehouse import _json_dumps, _maybe_limit, _parse_dt  # noqa: E402
+from lynchpin.views.warehouse.core import _json_dumps, _maybe_limit, _parse_dt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -168,7 +168,6 @@ RICH_PROJECT_PLANS: dict[str, RichProjectPlan] = {
                 "lynchpin/analysis/**",
                 "lynchpin/context/**",
                 "lynchpin/core/**",
-                "lynchpin/orchestration/**",
             ),
         ),
         SliceSpec(

@@ -6,18 +6,15 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from . import (
-    BUNDLE_ROOT,
-    DEFAULT_LOGS_COUNT,
-    DEFAULT_OUTPUT,
+from .bundles import BUNDLE_ROOT, DEFAULT_LOGS_COUNT, build_project_bundles
+from .rich_bundles import (
     DEFAULT_PATCH_COMMITS,
     DEFAULT_PATCH_WINDOW,
     DEFAULT_SUMMARY_WINDOW,
     RICH_BUNDLE_ROOT,
-    build_project_bundles,
     build_rich_project_bundles,
-    build_velocity_dashboard,
 )
+from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
 
 
 def _split_names(value: str) -> list[str] | None:

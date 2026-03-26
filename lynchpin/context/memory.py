@@ -1,4 +1,4 @@
-"""Persistent belief store for claims and themes across trajectory runs.
+"""Persistent belief store for claims and themes across context refreshes.
 
 Claims and themes produced per-run by generate_claims() and detect_themes()
 are ephemeral. This module accumulates them across sessions using an
@@ -319,38 +319,52 @@ def build_memory_packet(store: MemoryStore, *, top_n: int = 10) -> list[dict]:
     ]
 
 
+def update_memory_from_state(state: dict[str, Any], *, alpha: float = 0.3) -> MemoryStore:
+    claims_payload = state.get("claims") if isinstance(state.get("claims"), dict) else {}
+    themes_payload = state.get("themes") if isinstance(state.get("themes"), list) else []
+    claim_objs = [
+        type(
+            "ClaimLike",
+            (),
+            {
+                "statement": claim.get("statement", ""),
+                "confidence": float(claim.get("confidence", 0.5)),
+                "category": str(claim.get("category", "unknown")),
+                "evidence_refs": tuple(claim.get("evidence_refs") or ()),
+            },
+        )()
+        for claim in claims_payload.get("claims", [])
+        if isinstance(claim, dict)
+    ]
+    theme_objs = [
+        type(
+            "ThemeLike",
+            (),
+            {
+                "name": theme.get("name", ""),
+                "kind": theme.get("kind", "project"),
+                "total_hours": float(theme.get("total_hours", 0.0)),
+                "trend": str(theme.get("trend", "stable")),
+                "month_count": int(theme.get("month_count", theme.get("months_active", 1))),
+                "first_seen": str(theme.get("first_seen", "")),
+                "last_seen": str(theme.get("last_seen", "")),
+                "peak_month": str(theme.get("last_seen", "")),
+            },
+        )()
+        for theme in themes_payload
+        if isinstance(theme, dict)
+    ]
+    return update_memory(claim_objs, theme_objs, alpha=alpha)
+
+
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
     if cmd == "update":
-        from lynchpin.trajectory.day import summarize_days
-        from lynchpin.trajectory.week import summarize_weeks
-        from lynchpin.trajectory.month import summarize_months as summarize_trajectory_months
-        from lynchpin.context.claims import generate_claims
-        from lynchpin.context.themes import detect_themes
-        from lynchpin.trajectory import signal as trajectory_signal
-        from lynchpin.trajectory import chains as trajectory_chains
+        from lynchpin.context.packet_builders import build_current_state
 
-        # Load trajectory data
-        window_start, window_end = trajectory_signal.resolve_window(end=None, days=90)
-        signals = trajectory_signal.load_signals(start=window_start, end=window_end, days=90)
-        chains = trajectory_chains.build_chains(signals)
-        days = summarize_days(
-            signals=signals,
-            chains=chains,
-            start=window_start,
-            end=window_end,
-            days=90,
-        )
-        weeks = summarize_weeks(days)
-        months = summarize_trajectory_months(days, signals=signals)
-
-        # Generate claims and themes
-        claims = generate_claims(months, weeks, days)
-        themes = detect_themes(months, weeks)
-
-        # Update memory
-        store = update_memory(claims, themes)
+        state = build_current_state(days=90, tier="full")
+        store = update_memory_from_state(state)
         print(f"Updated: {len(store.claims)} claims, {len(store.themes)} themes")
     elif cmd == "show":
         store = load_memory()

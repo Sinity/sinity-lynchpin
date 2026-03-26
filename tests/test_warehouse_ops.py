@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("duckdb", exc_type=ImportError)
 
-from lynchpin.views.warehouse.ops import _extract_col_names  # noqa: E402
+from lynchpin.views.warehouse.ops import _extract_col_names, _filtered_source_specs  # noqa: E402
 
 
 class TestExtractColNames:
@@ -25,3 +25,16 @@ class TestExtractColNames:
     def test_single_column(self) -> None:
         sql = "CREATE TABLE t (id BIGINT)"
         assert _extract_col_names(sql) == ["id"]
+
+
+class TestFilteredSourceSpecs:
+    def test_filters_to_selected_table(self) -> None:
+        specs = _filtered_source_specs(tables=["processed_chat_activity"])
+
+        assert len(specs) == 1
+        assert specs[0].name == "processed"
+        assert [table.name for table in specs[0].tables] == ["processed_chat_activity"]
+
+    def test_unknown_table_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown warehouse table"):
+            _filtered_source_specs(tables=["does_not_exist"])

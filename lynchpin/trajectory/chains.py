@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from .rules import AttributedSignal, classify_chain_topics, classify_signals, mode_family
-from .signal import TrajectorySignal
+from ..signals import ActivitySignal
+from ..signals.rules import AttributedSignal, classify_chain_topics, classify_signals, mode_family
 
 _CHAIN_GAP = timedelta(minutes=5)
 _RECOVERY_GAP = timedelta(minutes=1)
@@ -65,7 +65,7 @@ class TrajectoryChain:
         }
 
 
-def build_chains(signals: Iterable[TrajectorySignal]) -> list[TrajectoryChain]:
+def build_chains(signals: Iterable[ActivitySignal]) -> list[TrajectoryChain]:
     return build_chains_from_attributed(classify_signals(signals))
 
 

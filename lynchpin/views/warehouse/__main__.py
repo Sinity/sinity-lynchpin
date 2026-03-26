@@ -1,3 +1,3 @@
-from . import cli
+from .ops import cli
 
 cli()

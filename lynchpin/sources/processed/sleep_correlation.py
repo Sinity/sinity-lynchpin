@@ -1,11 +1,17 @@
-"""Sleep-productivity correlations: link sleep quality to next-day output."""
+"""Sleep-productivity correlations using processed focus and delivery surfaces."""
 
 from __future__ import annotations
 
-import subprocess
+from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Iterator, Optional
+from datetime import date, datetime, time, timedelta
+from typing import Iterator
+
+from ._activitywatch import active_seconds_by_date
+from .deep_work import iter_deep_work
+from .focus_spans import iter_focus_spans
+from .git_commit_facts import iter_git_commit_facts
+from ..exports.sleep import iter_sleep
 
 
 @dataclass(frozen=True)
@@ -14,107 +20,87 @@ class SleepProductivityCorrelation:
     sleep_hours: float
     sleep_score: float | None
     sleep_quality: str
-    next_day_active_hours: float
-    next_day_commits: int
-    next_day_dominant_mode: str | None
-    next_day_deep_work_minutes: float
+    segment_count: int
+    workday_active_hours: float
+    workday_lines_changed: int
+    workday_files_changed: int
+    workday_dominant_mode: str | None
+    workday_deep_work_minutes: float
     productivity_vs_baseline: float
 
 
 def iter_sleep_correlations(
-    *, start: date, end: date
+    *,
+    start: date,
+    end: date,
 ) -> Iterator[SleepProductivityCorrelation]:
-    from ...core.config import get_config
     from ...metrics.health import sleep_summary
-    from ...sources.exports.health import iter_samsung_sleep_sessions
 
-    # Load trajectory days from warehouse
-    day_data: dict[date, dict] = {}
-    try:
-        r = subprocess.run(
-            [
-                "duckdb",
-                "artefacts/lynchpin/warehouse.duckdb",
-                "-c",
-                f"SELECT date, active_seconds/3600.0, commit_count, dominant_mode FROM trajectory_day WHERE date BETWEEN '{start}' AND '{end + timedelta(days=2)}'",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        for line in r.stdout.strip().split("\n"):
-            parts = line.strip().split("│")
-            if len(parts) >= 5:
-                try:
-                    d = date.fromisoformat(parts[1].strip())
-                    day_data[d] = {
-                        "active_hours": float(parts[2].strip()),
-                        "commits": int(float(parts[3].strip())),
-                        "mode": parts[4].strip() or None,
-                    }
-                except (ValueError, IndexError):
-                    pass
-    except Exception:
-        pass
-
-    # Rolling baseline
-    all_hours = [v["active_hours"] for v in day_data.values()]
-    baseline_avg = (
-        sum(all_hours) / max(len(all_hours), 1) if all_hours else 8.0
-    )
-
-    cfg = get_config()
-    export_path = cfg.exports_root / "health" / "raw" / "samsung-health"
-    for session in iter_samsung_sleep_sessions(export_path):
-        st = getattr(session, "start_time", None) or getattr(
-            session, "start_local", None
-        )
-        if st is None:
+    sleep_entries: list[tuple[object, date, object | None]] = []
+    for entry in iter_sleep():
+        day_text = getattr(entry, "date", None)
+        if not day_text:
             continue
-        sleep_date = (
-            st.date()
-            if hasattr(st, "date")
-            else date.fromisoformat(str(st)[:10])
-        )
+        try:
+            sleep_date = date.fromisoformat(str(day_text))
+        except ValueError:
+            continue
         if sleep_date < start or sleep_date > end:
             continue
+        sleep_entries.append((entry, sleep_date, sleep_summary(entry)))
 
-        dur_min = getattr(session, "duration_minutes", 0) or 0
-        sm = sleep_summary(session)
-        next_day = sleep_date + timedelta(days=1)
-        nd = day_data.get(next_day, {})
+    if not sleep_entries:
+        return
 
-        # Deep work for next day
-        dw_minutes = 0.0
-        try:
-            from datetime import datetime
+    analysis_days = sorted({sleep_date for _, sleep_date, _ in sleep_entries})
+    analysis_start = analysis_days[0]
+    analysis_end = analysis_days[-1]
 
-            from .deep_work import iter_deep_work
+    active_hours = {
+        day: seconds / 3600.0
+        for day, seconds in active_seconds_by_date(start=analysis_start, end=analysis_end).items()
+    }
+    baseline_average = sum(active_hours.values()) / len(active_hours) if active_hours else 8.0
 
-            blocks = list(
-                iter_deep_work(
-                    start=datetime(
-                        next_day.year, next_day.month, next_day.day
-                    ),
-                    end=datetime(
-                        next_day.year, next_day.month, next_day.day
-                    )
-                    + timedelta(days=1),
-                )
-            )
-            dw_minutes = sum(b.duration_minutes for b in blocks)
-        except Exception:
-            pass
+    mode_durations_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    focus_start = datetime.combine(analysis_start, time.min)
+    focus_end = datetime.combine(analysis_end + timedelta(days=1), time.min)
+    for span in iter_focus_spans(
+        start=focus_start,
+        end=focus_end,
+        min_duration_seconds=60,
+        include_keyboard=False,
+    ):
+        if span.span_kind == "focused" and span.mode:
+            mode_durations_by_day[span.start.date()][span.mode] += span.duration_seconds
 
-        next_active = nd.get("active_hours", 0.0)
+    deep_work_by_day: dict[date, float] = defaultdict(float)
+    for block in iter_deep_work(start=focus_start, end=focus_end):
+        deep_work_by_day[block.start.date()] += block.duration_minutes
+
+    git_lines_by_day: dict[date, int] = defaultdict(int)
+    git_files_by_day: dict[date, int] = defaultdict(int)
+    for fact in iter_git_commit_facts(start=analysis_start, end=analysis_end):
+        git_lines_by_day[fact.date] += fact.lines_changed
+        git_files_by_day[fact.date] += fact.files_changed
+
+    for entry, sleep_date, summary in sleep_entries:
+        dominant_mode = (
+            mode_durations_by_day[sleep_date].most_common(1)[0][0]
+            if mode_durations_by_day.get(sleep_date)
+            else None
+        )
+        workday_active_hours = active_hours.get(sleep_date, 0.0)
         yield SleepProductivityCorrelation(
             sleep_date=sleep_date,
-            sleep_hours=dur_min / 60.0,
-            sleep_score=getattr(session, "sleep_score", None),
-            sleep_quality=sm.quality_label if sm else "unknown",
-            next_day_active_hours=next_active,
-            next_day_commits=nd.get("commits", 0),
-            next_day_dominant_mode=nd.get("mode"),
-            next_day_deep_work_minutes=dw_minutes,
-            productivity_vs_baseline=next_active / max(baseline_avg, 0.1),
+            sleep_hours=(getattr(entry, "total_minutes", 0) or 0) / 60.0,
+            sleep_score=getattr(entry, "avg_score", None),
+            sleep_quality=summary.quality_label if summary else "unknown",
+            segment_count=len(getattr(entry, "segments", ()) or ()),
+            workday_active_hours=workday_active_hours,
+            workday_lines_changed=git_lines_by_day.get(sleep_date, 0),
+            workday_files_changed=git_files_by_day.get(sleep_date, 0),
+            workday_dominant_mode=dominant_mode,
+            workday_deep_work_minutes=deep_work_by_day.get(sleep_date, 0.0),
+            productivity_vs_baseline=workday_active_hours / max(baseline_average, 0.1),
         )

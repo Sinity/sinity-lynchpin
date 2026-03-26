@@ -20,9 +20,10 @@ def _run_repo_python(script: str) -> subprocess.CompletedProcess[str]:
 def test_unknown_warehouse_source_raises() -> None:
     script = textwrap.dedent(
         """
-        from lynchpin.views import warehouse
+        from lynchpin.views.warehouse.ops import _source_specs
+
         try:
-            warehouse._source_specs(["does-not-exist"])
+            _source_specs(["does-not-exist"])
         except ValueError as exc:
             assert "Unknown warehouse source" in str(exc)
         else:
@@ -36,16 +37,17 @@ def test_unknown_warehouse_source_raises() -> None:
 def test_build_views_drops_stale_managed_relation_for_selected_source() -> None:
     script = textwrap.dedent(
         """
+        from lynchpin.views import warehouse
         import tempfile
         from pathlib import Path
-        from lynchpin.views import warehouse
+        import duckdb
 
         spec = warehouse.SOURCE_SPECS[0]
         table_name = spec.tables[0].name
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "warehouse.duckdb"
-            conn = warehouse.duckdb.connect(str(db_path))
+            conn = duckdb.connect(str(db_path))
             conn.execute(f"CREATE VIEW {table_name} AS SELECT 1 AS stale_value")
             conn.close()
 
@@ -56,7 +58,7 @@ def test_build_views_drops_stale_managed_relation_for_selected_source() -> None:
                 sources=[spec.name],
             )
 
-            conn = warehouse.duckdb.connect(str(db_path))
+            conn = duckdb.connect(str(db_path))
             rows = conn.execute(
                 "SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
                 [table_name],
@@ -75,6 +77,7 @@ def test_build_views_preserves_manifest_rows_for_unselected_sources() -> None:
         import tempfile
         from pathlib import Path
         from lynchpin.views import warehouse
+        import duckdb
 
         selected = warehouse.SOURCE_SPECS[0]
         untouched = warehouse.SOURCE_SPECS[1]
@@ -82,7 +85,7 @@ def test_build_views_preserves_manifest_rows_for_unselected_sources() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db_path = tmp_path / "warehouse.duckdb"
-            conn = warehouse.duckdb.connect(str(db_path))
+            conn = duckdb.connect(str(db_path))
             conn.execute(
                 "CREATE TABLE warehouse_manifest ("
                 "source TEXT, format TEXT, source_path TEXT, present_tables BIGINT, "
@@ -101,7 +104,7 @@ def test_build_views_preserves_manifest_rows_for_unselected_sources() -> None:
                 sources=[selected.name],
             )
 
-            conn = warehouse.duckdb.connect(str(db_path))
+            conn = duckdb.connect(str(db_path))
             rows = conn.execute(
                 "SELECT source FROM warehouse_manifest ORDER BY source"
             ).fetchall()
@@ -123,7 +126,7 @@ def test_project_registry_exposes_shared_profiles() -> None:
         assert profiles["sinnix"].path == Path("/realm/project/sinnix").resolve()
         assert profiles["sinnix"].classify("modules/services/example.nix") == "module"
         assert profiles["sinex"].classify("crate/foo/tests/bar_test.rs") == "tests"
-        assert profiles["sinity-lynchpin"].classify("lynchpin/views/calendar_views.py") == "analysis"
+        assert profiles["sinity-lynchpin"].classify("lynchpin/context/reports.py") == "analysis"
         assert profiles["knowledgebase"].classify("notes/today.md") == "docs"
         """
     )
@@ -147,33 +150,52 @@ def test_sessions_source_reads_markdown_docs_directly() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_calendar_views_and_retrospective_api_use_shared_trajectory_layer() -> None:
-    views_text = (REPO_ROOT / "lynchpin/views/calendar_views.py").read_text(encoding="utf-8")
-    calendar_text = (REPO_ROOT / "lynchpin/retrospective/calendar.py").read_text(encoding="utf-8")
-    assert not (REPO_ROOT / "lynchpin/views/calendar_narratives.py").exists()
-    assert "build_calendar_views" in views_text
-    assert "CalendarScale.day" in views_text
-    assert "load_date_window" in calendar_text
-    assert "summarize_window_months" in calendar_text
+def test_period_reports_live_in_context_layer() -> None:
+    reports_text = (REPO_ROOT / "lynchpin/context/reports.py").read_text(encoding="utf-8")
+    packet_text = (REPO_ROOT / "lynchpin/context/packet_builders.py").read_text(encoding="utf-8")
+    periods_text = (REPO_ROOT / "lynchpin/periods.py").read_text(encoding="utf-8")
+    assert not (REPO_ROOT / "lynchpin/views/calendar_views.py").exists()
+    assert not (REPO_ROOT / "lynchpin/retrospective/calendar.py").exists()
+    assert "build_period_reports" in reports_text
+    assert "build_period_evidence_bundle" in reports_text
+    assert "query_evidence_range" in packet_text
+    assert "trajectory_day" not in packet_text
+    assert "trajectory_month" not in packet_text
+    assert "trajectory_episode" not in packet_text
+    assert "trajectory_anomaly" not in packet_text
+    assert "trajectory_chain" not in packet_text
+    assert "period_keys_in_range" in periods_text
 
 
-def test_calendar_docs_track_trajectory_surface() -> None:
-    text = (REPO_ROOT / "docs/reference/calendar-views.md").read_text(encoding="utf-8")
-    assert "context.calendar" not in text
-    assert "TrajectoryDay.to_dict()" in text
-    assert "lynchpin.views.calendar_views" in text
+def test_narrative_surface_has_no_standalone_runner_or_generic_orchestration_package() -> None:
+    narrative_text = (REPO_ROOT / "lynchpin/retrospective/narrative.py").read_text(encoding="utf-8")
+    assert not (REPO_ROOT / "scripts/run_dynamic_narratives.py").exists()
+    assert not (REPO_ROOT / "scripts/run-full-retrospective.sh").exists()
+    assert not (REPO_ROOT / "lynchpin/orchestration/__init__.py").exists()
+    assert "jsonl" not in narrative_text.lower()
+    assert "flat path" not in narrative_text.lower()
 
 
-def test_project_analysis_wrappers_are_thin_materializers() -> None:
-    velocity_api = (REPO_ROOT / "lynchpin/analysis/projects/velocity.py").read_text(encoding="utf-8")
+def test_period_report_docs_point_at_context_reports() -> None:
+    text = (REPO_ROOT / "docs/reference/period-reports.md").read_text(encoding="utf-8")
+    assert "calendar dossier" not in text.lower()
+    assert "lynchpin.context.reports" in text
+    assert "build_period_reports" in text
+
+
+def test_project_analysis_surfaces_have_no_velocity_wrapper() -> None:
+    velocity_analysis = (REPO_ROOT / "lynchpin/analysis/projects/velocity_analysis.py").read_text(encoding="utf-8")
+    velocity_renderer = (REPO_ROOT / "lynchpin/analysis/projects/velocity_renderer.py").read_text(encoding="utf-8")
     bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/bundles.py").read_text(encoding="utf-8")
     rich_bundles_api = (REPO_ROOT / "lynchpin/analysis/projects/rich_bundles.py").read_text(encoding="utf-8")
     projects_cli = (REPO_ROOT / "lynchpin/analysis/projects/cli.py").read_text(encoding="utf-8")
     justfile_text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
 
+    assert not (REPO_ROOT / "lynchpin/analysis/projects/velocity.py").exists()
     assert not (REPO_ROOT / "lynchpin/views/velocity.py").exists()
     assert not (REPO_ROOT / "lynchpin/views/project_bundles.py").exists()
-    assert "build_velocity_dashboard(" in velocity_api
+    assert "select_project_profiles(" in velocity_analysis
+    assert "build_velocity_dashboard(" in velocity_renderer
     assert "generate_project_bundle(" in bundles_api
     assert "generate_rich_project_bundle(" in rich_bundles_api
     assert "argparse" not in bundles_api
@@ -194,7 +216,7 @@ def test_project_analysis_docs_point_at_reusable_apis() -> None:
     readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "lynchpin.analysis.projects.build_velocity_dashboard" in velocity_text
-    assert "lynchpin.analysis.projects.velocity" in velocity_text
+    assert "lynchpin.analysis.projects.velocity_analysis" in velocity_text
     assert "lynchpin.analysis.projects import build_project_bundles" in bundles_text
     assert "lynchpin.analysis.projects import build_rich_project_bundles" in bundles_text
     assert "python -m lynchpin.analysis.projects velocity" in velocity_text
@@ -228,7 +250,7 @@ def test_knowledge_materializers_use_api_plus_just() -> None:
     assert "just artefact-index" in ledgers_text
 
 
-def test_calendar_views_root_cli_still_builds_day_views_without_subcommand() -> None:
+def test_period_reports_cli_builds_day_reports_from_root() -> None:
     result = subprocess.run(
         [
             "nix",
@@ -236,9 +258,11 @@ def test_calendar_views_root_cli_still_builds_day_views_without_subcommand() -> 
             "--command",
             "python",
             "-m",
-            "lynchpin.views.calendar_views",
+            "lynchpin.context.reports",
             "2026-03-16",
             "2026-03-17",
+            "--scale",
+            "day",
             "--no-write-files",
             "--json",
         ],
@@ -247,7 +271,7 @@ def test_calendar_views_root_cli_still_builds_day_views_without_subcommand() -> 
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "\"date\": \"2026-03-16\"" in result.stdout
+    assert "\"key\": \"2026-03-16\"" in result.stdout
 
 
 def test_warehouse_docs_list_trajectory_and_session_summary_tables() -> None:
@@ -260,8 +284,9 @@ def test_warehouse_docs_list_trajectory_and_session_summary_tables() -> None:
 def test_personal_trajectory_program_no_longer_refers_to_deleted_calendar_bridge() -> None:
     text = (REPO_ROOT / "docs/plans/personal-trajectory-program.md").read_text(encoding="utf-8")
     assert "lynchpin.context.calendar" not in text
-    assert "TrajectoryDay" in text
-    assert "trajectory.week" in text
+    assert "TrajectoryDay" not in text
+    assert "trajectory.week" not in text
+    assert "day/week/month semantics" in text
 
 
 def test_lynchpin_roadmap_frames_sinex_as_handoff_contracts() -> None:
@@ -401,23 +426,24 @@ def test_terminal_audit_detail_tracks_current_summary_fields() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_life_timeline_cli_defaults_to_latest_surface() -> None:
+def test_life_range_cli_defaults_to_latest_surface() -> None:
     script = textwrap.dedent(
         """
-        from lynchpin.system.life_timeline.paths import (
-            DEFAULT_LIFE_TIMELINE_START,
-            LATEST_LIFE_TIMELINE_JSON,
+        from lynchpin.retrospective.life_paths import (
+            DEFAULT_LIFE_START,
+            LATEST_LIFE_JSON,
         )
 
-        assert DEFAULT_LIFE_TIMELINE_START == "2013-10"
-        assert LATEST_LIFE_TIMELINE_JSON.name == "monthly_life_latest.json"
+        assert DEFAULT_LIFE_START == "2013-10"
+        assert LATEST_LIFE_JSON.name == "monthly_life_latest.json"
+        assert str(LATEST_LIFE_JSON).startswith("artefacts/retrospective/life-range/")
         """
     )
     script_result = _run_repo_python(script)
     assert script_result.returncode == 0, script_result.stderr
 
     result = subprocess.run(
-        ["nix", "develop", "--command", "python", "-m", "lynchpin.system.life_timeline", "build", "--help"],
+        ["nix", "develop", "--command", "python", "-m", "lynchpin.retrospective.life", "build", "--help"],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -465,17 +491,18 @@ def test_takeout_source_discovery_prefers_seed_archives() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_life_timeline_uses_source_aggregation_helpers() -> None:
-    text = (REPO_ROOT / "lynchpin/system/life_timeline/cli.py").read_text(encoding="utf-8")
+def test_life_range_surface_uses_source_aggregation_helpers() -> None:
+    text = (REPO_ROOT / "lynchpin/retrospective/life.py").read_text(encoding="utf-8")
     api_text = (REPO_ROOT / "lynchpin/retrospective/life_pipeline.py").read_text(encoding="utf-8")
-    assert "retrospective.run_life_timeline(" in text
+    assert "build_life_range(" in text
+    assert not (REPO_ROOT / "lynchpin/system/life_timeline/__init__.py").exists()
     assert "lp_reddit.summarize_activity(" in api_text
     assert "lp_wykop.summarize_activity(" in api_text
     assert "lp_raindrop.summarize_bookmarks(" in api_text
     assert "lp_gitstats.summarize_commit_activity(" in api_text
     assert "lp_spotify.summarize_streaming(" in api_text
     assert "lp_spotify.top_names(" in api_text
-    assert "build_recent_trajectory_summaries(" in api_text
+    assert "build_recent_context_summaries(" in api_text
     assert "build_month_summary(" in api_text
     assert "build_output_summary(" in api_text
     assert "build_work_summary(" in api_text
@@ -489,7 +516,7 @@ def test_life_timeline_uses_source_aggregation_helpers() -> None:
     assert "lp_takeout.tokenize_topic" in api_text
     assert "lp_takeout.summarize_youtube_watch_history_month(" in api_text
     assert "lp_takeout.phrase_topic_tokens(" in api_text
-    assert "lp_takeout.parse_life_timeline_takeouts(" in api_text
+    assert "lp_takeout.parse_life_takeouts(" in api_text
     assert "lp_knowledgebase.summarize_onenote_journal_entries(" in api_text
     assert "lp_takeout.resolve_archives(" in api_text
     assert "lp_takeout.load_youtube_oembed_cache(" in api_text
@@ -514,7 +541,7 @@ def test_takeout_life_timeline_bundle_parser_handles_sparse_archive() -> None:
                 info.size = len(data)
                 tf.addfile(info, io.BytesIO(data))
 
-            bundle = takeout.parse_life_timeline_takeouts(
+            bundle = takeout.parse_life_takeouts(
                 [archive],
                 start_month="2026-01",
                 end_month="2026-03",

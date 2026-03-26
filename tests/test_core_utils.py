@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from lynchpin.core.projects import _skip_common
 from lynchpin.system.validate import _count_iter, _sample_iter

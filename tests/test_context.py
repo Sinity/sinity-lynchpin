@@ -26,9 +26,9 @@ from lynchpin.context.packet_builders import (
     build_thread_packets,
 )
 from lynchpin.context.project_arcs import build_project_arcs
+from lynchpin.signals import ActivitySignal
 from lynchpin.trajectory.day import TrajectoryDay
 from lynchpin.trajectory.month import TrajectoryMonth
-from lynchpin.trajectory.signal import TrajectorySignal
 from lynchpin.trajectory.week import TrajectoryWeek
 
 
@@ -743,7 +743,7 @@ def _polylogue_signal(
     total_cost_usd: float | None = None,
     thread_id: str | None = None,
     project_hint: str | None = None,
-) -> TrajectorySignal:
+) -> ActivitySignal:
     evidence: dict[str, object] = {}
     if conversation_id is not None:
         evidence["conversation_id"] = conversation_id
@@ -755,7 +755,7 @@ def _polylogue_signal(
         evidence["thread_id"] = thread_id
     if project_hint is not None:
         evidence["project_hint"] = project_hint
-    return TrajectorySignal(
+    return ActivitySignal(
         signal_id=signal_id,
         source="polylogue.session",
         kind="chat_session",
@@ -833,7 +833,7 @@ class TestAggregateWorkEvents:
         assert breakdown["debugging"] == 1
 
     def test_ignores_non_polylogue_signals(self) -> None:
-        non_poly = TrajectorySignal(
+        non_poly = ActivitySignal(
             signal_id="x1", source="atuin.command", kind="command",
             start=_T0, end=_T1,
             evidence={"conversation_id": "c999", "total_cost_usd": 99.0},
@@ -872,7 +872,7 @@ class TestBuildThreadPackets:
 
     def test_ignores_non_polylogue_signals(self) -> None:
         sigs = [
-            TrajectorySignal(
+            ActivitySignal(
                 signal_id="x1", source="atuin.command", kind="command",
                 start=_T0, end=_T1,
                 evidence={"thread_id": "t1", "conversation_id": "c1"},

@@ -1,4 +1,4 @@
-"""Theme detection from trajectory activity patterns.
+"""Theme detection from recurring activity patterns.
 
 Scans top projects and topics across multiple months to identify recurring themes,
 tracking their prevalence and trend (rising/stable/declining).

@@ -34,7 +34,7 @@ surface that yields stable, queryable rows.
 Include:
 - structured source event streams,
 - metadata inventories and quality ledgers,
-- typed trajectory derivations,
+- derived daily / period query surfaces, including current `trajectory_*` tables where they are still useful,
 - session and transcript semantics that have been promoted into stable rows.
 
 Exclude:
@@ -69,10 +69,8 @@ table spec in `lynchpin/views/warehouse/specs.py`.
 - webhistory_raw: `webhistory_raw_entries`
 - wykop: `wykop_entries`, `wykop_entry_comments`, `wykop_link_comments`
 
-### Trajectory read-model tables
+### Current derived day / period read-model tables
 - `trajectory_signal`
-- `trajectory_chain`
-- `trajectory_chain_topic`
 - `trajectory_day`
 - `trajectory_day_project`
 - `trajectory_day_topic`
@@ -85,12 +83,10 @@ table spec in `lynchpin/views/warehouse/specs.py`.
 - `trajectory_year`
 - `trajectory_period_project`
 - `trajectory_period_topic`
-- `trajectory_episode`
-- `trajectory_anomaly`
 
-These tables encode lynchpin's current understanding of the inputs. They are
-useful reference contracts for future Sinex work, not a promise that lynchpin
-itself is the long-term runtime.
+These tables encode one current derived understanding surface over the inputs.
+They are useful query contracts and migration material, not a statement that
+`trajectory` is the architecture Lynchpin should keep centering.
 
 ### Polylogue and session semantics
 - `polylogue_markdown`
@@ -107,6 +103,20 @@ itself is the long-term runtime.
 summary payloads as stable warehouse rows alongside the session ledger.
 
 ### Other derived tables
+- `processed_focus_spans`
+- `processed_focus_loops`
+- `processed_app_sessions`
+- `processed_shell_sessions`
+- `processed_git_daily`
+- `processed_git_commit_facts`
+- `processed_git_file_facts`
+- `processed_deep_work`
+- `processed_circadian`
+- `processed_delivery_telemetry`
+- `processed_context_switches`
+- `processed_project_attention`
+- `processed_chat_activity`
+- `processed_sleep_correlation`
 - `narrative`
 - `warehouse_manifest`
 

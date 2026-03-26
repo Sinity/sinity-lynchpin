@@ -1,4 +1,4 @@
-"""Claims generation from trajectory data.
+"""Claims generation from derived activity rollups.
 
 Rule-based inference to extract quantified statements about work patterns,
 productivity, and behavioral trends from aggregated activity data.
@@ -23,7 +23,7 @@ def generate_claims(
     weeks: Optional[Sequence] = None,
     days: Optional[Sequence] = None,
 ) -> list[Claim]:
-    """Rule-based claim generation from trajectory rollups."""
+    """Rule-based claim generation from derived period rollups."""
     claims: list[Claim] = []
 
     if not months:

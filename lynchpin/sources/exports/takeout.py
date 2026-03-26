@@ -194,7 +194,7 @@ class MyActivityEvent:
 
 
 @dataclass(frozen=True)
-class LifeTimelineTakeoutBundle:
+class LifeTakeoutBundle:
     google_search_counts: Dict[str, int]
     google_search_tokens: Dict[str, Counter[str]]
     google_search_phrases: Dict[str, Counter[str]]
@@ -977,12 +977,12 @@ def parse_gmail_headers_from_takeout_mbox(
     return counts, per_month_from_domains, per_month_subject_tokens
 
 
-def parse_life_timeline_takeouts(
+def parse_life_takeouts(
     takeout_paths: List[Path],
     *,
     start_month: str,
     end_month: str,
-) -> LifeTimelineTakeoutBundle:
+) -> LifeTakeoutBundle:
     with ExitStack() as stack:
         takeouts = [stack.enter_context(TarReader(path)) for path in takeout_paths]
 
@@ -1188,7 +1188,7 @@ def parse_life_timeline_takeouts(
                 end_month=end_month,
             )
 
-    return LifeTimelineTakeoutBundle(
+    return LifeTakeoutBundle(
         google_search_counts=dict(google_search_counts),
         google_search_tokens=dict(google_search_tokens),
         google_search_phrases=dict(google_search_phrases),

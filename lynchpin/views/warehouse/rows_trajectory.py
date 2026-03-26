@@ -4,12 +4,12 @@ from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Iterator, Optional, Tuple
 
+from ... import signals as signal_model
+from ...signals import rules as signal_rules
 from ...trajectory import (
     chains as trajectory_chains,
     day as trajectory_day,
     period as trajectory_period,
-    rules as trajectory_rules,
-    signal as trajectory_signal,
 )
 from .core import WarehouseContext, _json_dumps, _maybe_limit, _parse_dt
 
@@ -28,10 +28,10 @@ def _trajectory_rows_window_cached(
         since = datetime.combine(date.fromisoformat(start_date), datetime.min.time(), tzinfo=local_tz)
     if end_date:
         until = datetime.combine(date.fromisoformat(end_date), datetime.min.time(), tzinfo=local_tz) + timedelta(days=1)
-    return trajectory_signal.resolve_window(
+    return signal_model.resolve_window(
         start=since,
         end=until,
-        days=trajectory_signal.DEFAULT_LOOKBACK_DAYS,
+        days=signal_model.DEFAULT_LOOKBACK_DAYS,
     )
 
 
@@ -49,21 +49,21 @@ def _trajectory_dataset(
     since_text: Optional[str],
     until_text: Optional[str],
 ) -> tuple[
-    tuple[trajectory_rules.AttributedSignal, ...],
+    tuple[signal_rules.AttributedSignal, ...],
     tuple[trajectory_chains.TrajectoryChain, ...],
     tuple[trajectory_day.TrajectoryDay, ...],
     trajectory_period.TrajectoryPeriodSummary,
-    tuple,  # raw TrajectorySignal objects
+    tuple,  # raw ActivitySignal objects
 ]:
     since = _parse_dt(since_text)
     until = _parse_dt(until_text)
-    start, end = trajectory_signal.resolve_window(
+    start, end = signal_model.resolve_window(
         start=since,
         end=until,
-        days=trajectory_signal.DEFAULT_LOOKBACK_DAYS,
+        days=signal_model.DEFAULT_LOOKBACK_DAYS,
     )
-    raw_signals = tuple(trajectory_signal.load_signals(start=start, end=end, days=trajectory_signal.DEFAULT_LOOKBACK_DAYS))
-    attributed = tuple(trajectory_rules.classify_signals(raw_signals))
+    raw_signals = tuple(signal_model.load_signals(start=start, end=end, days=signal_model.DEFAULT_LOOKBACK_DAYS))
+    attributed = tuple(signal_rules.classify_signals(raw_signals))
     chains = tuple(trajectory_chains.build_chains_from_attributed(attributed))
     days = tuple(
         trajectory_day.summarize_days(
@@ -71,7 +71,7 @@ def _trajectory_dataset(
             chains=chains,
             start=start,
             end=end,
-            days=trajectory_signal.DEFAULT_LOOKBACK_DAYS,
+            days=signal_model.DEFAULT_LOOKBACK_DAYS,
         )
     )
     period = trajectory_period.summarize_period(days)
@@ -129,37 +129,6 @@ def _trajectory_signal_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
             item.detail,
             _json_dumps({"signal": item.signal.evidence, "reasons": list(item.reasons)}),
         )
-
-
-def _trajectory_chain_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    _, chains, _, _ = _trajectory_snapshot(ctx)
-    for chain in _maybe_limit(chains, ctx.limit):
-        yield (
-            chain.chain_id,
-            chain.start,
-            chain.end,
-            chain.duration_seconds,
-            chain.mode,
-            chain.project,
-            chain.mode_confidence,
-            chain.project_confidence,
-            chain.signal_count,
-            chain.source_count,
-            _json_dumps(list(chain.sources)),
-            _json_dumps(list(chain.apps)),
-            _json_dumps(list(chain.domains)),
-            _json_dumps(list(chain.titles)),
-            _json_dumps(list(chain.reasons)),
-            chain.topic,
-            chain.topic_confidence,
-        )
-
-
-def _trajectory_chain_topic_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    _, chains, _, _ = _trajectory_snapshot(ctx)
-    for chain in chains:
-        for topic, seconds in chain.topic_seconds:
-            yield (chain.chain_id, topic, seconds, chain.topic_confidence)
 
 
 def _trajectory_day_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
@@ -384,51 +353,8 @@ def _trajectory_day_topic_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
     yield from _maybe_limit(rows, ctx.limit)
 
 
-def _trajectory_episode_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from lynchpin.trajectory.episode import detect_episodes
-
-    _, _, days, _ = _trajectory_snapshot(ctx)
-    episodes = detect_episodes(days)
-    for ep in _maybe_limit(episodes, ctx.limit):
-        yield (
-            ep.episode_id,
-            ep.label,
-            ep.start_date,
-            ep.end_date,
-            ep.days,
-            ep.active_seconds,
-            ep.dominant_mode,
-            ep.dominant_project,
-            ep.dominant_topic,
-            _json_dumps(ep.mode_distribution),
-            _json_dumps(ep.project_distribution),
-            ep.trigger,
-            ep.confidence,
-            ep.day_count_with_dominant,
-        )
-
-
-def _trajectory_anomaly_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from lynchpin.trajectory.anomaly import detect_anomalies
-
-    _, _, days, _ = _trajectory_snapshot(ctx)
-    anomalies = detect_anomalies(days)
-    for a in _maybe_limit(anomalies, ctx.limit):
-        yield (
-            a.anomaly_id,
-            a.date,
-            a.kind,
-            a.severity,
-            a.description,
-            a.baseline_value,
-            a.actual_value,
-            _json_dumps(a.evidence or {}),
-        )
-
-
 def _trajectory_day_event_rows(ctx: WarehouseContext) -> Iterator[Tuple]:
-    from lynchpin.trajectory.anomaly import detect_anomalies
-    from lynchpin.trajectory.episode import detect_episodes
+    from ...context.patterns import detect_anomalies, detect_episodes
 
     _, _, days, _ = _trajectory_snapshot(ctx)
 

@@ -205,10 +205,13 @@ def iter_session_profiles(
 ) -> Iterator[SessionProfile]:
     """Yield rich SessionProfile objects from the Polylogue archive.
 
-    Uses SyncPolylogue to query the archive database, then builds
-    a SessionProfile for each conversation in the time window.
+    Uses Polylogue's durable session-profile products instead of hydrating
+    full conversations and rebuilding profiles locally.
     """
-    from polylogue.lib.session_profile import build_session_profile
+    from datetime import timedelta
+
+    from polylogue.archive_products import SessionProfileProductQuery
+    from polylogue.lib.session_profile import SessionProfile
     from polylogue.sync import SyncPolylogue
 
     try:
@@ -218,29 +221,34 @@ def iter_session_profiles(
         return
 
     try:
-        filt = poly.filter()
-        if provider:
-            filt = filt.provider(provider)
-        if start:
-            filt = filt.since(start.isoformat())
-        if end:
-            filt = filt.until(end.isoformat())
-
-        from polylogue.sync import _run
-
-        summaries = _run(filt.list_summaries())
-
-        # Fetch full conversations in batches for session profiling
-        batch_size = 20
-        ids = [str(s.id) for s in summaries]
-        for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i : i + batch_size]
-            conversations = poly.get_conversations(batch_ids)
-            for conv in conversations:
+        offset = 0
+        batch_size = 500
+        session_date_since = start.date().isoformat() if start else None
+        session_date_until = (end - timedelta(microseconds=1)).date().isoformat() if end else None
+        while True:
+            products = poly.list_session_profile_products(
+                SessionProfileProductQuery(
+                    provider=provider,
+                    session_date_since=session_date_since,
+                    session_date_until=session_date_until,
+                    limit=batch_size,
+                    offset=offset,
+                )
+            )
+            if not products:
+                break
+            for product in products:
                 try:
-                    yield build_session_profile(conv)
+                    yield SessionProfile.from_dict(product.profile)
                 except Exception:
-                    logger.debug("Failed to build session profile for %s", conv.id, exc_info=True)
+                    logger.debug(
+                        "Failed to hydrate session profile product for %s",
+                        product.conversation_id,
+                        exc_info=True,
+                    )
+            if len(products) < batch_size:
+                break
+            offset += batch_size
     finally:
         poly.close()
 

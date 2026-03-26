@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 
 from lynchpin.sources.exports import chatlog
+from lynchpin.signals import ActivitySignal, resolve_window
+from lynchpin.signals.rules import AttributedSignal
 from lynchpin.trajectory.chains import TrajectoryChain, _chain_id, build_chains, build_chains_from_attributed
 from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject, summarize_days
 from lynchpin.trajectory.period import summarize_months
 from lynchpin.trajectory.day import _date_range, _highlights, _split_span_by_day
-from lynchpin.trajectory.rules import AttributedSignal
-from lynchpin.trajectory.signal import TrajectorySignal, resolve_window
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +58,7 @@ def test_chatlog_iter_transcripts_normalizes_naive_timestamps(monkeypatch) -> No
 
 def test_build_chains_merges_terminal_project_signals() -> None:
     signals = [
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="a",
             source="atuin.command",
             kind="command",
@@ -68,7 +68,7 @@ def test_build_chains_merges_terminal_project_signals() -> None:
             cwd="/realm/project/polylogue",
             detail="codex resume --last",
         ),
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="b",
             source="instrumentation.terminal_session",
             kind="terminal_session",
@@ -79,7 +79,7 @@ def test_build_chains_merges_terminal_project_signals() -> None:
             cwd="/realm/project/polylogue",
             detail="codex",
         ),
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="c",
             source="activitywatch.afk",
             kind="afk",
@@ -101,7 +101,7 @@ def test_build_chains_merges_terminal_project_signals() -> None:
 
 def test_build_chains_truncates_incompatible_overlaps() -> None:
     signals = [
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="a",
             source="instrumentation.terminal_session",
             kind="terminal_session",
@@ -112,7 +112,7 @@ def test_build_chains_truncates_incompatible_overlaps() -> None:
             cwd="/realm/project/polylogue",
             detail="codex",
         ),
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="b",
             source="activitywatch.web",
             kind="web",
@@ -132,7 +132,7 @@ def test_build_chains_truncates_incompatible_overlaps() -> None:
 
 def test_summarize_days_splits_cross_midnight_chain() -> None:
     signals = [
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="cmd",
             source="atuin.command",
             kind="command",
@@ -142,7 +142,7 @@ def test_summarize_days_splits_cross_midnight_chain() -> None:
             cwd="/realm/project/polylogue",
             detail="codex resume --last",
         ),
-        TrajectorySignal(
+        ActivitySignal(
             signal_id="git",
             source="git.commit",
             kind="git_commit",
@@ -195,7 +195,6 @@ table_names = [table.name for table in spec.tables]
 # Core trajectory tables (Sprint 1-5 schema)
 for expected in [
     "trajectory_signal",
-    "trajectory_chain",
     "trajectory_day",
     "trajectory_day_project",
     "trajectory_period",
@@ -292,7 +291,7 @@ class TestResolveWindow:
 
     def test_start_equal_to_end_raises(self):
         now = self._now()
-        with pytest.raises(ValueError, match="Invalid trajectory window"):
+        with pytest.raises(ValueError, match="Invalid activity window"):
             resolve_window(start=now, end=now)
 
     def test_start_after_end_raises(self):
@@ -307,15 +306,15 @@ class TestResolveWindow:
 
 
 # ---------------------------------------------------------------------------
-# TrajectorySignal
+# ActivitySignal
 # ---------------------------------------------------------------------------
 
-class TestTrajectorySignal:
+class TestActivitySignal:
     def _dt(self, h: int, m: int = 0) -> datetime:
         return datetime(2026, 3, 17, h, m, tzinfo=timezone.utc)
 
     def test_duration_seconds_basic(self):
-        sig = TrajectorySignal(
+        sig = ActivitySignal(
             signal_id="s1",
             source="atuin.command",
             kind="command",
@@ -326,7 +325,7 @@ class TestTrajectorySignal:
 
     def test_duration_zero_for_point_signal(self):
         t = self._dt(10)
-        sig = TrajectorySignal(
+        sig = ActivitySignal(
             signal_id="s2",
             source="git.commit",
             kind="git_commit",
@@ -337,7 +336,7 @@ class TestTrajectorySignal:
 
     def test_to_dict_is_json_serializable(self):
         import json
-        sig = TrajectorySignal(
+        sig = ActivitySignal(
             signal_id="s3",
             source="activitywatch.window",
             kind="window",
@@ -353,7 +352,7 @@ class TestTrajectorySignal:
         assert d["app"] == "code"
 
     def test_evidence_default_is_empty_dict(self):
-        sig = TrajectorySignal(
+        sig = ActivitySignal(
             signal_id="s4",
             source="atuin.command",
             kind="command",
@@ -451,7 +450,7 @@ def _attributed(
     project_confidence: float = 0.95,
     topic: str | None = None,
 ) -> AttributedSignal:
-    sig = TrajectorySignal(
+    sig = ActivitySignal(
         signal_id=signal_id,
         source=source,
         kind="command",
