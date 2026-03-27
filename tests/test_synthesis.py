@@ -3,15 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
-from lynchpin.retrospective.narrative import NarrativeKind, load_narratives
-from lynchpin.retrospective.temporal import (
-    SCALE_HIERARCHY,
-    child_keys,
-    child_scale,
-    next_key,
-    prior_key,
-)
+from lynchpin.periods import child_keys, child_scale, next_key, prior_key
+from lynchpin.retrospective.narrative import NarrativeKind, SCALE_HIERARCHY, load_narratives
 
 
 # ---------------------------------------------------------------------------
@@ -24,19 +17,19 @@ class TestChildScale:
         assert child_scale(NarrativeKind.day) is None
 
     def test_week_child_is_day(self):
-        assert child_scale(NarrativeKind.week) is NarrativeKind.day
+        assert child_scale(NarrativeKind.week) == "day"
 
     def test_month_child_is_week(self):
-        assert child_scale(NarrativeKind.month) is NarrativeKind.week
+        assert child_scale(NarrativeKind.month) == "week"
 
     def test_quarter_child_is_month(self):
-        assert child_scale(NarrativeKind.quarter) is NarrativeKind.month
+        assert child_scale(NarrativeKind.quarter) == "month"
 
     def test_half_child_is_quarter(self):
-        assert child_scale(NarrativeKind.half) is NarrativeKind.quarter
+        assert child_scale(NarrativeKind.half) == "quarter"
 
     def test_year_child_is_half(self):
-        assert child_scale(NarrativeKind.year) is NarrativeKind.half
+        assert child_scale(NarrativeKind.year) == "half"
 
     def test_episode_returns_none(self):
         assert child_scale(NarrativeKind.episode) is None
@@ -182,14 +175,14 @@ class TestLoadNarratives:
 
 class TestScaleHierarchy:
     def test_hierarchy_order(self):
-        assert SCALE_HIERARCHY == [
+        assert SCALE_HIERARCHY == (
             NarrativeKind.day,
             NarrativeKind.week,
             NarrativeKind.month,
             NarrativeKind.quarter,
             NarrativeKind.half,
             NarrativeKind.year,
-        ]
+        )
 
     def test_each_scale_can_produce_children(self):
         """Every non-day scale should produce at least one child key."""

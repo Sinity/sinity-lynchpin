@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import date
 
 
-from lynchpin.trajectory.anomaly import _anomaly_id
-from lynchpin.trajectory.episode import _compose_label, _episode_id
-from lynchpin.trajectory.week import _classify_day_pattern, _iso_week_key
+from lynchpin.context.patterns import _anomaly_id, _compose_label, _episode_id
+from lynchpin.context.period_rollups import _classify_day_pattern, _iso_week_key
 
 
 # ---------------------------------------------------------------------------

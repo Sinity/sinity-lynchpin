@@ -36,10 +36,10 @@ The active target architecture is documented in
    - Re-home the useful functionality currently trapped in `life_timeline` onto the shared evidence and context layers.
    - Eliminate the separate long-range JSON/pipeline world once the logic has moved.
 
-5. **Dissolve trajectory as the architectural center**
-   - Move useful pieces of `trajectory.*` into the surviving layers.
-   - Keep derived tables only where they remain genuinely useful query surfaces.
-   - Do not design new understanding logic as trajectory-first by default.
+5. **Keep context/signals as the canonical understanding surface**
+   - Preserve the moved functionality under `lynchpin.context` and `lynchpin.signals`.
+   - Keep derived rollup tables only where they remain genuinely useful query surfaces.
+   - Do not reintroduce a trajectory-first package boundary.
 
 6. **Narrative workflows**
    - Make evidence-bundle-driven interactive narrative work the default path.

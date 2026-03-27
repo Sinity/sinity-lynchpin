@@ -1,4 +1,4 @@
-"""Tests for context/packet_builders.py individual packet-build functions.
+"""Tests for context packet and current-state builder modules.
 
 Verifies field mapping, tier-based top-N truncation, hours conversion,
 and to_dict() serialization for each packet builder.
@@ -13,9 +13,9 @@ import pytest
 
 from lynchpin.context.bundles import EvidenceQuery
 from lynchpin.context.memory import MemoryStore
-from lynchpin.context.packet_builders import (
+from lynchpin.context.current_state import build_current_state
+from lynchpin.context.state_packets import (
     build_coverage_packet,
-    build_current_state,
     build_day_packet,
     build_episode_packet,
     build_month_packet,
@@ -35,7 +35,7 @@ from lynchpin.context.packet_types import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_trajectory_day(**kwargs):
+def _make_day_summary(**kwargs):
     defaults = dict(
         date=date(2026, 3, 10),
         active_seconds=14400.0,
@@ -60,7 +60,7 @@ def _make_trajectory_day(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-def _make_trajectory_week(**kwargs):
+def _make_week_summary(**kwargs):
     defaults = dict(
         iso_week="2026-W11",
         start_date=date(2026, 3, 9),
@@ -88,7 +88,7 @@ def _make_trajectory_week(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-def _make_trajectory_month(**kwargs):
+def _make_month_summary(**kwargs):
     defaults = dict(
         month="2026-03",
         start_date=date(2026, 3, 1),
@@ -117,7 +117,7 @@ def _make_trajectory_month(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-def _make_trajectory_episode(**kwargs):
+def _make_episode_summary(**kwargs):
     defaults = dict(
         episode_id="abc12345",
         label="sinex-sprint",
@@ -155,36 +155,36 @@ def _make_chain(**kwargs):
 
 class TestBuildDayPacket:
     def test_returns_day_packet_instance(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_day_packet(day)
         assert isinstance(pkt, DayPacket)
 
     def test_date_is_isoformat(self):
-        day = _make_trajectory_day(date=date(2026, 3, 15))
+        day = _make_day_summary(date=date(2026, 3, 15))
         pkt = build_day_packet(day)
         assert pkt.date == "2026-03-15"
 
     def test_hours_conversion(self):
-        day = _make_trajectory_day(active_seconds=7200.0, recovery_seconds=1800.0)
+        day = _make_day_summary(active_seconds=7200.0, recovery_seconds=1800.0)
         pkt = build_day_packet(day)
         assert pkt.active_hours == pytest.approx(2.0)
         assert pkt.recovery_hours == pytest.approx(0.5)
 
     def test_dominant_fields_passed_through(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_day_packet(day)
         assert pkt.dominant_mode == "coding"
         assert pkt.dominant_project == "sinex"
         assert pkt.dominant_topic == "rust"
 
     def test_compact_tier_truncates_top_modes(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_day_packet(day, tier="compact")
         # compact tier uses top-2
         assert len(pkt.top_modes) <= 3
 
     def test_to_dict_is_json_serializable(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_day_packet(day)
         d = pkt.to_dict()
         json.dumps(d)
@@ -193,12 +193,12 @@ class TestBuildDayPacket:
         assert "dominant_mode" in d
 
     def test_meta_reflects_tier(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_day_packet(day, tier="full")
         assert pkt.meta.budget_tier == "full"
 
     def test_highlights_list(self):
-        day = _make_trajectory_day(highlights=["feat: added replay", "debug: fixed crash"])
+        day = _make_day_summary(highlights=["feat: added replay", "debug: fixed crash"])
         pkt = build_day_packet(day)
         assert pkt.highlights == ["feat: added replay", "debug: fixed crash"]
 
@@ -209,17 +209,17 @@ class TestBuildDayPacket:
 
 class TestBuildWeekPacket:
     def test_returns_week_packet(self):
-        week = _make_trajectory_week()
+        week = _make_week_summary()
         pkt = build_week_packet(week)
         assert isinstance(pkt, WeekPacket)
 
     def test_iso_week_key(self):
-        week = _make_trajectory_week(iso_week="2026-W10")
+        week = _make_week_summary(iso_week="2026-W10")
         pkt = build_week_packet(week)
         assert pkt.iso_week == "2026-W10"
 
     def test_date_range_isoformat(self):
-        week = _make_trajectory_week(
+        week = _make_week_summary(
             start_date=date(2026, 3, 2),
             end_date=date(2026, 3, 8),
         )
@@ -228,29 +228,29 @@ class TestBuildWeekPacket:
         assert pkt.end_date == "2026-03-08"
 
     def test_hours_conversion(self):
-        week = _make_trajectory_week(active_seconds=36000.0)
+        week = _make_week_summary(active_seconds=36000.0)
         pkt = build_week_packet(week)
         assert pkt.active_hours == pytest.approx(10.0)
 
     def test_dominant_fields(self):
-        week = _make_trajectory_week()
+        week = _make_week_summary()
         pkt = build_week_packet(week)
         assert pkt.dominant_mode == "coding"
         assert pkt.dominant_project == "sinex"
         assert pkt.dominant_topic == "rust"
 
     def test_active_delta_none_when_absent(self):
-        week = _make_trajectory_week(active_delta_vs_prior=None)
+        week = _make_week_summary(active_delta_vs_prior=None)
         pkt = build_week_packet(week)
         assert pkt.active_delta_vs_prior is None
 
     def test_active_delta_converted_to_hours(self):
-        week = _make_trajectory_week(active_delta_vs_prior=7200.0)
+        week = _make_week_summary(active_delta_vs_prior=7200.0)
         pkt = build_week_packet(week)
         assert pkt.active_delta_vs_prior == pytest.approx(2.0)
 
     def test_to_dict_is_serializable(self):
-        week = _make_trajectory_week()
+        week = _make_week_summary()
         d = build_week_packet(week).to_dict()
         json.dumps(d)
         assert "iso_week" in d
@@ -263,34 +263,34 @@ class TestBuildWeekPacket:
 
 class TestBuildMonthPacket:
     def test_returns_month_packet(self):
-        month = _make_trajectory_month()
+        month = _make_month_summary()
         pkt = build_month_packet(month)
         assert isinstance(pkt, MonthPacket)
 
     def test_month_key(self):
-        month = _make_trajectory_month(month="2026-02")
+        month = _make_month_summary(month="2026-02")
         pkt = build_month_packet(month)
         assert pkt.month == "2026-02"
 
     def test_hours_conversion(self):
-        month = _make_trajectory_month(active_seconds=360000.0)
+        month = _make_month_summary(active_seconds=360000.0)
         pkt = build_month_packet(month)
         assert pkt.active_hours == pytest.approx(100.0)
 
     def test_chat_fields_populated(self):
-        month = _make_trajectory_month(chat_session_count=30, chat_cost_usd=4.5)
+        month = _make_month_summary(chat_session_count=30, chat_cost_usd=4.5)
         pkt = build_month_packet(month)
         assert pkt.chat_session_count == 30
         assert pkt.chat_cost_usd == pytest.approx(4.5)
 
     def test_episode_labels(self):
-        month = _make_trajectory_month(episode_count=2, episode_labels=["ep-a", "ep-b"])
+        month = _make_month_summary(episode_count=2, episode_labels=["ep-a", "ep-b"])
         pkt = build_month_packet(month)
         assert pkt.episode_count == 2
         assert "ep-a" in pkt.episode_labels
 
     def test_to_dict_serializable(self):
-        month = _make_trajectory_month()
+        month = _make_month_summary()
         d = build_month_packet(month).to_dict()
         json.dumps(d)
         assert "month" in d
@@ -303,18 +303,18 @@ class TestBuildMonthPacket:
 
 class TestBuildEpisodePacket:
     def test_returns_episode_packet(self):
-        ep = _make_trajectory_episode()
+        ep = _make_episode_summary()
         pkt = build_episode_packet(ep)
         assert isinstance(pkt, EpisodePacket)
 
     def test_episode_id_and_label(self):
-        ep = _make_trajectory_episode(episode_id="xyz999", label="test-ep")
+        ep = _make_episode_summary(episode_id="xyz999", label="test-ep")
         pkt = build_episode_packet(ep)
         assert pkt.episode_id == "xyz999"
         assert pkt.label == "test-ep"
 
     def test_date_range_isoformat(self):
-        ep = _make_trajectory_episode(
+        ep = _make_episode_summary(
             start_date=date(2026, 2, 1),
             end_date=date(2026, 2, 10),
         )
@@ -323,17 +323,17 @@ class TestBuildEpisodePacket:
         assert pkt.end_date == "2026-02-10"
 
     def test_hours_conversion(self):
-        ep = _make_trajectory_episode(active_seconds=36000.0)
+        ep = _make_episode_summary(active_seconds=36000.0)
         pkt = build_episode_packet(ep)
         assert pkt.active_hours == pytest.approx(10.0)
 
     def test_confidence(self):
-        ep = _make_trajectory_episode(confidence=0.92)
+        ep = _make_episode_summary(confidence=0.92)
         pkt = build_episode_packet(ep)
         assert pkt.confidence == pytest.approx(0.92)
 
     def test_to_dict_serializable(self):
-        ep = _make_trajectory_episode()
+        ep = _make_episode_summary()
         d = build_episode_packet(ep).to_dict()
         json.dumps(d)
         assert "episode_id" in d
@@ -347,20 +347,20 @@ class TestBuildEpisodePacket:
 
 class TestBuildProjectPacket:
     def test_returns_project_packet(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         chain = _make_chain()
         pkt = build_project_packet("sinex", [day], [chain])
         assert isinstance(pkt, ProjectPacket)
 
     def test_counts_hours_from_matching_days(self):
-        day = _make_trajectory_day(
+        day = _make_day_summary(
             top_projects=(("sinex", 7200.0), ("lynchpin", 3600.0)),
         )
         pkt = build_project_packet("sinex", [day], [])
         assert pkt.total_hours == pytest.approx(2.0)
 
     def test_zero_hours_for_nonexistent_project(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         pkt = build_project_packet("nonexistent", [day], [])
         assert pkt.total_hours == 0.0
 
@@ -370,7 +370,7 @@ class TestBuildProjectPacket:
         assert pkt.chain_count == 3
 
     def test_to_dict_serializable(self):
-        day = _make_trajectory_day()
+        day = _make_day_summary()
         d = build_project_packet("sinex", [day], []).to_dict()
         json.dumps(d)
         assert "project" in d
@@ -456,15 +456,15 @@ def test_build_current_state_uses_evidence_queries_for_period_rollups(monkeypatc
         )
 
     monkeypatch.setattr(
-        "lynchpin.context.packet_builders.open_warehouse_read_only",
+        "lynchpin.context.current_state.open_warehouse_read_only",
         lambda: _Conn(),
     )
     monkeypatch.setattr(
-        "lynchpin.context.packet_builders._resolve_window_bounds",
+        "lynchpin.context.current_state._resolve_window_bounds",
         lambda *, conn, days, end: (date(2026, 3, 1), date(2026, 3, 2)),
     )
     monkeypatch.setattr(
-        "lynchpin.context.packet_builders.query_evidence_range",
+        "lynchpin.context.current_state.query_evidence_range",
         lambda conn, *, start, end, artifact_limits: [
             _query(
                 "delivery_telemetry",
@@ -537,10 +537,10 @@ def test_build_current_state_uses_evidence_queries_for_period_rollups(monkeypatc
         ],
     )
     monkeypatch.setattr(
-        "lynchpin.context.packet_builders.inspect_core_surface_freshness",
+        "lynchpin.context.current_state.inspect_core_surface_freshness",
         lambda *, conn, reference_date: [SimpleNamespace(to_dict=lambda: {"surface": "processed_delivery_telemetry"})],
     )
-    monkeypatch.setattr("lynchpin.context.packet_builders.load_memory", lambda: MemoryStore())
+    monkeypatch.setattr("lynchpin.context.current_state.load_memory", lambda: MemoryStore())
 
     state = build_current_state(days=2, tier="standard")
 

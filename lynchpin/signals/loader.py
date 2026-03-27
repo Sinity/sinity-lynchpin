@@ -13,7 +13,7 @@ try:
 except ImportError:
     _fast_loads = json.loads  # type: ignore[assignment]
 
-from ..sources.captures.instrumentation import (
+from ..sources.captures.terminal_capture import (
     TerminalSessionEvent,
     TerminalSessionMetadata,
 )

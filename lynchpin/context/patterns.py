@@ -240,6 +240,14 @@ def detect_episodes(
                     dominant_seconds = max(dominant_seconds, mode_counter[dominant_mode])
                 if dominant_project and dominant_project in project_counter:
                     dominant_seconds = max(dominant_seconds, project_counter[dominant_project])
+                if dominant_topic:
+                    dominant_topic_seconds = sum(
+                        seconds
+                        for item in run_days
+                        for topic, seconds in item.top_topics
+                        if topic == dominant_topic
+                    )
+                    dominant_seconds = max(dominant_seconds, dominant_topic_seconds)
             proportion_time = dominant_seconds / total_active if total_active else 0.0
             episodes.append(
                 EpisodeSummary(
@@ -252,8 +260,11 @@ def detect_episodes(
                     dominant_mode=dominant_mode,
                     dominant_project=dominant_project,
                     dominant_topic=dominant_topic,
+                    mode_distribution={key: round(value, 3) for key, value in mode_counter.items()},
+                    project_distribution={key: round(value, 3) for key, value in project_counter.items()},
                     trigger=trigger,
                     confidence=round((proportion_days + proportion_time) / 2.0, 3),
+                    day_count_with_dominant=dominant_days,
                 )
             )
 
@@ -293,10 +304,17 @@ def detect_episodes(
                         for episode in episodes
                     )
                     if not overlaps:
+                        kinds = sorted(
+                            {
+                                item.kind
+                                for item in anomalies
+                                if cluster_start <= item.date <= cluster_end_date
+                            }
+                        )
                         episodes.append(
                             EpisodeSummary(
                                 episode_id=_episode_id(cluster_start, cluster_end_date, "anomaly_cluster"),
-                                label="anomaly cluster",
+                                label=f"anomaly cluster: {', '.join(kinds)}",
                                 start_date=cluster_start,
                                 end_date=cluster_end_date,
                                 days=len(cluster_days),
@@ -304,8 +322,11 @@ def detect_episodes(
                                 dominant_mode=dom_mode,
                                 dominant_project=dom_project,
                                 dominant_topic=dom_topic,
+                                mode_distribution={key: round(value, 3) for key, value in mode_counter.items()},
+                                project_distribution={key: round(value, 3) for key, value in project_counter.items()},
                                 trigger="anomaly_cluster",
                                 confidence=min(cluster_size / 5, 0.95),
+                                day_count_with_dominant=sum(1 for item in cluster_days if item.dominant_mode == dom_mode),
                             )
                         )
             index = cluster_end + 1
@@ -446,7 +467,7 @@ def _episode_id(start: date, end: date, label: str) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _compose_label(mode: Optional[str], project: Optional[str], topic: Optional[str]) -> str:
+def _compose_label(mode: Optional[str], project: Optional[str], topic: Optional[str] = None) -> str:
     parts: list[str] = []
     if project:
         parts.append(project)

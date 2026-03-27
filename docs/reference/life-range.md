@@ -1,35 +1,32 @@
 # Life Range Workflow
 
-Long-range life synthesis is now housed under `lynchpin.retrospective.life*`,
+Long-range life synthesis is housed under `lynchpin.retrospective.life*`,
 not under a separate `system.life_timeline` subsystem.
 
-The target shape remains one coherent system:
+It is part of the same coherent evidence-first system as the rest of Lynchpin:
 - canonical sources and semantic evidence planes,
 - warehouse query surfaces and context bundles,
 - interactive narrative writing under `artefacts/retrospective/narratives/`.
 
-The modules and commands below still exist because they contain useful
-long-range functionality, not because they define a separate architecture that
-should survive.
-
-## Current Implementation Surface
+## Implementation Surface
 
 For agents, the canonical orchestration surface is still the `lynchpin-ops`
 skill plus direct source, warehouse, and context queries. The APIs and commands
-below are documented because they materialize long-range artefacts today.
+below are documented because they materialize the canonical long-range life
+artefacts today.
 
 Recent month context now flows through `lynchpin.context.reports` and stored
-period evidence bundles rather than querying `trajectory_month` directly.
-Treat any remaining `trajectory_*` usage in the repo as implementation residue,
+period evidence bundles rather than querying `context_month` directly.
+Treat any remaining `trajectory_*` references in historical notes as stale,
 not as a reason to rebuild a trajectory-first architecture.
 
-## Existing API
+## API
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin python - <<'PY'
 from pathlib import Path
 
-from lynchpin.retrospective import LifeRangeInputs, build_life_range
+from lynchpin.retrospective.life_range import LifeRangeInputs, build_life_range
 
 result = build_life_range(
     start_month="2020-04",
@@ -41,7 +38,7 @@ print(result)
 PY
 ```
 
-## Existing Monthly JSON + Drilldowns
+## Monthly JSON + Drilldowns
 
 ### Fixed Range
 
@@ -69,26 +66,26 @@ Defaults:
 
 Use a dated JSON filename instead of `monthly_life_latest.json` when you want a pinned snapshot.
 
-## Existing Digest
+## Digest
 
-The digest renderer is reusable as `lynchpin.retrospective.render_life_digest(...)`.
+The digest renderer is reusable as `lynchpin.retrospective.life_rendering.render_life_digest(...)`.
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
   python -m lynchpin.retrospective.life_digest
 ```
 
-## Existing Quarterly / Annual Rollups
+## Quarterly / Annual Rollups
 
 The quarterly/annual rollup renderer is reusable as
-`lynchpin.retrospective.render_life_rollups(...)`.
+`lynchpin.retrospective.life_rendering.render_life_rollups(...)`.
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
   python -m lynchpin.retrospective.life_rollups
 ```
 
-## Existing YouTube oEmbed Enrichment
+## YouTube oEmbed Enrichment
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
@@ -97,7 +94,7 @@ direnv exec /realm/project/sinity-lynchpin \
 
 This appends to the JSONL cache, infers the range from `monthly_life_latest.json`, and is safe to re-run.
 
-## Existing Full Refresh Sequence
+## Full Refresh Sequence
 
 ```bash
 direnv exec /realm/project/sinity-lynchpin \
@@ -118,5 +115,6 @@ direnv exec /realm/project/sinity-lynchpin \
   python -m lynchpin.retrospective.life_oembed enrich
 ```
 
-The long-range capability here should survive. The separate `life_timeline`
-subsystem already should not.
+This is the canonical long-range artefact surface. It should evolve by sharing
+more evidence/context infrastructure with the rest of Lynchpin, not by growing a
+parallel subsystem.

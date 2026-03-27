@@ -54,12 +54,12 @@ is treated as a single category regardless of its internal classifier.
 Reusable API:
 ```python
 from pathlib import Path
-from lynchpin.analysis.projects import build_velocity_dashboard
+from lynchpin.analysis.projects.velocity_renderer import build_velocity_dashboard
 
 build_velocity_dashboard(output=Path("artefacts/meta/velocity/velocity.html"))
 ```
 
-Canonical API symbol: `lynchpin.analysis.projects.build_velocity_dashboard(...)`.
+Canonical API symbol: `lynchpin.analysis.projects.velocity_renderer.build_velocity_dashboard(...)`.
 
 Canonical module entrypoint:
 ```bash

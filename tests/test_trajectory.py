@@ -8,11 +8,12 @@ import pytest
 
 from lynchpin.sources.exports import chatlog
 from lynchpin.signals import ActivitySignal, resolve_window
+from lynchpin.signals.chains import ActivityChain as TrajectoryChain, _chain_id, build_chains, build_chains_from_attributed
 from lynchpin.signals.rules import AttributedSignal
-from lynchpin.trajectory.chains import TrajectoryChain, _chain_id, build_chains, build_chains_from_attributed
-from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject, summarize_days
-from lynchpin.trajectory.period import summarize_months
-from lynchpin.trajectory.day import _date_range, _highlights, _split_span_by_day
+from lynchpin.context.period_summaries import summarize_months
+from lynchpin.context.signal_rollups import _date_range, _highlights, _split_span_by_day, summarize_days
+from lynchpin.context.summary_models import DayProjectSummary as TrajectoryDayProject
+from lynchpin.context.summary_models import DaySummary as TrajectoryDay
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -186,23 +187,23 @@ def test_summarize_days_splits_cross_midnight_chain() -> None:
     assert days[1].dominant_project == "polylogue"
 
 
-def test_trajectory_source_is_registered_in_warehouse() -> None:
+def test_context_source_is_registered_in_warehouse() -> None:
     result = _run_repo_python(
         """
-from lynchpin.views import warehouse
-spec = next(spec for spec in warehouse.SOURCE_SPECS if spec.name == "trajectory")
+from lynchpin.views.warehouse.specs import SOURCE_SPECS
+spec = next(spec for spec in SOURCE_SPECS if spec.name == "context")
 table_names = [table.name for table in spec.tables]
-# Core trajectory tables (Sprint 1-5 schema)
+# Core context rollup tables
 for expected in [
-    "trajectory_signal",
-    "trajectory_day",
-    "trajectory_day_project",
-    "trajectory_period",
-    "trajectory_day_event",
-    "trajectory_period_project",
-    "trajectory_period_topic",
+    "context_signal",
+    "context_day",
+    "context_day_project",
+    "context_period",
+    "context_day_event",
+    "context_period_project",
+    "context_period_topic",
 ]:
-    assert expected in table_names, f"{expected!r} missing from trajectory source; got {table_names}"
+    assert expected in table_names, f"{expected!r} missing from context source; got {table_names}"
 print("OK")
         """
     )
@@ -210,7 +211,7 @@ print("OK")
     assert "OK" in result.stdout
 
 
-def test_summarize_months_groups_trajectory_days() -> None:
+def test_summarize_months_groups_day_summaries() -> None:
     january = TrajectoryDay(
         date=date(2026, 1, 31),
         active_seconds=7200.0,
@@ -222,8 +223,10 @@ def test_summarize_months_groups_trajectory_days() -> None:
         commit_count=2,
         dominant_mode="coding",
         dominant_project="polylogue",
+        dominant_topic=None,
         top_modes=(("coding", 7200.0),),
         top_projects=(("polylogue", 5400.0),),
+        top_topics=(),
         source_counts={"atuin.command": 4},
         coverage={"has_activitywatch": True, "has_terminal": True, "has_chatlog": True, "has_git": True},
         highlights=("mode:coding 2.0h",),
@@ -240,8 +243,10 @@ def test_summarize_months_groups_trajectory_days() -> None:
         commit_count=1,
         dominant_mode="research",
         dominant_project="lynchpin",
+        dominant_topic=None,
         top_modes=(("research", 3600.0),),
         top_projects=(("lynchpin", 2400.0),),
+        top_topics=(),
         source_counts={"activitywatch.window": 5},
         coverage={"has_activitywatch": True, "has_terminal": False, "has_chatlog": False, "has_git": True},
         highlights=("mode:research 1.0h",),
@@ -595,7 +600,7 @@ class TestHighlights:
             transcript_count=0,
             commit_count=0,
         )
-        assert hl == ()
+        assert hl == []
 
     def test_transcripts_included(self):
         hl = _highlights(
@@ -649,8 +654,10 @@ class TestTrajectoryDayToDict:
             commit_count=2,
             dominant_mode="coding",
             dominant_project="polylogue",
+            dominant_topic=None,
             top_modes=(("coding", 7200.0),),
             top_projects=(("polylogue", 5400.0),),
+            top_topics=(),
             source_counts={"atuin.command": 5, "git.commit": 2},
             coverage={"has_activitywatch": True, "has_git": True},
             highlights=("mode:coding 2.0h",),

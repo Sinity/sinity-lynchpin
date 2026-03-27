@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
-from ..sources.captures import activitywatch, atuin, instrumentation
-from ..sources.captures.instrumentation import (
+from ..sources.captures import activitywatch, atuin
+from ..sources.captures.terminal_capture import (
     TerminalSessionEvent,
     TerminalSessionMetadata,
+    iter_terminal_session_events,
     iter_terminal_sessions_fast,
 )
 from ..sources.indices import gitstats
@@ -367,7 +368,7 @@ def _terminal_command_signals(start: datetime, end: datetime) -> Iterator[Activi
     # Live path: recent events not yet in artefact
     cutover = _artefact_cutover(_SESSION_EVENTS_ARTEFACT)
     live_start = max(start, cutover - timedelta(days=1)) if cutover else start
-    for event in instrumentation.iter_terminal_session_events(start=live_start, end=end):
+    for event in iter_terminal_session_events(start=live_start, end=end):
         eid = f"{event.session_id}:{event.time}:{event.type}"
         if eid in seen_event_ids:
             continue

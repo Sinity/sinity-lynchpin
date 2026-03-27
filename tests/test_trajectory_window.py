@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
-from lynchpin.trajectory.day import TrajectoryDay
-from lynchpin.trajectory import window as trajectory_window
-from lynchpin.trajectory.window import load_date_window
+from lynchpin.context.summary_models import DaySummary as TrajectoryDay
+from lynchpin.context import window as context_window_module
+from lynchpin.context.window import load_date_window
 
 
 def _sample_day(target: date) -> TrajectoryDay:
@@ -20,8 +20,10 @@ def _sample_day(target: date) -> TrajectoryDay:
         commit_count=0,
         dominant_mode="build",
         dominant_project="sinity-lynchpin",
+        dominant_topic=None,
         top_modes=(("build", 3600.0),),
         top_projects=(("sinity-lynchpin", 3600.0),),
+        top_topics=(),
         source_counts={"git.commit": 1},
         coverage={"sources": ["git.commit"]},
         highlights=("mode:build",),
@@ -39,13 +41,13 @@ def test_load_date_window_annotates_anomalies(monkeypatch) -> None:
         captured["days"] = days
         return ["signal"]
 
-    monkeypatch.setattr(trajectory_window, "resolve_window", lambda **kwargs: (kwargs["start"], kwargs["end"]))
-    monkeypatch.setattr(trajectory_window, "load_signals", fake_load_signals)
-    monkeypatch.setattr(trajectory_window, "classify_signals", lambda signals: ("attributed",))
-    monkeypatch.setattr(trajectory_window, "build_chains_from_attributed", lambda attributed: ("chain",))
-    monkeypatch.setattr(trajectory_window, "summarize_days", lambda **kwargs: [_sample_day(target)])
+    monkeypatch.setattr(context_window_module, "resolve_window", lambda **kwargs: (kwargs["start"], kwargs["end"]))
+    monkeypatch.setattr(context_window_module, "load_signals", fake_load_signals)
+    monkeypatch.setattr(context_window_module, "classify_signals", lambda signals: ("attributed",))
+    monkeypatch.setattr(context_window_module, "build_chains_from_attributed", lambda attributed: ("chain",))
+    monkeypatch.setattr(context_window_module, "summarize_days", lambda **kwargs: [_sample_day(target)])
     monkeypatch.setattr(
-        trajectory_window,
+        context_window_module,
         "detect_anomalies",
         lambda days: [SimpleNamespace(date=target, description="timeline gap")],
     )

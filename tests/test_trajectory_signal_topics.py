@@ -5,7 +5,7 @@ from __future__ import annotations
 
 
 from lynchpin.signals.rules import _extract_topics_for_text
-from lynchpin.trajectory.quarter import _quarter_key
+from lynchpin.context.period_rollups import _quarter_key
 from lynchpin.context.selection import _score_packet
 
 

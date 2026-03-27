@@ -34,7 +34,7 @@ surface that yields stable, queryable rows.
 Include:
 - structured source event streams,
 - metadata inventories and quality ledgers,
-- derived daily / period query surfaces, including current `trajectory_*` tables where they are still useful,
+- derived daily / period query surfaces, centered on the `context_*` rollup tables,
 - session and transcript semantics that have been promoted into stable rows.
 
 Exclude:
@@ -70,19 +70,19 @@ table spec in `lynchpin/views/warehouse/specs.py`.
 - wykop: `wykop_entries`, `wykop_entry_comments`, `wykop_link_comments`
 
 ### Current derived day / period read-model tables
-- `trajectory_signal`
-- `trajectory_day`
-- `trajectory_day_project`
-- `trajectory_day_topic`
-- `trajectory_day_event`
-- `trajectory_signal_coverage`
-- `trajectory_period`
-- `trajectory_week`
-- `trajectory_month`
-- `trajectory_quarter`
-- `trajectory_year`
-- `trajectory_period_project`
-- `trajectory_period_topic`
+- `context_signal`
+- `context_day`
+- `context_day_project`
+- `context_day_topic`
+- `context_day_event`
+- `context_signal_coverage`
+- `context_period`
+- `context_week`
+- `context_month`
+- `context_quarter`
+- `context_year`
+- `context_period_project`
+- `context_period_topic`
 
 These tables encode one current derived understanding surface over the inputs.
 They are useful query contracts and migration material, not a statement that

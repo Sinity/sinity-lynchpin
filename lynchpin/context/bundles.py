@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..periods import Period, parse_period
@@ -33,7 +35,7 @@ class EvidenceQuery:
             "query_id": self.query_id,
             "title": self.title,
             "sql": self.sql,
-            "params": self.params,
+            "params": [_json_default(value) for value in self.params],
             "row_count": self.row_count,
             "rows": self.rows,
             "error": self.error,
@@ -158,7 +160,7 @@ def query_evidence_range(
     end: date,
     artifact_limits: bool = True,
 ) -> list[EvidenceQuery]:
-    date_params = [start.isoformat(), end.isoformat()]
+    date_params = [start, end]
     git_file_limit = "LIMIT 200" if artifact_limits else ""
     focus_span_limit = "LIMIT 120" if artifact_limits else ""
     focus_loop_limit = "LIMIT 80" if artifact_limits else ""
@@ -267,6 +269,17 @@ def query_evidence_range(
             date_params,
         ),
         (
+            "deep_work",
+            "Deep Work",
+            """
+            SELECT *
+            FROM processed_deep_work
+            WHERE date BETWEEN ? AND ?
+            ORDER BY date, duration_minutes DESC, start
+            """,
+            date_params,
+        ),
+        (
             "polylogue_sessions",
             "Polylogue Session Profiles",
             """
@@ -328,3 +341,65 @@ def _json_default(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
+
+
+def cli() -> None:
+    parser = argparse.ArgumentParser(description="Build a Lynchpin evidence bundle for a narrative period.")
+    parser.add_argument("--scale", default="day", help="Narrative scale: day, week, month, quarter, half, year.")
+    parser.add_argument("--key", help="Period key, e.g. 2026-03-16, 2026-W12, 2026-03, 2026-Q1, 2026-H1, 2026.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional standalone JSON output path for the bundle payload.",
+    )
+    parser.add_argument("--stdout", action="store_true", help="Also print the JSON packet to stdout.")
+    parser.add_argument(
+        "--write-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Control whether colocated bundle artifacts are materialized under artefacts/retrospective/narratives.",
+    )
+    args = parser.parse_args()
+
+    scale = str(args.scale).strip().lower()
+    key = args.key or _default_key(scale)
+    period = parse_period(scale, key)
+    if period is None:
+        raise SystemExit(f"Unsupported period: scale={scale!r} key={key!r}")
+
+    bundle = build_period_evidence_bundle(scale, key, write=args.write_artifacts)
+    payload = bundle.to_dict()
+    text = json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+
+    if args.output is not None:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text + "\n", encoding="utf-8")
+        print(f"Wrote {output_path}")
+    elif bundle.bundle_ref:
+        print(f"Wrote {bundle.bundle_ref}")
+
+    if args.stdout:
+        print(text)
+
+
+def _default_key(scale: str) -> str:
+    now = datetime.now(UTC)
+    if scale == "day":
+        return now.date().isoformat()
+    if scale == "week":
+        iso = now.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if scale == "month":
+        return now.strftime("%Y-%m")
+    if scale == "quarter":
+        return f"{now.year}-Q{((now.month - 1) // 3) + 1}"
+    if scale in {"half", "half-year", "halfyear"}:
+        return f"{now.year}-H{'1' if now.month <= 6 else '2'}"
+    if scale == "year":
+        return str(now.year)
+    raise SystemExit(f"Unsupported scale {scale!r}")
+
+
+if __name__ == "__main__":
+    cli()

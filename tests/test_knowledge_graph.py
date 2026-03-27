@@ -1,4 +1,4 @@
-"""Tests for lynchpin.views.knowledge_graph pure functions."""
+"""Tests for knowledge graph owner modules."""
 
 from __future__ import annotations
 
@@ -6,17 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from lynchpin.views.knowledge_graph import (
+from lynchpin.views.knowledge_graph_markdown import (
     Edge,
     Node,
-    _date_ranges_overlap,
     _digest,
-    _month_to_date_str,
-    build_temporal_edges,
     edges_to_df,
     iter_markdown_files,
     nodes_to_df,
     parse_markdown,
+)
+from lynchpin.views.knowledge_graph_temporal import (
+    _date_ranges_overlap,
+    _month_to_date_str,
+    build_temporal_edges,
 )
 
 

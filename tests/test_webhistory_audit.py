@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from lynchpin.ingest.webhistory import _audit_webhistory
+from lynchpin.ingest.webhistory_audit import audit_webhistory
 
 
 def test_audit_matches_simulated_dedup_against_canonical_and_merged(tmp_path) -> None:
@@ -103,7 +103,7 @@ def test_audit_matches_simulated_dedup_against_canonical_and_merged(tmp_path) ->
         encoding="utf-8",
     )
 
-    report = _audit_webhistory(
+    report = audit_webhistory(
         raw_root=raw_dir,
         canonical=canonical_dir,
         merged=merged,

@@ -26,6 +26,16 @@ class NarrativeKind(str, Enum):
     contrast = "contrast"
 
 
+SCALE_HIERARCHY: tuple[NarrativeKind, ...] = (
+    NarrativeKind.day,
+    NarrativeKind.week,
+    NarrativeKind.month,
+    NarrativeKind.quarter,
+    NarrativeKind.half,
+    NarrativeKind.year,
+)
+
+
 @dataclass(frozen=True)
 class Narrative:
     kind: str

@@ -4,8 +4,8 @@ import json
 import re
 import threading
 import time
-from collections.abc import Iterable, Iterator
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import ExitStack
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -15,7 +15,8 @@ from typing import Any
 import requests
 import typer
 
-from lynchpin.sources.exports.takeout import TarReader, parse_youtube_watch_history_from_takeouts
+from lynchpin.sources.exports.takeout_archives import TarReader, expand_takeout_parts
+from lynchpin.sources.exports.takeout_youtube import parse_youtube_watch_history_from_takeouts
 from .life_paths import (
     LATEST_LIFE_JSON,
     YOUTUBE_OEMBED_CACHE,
@@ -87,16 +88,6 @@ def _iter_video_ids_from_life_json(
                 if isinstance(vid, str) and _YOUTUBE_ID_RE.match(vid) and isinstance(cnt, int) and cnt > 0:
                     counts[vid] += cnt
 
-        # Backwards-compat fallback: older JSON stores IDs in `youtube_watch_history_top_titles`.
-        top_titles = intake.get("youtube_watch_history_top_titles") or []
-        if isinstance(top_titles, list):
-            for row in top_titles:
-                if not isinstance(row, (list, tuple)) or len(row) != 2:
-                    continue
-                label, cnt = row
-                if isinstance(label, str) and _YOUTUBE_ID_RE.match(label) and isinstance(cnt, int) and cnt > 0:
-                    counts[label] += cnt
-
     return counts
 
 
@@ -115,48 +106,21 @@ def _iter_takeout_seed_paths_from_life_json(life_json_path: Path) -> list[Path]:
     return out
 
 
-def _expand_takeout_parts(paths: Iterable[Path]) -> list[Path]:
-    """Expand `...-001.tgz` siblings into all parts (e.g. `...-002.tgz`)."""
-    out: list[Path] = []
-    seen: set[str] = set()
-    for path in paths:
-        if not path.exists():
-            continue
-        if path.suffix != ".tgz":
-            resolved = str(path.resolve())
-            if resolved not in seen:
-                out.append(path)
-                seen.add(resolved)
-            continue
-
-        stem = path.name[: -len(".tgz")]
-        m = re.match(r"^(?P<prefix>.+)-(?P<part>\d{3})$", stem)
-        if not m:
-            resolved = str(path.resolve())
-            if resolved not in seen:
-                out.append(path)
-                seen.add(resolved)
-            continue
-
-        prefix = m.group("prefix")
-        for candidate in sorted(path.parent.glob(f"{prefix}-*.tgz")):
-            if not candidate.exists():
-                continue
-            resolved = str(candidate.resolve())
-            if resolved in seen:
-                continue
-            out.append(candidate)
-            seen.add(resolved)
-    return out
-
-
 def _iter_video_ids_from_takeouts(
     takeout_paths: list[Path],
     *,
     start_month: str,
     end_month: str,
 ) -> Counter[str]:
-    expanded = _expand_takeout_parts(takeout_paths)
+    expanded: list[Path] = []
+    seen: set[str] = set()
+    for path in takeout_paths:
+        for expanded_path in expand_takeout_parts(path):
+            resolved = str(expanded_path.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            expanded.append(expanded_path)
     if not expanded:
         raise FileNotFoundError("No takeout archives found (expected .tgz paths).")
 

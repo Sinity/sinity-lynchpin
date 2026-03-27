@@ -7,18 +7,19 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from lynchpin.ingest.fbmessenger_export import _LiteExportDb
+from lynchpin.ingest.fbmessenger_db import MessengerExportDb
 from lynchpin.system import validate
+from lynchpin.system import validate_common
 
 
 def test_validate_cli_exits_nonzero_on_missing_dependency(tmp_path: Path) -> None:
     output = tmp_path / "validation.jsonl"
     runner = CliRunner()
 
-    original_run_check = validate._run_check
+    original_run_check = validate_common._run_check
 
     def fake_run_check(name, fn):
-        return validate.CheckResult(
+        return validate_common.CheckResult(
             name=name,
             status="missing",
             count=None,
@@ -27,14 +28,14 @@ def test_validate_cli_exits_nonzero_on_missing_dependency(tmp_path: Path) -> Non
             error="No module named imaginary_dep",
         )
 
-    validate._run_check = fake_run_check
+    validate_common._run_check = fake_run_check
     try:
         result = runner.invoke(
             validate.app,
             ["lynchpin", "--quick", "--output", str(output), "--no-progress"],
         )
     finally:
-        validate._run_check = original_run_check
+        validate_common._run_check = original_run_check
 
     assert result.exit_code == 1
     assert output.exists()
@@ -88,7 +89,7 @@ def test_lite_fbmessenger_db_backfills_hpi_compat_columns(tmp_path: Path) -> Non
     con.commit()
     con.close()
 
-    db = _LiteExportDb(db_path)
+    db = MessengerExportDb(db_path)
     thread_columns = {
         row[1] for row in db.db.execute("PRAGMA table_info(threads)")
     }

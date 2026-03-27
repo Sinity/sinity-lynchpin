@@ -1,11 +1,11 @@
-"""Tests for type-coercion and parsing helpers in sources/captures/instrumentation.py."""
+"""Tests for type-coercion and parsing helpers in sources/captures/terminal_capture_support.py."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 
-from lynchpin.sources.captures.instrumentation import (
+from lynchpin.sources.captures.terminal_capture_support import (
     _duration_between,
     _parse_iso_datetime,
     _session_time_from_id,

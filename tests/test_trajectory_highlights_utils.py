@@ -1,9 +1,9 @@
-"""Tests for _highlights helper in lynchpin/trajectory/day.py."""
+"""Tests for _highlights helper in lynchpin/context/signal_rollups.py."""
 
 from __future__ import annotations
 
 
-from lynchpin.trajectory.day import _highlights
+from lynchpin.context.signal_rollups import _highlights
 
 
 def _base(**overrides) -> dict:
@@ -23,7 +23,7 @@ def _base(**overrides) -> dict:
 class TestHighlights:
     def test_returns_tuple(self) -> None:
         result = _highlights(**_base())
-        assert isinstance(result, tuple)
+        assert isinstance(result, list)
 
     def test_mode_included(self) -> None:
         result = _highlights(**_base())
@@ -75,7 +75,7 @@ class TestHighlights:
             transcript_count=0,
             commit_count=0,
         )
-        assert result == ()
+        assert result == []
 
     def test_max_5_highlights(self) -> None:
         result = _highlights(

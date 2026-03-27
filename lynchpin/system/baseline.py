@@ -27,28 +27,20 @@ from typing_extensions import Annotated
 
 from lynchpin.sources.exports import sleep as lp_sleep
 
-from ._baseline import (
-    build_activity_timeline,
+from ._baseline.activitywatch import (
     build_activitywatch_afk_summary,
     build_activitywatch_afk_window,
     build_activitywatch_window_summary,
-    build_atuin_summary,
-    build_codex_summary,
-    build_command_category_pivot,
-    build_git_summary,
-    build_git_supporting_summary,
-    build_sleep_summary_from_entries,
-    build_sleep_summary_from_file,
     load_activitywatch_afk,
     load_activitywatch_windows,
-    load_atuin_history,
-    load_codex_sessions,
-    load_git_numstat,
-    parse_timestamp,
-    resolve_window,
     snapshot_web_bucket,
-    write_json,
 )
+from ._baseline.atuin import build_atuin_summary, build_command_category_pivot, load_atuin_history
+from ._baseline.codex import build_codex_summary, load_codex_sessions
+from ._baseline.git import build_git_summary, build_git_supporting_summary, load_git_numstat
+from ._baseline.shared import parse_timestamp, resolve_window, write_json
+from ._baseline.sleep import build_sleep_summary_from_entries, build_sleep_summary_from_file
+from ._baseline.timeline import build_activity_timeline
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 

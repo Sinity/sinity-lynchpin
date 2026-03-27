@@ -20,7 +20,8 @@ from .life_paths import (
     YOUTUBE_OEMBED_CACHE,
     current_month_key,
 )
-from .life_pipeline import LifeRangeInputs, LifeRangeResult, build_life_range
+from .life_range import build_life_range
+from .life_range_models import LifeRangeInputs, LifeRangeResult
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
 

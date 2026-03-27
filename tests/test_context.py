@@ -16,7 +16,7 @@ from lynchpin.context.memory import (
     save_memory,
     update_memory,
 )
-from lynchpin.context.packet_builders import (
+from lynchpin.context.state_packets import (
     _aggregate_chat_work_events,
     _top_n,
     build_claims_packet,
@@ -27,9 +27,9 @@ from lynchpin.context.packet_builders import (
 )
 from lynchpin.context.project_arcs import build_project_arcs
 from lynchpin.signals import ActivitySignal
-from lynchpin.trajectory.day import TrajectoryDay
-from lynchpin.trajectory.month import TrajectoryMonth
-from lynchpin.trajectory.week import TrajectoryWeek
+from lynchpin.context.summary_models import DaySummary as TrajectoryDay
+from lynchpin.context.summary_models import MonthSummary as TrajectoryMonth
+from lynchpin.context.summary_models import WeekSummary as TrajectoryWeek
 
 
 # ---------------------------------------------------------------------------

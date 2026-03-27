@@ -1,9 +1,9 @@
-"""Tests for pure helper functions in sources/captures/instrumentation.py."""
+"""Tests for pure helper functions in sources/captures/terminal_capture_support.py."""
 
 from __future__ import annotations
 
 
-from lynchpin.sources.captures.instrumentation import (
+from lynchpin.sources.captures.terminal_capture_support import (
     _assess_session_quality,
     _schema_generation,
 )

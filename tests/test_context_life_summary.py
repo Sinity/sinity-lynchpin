@@ -4,22 +4,22 @@ from collections import Counter
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-import lynchpin.retrospective.life_summary as life_summary_module
+import lynchpin.retrospective.life_summary_context as life_summary_context_module
 
-from lynchpin.retrospective.life_summary import (
-    LifeMonthContextSummary,
-    build_month_summary,
+from lynchpin.retrospective.life_summary_builders import (
+    build_health_summary,
     build_intake_summary,
     build_location_summary,
     build_mail_summary,
+    build_month_summary,
     build_money_summary,
     build_notes_summary,
     build_output_summary,
-    build_health_summary,
-    build_recent_context_summaries,
-    render_markdown,
     build_work_summary,
 )
+from lynchpin.retrospective.life_summary_context import build_recent_context_summaries
+from lynchpin.retrospective.life_summary_models import LifeMonthContextSummary
+from lynchpin.retrospective.life_summary_rendering import render_markdown
 
 
 def test_build_work_summary_returns_typed_month_payload() -> None:
@@ -109,7 +109,7 @@ def test_build_recent_context_summaries_use_period_reports(monkeypatch) -> None:
             }
         )
 
-    monkeypatch.setattr(life_summary_module, "build_period_report", fake_build_period_report)
+    monkeypatch.setattr(life_summary_context_module, "build_period_report", fake_build_period_report)
     summaries, window = build_recent_context_summaries(
         ["2026-03"],
         now=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),

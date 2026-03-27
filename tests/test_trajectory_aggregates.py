@@ -8,13 +8,22 @@ from typing import Optional
 import pytest
 
 from lynchpin.signals import ActivitySignal, _iter_months
-from lynchpin.trajectory.anomaly import TrajectoryAnomaly, _anomaly_id, detect_anomalies
-from lynchpin.trajectory.day import TrajectoryDay, TrajectoryDayProject
-from lynchpin.trajectory.episode import TrajectoryEpisode, _compose_label, detect_episodes
-from lynchpin.trajectory.month import TrajectoryMonth, summarize_months
-from lynchpin.trajectory.quarter import TrajectoryQuarter, summarize_quarters
-from lynchpin.trajectory.year import TrajectoryYear
-from lynchpin.trajectory.week import TrajectoryWeek, _classify_day_pattern, summarize_weeks
+from lynchpin.context.patterns import ContextAnomaly as TrajectoryAnomaly
+from lynchpin.context.patterns import EpisodeSummary as TrajectoryEpisode
+from lynchpin.context.patterns import _anomaly_id, _compose_label, detect_anomalies, detect_episodes
+from lynchpin.context.period_rollups import _classify_day_pattern, summarize_months, summarize_quarters, summarize_weeks, summarize_years
+from lynchpin.context.period_summaries import summarize_months as summarize_month_periods
+from lynchpin.context.period_summaries import summarize_period
+from lynchpin.context.signal_coverage import compute_coverage
+from lynchpin.context.summary_models import (
+    DayProjectSummary as TrajectoryDayProject,
+    DaySummary as TrajectoryDay,
+    MonthSummary as TrajectoryMonth,
+    PeriodSummary as TrajectoryPeriodSummary,
+    QuarterSummary as TrajectoryQuarter,
+    WeekSummary as TrajectoryWeek,
+    YearSummary as TrajectoryYear,
+)
 
 
 def _make_day(
@@ -703,8 +712,6 @@ def test_summarize_quarters_aggregates_active_seconds() -> None:
 
 def test_summarize_years_groups_by_calendar_year() -> None:
     """Months in 2026 → 1 year '2026'."""
-    from lynchpin.trajectory.year import summarize_years
-
     days_jan = [_make_day(date(2026, 1, i + 1)) for i in range(28)]
     days_feb = [_make_day(date(2026, 2, i + 1)) for i in range(28)]
     all_days = days_jan + days_feb
@@ -719,15 +726,12 @@ def test_summarize_years_groups_by_calendar_year() -> None:
 
 def test_summarize_years_aggregates_commit_counts() -> None:
     """3 months, 10 commits each month → year has 30 commits."""
-    from lynchpin.trajectory.year import summarize_years
-
     days = []
     for month_idx, (m, max_d) in enumerate([(1, 28), (2, 28), (3, 31)]):
         for d in range(1, max_d + 1):
             days.append(_make_day(date(2026, m, d), commit_count=0))
     # Create months manually with commit counts
     months = []
-    from lynchpin.trajectory.month import summarize_months
     # Use summarize_months then patch commit count via direct construction
     from datetime import date as _date
     for m_idx, (m, max_d) in enumerate([(1, 28), (2, 28), (3, 31)]):
@@ -743,7 +747,6 @@ def test_summarize_years_aggregates_commit_counts() -> None:
 
 def test_summarize_years_active_delta_vs_prior() -> None:
     """First year has delta=None, second year has positive delta if more active."""
-    from lynchpin.trajectory.year import summarize_years
     from datetime import date as _date
 
     # 2025: 1 month at 36000s/day × 28 days = 1008000s
@@ -766,7 +769,6 @@ def test_summarize_years_active_delta_vs_prior() -> None:
 
 def test_summarize_years_multi_quarter_trend() -> None:
     """Year with 4 quarters has quarter_active_trend with 4 entries."""
-    from lynchpin.trajectory.year import summarize_years
     from datetime import date as _date
 
     days = []
@@ -791,8 +793,6 @@ def test_summarize_years_multi_quarter_trend() -> None:
 
 def test_compute_coverage_empty_sources_returns_empty_quality() -> None:
     """Day with no sources → quality='empty', plane_count=0."""
-    from lynchpin.trajectory.coverage import compute_coverage
-
     day = _make_day(
         date(2026, 1, 1),
         source_counts={},
@@ -811,8 +811,6 @@ def test_compute_coverage_empty_sources_returns_empty_quality() -> None:
 
 def test_compute_coverage_rich_quality_with_4_planes() -> None:
     """Day with 4+ distinct planes → quality='rich'."""
-    from lynchpin.trajectory.coverage import compute_coverage
-
     day = _make_day(
         date(2026, 1, 1),
         source_counts={
@@ -832,8 +830,6 @@ def test_compute_coverage_rich_quality_with_4_planes() -> None:
 
 def test_compute_coverage_has_correct_plane_flags() -> None:
     """Verify individual plane flags are set correctly from source_counts."""
-    from lynchpin.trajectory.coverage import compute_coverage
-
     day = _make_day(
         date(2026, 1, 1),
         source_counts={
@@ -854,8 +850,6 @@ def test_compute_coverage_has_correct_plane_flags() -> None:
 
 def test_compute_coverage_date_matches_day() -> None:
     """Coverage date matches the input TrajectoryDay.date."""
-    from lynchpin.trajectory.coverage import compute_coverage
-
     d = date(2026, 3, 16)
     day = _make_day(d, source_counts={"atuin.command": 1}, coverage={})
     cov = compute_coverage(day)
@@ -864,7 +858,6 @@ def test_compute_coverage_date_matches_day() -> None:
 
 def test_compute_coverage_to_dict_is_serializable() -> None:
     """to_dict() returns a plain dict with no complex types."""
-    from lynchpin.trajectory.coverage import compute_coverage
     import json
 
     day = _make_day(
@@ -1338,7 +1331,6 @@ class TestTrajectoryYearToDict:
 
 class TestSummarizePeriod:
     def test_empty_input_returns_zero_filled(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         result = summarize_period([])
         assert result.total_days == 0
         assert result.active_seconds == 0.0
@@ -1348,27 +1340,23 @@ class TestSummarizePeriod:
         assert result.dominant_modes == ()
 
     def test_empty_input_has_empty_dates(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         result = summarize_period([])
         assert result.start_date == ""
         assert result.end_date == ""
 
     def test_single_day_active_seconds_accumulated(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         day = _make_day(date(2026, 3, 10), active_seconds=7200.0, recovery_seconds=3600.0)
         result = summarize_period([day])
         assert result.active_seconds == pytest.approx(7200.0)
         assert result.recovery_seconds == pytest.approx(3600.0)
 
     def test_single_day_dates_match(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         day = _make_day(date(2026, 3, 10))
         result = summarize_period([day])
         assert result.start_date == "2026-03-10"
         assert result.end_date == "2026-03-10"
 
     def test_multiple_days_dates_are_first_and_last(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         days = [
             _make_day(date(2026, 3, 1)),
             _make_day(date(2026, 3, 5)),
@@ -1380,7 +1368,6 @@ class TestSummarizePeriod:
         assert result.total_days == 3
 
     def test_active_seconds_sum_across_days(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         days = [
             _make_day(date(2026, 3, 1), active_seconds=3600.0),
             _make_day(date(2026, 3, 2), active_seconds=7200.0),
@@ -1389,7 +1376,6 @@ class TestSummarizePeriod:
         assert result.active_seconds == pytest.approx(10800.0)
 
     def test_chain_and_signal_counts_accumulated(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         days = [
             _make_day(date(2026, 3, 1), chain_count=5, signal_count=20),
             _make_day(date(2026, 3, 2), chain_count=8, signal_count=30),
@@ -1399,7 +1385,6 @@ class TestSummarizePeriod:
         assert result.signal_count == 50
 
     def test_dominant_modes_sorted_by_seconds(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         days = [
             _make_day(date(2026, 3, 1), top_modes=(("coding", 7200.0), ("research", 1800.0))),
             _make_day(date(2026, 3, 2), top_modes=(("coding", 3600.0),)),
@@ -1409,7 +1394,6 @@ class TestSummarizePeriod:
         assert mode_names[0] == "coding"
 
     def test_coverage_flags_tallied_per_day(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         cov_full = {"has_activitywatch": True, "has_terminal": True, "has_chatlog": True, "has_git": True}
         cov_none = {"has_activitywatch": False, "has_terminal": False, "has_chatlog": False, "has_git": False}
         days = [
@@ -1424,7 +1408,6 @@ class TestSummarizePeriod:
         assert result.coverage["days_with_terminal"] == 2
 
     def test_highlights_generated_for_nonempty_counts(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         day = _make_day(date(2026, 3, 1), command_count=10, commit_count=3)
         result = summarize_period([day])
         joined = " ".join(result.highlights)
@@ -1433,14 +1416,12 @@ class TestSummarizePeriod:
 
     def test_to_dict_is_json_serializable(self) -> None:
         import json
-        from lynchpin.trajectory.period import summarize_period
         day = _make_day(date(2026, 3, 1), top_topics=(("rust", 3600.0),))
         d = summarize_period([day]).to_dict()
         json.dumps(d)
         assert "dominant_topics" in d
 
     def test_observed_seconds_property(self) -> None:
-        from lynchpin.trajectory.period import summarize_period
         day = _make_day(date(2026, 3, 1), active_seconds=7200.0, recovery_seconds=3600.0)
         result = summarize_period([day])
         assert result.observed_seconds == pytest.approx(10800.0)
@@ -1448,43 +1429,37 @@ class TestSummarizePeriod:
 
 class TestSummarizeMonths:
     def test_empty_input_returns_empty_dict(self) -> None:
-        from lynchpin.trajectory.period import summarize_months
-        assert summarize_months([]) == {}
+        assert summarize_month_periods([]) == {}
 
     def test_single_month_keyed_by_year_month(self) -> None:
-        from lynchpin.trajectory.period import summarize_months
         days = [_make_day(date(2026, 3, d)) for d in range(1, 4)]
-        result = summarize_months(days)
+        result = summarize_month_periods(days)
         assert "2026-03" in result
         assert len(result) == 1
 
     def test_two_months_produces_two_keys(self) -> None:
-        from lynchpin.trajectory.period import summarize_months
         march = [_make_day(date(2026, 3, d)) for d in range(1, 4)]
         april = [_make_day(date(2026, 4, d)) for d in range(1, 4)]
-        result = summarize_months(march + april)
+        result = summarize_month_periods(march + april)
         assert "2026-03" in result
         assert "2026-04" in result
         assert len(result) == 2
 
     def test_result_keys_sorted_chronologically(self) -> None:
-        from lynchpin.trajectory.period import summarize_months
         jan = [_make_day(date(2026, 1, 1))]
         mar = [_make_day(date(2026, 3, 1))]
         feb = [_make_day(date(2026, 2, 1))]
-        result = summarize_months(jan + mar + feb)
+        result = summarize_month_periods(jan + mar + feb)
         keys = list(result.keys())
         assert keys == sorted(keys)
 
     def test_each_value_is_period_summary(self) -> None:
-        from lynchpin.trajectory.period import summarize_months, TrajectoryPeriodSummary
-        result = summarize_months([_make_day(date(2026, 3, 1))])
+        result = summarize_month_periods([_make_day(date(2026, 3, 1))])
         assert isinstance(result["2026-03"], TrajectoryPeriodSummary)
 
     def test_month_totals_correct(self) -> None:
-        from lynchpin.trajectory.period import summarize_months
         days = [_make_day(date(2026, 3, d), active_seconds=3600.0) for d in range(1, 4)]
-        result = summarize_months(days)
+        result = summarize_month_periods(days)
         march = result["2026-03"]
         assert march.active_seconds == pytest.approx(10800.0)
         assert march.total_days == 3

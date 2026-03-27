@@ -1,10 +1,10 @@
-"""Tests for pure helper functions in lynchpin/core/projects.py and system/validate.py."""
+"""Tests for pure helper functions in lynchpin/core/projects.py and system/validate_common.py."""
 
 from __future__ import annotations
 
 
 from lynchpin.core.projects import _skip_common
-from lynchpin.system.validate import _count_iter, _sample_iter
+from lynchpin.system.validate_common import _count_iter, _sample_iter
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ class TestSkipCommon:
         assert _skip_common("artefacts/lynchpin/cache/data.json") is True
 
     def test_source_file_not_skipped(self) -> None:
-        assert _skip_common("lynchpin/trajectory/day.py") is False
+        assert _skip_common("lynchpin/context/signal_rollups.py") is False
 
     def test_docs_not_skipped(self) -> None:
         assert _skip_common("docs/plans/roadmap.md") is False

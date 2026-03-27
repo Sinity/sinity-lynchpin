@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from .life_outputs import render_life_rollups
+from .life_rendering import render_life_rollups
 from .life_paths import (
     LATEST_LIFE_JSON,
     LIFE_ROLLUPS_OUTPUT,

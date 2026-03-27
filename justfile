@@ -73,8 +73,8 @@ derived-refresh:
     python -m lynchpin.views.warehouse refresh --sources trajectory
 
 # Emit an evidence bundle JSON for a narrative period
-context-state scale="day" key="":
-    python -m lynchpin.context.state --scale {{scale}} --key "{{key}}" --stdout
+context-bundle scale="day" key="":
+    python -m lynchpin.context.bundles --scale {{scale}} --key "{{key}}" --stdout
 
 # Update persistent memory store (claims + themes) from a 90-day activity window
 context-memory-update:

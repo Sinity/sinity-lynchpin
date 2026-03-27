@@ -8,9 +8,11 @@ from pathlib import Path
 
 import typer
 
-from ..sources.captures.instrumentation import (
+from ..sources.captures.media_capture import (
     iter_audio_recordings,
     iter_screenshots,
+)
+from ..sources.captures.terminal_capture import (
     iter_terminal_audit,
     iter_terminal_session_events,
     iter_terminal_sessions,

@@ -361,7 +361,7 @@ if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
     if cmd == "update":
-        from lynchpin.context.packet_builders import build_current_state
+        from lynchpin.context.current_state import build_current_state
 
         state = build_current_state(days=90, tier="full")
         store = update_memory_from_state(state)

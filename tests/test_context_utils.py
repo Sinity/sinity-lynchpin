@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 
-from lynchpin.context.packet_builders import _top_n
+from lynchpin.context.state_packets import _top_n
 from lynchpin.context.selection import _estimate_tokens
-from lynchpin.trajectory.quarter import _quarter_key
+from lynchpin.context.period_rollups import _quarter_key
 
 
 # ---------------------------------------------------------------------------

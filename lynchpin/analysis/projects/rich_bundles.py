@@ -171,12 +171,12 @@ RICH_PROJECT_PLANS: dict[str, RichProjectPlan] = {
             ),
         ),
         SliceSpec(
-            "ingest-and-trajectory",
-            "Source adapters, ingest pipelines, trajectory layers, and upstream data shaping.",
+            "ingest-and-evidence-planes",
+            "Source adapters, ingest pipelines, evidence planes, and upstream data shaping.",
             (
                 "lynchpin/ingest/**",
                 "lynchpin/sources/**",
-                "lynchpin/trajectory/**",
+                "lynchpin/signals/**",
                 "lynchpin/metrics/**",
             ),
         ),

@@ -106,7 +106,7 @@ def select_context(
         ContextAssembly with selected packets, total tokens, and included types
     """
     # Lazy import to avoid circular dependency
-    from .packet_builders import build_current_state
+    from .current_state import build_current_state
 
     # Derive tier from budget if not provided
     if tier is None:

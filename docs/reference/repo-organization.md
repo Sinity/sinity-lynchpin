@@ -7,7 +7,7 @@ This is the quick map for the current repo shape. The project is centered on the
 - `lynchpin/`: canonical code surface.
 - `docs/reference/`: current operational docs and maps.
 - `docs/analysis/`: interpreted findings and narratives.
-- `docs/personal/`: personal long-range materials and legacy narrative surfaces awaiting absorption into the unified system.
+- `docs/personal/`: authored long-range personal materials that live inside the same unified evidence-first system.
 - `docs/plans/`: active near-term plans.
 - `artefacts/`: regenerated output trees, ignored by Git.
 - `config/`: HPI-style config for vendored `my.*` modules.
@@ -31,8 +31,8 @@ This is the quick map for the current repo shape. The project is centered on the
 | Workflow | Command | Output |
 | --- | --- | --- |
 | Baseline | `python -m lynchpin.system.baseline` | `artefacts/core/baseline/latest/` |
-| Interactive narratives | `lynchpin.context.build_period_evidence_bundle(...)`, `lynchpin.context.reports.build_period_reports(...)`, and `lynchpin-ops` / `lynchpin-narrative-improvement` workflows over warehouse/source/Polylogue evidence | `artefacts/retrospective/narratives/YYYY/...` plus colocated `.evidence/` bundles |
-| Existing long-range artefacts | `lynchpin.retrospective.build_life_range(...)` or `python -m lynchpin.retrospective.life build --start ... --end ...` | `artefacts/retrospective/life-range/` |
+| Interactive narratives | `lynchpin.context.bundles.build_period_evidence_bundle(...)`, `lynchpin.context.reports.build_period_reports(...)`, and `lynchpin-ops` / `lynchpin-narrative-improvement` workflows over warehouse/source/Polylogue evidence | `artefacts/retrospective/narratives/YYYY/...` plus colocated `.evidence/` bundles |
+| Long-range life artefacts | `lynchpin.retrospective.life_range.build_life_range(...)` or `python -m lynchpin.retrospective.life build --start ... --end ...` | `artefacts/retrospective/life-range/` |
 | Period reports | `lynchpin.context.reports.build_period_reports(...)` or `python -m lynchpin.context.reports START END --scale day` | `artefacts/context/reports/` |
 | Warehouse views | `python -m lynchpin.views.warehouse build` | `artefacts/lynchpin/warehouse.duckdb` |
 | Source materialization | `python -m lynchpin.views.warehouse materialize` or `refresh` | `artefacts/lynchpin/warehouse/{parquet,duckdb}/` |
@@ -47,7 +47,7 @@ This is the quick map for the current repo shape. The project is centered on the
 
 - `docs/reference/data-sources.md`: canonical raw-input paths.
 - `docs/reference/baseline.md`: direct baseline rebuild workflow.
-- `docs/reference/life-range.md`: current inherited long-range workflow to absorb, not the target architecture.
+- `docs/reference/life-range.md`: canonical long-range life artefact workflow inside the unified system.
 - `docs/reference/period-reports.md`: generic period-report workflow over evidence bundles.
 - `docs/reference/hpi-modules.md`: curated supported vendored HPI surface.
 - `docs/reference/webhistory.md`: canonical webhistory maintenance commands.

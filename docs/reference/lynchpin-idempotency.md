@@ -35,7 +35,8 @@ clear as modules grow.
 | `lynchpin.sources.exports.goodreads` | `/realm/data/exports/goodreads/raw/library_export.csv` | yes | Cached CSV parser (file signature). |
 | `lynchpin.sources.indices.gitstats` | `/realm/project/*` repos | yes | Caches repo scans via file signatures. |
 | `lynchpin.sources.exports.health` | `/realm/data/exports/health/raw/samsung-health/` | yes | Cached Samsung Health parser (CSV/tar signature). |
-| `lynchpin.sources.captures.instrumentation` | `/realm/data/captures/{asciinema,audio/raw,screenshot}` | no | Reads raw capture files; no cache yet. |
+| `lynchpin.sources.captures.terminal_capture` | `/realm/data/captures/asciinema` | no | Reads raw terminal capture files; no cache yet. |
+| `lynchpin.sources.captures.media_capture` | `/realm/data/captures/{audio/raw,screenshot}` | no | Reads raw audio/screen capture files; no cache yet. |
 | `lynchpin.sources.exports.polylogue` | Polylogue Markdown transcripts + run metadata | yes | Caches inventories via file signatures. |
 | `lynchpin.sources.exports.raindrop` | `/realm/data/exports/raindrop/raw/*.csv` | no | Parses CSV on demand. |
 | `lynchpin.sources.exports.reddit` | `/realm/data/exports/reddit/processed/<date>/*.csv` | yes | Caches CSV parses via file signatures. |
@@ -44,7 +45,9 @@ clear as modules grow.
 | `lynchpin.sources.exports.sleep` | `/realm/data/exports/health/processed/sleep_merged.jsonl` | yes | Cached JSONL parser (file signature). |
 | `lynchpin.sources.exports.spotify` | `/realm/data/exports/spotify/processed/**/StreamingHistory*.json` | yes | Cached JSON parser (file signatures). |
 | `lynchpin.sources.libraries.substack` | `/realm/data/libraries/substack` | no | Parses Markdown/HTML on demand. |
-| `lynchpin.sources.exports.takeout` | `/realm/data/exports/google/raw/takeout/*.tgz` | no | Reads Takeout archives on demand. |
+| `lynchpin.sources.exports.takeout_archives` | `/realm/data/exports/google/raw/takeout/*.tgz` | no | Reads Takeout archives on demand and expands multipart sets. |
+| `lynchpin.sources.exports.takeout_life` | `/realm/data/exports/google/raw/takeout/*.tgz` | no | Builds the long-range life takeout bundle from archive readers. |
+| `lynchpin.sources.exports.takeout_youtube` | `/realm/data/exports/google/raw/takeout/*.tgz` | no | Parses YouTube watch/search metadata and oEmbed caches. |
 | `lynchpin.sources.captures.webhistory` | `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson` | yes | Cached NDJSON scan (content hashes via `files_digest`). |
 | `lynchpin.sources.captures.webhistory_raw` | `/realm/data/captures/webhistory/gestalt/raw` | yes | Cached raw exports (content hashes via `file_digest`). |
 | `lynchpin.sources.exports.wykop` | `/realm/data/exports/wykop/raw/<user>/*.jsonl` | yes | Cached JSONL parser (file signatures). |

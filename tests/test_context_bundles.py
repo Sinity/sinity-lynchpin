@@ -193,6 +193,30 @@ def _make_warehouse(db_path: Path) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE processed_deep_work (
+              date DATE,
+              start TIMESTAMP,
+              end_time TIMESTAMP,
+              duration_minutes DOUBLE,
+              project VARCHAR,
+              mode VARCHAR,
+              app_switches BIGINT,
+              git_lines_changed BIGINT,
+              git_files_changed BIGINT,
+              command_count BIGINT,
+              focus_ratio DOUBLE
+            )
+            """,
+        )
+        conn.execute(
+            """
+            INSERT INTO processed_deep_work VALUES
+            ('2026-03-16', '2026-03-16 10:00:00', '2026-03-16 11:30:00', 90.0, 'sinity-lynchpin',
+             'coding', 2, 90, 3, 12, 0.92)
+            """,
+        )
+        conn.execute(
+            """
             CREATE TABLE polylogue_session_profile (
               conversation_id VARCHAR,
               provider VARCHAR,
@@ -246,6 +270,7 @@ def test_build_period_evidence_bundle_reads_core_surfaces(tmp_path, monkeypatch)
     assert any(query.query_id == "polylogue_sessions" and query.row_count == 1 for query in bundle.queries)
     assert any(query.query_id == "context_switches" and query.row_count == 1 for query in bundle.queries)
     assert any(query.query_id == "circadian" and query.row_count == 1 for query in bundle.queries)
+    assert any(query.query_id == "deep_work" and query.row_count == 1 for query in bundle.queries)
 
 
 def test_build_period_evidence_bundle_writes_colocated_artifacts(tmp_path, monkeypatch) -> None:
