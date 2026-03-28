@@ -1,4 +1,8 @@
-"""HTML/ECharts rendering for the velocity dashboard."""
+"""HTML/ECharts rendering for the cross-repo velocity dashboard.
+
+The dashboard is generated into `artefacts/meta/velocity/velocity.html`. The
+categorization comes from the project profiles in `lynchpin.core.projects`.
+"""
 
 from collections.abc import Mapping
 import json
@@ -7,7 +11,7 @@ from pathlib import Path
 from typing import Dict
 
 from ...core.projects import ProjectProfile
-from ...core.io import write_text_if_changed
+from ...core.cache import write_text_if_changed
 from .velocity_analysis import (
     AGGREGATE_PROJECT,
     LogFn,

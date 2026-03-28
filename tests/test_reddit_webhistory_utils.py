@@ -4,9 +4,9 @@ from __future__ import annotations
 
 
 
-from lynchpin.sources.captures.webhistory import _tokenize_topic
-from lynchpin.sources.exports.reddit import _parse_datetime as _reddit_parse_dt
-from lynchpin.sources.exports.reddit import _safe_int as _reddit_safe_int
+from lynchpin.sources.web import _tokenize_topic
+from lynchpin.sources.reddit import _parse_datetime as _reddit_parse_dt
+from lynchpin.sources.reddit import _safe_int as _reddit_safe_int
 
 
 # ---------------------------------------------------------------------------

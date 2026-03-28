@@ -542,6 +542,7 @@ EOF
             scipy
             seaborn
             statsmodels
+            hmmlearn
             tqdm
             typer
             duckdb

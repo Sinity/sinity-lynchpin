@@ -1,4 +1,8 @@
-"""CLI entrypoints for knowledge ledgers and session summaries."""
+"""CLI entrypoints for knowledge ledgers and transcript summaries.
+
+The registry-backed ledger inputs live in `config/knowledge/`. Generated
+outputs stay under `artefacts/knowledge/`.
+"""
 
 from __future__ import annotations
 
@@ -37,12 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_index = subparsers.add_parser(
         "session-index",
-        help="Export the session ledger CSV from docs/reference/sessions.",
+        help="Export the session ledger CSV from config/knowledge/sessions.",
     )
     session_index.add_argument(
         "--sessions-dir",
         type=Path,
-        default=Path("docs/reference/sessions"),
+        default=Path("config/knowledge/sessions"),
     )
     session_index.add_argument(
         "--output",
@@ -57,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     artefact_index.add_argument(
         "--catalog",
         type=Path,
-        default=Path("docs/reference/ledgers/artefact_catalog.json"),
+        default=Path("config/knowledge/artefact_catalog.json"),
     )
     artefact_index.add_argument(
         "--output",

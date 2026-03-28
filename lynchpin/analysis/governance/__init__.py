@@ -1,1 +1,1 @@
-"""Governance artifacts (provenance, registries, and status views)."""
+"""Governance stubs — original modules were removed during rewrite."""

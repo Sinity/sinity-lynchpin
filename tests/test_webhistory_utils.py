@@ -6,14 +6,14 @@ import json
 from datetime import datetime, timezone
 
 
-from lynchpin.sources.captures.webhistory import (
+from lynchpin.sources.web import (
     _normalize_domain,
     _parse_csv_dt,
     _tokenize_topic,
     normalize_url,
     iter_gestalt_events,
 )
-from lynchpin.sources.captures.webhistory_common import (
+from lynchpin.sources.web import (
     parse_webhistory_timestamp,
     _parse_webhistory_slash_timestamp,
 )

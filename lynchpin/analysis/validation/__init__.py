@@ -1,1 +1,1 @@
-"""Product-validation metrics modules."""
+"""Stub: validation (removed during rewrite)."""

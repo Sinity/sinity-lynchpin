@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
-from lynchpin.sources.captures.atuin import _from_unit, _to_unit
+from lynchpin.sources.terminal import _from_unit, _to_unit
 
 
 _UTC = timezone.utc

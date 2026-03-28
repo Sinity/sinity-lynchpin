@@ -1,3 +1,16 @@
+"""Cache helpers for lazy, read-only Lynchpin readers.
+
+`persistent_cache` stores cachew sqlite files under `artefacts/lynchpin/cache`.
+Use it only for deterministic readers: source modules remain read-only, while
+explicit writes and network refreshes belong under `lynchpin.analysis` or
+`lynchpin.scripts`.
+
+Prefer `file_signature` / `files_signature` when path, mtime, and size are
+enough to invalidate cached results. Use `file_digest` / `files_digest` when
+content-based invalidation matters, for example append-only NDJSON or raw export
+trees where mtimes alone are too weak.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -67,3 +80,22 @@ def file_digest(path: Path, *, chunk_size: int = 1024 * 1024) -> Tuple[str, int 
 def files_digest(paths: Iterable[Path]) -> Tuple[Tuple[str, int | None, int | None, str | None], ...]:
     ordered = sorted((Path(path) for path in paths), key=lambda p: str(p))
     return tuple(file_digest(path) for path in ordered)
+
+
+def write_text_if_changed(path: Path, text: str, *, encoding: str = "utf-8") -> bool:
+    """Write text to file only if content differs from existing file.
+
+    Returns True if file was written, False if content was unchanged.
+    Creates parent directories as needed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: str | None = None
+    if path.exists():
+        try:
+            existing = path.read_text(encoding=encoding)
+        except OSError:
+            existing = None
+    if existing == text:
+        return False
+    path.write_text(text, encoding=encoding)
+    return True

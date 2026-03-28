@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 
-from lynchpin.sources.indices.gitstats import (
+from lynchpin.sources.git import (
     _month_after,
     _parse_date,
     _parse_git_shortstat,

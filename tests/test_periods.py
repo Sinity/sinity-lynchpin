@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from lynchpin.periods import (
+from lynchpin.core.periods import (
     child_keys,
     child_scale,
     hierarchical_relpath,

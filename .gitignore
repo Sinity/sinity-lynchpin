@@ -24,15 +24,10 @@ artefacts/
 # No tracked snapshots; keep repo purely regenerable.
 checkpoints/
 
-# Regenerable HTML exports (keep markdown tracked)
-docs/reference/filesystem-audit-*.html
-
 # Legacy output dirs (kept ignored for back-compat)
 data/derived/
 reports/
 results/
-!docs/reference/codebase-analysis/reports/
-!docs/reference/codebase-analysis/reports/*.md
 
 # Data/analysis artifacts
 tmp/

@@ -1,4 +1,8 @@
-"""Project-level repomix bundle generation."""
+"""Project-level repomix bundle generation.
+
+This is the fast whole-project bundle path. It writes Markdown snapshots and a
+machine-readable manifest under `/realm/project/_context-project-bundles/`.
+"""
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -12,7 +16,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ...core.io import write_text_if_changed
+from ...core.cache import write_text_if_changed
 from ...core.projects import project_profiles
 
 BUNDLE_ROOT = Path("/realm/project/_context-project-bundles")

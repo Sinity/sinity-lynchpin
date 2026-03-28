@@ -1,4 +1,9 @@
-"""Richer project bundle generation with structural slices and git history shards."""
+"""Richer project bundle generation with structural slices and git history shards.
+
+The rich bundle family keeps the same output root as the simple bundle family
+but adds subsystem-aware slices plus history shards. Slice definitions should
+track the current maintained repo shape rather than old package names.
+"""
 from __future__ import annotations
 
 from collections import Counter
@@ -11,7 +16,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ...core.io import write_text_if_changed
+from ...core.cache import write_text_if_changed
 from ...core.projects import project_profiles
 from .bundles import (
     BUNDLE_ROOT,
@@ -160,35 +165,28 @@ RICH_PROJECT_PLANS: dict[str, RichProjectPlan] = {
     "sinity-lynchpin": _plan(
         "sinity-lynchpin",
         SliceSpec(
-            "analysis-and-project-surfaces",
-            "Analysis core, project tooling, and context/control-plane surfaces.",
+            "analysis-and-core",
+            "Repo control plane, analysis modules, config inputs, and shared primitives.",
             (
                 "README.md",
-                "docs/reference/**",
+                "config/**",
+                "docs/**",
                 "lynchpin/analysis/**",
-                "lynchpin/context/**",
                 "lynchpin/core/**",
             ),
         ),
         SliceSpec(
-            "ingest-and-evidence-planes",
-            "Source adapters, ingest pipelines, evidence planes, and upstream data shaping.",
+            "sources-and-scripts",
+            "Read-only source adapters plus the explicit write/refresh script surfaces.",
             (
-                "lynchpin/ingest/**",
                 "lynchpin/sources/**",
-                "lynchpin/signals/**",
-                "lynchpin/metrics/**",
+                "lynchpin/scripts/**",
             ),
         ),
         SliceSpec(
-            "views-system-and-tests",
-            "View materializers, system entrypoints, retrospective flows, docs, and tests.",
+            "tests-and-tooling",
+            "Tests and lightweight repo tooling.",
             (
-                "docs/**",
-                "lynchpin/retrospective/**",
-                "lynchpin/system/**",
-                "lynchpin/views/**",
-                "scripts/**",
                 "tests/**",
                 "justfile",
                 "pyproject.toml",

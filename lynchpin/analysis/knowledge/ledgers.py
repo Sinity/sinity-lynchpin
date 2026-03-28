@@ -1,16 +1,25 @@
-"""Knowledge-ledger builders for sessions and artefacts."""
+"""Knowledge-ledger builders for session and artefact registries.
+
+Tracked registry inputs live under `config/knowledge/`:
+
+- `config/knowledge/sessions/*.md` for curated session notes
+- `config/knowledge/artefact_catalog.json` for the artefact catalog
+
+The generated CSVs belong under `artefacts/knowledge/ledgers/`.
+"""
 
 from __future__ import annotations
 
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
-from ...core.io import write_text_if_changed
-from ...sources.indices import sessions
+from ...core.cache import write_text_if_changed
 
 
 REQUIRED_FIELDS = [
@@ -30,6 +39,18 @@ class SessionLedgerResult:
     output: Path
     row_count: int
     wrote: bool
+
+
+@dataclass(frozen=True)
+class SessionDocument:
+    date: date
+    provider: str
+    label: str
+    doc_path: Path
+    source_files: tuple[str, ...]
+    highlights: tuple[str, ...]
+    next_actions: tuple[str, ...]
+    last_modified: datetime
 
 
 @dataclass(frozen=True)
@@ -67,15 +88,80 @@ class ArtefactLedgerResult:
 
 def build_session_records(
     sessions_dir: Path,
-) -> list[sessions.SessionDocument]:
+) -> list[SessionDocument]:
     if not sessions_dir.exists():
         raise ValueError(f"Sessions directory {sessions_dir} does not exist")
-    return list(sessions.iter_session_documents_from(sessions_dir))
+    return list(iter_session_documents_from(sessions_dir))
+
+
+def iter_session_documents_from(sessions_dir: Path) -> Iterator[SessionDocument]:
+    for path in sorted(sessions_dir.glob("*.md")):
+        if path.name == "README.md":
+            continue
+        yield _parse_session_document(path)
+
+
+_SESSION_DOC_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})-(?P<provider>[a-z0-9-]+)$")
+_BULLET_PREFIXES = ("- ", "* ")
+
+
+def _parse_session_document(path: Path) -> SessionDocument:
+    match = _SESSION_DOC_RE.match(path.stem)
+    if not match:
+        raise ValueError(f"Session doc filename must start with YYYY-MM-DD-provider: {path}")
+
+    doc_date = date.fromisoformat(match.group("date"))
+    provider = match.group("provider")
+    text = path.read_text(encoding="utf-8")
+    title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), path.stem)
+    sections = _markdown_sections(text)
+    source_files = tuple(_list_items(sections.get("Source Files", [])))
+    highlights = tuple(_list_items(sections.get("Key Instructions Captured", []) or sections.get("Highlights", [])))
+    next_actions = tuple(_list_items(sections.get("Next Actions", [])))
+    last_modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    return SessionDocument(
+        date=doc_date,
+        provider=provider,
+        label=title,
+        doc_path=path,
+        source_files=source_files,
+        highlights=highlights,
+        next_actions=next_actions,
+        last_modified=last_modified,
+    )
+
+
+def _markdown_sections(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip()
+            sections.setdefault(current, [])
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return sections
+
+
+def _list_items(lines: list[str]) -> list[str]:
+    items: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(_BULLET_PREFIXES):
+            items.append(stripped[2:].strip())
+            continue
+        numbered = re.match(r"\d+\.\s+(.*)", stripped)
+        if numbered:
+            items.append(numbered.group(1).strip())
+    return items
 
 
 def write_session_ledger(
     *,
-    sessions_dir: Path = Path("docs/reference/sessions"),
+    sessions_dir: Path = Path("config/knowledge/sessions"),
     output: Path = Path("artefacts/knowledge/ledgers/session_index.csv"),
 ) -> SessionLedgerResult:
     records = build_session_records(sessions_dir)
@@ -156,7 +242,7 @@ def build_artefacts(entries: Iterable[dict], base_dir: Path) -> list[Artefact]:
 
 def write_artefact_ledger(
     *,
-    catalog: Path = Path("docs/reference/ledgers/artefact_catalog.json"),
+    catalog: Path = Path("config/knowledge/artefact_catalog.json"),
     output: Path = Path("artefacts/knowledge/ledgers/artefact_index.csv"),
     base_dir: Path | None = None,
 ) -> ArtefactLedgerResult:
