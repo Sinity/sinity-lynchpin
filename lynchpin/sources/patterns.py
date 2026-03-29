@@ -48,20 +48,46 @@ _NUMERIC_FIELDS: tuple[str, ...] = ()  # populated after DayFeatures is defined
 @dataclass(frozen=True)
 class DayFeatures:
     date: date
+    # AW
     active_hours: float
     deep_work_min: float
     sustained_focus_min: float
     fragmentation: float
-    commit_count: int
-    command_count: int
     project_count: int
+    # Git
+    commit_count: int
+    # Terminal
+    command_count: int
+    # Polylogue
     chat_sessions: int
+    # Sleep
     sleep_hours: float
     sleep_score: float
+    # Spotify
     listening_hours: float
+    # Reddit
     reddit_comments: int
+    # Health — basic
     daily_steps: int
     vitality_score: float
+    # Health — expanded
+    stress_avg: float
+    heart_rate_avg: float
+    heart_rate_resting: float
+    hrv_rmssd: float
+    spo2_avg: float
+    floors_climbed: float
+    skin_temp_avg: float
+    snoring_duration_min: float
+    # Web
+    browsing_visits: int
+    browsing_domains: int
+    # Social
+    messenger_messages: int
+    bookmarks_added: int
+    # Substance
+    substance_doses: int
+    # Categorical
     dominant_mode: str
     dominant_project: str
 
@@ -81,8 +107,19 @@ def _extract(features: Sequence[DayFeatures], field: str) -> list[float]:
     return [float(getattr(f, field)) for f in features]
 
 
+def _safe_fetch(fn, *args, default=None, **kwargs):
+    """Call a source function; return default on failure."""
+    try:
+        result = fn(*args, **kwargs)
+        if hasattr(result, '__next__'):
+            result = list(result)
+        return result
+    except Exception:
+        return default if default is not None else []
+
+
 def build_day_features(start: date, end: date) -> list[DayFeatures]:
-    """Assemble per-day feature vectors from all available sources."""
+    """Assemble per-day feature vectors from all available sources (31 numeric fields)."""
     from .activitywatch import active_seconds_by_date, deep_work, sustained_focus, fragmentation, attention, app_sessions
     from .git import daily_activity
     from .terminal import shell_sessions
@@ -90,10 +127,14 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
     from .sleep import entries as sleep_entries
     from .spotify import daily_listening
     from .reddit import daily_activity as reddit_daily
-    from .health import daily_steps, daily_vitality
+    from .health import daily_steps, daily_vitality, daily_health_summary
+    from .web import daily_browsing
+    from .exports import daily_messenger_activity, daily_raindrop_activity
+    from .substance import daily_summary as substance_daily
 
     s_dt, e_dt = date_to_dt_range(start, end)
 
+    # ── AW ──
     aw_active = active_seconds_by_date(start, end)
     dw_blocks = deep_work(start=s_dt, end=e_dt)
     dw_by_day: dict[date, float] = {}
@@ -108,43 +149,50 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
     frag_by_day = {f.date: f.fragmentation for f in fragmentation(start=start, end=end)}
     att_by_day = {a.date: a.project_count for a in attention(start=start, end=end)}
 
+    # ── Git ──
     git_by_day: dict[date, int] = {}
     for g in daily_activity(start=start, end=end):
         git_by_day[g.date] = git_by_day.get(g.date, 0) + g.commit_count
 
+    # ── Terminal ──
     shell_by_day: dict[date, int] = {}
     for s in shell_sessions(start=s_dt, end=e_dt):
         shell_by_day[s.start.date()] = shell_by_day.get(s.start.date(), 0) + s.command_count
 
+    # ── Polylogue ──
     chat_by_day: dict[date, int] = {}
-    for c in chat_daily(start=start, end=end):
+    for c in _safe_fetch(chat_daily, start=start, end=end):
         chat_by_day[c.date] = chat_by_day.get(c.date, 0) + c.session_count
 
+    # ── Sleep ──
     sleep_data = {e.date: e for e in sleep_entries()}
 
-    try:
-        spotify_by_day = {s.date: s.hours for s in daily_listening(start=start, end=end)}
-    except Exception:
-        spotify_by_day = {}
+    # ── Spotify ──
+    spotify_by_day = {s.date: s.hours for s in _safe_fetch(daily_listening, start=start, end=end)}
 
-    try:
-        reddit_by_day = {r.date: r.comment_count for r in reddit_daily(start=start, end=end)}
-    except Exception:
-        reddit_by_day = {}
+    # ── Reddit ──
+    reddit_by_day = {r.date: r.comment_count for r in _safe_fetch(reddit_daily, start=start, end=end)}
 
-    # Health: steps and vitality
-    try:
-        steps_data = daily_steps(start=start, end=end)
-        steps_by_day = {s.date: s.steps for s in steps_data}
-    except Exception:
-        steps_by_day = {}
+    # ── Health: basic ──
+    steps_by_day = {s.date: s.steps for s in _safe_fetch(daily_steps, start=start, end=end)}
+    vitality_by_day = {v.date: v.activity_score or 0 for v in _safe_fetch(daily_vitality, start=start, end=end)}
 
-    try:
-        vitality_data = daily_vitality(start=start, end=end)
-        vitality_by_day = {v.date: v.activity_score or 0 for v in vitality_data}
-    except Exception:
-        vitality_by_day = {}
+    # ── Health: expanded (daily summary joins all health signals) ──
+    health_by_day = {h.date: h for h in _safe_fetch(daily_health_summary, start=start, end=end)}
 
+    # ── Web ──
+    web_by_day = {w.date: w for w in _safe_fetch(daily_browsing, start=start, end=end)}
+
+    # ── Messenger ──
+    msg_by_day = {m.date: m.message_count for m in _safe_fetch(daily_messenger_activity, start=start, end=end)}
+
+    # ── Raindrop ──
+    bm_by_day = {r.date: r.bookmarks_added for r in _safe_fetch(daily_raindrop_activity, start=start, end=end)}
+
+    # ── Substance ──
+    sub_by_day = {s.date: s.dose_count for s in _safe_fetch(substance_daily, start=start, end=end)}
+
+    # ── AW mode/project ──
     sessions = app_sessions(start=s_dt, end=e_dt)
     mode_by_day: dict[date, str] = {}
     proj_by_day: dict[date, str] = {}
@@ -155,18 +203,21 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
         if d not in proj_by_day and sess.project:
             proj_by_day[d] = sess.project
 
+    # ── Assemble ──
     result: list[DayFeatures] = []
     for d in iter_dates(start, end):
         sleep_entry = sleep_data.get(d)
+        health = health_by_day.get(d)
+        web = web_by_day.get(d)
         result.append(DayFeatures(
             date=d,
             active_hours=round(aw_active.get(d, 0) / 3600, 2),
             deep_work_min=round(dw_by_day.get(d, 0), 1),
             sustained_focus_min=round(sf_by_day.get(d, 0), 1),
             fragmentation=round(frag_by_day.get(d, 0), 3),
+            project_count=att_by_day.get(d, 0),
             commit_count=git_by_day.get(d, 0),
             command_count=shell_by_day.get(d, 0),
-            project_count=att_by_day.get(d, 0),
             chat_sessions=chat_by_day.get(d, 0),
             sleep_hours=round(sleep_entry.total_minutes / 60, 2) if sleep_entry else 0,
             sleep_score=round(sleep_entry.avg_score or 0, 1) if sleep_entry else 0,
@@ -174,6 +225,24 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
             reddit_comments=reddit_by_day.get(d, 0),
             daily_steps=steps_by_day.get(d, 0),
             vitality_score=vitality_by_day.get(d, 0),
+            # Health expanded
+            stress_avg=round(health.stress_avg or 0, 1) if health else 0,
+            heart_rate_avg=round(health.heart_rate_avg or 0, 1) if health else 0,
+            heart_rate_resting=round(health.heart_rate_resting or 0, 1) if health else 0,
+            hrv_rmssd=round(health.hrv_rmssd_avg or 0, 2) if health else 0,
+            spo2_avg=round(health.spo2_avg or 0, 1) if health else 0,
+            floors_climbed=round(health.floors or 0, 1) if health else 0,
+            skin_temp_avg=round(health.skin_temp_avg or 0, 2) if health else 0,
+            snoring_duration_min=round((health.snoring_duration_s or 0) / 60, 1) if health else 0,
+            # Web
+            browsing_visits=web.visit_count if web else 0,
+            browsing_domains=web.unique_domains if web else 0,
+            # Social
+            messenger_messages=msg_by_day.get(d, 0),
+            bookmarks_added=bm_by_day.get(d, 0),
+            # Substance
+            substance_doses=sub_by_day.get(d, 0),
+            # Categorical
             dominant_mode=mode_by_day.get(d, "unknown"),
             dominant_project=proj_by_day.get(d, ""),
         ))
@@ -292,7 +361,10 @@ def day_type_clusters(
 def activity_trends(
     features: Sequence[DayFeatures],
     *,
-    metrics: Sequence[str] = ("active_hours", "deep_work_min", "fragmentation", "commit_count", "command_count"),
+    metrics: Sequence[str] = (
+        "active_hours", "deep_work_min", "fragmentation", "commit_count", "command_count",
+        "stress_avg", "heart_rate_avg", "hrv_rmssd", "floors_climbed", "browsing_visits",
+    ),
 ) -> dict[str, TrendResult]:
     """Trend analysis for specified metrics over the period."""
     if len(features) < 7:
@@ -303,7 +375,10 @@ def activity_trends(
 def day_anomalies(
     features: Sequence[DayFeatures],
     *,
-    metrics: Sequence[str] = ("active_hours", "deep_work_min", "fragmentation", "commit_count"),
+    metrics: Sequence[str] = (
+        "active_hours", "deep_work_min", "fragmentation", "commit_count",
+        "stress_avg", "heart_rate_avg", "hrv_rmssd",
+    ),
 ) -> dict[str, AnomalyResult]:
     """Is the last day anomalous compared to the rest as history?"""
     if len(features) < 10:
@@ -344,3 +419,48 @@ def full_analysis(start: date, end: date) -> FullAnalysis:
         trends=activity_trends(features),
         anomalies=day_anomalies(features),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cross-source health analytics
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def health_correlations(features: Sequence[DayFeatures]) -> dict[str, list[CorrelationResult]]:
+    """Cross-source health correlations: sleep×stress, HRV×productivity, substance×health.
+
+    Returns {pair_label: [CorrelationResult...]} for significant lagged correlations.
+    """
+    if len(features) < 14:
+        return {}
+
+    pairs = [
+        ("sleep_hours", "stress_avg", "sleep→stress"),
+        ("sleep_hours", "heart_rate_avg", "sleep→heart_rate"),
+        ("sleep_hours", "active_hours", "sleep→productivity"),
+        ("sleep_score", "fragmentation", "sleep_quality→fragmentation"),
+        ("hrv_rmssd", "active_hours", "hrv→productivity"),
+        ("hrv_rmssd", "deep_work_min", "hrv→deep_work"),
+        ("stress_avg", "fragmentation", "stress→fragmentation"),
+        ("stress_avg", "commit_count", "stress→commits"),
+        ("substance_doses", "stress_avg", "substance→stress"),
+        ("substance_doses", "heart_rate_avg", "substance→heart_rate"),
+        ("substance_doses", "active_hours", "substance→productivity"),
+        ("substance_doses", "fragmentation", "substance→fragmentation"),
+        ("floors_climbed", "stress_avg", "activity→stress"),
+        ("daily_steps", "sleep_hours", "steps→sleep"),
+    ]
+
+    results: dict[str, list[CorrelationResult]] = {}
+    for cause_field, effect_field, label in pairs:
+        cause = _extract(features, cause_field)
+        effect = _extract(features, effect_field)
+        # Skip if either series is all zeros
+        if all(v == 0 for v in cause) or all(v == 0 for v in effect):
+            continue
+        corrs = cross_correlate(cause, effect, max_lag=3)
+        significant = [c for c in corrs if c.significant]
+        if significant:
+            results[label] = significant
+
+    return results

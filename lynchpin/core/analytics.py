@@ -1,6 +1,7 @@
-"""Statistical analytics: trend detection, change points, periodicity, correlation, clustering, anomalies.
+"""Statistical analytics: trend detection, change points, periodicity, correlation, clustering, anomalies, regimes.
 
-All functions use pure Python + math stdlib. No heavy dependencies.
+Core functions use pure Python + math stdlib. No heavy dependencies required.
+Optional hmmlearn integration for regime detection (falls back to k-means smoothing).
 Data volumes (100-5000 daily observations) are ideal for these methods.
 """
 
@@ -70,6 +71,23 @@ class DayCluster:
     size: int
     centroid: dict[str, float]
     members: list[int] = field(default_factory=list)  # indices
+
+
+@dataclass(frozen=True)
+class RegimeState:
+    state_id: int
+    n_days: int
+    means: dict[str, float]
+    stds: dict[str, float]
+
+
+@dataclass
+class RegimeResult:
+    states: list[int]            # per-day state assignment
+    profiles: list[RegimeState]  # per-state profile
+    n_states: int
+    method: str                  # "hmmlearn" or "kmeans_smoothed"
+    log_likelihood: float | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -516,3 +534,176 @@ def _t_test_p(t_stat: float, df: int) -> float:
     # Regularized incomplete beta approximation (crude but functional)
     p = 1 - (1 - x ** (df / 2)) ** 0.5
     return min(max(p, 0.0), 1.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Regime detection: HMM with k-means fallback
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def detect_regimes(
+    matrix: Sequence[Sequence[float]],
+    *,
+    n_states: int = 4,
+    feature_names: Sequence[str] | None = None,
+    max_iter: int = 50,
+) -> RegimeResult:
+    """Detect behavioral regimes from daily feature vectors.
+
+    Tries hmmlearn's GaussianHMM first, falls back to k-means + temporal smoothing.
+    Each regime is a distinct behavioral state (e.g., "deep focus day", "rest day").
+
+    Args:
+        matrix: N×D feature matrix (N days, D numeric features)
+        n_states: Number of regimes to detect
+        feature_names: Optional names for columns (used in state profiles)
+        max_iter: Max EM/k-means iterations
+    """
+    rows = [list(r) for r in matrix]
+    n = len(rows)
+    if n < n_states * 3:
+        return RegimeResult(states=[], profiles=[], n_states=0, method="insufficient_data")
+
+    n_features = len(rows[0])
+    names = list(feature_names) if feature_names else [f"f{i}" for i in range(n_features)]
+
+    # Normalize columns for clustering
+    col_means = [sum(r[j] for r in rows) / n for j in range(n_features)]
+    col_stds = [
+        max((sum((r[j] - col_means[j]) ** 2 for r in rows) / n) ** 0.5, 1e-8)
+        for j in range(n_features)
+    ]
+    normed = [[(r[j] - col_means[j]) / col_stds[j] for j in range(n_features)] for r in rows]
+
+    # Try hmmlearn
+    try:
+        return _hmm_regimes(normed, rows, names, n_states, max_iter)
+    except Exception:
+        pass
+
+    # Fallback: k-means + temporal smoothing
+    return _kmeans_regimes(normed, rows, names, n_states, max_iter)
+
+
+def _hmm_regimes(
+    normed: list[list[float]], raw: list[list[float]],
+    names: list[str], n_states: int, max_iter: int,
+) -> RegimeResult:
+    """HMM regime detection using hmmlearn."""
+    import numpy as np
+    from hmmlearn.hmm import GaussianHMM
+
+    X = np.array(normed)
+    model = GaussianHMM(
+        n_components=n_states, covariance_type="diag",
+        n_iter=max_iter, random_state=42,
+    )
+    model.fit(X)
+    states = model.predict(X).tolist()
+    ll = float(model.score(X))
+
+    return RegimeResult(
+        states=states,
+        profiles=_build_regime_profiles(raw, states, names, n_states),
+        n_states=n_states,
+        method="hmmlearn",
+        log_likelihood=ll,
+    )
+
+
+def _kmeans_regimes(
+    normed: list[list[float]], raw: list[list[float]],
+    names: list[str], n_states: int, max_iter: int,
+) -> RegimeResult:
+    """Fallback: k-means clustering + temporal smoothing."""
+    labels = _kmeans(normed, n_states, max_iter=max_iter)
+
+    # Temporal smoothing: isolated states get flipped to match neighbors
+    smoothed = list(labels)
+    for i in range(1, len(smoothed) - 1):
+        if smoothed[i] != smoothed[i - 1] and smoothed[i] != smoothed[i + 1] and smoothed[i - 1] == smoothed[i + 1]:
+            smoothed[i] = smoothed[i - 1]
+
+    return RegimeResult(
+        states=smoothed,
+        profiles=_build_regime_profiles(raw, smoothed, names, n_states),
+        n_states=n_states,
+        method="kmeans_smoothed",
+    )
+
+
+def _build_regime_profiles(
+    raw: list[list[float]], states: list[int],
+    names: list[str], n_states: int,
+) -> list[RegimeState]:
+    """Compute per-state mean and std from raw (unnormalized) data."""
+    from collections import defaultdict
+    state_rows: dict[int, list[list[float]]] = defaultdict(list)
+    for i, s in enumerate(states):
+        state_rows[s].append(raw[i])
+
+    profiles = []
+    for sid in range(n_states):
+        rows = state_rows.get(sid, [])
+        n = len(rows)
+        if n == 0:
+            continue
+        n_feat = len(rows[0])
+        means = {names[j]: round(sum(r[j] for r in rows) / n, 3) for j in range(n_feat)}
+        stds = {
+            names[j]: round((sum((r[j] - sum(r2[j] for r2 in rows) / n) ** 2 for r in rows) / max(n - 1, 1)) ** 0.5, 3)
+            for j in range(n_feat)
+        }
+        profiles.append(RegimeState(state_id=sid, n_days=n, means=means, stds=stds))
+    return profiles
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Correlation matrix
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def correlation_matrix(
+    series: dict[str, Sequence[float]], *, min_samples: int = 10
+) -> dict[str, dict[str, float | None]]:
+    """Pairwise Pearson correlations between named numeric series.
+
+    Args:
+        series: {name: [values...]} — all series must have the same length
+        min_samples: minimum data points required
+    """
+    names = sorted(series.keys())
+    n = min(len(v) for v in series.values()) if series else 0
+    if n < min_samples:
+        return {}
+
+    matrix: dict[str, dict[str, float | None]] = {}
+    for a in names:
+        row: dict[str, float | None] = {}
+        for b in names:
+            r = _pearson_r(list(series[a][:n]), list(series[b][:n]))
+            row[b] = round(r, 3) if r is not None else None
+        matrix[a] = row
+    return matrix
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Granger-style causality (lagged correlation significance)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def granger_test(
+    cause: Sequence[float], effect: Sequence[float], *, max_lag: int = 3
+) -> list[CorrelationResult]:
+    """Test if `cause` Granger-causes `effect` via lagged cross-correlation.
+
+    This is a simplified Granger test using lagged Pearson correlation with
+    significance testing, not a full VAR-based test. Sufficient for daily
+    behavioral data where we want to detect lead-lag relationships like
+    "does sleep predict next-day productivity?".
+
+    Returns only positive lags (cause leads effect) sorted by significance.
+    """
+    results = cross_correlate(cause, effect, max_lag=max_lag)
+    # Keep only positive lags (cause leads) and significant results
+    return [r for r in results if r.lag > 0 and r.significant]

@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from ..core.config import get_config
 from ..core.primitives import logical_date, date_to_dt_range
@@ -26,8 +26,10 @@ from ..core.primitives import logical_date, date_to_dt_range
 __all__ = [
     "ActivitySegment",
     "DaySegmentation",
+    "TransitionMatrix",
     "segment_day",
     "segment_range",
+    "transition_bigrams",
 ]
 
 
@@ -321,3 +323,43 @@ def segment_range(*, start: date, end: date) -> list[DaySegmentation]:
             results.append(seg)
         d += timedelta(days=1)
     return results
+
+
+@dataclass(frozen=True)
+class TransitionEntry:
+    from_ctx: str
+    to_ctx: str
+    count: int
+    pct: float
+
+
+@dataclass(frozen=True)
+class TransitionMatrix:
+    """Context→context transition frequency from activity segments."""
+    transitions: tuple[TransitionEntry, ...]
+    total: int
+    contexts: tuple[str, ...]  # unique contexts seen
+
+
+def transition_bigrams(segmentations: Sequence[DaySegmentation]) -> TransitionMatrix:
+    """Compute context→context transition frequency across day segmentations.
+
+    Returns a sorted list of (from, to, count, pct) bigrams. Useful for understanding
+    how work patterns flow between activity types (e.g., coding→ai→coding loops).
+    """
+    from collections import Counter
+    bigrams: Counter = Counter()
+    contexts: set[str] = set()
+    for seg_day in segmentations:
+        for i in range(len(seg_day.segments) - 1):
+            a = seg_day.segments[i].context
+            b = seg_day.segments[i + 1].context
+            bigrams[(a, b)] += 1
+            contexts.update((a, b))
+
+    total = sum(bigrams.values()) or 1
+    entries = tuple(
+        TransitionEntry(from_ctx=a, to_ctx=b, count=c, pct=round(c / total * 100, 1))
+        for (a, b), c in bigrams.most_common()
+    )
+    return TransitionMatrix(transitions=entries, total=total, contexts=tuple(sorted(contexts)))

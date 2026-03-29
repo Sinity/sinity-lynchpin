@@ -16,7 +16,7 @@ import csv
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -52,6 +52,10 @@ __all__ = [
     "iter_wykop_entries",
     "iter_wykop_entry_comments",
     "iter_dendron_notes",
+    "MessengerDayActivity",
+    "RaindropDayActivity",
+    "daily_messenger_activity",
+    "daily_raindrop_activity",
 ]
 
 # =========================================================================
@@ -329,6 +333,31 @@ def _raindrop_strip(value: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
+@dataclass(frozen=True)
+class RaindropDayActivity:
+    date: date
+    bookmarks_added: int
+    unique_tags: int
+
+
+def daily_raindrop_activity(*, start: date, end: date) -> list[RaindropDayActivity]:
+    """Daily bookmark additions."""
+    by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
+    for _export, bookmark in iter_raindrop_bookmarks_all():
+        if bookmark.created is None:
+            continue
+        d = bookmark.created.date()
+        if d < start or d >= end:
+            continue
+        count, tags = by_date[d]
+        tags.update(bookmark.tags)
+        by_date[d] = (count + 1, tags)
+    return sorted(
+        [RaindropDayActivity(date=d, bookmarks_added=count, unique_tags=len(tags)) for d, (count, tags) in by_date.items()],
+        key=lambda x: x.date,
+    )
+
+
 # =========================================================================
 # Section 3: Facebook Messenger (from sources/exports/fbmessenger.py)
 # =========================================================================
@@ -466,6 +495,48 @@ def _fbmessenger_clean_text(value: Optional[str]) -> Optional[str]:
 def _fbmessenger_clean_path(path: Path) -> str:
     text = str(path)
     return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+@dataclass(frozen=True)
+class MessengerDayActivity:
+    date: date
+    message_count: int
+    thread_count: int
+    sent_count: int
+
+
+def daily_messenger_activity(*, start: date, end: date) -> list[MessengerDayActivity]:
+    """Daily messenger message counts."""
+    # First pass: determine primary user (most frequent sender = export owner)
+    sender_counts: Counter[str] = Counter()
+    messages = list(iter_fbmessenger_messages())
+    for msg in messages:
+        if msg.sender:
+            sender_counts[msg.sender] += 1
+    primary_user = sender_counts.most_common(1)[0][0] if sender_counts else ""
+
+    # Second pass: aggregate by date
+    day_messages: dict[date, list[MessengerMessage]] = defaultdict(list)
+    for msg in messages:
+        if msg.timestamp is None:
+            continue
+        d = msg.timestamp.date()
+        if d < start or d >= end:
+            continue
+        day_messages[d].append(msg)
+
+    return sorted(
+        [
+            MessengerDayActivity(
+                date=d,
+                message_count=len(msgs),
+                thread_count=len({m.thread_name for m in msgs}),
+                sent_count=sum(1 for m in msgs if m.sender == primary_user),
+            )
+            for d, msgs in day_messages.items()
+        ],
+        key=lambda x: x.date,
+    )
 
 
 # =========================================================================
