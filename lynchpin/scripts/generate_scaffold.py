@@ -397,51 +397,215 @@ def _baseline_comparison(d: date, metrics: dict[str, float], all_features: list 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Batch source loader — load once, slice per day
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BatchSources:
+    """Pre-load all sources for a date range. generate_day() slices from this."""
+
+    def __init__(self, start: date, end: date):
+        from ..sources.activitywatch import (
+            active_seconds_by_date, focus_spans, app_sessions,
+            deep_work, fragmentation, attention, circadian,
+            sustained_focus, daily_activity as aw_daily,
+        )
+        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions
+        from ..sources.polylogue import work_events, day_session_summaries
+        from ..sources.terminal import shell_sessions
+        from ..sources.sleep_infer import infer_sleep
+        from ..sources.health import daily_steps, daily_health_summary, heart_rate_measurements, daily_stress
+        from ..sources.web import daily_browsing
+        from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
+        from ..sources.timeline import work_sessions
+        from ..sources.substance import entries as substance_entries
+
+        s_dt, e_dt = date_to_dt_range(start, end)
+
+        def _load(label, fn, *args, **kwargs):
+            print(f"      {label}...", end=" ", flush=True)
+            t = time.monotonic()
+            result = _safe(fn, *args, default=kwargs.pop('default', []), **kwargs)
+            elapsed = time.monotonic() - t
+            count = len(result) if isinstance(result, (list, dict, tuple)) else 0
+            print(f"({count}, {elapsed:.1f}s)")
+            return result
+
+        print("    Batch-loading sources...")
+        # AW
+        self.aw_active = _load("AW active", active_seconds_by_date, start, end, default={})
+        self.focus_spans = _load("AW focus spans", focus_spans, start=s_dt, end=e_dt)
+        self.app_sessions = _load("AW sessions", app_sessions, start=s_dt, end=e_dt)
+        self.deep_work = _load("AW deep work", deep_work, start=s_dt, end=e_dt)
+        self.sustained_focus = _load("AW sustained focus", sustained_focus, start=s_dt, end=e_dt)
+        self.fragmentation = _load("AW fragmentation", fragmentation, start=start, end=end)
+        self.attention = _load("AW attention", attention, start=start, end=end)
+        self.circadian = _load("AW circadian", circadian, start=start, end=end)
+        self.aw_daily = _load("AW daily", aw_daily, start=start, end=end)
+        # Git
+        self.git_facts = _load("Git facts", commit_facts, start=start, end=end)
+        self.git_daily = _load("Git daily", git_daily, start=start, end=end)
+        self.git_sessions = _load("Git sessions", commit_sessions, start=start, end=end)
+        # Polylogue
+        self.poly_events = _load("Polylogue events", work_events, start=start, end=end)
+        self.poly_summaries = _load("Polylogue summaries", day_session_summaries, start=start, end=end)
+        # Terminal
+        self.shell_sessions = _load("Terminal", shell_sessions, start=s_dt, end=e_dt)
+        # Sleep
+        self.sleep = _load("Sleep", infer_sleep, start=start - timedelta(days=1), end=end)
+        # Health
+        self.steps = _load("Health steps", daily_steps, start=start, end=end)
+        self.health_summary = _load("Health summary", daily_health_summary, start=start, end=end)
+        self.hr = _load("Heart rate", heart_rate_measurements, start=start, end=end)
+        self.stress = _load("Stress", daily_stress, start=start, end=end)
+        # Web
+        self.browsing = _load("Web browsing", daily_browsing, start=start, end=end)
+        # Social
+        self.messenger = _load("Messenger", daily_messenger_activity, start=start, end=end)
+        self.raindrop = _load("Raindrop", daily_raindrop_activity, start=start, end=end)
+        # Timeline
+        self.work_sessions = _load("Work sessions", work_sessions, start=start, end=end)
+        # Substance
+        self.substance = _load("Substance", substance_entries)
+
+        # Build per-day indexes
+        self._index_by_day()
+        print(f"    → Batch load complete\n")
+
+    def _index_by_day(self):
+        """Build date→list indexes for fast per-day slicing."""
+        self._frag_by_date = {f.date: f for f in self.fragmentation}
+        self._attn_by_date = {a.date: a for a in self.attention}
+        self._circ_by_date = _group_by_date(self.circadian, lambda c: c.date)
+        self._git_daily_by_date = _group_by_date(self.git_daily, lambda g: g.date)
+        self._git_facts_by_date = _group_by_date(self.git_facts, lambda f: f.authored_at.date() if hasattr(f, 'authored_at') and f.authored_at else None)
+        self._git_sessions_by_date = _group_by_date(self.git_sessions, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._focus_by_date = _group_by_date(self.focus_spans, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._dw_by_date = _group_by_date(self.deep_work, lambda b: b.start.date() if hasattr(b, 'start') and b.start else None)
+        self._sf_by_date = _group_by_date(self.sustained_focus, lambda b: b.start.date() if hasattr(b, 'start') and b.start else None)
+        self._poly_events_by_date = _group_by_date(self.poly_events, lambda e: e.start.date() if hasattr(e, 'start') and e.start else None)
+        self._poly_summaries_by_date = _group_by_date(self.poly_summaries, lambda s: s.date if hasattr(s, 'date') else None)
+        self._shells_by_date = _group_by_date(self.shell_sessions, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._sleep_by_date = _group_by_date(self.sleep, lambda s: s.date if hasattr(s, 'date') else None)
+        self._steps_by_date = {s.date: s for s in self.steps}
+        self._health_by_date = {h.date: h for h in self.health_summary}
+        self._hr_by_date = _group_by_date(self.hr, lambda h: h.timestamp.date() if hasattr(h, 'timestamp') and h.timestamp else None)
+        self._stress_by_date = {s.date: s for s in self.stress}
+        self._browsing_by_date = {b.date: b for b in self.browsing}
+        self._messenger_by_date = {m.date: m for m in self.messenger}
+        self._raindrop_by_date = {r.date: r for r in self.raindrop}
+        self._work_sessions_by_date = _group_by_date(self.work_sessions, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._substance_by_date: dict[date, list] = defaultdict(list)
+        for e in self.substance:
+            self._substance_by_date[e.date].append(e)
+
+
+def _group_by_date(items: list, date_fn) -> dict[date, list]:
+    """Group items by date using a date extraction function."""
+    result: dict[date, list] = defaultdict(list)
+    for item in items:
+        d = date_fn(item)
+        if d is not None:
+            result[d].append(item)
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Day scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_day(d: date, output: Path, *, force: bool = False, all_features: list | None = None) -> bool:
-    """Generate scaffold for a single day. Returns True if generated."""
+def generate_day(d: date, output: Path, *, force: bool = False, all_features: list | None = None,
+                 batch: BatchSources | None = None) -> bool:
+    """Generate scaffold for a single day. Returns True if generated.
+
+    If batch is provided, slices data from pre-loaded sources (fast).
+    Otherwise, queries each source individually (slow, for single-day runs).
+    """
     day_dir = _day_dir(d, output)
     if (day_dir / "manifest.json").exists() and not force:
         return False
 
     t0 = time.monotonic()
 
-    from ..sources.activitywatch import (
-        active_seconds_by_date, focus_spans, app_sessions,
-        deep_work, fragmentation, attention, circadian,
-        sustained_focus, daily_activity as aw_daily,
-    )
-    from ..sources.activity_segments import segment_day
-    from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions
-    from ..sources.polylogue import work_events, day_session_summaries
-    from ..sources.terminal import shell_sessions
-    from ..sources.sleep_infer import infer_sleep
-    from ..sources.health import daily_steps, daily_health_summary, heart_rate_measurements, daily_stress
-    from ..sources.web import daily_browsing
-    from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
-    from ..sources.timeline import work_sessions
-    from ..sources.day_summary import day_summary
-    from ..sources.delivery import daily_delivery
-    from ..sources.substance import entries_for_date as substance_for_date
+    if batch:
+        # Fast path: slice from batch-loaded data
+        active_h = batch.aw_active.get(d, 0) / 3600 if isinstance(batch.aw_active, dict) else 0
+        frag = [batch._frag_by_date[d]] if d in batch._frag_by_date else []
+        attn = [batch._attn_by_date[d]] if d in batch._attn_by_date else []
+        circ = batch._circ_by_date.get(d, [])
+        git_act = batch._git_daily_by_date.get(d, [])
+        dw = batch._dw_by_date.get(d, [])
+        sf = batch._sf_by_date.get(d, [])
+        spans = batch._focus_by_date.get(d, [])
+        facts = batch._git_facts_by_date.get(d, [])
+        sessions = batch._git_sessions_by_date.get(d, [])
+        poly_events = batch._poly_events_by_date.get(d, [])
+        poly_summaries = batch._poly_summaries_by_date.get(d, [])
+        shells = batch._shells_by_date.get(d, [])
+        sleep_data = batch._sleep_by_date.get(d, [])
+        steps = [batch._steps_by_date[d]] if d in batch._steps_by_date else []
+        health_summary = [batch._health_by_date[d]] if d in batch._health_by_date else []
+        hr_measurements = batch._hr_by_date.get(d, [])
+        stress_measurements = [batch._stress_by_date[d]] if d in batch._stress_by_date else []
+        browsing = [batch._browsing_by_date[d]] if d in batch._browsing_by_date else []
+        messenger = [batch._messenger_by_date[d]] if d in batch._messenger_by_date else []
+        raindrop = [batch._raindrop_by_date[d]] if d in batch._raindrop_by_date else []
+        work_sess = batch._work_sessions_by_date.get(d, [])
+        substance_day = batch._substance_by_date.get(d, [])
+        # Per-day only sources (can't batch)
+        from ..sources.activity_segments import segment_day
+        from ..sources.day_summary import day_summary
+        seg = _safe(segment_day, d, default=None)
+        two_track = _safe(day_summary, d, default=None)
+    else:
+        # Slow path: query each source individually
+        from ..sources.activitywatch import (
+            active_seconds_by_date, focus_spans, app_sessions,
+            deep_work, fragmentation, attention, circadian,
+            sustained_focus, daily_activity as aw_daily,
+        )
+        from ..sources.activity_segments import segment_day
+        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions
+        from ..sources.polylogue import work_events, day_session_summaries
+        from ..sources.terminal import shell_sessions
+        from ..sources.sleep_infer import infer_sleep
+        from ..sources.health import daily_steps, daily_health_summary, heart_rate_measurements, daily_stress
+        from ..sources.web import daily_browsing
+        from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
+        from ..sources.timeline import work_sessions as ws_fn
+        from ..sources.day_summary import day_summary
+        from ..sources.substance import entries_for_date as substance_for_date
 
-    s_dt, e_dt = date_to_dt_range(d, d)
-
-    # ── Metrics ──
-    active_secs = _safe(active_seconds_by_date, d, d, default={})
-    active_h = active_secs.get(d, 0) / 3600 if active_secs else 0
-
-    frag = _safe(fragmentation, start=d, end=d, default=[])
-    attn = _safe(attention, start=d, end=d, default=[])
-    circ = _safe(circadian, start=d, end=d, default=[])
-    git_act = _safe(git_daily, start=d, end=d, default=[])
-    aw_act = _safe(aw_daily, start=d, end=d, default=[])
-    dw = _safe(deep_work, start=s_dt, end=e_dt, default=[])
-    sf = _safe(sustained_focus, start=s_dt, end=e_dt, default=[])
+        s_dt, e_dt = date_to_dt_range(d, d)
+        active_secs = _safe(active_seconds_by_date, d, d, default={})
+        active_h = active_secs.get(d, 0) / 3600 if active_secs else 0
+        frag = _safe(fragmentation, start=d, end=d, default=[])
+        attn = _safe(attention, start=d, end=d, default=[])
+        circ = _safe(circadian, start=d, end=d, default=[])
+        git_act = _safe(git_daily, start=d, end=d, default=[])
+        dw = _safe(deep_work, start=s_dt, end=e_dt, default=[])
+        sf = _safe(sustained_focus, start=s_dt, end=e_dt, default=[])
+        spans = _safe(focus_spans, start=s_dt, end=e_dt, default=[])
+        facts = _safe(commit_facts, start=d, end=d, default=[])
+        sessions = _safe(commit_sessions, start=d, end=d, default=[])
+        poly_events = _safe(work_events, start=d, end=d, default=[])
+        poly_summaries = _safe(day_session_summaries, start=d, end=d, default=[])
+        shells = _safe(shell_sessions, start=s_dt, end=e_dt, default=[])
+        sleep_data = _safe(infer_sleep, start=d - timedelta(days=1), end=d, default=[])
+        steps = _safe(daily_steps, start=d, end=d, default=[])
+        health_summary = _safe(daily_health_summary, start=d, end=d, default=[])
+        hr_measurements = _safe(heart_rate_measurements, start=d, end=d, default=[])
+        stress_measurements = _safe(daily_stress, start=d, end=d, default=[])
+        browsing = _safe(daily_browsing, start=d, end=d, default=[])
+        messenger = _safe(daily_messenger_activity, start=d, end=d, default=[])
+        raindrop = _safe(daily_raindrop_activity, start=d, end=d, default=[])
+        work_sess = _safe(ws_fn, start=d, end=d, default=[])
+        substance_day = _safe(substance_for_date, d, default=[])
+        seg = _safe(segment_day, d, default=None)
+        two_track = _safe(day_summary, d, default=None)
 
     total_commits = sum(g.commit_count for g in git_act) if git_act else 0
-    total_churn = sum(g.lines_added + g.lines_deleted for g in git_act) if git_act else 0
+    total_churn = sum(getattr(g, 'lines_added', 0) + getattr(g, 'lines_deleted', 0) for g in git_act) if git_act else 0
+    segments_data = to_dict(seg) if seg else None
 
     metrics = {
         "date": d.isoformat(),
@@ -455,56 +619,11 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         "churn": total_churn,
     }
 
-    # ── Focus spans ──
-    spans = _safe(focus_spans, start=s_dt, end=e_dt, default=[])
-
-    # ── Segments (activity context classification) ──
-    seg = _safe(segment_day, d, default=None)
-    segments_data = to_dict(seg) if seg else None
-
-    # ── Git ──
-    facts = _safe(commit_facts, start=d, end=d, default=[])
-    sessions = _safe(commit_sessions, start=d, end=d, default=[])
-
-    # ── AI activity ──
-    poly_events = _safe(work_events, start=d, end=d, default=[])
-    poly_summaries = _safe(day_session_summaries, start=d, end=d, default=[])
-
-    # ── Shell ──
-    shells = _safe(shell_sessions, start=s_dt, end=e_dt, default=[])
-
-    # ── Sleep ──
-    sleep_data = _safe(infer_sleep, start=d - timedelta(days=1), end=d, default=[])
-
-    # ── Health ──
-    steps = _safe(daily_steps, start=d, end=d, default=[])
-    health_summary = _safe(daily_health_summary, start=d, end=d, default=[])
-    hr_measurements = _safe(heart_rate_measurements, start=d, end=d, default=[])
-    stress_measurements = _safe(daily_stress, start=d, end=d, default=[])
-
-    # ── Browsing ──
-    browsing = _safe(daily_browsing, start=d, end=d, default=[])
-
-    # ── Social ──
-    messenger = _safe(daily_messenger_activity, start=d, end=d, default=[])
-    raindrop = _safe(daily_raindrop_activity, start=d, end=d, default=[])
-
-    # ── Work sessions ──
-    work_sess = _safe(work_sessions, start=d, end=d, default=[])
-
-    # ── Substance ──
-    substance_day = _safe(substance_for_date, d, default=[])
-
-    # ── Two-track summary ──
-    two_track = _safe(day_summary, d, default=None)
-
     # ── Baseline comparison ──
     baseline_metrics = {
-        k: v for k, v in {
-            "active_hours": active_h,
-            "commit_count": total_commits,
-            "fragmentation": frag[0].fragmentation if frag else 0,
-        }.items()
+        "active_hours": active_h,
+        "commit_count": total_commits,
+        "fragmentation": frag[0].fragmentation if frag else 0,
     }
     baseline = _safe(_baseline_comparison, d, baseline_metrics, all_features, default={})
 
@@ -566,7 +685,8 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
 # Week scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_week(week_key: str, output: Path, *, force: bool = False) -> bool:
+def generate_week(week_key: str, output: Path, *, force: bool = False,
+                  all_features: list | None = None, batch: BatchSources | None = None) -> bool:
     period = parse_period("week", week_key)
     if period is None:
         return False
@@ -577,48 +697,46 @@ def generate_week(week_key: str, output: Path, *, force: bool = False) -> bool:
 
     t0 = time.monotonic()
 
-    from ..sources.activitywatch import active_seconds_by_date
-    from ..sources.git import daily_activity as git_daily, commit_facts, commit_sessions
-    from ..sources.polylogue import day_session_summaries, work_events
-    from ..sources.sleep import entries_in_range as sleep_range
-    from ..sources.health import daily_health_summary
-    from ..sources.web import daily_browsing
-    from ..sources.patterns import build_day_features, weekly_rhythm, activity_trends
-    from ..sources.intraday import clock_hour_profile
-    from ..sources.activity_segments import segment_range, transition_bigrams
-
     s, e = period.start, period.end
 
-    # AW
-    active_map = _safe(active_seconds_by_date, s, e, default={})
+    if batch and all_features:
+        # Fast path: slice from batch
+        active_map = {d: v for d, v in batch.aw_active.items() if s <= d <= e} if isinstance(batch.aw_active, dict) else {}
+        git_act = [g for g in batch.git_daily if s <= g.date <= e]
+        git_facts = [f for f in batch.git_facts if hasattr(f, 'authored_at') and f.authored_at and s <= f.authored_at.date() <= e]
+        poly_summaries = [p for p in batch.poly_summaries if hasattr(p, 'date') and s <= p.date <= e]
+        poly_events = [p for p in batch.poly_events if hasattr(p, 'start') and p.start and s <= p.start.date() <= e]
+        sleep = [sl for sl in batch.sleep if hasattr(sl, 'date') and s <= sl.date <= e]
+        health = [h for h in batch.health_summary if s <= h.date <= e]
+        browsing = [b for b in batch.browsing if s <= b.date <= e]
+        features = [f for f in all_features if s <= f.date <= e]
+    else:
+        # Slow path
+        from ..sources.activitywatch import active_seconds_by_date
+        from ..sources.git import daily_activity as git_daily, commit_facts
+        from ..sources.polylogue import day_session_summaries, work_events
+        from ..sources.sleep import entries_in_range as sleep_range
+        from ..sources.health import daily_health_summary
+        from ..sources.web import daily_browsing
+        from ..sources.patterns import build_day_features
+        active_map = _safe(active_seconds_by_date, s, e, default={})
+        git_act = _safe(git_daily, start=s, end=e, default=[])
+        git_facts = _safe(commit_facts, start=s, end=e, default=[])
+        poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
+        poly_events = _safe(work_events, start=s, end=e, default=[])
+        sleep = _safe(sleep_range, s, e, default=[])
+        health = _safe(daily_health_summary, start=s, end=e, default=[])
+        browsing = _safe(daily_browsing, start=s, end=e, default=[])
+        features = _safe(build_day_features, s, e, default=[])
 
-    # Git
-    git_act = _safe(git_daily, start=s, end=e, default=[])
-    git_facts = _safe(commit_facts, start=s, end=e, default=[])
-    git_sessions = _safe(commit_sessions, start=s, end=e, default=[])
-
-    # Polylogue
-    poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
-    poly_events = _safe(work_events, start=s, end=e, default=[])
-
-    # Sleep
-    sleep = _safe(sleep_range, s, e, default=[])
-
-    # Health
-    health = _safe(daily_health_summary, start=s, end=e, default=[])
-
-    # Web
-    browsing = _safe(daily_browsing, start=s, end=e, default=[])
-
-    # Patterns
-    features = _safe(build_day_features, s, e, default=[])
+    from ..sources.patterns import weekly_rhythm, activity_trends
     rhythm = _safe(weekly_rhythm, features, default=None) if features else None
     trends = _safe(activity_trends, features, default={}) if features else {}
 
-    # Intraday
+    # These are cheap per-week computations, keep as direct calls
+    from ..sources.intraday import clock_hour_profile
+    from ..sources.activity_segments import segment_range, transition_bigrams
     hourly = _safe(clock_hour_profile, start=s, end=e, default=[])
-
-    # Transitions
     segs = _safe(segment_range, start=s, end=e, default=[])
     transitions = _safe(transition_bigrams, segs, default=None)
 
@@ -727,7 +845,8 @@ def generate_week(week_key: str, output: Path, *, force: bool = False) -> bool:
 # Month scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_month(month_key: str, output: Path, *, force: bool = False) -> bool:
+def generate_month(month_key: str, output: Path, *, force: bool = False,
+                   all_features: list | None = None, batch: BatchSources | None = None) -> bool:
     period = parse_period("month", month_key)
     if period is None:
         return False
@@ -740,46 +859,58 @@ def generate_month(month_key: str, output: Path, *, force: bool = False) -> bool
 
     t0 = time.monotonic()
 
-    from ..sources.activitywatch import active_seconds_by_date
-    from ..sources.git import daily_activity as git_daily
-    from ..sources.polylogue import day_session_summaries, work_events
-    from ..sources.sleep import entries_in_range as sleep_range
-    from ..sources.health import daily_steps, daily_health_summary
-    from ..sources.web import daily_browsing
-    from ..sources.patterns import full_analysis, build_day_features
-    from ..sources.activity_segments import segment_range, transition_bigrams
-    from ..sources.substance import monthly_summary as substance_monthly
-
     s, e = period.start, period.end
 
-    # Full statistical analysis
-    analysis = _safe(full_analysis, s, e, default=None)
+    if batch and all_features:
+        # Fast path: slice from batch
+        active_map = {d: v for d, v in batch.aw_active.items() if s <= d <= e} if isinstance(batch.aw_active, dict) else {}
+        git_act = [g for g in batch.git_daily if s <= g.date <= e]
+        poly_summaries = [p for p in batch.poly_summaries if hasattr(p, 'date') and s <= p.date <= e]
+        poly_events = [p for p in batch.poly_events if hasattr(p, 'start') and p.start and s <= p.start.date() <= e]
+        sleep = [sl for sl in batch.sleep if hasattr(sl, 'date') and s <= sl.date <= e]
+        steps = [st for st in batch.steps if s <= st.date <= e]
+        health = [h for h in batch.health_summary if s <= h.date <= e]
+        browsing = [b for b in batch.browsing if s <= b.date <= e]
+        features = [f for f in all_features if s <= f.date <= e]
+    else:
+        from ..sources.activitywatch import active_seconds_by_date
+        from ..sources.git import daily_activity as git_daily
+        from ..sources.polylogue import day_session_summaries, work_events
+        from ..sources.sleep import entries_in_range as sleep_range
+        from ..sources.health import daily_steps, daily_health_summary
+        from ..sources.web import daily_browsing
+        from ..sources.patterns import build_day_features
+        active_map = _safe(active_seconds_by_date, s, e, default={})
+        git_act = _safe(git_daily, start=s, end=e, default=[])
+        poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
+        poly_events = _safe(work_events, start=s, end=e, default=[])
+        sleep = _safe(sleep_range, s, e, default=[])
+        steps = _safe(daily_steps, start=s, end=e, default=[])
+        health = _safe(daily_health_summary, start=s, end=e, default=[])
+        browsing = _safe(daily_browsing, start=s, end=e, default=[])
+        features = _safe(build_day_features, s, e, default=[])
 
-    # AW
-    active_map = _safe(active_seconds_by_date, s, e, default={})
+    # Run analytics on the pre-sliced features (no source re-query)
+    from ..sources.patterns import FullAnalysis, weekly_rhythm, productivity_drivers, work_regime_changes, day_type_clusters, activity_trends, day_anomalies
+    analysis = None
+    if features:
+        analysis = FullAnalysis(
+            features=features,
+            rhythm=_safe(weekly_rhythm, features, default=None),
+            drivers=_safe(productivity_drivers, features, default=[]),
+            regime_changes=_safe(work_regime_changes, features, default=[]),
+            clusters=_safe(day_type_clusters, features, default=[]),
+            trends=_safe(activity_trends, features, default={}),
+            anomalies=_safe(day_anomalies, features, default={}),
+        )
 
-    # Git
-    git_act = _safe(git_daily, start=s, end=e, default=[])
-
-    # Polylogue
-    poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
-    poly_events = _safe(work_events, start=s, end=e, default=[])
-
-    # Sleep
-    sleep = _safe(sleep_range, s, e, default=[])
-
-    # Health
-    steps = _safe(daily_steps, start=s, end=e, default=[])
-    health = _safe(daily_health_summary, start=s, end=e, default=[])
-
-    # Web
-    browsing = _safe(daily_browsing, start=s, end=e, default=[])
-
-    # Transitions
+    # Transitions (per-day AW queries, can't batch easily)
+    from ..sources.activity_segments import segment_range, transition_bigrams
     segs = _safe(segment_range, start=s, end=e, default=[])
     transitions = _safe(transition_bigrams, segs, default=None)
 
     # Substance
+    from ..sources.substance import monthly_summary as substance_monthly
     substance_summary = _safe(substance_monthly, start=s, end=e, default=[])
 
     # Per-day metrics
@@ -883,7 +1014,8 @@ def generate_month(month_key: str, output: Path, *, force: bool = False) -> bool
 # Quarter scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_quarter(quarter_key: str, output: Path, *, force: bool = False) -> bool:
+def generate_quarter(quarter_key: str, output: Path, *, force: bool = False,
+                     all_features: list | None = None, batch: BatchSources | None = None) -> bool:
     period = parse_period("quarter", quarter_key)
     if period is None:
         return False
@@ -894,19 +1026,24 @@ def generate_quarter(quarter_key: str, output: Path, *, force: bool = False) -> 
 
     t0 = time.monotonic()
 
-    from ..sources.patterns import build_day_features, activity_trends, work_regime_changes
-    from ..sources.git import daily_activity as git_daily
-    from ..sources.activitywatch import active_seconds_by_date
-    from ..sources.polylogue import day_session_summaries
+    from ..sources.patterns import activity_trends, work_regime_changes
 
     s, e = period.start, period.end
 
-    features = _safe(build_day_features, s, e, default=[])
+    if batch and all_features:
+        features = [f for f in all_features if s <= f.date <= e]
+        git_act = [g for g in batch.git_daily if s <= g.date <= e]
+        active_map = {d: v for d, v in batch.aw_active.items() if s <= d <= e} if isinstance(batch.aw_active, dict) else {}
+    else:
+        from ..sources.patterns import build_day_features
+        from ..sources.git import daily_activity as git_daily
+        from ..sources.activitywatch import active_seconds_by_date
+        features = _safe(build_day_features, s, e, default=[])
+        git_act = _safe(git_daily, start=s, end=e, default=[])
+        active_map = _safe(active_seconds_by_date, s, e, default={})
+
     trends = _safe(activity_trends, features, default={}) if features else {}
     regimes = _safe(work_regime_changes, features, default=[]) if features else []
-    git_act = _safe(git_daily, start=s, end=e, default=[])
-    active_map = _safe(active_seconds_by_date, s, e, default={})
-    poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
 
     # Per-month summary
     month_keys = child_keys("quarter", quarter_key)
@@ -963,7 +1100,8 @@ def generate_quarter(quarter_key: str, output: Path, *, force: bool = False) -> 
 # Half-year scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_half(half_key: str, output: Path, *, force: bool = False) -> bool:
+def generate_half(half_key: str, output: Path, *, force: bool = False,
+                  all_features: list | None = None, batch: BatchSources | None = None) -> bool:
     period = parse_period("half", half_key)
     if period is None:
         return False
@@ -973,16 +1111,23 @@ def generate_half(half_key: str, output: Path, *, force: bool = False) -> bool:
         return False
     t0 = time.monotonic()
 
-    from ..sources.patterns import build_day_features, activity_trends
-    from ..sources.git import daily_activity as git_daily
-    from ..sources.activitywatch import active_seconds_by_date
+    from ..sources.patterns import activity_trends
 
     s, e = period.start, period.end
 
-    features = _safe(build_day_features, s, e, default=[])
+    if batch and all_features:
+        features = [f for f in all_features if s <= f.date <= e]
+        git_act = [g for g in batch.git_daily if s <= g.date <= e]
+        active_map = {d: v for d, v in batch.aw_active.items() if s <= d <= e} if isinstance(batch.aw_active, dict) else {}
+    else:
+        from ..sources.patterns import build_day_features
+        from ..sources.git import daily_activity as git_daily
+        from ..sources.activitywatch import active_seconds_by_date
+        features = _safe(build_day_features, s, e, default=[])
+        git_act = _safe(git_daily, start=s, end=e, default=[])
+        active_map = _safe(active_seconds_by_date, s, e, default={})
+
     trends = _safe(activity_trends, features, default={}) if features else {}
-    git_act = _safe(git_daily, start=s, end=e, default=[])
-    active_map = _safe(active_seconds_by_date, s, e, default={})
 
     # Per-quarter summary
     q_keys = child_keys("half", half_key)
@@ -1029,7 +1174,8 @@ def generate_half(half_key: str, output: Path, *, force: bool = False) -> bool:
 # Year scaffold
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_year(year_key: str, output: Path, *, force: bool = False) -> bool:
+def generate_year(year_key: str, output: Path, *, force: bool = False,
+                  all_features: list | None = None, batch: BatchSources | None = None) -> bool:
     period = parse_period("year", year_key)
     if period is None:
         return False
@@ -1040,18 +1186,26 @@ def generate_year(year_key: str, output: Path, *, force: bool = False) -> bool:
 
     t0 = time.monotonic()
 
-    from ..sources.patterns import build_day_features, activity_trends
-    from ..sources.git import daily_activity as git_daily
-    from ..sources.activitywatch import active_seconds_by_date
-    from ..sources.polylogue import daily_activity as chat_daily
+    from ..sources.patterns import activity_trends
 
     s, e = period.start, min(period.end, date.today())
 
-    features = _safe(build_day_features, s, e, default=[])
+    if batch and all_features:
+        features = [f for f in all_features if s <= f.date <= e]
+        git_act = [g for g in batch.git_daily if s <= g.date <= e]
+        active_map = {d: v for d, v in batch.aw_active.items() if s <= d <= e} if isinstance(batch.aw_active, dict) else {}
+        chat_act = [c for c in _safe(lambda: batch.poly_summaries, default=[]) if hasattr(c, 'date') and s <= c.date <= e]
+    else:
+        from ..sources.patterns import build_day_features
+        from ..sources.git import daily_activity as git_daily
+        from ..sources.activitywatch import active_seconds_by_date
+        from ..sources.polylogue import daily_activity as chat_daily
+        features = _safe(build_day_features, s, e, default=[])
+        git_act = _safe(git_daily, start=s, end=e, default=[])
+        active_map = _safe(active_seconds_by_date, s, e, default={})
+        chat_act = _safe(chat_daily, start=s, end=e, default=[])
+
     trends = _safe(activity_trends, features, default={}) if features else {}
-    git_act = _safe(git_daily, start=s, end=e, default=[])
-    active_map = _safe(active_seconds_by_date, s, e, default={})
-    chat_act = _safe(chat_daily, start=s, end=e, default=[])
 
     # Per-month metrics
     month_keys = period_keys_in_range("month", s, e)
@@ -1690,13 +1844,22 @@ def generate_hierarchy(start: date, end: date, output: Path, *, force: bool = Fa
         print(f"  → {len(days_with_data)} days with data, {skipped_empty} empty days skipped")
         print(f"  → {total_items} items to generate\n")
 
+    # Batch-load all sources once for the day generator
+    print("  Batch-loading sources for day generation...")
+    t_batch = time.monotonic()
+    batch = _safe(BatchSources, start, end, default=None)
+    if batch:
+        print(f"  → Batch load complete ({time.monotonic() - t_batch:.1f}s)\n")
+    else:
+        print(f"  → Batch load failed, falling back to per-day queries\n")
+
     generators = {
-        "day": lambda k: generate_day(date.fromisoformat(k), output, force=force, all_features=all_features),
-        "week": lambda k: generate_week(k, output, force=force),
-        "month": lambda k: generate_month(k, output, force=force),
-        "quarter": lambda k: generate_quarter(k, output, force=force),
-        "half": lambda k: generate_half(k, output, force=force),
-        "year": lambda k: generate_year(k, output, force=force),
+        "day": lambda k: generate_day(date.fromisoformat(k), output, force=force, all_features=all_features, batch=batch),
+        "week": lambda k: generate_week(k, output, force=force, all_features=all_features, batch=batch),
+        "month": lambda k: generate_month(k, output, force=force, all_features=all_features, batch=batch),
+        "quarter": lambda k: generate_quarter(k, output, force=force, all_features=all_features, batch=batch),
+        "half": lambda k: generate_half(k, output, force=force, all_features=all_features, batch=batch),
+        "year": lambda k: generate_year(k, output, force=force, all_features=all_features, batch=batch),
     }
 
     grand_t0 = time.monotonic()
