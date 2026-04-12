@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import ast
-import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from .core.io import save_json
 
 @dataclass
 class ModuleStats:
@@ -26,12 +25,6 @@ class ImportEdge:
 
 
 @dataclass
-class WarehouseCoverage:
-    module: str
-    has_warehouse_spec: bool
-
-
-@dataclass
 class TestCoverage:
     source_file: str
     has_test: bool
@@ -44,7 +37,6 @@ class LynchpinSelfMetrics:
     total_code_lines: int
     subpackages: List[ModuleStats]
     import_edges: List[ImportEdge]
-    warehouse_coverage: List[WarehouseCoverage]
     test_coverage: List[TestCoverage]
     isolation_warnings: List[str]
 
@@ -52,16 +44,14 @@ class LynchpinSelfMetrics:
 _LYNCHPIN_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _LYNCHPIN_ROOT.parent
 
-_SUBPACKAGES = [
-    "sources",
-    "views",
-    "metrics",
-    "analysis",
-    "system",
-    "core",
-    "ingest",
-    "context",
-]
+def _subpackages() -> List[str]:
+    return sorted(
+        path.name
+        for path in _LYNCHPIN_ROOT.iterdir()
+        if path.is_dir()
+        and not path.name.startswith("__")
+        and any(child.suffix == ".py" for child in path.iterdir())
+    )
 
 
 def _count_lines(path: Path) -> tuple[int, int, int]:
@@ -85,10 +75,8 @@ def _count_lines(path: Path) -> tuple[int, int, int]:
 def _module_breakdown() -> List[ModuleStats]:
     """Compute LoC breakdown by subpackage."""
     stats: Dict[str, ModuleStats] = {}
-    for subpkg in _SUBPACKAGES:
+    for subpkg in _subpackages():
         pkg_dir = _LYNCHPIN_ROOT / subpkg
-        if not pkg_dir.is_dir():
-            continue
         files = 0
         total_code = total_blank = total_comment = 0
         for py_file in pkg_dir.rglob("*.py"):
@@ -148,44 +136,15 @@ def _extract_imports(py_file: Path) -> Set[str]:
 def _import_graph() -> List[ImportEdge]:
     """Build cross-subpackage import graph."""
     edges: Set[tuple[str, str]] = set()
-    for subpkg in _SUBPACKAGES:
+    subpackages = set(_subpackages())
+    for subpkg in sorted(subpackages):
         pkg_dir = _LYNCHPIN_ROOT / subpkg
-        if not pkg_dir.is_dir():
-            continue
         for py_file in pkg_dir.rglob("*.py"):
             targets = _extract_imports(py_file)
             for target in targets:
-                if target != subpkg and target in _SUBPACKAGES:
+                if target != subpkg and target in subpackages:
                     edges.add((subpkg, target))
     return [ImportEdge(source=s, target=t) for s, t in sorted(edges)]
-
-
-def _warehouse_coverage() -> List[WarehouseCoverage]:
-    """Check which source modules have warehouse specs."""
-    # Known warehouse sources from warehouse.py
-    warehoused = {
-        "activitywatch", "atuin", "chatlog", "codex", "dendron", "finance",
-        "fbmessenger", "gitstats", "goodreads", "health", "instrumentation",
-        "polylogue", "raindrop", "reddit", "sessions", "sleep", "spotify",
-        "substack", "takeout", "webhistory", "webhistory_raw", "wykop",
-        "analysis",
-    }
-    results = []
-    sources_dir = _LYNCHPIN_ROOT / "sources"
-    if sources_dir.is_dir():
-        for subdir in ["captures", "exports", "indices", "libraries"]:
-            pkg = sources_dir / subdir
-            if not pkg.is_dir():
-                continue
-            for py_file in pkg.glob("*.py"):
-                if py_file.name.startswith("_"):
-                    continue
-                module_name = py_file.stem
-                results.append(WarehouseCoverage(
-                    module=f"sources.{subdir}.{module_name}",
-                    has_warehouse_spec=module_name in warehoused,
-                ))
-    return results
 
 
 def _test_coverage() -> List[TestCoverage]:
@@ -215,13 +174,11 @@ def _test_coverage() -> List[TestCoverage]:
 def _detect_isolation() -> List[str]:
     """Detect modules that don't import from other lynchpin subpackages."""
     warnings = []
+    subpackages = _subpackages()
     graph = _import_graph()
     importing = {edge.source for edge in graph}
     imported_by = {edge.target for edge in graph}
-    for subpkg in _SUBPACKAGES:
-        pkg_dir = _LYNCHPIN_ROOT / subpkg
-        if not pkg_dir.is_dir():
-            continue
+    for subpkg in subpackages:
         if subpkg not in importing and subpkg not in imported_by:
             warnings.append(f"{subpkg}: fully isolated (no cross-subpackage imports)")
         elif subpkg not in imported_by:
@@ -233,7 +190,6 @@ def run_self_analysis(out_file: Optional[str] = None) -> LynchpinSelfMetrics:
     """Run full self-analysis and optionally write to JSON."""
     subpackages = _module_breakdown()
     import_edges = _import_graph()
-    warehouse_cov = _warehouse_coverage()
     test_cov = _test_coverage()
     isolation = _detect_isolation()
 
@@ -242,14 +198,11 @@ def run_self_analysis(out_file: Optional[str] = None) -> LynchpinSelfMetrics:
         total_code_lines=sum(s.code_lines for s in subpackages),
         subpackages=subpackages,
         import_edges=import_edges,
-        warehouse_coverage=warehouse_cov,
         test_coverage=test_cov,
         isolation_warnings=isolation,
     )
 
     if out_file:
-        os.makedirs(os.path.dirname(out_file), exist_ok=True)
-        with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(asdict(metrics), f, indent=2)
+        save_json(out_file, asdict(metrics))
 
     return metrics

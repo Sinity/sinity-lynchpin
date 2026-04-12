@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from ...core.config import get_config
 from ...core.codex_exec import run_codex_exec
 
 DEFAULT_MODEL = os.environ.get("LYNCHPIN_SESSION_MODEL", "")
@@ -60,8 +61,6 @@ SUMMARY_SCHEMA = {
     "additionalProperties": False,
 }
 
-DEFAULT_OUTPUT_DIR = Path("artefacts/knowledge/sessions/summaries")
-LOG_PATH = Path("artefacts/knowledge/sessions/logs/session_summaries.jsonl")
 MODEL_PRICING: dict[str, dict[str, float]] = {
     "gpt-5-mini": {"input": 0.0000015, "output": 0.0000020},
 }
@@ -141,8 +140,9 @@ def _estimate_cost(
 
 
 def _log_call(entry: dict[str, Any]) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_PATH.open("a", encoding="utf-8") as fh:
+    log_path = get_config().session_summary_log
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
@@ -189,7 +189,7 @@ def summarise_session_transcript(
         raise ValueError(f"Input file not found: {input_path}")
 
     resolved_backend = _normalize_backend(backend)
-    destination = output or (DEFAULT_OUTPUT_DIR / f"{input_path.stem}.json")
+    destination = output or (get_config().session_summary_dir / f"{input_path.stem}.json")
     if destination.exists() and not force:
         log(
             f"Summary already exists at {destination}; skipping. Use force=True to regenerate."

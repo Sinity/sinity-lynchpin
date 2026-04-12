@@ -20,6 +20,8 @@ from .webhistory_compare import compare_webhistory
 from .webhistory_dedup import build_full_history, dedup_webhistory
 
 app = typer.Typer(help="Webhistory derived artefacts")
+DEFAULT_COMPARE_OUTPUT = get_config().webhistory_report_dir / "gestalt_compare.json"
+DEFAULT_AUDIT_OUTPUT = get_config().webhistory_report_dir / "gestalt_audit.json"
 
 
 @app.command()
@@ -114,7 +116,7 @@ def compare(
     ),
     sample: int = typer.Option(20, "--sample", help="Max samples to include for missing/extra lists."),
     output: Optional[Path] = typer.Option(
-        Path("artefacts/webhistory/gestalt_compare.json"),
+        DEFAULT_COMPARE_OUTPUT,
         "--output",
         help="Optional JSON output path.",
     ),
@@ -184,7 +186,7 @@ def audit(
     ),
     sample: int = typer.Option(20, "--sample", help="Max samples to include for mismatch lists."),
     output: Optional[Path] = typer.Option(
-        Path("artefacts/webhistory/gestalt_audit.json"),
+        DEFAULT_AUDIT_OUTPUT,
         "--output",
         help="Optional JSON output path.",
     ),

@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 import tomllib
 
-from ..core.io import resolve_project_path, save_json, save_text
+from ..core.io import resolve_analysis_path, save_json, save_text
 
 
 def _run_cargo_metadata(repo_dir):
@@ -303,8 +303,8 @@ def run_dependency_map(spec, out_file, markdown_out):
         'top_dependent_hubs': sorted(nodes, key=lambda x: (x['in_degree'], x['transitive_dependents']), reverse=True)[:20],
     }
 
-    out_abs = resolve_project_path(out_file)
-    md_abs = resolve_project_path(markdown_out)
+    out_abs = resolve_analysis_path(out_file)
+    md_abs = resolve_analysis_path(markdown_out)
     save_json(out_abs, payload, sort_keys=True)
     save_text(md_abs, _render_markdown(payload))
 

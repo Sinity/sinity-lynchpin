@@ -17,8 +17,17 @@ analysis-refresh spec="lynchpin/analysis/analysis_spec.json":
 analysis-dry-run spec="lynchpin/analysis/analysis_spec.json":
     python -m lynchpin.analysis refresh --spec "{{spec}}" --dry-run
 
+ecosystem-dashboard spec="lynchpin/analysis/analysis_spec.json":
+    python -m lynchpin.analysis ecosystem-dashboard --spec "{{spec}}"
+
+ecosystem-dashboard-serve spec="lynchpin/analysis/analysis_spec.json" host="127.0.0.1" port="8765":
+    python -m lynchpin.analysis ecosystem-dashboard-serve --spec "{{spec}}" --host "{{host}}" --port "{{port}}"
+
+scaffold-browse host="127.0.0.1" port="8766":
+    python -m lynchpin.scripts.scaffold_browser --host "{{host}}" --port "{{port}}"
+
 # Materialize the default cross-project velocity dashboard.
-velocity output="artefacts/meta/velocity/velocity.html" projects="" exclude="" aggregate="true":
+velocity output="/realm/project/knowledgebase/lynchpin/repo-artefacts/meta/velocity/velocity.html" projects="" exclude="" aggregate="true":
     python -m lynchpin.analysis.projects velocity --output "{{output}}" --projects "{{projects}}" --exclude "{{exclude}}" --aggregate "{{aggregate}}"
 
 # Materialize repomix-backed project bundles.

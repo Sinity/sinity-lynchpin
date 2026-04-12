@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from ..core.commit_stats import collect_commit_stats, parse_iso_datetime
+from ..core.io import save_json
 from ..canonical import load_analysis_spec
 
 NS_PER_SECOND = 1_000_000_000
@@ -216,8 +217,7 @@ def run_aw_git_join(spec_path, out_file, aw_db_path):
     )
     if not commits:
         output = {'error': 'no commits found in sinex stream'}
-        with open(out_file, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2, sort_keys=True)
+        save_json(out_file, output, sort_keys=True)
         return output
 
     commit_dates = [parse_iso_datetime(c['date']) for c in commits if parse_iso_datetime(c['date']) is not None]
@@ -336,8 +336,7 @@ def run_aw_git_join(spec_path, out_file, aw_db_path):
         sum(s['duration_hours'] for s in sessions), 2,
     )
 
-    with open(out_file, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, sort_keys=True)
+    save_json(out_file, output, sort_keys=True)
 
     return output
 

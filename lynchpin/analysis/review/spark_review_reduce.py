@@ -4,7 +4,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from ..core.io import load_json, resolve_project_path, save_json
+from ..core.io import load_json, resolve_analysis_path, save_json
 
 
 def _result_files(results_dir):
@@ -57,11 +57,12 @@ def _is_valid_packet_result(payload):
 
 
 def run_spark_review_reduce(packet_index_file, results_dir, out_file):
-    packet_index = load_json(resolve_project_path(packet_index_file))
+    packet_index = load_json(resolve_analysis_path(packet_index_file))
     expected_packets = packet_index.get('packets', [])
     expected_ids = {row['packet_id'] for row in expected_packets}
 
-    by_packet, invalid_files = _load_results(resolve_project_path(results_dir))
+    resolved_results_dir = resolve_analysis_path(results_dir)
+    by_packet, invalid_files = _load_results(resolved_results_dir)
 
     reviewed = []
     missing = []
@@ -147,8 +148,8 @@ def run_spark_review_reduce(packet_index_file, results_dir, out_file):
     payload = {
         'generated_at_utc': datetime.now(timezone.utc).isoformat(),
         'source': {
-            'packet_index': resolve_project_path(packet_index_file),
-            'results_dir': resolve_project_path(results_dir),
+            'packet_index': resolve_analysis_path(packet_index_file),
+            'results_dir': resolved_results_dir,
         },
         'summary': {
             'expected_packet_count': len(expected_packets),
@@ -177,5 +178,5 @@ def run_spark_review_reduce(packet_index_file, results_dir, out_file):
         'invalid_result_files': invalid_files,
         'unexpected_results': unexpected,
     }
-    save_json(resolve_project_path(out_file), payload, sort_keys=True)
+    save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload

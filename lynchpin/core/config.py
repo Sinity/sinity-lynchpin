@@ -6,7 +6,8 @@ their default filesystem roots. The important boundaries are:
 - local app state under `~/.local/share/...` for ActivityWatch and Atuin,
 - canonical raw and processed exports under `/realm/data/...`,
 - local repos under `/realm/project/...`,
-- personal notes under `/realm/project/knowledgebase/...`.
+- personal registries, generated datasets, and archives under
+  `/realm/project/knowledgebase/lynchpin/...`.
 
 If a stable source root changes, update this module and the consuming source
 module together rather than reviving a parallel reference doc.
@@ -29,6 +30,18 @@ class LynchpinConfig:
     captures_root: Path
     exports_root: Path
     libraries_root: Path
+    knowledgebase_root: Path
+    knowledge_archive_root: Path
+    repo_artefacts_root: Path
+    session_registry_dir: Path
+    artefact_catalog: Path
+    analysis_output_dir: Path
+    session_ledger_output: Path
+    artefact_ledger_output: Path
+    session_summary_dir: Path
+    session_summary_log: Path
+    velocity_output: Path
+    webhistory_report_dir: Path
     # Source paths
     activitywatch_db: Path
     atuin_db: Path
@@ -55,6 +68,7 @@ class LynchpinConfig:
     goodreads_library: Path
     wykop_root: Path
     wykop_username: str
+    samsung_gdpr_cloud_dir: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -74,6 +88,7 @@ class LynchpinConfig:
             "raindrop": self.raindrop_csv is not None and self.raindrop_csv.exists(),
             "wykop": self.wykop_root.exists(),
             "dendron": self.dendron_root.exists(),
+            "samsung_gdpr_cloud": self.samsung_gdpr_cloud_dir.exists(),
         }
 
     @classmethod
@@ -84,12 +99,63 @@ class LynchpinConfig:
         exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
+        knowledgebase_root = Path(
+            os.environ.get("LYNCHPIN_KNOWLEDGEBASE_ROOT", "/realm/project/knowledgebase/lynchpin")
+        )
+        knowledge_archive_root = Path(
+            os.environ.get("LYNCHPIN_KNOWLEDGE_ARCHIVE_ROOT", knowledgebase_root / "archive")
+        )
+        repo_artefacts_root = Path(
+            os.environ.get("LYNCHPIN_REPO_ARTEFACTS_ROOT", knowledgebase_root / "repo-artefacts")
+        )
+        registry_root = Path(os.environ.get("LYNCHPIN_REGISTRY_ROOT", knowledgebase_root / "registry"))
+        session_registry_dir = Path(
+            os.environ.get("LYNCHPIN_SESSION_REGISTRY_DIR", registry_root / "sessions")
+        )
+        artefact_catalog = Path(
+            os.environ.get("LYNCHPIN_ARTEFACT_CATALOG", registry_root / "artefact_catalog.json")
+        )
+        analysis_output_dir = Path(
+            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR", repo_artefacts_root / "analysis/derived")
+        )
+        session_ledger_output = Path(
+            os.environ.get(
+                "LYNCHPIN_SESSION_LEDGER_OUTPUT",
+                repo_artefacts_root / "knowledge/ledgers/session_index.csv",
+            )
+        )
+        artefact_ledger_output = Path(
+            os.environ.get(
+                "LYNCHPIN_ARTEFACT_LEDGER_OUTPUT",
+                repo_artefacts_root / "knowledge/ledgers/artefact_index.csv",
+            )
+        )
+        session_summary_dir = Path(
+            os.environ.get(
+                "LYNCHPIN_SESSION_SUMMARY_DIR",
+                repo_artefacts_root / "knowledge/sessions/summaries",
+            )
+        )
+        session_summary_log = Path(
+            os.environ.get(
+                "LYNCHPIN_SESSION_SUMMARY_LOG",
+                repo_artefacts_root / "knowledge/sessions/logs/session_summaries.jsonl",
+            )
+        )
+        velocity_output = Path(
+            os.environ.get("LYNCHPIN_VELOCITY_OUTPUT", repo_artefacts_root / "meta/velocity/velocity.html")
+        )
+        webhistory_report_dir = Path(
+            os.environ.get("LYNCHPIN_WEBHISTORY_REPORT_DIR", repo_artefacts_root / "webhistory")
+        )
 
         aw_db = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_DB", "~/.local/share/activitywatch/aw-server-rust/sqlite.db"
         )).expanduser()
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
-        baseline_dir = Path(os.environ.get("LYNCHPIN_BASELINE_DIR", repo_root / "artefacts/core/baseline/latest"))
+        baseline_dir = Path(
+            os.environ.get("LYNCHPIN_BASELINE_DIR", repo_artefacts_root / "core/baseline/latest")
+        )
 
         webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", captures_root / "webhistory/gestalt/raw"))
         webhistory_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_DIR", captures_root / "webhistory/gestalt/data"))
@@ -124,7 +190,7 @@ class LynchpinConfig:
         screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", captures_root / "screenshot"))
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", captures_root / "keylog"))
 
-        cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", repo_root / "artefacts/lynchpin/cache"))
+        cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", repo_artefacts_root / "lynchpin/cache"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/project/knowledgebase"))
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
@@ -134,12 +200,27 @@ class LynchpinConfig:
         ))
         wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", exports_root / "wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
+        samsung_gdpr_cloud_dir = Path(os.environ.get(
+            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", exports_root / "health/raw/samsung-gdpr-cloud"
+        ))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
             repo_root=repo_root, sinnix_root=sinnix_root, data_root=data_root,
             captures_root=captures_root, exports_root=exports_root, libraries_root=libraries_root,
+            knowledgebase_root=knowledgebase_root,
+            knowledge_archive_root=knowledge_archive_root,
+            repo_artefacts_root=repo_artefacts_root,
+            session_registry_dir=session_registry_dir,
+            artefact_catalog=artefact_catalog,
+            analysis_output_dir=analysis_output_dir,
+            session_ledger_output=session_ledger_output,
+            artefact_ledger_output=artefact_ledger_output,
+            session_summary_dir=session_summary_dir,
+            session_summary_log=session_summary_log,
+            velocity_output=velocity_output,
+            webhistory_report_dir=webhistory_report_dir,
             activitywatch_db=aw_db, atuin_db=atuin_db, baseline_dir=baseline_dir,
             webhistory_raw_dir=webhistory_raw_dir, webhistory_dir=webhistory_dir,
             webhistory_ndjson=webhistory_ndjson, sleep_jsonl=sleep_jsonl,
@@ -153,6 +234,7 @@ class LynchpinConfig:
             raindrop_dir=raindrop_dir, raindrop_csv=raindrop_csv,
             goodreads_library=goodreads_library, wykop_root=wykop_root,
             wykop_username=wykop_username,
+            samsung_gdpr_cloud_dir=samsung_gdpr_cloud_dir,
         )
 
 

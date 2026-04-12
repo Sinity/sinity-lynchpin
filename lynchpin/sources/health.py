@@ -35,6 +35,10 @@ __all__ = [
     "DailyStressSummary",
     "DailyHeartRateSummary",
     "DailyHealthSummary",
+    "ActivityDaySummary",
+    "MovementRecord",
+    "CalorieBurn",
+    "NapSession",
     # Loaders
     "daily_steps",
     "stress_measurements",
@@ -48,6 +52,10 @@ __all__ = [
     "mood_entries",
     "snoring_records",
     "respiratory_rate",
+    "activity_summaries",
+    "movement_records",
+    "calorie_burns",
+    "nap_sessions",
     "daily_stress",
     "daily_heart_rate",
     "daily_health_summary",
@@ -190,6 +198,38 @@ class DailyHealthSummary:
     skin_temp_avg: Optional[float] = None
     snoring_duration_s: int = 0
     vitality_score: Optional[float] = None
+    calories: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ActivityDaySummary:
+    date: date
+    active_time_min: float
+    calories: Optional[float] = None
+    step_count: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class MovementRecord:
+    start: datetime
+    end: datetime
+    movement_type: Optional[str] = None
+    duration_min: float = 0.0
+
+
+@dataclass(frozen=True)
+class CalorieBurn:
+    date: date
+    calories: float
+
+
+@dataclass(frozen=True)
+class NapSession:
+    start: datetime
+    end: datetime
+    duration_min: float
+    before_vitality: Optional[float] = None
+    after_vitality: Optional[float] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -460,6 +500,89 @@ def respiratory_rate(*, start: Optional[date] = None, end: Optional[date] = None
     return result
 
 
+def activity_summaries(*, start: Optional[date] = None, end: Optional[date] = None) -> list[ActivityDaySummary]:
+    """Daily activity summary from Samsung Health."""
+    result = []
+    for r in _load_jsonl("health_activity_summary.jsonl"):
+        d = r.get("date")
+        if not d or d < "2000":
+            continue
+        d_date = date.fromisoformat(d)
+        if not _in_range(d_date, start, end):
+            continue
+        active_ms = r.get("active_time_ms", 0)
+        result.append(ActivityDaySummary(
+            date=d_date,
+            active_time_min=float(active_ms) / 60_000 if active_ms else 0.0,
+            calories=r.get("calories"),
+            step_count=r.get("step_count"),
+        ))
+    return result
+
+
+def movement_records(*, start: Optional[date] = None, end: Optional[date] = None) -> list[MovementRecord]:
+    """Movement events from Samsung Health."""
+    result = []
+    for r in _load_jsonl("health_movement.jsonl"):
+        st = _parse_dt(r.get("start_time"))
+        et = _parse_dt(r.get("end_time"))
+        if st is None or et is None:
+            continue
+        if not _in_range(st.date(), start, end):
+            continue
+        dur_ms = r.get("duration_ms", 0)
+        result.append(MovementRecord(
+            start=st,
+            end=et,
+            movement_type=r.get("movement_type"),
+            duration_min=float(dur_ms) / 60_000 if dur_ms else 0.0,
+        ))
+    return result
+
+
+def calorie_burns(*, start: Optional[date] = None, end: Optional[date] = None) -> list[CalorieBurn]:
+    """Daily calorie burn totals from Samsung Health."""
+    result = []
+    for r in _load_jsonl("health_calories.jsonl"):
+        d = r.get("date")
+        if not d or d < "2000":
+            continue
+        d_date = date.fromisoformat(d)
+        if not _in_range(d_date, start, end):
+            continue
+        active = r.get("active_calorie") or 0
+        rest = r.get("rest_calorie") or 0
+        tef = r.get("tef_calorie") or 0
+        cal = float(active) + float(rest) + float(tef)
+        if cal <= 0:
+            continue
+        result.append(CalorieBurn(date=d_date, calories=round(cal, 1)))
+    return result
+
+
+def nap_sessions(*, start: Optional[date] = None, end: Optional[date] = None) -> list[NapSession]:
+    """Nap sessions from Samsung Health."""
+    result = []
+    for r in _load_jsonl("health_naps.jsonl"):
+        st = _parse_dt(r.get("start_time"))
+        et = _parse_dt(r.get("end_time"))
+        if st is None or et is None:
+            continue
+        if not _in_range(st.date(), start, end):
+            continue
+        dur = r.get("duration_min")
+        if dur is None:
+            continue
+        result.append(NapSession(
+            start=st,
+            end=et,
+            duration_min=float(dur),
+            before_vitality=r.get("before_vitality"),
+            after_vitality=r.get("after_vitality"),
+        ))
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Loaders — daily aggregates
 # ══════════════════════════════════════════════════════════════════════════════
@@ -571,6 +694,12 @@ def daily_health_summary(*, start: Optional[date] = None, end: Optional[date] = 
             vitality_by_day[v.date] = v.activity_score
             all_dates.add(v.date)
 
+    # Calories
+    cal_by_day: dict[date, float] = {}
+    for c in calorie_burns(start=start, end=end):
+        cal_by_day[c.date] = c.calories
+        all_dates.add(c.date)
+
     def _avg(vals: list) -> Optional[float]:
         return sum(vals) / len(vals) if vals else None
 
@@ -600,5 +729,6 @@ def daily_health_summary(*, start: Optional[date] = None, end: Optional[date] = 
             skin_temp_avg=_avg(skin_vals),
             snoring_duration_s=snoring_by_day.get(d, 0),
             vitality_score=vitality_by_day.get(d),
+            calories=cal_by_day.get(d),
         ))
     return result

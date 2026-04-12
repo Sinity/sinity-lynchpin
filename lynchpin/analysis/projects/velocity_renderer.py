@@ -1,7 +1,8 @@
 """HTML/ECharts rendering for the cross-repo velocity dashboard.
 
-The dashboard is generated into `artefacts/meta/velocity/velocity.html`. The
-categorization comes from the project profiles in `lynchpin.core.projects`.
+The dashboard is generated into the configured knowledgebase-backed artefact
+root. The categorization comes from the project profiles in
+`lynchpin.core.projects`.
 """
 
 from collections.abc import Mapping
@@ -12,6 +13,7 @@ from typing import Dict
 
 from ...core.projects import ProjectProfile
 from ...core.cache import write_text_if_changed
+from ...core.config import get_config
 from .velocity_analysis import (
     AGGREGATE_PROJECT,
     LogFn,
@@ -23,7 +25,7 @@ from .velocity_analysis import (
     select_project_profiles,
 )
 
-DEFAULT_OUTPUT = Path("artefacts/meta/velocity/velocity.html")
+DEFAULT_OUTPUT = get_config().velocity_output
 
 
 def build_velocity_dashboard(

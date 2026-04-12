@@ -1,9 +1,9 @@
 """Cross-Project Productivity and Structural Metrics Suite"""
 import os
-import json
 from collections import Counter
 from datetime import datetime
 
+from ..core.io import save_json
 from ..core.fs import walk_files
 from ..core.git import get_log
 from ...core.projects import ALL_PROJECTS
@@ -152,6 +152,5 @@ def run_cross_project(base_dir, out_file):
     print("Gathering productivity traces...")
     res = analyze_productivity(base_dir, res)
     
-    with open(out_file, 'w') as f:
-        json.dump({"projects": res}, f, indent=2)
+    save_json(out_file, {"projects": res})
     print(f"Results saved to {out_file}.")

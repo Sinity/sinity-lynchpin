@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timedelta
-from typing import Sequence
+from typing import Optional, Sequence
 
 from ..core.analytics import (
     TrendResult, ChangePoint, CorrelationResult, PeriodicComponent, DayCluster, AnomalyResult,
@@ -49,51 +49,56 @@ _NUMERIC_FIELDS: tuple[str, ...] = ()  # populated after DayFeatures is defined
 class DayFeatures:
     date: date
     # AW
-    active_hours: float
-    deep_work_min: float
-    sustained_focus_min: float
-    fragmentation: float
-    project_count: int
+    active_hours: Optional[float] = None
+    deep_work_min: Optional[float] = None
+    sustained_focus_min: Optional[float] = None
+    fragmentation: Optional[float] = None
+    project_count: Optional[int] = None
     # Git
-    commit_count: int
+    commit_count: Optional[int] = None
     # Terminal
-    command_count: int
+    command_count: Optional[int] = None
     # Polylogue
-    chat_sessions: int
+    chat_sessions: Optional[int] = None
     # Sleep
-    sleep_hours: float
-    sleep_score: float
+    sleep_hours: Optional[float] = None
+    sleep_score: Optional[float] = None
     # Spotify
-    listening_hours: float
+    listening_hours: Optional[float] = None
     # Reddit
-    reddit_comments: int
+    reddit_comments: Optional[int] = None
     # Health — basic
-    daily_steps: int
-    vitality_score: float
+    daily_steps: Optional[int] = None
+    vitality_score: Optional[float] = None
     # Health — expanded
-    stress_avg: float
-    heart_rate_avg: float
-    heart_rate_resting: float
-    hrv_rmssd: float
-    spo2_avg: float
-    floors_climbed: float
-    skin_temp_avg: float
-    snoring_duration_min: float
+    stress_avg: Optional[float] = None
+    heart_rate_avg: Optional[float] = None
+    heart_rate_resting: Optional[float] = None
+    hrv_rmssd: Optional[float] = None
+    spo2_avg: Optional[float] = None
+    floors_climbed: Optional[float] = None
+    skin_temp_avg: Optional[float] = None
+    snoring_duration_min: Optional[float] = None
     # Web
-    browsing_visits: int
-    browsing_domains: int
+    browsing_visits: Optional[int] = None
+    browsing_domains: Optional[int] = None
     # Social
-    messenger_messages: int
-    bookmarks_added: int
+    messenger_messages: Optional[int] = None
+    bookmarks_added: Optional[int] = None
     # Substance
-    substance_doses: int
+    substance_doses: Optional[int] = None
     # Categorical
-    dominant_mode: str
-    dominant_project: str
+    dominant_mode: str = "unknown"
+    dominant_project: str = ""
 
     def as_numeric_dict(self) -> dict[str, float]:
-        """All numeric fields as {name: float} — ready for analytics functions."""
-        return {name: float(getattr(self, name)) for name in _NUMERIC_FIELDS}
+        """All numeric fields as {name: float} — skips None values."""
+        result = {}
+        for name in _NUMERIC_FIELDS:
+            val = getattr(self, name)
+            if val is not None:
+                result[name] = float(val)
+        return result
 
 
 _NUMERIC_FIELDS = tuple(
@@ -103,8 +108,8 @@ _NUMERIC_FIELDS = tuple(
 
 
 def _extract(features: Sequence[DayFeatures], field: str) -> list[float]:
-    """Extract one numeric field as a float series."""
-    return [float(getattr(f, field)) for f in features]
+    """Extract one numeric field as a float series — skips None values."""
+    return [float(v) for f in features if (v := getattr(f, field)) is not None]
 
 
 def _safe_fetch(fn, *args, default=None, **kwargs):
@@ -175,7 +180,7 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
 
     # ── Health: basic ──
     steps_by_day = {s.date: s.steps for s in _safe_fetch(daily_steps, start=start, end=end)}
-    vitality_by_day = {v.date: v.activity_score or 0 for v in _safe_fetch(daily_vitality, start=start, end=end)}
+    vitality_by_day = {v.date: v.activity_score for v in _safe_fetch(daily_vitality, start=start, end=end) if v.activity_score is not None}
 
     # ── Health: expanded (daily summary joins all health signals) ──
     health_by_day = {h.date: h for h in _safe_fetch(daily_health_summary, start=start, end=end)}
@@ -203,45 +208,78 @@ def build_day_features(start: date, end: date) -> list[DayFeatures]:
         if d not in proj_by_day and sess.project:
             proj_by_day[d] = sess.project
 
-    # ── Assemble ──
+    # ── Collect all dates that have data from ANY source ──
+    data_dates: set[date] = set()
+    data_dates.update(d for d, v in aw_active.items() if v > 0)
+    data_dates.update(dw_by_day)
+    data_dates.update(sf_by_day)
+    data_dates.update(frag_by_day)
+    data_dates.update(att_by_day)
+    data_dates.update(git_by_day)
+    data_dates.update(shell_by_day)
+    data_dates.update(chat_by_day)
+    data_dates.update(sleep_data)
+    data_dates.update(spotify_by_day)
+    data_dates.update(reddit_by_day)
+    data_dates.update(steps_by_day)
+    data_dates.update(vitality_by_day)
+    data_dates.update(health_by_day)
+    data_dates.update(web_by_day)
+    data_dates.update(msg_by_day)
+    data_dates.update(bm_by_day)
+    data_dates.update(sub_by_day)
+    data_dates.update(mode_by_day)
+
+    # ── Assemble — only dates with data from at least one source ──
     result: list[DayFeatures] = []
     for d in iter_dates(start, end):
+        if d not in data_dates:
+            continue
         sleep_entry = sleep_data.get(d)
         health = health_by_day.get(d)
         web = web_by_day.get(d)
+        aw_has_data = d in aw_active and aw_active[d] > 0
         result.append(DayFeatures(
             date=d,
-            active_hours=round(aw_active.get(d, 0) / 3600, 2),
-            deep_work_min=round(dw_by_day.get(d, 0), 1),
-            sustained_focus_min=round(sf_by_day.get(d, 0), 1),
-            fragmentation=round(frag_by_day.get(d, 0), 3),
-            project_count=att_by_day.get(d, 0),
-            commit_count=git_by_day.get(d, 0),
-            command_count=shell_by_day.get(d, 0),
-            chat_sessions=chat_by_day.get(d, 0),
-            sleep_hours=round(sleep_entry.total_minutes / 60, 2) if sleep_entry else 0,
-            sleep_score=round(sleep_entry.avg_score or 0, 1) if sleep_entry else 0,
-            listening_hours=round(spotify_by_day.get(d, 0), 2),
-            reddit_comments=reddit_by_day.get(d, 0),
-            daily_steps=steps_by_day.get(d, 0),
-            vitality_score=vitality_by_day.get(d, 0),
-            # Health expanded
-            stress_avg=round(health.stress_avg or 0, 1) if health else 0,
-            heart_rate_avg=round(health.heart_rate_avg or 0, 1) if health else 0,
-            heart_rate_resting=round(health.heart_rate_resting or 0, 1) if health else 0,
-            hrv_rmssd=round(health.hrv_rmssd_avg or 0, 2) if health else 0,
-            spo2_avg=round(health.spo2_avg or 0, 1) if health else 0,
-            floors_climbed=round(health.floors or 0, 1) if health else 0,
-            skin_temp_avg=round(health.skin_temp_avg or 0, 2) if health else 0,
-            snoring_duration_min=round((health.snoring_duration_s or 0) / 60, 1) if health else 0,
+            # AW — None if no AW data for this day
+            active_hours=round(aw_active[d] / 3600, 2) if aw_has_data else None,
+            deep_work_min=round(dw_by_day[d], 1) if d in dw_by_day else None,
+            sustained_focus_min=round(sf_by_day[d], 1) if d in sf_by_day else None,
+            fragmentation=round(frag_by_day[d], 3) if d in frag_by_day else None,
+            project_count=att_by_day[d] if d in att_by_day else None,
+            # Git
+            commit_count=git_by_day[d] if d in git_by_day else None,
+            # Terminal
+            command_count=shell_by_day[d] if d in shell_by_day else None,
+            # Polylogue
+            chat_sessions=chat_by_day[d] if d in chat_by_day else None,
+            # Sleep
+            sleep_hours=round(sleep_entry.total_minutes / 60, 2) if sleep_entry else None,
+            sleep_score=round(sleep_entry.avg_score, 1) if sleep_entry and sleep_entry.avg_score is not None else None,
+            # Spotify
+            listening_hours=round(spotify_by_day[d], 2) if d in spotify_by_day else None,
+            # Reddit
+            reddit_comments=reddit_by_day[d] if d in reddit_by_day else None,
+            # Health basic
+            daily_steps=steps_by_day[d] if d in steps_by_day else None,
+            vitality_score=vitality_by_day[d] if d in vitality_by_day else None,
+            # Health expanded — only if health summary exists for this date
+            stress_avg=round(health.stress_avg, 1) if health and health.stress_avg is not None else None,
+            heart_rate_avg=round(health.heart_rate_avg, 1) if health and health.heart_rate_avg is not None else None,
+            heart_rate_resting=round(health.heart_rate_resting, 1) if health and health.heart_rate_resting is not None else None,
+            hrv_rmssd=round(health.hrv_rmssd_avg, 2) if health and health.hrv_rmssd_avg is not None else None,
+            spo2_avg=round(health.spo2_avg, 1) if health and health.spo2_avg is not None else None,
+            floors_climbed=round(health.floors, 1) if health and health.floors is not None else None,
+            skin_temp_avg=round(health.skin_temp_avg, 2) if health and health.skin_temp_avg is not None else None,
+            snoring_duration_min=round(health.snoring_duration_s / 60, 1) if health and health.snoring_duration_s else None,
             # Web
-            browsing_visits=web.visit_count if web else 0,
-            browsing_domains=web.unique_domains if web else 0,
+            browsing_visits=web.visit_count if web else None,
+            browsing_domains=web.unique_domains if web else None,
             # Social
-            messenger_messages=msg_by_day.get(d, 0),
-            bookmarks_added=bm_by_day.get(d, 0),
+            messenger_messages=msg_by_day[d] if d in msg_by_day else None,
+            bookmarks_added=bm_by_day[d] if d in bm_by_day else None,
             # Substance
-            substance_doses=sub_by_day.get(d, 0),
+            substance_doses=sub_by_day[d] if d in sub_by_day else None,
             # Categorical
             dominant_mode=mode_by_day.get(d, "unknown"),
             dominant_project=proj_by_day.get(d, ""),
@@ -274,7 +312,8 @@ def weekly_rhythm(features: Sequence[DayFeatures]) -> WeeklyRhythm:
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     by_dow: dict[int, list[float]] = defaultdict(list)
     for f in features:
-        by_dow[f.date.weekday()].append(f.active_hours)
+        if f.active_hours is not None:
+            by_dow[f.date.weekday()].append(f.active_hours)
     means = {day_names[i]: round(sum(by_dow.get(i, [0])) / max(len(by_dow.get(i, [1])), 1), 2) for i in range(7)}
 
     best = max(means, key=means.get)
@@ -303,15 +342,22 @@ def productivity_drivers(
     if len(features) < 10:
         return []
 
-    target = _extract(features, target_field)
     results: list[tuple[str, CorrelationResult]] = []
     for name in _NUMERIC_FIELDS:
         if name == target_field:
             continue
-        values = _extract(features, name)
-        if all(v == 0 for v in values):
+        # Extract paired values where both fields are non-None
+        vals = []
+        targets = []
+        for f in features:
+            v = getattr(f, name)
+            t = getattr(f, target_field)
+            if v is not None and t is not None:
+                vals.append(float(v))
+                targets.append(float(t))
+        if len(vals) < 10 or all(v == 0 for v in vals):
             continue
-        corrs = cross_correlate(values, target, max_lag=max_lag)
+        corrs = cross_correlate(vals, targets, max_lag=max_lag)
         significant = [c for c in corrs if c.significant]
         if significant:
             best = max(significant, key=lambda c: abs(c.r))
@@ -354,7 +400,7 @@ def day_type_clusters(
     use_fields = cluster_fields or ("active_hours", "deep_work_min", "fragmentation",
                                      "commit_count", "command_count", "project_count",
                                      "chat_sessions", "listening_hours", "daily_steps")
-    feature_dicts = [{name: float(getattr(f, name)) for name in use_fields} for f in features]
+    feature_dicts = [{name: float(v) for name in use_fields if (v := getattr(f, name)) is not None} for f in features]
     return cluster_days(feature_dicts, k=k)
 
 
@@ -385,10 +431,16 @@ def day_anomalies(
         return {}
     today = features[-1]
     history = features[:-1]
-    return {
-        name: anomaly_score(float(getattr(today, name)), _extract(history, name))
-        for name in metrics
-    }
+    result = {}
+    for name in metrics:
+        val = getattr(today, name)
+        if val is None:
+            continue
+        hist = _extract(history, name)
+        if not hist:
+            continue
+        result[name] = anomaly_score(float(val), hist)
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -453,12 +505,22 @@ def health_correlations(features: Sequence[DayFeatures]) -> dict[str, list[Corre
 
     results: dict[str, list[CorrelationResult]] = {}
     for cause_field, effect_field, label in pairs:
-        cause = _extract(features, cause_field)
-        effect = _extract(features, effect_field)
-        # Skip if either series is all zeros
-        if all(v == 0 for v in cause) or all(v == 0 for v in effect):
+        # Extract paired values where both fields are non-None
+        cause_vals = []
+        effect_vals = []
+        for f in features:
+            c = getattr(f, cause_field)
+            e = getattr(f, effect_field)
+            if c is not None and e is not None:
+                cause_vals.append(float(c))
+                effect_vals.append(float(e))
+        # Need enough paired data points
+        if len(cause_vals) < 14:
             continue
-        corrs = cross_correlate(cause, effect, max_lag=3)
+        # Skip if either series is all zeros
+        if all(v == 0 for v in cause_vals) or all(v == 0 for v in effect_vals):
+            continue
+        corrs = cross_correlate(cause_vals, effect_vals, max_lag=3)
         significant = [c for c in corrs if c.significant]
         if significant:
             results[label] = significant

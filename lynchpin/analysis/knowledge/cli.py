@@ -1,7 +1,7 @@
 """CLI entrypoints for knowledge ledgers and transcript summaries.
 
-The registry-backed ledger inputs live in `config/knowledge/`. Generated
-outputs stay under `artefacts/knowledge/`.
+Registry-backed inputs live under the configured knowledgebase root. Generated
+outputs stay under the configured knowledgebase artefact root.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
+from ...core.config import get_config
 from .ledgers import write_artefact_ledger, write_session_ledger
 from .session_summaries import summarise_session_transcript
 
@@ -34,6 +35,7 @@ def _parse_optional_path(value: str) -> Path | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    cfg = get_config()
     parser = argparse.ArgumentParser(
         description="Knowledge-oriented materializers for ledgers and session summaries.",
     )
@@ -41,17 +43,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_index = subparsers.add_parser(
         "session-index",
-        help="Export the session ledger CSV from config/knowledge/sessions.",
+        help="Export the session ledger CSV from the curated knowledgebase registry.",
     )
     session_index.add_argument(
         "--sessions-dir",
         type=Path,
-        default=Path("config/knowledge/sessions"),
+        default=cfg.session_registry_dir,
     )
     session_index.add_argument(
         "--output",
         type=Path,
-        default=Path("artefacts/knowledge/ledgers/session_index.csv"),
+        default=cfg.session_ledger_output,
     )
 
     artefact_index = subparsers.add_parser(
@@ -61,12 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     artefact_index.add_argument(
         "--catalog",
         type=Path,
-        default=Path("config/knowledge/artefact_catalog.json"),
+        default=cfg.artefact_catalog,
     )
     artefact_index.add_argument(
         "--output",
         type=Path,
-        default=Path("artefacts/knowledge/ledgers/artefact_index.csv"),
+        default=cfg.artefact_ledger_output,
     )
     artefact_index.add_argument(
         "--base-dir",

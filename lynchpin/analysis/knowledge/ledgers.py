@@ -1,11 +1,11 @@
 """Knowledge-ledger builders for session and artefact registries.
 
-Tracked registry inputs live under `config/knowledge/`:
+Curated registry inputs now live under the configured knowledgebase root:
 
-- `config/knowledge/sessions/*.md` for curated session notes
-- `config/knowledge/artefact_catalog.json` for the artefact catalog
+- `<knowledgebase>/registry/sessions/*.md` for curated session notes
+- `<knowledgebase>/registry/artefact_catalog.json` for the artefact catalog
 
-The generated CSVs belong under `artefacts/knowledge/ledgers/`.
+Generated CSVs belong under the configured knowledgebase artefact root.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ...core.cache import write_text_if_changed
+from ...core.config import get_config
 
 
 REQUIRED_FIELDS = [
@@ -161,10 +162,13 @@ def _list_items(lines: list[str]) -> list[str]:
 
 def write_session_ledger(
     *,
-    sessions_dir: Path = Path("config/knowledge/sessions"),
-    output: Path = Path("artefacts/knowledge/ledgers/session_index.csv"),
+    sessions_dir: Path | None = None,
+    output: Path | None = None,
 ) -> SessionLedgerResult:
-    records = build_session_records(sessions_dir)
+    cfg = get_config()
+    resolved_sessions_dir = sessions_dir or cfg.session_registry_dir
+    resolved_output = output or cfg.session_ledger_output
+    records = build_session_records(resolved_sessions_dir)
     fieldnames = [
         "date",
         "provider",
@@ -197,8 +201,8 @@ def write_session_ledger(
                 "last_modified": record.last_modified.isoformat(),
             }
         )
-    wrote = write_text_if_changed(output, buffer.getvalue())
-    return SessionLedgerResult(output=output, row_count=len(records), wrote=wrote)
+    wrote = write_text_if_changed(resolved_output, buffer.getvalue())
+    return SessionLedgerResult(output=resolved_output, row_count=len(records), wrote=wrote)
 
 
 def load_catalog(path: Path) -> list[dict]:
@@ -242,14 +246,17 @@ def build_artefacts(entries: Iterable[dict], base_dir: Path) -> list[Artefact]:
 
 def write_artefact_ledger(
     *,
-    catalog: Path = Path("config/knowledge/artefact_catalog.json"),
-    output: Path = Path("artefacts/knowledge/ledgers/artefact_index.csv"),
+    catalog: Path | None = None,
+    output: Path | None = None,
     base_dir: Path | None = None,
 ) -> ArtefactLedgerResult:
-    if not catalog.exists():
-        raise ValueError(f"Catalog not found: {catalog}")
+    cfg = get_config()
+    resolved_catalog = catalog or cfg.artefact_catalog
+    resolved_output = output or cfg.artefact_ledger_output
+    if not resolved_catalog.exists():
+        raise ValueError(f"Catalog not found: {resolved_catalog}")
 
-    entries = load_catalog(catalog)
+    entries = load_catalog(resolved_catalog)
     artefacts = build_artefacts(entries, base_dir=(base_dir or Path(".").resolve()))
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
@@ -267,10 +274,10 @@ def write_artefact_ledger(
     )
     for artefact in sorted(artefacts, key=lambda a: a.artifact_id):
         writer.writerow(artefact.to_row())
-    wrote = write_text_if_changed(output, buffer.getvalue())
+    wrote = write_text_if_changed(resolved_output, buffer.getvalue())
     missing = tuple(sorted(a.artifact_id for a in artefacts if not a.exists))
     return ArtefactLedgerResult(
-        output=output,
+        output=resolved_output,
         artefact_count=len(artefacts),
         wrote=wrote,
         missing_artifacts=missing,

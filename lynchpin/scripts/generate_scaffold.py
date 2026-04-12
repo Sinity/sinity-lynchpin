@@ -246,7 +246,7 @@ def _build_features_verbose(start: date, end: date):
     spotify_by_day = {s.date: s.hours for s in spotify_act}
     reddit_by_day = {r.date: r.comment_count for r in reddit_act}
     steps_by_day = {s.date: s.steps for s in steps_data}
-    vitality_by_day = {v.date: v.activity_score or 0 for v in vitality_data}
+    vitality_by_day = {v.date: v.activity_score for v in vitality_data if v.activity_score is not None}
     health_by_day = {h.date: h for h in health_sum}
     web_by_day = {w.date: w for w in web_act}
     msg_by_day = {m.date: m.message_count for m in msg_act}
@@ -261,45 +261,86 @@ def _build_features_verbose(start: date, end: date):
         if d not in proj_by_day and sess.project:
             proj_by_day[d] = sess.project
 
+    # Collect all dates with data from any source
+    data_dates: set[date] = set()
+    if isinstance(aw_active, dict):
+        data_dates.update(d for d, v in aw_active.items() if v > 0)
+    data_dates.update(dw_by_day)
+    data_dates.update(sf_by_day)
+    data_dates.update(frag_by_day)
+    data_dates.update(att_by_day)
+    data_dates.update(git_by_day)
+    data_dates.update(shell_by_day)
+    data_dates.update(chat_by_day)
+    data_dates.update(sleep_data)
+    data_dates.update(spotify_by_day)
+    data_dates.update(reddit_by_day)
+    data_dates.update(steps_by_day)
+    data_dates.update(vitality_by_day)
+    data_dates.update(health_by_day)
+    data_dates.update(web_by_day)
+    data_dates.update(msg_by_day)
+    data_dates.update(bm_by_day)
+    data_dates.update(sub_by_day)
+    data_dates.update(mode_by_day)
+
     print("      Assembling features...", end=" ", flush=True)
     result: list[DayFeatures] = []
+    skipped = 0
     for d in iter_dates(start, end):
+        if d not in data_dates:
+            skipped += 1
+            continue
         sleep_entry = sleep_data.get(d)
         health = health_by_day.get(d)
         web = web_by_day.get(d)
+        aw_has_data = isinstance(aw_active, dict) and d in aw_active and aw_active[d] > 0
         result.append(DayFeatures(
             date=d,
-            active_hours=round(aw_active.get(d, 0) / 3600, 2) if isinstance(aw_active, dict) else 0,
-            deep_work_min=round(dw_by_day.get(d, 0), 1),
-            sustained_focus_min=round(sf_by_day.get(d, 0), 1),
-            fragmentation=round(frag_by_day.get(d, 0), 3),
-            project_count=att_by_day.get(d, 0),
-            commit_count=git_by_day.get(d, 0),
-            command_count=shell_by_day.get(d, 0),
-            chat_sessions=chat_by_day.get(d, 0),
-            sleep_hours=round(sleep_entry.total_minutes / 60, 2) if sleep_entry else 0,
-            sleep_score=round(sleep_entry.avg_score or 0, 1) if sleep_entry else 0,
-            listening_hours=round(spotify_by_day.get(d, 0), 2),
-            reddit_comments=reddit_by_day.get(d, 0),
-            daily_steps=steps_by_day.get(d, 0),
-            vitality_score=vitality_by_day.get(d, 0),
-            stress_avg=round(health.stress_avg or 0, 1) if health else 0,
-            heart_rate_avg=round(health.heart_rate_avg or 0, 1) if health else 0,
-            heart_rate_resting=round(health.heart_rate_resting or 0, 1) if health else 0,
-            hrv_rmssd=round(health.hrv_rmssd_avg or 0, 2) if health else 0,
-            spo2_avg=round(health.spo2_avg or 0, 1) if health else 0,
-            floors_climbed=round(health.floors or 0, 1) if health else 0,
-            skin_temp_avg=round(health.skin_temp_avg or 0, 2) if health else 0,
-            snoring_duration_min=round((health.snoring_duration_s or 0) / 60, 1) if health else 0,
-            browsing_visits=web.visit_count if web else 0,
-            browsing_domains=web.unique_domains if web else 0,
-            messenger_messages=msg_by_day.get(d, 0),
-            bookmarks_added=bm_by_day.get(d, 0),
-            substance_doses=sub_by_day.get(d, 0),
+            # AW — None if no AW data for this day
+            active_hours=round(aw_active[d] / 3600, 2) if aw_has_data else None,
+            deep_work_min=round(dw_by_day[d], 1) if d in dw_by_day else None,
+            sustained_focus_min=round(sf_by_day[d], 1) if d in sf_by_day else None,
+            fragmentation=round(frag_by_day[d], 3) if d in frag_by_day else None,
+            project_count=att_by_day[d] if d in att_by_day else None,
+            # Git
+            commit_count=git_by_day[d] if d in git_by_day else None,
+            # Terminal
+            command_count=shell_by_day[d] if d in shell_by_day else None,
+            # Polylogue
+            chat_sessions=chat_by_day[d] if d in chat_by_day else None,
+            # Sleep
+            sleep_hours=round(sleep_entry.total_minutes / 60, 2) if sleep_entry else None,
+            sleep_score=round(sleep_entry.avg_score, 1) if sleep_entry and sleep_entry.avg_score is not None else None,
+            # Spotify
+            listening_hours=round(spotify_by_day[d], 2) if d in spotify_by_day else None,
+            # Reddit
+            reddit_comments=reddit_by_day[d] if d in reddit_by_day else None,
+            # Health basic
+            daily_steps=steps_by_day[d] if d in steps_by_day else None,
+            vitality_score=vitality_by_day[d] if d in vitality_by_day else None,
+            # Health expanded — only if health summary exists for this date
+            stress_avg=round(health.stress_avg, 1) if health and health.stress_avg is not None else None,
+            heart_rate_avg=round(health.heart_rate_avg, 1) if health and health.heart_rate_avg is not None else None,
+            heart_rate_resting=round(health.heart_rate_resting, 1) if health and health.heart_rate_resting is not None else None,
+            hrv_rmssd=round(health.hrv_rmssd_avg, 2) if health and health.hrv_rmssd_avg is not None else None,
+            spo2_avg=round(health.spo2_avg, 1) if health and health.spo2_avg is not None else None,
+            floors_climbed=round(health.floors, 1) if health and health.floors is not None else None,
+            skin_temp_avg=round(health.skin_temp_avg, 2) if health and health.skin_temp_avg is not None else None,
+            snoring_duration_min=round(health.snoring_duration_s / 60, 1) if health and health.snoring_duration_s else None,
+            # Web
+            browsing_visits=web.visit_count if web else None,
+            browsing_domains=web.unique_domains if web else None,
+            # Social
+            messenger_messages=msg_by_day[d] if d in msg_by_day else None,
+            bookmarks_added=bm_by_day[d] if d in bm_by_day else None,
+            # Substance
+            substance_doses=sub_by_day[d] if d in sub_by_day else None,
+            # Categorical
             dominant_mode=mode_by_day.get(d, "unknown"),
             dominant_project=proj_by_day.get(d, ""),
         ))
-    print(f"done ({len(result)} days)")
+    print(f"done ({len(result)} days, {skipped} no-data skipped)")
     return result
 
 
@@ -344,7 +385,9 @@ def _baseline_comparison(d: date, metrics: dict[str, float], all_features: list 
         return result
 
     for metric_name, today_val in metrics.items():
-        vals_30 = [float(getattr(f, metric_name, 0)) for f in features if hasattr(f, metric_name)]
+        if today_val is None:
+            continue
+        vals_30 = [float(v) for f in features if hasattr(f, metric_name) and (v := getattr(f, metric_name)) is not None]
         vals_7 = vals_30[-7:] if len(vals_30) >= 7 else vals_30
 
         if not vals_30:
@@ -413,7 +456,11 @@ class BatchSources:
         from ..sources.polylogue import work_events, day_session_summaries
         from ..sources.terminal import shell_sessions
         from ..sources.sleep_infer import infer_sleep
-        from ..sources.health import daily_steps, daily_health_summary, heart_rate_measurements, daily_stress
+        from ..sources.health import (
+            daily_steps, daily_health_summary, heart_rate_measurements, daily_stress,
+            calorie_burns, nap_sessions, activity_summaries, movement_records,
+        )
+        from ..sources.sleep import sleep_stages
         from ..sources.web import daily_browsing
         from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
         from ..sources.timeline import work_sessions
@@ -452,11 +499,16 @@ class BatchSources:
         self.shell_sessions = _load("Terminal", shell_sessions, start=s_dt, end=e_dt)
         # Sleep
         self.sleep = _load("Sleep", infer_sleep, start=start - timedelta(days=1), end=end)
+        self.sleep_stages = _load("Sleep stages", sleep_stages, start=start, end=end)
         # Health
         self.steps = _load("Health steps", daily_steps, start=start, end=end)
         self.health_summary = _load("Health summary", daily_health_summary, start=start, end=end)
         self.hr = _load("Heart rate", heart_rate_measurements, start=start, end=end)
         self.stress = _load("Stress", daily_stress, start=start, end=end)
+        self.calories = _load("Calories", calorie_burns, start=start, end=end)
+        self.naps = _load("Naps", nap_sessions, start=start, end=end)
+        self.activity_summary = _load("Activity summary", activity_summaries, start=start, end=end)
+        self.movement = _load("Movement", movement_records, start=start, end=end)
         # Web
         self.browsing = _load("Web browsing", daily_browsing, start=start, end=end)
         # Social
@@ -497,6 +549,11 @@ class BatchSources:
         self._substance_by_date: dict[date, list] = defaultdict(list)
         for e in self.substance:
             self._substance_by_date[e.date].append(e)
+        self._sleep_stages_by_date = _group_by_date(self.sleep_stages, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._calories_by_date = {c.date: c for c in self.calories}
+        self._naps_by_date = _group_by_date(self.naps, lambda n: n.start.date() if hasattr(n, 'start') and n.start else None)
+        self._activity_summary_by_date = {a.date: a for a in self.activity_summary}
+        self._movement_by_date = _group_by_date(self.movement, lambda m: m.start.date() if hasattr(m, 'start') and m.start else None)
 
 
 def _group_by_date(items: list, date_fn) -> dict[date, list]:
@@ -551,6 +608,11 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         raindrop = [batch._raindrop_by_date[d]] if d in batch._raindrop_by_date else []
         work_sess = batch._work_sessions_by_date.get(d, [])
         substance_day = batch._substance_by_date.get(d, [])
+        sleep_stages_day = batch._sleep_stages_by_date.get(d, [])
+        calories_day = [batch._calories_by_date[d]] if d in batch._calories_by_date else []
+        naps_day = batch._naps_by_date.get(d, [])
+        activity_summary_day = [batch._activity_summary_by_date[d]] if d in batch._activity_summary_by_date else []
+        movement_day = batch._movement_by_date.get(d, [])
         # Per-day only sources (can't batch)
         from ..sources.activity_segments import segment_day
         from ..sources.day_summary import day_summary
@@ -568,7 +630,11 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         from ..sources.polylogue import work_events, day_session_summaries
         from ..sources.terminal import shell_sessions
         from ..sources.sleep_infer import infer_sleep
-        from ..sources.health import daily_steps, daily_health_summary, heart_rate_measurements, daily_stress
+        from ..sources.sleep import sleep_stages as sleep_stages_fn
+        from ..sources.health import (
+            daily_steps, daily_health_summary, heart_rate_measurements, daily_stress,
+            calorie_burns, nap_sessions, activity_summaries, movement_records,
+        )
         from ..sources.web import daily_browsing
         from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
         from ..sources.timeline import work_sessions as ws_fn
@@ -600,6 +666,11 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         raindrop = _safe(daily_raindrop_activity, start=d, end=d, default=[])
         work_sess = _safe(ws_fn, start=d, end=d, default=[])
         substance_day = _safe(substance_for_date, d, default=[])
+        sleep_stages_day = _safe(sleep_stages_fn, start=d, end=d, default=[])
+        calories_day = _safe(calorie_burns, start=d, end=d, default=[])
+        naps_day = _safe(nap_sessions, start=d, end=d, default=[])
+        activity_summary_day = _safe(activity_summaries, start=d, end=d, default=[])
+        movement_day = _safe(movement_records, start=d, end=d, default=[])
         seg = _safe(segment_day, d, default=None)
         two_track = _safe(day_summary, d, default=None)
 
@@ -609,21 +680,21 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
 
     metrics = {
         "date": d.isoformat(),
-        "active_hours": round(active_h, 2),
-        "deep_work_blocks": len(dw),
-        "deep_work_min": round(sum(b.duration_min for b in dw), 1) if dw else 0,
-        "sustained_focus_min": round(sum(b.duration_min for b in sf), 1) if sf else 0,
-        "fragmentation": round(frag[0].fragmentation if frag else 0, 3),
-        "attention_entropy": round(attn[0].entropy if attn else 0, 3),
-        "commits": total_commits,
-        "churn": total_churn,
+        "active_hours": round(active_h, 2) if active_h else None,
+        "deep_work_blocks": len(dw) if dw else None,
+        "deep_work_min": round(sum(b.duration_min for b in dw), 1) if dw else None,
+        "sustained_focus_min": round(sum(b.duration_min for b in sf), 1) if sf else None,
+        "fragmentation": round(frag[0].fragmentation, 3) if frag else None,
+        "attention_entropy": round(attn[0].entropy, 3) if attn else None,
+        "commits": total_commits if total_commits else None,
+        "churn": total_churn if total_churn else None,
     }
 
     # ── Baseline comparison ──
     baseline_metrics = {
-        "active_hours": active_h,
-        "commit_count": total_commits,
-        "fragmentation": frag[0].fragmentation if frag else 0,
+        "active_hours": active_h if active_h else None,
+        "commit_count": total_commits if total_commits else None,
+        "fragmentation": frag[0].fragmentation if frag else None,
     }
     baseline = _safe(_baseline_comparison, d, baseline_metrics, all_features, default={})
 
@@ -645,6 +716,13 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
     })
     write_json(day_dir / "shell.json", shells)
     write_json(day_dir / "sleep.json", sleep_data)
+    if sleep_stages_day:
+        write_json(day_dir / "sleep_stages.json", sleep_stages_day)
+        # Compute per-night architecture from stages
+        from ..sources.sleep import sleep_architecture
+        arch = _safe(sleep_architecture, start=d, end=d, default=[])
+        if arch:
+            write_json(day_dir / "sleep_architecture.json", arch)
     write_json(day_dir / "health.json", {
         "steps": steps,
         "summary": health_summary,
@@ -655,6 +733,10 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         "attention": attn,
         "deep_work": dw,
         "sustained_focus": sf,
+        "calories": calories_day,
+        "naps": naps_day,
+        "activity_summary": activity_summary_day,
+        "movement": movement_day,
     })
     if browsing:
         write_json(day_dir / "browsing.json", browsing)
@@ -750,12 +832,12 @@ def generate_week(week_key: str, output: Path, *, force: bool = False,
         sleep_by_date = {sl.date if hasattr(sl, 'date') else None: sl for sl in sleep}
         for f in features:
             sl = sleep_by_date.get(f.date)
-            if sl:
+            if sl and f.active_hours is not None:
                 sleep_activity.append({
                     "date": f.date.isoformat(),
                     "sleep_hours": round(getattr(sl, 'total_minutes', 0) / 60, 2),
                     "next_day_active_h": round(f.active_hours, 2),
-                    "next_day_fragmentation": round(f.fragmentation, 3),
+                    "next_day_fragmentation": round(f.fragmentation, 3) if f.fragmentation is not None else None,
                 })
 
     # Per-day metrics table
@@ -763,11 +845,11 @@ def generate_week(week_key: str, output: Path, *, force: bool = False,
     for f in (features or []):
         day_metrics.append({
             "date": f.date.isoformat(),
-            "active_hours": round(f.active_hours, 2),
-            "deep_work_min": round(f.deep_work_min, 1),
+            "active_hours": round(f.active_hours, 2) if f.active_hours is not None else None,
+            "deep_work_min": round(f.deep_work_min, 1) if f.deep_work_min is not None else None,
             "commits": f.commit_count,
-            "fragmentation": round(f.fragmentation, 3),
-            "sleep_hours": round(f.sleep_hours, 2),
+            "fragmentation": round(f.fragmentation, 3) if f.fragmentation is not None else None,
+            "sleep_hours": round(f.sleep_hours, 2) if f.sleep_hours is not None else None,
             "chat_sessions": f.chat_sessions,
             "dominant_project": f.dominant_project,
             "dominant_mode": f.dominant_mode,
@@ -792,10 +874,13 @@ def generate_week(week_key: str, output: Path, *, force: bool = False,
     if health:
         stress_vals = [h.stress_avg for h in health if h.stress_avg is not None]
         hr_vals = [h.heart_rate_avg for h in health if h.heart_rate_avg is not None]
+        cal_vals = [h.calories for h in health if h.calories is not None]
         if stress_vals:
             health_week["avg_stress"] = round(sum(stress_vals) / len(stress_vals), 1)
         if hr_vals:
             health_week["avg_heart_rate"] = round(sum(hr_vals) / len(hr_vals), 1)
+        if cal_vals:
+            health_week["avg_daily_calories"] = round(sum(cal_vals) / len(cal_vals), 0)
 
     # Browsing aggregation for week
     browsing_week = {}
@@ -919,11 +1004,11 @@ def generate_month(month_key: str, output: Path, *, force: bool = False,
         for f in analysis.features:
             day_metrics.append({
                 "date": f.date.isoformat(),
-                "active_hours": round(f.active_hours, 2),
-                "deep_work_min": round(f.deep_work_min, 1),
+                "active_hours": round(f.active_hours, 2) if f.active_hours is not None else None,
+                "deep_work_min": round(f.deep_work_min, 1) if f.deep_work_min is not None else None,
                 "commits": f.commit_count,
-                "fragmentation": round(f.fragmentation, 3),
-                "sleep_hours": round(f.sleep_hours, 2),
+                "fragmentation": round(f.fragmentation, 3) if f.fragmentation is not None else None,
+                "sleep_hours": round(f.sleep_hours, 2) if f.sleep_hours is not None else None,
                 "daily_steps": f.daily_steps,
                 "dominant_project": f.dominant_project,
             })
@@ -1315,10 +1400,11 @@ def generate_overview(output: Path, *, force: bool = False, data_start: date | N
     periodicity = {}
     if features and len(features) > 14:
         for field_name in ("active_hours", "commit_count", "fragmentation", "sleep_hours"):
-            vals = [float(getattr(f, field_name, 0)) for f in features]
-            p = _safe(detect_periodicity, vals, default=[])
-            if p:
-                periodicity[field_name] = p
+            vals = [float(v) for f in features if (v := getattr(f, field_name)) is not None]
+            if len(vals) > 14:
+                p = _safe(detect_periodicity, vals, default=[])
+                if p:
+                    periodicity[field_name] = p
 
     # HMM regime detection (uses hmmlearn if available, k-means fallback)
     regimes = None
@@ -1327,7 +1413,7 @@ def generate_overview(output: Path, *, force: bool = False, data_start: date | N
             f.name for f in fields(features[0].__class__)
             if f.name not in ("date", "dominant_mode", "dominant_project")
         ]
-        matrix = [[float(getattr(f, n)) for n in numeric_fields] for f in features]
+        matrix = [[float(getattr(f, n) or 0) for n in numeric_fields] for f in features]
         regime_result = _safe(detect_regimes, matrix, feature_names=numeric_fields, default=None)
         if regime_result and regime_result.states:
             regimes = {
@@ -1381,7 +1467,7 @@ def generate_overview(output: Path, *, force: bool = False, data_start: date | N
             f.name for f in fields(features[0].__class__)
             if f.name not in ("date", "dominant_mode", "dominant_project")
         ]
-        series = {name: [float(getattr(f, name)) for f in features] for name in numeric_names}
+        series = {name: [float(getattr(f, name) or 0) for f in features] for name in numeric_names}
         corr_matrix = _safe(compute_corr_matrix, series, default={})
 
     # Granger causality tests (sleep→productivity, etc.)
@@ -1394,8 +1480,8 @@ def generate_overview(output: Path, *, force: bool = False, data_start: date | N
             ("active_hours", "commit_count"),
         ]
         for cause_name, effect_name in pairs:
-            cause = [float(getattr(f, cause_name)) for f in features]
-            effect = [float(getattr(f, effect_name)) for f in features]
+            cause = [float(getattr(f, cause_name) or 0) for f in features]
+            effect = [float(getattr(f, effect_name) or 0) for f in features]
             result = _safe(granger_test, cause, effect, max_lag=3, default=[])
             if result:
                 granger_results[f"{cause_name}→{effect_name}"] = result
@@ -1426,7 +1512,7 @@ def generate_overview(output: Path, *, force: bool = False, data_start: date | N
         for h in health_all:
             f = feat_by_date.get(h.date)
             if f and h.stress_avg is not None:
-                stress_prod.append((h.stress_avg, f.active_hours, f.fragmentation))
+                stress_prod.append((h.stress_avg, f.active_hours or 0, f.fragmentation or 0))
         if len(stress_prod) >= 10:
             health_correlations["stress_vs_active_hours"] = {
                 "n": len(stress_prod),
@@ -1504,7 +1590,7 @@ def _build_source_coverage(features, git_act, chat_act, sleep, substance, month_
     for f in (features or []):
         mk = key_for_date("month", f.date)
         if mk in coverage:
-            if f.active_hours > 0:
+            if f.active_hours is not None and f.active_hours > 0:
                 coverage[mk]["activitywatch"] = True
 
     # Git
@@ -1559,10 +1645,10 @@ def _substance_productivity(substance_entries, features) -> dict:
             "substance": entry.substance,
             "amount_mg": entry.amount_mg,
             "time": entry.time,
-            "active_hours": round(f.active_hours, 2),
-            "fragmentation": round(f.fragmentation, 3),
+            "active_hours": round(f.active_hours, 2) if f.active_hours is not None else None,
+            "fragmentation": round(f.fragmentation, 3) if f.fragmentation is not None else None,
             "commits": f.commit_count,
-            "deep_work_min": round(f.deep_work_min, 1),
+            "deep_work_min": round(f.deep_work_min, 1) if f.deep_work_min is not None else None,
         })
 
     if not results:
@@ -1767,7 +1853,7 @@ def generate_hierarchy(start: date, end: date, output: Path, *, force: bool = Fa
     all_features = _safe(_build_features_verbose, start, end, default=[])
     feat_elapsed = time.monotonic() - t_feat
     if all_features:
-        non_zero = sum(1 for f in all_features if f.active_hours > 0 or f.commit_count > 0 or f.sleep_hours > 0)
+        non_zero = sum(1 for f in all_features if (f.active_hours or 0) > 0 or (f.commit_count or 0) > 0 or (f.sleep_hours or 0) > 0)
         print(f"  → {len(all_features)} days loaded, {non_zero} with activity ({feat_elapsed:.1f}s)\n")
     else:
         print(f"  → No features available ({feat_elapsed:.1f}s)\n")
@@ -1779,7 +1865,7 @@ def generate_hierarchy(start: date, end: date, output: Path, *, force: bool = Fa
         days_with_data = set()
         # Days with features that have non-zero values
         for f in (all_features or []):
-            if f.active_hours > 0 or f.commit_count > 0 or f.sleep_hours > 0 or f.daily_steps > 0:
+            if (f.active_hours or 0) > 0 or (f.commit_count or 0) > 0 or (f.sleep_hours or 0) > 0 or (f.daily_steps or 0) > 0:
                 days_with_data.add(f.date)
         print(f"    from features: {len(days_with_data)} days")
         # Days with substance

@@ -6,6 +6,7 @@ Absorbs: exports/health, exports/sleep, processed/sleep_correlation, metrics/hea
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -13,14 +14,19 @@ from typing import Iterator, List, Optional
 
 from ..core.config import get_config
 from ..core.parse import parse_datetime as _parse_dt, parse_date_from_any as _parse_date, safe_float as _safe_float
+from ..core.primitives import logical_date
 
 __all__ = [
     "SleepSegment",
     "SleepEntry",
+    "SleepStageRecord",
+    "SleepArchitecture",
     "SleepProductivity",
     "entries",
     "sleep_for_date",
     "entries_in_range",
+    "sleep_stages",
+    "sleep_architecture",
     "sleep_productivity",
 ]
 
@@ -52,6 +58,55 @@ class SleepEntry:
         if self.avg_score >= 80: return "good"
         if self.avg_score >= 60: return "fair"
         return "poor"
+
+
+@dataclass(frozen=True)
+class SleepStageRecord:
+    start: datetime
+    end: datetime
+    stage: str  # "awake", "light", "deep", "rem"
+    sleep_id: str
+    duration_min: float
+
+
+@dataclass(frozen=True)
+class SleepArchitecture:
+    """Per-night sleep stage breakdown."""
+    date: date
+    sleep_id: str
+    total_min: float
+    awake_min: float
+    light_min: float
+    deep_min: float
+    rem_min: float
+    awake_pct: float
+    light_pct: float
+    deep_pct: float
+    rem_pct: float
+    stage_transitions: int
+    first_rem_min: Optional[float] = None  # minutes from sleep onset to first REM
+
+
+_PROCESSED = Path("/realm/data/exports/health/processed")
+
+
+def _load_jsonl(filename: str):
+    path = _PROCESSED / filename
+    if not path.exists():
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
+    if start and d < start:
+        return False
+    if end and d > end:
+        return False
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -134,6 +189,107 @@ def sleep_for_date(target: date) -> Optional[SleepEntry]:
 
 def entries_in_range(start: date, end: date) -> list[SleepEntry]:
     return [e for e in entries() if start <= e.date <= end]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sleep stage analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def sleep_stages(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SleepStageRecord]:
+    """Sleep stage records from Samsung Health GDPR export."""
+    result = []
+    for r in _load_jsonl("health_sleep_stages.jsonl"):
+        st = _parse_dt(r.get("start_time"))
+        et = _parse_dt(r.get("end_time"))
+        if st is None or et is None:
+            continue
+        if not _in_range(st.date(), start, end):
+            continue
+        stage = r.get("stage")
+        sleep_id = r.get("sleep_id")
+        if not stage or not sleep_id:
+            continue
+        dur = r.get("duration_minutes")
+        result.append(SleepStageRecord(
+            start=st,
+            end=et,
+            stage=stage,
+            sleep_id=sleep_id,
+            duration_min=float(dur) if dur is not None else max((et - st).total_seconds() / 60, 0),
+        ))
+    return result
+
+
+def sleep_architecture(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SleepArchitecture]:
+    """Per-night sleep stage architecture from Samsung Health.
+
+    Groups stage records by sleep_id, computes duration breakdown, percentages,
+    stage transition count, and time-to-first-REM.
+    """
+    stages = sleep_stages(start=start, end=end)
+    if not stages:
+        return []
+
+    # Group by sleep_id
+    by_id: dict[str, list[SleepStageRecord]] = defaultdict(list)
+    for s in stages:
+        by_id[s.sleep_id].append(s)
+
+    result = []
+    for sleep_id, records in by_id.items():
+        # Sort by start time
+        records.sort(key=lambda r: r.start)
+
+        # Sum durations by stage
+        stage_min: dict[str, float] = defaultdict(float)
+        for r in records:
+            stage_min[r.stage] += r.duration_min
+
+        awake = stage_min.get("awake", 0.0)
+        light = stage_min.get("light", 0.0)
+        deep = stage_min.get("deep", 0.0)
+        rem = stage_min.get("rem", 0.0)
+        total = awake + light + deep + rem
+
+        if total <= 0:
+            continue
+
+        # Count stage transitions
+        transitions = 0
+        for i in range(1, len(records)):
+            if records[i].stage != records[i - 1].stage:
+                transitions += 1
+
+        # Time to first REM (minutes from sleep onset)
+        onset = records[0].start
+        first_rem_min: Optional[float] = None
+        for r in records:
+            if r.stage == "rem":
+                first_rem_min = max((r.start - onset).total_seconds() / 60, 0)
+                break
+
+        # Logical date from the earliest stage start
+        d = logical_date(records[0].start)
+
+        result.append(SleepArchitecture(
+            date=d,
+            sleep_id=sleep_id,
+            total_min=round(total, 1),
+            awake_min=round(awake, 1),
+            light_min=round(light, 1),
+            deep_min=round(deep, 1),
+            rem_min=round(rem, 1),
+            awake_pct=round(awake / total * 100, 1),
+            light_pct=round(light / total * 100, 1),
+            deep_pct=round(deep / total * 100, 1),
+            rem_pct=round(rem / total * 100, 1),
+            stage_transitions=transitions,
+            first_rem_min=round(first_rem_min, 1) if first_rem_min is not None else None,
+        ))
+
+    result.sort(key=lambda a: a.date)
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════

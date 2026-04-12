@@ -8,6 +8,7 @@ import re
 import json
 import subprocess
 
+from ..core.io import save_json
 
 SINEX_DIR_DEFAULT = '/realm/project/sinex'
 SKIP_DIRS = {'.git', 'target', 'node_modules', '.direnv', '.sinex'}
@@ -279,6 +280,5 @@ def run_sinex_analysis(sinex_dir, out_file):
     print(f"  {totals['functions']} fns, {totals['structs']} structs, "
           f"{totals['traits']} traits, {totals['unsafe_blocks']} unsafe blocks")
 
-    with open(out_file, 'w') as f:
-        json.dump(output, f, indent=2)
+    save_json(out_file, output)
     print(f"\nSaved to {out_file}")

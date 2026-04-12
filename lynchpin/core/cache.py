@@ -1,9 +1,9 @@
 """Cache helpers for lazy, read-only Lynchpin readers.
 
-`persistent_cache` stores cachew sqlite files under `artefacts/lynchpin/cache`.
-Use it only for deterministic readers: source modules remain read-only, while
-explicit writes and network refreshes belong under `lynchpin.analysis` or
-`lynchpin.scripts`.
+`persistent_cache` stores cachew sqlite files under the configured
+knowledgebase-backed runtime cache. Use it only for deterministic readers:
+source modules remain read-only, while explicit writes and network refreshes
+belong under `lynchpin.analysis` or `lynchpin.scripts`.
 
 Prefer `file_signature` / `files_signature` when path, mtime, and size are
 enough to invalidate cached results. Use `file_digest` / `files_digest` when
@@ -33,7 +33,7 @@ def persistent_cache(
     chunk_by: int | None = None,
     logger: logging.Logger | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Cachew adapter that stores sqlite caches under artefacts/lynchpin/cache."""
+    """Cachew adapter that stores sqlite caches under the configured runtime cache."""
 
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         def cache_path(*args: P.args, **kwargs: P.kwargs) -> Path:
