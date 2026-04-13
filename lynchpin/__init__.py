@@ -1,1 +1,0 @@
-"""Lynchpin package root."""
