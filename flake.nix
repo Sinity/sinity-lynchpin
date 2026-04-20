@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs-rust.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -10,6 +11,7 @@
     {
       self,
       nixpkgs,
+      nixpkgs-rust,
       flake-utils,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -19,6 +21,17 @@
           inherit system;
           config.allowUnfree = true;
         };
+        pkgsRust = import nixpkgs-rust {
+          inherit system;
+          config.allowUnfree = true;
+        };
+        rustToolchain = with pkgsRust; [
+          cargo
+          rustc
+          rustfmt
+          clippy
+          rust-analyzer
+        ];
         fetchFromGitHub =
           if pkgs ? fetchFromGitHub then
             pkgs.fetchFromGitHub
@@ -721,34 +734,36 @@ EOF
 
         devShells.default = pkgs.mkShell {
           name = "sinity-lynchpin";
-          packages = with pkgs; [
-            pythonEnv
-            rEnv
-            duckdb
-            sqlite
-            git
-            gh
-            jq
-            yq
-            ripgrep
-            fd
-            just
-            nodejs_22
-            cargo
-            go
-            rustup
-            gnumake
-            cmake
-            graphviz
-            imagemagick
-            ffmpeg
-            deno
-            pandoc
-            uv
-            pre-commit
-            gnuplot
-            gnome-keyring
-          ];
+          packages =
+            (with pkgs; [
+              pythonEnv
+              rEnv
+              duckdb
+              sqlite
+              git
+              gh
+              jq
+              yq
+              ripgrep
+              fd
+              just
+              nodejs_22
+            ])
+            ++ rustToolchain
+            ++ (with pkgs; [
+              go
+              gnumake
+              cmake
+              graphviz
+              imagemagick
+              ffmpeg
+              deno
+              pandoc
+              uv
+              pre-commit
+              gnuplot
+              gnome-keyring
+            ]);
 
           shellHook = ''
             export PYTHONBREAKPOINT=ipdb.set_trace

@@ -44,6 +44,10 @@ scratch/
 .cclsp.json
 .mcp.json
 
+# Playwright-MCP debug artifacts (browser session logs + screenshots)
+.playwright-mcp/
+scaffold-browser.png
+
 AGENTS.override.md
 lynchpin.egg-info/
 usb.ids

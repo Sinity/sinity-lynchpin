@@ -3,7 +3,90 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime
+import subprocess
 from ..core import git
+
+
+_COMMIT_TYPE_RE = re.compile(
+    r"^(fix|refactor|feat|test|docs|chore|ci|style|build|perf)(?:\([^)]+\))?(?::|\b)",
+    re.IGNORECASE,
+)
+
+
+def _classify_commit_type(subject):
+    match = _COMMIT_TYPE_RE.match(subject.strip())
+    if match:
+        return match.group(1).lower()
+    lowered = subject.lower()
+    if lowered.startswith('merge '):
+        return 'merge'
+    return 'other'
+
+
+def _top_area(path):
+    rel = path.replace('\\', '/')
+    if '/' not in rel:
+        return '(root)'
+    return rel.split('/', 1)[0]
+
+
+def _resolve_default_branch(repo_dir):
+    for candidate in ('master', 'main'):
+        try:
+            subprocess.check_output(['git', 'rev-parse', '--verify', candidate], cwd=repo_dir, stderr=subprocess.DEVNULL)
+            return candidate
+        except Exception:
+            continue
+    return 'HEAD'
+
+
+def _summarize_branch_sizes(repo_dir):
+    baseline = _resolve_default_branch(repo_dir)
+    try:
+        raw = subprocess.check_output(
+            ['git', 'for-each-ref', '--format=%(refname:short)', 'refs/heads'],
+            cwd=repo_dir,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return {'mean': 0, '50%': 0, 'max': 0, 'branch_count': 0}, []
+
+    sizes = []
+    details = []
+    for branch in [line.strip() for line in raw.splitlines() if line.strip()]:
+        try:
+            merge_base = subprocess.check_output(
+                ['git', 'merge-base', baseline, branch],
+                cwd=repo_dir,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+            if not merge_base:
+                continue
+            unique = int(
+                subprocess.check_output(
+                    ['git', 'rev-list', '--count', f'{merge_base}..{branch}'],
+                    cwd=repo_dir,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).strip()
+            )
+        except Exception:
+            continue
+        sizes.append(unique)
+        details.append({'branch': branch, 'unique_commits': unique})
+    if not sizes:
+        return {'mean': 0, '50%': 0, 'max': 0, 'branch_count': 0}, []
+    ordered = sorted(sizes)
+    summary = {
+        'mean': round(sum(ordered) / len(ordered), 3),
+        '50%': float(ordered[len(ordered) // 2]),
+        'max': float(ordered[-1]),
+        'branch_count': len(ordered),
+    }
+    details.sort(key=lambda row: row['unique_commits'], reverse=True)
+    return summary, details[:20]
 
 
 def compute_monthly_velocity(sinex_dir):
@@ -120,16 +203,20 @@ def compute_sinex_stats(sinex_dir):
     last_date = None
     active_days = set()
     files_per_commit = []
-    
+    churn_per_commit = []
+    commit_type_counts = defaultdict(int)
+    area_touches = defaultdict(int)
     cur_files = 0
+    cur_churn = 0
 
-    for line in git.get_log(sinex_dir, branch="HEAD",
-                            params=['--pretty=format:COMMIT|%aI', '--name-only']):
+    for line in git.get_log(sinex_dir, branch="HEAD", params=['--pretty=format:COMMIT|%aI|%s', '--numstat']):
         line = line.strip()
         if not line:
             continue
         if line.startswith('COMMIT|'):
-            d = line.split('|')[1][:10]
+            parts = line.split('|', 2)
+            d = parts[1][:10]
+            subject = parts[2] if len(parts) > 2 else ''
             if d:
                 total_commits += 1
                 active_days.add(d)
@@ -137,15 +224,27 @@ def compute_sinex_stats(sinex_dir):
                     first_date = d
                 if last_date is None or d > last_date:
                     last_date = d
+            commit_type_counts[_classify_commit_type(subject)] += 1
             if cur_files > 0:
                 files_per_commit.append(cur_files)
+                churn_per_commit.append(cur_churn)
             cur_files = 0
+            cur_churn = 0
         else:
-            if line.endswith('.rs') and 'target/' not in line:
+            parts = line.split('\t')
+            if len(parts) < 3:
+                continue
+            added_raw, deleted_raw, rel = parts
+            added = int(added_raw) if added_raw.isdigit() else 0
+            deleted = int(deleted_raw) if deleted_raw.isdigit() else 0
+            area_touches[_top_area(rel)] += 1
+            if rel.endswith('.rs') and 'target/' not in rel:
                 cur_files += 1
+                cur_churn += added + deleted
 
     if cur_files > 0:
         files_per_commit.append(cur_files)
+        churn_per_commit.append(cur_churn)
 
     if first_date and last_date:
         span_days = (datetime.strptime(last_date, '%Y-%m-%d') -
@@ -153,16 +252,41 @@ def compute_sinex_stats(sinex_dir):
     else:
         span_days = 0
         
-    files_per_commit.sort()
+    files_per_commit = sorted(files_per_commit)
+    churn_per_commit = sorted(churn_per_commit)
     n = len(files_per_commit)
+    branch_size_summary, branch_sizes = _summarize_branch_sizes(sinex_dir)
+    calendar_days = span_days + 1 if span_days else (1 if total_commits else 0)
+    active_day_ratio = round(len(active_days) / max(calendar_days, 1), 6)
+    area_total = max(sum(area_touches.values()), 1)
+    top_touch_areas = [
+        {
+            'area': area,
+            'touches': touches,
+            'share': round(touches / area_total, 6),
+        }
+        for area, touches in sorted(area_touches.items(), key=lambda item: item[1], reverse=True)
+    ]
+    top_touch_areas = top_touch_areas[:20]
 
     return {
         'total_commits': total_commits,
         'first_commit': first_date,
         'last_commit': last_date,
         'span_days': span_days,
+        'calendar_days': calendar_days,
         'active_days': len(active_days),
+        'active_day_ratio': active_day_ratio,
         'active_months': len(set(d[:7] for d in active_days)),
+        'commits_per_calendar_day': round(total_commits / max(calendar_days, 1), 3),
+        'commits_per_active_day': round(total_commits / max(len(active_days), 1), 3),
         'files_per_commit_median': files_per_commit[n//2] if n > 0 else 0,
-        'files_per_commit_mean': round(sum(files_per_commit)/max(1, n), 1)
+        'files_per_commit_mean': round(sum(files_per_commit)/max(1, n), 1),
+        'median_churn_per_commit': churn_per_commit[n//2] if n > 0 else 0,
+        'p90_files_per_commit': files_per_commit[min(n - 1, int(n * 0.9))] if n > 0 else 0,
+        'p90_churn_per_commit': churn_per_commit[min(n - 1, int(n * 0.9))] if n > 0 else 0,
+        'commit_type_counts': dict(sorted(commit_type_counts.items(), key=lambda item: item[1], reverse=True)),
+        'branch_size_summary': branch_size_summary,
+        'branch_sizes': branch_sizes,
+        'top_touch_areas': top_touch_areas,
     }

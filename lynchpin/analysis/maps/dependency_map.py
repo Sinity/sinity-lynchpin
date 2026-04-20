@@ -3,95 +3,16 @@
 import json
 import os
 import subprocess
-import glob
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-import tomllib
 
 from ..core.io import resolve_analysis_path, save_json, save_text
 
 
 def _run_cargo_metadata(repo_dir):
     cmd = ['cargo', 'metadata', '--format-version', '1', '--locked']
-    out = subprocess.check_output(cmd, cwd=repo_dir, text=True)
+    out = subprocess.check_output(cmd, cwd=repo_dir, text=True, stderr=subprocess.DEVNULL)
     return json.loads(out)
-
-
-def _workspace_from_toml(repo_dir):
-    root_toml = os.path.join(repo_dir, 'Cargo.toml')
-    with open(root_toml, 'rb') as f:
-        root = tomllib.load(f)
-
-    members = ((root.get('workspace') or {}).get('members') or [])
-    member_dirs = []
-    for member in members:
-        pattern = os.path.join(repo_dir, member)
-        if '*' in member or '?' in member or '[' in member:
-            for path in sorted(glob.glob(pattern)):
-                if os.path.isfile(os.path.join(path, 'Cargo.toml')):
-                    member_dirs.append(path)
-        else:
-            if os.path.isfile(os.path.join(pattern, 'Cargo.toml')):
-                member_dirs.append(pattern)
-
-    member_dirs = sorted(set(member_dirs))
-    packages = {}
-    for path in member_dirs:
-        manifest_abs = os.path.join(path, 'Cargo.toml')
-        with open(manifest_abs, 'rb') as f:
-            doc = tomllib.load(f)
-        pkg = doc.get('package') or {}
-        name = pkg.get('name')
-        if not name:
-            continue
-        version_val = pkg.get('version', '0.0.0')
-        if isinstance(version_val, dict):
-            version = 'workspace-inherited'
-        else:
-            version = str(version_val)
-        rel_path = os.path.relpath(path, repo_dir).replace('\\', '/')
-        pkg_id = f'{name}@{rel_path}'
-        packages[pkg_id] = {
-            'id': pkg_id,
-            'name': name,
-            'version': version,
-            'manifest_path': os.path.relpath(manifest_abs, repo_dir).replace('\\', '/'),
-            'crate_path': os.path.relpath(path, repo_dir).replace('\\', '/'),
-            'doc': doc,
-        }
-
-    name_to_id = {p['name']: pkg_id for pkg_id, p in packages.items()}
-    edges = set()
-    dep_sections = ('dependencies', 'dev-dependencies', 'build-dependencies')
-    for src_id, info in packages.items():
-        doc = info['doc']
-        for sec in dep_sections:
-            deps = doc.get(sec) or {}
-            for dep_name, dep_val in deps.items():
-                target_name = dep_name
-                if isinstance(dep_val, dict) and isinstance(dep_val.get('package'), str):
-                    target_name = dep_val['package']
-                dst_id = name_to_id.get(target_name)
-                if dst_id and dst_id != src_id:
-                    edges.add((src_id, dst_id))
-        targets = (doc.get('target') or {}).values()
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            for sec in dep_sections:
-                deps = target.get(sec) or {}
-                for dep_name, dep_val in deps.items():
-                    target_name = dep_name
-                    if isinstance(dep_val, dict) and isinstance(dep_val.get('package'), str):
-                        target_name = dep_val['package']
-                    dst_id = name_to_id.get(target_name)
-                    if dst_id and dst_id != src_id:
-                        edges.add((src_id, dst_id))
-
-    for info in packages.values():
-        info.pop('doc', None)
-
-    return packages, sorted(edges)
 
 
 def _workspace_packages(metadata, repo_dir):
@@ -229,13 +150,9 @@ def _render_markdown(payload):
 def run_dependency_map(spec, out_file, markdown_out):
     repo_dir = spec['sinex']['repo']
     source_command = 'cargo metadata --format-version 1 --locked'
-    try:
-        metadata = _run_cargo_metadata(repo_dir)
-        workspace = _workspace_packages(metadata, repo_dir)
-        edges = _workspace_edges(metadata, workspace)
-    except FileNotFoundError:
-        workspace, edges = _workspace_from_toml(repo_dir)
-        source_command = 'workspace Cargo.toml + crate Cargo.toml fallback'
+    metadata = _run_cargo_metadata(repo_dir)
+    workspace = _workspace_packages(metadata, repo_dir)
+    edges = _workspace_edges(metadata, workspace)
 
     node_ids = sorted(workspace.keys())
     deg = _compute_degrees(node_ids, edges)

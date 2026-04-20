@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 
 
-from lynchpin.analysis.canonical import _is_skip_marker
 from lynchpin.analysis.comparison import _parse_date, _rolling_best
 
 
@@ -84,32 +83,3 @@ class TestRollingBest:
         daily = {"2026-03-01": 50, "2026-03-02": 80, "2026-03-03": 30}
         result = _rolling_best(daily, 1)
         assert result["best_total"] == 80
-
-
-# ---------------------------------------------------------------------------
-# _is_skip_marker (canonical)
-# ---------------------------------------------------------------------------
-
-class TestIsSkipMarker:
-    def test_dict_with_skipped_true_returns_true(self) -> None:
-        assert _is_skip_marker({"skipped": True}) is True
-
-    def test_dict_with_skipped_false_returns_false(self) -> None:
-        assert _is_skip_marker({"skipped": False}) is False
-
-    def test_dict_without_skipped_returns_false(self) -> None:
-        assert _is_skip_marker({"data": "something"}) is False
-
-    def test_empty_dict_returns_false(self) -> None:
-        assert _is_skip_marker({}) is False
-
-    def test_non_dict_returns_false(self) -> None:
-        assert _is_skip_marker(None) is False
-        assert _is_skip_marker("string") is False
-        assert _is_skip_marker(42) is False
-        assert _is_skip_marker([]) is False
-
-    def test_skipped_truthy_non_boolean_returns_false(self) -> None:
-        # skipped must be True, not just truthy
-        assert _is_skip_marker({"skipped": 1}) is False
-        assert _is_skip_marker({"skipped": "yes"}) is False

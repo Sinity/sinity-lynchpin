@@ -7,7 +7,7 @@ their default filesystem roots. The important boundaries are:
 - canonical raw and processed exports under `/realm/data/...`,
 - local repos under `/realm/project/...`,
 - personal registries, generated datasets, and archives under
-  `/realm/project/knowledgebase/lynchpin/...`.
+  `/realm/project/__lynchpin_exported/...`.
 
 If a stable source root changes, update this module and the consuming source
 module together rather than reviving a parallel reference doc.
@@ -100,7 +100,7 @@ class LynchpinConfig:
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         knowledgebase_root = Path(
-            os.environ.get("LYNCHPIN_KNOWLEDGEBASE_ROOT", "/realm/project/knowledgebase/lynchpin")
+            os.environ.get("LYNCHPIN_KNOWLEDGEBASE_ROOT", "/realm/project/__lynchpin_exported")
         )
         knowledge_archive_root = Path(
             os.environ.get("LYNCHPIN_KNOWLEDGE_ARCHIVE_ROOT", knowledgebase_root / "archive")
