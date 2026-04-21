@@ -1,1 +1,0 @@
-"""Sinex analysis modules."""
