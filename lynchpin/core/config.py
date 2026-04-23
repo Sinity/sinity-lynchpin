@@ -55,6 +55,7 @@ class LynchpinConfig:
     spotify_root: Path
     polylogue_root: Path
     polylogue_archive_root: Path
+    polylogue_db: Path
     fbmessenger_gdpr_root: Path
     fbmessenger_db: Path
     asciinema_root: Path
@@ -81,9 +82,14 @@ class LynchpinConfig:
             "codex": self.codex_sessions_root.exists(),
             "reddit": self.reddit_export_dir is not None and self.reddit_export_dir.exists(),
             "spotify": self.spotify_root.exists(),
-            "polylogue": self.polylogue_root.exists(),
+            "polylogue": (
+                self.polylogue_db.exists()
+                or self.polylogue_root.exists()
+                or self.polylogue_archive_root.exists()
+            ),
             "fbmessenger": self.fbmessenger_gdpr_root.exists() or Path(self.fbmessenger_db).exists(),
             "asciinema": self.asciinema_root.exists(),
+            "keylog": (self.keylog_root / "logs").exists(),
             "goodreads": self.goodreads_library.exists(),
             "raindrop": self.raindrop_csv is not None and self.raindrop_csv.exists(),
             "wykop": self.wykop_root.exists(),
@@ -175,6 +181,13 @@ class LynchpinConfig:
         )))
         polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", exports_root / "chatlog/processed/markdown"))
         polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", exports_root / "chatlog/archive"))
+        xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
+        polylogue_db = Path(
+            os.environ.get(
+                "LYNCHPIN_POLYLOGUE_DB",
+                os.environ.get("POLYLOGUE_DB_PATH", xdg_data_home / "polylogue" / "polylogue.db"),
+            )
+        ).expanduser()
 
         fbmessenger_gdpr_root = Path(os.environ.get(
             "LYNCHPIN_FBMESSENGER_GDPR", exports_root / "comms/facebook-messenger/processed/gdpr"
@@ -227,6 +240,7 @@ class LynchpinConfig:
             codex_sessions_root=codex_sessions_root, reddit_export_dir=reddit_export_dir,
             spotify_root=spotify_root, polylogue_root=polylogue_root,
             polylogue_archive_root=polylogue_archive_root,
+            polylogue_db=polylogue_db,
             fbmessenger_gdpr_root=fbmessenger_gdpr_root, fbmessenger_db=fbmessenger_db,
             asciinema_root=asciinema_root, audio_root=audio_root,
             screenshot_root=screenshot_root, keylog_root=keylog_root,

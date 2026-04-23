@@ -38,6 +38,7 @@ from ..core.parse import as_local
 __all__ = [
     "AWEvent",
     "FocusSpan",
+    "FocusTimelineSpan",
     "AppSession",
     "DeepWorkBlock",
     "CircadianProfile",
@@ -52,6 +53,7 @@ __all__ = [
     "afk_intervals",
     "active_seconds_by_date",
     "focus_spans",
+    "focus_timeline",
     "app_sessions",
     "deep_work",
     "circadian",
@@ -173,6 +175,28 @@ class FocusSpan:
 
 
 @dataclass(frozen=True)
+class FocusTimelineSpan:
+    start: datetime
+    end: datetime
+    kind: str  # "focused" | "afk" | "active_unknown" | "coverage_gap"
+    app: str | None
+    title: str | None
+    mode: str | None
+    project: str | None
+    source: str
+    keypress_count: int = 0
+    keylog_state: str = "not_requested"
+
+    @property
+    def duration_s(self) -> float:
+        return max((self.end - self.start).total_seconds(), 0)
+
+    @property
+    def date(self) -> date:
+        return self.start.date()
+
+
+@dataclass(frozen=True)
 class _WindowSpan:
     start: datetime
     end: datetime
@@ -182,7 +206,7 @@ class _WindowSpan:
     project: str | None
 
 
-def focus_spans(*, start: datetime, end: datetime, min_duration_s: float = 10.0) -> list[FocusSpan]:
+def focus_spans(*, start: datetime, end: datetime, min_duration_s: float = 0.0) -> list[FocusSpan]:
     """AFK-trimmed classified focus timeline."""
     return list(_focus_spans_cached(as_local(start), as_local(end), min_duration_s))
 
@@ -191,7 +215,7 @@ def focus_spans(*, start: datetime, end: datetime, min_duration_s: float = 10.0)
 def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple[FocusSpan, ...]:
     active = active_intervals(start, end)
     afk = afk_intervals(start, end)
-    windows = _attributed_windows(start, end, active)
+    windows = _window_spans(start, end, active=active, min_duration_s=0.0)
 
     # Collect all boundary points
     boundaries = {start, end}
@@ -231,11 +255,112 @@ def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple
         elif a_idx < len(active) and active[a_idx][0] <= left and active[a_idx][1] >= right:
             spans.append(FocusSpan(start=left, end=right, kind="active_unknown", app=None, title=None, mode=None, project=None))
 
-    return tuple(s for s in _merge_adjacent(spans) if s.duration_s >= min_dur)
+    merged = [s for s in _merge_adjacent(spans) if s.duration_s >= min_dur]
+    return tuple(_attach_keypress_counts(merged, start=start, end=end))
 
 
-def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) -> list[_WindowSpan]:
-    """Window events intersected with active intervals, classified.
+def focus_timeline(
+    *, start: datetime, end: datetime, heal_afk: bool = True, min_duration_s: float = 0.0,
+) -> list[FocusTimelineSpan]:
+    """Prompt-facing focus timeline with explicit AFK coverage gaps."""
+    start_local = as_local(start)
+    end_local = as_local(end)
+    base = [
+        FocusTimelineSpan(
+            start=span.start,
+            end=span.end,
+            kind=span.kind,
+            app=span.app,
+            title=span.title,
+            mode=span.mode,
+            project=span.project,
+            source="aw_trimmed",
+        )
+        for span in focus_spans(start=start_local, end=end_local, min_duration_s=0.0)
+    ]
+    raw_windows = _window_spans(start_local, end_local, active=None, min_duration_s=0.0)
+    press_times, keylog_state = _keypress_timestamps(start_local, end_local)
+
+    gap_spans: list[FocusTimelineSpan] = []
+    for gap_start, gap_end in _coverage_gaps(start_local, end_local):
+        gap_windows = _intersect_window_spans(raw_windows, gap_start, gap_end)
+        gap_keypresses = (
+            _count_presses_in_intervals(press_times, [(gap_start, gap_end)])[0]
+            if press_times else 0
+        )
+        if heal_afk and gap_keypresses > 0:
+            if gap_windows:
+                gap_spans.extend(
+                    FocusTimelineSpan(
+                        start=window.start,
+                        end=window.end,
+                        kind="focused",
+                        app=window.app,
+                        title=window.title,
+                        mode=window.mode,
+                        project=window.project,
+                        source="afk_gap_healed",
+                    )
+                    for window in gap_windows
+                )
+            else:
+                gap_spans.append(FocusTimelineSpan(
+                    start=gap_start,
+                    end=gap_end,
+                    kind="active_unknown",
+                    app=None,
+                    title=None,
+                    mode=None,
+                    project=None,
+                    source="afk_gap_healed",
+                ))
+            continue
+
+        if gap_windows:
+            gap_spans.extend(
+                FocusTimelineSpan(
+                    start=window.start,
+                    end=window.end,
+                    kind="coverage_gap",
+                    app=window.app,
+                    title=window.title,
+                    mode=window.mode,
+                    project=window.project,
+                    source="aw_afk_missing",
+                )
+                for window in gap_windows
+            )
+        else:
+            gap_spans.append(FocusTimelineSpan(
+                start=gap_start,
+                end=gap_end,
+                kind="coverage_gap",
+                app=None,
+                title=None,
+                mode=None,
+                project=None,
+                source="aw_afk_missing",
+            ))
+
+    ordered = sorted([*base, *gap_spans], key=lambda span: (span.start, span.end, span.kind, span.source))
+    merged = [
+        span
+        for span in _merge_timeline_adjacent(ordered)
+        if span.duration_s >= min_duration_s
+    ]
+    return _attach_keypress_counts(
+        merged,
+        start=start_local,
+        end=end_local,
+        keylog_state=keylog_state,
+        press_times=press_times,
+    )
+
+
+def _window_spans(
+    start: datetime, end: datetime, *, active: list[Interval] | None, min_duration_s: float,
+) -> list[_WindowSpan]:
+    """Window events, optionally intersected with AFK-active intervals.
 
     AW stores zero-duration window events — each event's effective end is the
     next event's start. We compute implicit durations before intersecting.
@@ -258,6 +383,8 @@ def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) 
 
     raw_spans: list[_WindowSpan] = []
     iv_idx = 0
+    start_local = as_local(start)
+    end_local = as_local(end)
     for evt_start, evt_end, evt in timed:
         if not evt.data.get("app"):
             continue
@@ -276,7 +403,10 @@ def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) 
             mode = feat.domain_category
         if mode is None and feat.is_ai_tool:
             mode = "coding"
-        overlaps, iv_idx = intersect_intervals(evt_start, evt_end, active, iv_idx)
+        if active is None:
+            overlaps = [(max(evt_start, start_local), min(evt_end, end_local))]
+        else:
+            overlaps, iv_idx = intersect_intervals(evt_start, evt_end, active, iv_idx)
         for ov_start, ov_end in overlaps:
             for day, (seg_s, seg_e) in split_by_day(ov_start, ov_end):
                 raw_spans.append(_WindowSpan(
@@ -285,7 +415,99 @@ def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) 
                 ))
     # Linearize merges consecutive same-app spans; filter short ones after merge
     merged = _linearize_windows(raw_spans)
-    return [w for w in merged if (w.end - w.start).total_seconds() >= 10]
+    return [w for w in merged if (w.end - w.start).total_seconds() >= min_duration_s]
+
+
+def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) -> list[_WindowSpan]:
+    return _window_spans(start, end, active=active, min_duration_s=10.0)
+
+
+def _coverage_gaps(start: datetime, end: datetime) -> list[Interval]:
+    rows = sorted(
+        (as_local(event.start), as_local(event.end))
+        for event in afk_events(start=as_local(start), end=as_local(end))
+        if event.start is not None and event.end is not None
+    )
+    if not rows:
+        return [(start, end)]
+
+    merged = merge_intervals(rows)
+    gaps: list[Interval] = []
+    cursor = start
+    for left, right in merged:
+        if left > cursor:
+            gaps.append((cursor, min(left, end)))
+        cursor = max(cursor, right)
+        if cursor >= end:
+            break
+    if cursor < end:
+        gaps.append((cursor, end))
+    return [(left, right) for left, right in gaps if right > left]
+
+
+def _intersect_window_spans(spans: Sequence[_WindowSpan], start: datetime, end: datetime) -> list[_WindowSpan]:
+    result: list[_WindowSpan] = []
+    for span in spans:
+        if span.end <= start:
+            continue
+        if span.start >= end:
+            break
+        ov_start = max(span.start, start)
+        ov_end = min(span.end, end)
+        if ov_end > ov_start:
+            result.append(replace(span, start=ov_start, end=ov_end))
+    return _linearize_windows(result)
+
+
+def _keypress_timestamps(start: datetime, end: datetime) -> tuple[tuple[datetime, ...], str]:
+    try:
+        from .keylog import has_coverage, keypresses
+    except Exception:
+        return (), "error"
+
+    if not has_coverage(start=start, end=end):
+        return (), "missing"
+    try:
+        return tuple(event.ts for event in keypresses(start=start, end=end)), "covered"
+    except Exception:
+        return (), "error"
+
+
+def _count_presses_in_intervals(
+    press_times: Sequence[datetime], intervals: Sequence[Interval],
+) -> list[int]:
+    if not intervals:
+        return []
+    counts: list[int] = []
+    cursor = 0
+    for left, right in intervals:
+        start_idx = bisect_left(press_times, left, cursor)
+        end_idx = bisect_left(press_times, right, start_idx)
+        counts.append(max(end_idx - start_idx, 0))
+        cursor = start_idx
+    return counts
+
+
+def _attach_keypress_counts(
+    spans: Sequence[FocusSpan | FocusTimelineSpan],
+    *,
+    start: datetime,
+    end: datetime,
+    keylog_state: str | None = None,
+    press_times: Sequence[datetime] | None = None,
+) -> list[FocusSpan | FocusTimelineSpan]:
+    if not spans:
+        return []
+    if press_times is None or keylog_state is None:
+        press_times, keylog_state = _keypress_timestamps(start, end)
+    counts = (
+        _count_presses_in_intervals(press_times, [(span.start, span.end) for span in spans])
+        if press_times else [0] * len(spans)
+    )
+    return [
+        replace(span, keypress_count=count, keylog_state=keylog_state)
+        for span, count in zip(spans, counts)
+    ]
 
 
 def _linearize_windows(spans: Sequence[_WindowSpan]) -> list[_WindowSpan]:
@@ -346,6 +568,39 @@ def _merge_adjacent(spans: Sequence[FocusSpan]) -> Iterator[FocusSpan]:
     yield current
 
 
+def _merge_timeline_adjacent(spans: Sequence[FocusTimelineSpan]) -> Iterator[FocusTimelineSpan]:
+    if not spans:
+        return
+    current = spans[0]
+    for span in spans[1:]:
+        if (
+            current.kind == span.kind
+            and current.app == span.app
+            and current.title == span.title
+            and current.mode == span.mode
+            and current.project == span.project
+            and current.source == span.source
+            and current.date == span.date
+            and current.end >= span.start
+        ):
+            current = FocusTimelineSpan(
+                start=current.start,
+                end=max(current.end, span.end),
+                kind=current.kind,
+                app=current.app,
+                title=current.title,
+                mode=current.mode,
+                project=current.project,
+                source=current.source,
+                keypress_count=current.keypress_count + span.keypress_count,
+                keylog_state=current.keylog_state,
+            )
+        else:
+            yield current
+            current = span
+    yield current
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Layer 3: Derived analytics
 # ══════════════════════════════════════════════════════════════════════════════
@@ -367,7 +622,10 @@ class AppSession:
 
 
 def app_sessions(*, start: datetime, end: datetime, min_duration_s: float = 60) -> list[AppSession]:
-    spans = [s for s in focus_spans(start=start, end=end) if s.kind == "focused" and s.app and s.title]
+    spans = [
+        s for s in focus_spans(start=start, end=end, min_duration_s=10.0)
+        if s.kind == "focused" and s.app and s.title
+    ]
     sessions: list[AppSession] = []
     for g in group_by_gap(
         spans, start_of=lambda s: s.start, end_of=lambda s: s.end,

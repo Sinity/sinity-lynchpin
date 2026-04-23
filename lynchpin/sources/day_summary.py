@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ..core.primitives import date_to_dt_range
@@ -100,8 +100,8 @@ def day_summary(d: date) -> Optional[DaySummary]:
     from .activitywatch import active_seconds_by_date
     from .health import daily_health_summary, nap_sessions
 
-    def strip(dt: datetime) -> datetime:
-        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    def dt_key(dt: datetime) -> float:
+        return dt.timestamp() if dt.tzinfo else dt.replace(tzinfo=timezone.utc).timestamp()
 
     # ── Human focus track ──
     seg = segment_day(d)
@@ -121,11 +121,11 @@ def day_summary(d: date) -> Optional[DaySummary]:
 
     # Group consecutive work events into blocks (max 10min gap)
     raw_blocks: list[dict] = []
-    for ev in sorted(poly_events, key=lambda e: strip(e.start) if e.start else datetime.min):
+    for ev in sorted(poly_events, key=lambda e: dt_key(e.start) if e.start else float("-inf")):
         if ev.start is None:
             continue
-        ev_s = strip(ev.start)
-        ev_e = strip(ev.end) if ev.end else ev_s + timedelta(minutes=5)
+        ev_s = ev.start
+        ev_e = ev.end if ev.end else ev_s + timedelta(minutes=5)
         if raw_blocks and (ev_s - raw_blocks[-1]['end']).total_seconds() < 600:
             raw_blocks[-1]['end'] = max(raw_blocks[-1]['end'], ev_e)
             raw_blocks[-1]['kinds'].add(ev.kind)
@@ -139,7 +139,7 @@ def day_summary(d: date) -> Optional[DaySummary]:
     ai_blocks_list: list[AIBlock] = []
     for block in raw_blocks:
         commits = sum(1 for f in git_facts_list
-                      if strip(f.authored_at) >= block['start'] and strip(f.authored_at) < block['end'])
+                      if dt_key(f.authored_at) >= dt_key(block['start']) and dt_key(f.authored_at) < dt_key(block['end']))
         dur = (block['end'] - block['start']).total_seconds() / 60
         ai_blocks_list.append(AIBlock(
             start=block['start'], end=block['end'],
@@ -157,7 +157,7 @@ def day_summary(d: date) -> Optional[DaySummary]:
         human_contexts = []
         if seg:
             for s in seg.segments:
-                if strip(s.end) > strip(block.start) and strip(s.start) < strip(block.end):
+                if dt_key(s.end) > dt_key(block.start) and dt_key(s.start) < dt_key(block.end):
                     if s.context not in human_contexts:
                         human_contexts.append(s.context)
         overlaps_list.append(OverlapInsight(

@@ -218,19 +218,24 @@ def _project_from_path(text: str) -> str | None:
         return None
     if "://" in text and not text.startswith("file://"):
         return None
-    if not text.startswith(("/", "~", ".")):
-        return None
     normalized = text.replace("\\", "/")
-    if normalized.startswith("/realm/project/"):
-        project_name = normalized[len("/realm/project/"):].split("/", 1)[0]
+    if "/realm/project/" in normalized:
+        project_name = normalized.split("/realm/project/", 1)[1].split("/", 1)[0]
         if project_name in ALL_PROJECTS:
             return project_name
-    try:
-        path = Path(text).expanduser().resolve(strict=False)
-    except (RuntimeError, OSError):
+
+    if not text.startswith(("/", "~", ".")):
         return None
+    if any(ch.isspace() for ch in text):
+        return None
+
+    raw_path = Path(text).expanduser()
     for name, project_path in _PROJECT_RESOLVED_PATHS:
-        if path == project_path or project_path in path.parents:
+        try:
+            raw_path.relative_to(project_path)
+        except ValueError:
+            continue
+        else:
             return name
     return None
 

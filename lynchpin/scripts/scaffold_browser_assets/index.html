@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lynchpin Retrospective Browser</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+  <div id="app-shell">
+    <aside id="nav-shell">
+      <div id="nav-header">
+        <div class="eyebrow">Retrospective</div>
+        <h1>Lynchpin Browser</h1>
+        <p>Scaffold, narrative, and evidence in one local workspace.</p>
+      </div>
+      <div id="nav-toolbar">
+        <button class="nav-action selected" data-kind="overview" id="overview-button" type="button">Overview</button>
+      </div>
+      <div id="nav-tree"></div>
+    </aside>
+
+    <main id="main-shell">
+      <header id="hero-shell"></header>
+      <section id="workspace">
+        <section class="panel panel-story">
+          <div class="panel-header">
+            <div>
+              <div class="panel-eyebrow">Story</div>
+              <h2>Narrative</h2>
+            </div>
+            <div class="segmented" id="story-tabs"></div>
+          </div>
+          <div class="panel-body" id="story-body"></div>
+        </section>
+
+        <section class="panel panel-viz">
+          <div class="panel-header">
+            <div>
+              <div class="panel-eyebrow">Dataviz</div>
+              <h2>Rhythms</h2>
+            </div>
+            <div class="segmented" id="viz-tabs"></div>
+          </div>
+          <div class="panel-body panel-body-tight">
+            <div id="viz-chart"></div>
+            <div id="viz-footnotes"></div>
+          </div>
+        </section>
+
+        <section class="panel panel-insights">
+          <div class="panel-header">
+            <div>
+              <div class="panel-eyebrow">Interpretation</div>
+              <h2>Signals</h2>
+            </div>
+          </div>
+          <div class="panel-body" id="insights-body"></div>
+        </section>
+
+        <section class="panel panel-detail">
+          <div class="panel-header">
+            <div>
+              <div class="panel-eyebrow">Evidence</div>
+              <h2>Inspector</h2>
+            </div>
+            <div class="segmented segmented-wrap" id="detail-tabs"></div>
+          </div>
+          <div class="panel-body" id="detail-body"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

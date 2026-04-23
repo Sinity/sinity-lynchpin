@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from functools import lru_cache
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Iterator, Optional, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def parse_date(raw: str, *fmts: str) -> Optional[datetime]:
@@ -135,9 +139,28 @@ def safe_int(value: object) -> Optional[int]:
 # ── Timezone helpers ──────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=1)
 def local_tz():
-    """Get the local timezone."""
+    """Get the local timezone with historical DST rules when available."""
     from datetime import timezone
+    candidates = []
+    if os.environ.get("TZ"):
+        candidates.append(os.environ["TZ"])
+    try:
+        localtime = Path("/etc/localtime").resolve()
+        parts = localtime.parts
+        if "zoneinfo" in parts:
+            idx = parts.index("zoneinfo")
+            candidates.append("/".join(parts[idx + 1:]))
+    except OSError:
+        pass
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            continue
     return datetime.now().astimezone().tzinfo or timezone.utc
 
 

@@ -544,6 +544,7 @@ EOF
             ipython
             jupyterlab
             matplotlib
+            markdown
             numpy
             pandas
             polars
@@ -563,6 +564,7 @@ EOF
             click
             cachew
             plotly
+            markdown
             beautifulsoup4
             decorator
             lxml
@@ -618,6 +620,7 @@ EOF
             pygithub
             praw
             structlog
+            tiktoken
             pydantic
             aiosqlite
             claude-agent-sdk
@@ -650,6 +653,7 @@ EOF
             click
             cachew
             plotly
+            markdown
             beautifulsoup4
             decorator
             lxml
@@ -708,10 +712,14 @@ EOF
             datasette
             pandas
             pyyaml
+            tiktoken
             typer
           ];
 
-          pythonImportsCheck = [ "lynchpin" ];
+          pythonImportsCheck = [
+            "lynchpin"
+            "lynchpin.scripts.scaffold_browser"
+          ];
           doCheck = false;
           dontCheckRuntimeDeps = true;
 
@@ -747,9 +755,11 @@ EOF
               ripgrep
               fd
               just
-              nodejs_22
             ])
             ++ rustToolchain
+            ++ [
+              pkgsRust.nodejs_22
+            ]
             ++ (with pkgs; [
               go
               gnumake
