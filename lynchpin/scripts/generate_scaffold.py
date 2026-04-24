@@ -676,6 +676,43 @@ def _safe(fn, *args, default=None, **kwargs):
         return default
 
 
+def _capture_days_with_data(
+    coverage: dict[str, DateSpan],
+    start: date,
+    end: date,
+) -> dict[str, set[date]]:
+    """Return capture source days that should not be skipped."""
+    capture_days: dict[str, set[date]] = {
+        "clipboard": set(),
+        "irc": set(),
+        "raw_log": set(),
+    }
+
+    from ..sources.clipboard import entries_in_range as _clipboard_entries
+    from ..sources.irc import conversations_in_range as _irc_conversations
+    from ..sources.raw_log import entries_in_range as _raw_log_entries
+
+    clipboard_window = _coverage_dates(coverage, "clipboard", start, end)
+    if clipboard_window:
+        for entry in _safe(_clipboard_entries, start=clipboard_window[0], end=clipboard_window[1], default=[]):
+            if getattr(entry, "date", None):
+                capture_days["clipboard"].add(entry.date)
+
+    irc_window = _coverage_dates(coverage, "irc", start, end)
+    if irc_window:
+        for conv in _safe(_irc_conversations, start=irc_window[0], end=irc_window[1], default=[]):
+            if getattr(conv, "start", None):
+                capture_days["irc"].add(conv.start.date())
+
+    raw_log_window = _coverage_dates(coverage, "raw_log", start, end)
+    if raw_log_window:
+        for entry in _safe(_raw_log_entries, start=raw_log_window[0], end=raw_log_window[1], default=[]):
+            if getattr(entry, "date", None):
+                capture_days["raw_log"].add(entry.date)
+
+    return capture_days
+
+
 def _avg(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
@@ -1095,18 +1132,32 @@ def _build_ai_activity_payload(
     transcripts: list[Any],
 ) -> dict[str, Any]:
     summary = _summarize_ai(poly_summaries, poly_events, sessions=sessions, transcripts=transcripts)
+    prompt_text_ids: dict[str, str] = {}
+    prompt_texts: list[dict[str, Any]] = []
     user_prompts = []
     dialogues = []
     for transcript in transcripts:
-        prompts = [
-            {
+        prompt_ids_by_ordinal: dict[int, str] = {}
+        prompts = []
+        for message in transcript.messages:
+            if getattr(message, "kind", getattr(message, "role", "unknown")) != "prompt" or not message.text:
+                continue
+            text_id = prompt_text_ids.get(message.text)
+            if text_id is None:
+                text_id = f"pt{len(prompt_texts) + 1:04d}"
+                prompt_text_ids[message.text] = text_id
+                prompt_texts.append({
+                    "prompt_text_id": text_id,
+                    "text": message.text,
+                    "char_count": len(message.text),
+                })
+            prompts.append({
+                "prompt_id": f"{transcript.conversation_id}:u{message.ordinal}",
                 "ordinal": message.ordinal,
-                "text": message.text,
+                "prompt_text_id": text_id,
                 "approx_tokens": message.approx_tokens,
-            }
-            for message in transcript.messages
-            if getattr(message, "kind", getattr(message, "role", "unknown")) == "prompt" and message.text
-        ]
+            })
+        prompt_ids_by_ordinal = {prompt["ordinal"]: prompt["prompt_id"] for prompt in prompts}
         if prompts:
             user_prompts.append({
                 "conversation_id": transcript.conversation_id,
@@ -1118,18 +1169,25 @@ def _build_ai_activity_payload(
                 "prompts": prompts,
             })
 
-        dialogue_messages = [
-            {
+        dialogue_messages = []
+        for message in transcript.messages:
+            kind = getattr(message, "kind", getattr(message, "role", "unknown"))
+            if kind not in {"prompt", "assistant"} or not message.text:
+                continue
+            row = {
                 "ordinal": message.ordinal,
                 "role": message.role,
-                "text": message.text,
                 "approx_tokens": message.approx_tokens,
-                **({"has_tool_use": True} if message.has_tool_use else {}),
-                **({"has_thinking": True} if message.has_thinking else {}),
             }
-            for message in transcript.messages
-            if getattr(message, "kind", getattr(message, "role", "unknown")) in {"prompt", "assistant"} and message.text
-        ]
+            if kind == "prompt":
+                row["prompt_id"] = prompt_ids_by_ordinal.get(message.ordinal)
+            else:
+                row["text"] = message.text
+            if message.has_tool_use:
+                row["has_tool_use"] = True
+            if message.has_thinking:
+                row["has_thinking"] = True
+            dialogue_messages.append(row)
         if dialogue_messages:
             dialogues.append({
                 "conversation_id": transcript.conversation_id,
@@ -1189,6 +1247,7 @@ def _build_ai_activity_payload(
         "summary": summary,
         "sessions": session_rows,
         "work_events": poly_events,
+        "prompt_texts": prompt_texts,
         "user_prompts": user_prompts,
         "dialogues": dialogues,
     }
@@ -1257,6 +1316,90 @@ def _build_commit_payload(
         "facts": fact_rows,
         "sessions": sessions,
         "daily": daily,
+    }
+
+
+def _filter_github_context_for_facts(context: Any, facts: list[Any]) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {"status": "unavailable", "items": []}
+    wanted: set[tuple[str, str, int]] = set()
+    for fact in facts:
+        repo = str(getattr(fact, "repo", "") or "")
+        refs = _extract_commit_refs(getattr(fact, "subject", "") or "")
+        wanted.update((repo, "pr", number) for number in refs["prs"])
+        wanted.update((repo, "issue", number) for number in refs["issues"] if number not in refs["prs"])
+    items = [
+        item
+        for item in context.get("items", []) or []
+        if isinstance(item, dict)
+        and (str(item.get("repo") or ""), str(item.get("kind") or ""), int(item.get("number") or 0)) in wanted
+    ]
+    return {
+        "status": context.get("status", "ok") if items else "no_refs",
+        "items": items,
+    }
+
+
+def _build_clipboard_payload(rows: list[Any]) -> dict[str, Any]:
+    kinds = Counter(getattr(row, "kind", "unknown") for row in rows)
+    sources = Counter(getattr(row, "source", "unknown") for row in rows)
+    value_ids: dict[str, str] = {}
+    values: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        value = str(getattr(row, "value", "") or "")
+        value_id = value_ids.get(value)
+        if value_id is None:
+            value_id = f"v{len(values) + 1:04d}"
+            value_ids[value] = value_id
+            values.append({
+                "value_id": value_id,
+                "value": value,
+                "char_count": len(value),
+            })
+        entries.append({
+            "recorded_at": getattr(row, "recorded_at", None),
+            "value_id": value_id,
+            "source": getattr(row, "source", None),
+            "file_path": getattr(row, "file_path", None),
+            "pinned": getattr(row, "pinned", False),
+            "kind": getattr(row, "kind", "unknown"),
+        })
+    return {
+        "summary": {
+            "entry_count": len(rows),
+            "unique_value_count": len(values),
+            "kind_breakdown": dict(kinds.most_common()),
+            "source_files": dict(sources.most_common()),
+            "semantics": "Clipboard entries preserve timestamp/source metadata; exact values are stored verbatim once in values[] and referenced by value_id.",
+        },
+        "values": values,
+        "entries": entries,
+    }
+
+
+def _build_irc_payload(rows: list[Any]) -> dict[str, Any]:
+    return {
+        "summary": {
+            "conversation_count": len(rows),
+            "total_lines": sum(int(getattr(row, "total_lines", 0) or 0) for row in rows),
+            "sinity_lines": sum(int(getattr(row, "sinity_lines", 0) or 0) for row in rows),
+            "mention_lines": sum(int(getattr(row, "mention_lines", 0) or 0) for row in rows),
+            "channels": dict(Counter(getattr(row, "channel", "unknown") for row in rows).most_common()),
+            "semantics": "IRC excerpts preserve surrounding dialogue for conversations containing sinity lines or direct mentions.",
+        },
+        "conversations": rows,
+    }
+
+
+def _build_raw_log_payload(rows: list[Any]) -> dict[str, Any]:
+    return {
+        "summary": {
+            "entry_count": len(rows),
+            "source_files": dict(Counter(getattr(row, "source_path", "unknown") for row in rows).most_common()),
+            "semantics": "Knowledgebase raw-log entries are exact timestamped captures, not retrospective summaries.",
+        },
+        "entries": rows,
     }
 
 
@@ -1482,6 +1625,9 @@ def _build_day_narrative_brief(
     shells: list,
     sleep_data: list,
     work_sess: list,
+    clipboard_day: list,
+    irc_day: list,
+    raw_log_day: list,
     baseline: dict[str, Any],
     two_track,
 ) -> dict[str, Any]:
@@ -1547,6 +1693,9 @@ def _build_day_narrative_brief(
                 "terminal" if shells else "",
                 "sleep" if sleep_data else "",
                 "work_sessions" if work_sess else "",
+                "clipboard" if clipboard_day else "",
+                "irc" if irc_day else "",
+                "raw_log" if raw_log_day else "",
             ]),
             "counts": {
                 "human_segments": len(getattr(seg, "segments", ()) or ()) if seg else 0,
@@ -1558,6 +1707,9 @@ def _build_day_narrative_brief(
                 "work_sessions": len(work_sess or []),
                 "sleep_records": len(sleep_data or []),
                 "polylogue_sessions": len(poly_sessions or []),
+                "clipboard_entries": len(clipboard_day or []),
+                "irc_conversations": len(irc_day or []),
+                "raw_log_entries": len(raw_log_day or []),
             },
             "data_quality_notes": quality_notes,
         },
@@ -1958,7 +2110,7 @@ class BatchSources:
         from ..sources.activitywatch import (
             active_seconds_by_date,
         )
-        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions
+        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions, github_context_for_commits
         from ..sources.polylogue import (
             work_events,
             day_session_summaries,
@@ -1976,6 +2128,9 @@ class BatchSources:
         from ..sources.web import daily_browsing
         from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
         from ..sources.substance import entries as substance_entries
+        from ..sources.clipboard import entries_in_range as clipboard_entries
+        from ..sources.irc import conversations_in_range as irc_conversations
+        from ..sources.raw_log import entries_in_range as raw_log_entries
 
         def _load(label, fn, *args, **kwargs):
             print(f"      {label}...", end=" ", flush=True)
@@ -2001,6 +2156,7 @@ class BatchSources:
         self.git_facts = _load_date_range("Git facts", commit_facts, "git", coverage, start, end)
         self.git_daily = _load_date_range("Git daily", git_daily, "git", coverage, start, end)
         self.git_sessions = _load_date_range("Git sessions", commit_sessions, "git", coverage, start, end)
+        self.github_context = _safe(github_context_for_commits, self.git_facts, default={"status": "unavailable", "items": []})
         # Polylogue
         self.poly_events = _load_date_range("Polylogue events", work_events, "polylogue_events", coverage, start, end)
         self.poly_summaries = _load_date_range("Polylogue summaries", day_session_summaries, "polylogue", coverage, start, end)
@@ -2029,6 +2185,10 @@ class BatchSources:
         self.raindrop = _load_date_range("Raindrop", daily_raindrop_activity, "raindrop", coverage, start, end)
         # Substance
         self.substance = _load("Substance", substance_entries)
+        # Prompt-facing capture streams
+        self.clipboard = _load_date_range("Clipboard", clipboard_entries, "clipboard", coverage, start, end)
+        self.irc = _load_date_range("IRC", irc_conversations, "irc", coverage, start, end)
+        self.raw_log = _load_date_range("Raw log", raw_log_entries, "raw_log", coverage, start, end)
 
         # Build per-day indexes
         self._index_by_day()
@@ -2045,6 +2205,11 @@ class BatchSources:
         self._git_daily_by_date = _group_by_date(self.git_daily, lambda g: g.date)
         self._git_facts_by_date = _group_by_date(self.git_facts, lambda f: f.authored_at.date() if hasattr(f, 'authored_at') and f.authored_at else None)
         self._git_sessions_by_date = _group_by_date(self.git_sessions, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
+        self._github_items_by_repo_number: dict[tuple[str, str, int], dict[str, Any]] = {}
+        if isinstance(getattr(self, "github_context", None), dict):
+            for item in self.github_context.get("items", []) or []:
+                if isinstance(item, dict) and item.get("repo") and item.get("kind") and item.get("number"):
+                    self._github_items_by_repo_number[(str(item["repo"]), str(item["kind"]), int(item["number"]))] = item
         self._focus_by_date = _group_by_date(self.focus_spans, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
         self._dw_by_date = _group_by_date(self.deep_work, lambda b: b.start.date() if hasattr(b, 'start') and b.start else None)
         self._sf_by_date = _group_by_date(self.sustained_focus, lambda b: b.start.date() if hasattr(b, 'start') and b.start else None)
@@ -2075,6 +2240,9 @@ class BatchSources:
         self._substance_by_date: dict[date, list] = defaultdict(list)
         for e in self.substance:
             self._substance_by_date[e.date].append(e)
+        self._clipboard_by_date = _group_by_date(self.clipboard, lambda c: c.date if hasattr(c, 'date') else None)
+        self._irc_by_date = _group_by_date(self.irc, lambda c: c.start.date() if hasattr(c, 'start') and c.start else None)
+        self._raw_log_by_date = _group_by_date(self.raw_log, lambda r: r.date if hasattr(r, 'date') else None)
         self._sleep_stages_by_date = _group_by_date(self.sleep_stages, lambda s: s.start.date() if hasattr(s, 'start') and s.start else None)
         self._calories_by_date = {c.date: c for c in self.calories}
         self._naps_by_date = _group_by_date(self.naps, lambda n: n.start.date() if hasattr(n, 'start') and n.start else None)
@@ -2401,6 +2569,7 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         spans = batch._focus_by_date.get(d, [])
         facts = batch._git_facts_by_date.get(d, [])
         sessions = batch._git_sessions_by_date.get(d, [])
+        github_context = _filter_github_context_for_facts(getattr(batch, "github_context", None), facts)
         poly_events = batch._poly_events_by_date.get(d, [])
         poly_summaries = batch._poly_summaries_by_date.get(d, [])
         shells = batch._shells_by_date.get(d, [])
@@ -2414,6 +2583,9 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         raindrop = [batch._raindrop_by_date[d]] if d in batch._raindrop_by_date else []
         work_sess = batch._work_sessions_by_date.get(d, [])
         substance_day = batch._substance_by_date.get(d, [])
+        clipboard_day = getattr(batch, "_clipboard_by_date", {}).get(d, [])
+        irc_day = getattr(batch, "_irc_by_date", {}).get(d, [])
+        raw_log_day = getattr(batch, "_raw_log_by_date", {}).get(d, [])
         sleep_stages_day = batch._sleep_stages_by_date.get(d, [])
         sleep_architecture_day = batch._sleep_architecture_by_date.get(d, []) + batch._sleep_architecture_by_date.get(d - timedelta(days=1), [])
         calories_day = [batch._calories_by_date[d]] if d in batch._calories_by_date else []
@@ -2454,7 +2626,7 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
             sustained_focus, daily_activity as aw_daily,
         )
         from ..sources.activity_segments import segment_day
-        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions
+        from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions, github_context_for_commits
         from ..sources.polylogue import work_events, day_session_summaries
         from ..sources.terminal import shell_sessions
         from ..sources.sleep_infer import infer_sleep
@@ -2469,6 +2641,9 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         from ..sources.timeline import work_sessions as ws_fn
         from ..sources.day_summary import day_summary
         from ..sources.substance import entries_for_date as substance_for_date
+        from ..sources.clipboard import entries_in_range as clipboard_entries
+        from ..sources.irc import conversations_in_range as irc_conversations
+        from ..sources.raw_log import entries_in_range as raw_log_entries
 
         active_secs = _safe(active_seconds_by_date, d, d, default={})
         active_h = active_secs.get(d, 0) / 3600 if active_secs else 0
@@ -2481,6 +2656,7 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         spans = _safe(focus_spans, start=s_dt, end=e_dt, default=[])
         facts = _safe(commit_facts, start=d, end=d, default=[])
         sessions = _safe(commit_sessions, start=d, end=d, default=[])
+        github_context = _safe(github_context_for_commits, facts, default={"status": "unavailable", "items": []})
         poly_events = _safe(work_events, start=d, end=d, default=[])
         poly_summaries = _safe(day_session_summaries, start=d, end=d, default=[])
         shells = _safe(shell_sessions, start=s_dt, end=e_dt, default=[])
@@ -2494,6 +2670,9 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         raindrop = _safe(daily_raindrop_activity, start=d, end=d, default=[])
         work_sess = _safe(ws_fn, start=d, end=d, default=[])
         substance_day = _safe(substance_for_date, d, default=[])
+        clipboard_day = _safe(clipboard_entries, start=d, end=d, default=[])
+        irc_day = _safe(irc_conversations, start=d, end=d, default=[])
+        raw_log_day = _safe(raw_log_entries, start=d, end=d, default=[])
         sleep_stages_day = _safe(sleep_stages_fn, start=d - timedelta(days=1), end=d, default=[])
         sleep_architecture_day = _safe(sleep_architecture_fn, start=d - timedelta(days=1), end=d, default=[])
         calories_day = _safe(calorie_burns, start=d, end=d, default=[])
@@ -2560,6 +2739,9 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         shells=shells,
         sleep_data=sleep_data,
         work_sess=work_sess,
+        clipboard_day=clipboard_day,
+        irc_day=irc_day,
+        raw_log_day=raw_log_day,
         baseline=baseline,
         two_track=two_track,
     )
@@ -2573,7 +2755,10 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         write_json(day_dir / "segments.json", segments_data)
     write_json(
         day_dir / "commits.json",
-        _build_commit_payload(facts=facts, sessions=sessions, daily=git_act),
+        {
+            **_build_commit_payload(facts=facts, sessions=sessions, daily=git_act),
+            "github": github_context,
+        },
     )
     write_json(day_dir / "ai_activity.json", ai_payload)
     write_json(day_dir / "shell.json", shells)
@@ -2602,6 +2787,12 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         write_json(day_dir / "work_sessions.json", work_sess)
     if substance_day:
         write_json(day_dir / "substance.json", substance_day)
+    if clipboard_day:
+        write_json(day_dir / "clipboard.json", _build_clipboard_payload(clipboard_day))
+    if irc_day:
+        write_json(day_dir / "irc.json", _build_irc_payload(irc_day))
+    if raw_log_day:
+        write_json(day_dir / "raw_log.json", _build_raw_log_payload(raw_log_day))
     if two_track:
         write_json(day_dir / "two_track.json", two_track)
     write_json(day_dir / "baseline.json", baseline)
@@ -3827,11 +4018,26 @@ def _discover_source_coverage() -> dict[str, DateSpan]:
     bm_rows = _safe(daily_raindrop_activity, start=floor, end=today, default=[])
     add("raindrop", _span_from_dates([r.date for r in bm_rows if getattr(r, "date", None)]), "raindrop")
 
+    from ..sources.clipboard import entries as clipboard_entries
+    clipboard_rows = _safe(lambda: list(clipboard_entries()), default=[])
+    add("clipboard", _span_from_dates([c.date for c in clipboard_rows if getattr(c, "date", None)]), "clipboard")
+
+    from ..sources.irc import conversations as irc_conversations
+    irc_rows = _safe(lambda: list(irc_conversations()), default=[])
+    add("irc", _span_from_dates([c.start.date() for c in irc_rows if getattr(c, "start", None)]), "irc")
+
+    from ..sources.raw_log import entries as raw_log_entries
+    raw_log_rows = _safe(lambda: list(raw_log_entries()), default=[])
+    add("raw_log", _span_from_dates([r.date for r in raw_log_rows if getattr(r, "date", None)]), "raw log")
+
     coverage["timeline"] = _union_span(
         coverage.get("aw"),
         coverage.get("git"),
         coverage.get("terminal"),
         coverage.get("polylogue"),
+        coverage.get("clipboard"),
+        coverage.get("irc"),
+        coverage.get("raw_log"),
     ) or DateSpan(floor, today)
 
     return coverage
@@ -4010,6 +4216,11 @@ def generate_hierarchy(start: date, end: date, output: Path, *, force: bool = Fa
                 reddit_days.add(r.date)
         days_with_data.update(reddit_days)
         print(f"    + reddit: {len(reddit_days)} days")
+
+        capture_days = _capture_days_with_data(coverage, start, end)
+        for label, source_days in capture_days.items():
+            days_with_data.update(source_days)
+            print(f"    + {label.replace('_', ' ')}: {len(source_days)} days")
 
         # Filter day_keys to only days with data
         original_count = len(day_keys)

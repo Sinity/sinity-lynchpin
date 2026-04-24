@@ -1,4 +1,4 @@
-"""CLI entrypoints for knowledge ledgers and transcript summaries.
+"""CLI entrypoints for knowledge ledgers.
 
 Registry-backed inputs live under the configured knowledgebase root. Generated
 outputs stay under the configured knowledgebase artefact root.
@@ -12,32 +12,12 @@ from typing import Sequence
 
 from ...core.config import get_config
 from .ledgers import write_artefact_ledger, write_session_ledger
-from .session_summaries import summarise_session_transcript
-
-
-def _parse_bool(value: str) -> bool:
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise argparse.ArgumentTypeError(f"invalid boolean value: {value!r}")
-
-
-def _parse_optional_text(value: str) -> str | None:
-    stripped = value.strip()
-    return stripped or None
-
-
-def _parse_optional_path(value: str) -> Path | None:
-    stripped = value.strip()
-    return Path(stripped) if stripped else None
 
 
 def build_parser() -> argparse.ArgumentParser:
     cfg = get_config()
     parser = argparse.ArgumentParser(
-        description="Knowledge-oriented materializers for ledgers and session summaries.",
+        description="Knowledge-oriented materializers for ledgers.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -75,17 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(".").resolve(),
     )
-
-    summarise = subparsers.add_parser(
-        "summarise-session",
-        help="Summarise a rendered assistant session transcript into JSON.",
-    )
-    summarise.add_argument("--input", type=Path, required=True)
-    summarise.add_argument("--output", type=_parse_optional_path, default=None)
-    summarise.add_argument("--model", type=_parse_optional_text, default=None)
-    summarise.add_argument("--backend", type=_parse_optional_text, default=None)
-    summarise.add_argument("--max-chars", type=int, default=20000)
-    summarise.add_argument("--force", type=_parse_bool, default=False)
 
     return parser
 
@@ -125,22 +94,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Reused {result.artefact_count} artefacts -> {result.output}{missing}")
         else:
             print(f"Artefact ledger unchanged at {result.output}")
-        return 0
-
-    if args.command == "summarise-session":
-        result = summarise_session_transcript(
-            args.input,
-            output=args.output,
-            model=args.model or "",
-            backend=args.backend or None,
-            max_chars=args.max_chars,
-            force=args.force,
-            log=print,
-        )
-        if result.skipped:
-            print(f"Summary already exists at {result.output_path}")
-        else:
-            print(f"Summary written to {result.output_path}")
         return 0
 
     parser.error(f"unknown command: {args.command}")

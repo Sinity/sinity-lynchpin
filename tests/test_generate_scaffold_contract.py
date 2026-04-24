@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from lynchpin.scripts.generate_scaffold import (
     DateSpan,
     _build_ai_activity_payload,
+    _build_clipboard_payload,
     _build_commit_payload,
+    _capture_days_with_data,
     _clip_dates,
     _summarize_ai,
     _summarize_health,
@@ -94,6 +96,33 @@ def test_clip_dates_pads_requested_start_not_coverage_start():
         date(2026, 3, 17),
         date(2026, 3, 18),
     )
+
+
+def test_capture_days_with_data_uses_capture_sources(monkeypatch):
+    monkeypatch.setattr(
+        "lynchpin.sources.clipboard.entries_in_range",
+        lambda **_kw: [SimpleNamespace(date=date(2026, 4, 18))],
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.irc.conversations_in_range",
+        lambda **_kw: [SimpleNamespace(start=SimpleNamespace(date=lambda: date(2026, 4, 19)))],
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.raw_log.entries_in_range",
+        lambda **_kw: [SimpleNamespace(date=date(2026, 4, 20))],
+    )
+
+    coverage = {
+        "clipboard": DateSpan(date(2026, 4, 18), date(2026, 4, 18), 1),
+        "irc": DateSpan(date(2026, 4, 19), date(2026, 4, 19), 1),
+        "raw_log": DateSpan(date(2026, 4, 20), date(2026, 4, 20), 1),
+    }
+
+    assert _capture_days_with_data(coverage, date(2026, 4, 1), date(2026, 4, 30)) == {
+        "clipboard": {date(2026, 4, 18)},
+        "irc": {date(2026, 4, 19)},
+        "raw_log": {date(2026, 4, 20)},
+    }
 
 
 def test_summarize_ai_uses_repos_active_and_event_paths():
@@ -238,12 +267,44 @@ def test_build_ai_activity_payload_filters_protocol_noise_from_prompts():
     assert payload["summary"]["message_kinds"]["prompt"] == 1
     assert payload["summary"]["message_kinds"]["control"] == 1
     assert payload["summary"]["message_kinds"]["caveat"] == 1
+    assert payload["prompt_texts"][0]["text"] == "actual prompt"
     assert payload["user_prompts"][0]["prompt_count"] == 1
-    assert payload["user_prompts"][0]["prompts"][0]["text"] == "actual prompt"
-    assert [m["text"] for m in payload["dialogues"][0]["messages"]] == ["actual prompt", "actual answer"]
+    assert payload["user_prompts"][0]["prompts"][0]["prompt_text_id"] == "pt0001"
+    assert payload["dialogues"][0]["messages"][0]["prompt_id"] == "conv-1:u2"
+    assert "text" not in payload["dialogues"][0]["messages"][0]
+    assert payload["dialogues"][0]["messages"][1]["text"] == "actual answer"
     assert payload["sessions"][0]["cost_status"] == "estimated_zero"
     assert payload["sessions"][0]["recorded_cost_usd"] is None
     assert payload["sessions"][0]["estimated_cost_usd"] is None
+
+
+def test_build_clipboard_payload_interns_repeated_values():
+    payload = _build_clipboard_payload(
+        [
+            SimpleNamespace(
+                recorded_at="2026-04-21T12:00:00+02:00",
+                value="same text",
+                source="/tmp/clipboard.json",
+                file_path=None,
+                pinned=False,
+                kind="text",
+            ),
+            SimpleNamespace(
+                recorded_at="2026-04-21T12:01:00+02:00",
+                value="same text",
+                source="/tmp/clipboard.json",
+                file_path=None,
+                pinned=False,
+                kind="text",
+            ),
+        ]
+    )
+
+    assert payload["summary"]["entry_count"] == 2
+    assert payload["summary"]["unique_value_count"] == 1
+    assert payload["values"][0]["value"] == "same text"
+    assert payload["entries"][0]["value_id"] == payload["entries"][1]["value_id"]
+    assert "value" not in payload["entries"][0]
 
 
 def test_build_commit_payload_extracts_subject_refs():

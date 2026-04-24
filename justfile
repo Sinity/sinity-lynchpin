@@ -27,7 +27,7 @@ scaffold-browse host="127.0.0.1" port="8766":
     python -m lynchpin.scripts.scaffold_browser --host "{{host}}" --port "{{port}}"
 
 # Materialize the default cross-project velocity dashboard.
-velocity output="/realm/project/__lynchpin_exported/repo-artefacts/meta/velocity/velocity.html" projects="" exclude="" aggregate="true":
+velocity output=".lynchpin/generated/meta/velocity.html" projects="" exclude="" aggregate="true":
     python -m lynchpin.analysis.projects velocity --output "{{output}}" --projects "{{projects}}" --exclude "{{exclude}}" --aggregate "{{aggregate}}"
 
 # Materialize repomix-backed project bundles.

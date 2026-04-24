@@ -2,10 +2,13 @@
 .direnv/
 result
 
+# Repo-local generated working state. New ad hoc caches, temporary outputs,
+# rescued material, and handoff bundles belong here.
+.lynchpin/
+
 # Python user installs / caches
 .pyuser/
 .jupyter/
-.bin/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
@@ -20,14 +23,15 @@ __pycache__/
 # Local raw datasets (heavy, non-versioned)
 data/raw/
 
-# Generated artefacts (regenerable; keep out of Git)
+# Legacy/generated local roots; new material belongs under `.lynchpin/`.
 artefacts/
+tmp/
+__mess_to_triage/
 
 # No tracked snapshots; keep repo purely regenerable.
 checkpoints/
 
 # Data/analysis artifacts
-tmp/
 .agent/scratch/
 .claude/settings.local.json
 
@@ -45,6 +49,3 @@ AGENTS.override.md
 lynchpin.egg-info/
 usb.ids
 uv.lock
-
-__mess_to_triage/
-

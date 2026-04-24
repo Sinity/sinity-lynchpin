@@ -6,8 +6,7 @@ their default filesystem roots. The important boundaries are:
 - local app state under `~/.local/share/...` for ActivityWatch and Atuin,
 - canonical raw and processed exports under `/realm/data/...`,
 - local repos under `/realm/project/...`,
-- personal registries, generated datasets, and archives under
-  `/realm/project/__lynchpin_exported/...`.
+- repo-local generated registries, datasets, and archives under `.lynchpin/`.
 
 If a stable source root changes, update this module and the consuming source
 module together rather than reviving a parallel reference doc.
@@ -38,8 +37,6 @@ class LynchpinConfig:
     analysis_output_dir: Path
     session_ledger_output: Path
     artefact_ledger_output: Path
-    session_summary_dir: Path
-    session_summary_log: Path
     velocity_output: Path
     webhistory_report_dir: Path
     # Source paths
@@ -70,6 +67,10 @@ class LynchpinConfig:
     wykop_root: Path
     wykop_username: str
     samsung_gdpr_cloud_dir: Path
+    clipboard_live_file: Path
+    clipboard_export_files: tuple[Path, ...]
+    irc_root: Path
+    raw_log_file: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -95,6 +96,9 @@ class LynchpinConfig:
             "wykop": self.wykop_root.exists(),
             "dendron": self.dendron_root.exists(),
             "samsung_gdpr_cloud": self.samsung_gdpr_cloud_dir.exists(),
+            "clipboard": self.clipboard_live_file.exists() or any(path.exists() for path in self.clipboard_export_files),
+            "irc": self.irc_root.exists(),
+            "raw_log": self.raw_log_file.exists(),
         }
 
     @classmethod
@@ -105,62 +109,52 @@ class LynchpinConfig:
         exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
-        knowledgebase_root = Path(
-            os.environ.get("LYNCHPIN_KNOWLEDGEBASE_ROOT", "/realm/project/__lynchpin_exported")
+        local_root = Path(os.environ.get("LYNCHPIN_LOCAL_ROOT", repo_root / ".lynchpin"))
+        generated_root = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_GENERATED_ROOT"), local_root / "generated"
         )
-        knowledge_archive_root = Path(
-            os.environ.get("LYNCHPIN_KNOWLEDGE_ARCHIVE_ROOT", knowledgebase_root / "archive")
+        knowledgebase_root = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_KNOWLEDGEBASE_ROOT"), generated_root
         )
-        repo_artefacts_root = Path(
-            os.environ.get("LYNCHPIN_REPO_ARTEFACTS_ROOT", knowledgebase_root / "repo-artefacts")
+        knowledge_archive_root = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_KNOWLEDGE_ARCHIVE_ROOT"), knowledgebase_root / "archive"
         )
-        registry_root = Path(os.environ.get("LYNCHPIN_REGISTRY_ROOT", knowledgebase_root / "registry"))
-        session_registry_dir = Path(
-            os.environ.get("LYNCHPIN_SESSION_REGISTRY_DIR", registry_root / "sessions")
+        repo_artefacts_root = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_REPO_ARTEFACTS_ROOT"), generated_root
         )
-        artefact_catalog = Path(
-            os.environ.get("LYNCHPIN_ARTEFACT_CATALOG", registry_root / "artefact_catalog.json")
+        registry_root = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_REGISTRY_ROOT"), knowledgebase_root / "registry"
         )
-        analysis_output_dir = Path(
-            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR", repo_artefacts_root / "analysis/derived")
+        session_registry_dir = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_SESSION_REGISTRY_DIR"), registry_root / "sessions"
         )
-        session_ledger_output = Path(
-            os.environ.get(
-                "LYNCHPIN_SESSION_LEDGER_OUTPUT",
-                repo_artefacts_root / "knowledge/ledgers/session_index.csv",
-            )
+        artefact_catalog = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_ARTEFACT_CATALOG"), registry_root / "artefact_catalog.json"
         )
-        artefact_ledger_output = Path(
-            os.environ.get(
-                "LYNCHPIN_ARTEFACT_LEDGER_OUTPUT",
-                repo_artefacts_root / "knowledge/ledgers/artefact_index.csv",
-            )
+        analysis_output_dir = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_ANALYSIS_OUTPUT_DIR"), repo_artefacts_root / "analysis"
         )
-        session_summary_dir = Path(
-            os.environ.get(
-                "LYNCHPIN_SESSION_SUMMARY_DIR",
-                repo_artefacts_root / "knowledge/sessions/summaries",
-            )
+        session_ledger_output = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_SESSION_LEDGER_OUTPUT"),
+            repo_artefacts_root / "knowledge/ledgers/session_index.csv",
         )
-        session_summary_log = Path(
-            os.environ.get(
-                "LYNCHPIN_SESSION_SUMMARY_LOG",
-                repo_artefacts_root / "knowledge/sessions/logs/session_summaries.jsonl",
-            )
+        artefact_ledger_output = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_ARTEFACT_LEDGER_OUTPUT"),
+            repo_artefacts_root / "knowledge/ledgers/artefact_index.csv",
         )
-        velocity_output = Path(
-            os.environ.get("LYNCHPIN_VELOCITY_OUTPUT", repo_artefacts_root / "meta/velocity/velocity.html")
+        velocity_output = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_VELOCITY_OUTPUT"), repo_artefacts_root / "meta/velocity.html"
         )
-        webhistory_report_dir = Path(
-            os.environ.get("LYNCHPIN_WEBHISTORY_REPORT_DIR", repo_artefacts_root / "webhistory")
+        webhistory_report_dir = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_WEBHISTORY_REPORT_DIR"), repo_artefacts_root / "webhistory"
         )
 
         aw_db = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_DB", "~/.local/share/activitywatch/aw-server-rust/sqlite.db"
         )).expanduser()
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
-        baseline_dir = Path(
-            os.environ.get("LYNCHPIN_BASELINE_DIR", repo_artefacts_root / "core/baseline/latest")
+        baseline_dir = _non_legacy_generated_path(
+            os.environ.get("LYNCHPIN_BASELINE_DIR"), repo_artefacts_root / "baseline/latest"
         )
 
         webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", captures_root / "webhistory/gestalt/raw"))
@@ -203,7 +197,7 @@ class LynchpinConfig:
         screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", captures_root / "screenshot"))
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", captures_root / "keylog"))
 
-        cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", repo_artefacts_root / "lynchpin/cache"))
+        cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/project/knowledgebase"))
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
@@ -215,6 +209,25 @@ class LynchpinConfig:
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
             "LYNCHPIN_SAMSUNG_GDPR_CLOUD", exports_root / "health/raw/samsung-gdpr-cloud"
+        ))
+        clipboard_live_file = Path(os.environ.get(
+            "LYNCHPIN_CLIPBOARD_LIVE_FILE", "~/.config/clipse/clipboard_history.json"
+        )).expanduser()
+        clipboard_export_files = tuple(
+            Path(item).expanduser()
+            for item in os.environ.get(
+                "LYNCHPIN_CLIPBOARD_EXPORT_FILES",
+                ":".join([
+                    str(exports_root / "clipse/clipse-archive-20260201/clipboard_history.json"),
+                    str(exports_root / "clipse/clipse_bck/clipse-config-20260112-000626/clipboard_history.json"),
+                    str(exports_root / "chatlog_bck/raw/_archive/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
+                ]),
+            ).split(":")
+            if item
+        )
+        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", captures_root / "comms/irc"))
+        raw_log_file = Path(os.environ.get(
+            "LYNCHPIN_RAW_LOG_FILE", "/realm/project/knowledgebase/logs.raw-log.md"
         ))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -230,8 +243,6 @@ class LynchpinConfig:
             analysis_output_dir=analysis_output_dir,
             session_ledger_output=session_ledger_output,
             artefact_ledger_output=artefact_ledger_output,
-            session_summary_dir=session_summary_dir,
-            session_summary_log=session_summary_log,
             velocity_output=velocity_output,
             webhistory_report_dir=webhistory_report_dir,
             activitywatch_db=aw_db, atuin_db=atuin_db, baseline_dir=baseline_dir,
@@ -249,6 +260,10 @@ class LynchpinConfig:
             goodreads_library=goodreads_library, wykop_root=wykop_root,
             wykop_username=wykop_username,
             samsung_gdpr_cloud_dir=samsung_gdpr_cloud_dir,
+            clipboard_live_file=clipboard_live_file,
+            clipboard_export_files=clipboard_export_files,
+            irc_root=irc_root,
+            raw_log_file=raw_log_file,
         )
 
 
@@ -263,6 +278,16 @@ def get_config() -> LynchpinConfig:
 
 
 # ── Path resolution helpers ───────────────────────────────────────────────────
+
+
+def _non_legacy_generated_path(env_value: str | None, default: Path) -> Path:
+    """Resolve generated-output roots without reviving retired temp roots."""
+    if not env_value:
+        return Path(default)
+    candidate = Path(env_value)
+    if "__lynchpin_exported" in candidate.parts:
+        return Path(default)
+    return candidate
 
 
 def resolve_latest_dated_dir(root: Path, ignore: Optional[set[str]] = None) -> Optional[Path]:

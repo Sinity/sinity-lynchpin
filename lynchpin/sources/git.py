@@ -56,6 +56,7 @@ __all__ = [
     "repo_files",
     "recent_commits",
     "repo_tokei",
+    "github_context_for_commits",
     "iter_numstat",
     "iter_commit_activity",
     "summarize_commit_activity",
@@ -459,6 +460,48 @@ def recent_commits(repo_name: str, limit: int = 20) -> list[RepoCommitSummary]:
     return result
 
 
+def github_context_for_commits(facts: Sequence[GitCommitFact], *, max_refs: int = 24) -> dict[str, object]:
+    """Fetch GitHub PR/issue context referenced by commit subjects when available.
+
+    This is intentionally best-effort: local git remains the primary source and
+    GitHub enriches only referenced commits. Missing `gh`, missing auth, private
+    repos, or network failures produce explicit unavailable metadata rather than
+    failing scaffold generation.
+    """
+    if shutil.which("gh") is None:
+        return {"status": "unavailable", "reason": "gh_not_found", "items": []}
+
+    refs_by_repo: dict[str, dict[str, set[int]]] = defaultdict(lambda: {"prs": set(), "issues": set()})
+    for fact in facts:
+        refs = _extract_subject_refs(fact.subject)
+        refs_by_repo[fact.repo]["prs"].update(refs["prs"])
+        refs_by_repo[fact.repo]["issues"].update(refs["issues"])
+
+    items: list[dict[str, object]] = []
+    attempted = 0
+    for repo, refs in sorted(refs_by_repo.items()):
+        slug = _github_slug(repo)
+        if slug is None:
+            continue
+        for number in sorted(refs["prs"]):
+            if attempted >= max_refs:
+                break
+            attempted += 1
+            payload = _gh_json(["pr", "view", str(number), "--repo", slug, "--json", "number,title,state,author,mergedAt,url,body,comments,reviews"])
+            items.append(_github_item(repo, "pr", number, slug, payload))
+        for number in sorted(refs["issues"] - refs["prs"]):
+            if attempted >= max_refs:
+                break
+            attempted += 1
+            payload = _gh_json(["issue", "view", str(number), "--repo", slug, "--json", "number,title,state,author,closedAt,url,body,comments,labels"])
+            items.append(_github_item(repo, "issue", number, slug, payload))
+
+    status = "ok" if items else "no_refs"
+    if attempted >= max_refs:
+        status = "truncated"
+    return {"status": status, "max_refs": max_refs, "items": items}
+
+
 def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
     spec = PROJECT_SPECS.get(repo_name)
     if not spec or not spec["path"].exists() or shutil.which("tokei") is None: return None
@@ -684,6 +727,84 @@ def _parse_prefix(subject: str) -> str:
             c = subject[:idx].strip().lower()
             if c in _KNOWN_PREFIXES: return c
     return "other"
+
+
+def _extract_subject_refs(subject: str) -> dict[str, set[int]]:
+    text = subject or ""
+    prs = {int(match) for match in re.findall(r"\(#(\d+)\)", text)}
+    issues = {
+        int(match)
+        for match in re.findall(
+            r"\b(?:close|closes|closed|fix|fixes|fixed|ref|refs)\s+#(\d+)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    }
+    return {"prs": prs, "issues": issues}
+
+
+def _github_slug(repo: str) -> str | None:
+    repo_path = _repo_path(repo)
+    if not (repo_path / ".git").is_dir():
+        return None
+    remote = _git_output(repo_path, ["remote", "get-url", "origin"])
+    if not remote:
+        return None
+    patterns = [
+        r"github\.com[:/](?P<owner>[^/]+)/(?P<name>[^/.]+)(?:\.git)?$",
+        r"https?://github\.com/(?P<owner>[^/]+)/(?P<name>[^/.]+)(?:\.git)?$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, remote)
+        if match:
+            return f"{match.group('owner')}/{match.group('name')}"
+    return None
+
+
+def _gh_json(args: list[str]) -> dict[str, object] | None:
+    try:
+        result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=20)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _github_item(repo: str, kind: str, number: int, slug: str, payload: dict[str, object] | None) -> dict[str, object]:
+    if payload is None:
+        return {"repo": repo, "slug": slug, "kind": kind, "number": number, "status": "unavailable"}
+    comments = payload.get("comments")
+    reviews = payload.get("reviews")
+    labels = payload.get("labels")
+    author = payload.get("author") if isinstance(payload.get("author"), dict) else {}
+    return {
+        "repo": repo,
+        "slug": slug,
+        "kind": kind,
+        "number": number,
+        "status": "ok",
+        "title": payload.get("title"),
+        "state": payload.get("state"),
+        "author": author.get("login") if isinstance(author, dict) else None,
+        "url": payload.get("url"),
+        "merged_at": payload.get("mergedAt"),
+        "closed_at": payload.get("closedAt"),
+        "body": payload.get("body"),
+        "comment_count": len(comments) if isinstance(comments, list) else None,
+        "review_count": len(reviews) if isinstance(reviews, list) else None,
+        "labels": [
+            item.get("name")
+            for item in labels
+            if isinstance(item, dict) and item.get("name")
+        ] if isinstance(labels, list) else None,
+        "comments": comments if isinstance(comments, list) else None,
+        "reviews": reviews if isinstance(reviews, list) else None,
+    }
 
 
 def _count_bursts(timestamps: list[datetime]) -> int:

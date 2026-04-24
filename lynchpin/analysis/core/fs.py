@@ -23,7 +23,7 @@ def walk_files(base_dir, skip_dirs=None, target_exts=None, exclude_exts=None):
     if skip_dirs is None:
         skip_dirs = {
             '.git', 'venv', '.venv', 'node_modules', '__pycache__', 'target',
-            'artefacts', '.direnv', '.ruff_cache', '.pytest_cache', '.mypy_cache',
+            '.lynchpin', 'artefacts', '.direnv', '.ruff_cache', '.pytest_cache', '.mypy_cache',
             'dist', 'build', '.eggs', 'result', '.claude', '.playwright-mcp',
             '.sinex', '.cargo', '.nats', '.cache', '.local',
         }

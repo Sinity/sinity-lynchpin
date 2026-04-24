@@ -3,7 +3,7 @@ const state = {
   payload: null,
   treeCache: new Map(),
   chart: null,
-  storyTab: "narrative",
+  storyTab: null,
   vizTab: null,
   detailTab: null,
   rawFile: null,
@@ -72,6 +72,157 @@ function formatMoney(value) {
 function formatPercent(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return `${Math.round(Number(value) * 100)}%`;
+}
+
+function isDeferredFile(value) {
+  return Boolean(value && typeof value === "object" && value._deferred);
+}
+
+function evidenceCounts(payload) {
+  return payload.summary?.evidence_profile?.counts || {};
+}
+
+function dayAISessions(payload) {
+  const ai = payload.data?.ai_activity;
+  if (!ai || isDeferredFile(ai)) return [];
+  return ai.sessions || ai.session_summaries || [];
+}
+
+function dayCommitFacts(payload) {
+  const commits = payload.data?.commits;
+  if (!commits || isDeferredFile(commits)) return [];
+  return commits.facts || [];
+}
+
+function daySleepRecords(payload) {
+  const sleep = payload.data?.sleep;
+  if (Array.isArray(sleep)) return sleep;
+  if (sleep && typeof sleep === "object") return sleep.records || [];
+  return [];
+}
+
+function rawFileUrl(payload, file) {
+  return `/api/file?kind=${encodeURIComponent(payload.kind)}&key=${encodeURIComponent(payload.key)}&file=${encodeURIComponent(file)}`;
+}
+
+function periodMetrics(payload) {
+  if (payload.kind === "week") return payload.data?.week_metrics || {};
+  if (payload.kind === "month") return payload.data?.month_metrics || {};
+  if (payload.kind === "quarter") return payload.data?.quarter_metrics || {};
+  if (payload.kind === "half") return payload.data?.half_metrics || {};
+  if (payload.kind === "year") return payload.data?.year_metrics || {};
+  return {};
+}
+
+function narrativeStatus(payload) {
+  return payload.summary?.narrative_status || { state: payload.narrative?.exists ? "fresh" : "missing", reasons: [] };
+}
+
+function narrativeStateLabel(stateName) {
+  if (stateName === "fresh") return "fresh";
+  if (stateName === "stale") return "stale";
+  return "missing";
+}
+
+function narrativeReasonLabels(reasons) {
+  return (reasons || []).map((reason) => {
+    if (reason === "generated_before_scaffold") return "older than scaffold";
+    if (reason === "range_mismatch") return "range mismatch";
+    if (reason === "key_mismatch") return "key mismatch";
+    if (reason === "narrative_missing") return "not generated";
+    return reason.replaceAll("_", " ");
+  });
+}
+
+function preferredStoryTab(payload) {
+  if (!payload.narrative?.exists) return "brief";
+  if (payload.kind === "overview") return "brief";
+  return narrativeStatus(payload).state === "fresh" ? "narrative" : "brief";
+}
+
+function sourceEntriesForPayload(payload) {
+  const explicit = payload.summary?.evidence_profile?.sources_present;
+  if (Array.isArray(explicit) && explicit.length) {
+    return explicit.map((name) => ({ label: name, detail: null }));
+  }
+  const manifestSources = payload.data?.manifest?.sources_available;
+  const coverage = payload.summary?.dominant_threads?.source_coverage;
+  const coverageDetail = new Map(
+    (Array.isArray(coverage) ? coverage : []).map((entry) => [
+      entry.name,
+      entry.months != null ? `${formatNumber(entry.months)} mo` : null,
+    ]),
+  );
+  if (manifestSources && typeof manifestSources === "object") {
+    return Object.entries(manifestSources)
+      .filter(([, available]) => Boolean(available))
+      .map(([name]) => ({ label: name, detail: coverageDetail.get(name) || null }));
+  }
+  if (Array.isArray(coverage) && coverage.length) {
+    return coverage.map((entry) => ({
+      label: entry.name,
+      detail: entry.months != null ? `${formatNumber(entry.months)} mo` : null,
+    }));
+  }
+  const inferred = [];
+  const metrics = periodMetrics(payload);
+  const rows = seriesRowsForPeriod(payload);
+  if (payload.kind === "day") {
+    const counts = evidenceCounts(payload);
+    if (payload.data?.focus_timeline?.summary || counts.human_segments) inferred.push({ label: "activitywatch", detail: null });
+    if (dayCommitFacts(payload).length || counts.git_facts || counts.commits) inferred.push({ label: "git", detail: null });
+    if (dayAISessions(payload).length || counts.ai_sessions || counts.polylogue_sessions) inferred.push({ label: "polylogue", detail: null });
+    if (daySleepRecords(payload).length || counts.sleep_records) inferred.push({ label: "sleep", detail: null });
+    if (payload.data?.health) inferred.push({ label: "health", detail: null });
+    if (payload.data?.shell?.length || counts.shell_sessions) inferred.push({ label: "terminal", detail: null });
+    if (counts.clipboard_entries) inferred.push({ label: "clipboard", detail: `${formatNumber(counts.clipboard_entries)} entries` });
+    if (counts.irc_conversations) inferred.push({ label: "irc", detail: `${formatNumber(counts.irc_conversations)} conversations` });
+    if (counts.raw_log_entries) inferred.push({ label: "raw_log", detail: `${formatNumber(counts.raw_log_entries)} entries` });
+  } else {
+    if (rows.some((row) => row.active_hours != null)) inferred.push({ label: "activitywatch", detail: null });
+    if (metrics.total_commits != null || (payload.summary?.dominant_threads?.projects || []).length) inferred.push({ label: "git", detail: null });
+    if (metrics.ai?.session_count) inferred.push({ label: "polylogue", detail: null });
+    if (Object.keys(metrics.sleep || {}).length) inferred.push({ label: "sleep", detail: null });
+    if (Object.keys(metrics.health || {}).length) inferred.push({ label: "health", detail: null });
+  }
+  if (inferred.length) return inferred;
+  return [];
+}
+
+function formatRange(range) {
+  if (!range) return "-";
+  if (typeof range === "string") return range;
+  if (range.start || range.end) return `${range.start || "?"} → ${range.end || "?"}`;
+  return "-";
+}
+
+function truncateText(value, limit = 1200) {
+  const text = value == null ? "" : String(value);
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n... [${formatNumber(text.length - limit)} more chars]`;
+}
+
+function renderNarrativeBanner(payload) {
+  const status = narrativeStatus(payload);
+  if (status.state === "fresh") return "";
+  const narrativeRange = formatRange(status.narrative_range);
+  const scaffoldRange = formatRange(status.scaffold_range);
+  const reasons = narrativeReasonLabels(status.reasons);
+  return `
+    <div class="status-banner ${status.state === "stale" ? "warn" : ""}">
+      <div class="status-banner-header">
+        <span class="status-pill ${status.state}">Narrative ${escapeHtml(narrativeStateLabel(status.state))}</span>
+        ${reasons.length ? `<span>${escapeHtml(reasons.join(", "))}</span>` : ""}
+      </div>
+      <div class="status-banner-body">
+        ${
+          status.state === "missing"
+            ? `No markdown narrative exists for this period yet. The scaffold brief below is the current source of truth.`
+            : `This markdown narrative predates the current scaffold. Narrative range: ${escapeHtml(narrativeRange)}. Scaffold range: ${escapeHtml(scaffoldRange)}.`
+        }
+      </div>
+    </div>
+  `;
 }
 
 function dayLabel(isoDate) {
@@ -248,7 +399,7 @@ function renderLoadError(kind, key, error) {
 async function loadPeriod(kind, key) {
   state.current = { kind, key };
   state.payload = null;
-  state.storyTab = "narrative";
+  state.storyTab = null;
   state.vizTab = null;
   state.detailTab = null;
   state.rawFile = null;
@@ -275,7 +426,7 @@ function renderCurrent() {
   document.title = `${payload.title} | Lynchpin Browser`;
   const storyTabs = storyTabsFor(payload);
   if (!storyTabs.find((tab) => tab.id === state.storyTab)) {
-    state.storyTab = storyTabs[0].id;
+    state.storyTab = preferredStoryTab(payload);
   }
   const vizTabs = vizTabsFor(payload);
   if (!vizTabs.find((tab) => tab.id === state.vizTab)) {
@@ -325,14 +476,17 @@ function renderTabs(containerId, tabs, selectedId, onSelect) {
 
 function renderHero(payload) {
   const summary = payload.summary || {};
+  const status = narrativeStatus(payload);
   const topProject = firstThreadLabel(summary.dominant_threads?.projects);
   const topProvider = firstThreadLabel(summary.dominant_threads?.ai_providers);
+  const sources = sourceEntriesForPayload(payload);
   const hero = document.getElementById("hero-shell");
   const chips = [
     `<div class="hero-chip"><strong>${escapeHtml(payload.kind)}</strong><span>${escapeHtml(payload.key)}</span></div>`,
-    `<div class="hero-chip"><strong>Narrative</strong><span>${summary.narrative_available ? "available" : "missing"}</span></div>`,
+    `<div class="hero-chip"><strong>Narrative</strong><span>${escapeHtml(narrativeStateLabel(status.state))}</span></div>`,
     topProject ? `<div class="hero-chip"><strong>Project</strong><span>${escapeHtml(topProject)}</span></div>` : "",
     topProvider ? `<div class="hero-chip"><strong>Provider</strong><span>${escapeHtml(topProvider)}</span></div>` : "",
+    sources.length ? `<div class="hero-chip"><strong>Sources</strong><span>${escapeHtml(formatNumber(sources.length))}</span></div>` : "",
     summary.data_quality_notes?.length
       ? `<div class="hero-chip"><strong>Caveats</strong><span>${summary.data_quality_notes.length}</span></div>`
       : "",
@@ -364,13 +518,13 @@ function renderHero(payload) {
 }
 
 function buildHeroSubtitle(payload) {
+  const status = narrativeStatus(payload);
   if (payload.kind === "overview") {
     const period = payload.data?.narrative_brief?.period || {};
-    return `${period.start || "?"} through ${period.end || "?"}`;
+    return `${period.start || "?"} through ${period.end || "?"}${status.state === "stale" ? " · overview markdown lags scaffold" : ""}`;
   }
-  const narrativeMeta = payload.narrative?.meta || {};
-  const range = narrativeMeta.range || payload.data?.manifest?.data_range;
-  if (range) return String(range);
+  const range = payload.summary?.narrative_status?.scaffold_range || payload.narrative?.meta?.range || payload.data?.manifest?.data_range;
+  if (range) return formatRange(range);
   const summary = payload.summary || {};
   const noteCount = summary.data_quality_notes?.length || 0;
   return noteCount ? `${noteCount} quality caveat${noteCount === 1 ? "" : "s"} recorded for this period` : "Scaffold-backed retrospective surface";
@@ -406,6 +560,7 @@ function detailTabsFor(payload) {
   if (hasSleepInspector(payload)) tabs.push({ id: "sleep", label: "Sleep" });
   if (hasAIData(payload)) tabs.push({ id: "ai", label: "AI" });
   if (hasCommitData(payload)) tabs.push({ id: "commits", label: "Commits" });
+  if (hasCaptureData(payload)) tabs.push({ id: "captures", label: "Captures" });
   if (hasHealthInspector(payload)) tabs.push({ id: "health", label: "Health" });
   tabs.push({ id: "raw", label: "Raw" });
   return tabs;
@@ -414,7 +569,11 @@ function detailTabsFor(payload) {
 function renderStory(payload) {
   const container = document.getElementById("story-body");
   if (state.storyTab === "narrative" && payload.narrative?.exists) {
-    container.innerHTML = `<div class="story-markdown">${payload.narrative.html}</div>`;
+    container.innerHTML = `${renderNarrativeBanner(payload)}<div class="story-markdown">${payload.narrative.html}</div>`;
+    return;
+  }
+  if (payload.kind === "overview") {
+    container.innerHTML = renderOverviewBrief(payload);
     return;
   }
   const summary = payload.summary || {};
@@ -438,6 +597,68 @@ function renderStory(payload) {
       <div class="card">
         <h3>Story signals</h3>
         ${signals}
+      </div>
+    </div>
+  `;
+}
+
+function renderOverviewBrief(payload) {
+  const summary = payload.summary || {};
+  const status = narrativeStatus(payload);
+  const sources = sourceEntriesForPayload(payload);
+  const trendHooks = (summary.analytic_hooks?.trend_hooks || []).slice(0, 8);
+  const storySignals = renderStorySignals(summary.story_signals || []);
+  return `
+    <div class="stack">
+      ${renderNarrativeBanner(payload)}
+      <div class="overview-brief-grid">
+        <div class="card">
+          <h3>Framing</h3>
+          <div class="brief-list">
+            ${(summary.angles || []).map((angle) => `<div class="brief-item">${escapeHtml(angle)}</div>`).join("")}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Narrative state</h3>
+          <div class="key-list">
+            <div class="key-item"><div class="key-label">Status</div><div class="key-value">${escapeHtml(narrativeStateLabel(status.state))}</div></div>
+            <div class="key-item"><div class="key-label">Scaffold range</div><div class="key-value">${escapeHtml(formatRange(status.scaffold_range))}</div></div>
+            <div class="key-item"><div class="key-label">Narrative range</div><div class="key-value">${escapeHtml(formatRange(status.narrative_range))}</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Carry forward</h3>
+          <div class="pill-grid">${(summary.carry_forward || []).map((item) => `<span class="pill"><strong>${escapeHtml(item)}</strong></span>`).join("")}</div>
+        </div>
+        <div class="card">
+          <h3>Coverage surfaces</h3>
+          <div class="pill-grid">
+            ${sources.length
+              ? sources.map((source) => `<span class="pill"><strong>${escapeHtml(source.label)}</strong>${source.detail ? ` ${escapeHtml(source.detail)}` : ""}</span>`).join("")
+              : `<span class="pill"><strong>None</strong></span>`}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Story signals</h3>
+        ${storySignals}
+      </div>
+      <div class="card">
+        <h3>Top trend hooks</h3>
+        ${
+          trendHooks.length
+            ? `<table class="data-table">
+                <thead><tr><th>Metric</th><th>Direction</th><th>Slope</th><th>P</th></tr></thead>
+                <tbody>
+                  ${trendHooks
+                    .map(
+                      (hook) => `<tr><td>${escapeHtml(hook.metric)}</td><td>${escapeHtml(hook.direction)}</td><td class="num">${escapeHtml(formatNumber(hook.slope))}</td><td class="num">${escapeHtml(formatNumber(hook.p_value))}</td></tr>`,
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : `<div class="brief-item">No trend hooks emitted.</div>`
+        }
       </div>
     </div>
   `;
@@ -468,12 +689,15 @@ function renderStorySignals(signals) {
 function renderInsights(payload) {
   const summary = payload.summary || {};
   const evidenceProfile = summary.evidence_profile || {};
-  const sourcesPresent = (evidenceProfile.sources_present || [])
-    .map((source) => `<span class="pill"><strong>${escapeHtml(source)}</strong></span>`)
+  const sourcesPresent = sourceEntriesForPayload(payload)
+    .map((source) => `<span class="pill"><strong>${escapeHtml(source.label)}</strong>${source.detail ? ` ${escapeHtml(source.detail)}` : ""}</span>`)
     .join("");
   const notes = (summary.data_quality_notes || [])
     .map((note) => `<div class="warning-item">${escapeHtml(note)}</div>`)
     .join("");
+  const narrativeNotes = narrativeStatus(payload).state === "stale"
+    ? `<div class="card"><h3>Narrative drift</h3><div class="warning-list"><div class="warning-item">Rendered markdown is older than the current scaffold. Treat the brief and raw panels as authoritative until narratives are regenerated.</div></div></div>`
+    : "";
   const dominant = summary.dominant_threads || {};
   const threads = [
     ["Projects", dominant.projects],
@@ -522,6 +746,7 @@ function renderInsights(payload) {
         <h3>Sources in play</h3>
         <div class="pill-grid">${sourcesPresent || `<span class="pill"><strong>None</strong></span>`}</div>
       </div>
+      ${narrativeNotes}
       ${countsHtml}
       ${notes ? `<div class="card"><h3>Quality and interpretation caveats</h3><div class="warning-list">${notes}</div></div>` : ""}
       ${threads}
@@ -693,7 +918,7 @@ function renderDayThreadsChart(payload) {
 }
 
 function renderDayRecoveryChart(payload) {
-  const sleep = payload.data?.sleep || [];
+  const sleep = daySleepRecords(payload);
   if (!Array.isArray(sleep) || !sleep.length) {
     state.chart.clear();
     return ["No sleep records attached to this day."];
@@ -766,14 +991,21 @@ function renderDayRecoveryChart(payload) {
 }
 
 function renderDayAIChart(payload) {
-  const sessions = payload.data?.ai_activity?.session_summaries || [];
+  const sessions = dayAISessions(payload);
   const counts = {};
   const messages = {};
   sessions.forEach((session) => {
     const provider = session.provider || "unknown";
     counts[provider] = (counts[provider] || 0) + 1;
-    messages[provider] = (messages[provider] || 0) + Number(session.messages || 0);
+    messages[provider] = (messages[provider] || 0) + Number(session.messages || session.message_count || 0);
   });
+  if (!sessions.length && isDeferredFile(payload.data?.ai_activity)) {
+    (payload.summary?.dominant_threads?.ai_providers || []).forEach((provider) => {
+      const name = provider.name || "unknown";
+      counts[name] = Number(provider.sessions || 0);
+      messages[name] = 0;
+    });
+  }
   const providers = Object.keys(counts);
   if (!providers.length) {
     state.chart.clear();
@@ -820,13 +1052,21 @@ function renderDayAIChart(payload) {
       },
     ],
   });
-  return [`AI sessions: ${sessions.length}`, `Work events may be sparse even when sessions are present.`];
+  return [
+    isDeferredFile(payload.data?.ai_activity)
+      ? `AI sessions: ${formatNumber(evidenceCounts(payload).ai_sessions || 0)} from day brief; raw AI JSON is deferred.`
+      : `AI sessions: ${sessions.length}`,
+    `Work events may be sparse even when sessions are present.`,
+  ];
 }
 
 function seriesRowsForPeriod(payload) {
-  if (payload.kind === "week") return payload.data?.week_metrics?.per_day || [];
-  if (payload.kind === "month") return payload.data?.month_metrics?.per_day || [];
-  if (payload.kind === "year") return payload.data?.year_metrics?.per_month || [];
+  const metrics = periodMetrics(payload);
+  if (payload.kind === "week") return metrics.per_day || [];
+  if (payload.kind === "month") return metrics.per_day || [];
+  if (payload.kind === "quarter") return metrics.per_month || [];
+  if (payload.kind === "half") return metrics.per_quarter || [];
+  if (payload.kind === "year") return metrics.per_month || [];
   return [];
 }
 
@@ -839,7 +1079,15 @@ function renderPeriodActivityChart(payload) {
   const labels = rows.map((row) => row.date || row.month || row.week || row.key);
   const active = rows.map((row) => Number(row.active_hours || 0));
   const commits = rows.map((row) => Number(row.commits || 0));
+  const hasSleepSeries = rows.some((row) => row.sleep_hours != null);
   const sleep = rows.map((row) => Number(row.sleep_hours || 0));
+  const series = [
+    { name: "Active Hours", type: "bar", data: active, itemStyle: { color: palette.accent }, barWidth: payload.kind === "year" ? 42 : 18 },
+    { name: "Commits", type: "line", yAxisIndex: 1, data: commits, itemStyle: { color: palette.coral }, smooth: true },
+  ];
+  if (hasSleepSeries) {
+    series.push({ name: "Sleep", type: "line", data: sleep, itemStyle: { color: palette.accent2 }, smooth: true });
+  }
   state.chart.setOption({
     ...chartBase(),
     legend: { top: 0, textStyle: { color: "#cbd3df" } },
@@ -864,12 +1112,15 @@ function renderPeriodActivityChart(payload) {
       },
     ],
     series: [
-      { name: "Active Hours", type: "bar", data: active, itemStyle: { color: palette.accent }, barWidth: payload.kind === "year" ? 42 : 18 },
-      { name: "Commits", type: "line", yAxisIndex: 1, data: commits, itemStyle: { color: palette.coral }, smooth: true },
-      { name: "Sleep", type: "line", data: sleep, itemStyle: { color: palette.accent2 }, smooth: true },
+      ...series,
     ],
   });
-  return [`${payload.kind} activity combines active hours, commits, and sleep.`, `Use Threads and Recovery tabs to break that apart.`];
+  return [
+    hasSleepSeries
+      ? `${payload.kind} activity combines active hours, commits, and sleep.`
+      : `${payload.kind} activity combines active hours and commits.`,
+    `Use Threads and Recovery tabs to break that apart.`,
+  ];
 }
 
 function renderPeriodThreadsChart(payload) {
@@ -964,15 +1215,14 @@ function renderPeriodThreadsChart(payload) {
 
 function renderPeriodRecoveryChart(payload) {
   const rows = seriesRowsForPeriod(payload);
+  if (!rows.some((row) => row.sleep_hours != null)) {
+    state.chart.clear();
+    return ["No per-unit sleep series for this period; use the Sleep inspector for the aggregate summary."];
+  }
   const labels = rows.map((row) => shortenLabel(row.date || row.month || row.key));
   const sleep = rows.map((row) => Number(row.sleep_hours || 0));
   const active = rows.map((row) => Number(row.active_hours || 0));
-  const sleepSummary =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.sleep
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.sleep
-        : payload.data?.year_metrics?.sleep;
+  const sleepSummary = periodMetrics(payload).sleep || {};
   state.chart.setOption({
     ...chartBase(),
     legend: { top: 0, textStyle: { color: "#cbd3df" } },
@@ -1001,12 +1251,7 @@ function renderPeriodRecoveryChart(payload) {
 }
 
 function renderPeriodAIChart(payload) {
-  const ai =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.ai
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.ai
-        : payload.data?.year_metrics?.ai;
+  const ai = periodMetrics(payload).ai || {};
   const providers = Object.entries(ai?.providers || {});
   if (!providers.length) {
     state.chart.clear();
@@ -1210,18 +1455,27 @@ function renderDetail(payload) {
   const container = document.getElementById("detail-body");
   if (state.detailTab === "sleep") {
     container.innerHTML = renderSleepInspector(payload);
+    wireDeferredLoaders(container, payload);
     return;
   }
   if (state.detailTab === "ai") {
     container.innerHTML = renderAIInspector(payload);
+    wireDeferredLoaders(container, payload);
     return;
   }
   if (state.detailTab === "commits") {
     container.innerHTML = renderCommitInspector(payload);
+    wireDeferredLoaders(container, payload);
+    return;
+  }
+  if (state.detailTab === "captures") {
+    container.innerHTML = renderCaptureInspector(payload);
+    wireDeferredLoaders(container, payload);
     return;
   }
   if (state.detailTab === "health") {
     container.innerHTML = renderHealthInspector(payload);
+    wireDeferredLoaders(container, payload);
     return;
   }
   if (state.detailTab === "raw") {
@@ -1233,15 +1487,48 @@ function renderDetail(payload) {
         renderDetail(payload);
       });
     }
+    wireDeferredLoaders(container, payload);
     return;
   }
   container.innerHTML = renderBriefInspector(payload);
+  wireDeferredLoaders(container, payload);
+}
+
+function wireDeferredLoaders(container, payload) {
+  container.querySelectorAll("[data-load-file]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const file = button.dataset.loadFile;
+      button.disabled = true;
+      button.textContent = "Loading...";
+      try {
+        payload.data[file] = await api(rawFileUrl(payload, file));
+        renderCurrent();
+      } catch (error) {
+        button.textContent = "Load failed";
+        button.disabled = false;
+        console.error("raw file load failed", error);
+      }
+    });
+  });
 }
 
 function renderBriefInspector(payload) {
   const hooks = payload.summary?.analytic_hooks || {};
+  const status = narrativeStatus(payload);
+  const sources = sourceEntriesForPayload(payload);
+  const trendHooks = hooks.trend_hooks || [];
+  const regimeHooks = hooks.regime_change_hooks || [];
+  const sleepCaveats = hooks.sleep_caveats || [];
   return `
     <div class="stack">
+      <div class="card">
+        <h3>Scaffold state</h3>
+        <div class="key-list">
+          <div class="key-item"><div class="key-label">Narrative</div><div class="key-value">${escapeHtml(narrativeStateLabel(status.state))}</div></div>
+          <div class="key-item"><div class="key-label">Scaffold generated</div><div class="key-value">${escapeHtml(status.scaffold_generated_at || "-")}</div></div>
+          <div class="key-item"><div class="key-label">Narrative generated</div><div class="key-value">${escapeHtml(status.narrative_generated_at || "-")}</div></div>
+        </div>
+      </div>
       <div class="card">
         <h3>Angles</h3>
         <div class="brief-list">
@@ -1250,6 +1537,57 @@ function renderBriefInspector(payload) {
             .join("") || `<div class="brief-item">No angles captured.</div>`}
         </div>
       </div>
+      <div class="card">
+        <h3>Trend hooks</h3>
+        ${
+          trendHooks.length
+            ? `<table class="data-table">
+                <thead><tr><th>Metric</th><th>Direction</th><th>Slope</th><th>P</th></tr></thead>
+                <tbody>
+                  ${trendHooks
+                    .map(
+                      (hook) => `<tr><td>${escapeHtml(hook.metric)}</td><td>${escapeHtml(hook.direction)}</td><td class="num">${escapeHtml(formatNumber(hook.slope))}</td><td class="num">${escapeHtml(formatNumber(hook.p_value))}</td></tr>`,
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : `<div class="brief-item">No trend hooks captured.</div>`
+        }
+      </div>
+      ${
+        regimeHooks.length
+          ? `<div class="card">
+              <h3>Regime shifts</h3>
+              <table class="data-table">
+                <thead><tr><th>Metric</th><th>Magnitude</th><th>Before</th><th>After</th></tr></thead>
+                <tbody>
+                  ${regimeHooks
+                    .slice(0, 8)
+                    .map(
+                      (hook) => `<tr><td>${escapeHtml(hook.metric)}</td><td class="num">${escapeHtml(formatNumber(hook.magnitude))}</td><td class="num">${escapeHtml(formatNumber(hook.before_mean))}</td><td class="num">${escapeHtml(formatNumber(hook.after_mean))}</td></tr>`,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : ""
+      }
+      ${
+        sleepCaveats.length
+          ? `<div class="card">
+              <h3>Sleep caveats</h3>
+              <div class="warning-list">${sleepCaveats.map((note) => `<div class="warning-item">${escapeHtml(note)}</div>`).join("")}</div>
+            </div>`
+          : ""
+      }
+      ${
+        sources.length
+          ? `<div class="card">
+              <h3>Sources</h3>
+              <div class="pill-grid">${sources.map((source) => `<span class="pill"><strong>${escapeHtml(source.label)}</strong>${source.detail ? ` ${escapeHtml(source.detail)}` : ""}</span>`).join("")}</div>
+            </div>`
+          : ""
+      }
       <div class="card">
         <h3>Analytic hooks</h3>
         <pre class="json-block">${escapeHtml(JSON.stringify(hooks, null, 2))}</pre>
@@ -1260,7 +1598,7 @@ function renderBriefInspector(payload) {
 
 function renderSleepInspector(payload) {
   if (payload.kind === "day") {
-    const records = payload.data?.sleep || [];
+    const records = daySleepRecords(payload);
     if (!records.length) return `<div class="empty-state"><div><strong>No sleep records</strong>This day has no attached sleep payload.</div></div>`;
     return `
       <table class="data-table">
@@ -1286,14 +1624,7 @@ function renderSleepInspector(payload) {
       </table>
     `;
   }
-  const summary =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.sleep
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.sleep
-        : payload.kind === "year"
-          ? payload.data?.year_metrics?.sleep
-          : {};
+  const summary = periodMetrics(payload).sleep || {};
   return `
     <div class="stack">
       <div class="card">
@@ -1317,38 +1648,67 @@ function renderSleepInspector(payload) {
 
 function renderAIInspector(payload) {
   if (payload.kind === "day") {
-    const sessions = payload.data?.ai_activity?.session_summaries || [];
+    const ai = payload.data?.ai_activity;
+    const counts = evidenceCounts(payload);
+    const tokenEstimates = payload.summary?.analytic_hooks?.ai_token_estimates || payload.summary?.evidence_profile?.token_estimates || {};
+    if (isDeferredFile(ai)) {
+      return `
+        <div class="stack">
+          <div class="card">
+            <h3>AI evidence deferred</h3>
+            <div class="key-list">
+              <div class="key-item"><div class="key-label">Sessions</div><div class="key-value">${escapeHtml(formatNumber(counts.ai_sessions || counts.polylogue_sessions))}</div></div>
+              <div class="key-item"><div class="key-label">Raw file</div><div class="key-value">${escapeHtml(formatNumber(ai.bytes))} bytes</div></div>
+              <div class="key-item"><div class="key-label">Prompt tokens</div><div class="key-value">${escapeHtml(formatNumber(tokenEstimates.user_prompts))}</div></div>
+              <div class="key-item"><div class="key-label">Dialogue tokens</div><div class="key-value">${escapeHtml(formatNumber(tokenEstimates.dialogue))}</div></div>
+            </div>
+          </div>
+          <button class="nav-action" type="button" data-load-file="ai_activity">Load full AI JSON</button>
+        </div>
+      `;
+    }
+    const sessions = dayAISessions(payload);
     if (!sessions.length) return `<div class="empty-state"><div><strong>No AI sessions</strong>No session summaries were loaded for this period.</div></div>`;
+    const promptTextMap = new Map((ai?.prompt_texts || []).map((item) => [item.prompt_text_id, item.text]));
+    const promptRows = (ai?.user_prompts || [])
+      .flatMap((group) => (group.prompts || []).map((prompt) => ({ ...prompt, provider: group.provider, title: group.title })))
+      .slice(0, 12);
     return `
-      <table class="data-table">
-        <thead>
-          <tr><th>Provider</th><th>Messages</th><th>Words</th><th>Projects</th></tr>
-        </thead>
-        <tbody>
-          ${sessions
-            .map(
-              (session) => `
-                <tr>
-                  <td>${escapeHtml(session.provider || "-")}</td>
-                  <td class="num">${escapeHtml(formatNumber(session.messages))}</td>
-                  <td class="num">${escapeHtml(formatNumber(session.words))}</td>
-                  <td>${escapeHtml((session.projects || []).join(", "))}</td>
-                </tr>
-              `,
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <div class="stack">
+        <table class="data-table">
+          <thead>
+            <tr><th>Provider</th><th>Messages</th><th>Words</th><th>Projects</th></tr>
+          </thead>
+          <tbody>
+            ${sessions
+              .map(
+                (session) => `
+                  <tr>
+                    <td>${escapeHtml(session.provider || "-")}</td>
+                    <td class="num">${escapeHtml(formatNumber(session.messages || session.message_count))}</td>
+                    <td class="num">${escapeHtml(formatNumber(session.words || session.word_count))}</td>
+                    <td>${escapeHtml((session.projects || session.work_event_projects || []).join(", "))}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="card">
+          <h3>User prompts</h3>
+          <div class="signal-list">
+            ${promptRows.map((prompt) => `
+              <div class="signal-item">
+                <div class="signal-kind">${escapeHtml(prompt.provider || "ai")} · ${escapeHtml(prompt.title || "")}</div>
+                <div class="signal-evidence">${escapeHtml(truncateText(prompt.text || promptTextMap.get(prompt.prompt_text_id), 1200))}</div>
+              </div>
+            `).join("") || `<div class="brief-item">No prompt texts attached.</div>`}
+          </div>
+        </div>
+      </div>
     `;
   }
-  const ai =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.ai
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.ai
-        : payload.kind === "year"
-          ? payload.data?.year_metrics?.ai
-          : {};
+  const ai = periodMetrics(payload).ai || {};
   return `
     <div class="stack">
       <div class="card">
@@ -1372,7 +1732,7 @@ function renderAIInspector(payload) {
 
 function renderCommitInspector(payload) {
   if (payload.kind === "day") {
-    const commits = payload.data?.commits?.facts || [];
+    const commits = dayCommitFacts(payload);
     if (!commits.length) return `<div class="empty-state"><div><strong>No commits</strong>No commit facts were attached to this day.</div></div>`;
     return commits
       .slice(0, 40)
@@ -1381,7 +1741,7 @@ function renderCommitInspector(payload) {
           <div class="signal-item">
             <div class="signal-kind">${escapeHtml(commit.repo || "-")}</div>
             <div class="signal-summary">${escapeHtml(commit.subject || commit.message || "-")}</div>
-            <div class="signal-evidence">${escapeHtml(`${commit.authored_at || ""}  +${commit.insertions || 0} -${commit.deletions || 0}`)}</div>
+            <div class="signal-evidence">${escapeHtml(`${commit.authored_at || ""}  +${commit.lines_added || commit.insertions || 0} -${commit.lines_deleted || commit.deletions || 0}`)}</div>
           </div>
         `,
       )
@@ -1390,11 +1750,7 @@ function renderCommitInspector(payload) {
   const summary =
     payload.kind === "week"
       ? payload.data?.week_metrics?.project_commits
-      : payload.kind === "month"
-        ? payload.summary?.dominant_threads?.projects
-        : payload.kind === "year"
-          ? payload.summary?.dominant_threads?.projects
-          : [];
+      : payload.summary?.dominant_threads?.projects || [];
   if (Array.isArray(summary)) {
     return `
       <table class="data-table">
@@ -1417,6 +1773,85 @@ function renderCommitInspector(payload) {
   `;
 }
 
+function renderCaptureInspector(payload) {
+  const counts = evidenceCounts(payload);
+  const clipboard = payload.data?.clipboard;
+  const rawLog = payload.data?.raw_log;
+  const irc = payload.data?.irc;
+  const sections = [];
+
+  if (counts.clipboard_entries || clipboard) {
+    if (isDeferredFile(clipboard)) {
+      sections.push(`
+        <div class="card">
+          <h3>Clipboard</h3>
+          <div class="key-list">
+            <div class="key-item"><div class="key-label">Entries</div><div class="key-value">${escapeHtml(formatNumber(counts.clipboard_entries))}</div></div>
+            <div class="key-item"><div class="key-label">Raw file</div><div class="key-value">${escapeHtml(formatNumber(clipboard.bytes))} bytes</div></div>
+          </div>
+          <button class="nav-action" type="button" data-load-file="clipboard">Load clipboard JSON</button>
+        </div>
+      `);
+    } else {
+      const valueMap = new Map((clipboard?.values || []).map((item) => [item.value_id, item.value]));
+      const entries = clipboard?.entries || [];
+      sections.push(`
+        <div class="card">
+          <h3>Clipboard</h3>
+          <div class="signal-list">
+            ${entries.slice(0, 20).map((entry) => {
+              const value = entry.value != null ? entry.value : valueMap.get(entry.value_id);
+              return `
+                <div class="signal-item">
+                  <div class="signal-kind">${escapeHtml(entry.kind || "clipboard")} · ${escapeHtml(entry.recorded_at || "")}</div>
+                  <div class="signal-evidence">${escapeHtml(truncateText(value, 900))}</div>
+                </div>
+              `;
+            }).join("") || `<div class="brief-item">No clipboard entries.</div>`}
+          </div>
+        </div>
+      `);
+    }
+  }
+
+  if (counts.raw_log_entries || rawLog) {
+    const entries = rawLog?.entries || [];
+    sections.push(`
+      <div class="card">
+        <h3>Raw log</h3>
+        <div class="signal-list">
+          ${entries.slice(0, 40).map((entry) => `
+            <div class="signal-item">
+              <div class="signal-kind">${escapeHtml(entry.timestamp || "")}</div>
+              <div class="signal-summary">${escapeHtml(entry.text || "")}</div>
+            </div>
+          `).join("") || `<div class="brief-item">${escapeHtml(formatNumber(counts.raw_log_entries || 0))} entries noted in brief; raw_log.json was not loaded.</div>`}
+        </div>
+      </div>
+    `);
+  }
+
+  if (counts.irc_conversations || irc) {
+    const conversations = irc?.conversations || [];
+    sections.push(`
+      <div class="card">
+        <h3>IRC</h3>
+        <div class="signal-list">
+          ${conversations.slice(0, 12).map((conv) => `
+            <div class="signal-item">
+              <div class="signal-kind">${escapeHtml(conv.channel || "irc")} · ${escapeHtml(conv.start || "")}</div>
+              <div class="signal-summary">${escapeHtml(`${formatNumber(conv.total_lines)} lines, ${formatNumber(conv.sinity_lines)} sinity lines`)}</div>
+              <div class="signal-evidence">${escapeHtml(truncateText((conv.messages || []).map((msg) => `${msg.timestamp || ""} ${msg.speaker || ""}: ${msg.text || ""}`).join("\n"), 1400))}</div>
+            </div>
+          `).join("") || `<div class="brief-item">${escapeHtml(formatNumber(counts.irc_conversations || 0))} conversations noted in brief; irc.json was not loaded.</div>`}
+        </div>
+      </div>
+    `);
+  }
+
+  return `<div class="stack">${sections.join("") || `<div class="empty-state"><div><strong>No captures</strong>No clipboard, IRC, or raw-log evidence is attached.</div></div>`}</div>`;
+}
+
 function renderHealthInspector(payload) {
   if (payload.kind === "day") {
     const health = payload.data?.health || {};
@@ -1429,14 +1864,7 @@ function renderHealthInspector(payload) {
       </div>
     `;
   }
-  const health =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.health
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.health
-        : payload.kind === "year"
-          ? payload.data?.year_metrics?.health
-          : {};
+  const health = periodMetrics(payload).health || {};
   return `
     <div class="stack">
       <div class="card">
@@ -1465,11 +1893,23 @@ function renderRawInspector(payload) {
   }
   const selected = files.includes(state.rawFile) ? state.rawFile : files[0];
   const jsonValue = payload.data?.[selected];
+  const rawBody = isDeferredFile(jsonValue)
+    ? `
+      <div class="card">
+        <h3>${escapeHtml(selected)} is deferred</h3>
+        <div class="key-list">
+          <div class="key-item"><div class="key-label">Size</div><div class="key-value">${escapeHtml(formatNumber(jsonValue.bytes))} bytes</div></div>
+          <div class="key-item"><div class="key-label">Reason</div><div class="key-value">${escapeHtml(jsonValue.reason || "large json")}</div></div>
+        </div>
+      </div>
+      <button class="nav-action" type="button" data-load-file="${escapeHtml(selected)}">Load full ${escapeHtml(selected)} JSON</button>
+    `
+    : `<pre class="json-block">${escapeHtml(JSON.stringify(jsonValue, null, 2))}</pre>`;
   return `
     <select class="detail-select">
       ${files.map((file) => `<option value="${escapeHtml(file)}" ${file === selected ? "selected" : ""}>${escapeHtml(file)}</option>`).join("")}
     </select>
-    <pre class="json-block">${escapeHtml(JSON.stringify(jsonValue, null, 2))}</pre>
+    <div class="stack">${rawBody}</div>
   `;
 }
 
@@ -1489,38 +1929,42 @@ function formatThreadMeasure(entry) {
 }
 
 function hasAIData(payload) {
-  if (payload.kind === "day") return Boolean(payload.data?.ai_activity?.session_summaries?.length);
+  if (payload.kind === "day") return Boolean(dayAISessions(payload).length || evidenceCounts(payload).ai_sessions || isDeferredFile(payload.data?.ai_activity));
   if (payload.kind === "overview") return true;
-  const ai =
-    payload.kind === "week"
-      ? payload.data?.week_metrics?.ai
-      : payload.kind === "month"
-        ? payload.data?.month_metrics?.ai
-        : payload.data?.year_metrics?.ai;
+  const ai = periodMetrics(payload).ai || {};
   return Boolean(ai?.session_count);
 }
 
 function hasRecoveryData(payload) {
-  if (payload.kind === "day") return Boolean(payload.data?.sleep?.length);
+  if (payload.kind === "day") return Boolean(daySleepRecords(payload).length || evidenceCounts(payload).sleep_records);
   if (payload.kind === "overview") return true;
   const rows = seriesRowsForPeriod(payload);
   return rows.some((row) => row.sleep_hours != null);
 }
 
 function hasSleepInspector(payload) {
-  return payload.kind === "overview" ? false : hasRecoveryData(payload);
+  if (payload.kind === "overview") return false;
+  if (payload.kind === "day") return Boolean(daySleepRecords(payload).length || evidenceCounts(payload).sleep_records);
+  const sleep = periodMetrics(payload).sleep || {};
+  return Boolean(Object.keys(sleep).length);
 }
 
 function hasCommitData(payload) {
-  if (payload.kind === "day") return Boolean(payload.data?.commits?.facts?.length);
+  if (payload.kind === "day") return Boolean(dayCommitFacts(payload).length || evidenceCounts(payload).git_facts || evidenceCounts(payload).commits);
   if (payload.kind === "overview") return false;
   return true;
+}
+
+function hasCaptureData(payload) {
+  if (payload.kind !== "day") return false;
+  const counts = evidenceCounts(payload);
+  return Boolean(counts.clipboard_entries || counts.irc_conversations || counts.raw_log_entries || payload.data?.clipboard || payload.data?.irc || payload.data?.raw_log);
 }
 
 function hasHealthInspector(payload) {
   if (payload.kind === "overview") return false;
   if (payload.kind === "day") return Boolean(payload.data?.health);
-  return true;
+  return Boolean(Object.keys(periodMetrics(payload).health || {}).length);
 }
 
 function stackColor(index) {
@@ -1542,11 +1986,11 @@ async function toggleYear(year, button) {
   children.dataset.loaded = "1";
   const tree = await api(`/api/tree?year=${encodeURIComponent(year)}`);
   state.treeCache.set(year, tree);
-  children.innerHTML = buildQuarterTree(tree);
+  children.innerHTML = buildYearTree(tree);
   wireNavInteractions(children);
 }
 
-function buildQuarterTree(tree) {
+function buildYearTree(tree) {
   return `
     <div class="tree-block">
       <div class="tree-row compact" data-kind="year" data-key="${escapeHtml(tree.year)}">
@@ -1555,56 +1999,76 @@ function buildQuarterTree(tree) {
         <div class="tree-meta"><span class="dot ${tree.has_narrative ? "has-narrative" : ""}"></span></div>
       </div>
     </div>
-    ${tree.quarters
+    ${(tree.halves || [])
       .map(
-        (quarter) => `
+        (half) => `
           <div class="tree-block">
-            <div class="tree-row" data-toggle-quarter="${escapeHtml(quarter.key)}">
+            <div class="tree-row" data-toggle-half="${escapeHtml(half.key)}">
               <div class="tree-arrow">></div>
-              <div>${escapeHtml(quarter.label)}</div>
-              <div class="tree-meta"><span class="dot ${quarter.has_narrative ? "has-narrative" : ""}"></span></div>
+              <div>${escapeHtml(half.label)}</div>
+              <div class="tree-meta"><span class="dot ${half.has_narrative ? "has-narrative" : ""}"></span></div>
             </div>
-            <div class="tree-children" id="quarter-${escapeHtml(quarter.key)}">
-              <div class="tree-row compact" data-kind="quarter" data-key="${escapeHtml(quarter.key)}">
+            <div class="tree-children" id="half-${escapeHtml(half.key)}">
+              <div class="tree-row compact" data-kind="half" data-key="${escapeHtml(half.key)}">
                 <div class="tree-arrow"></div>
-                <div>${escapeHtml(quarter.key)} summary</div>
-                <div class="tree-meta"><span class="dot ${quarter.has_narrative ? "has-narrative" : ""}"></span></div>
+                <div>${escapeHtml(half.key)} summary</div>
+                <div class="tree-meta"><span class="dot ${half.has_narrative ? "has-narrative" : ""}"></span></div>
               </div>
-              ${quarter.months
+              ${(half.quarters || [])
                 .map(
-                  (month) => `
+                  (quarter) => `
                     <div class="tree-block">
-                      <div class="tree-row compact" data-toggle-month="${escapeHtml(month.key)}">
+                      <div class="tree-row compact" data-toggle-quarter="${escapeHtml(quarter.key)}">
                         <div class="tree-arrow">></div>
-                        <div>${escapeHtml(month.label)}</div>
-                        <div class="tree-meta"><span class="dot ${month.has_narrative ? "has-narrative" : ""}"></span></div>
+                        <div>${escapeHtml(quarter.label)}</div>
+                        <div class="tree-meta"><span class="dot ${quarter.has_narrative ? "has-narrative" : ""}"></span></div>
                       </div>
-                      <div class="tree-children" id="month-${escapeHtml(month.key)}">
-                        <div class="tree-row compact" data-kind="month" data-key="${escapeHtml(month.key)}">
+                      <div class="tree-children" id="quarter-${escapeHtml(quarter.key)}">
+                        <div class="tree-row compact" data-kind="quarter" data-key="${escapeHtml(quarter.key)}">
                           <div class="tree-arrow"></div>
-                          <div>${escapeHtml(month.key)}</div>
-                          <div class="tree-meta"><span class="dot ${month.has_narrative ? "has-narrative" : ""}"></span></div>
+                          <div>${escapeHtml(quarter.key)} summary</div>
+                          <div class="tree-meta"><span class="dot ${quarter.has_narrative ? "has-narrative" : ""}"></span></div>
                         </div>
-                        <div class="tree-section-label">Weeks</div>
-                        ${month.weeks
+                        ${(quarter.months || [])
                           .map(
-                            (week) => `
-                              <div class="tree-row compact" data-kind="week" data-key="${escapeHtml(week.key)}">
-                                <div class="tree-arrow"></div>
-                                <div>${escapeHtml(week.label)}</div>
-                                <div class="tree-meta"><span class="dot ${week.has_narrative ? "has-narrative" : ""}"></span></div>
-                              </div>
-                            `,
-                          )
-                          .join("")}
-                        <div class="tree-section-label">Days</div>
-                        ${month.days
-                          .map(
-                            (day) => `
-                              <div class="tree-row compact" data-kind="day" data-key="${escapeHtml(day.key)}">
-                                <div class="tree-arrow"></div>
-                                <div>${escapeHtml(day.label)} <span class="tree-subtle">${escapeHtml(day.weekday)}</span></div>
-                                <div class="tree-meta"><span class="dot ${day.has_narrative ? "has-narrative" : ""}"></span></div>
+                            (month) => `
+                              <div class="tree-block">
+                                <div class="tree-row compact" data-toggle-month="${escapeHtml(month.key)}">
+                                  <div class="tree-arrow">></div>
+                                  <div>${escapeHtml(month.label)}</div>
+                                  <div class="tree-meta"><span class="dot ${month.has_narrative ? "has-narrative" : ""}"></span></div>
+                                </div>
+                                <div class="tree-children" id="month-${escapeHtml(month.key)}">
+                                  <div class="tree-row compact" data-kind="month" data-key="${escapeHtml(month.key)}">
+                                    <div class="tree-arrow"></div>
+                                    <div>${escapeHtml(month.key)}</div>
+                                    <div class="tree-meta"><span class="dot ${month.has_narrative ? "has-narrative" : ""}"></span></div>
+                                  </div>
+                                  <div class="tree-section-label">Weeks</div>
+                                  ${month.weeks
+                                    .map(
+                                      (week) => `
+                                        <div class="tree-row compact" data-kind="week" data-key="${escapeHtml(week.key)}">
+                                          <div class="tree-arrow"></div>
+                                          <div>${escapeHtml(week.label)}</div>
+                                          <div class="tree-meta"><span class="dot ${week.has_narrative ? "has-narrative" : ""}"></span></div>
+                                        </div>
+                                      `,
+                                    )
+                                    .join("")}
+                                  <div class="tree-section-label">Days</div>
+                                  ${month.days
+                                    .map(
+                                      (day) => `
+                                        <div class="tree-row compact" data-kind="day" data-key="${escapeHtml(day.key)}">
+                                          <div class="tree-arrow"></div>
+                                          <div>${escapeHtml(day.label)} <span class="tree-subtle">${escapeHtml(day.weekday)}</span></div>
+                                          <div class="tree-meta"><span class="dot ${day.has_narrative ? "has-narrative" : ""}"></span></div>
+                                        </div>
+                                      `,
+                                    )
+                                    .join("")}
+                                </div>
                               </div>
                             `,
                           )
@@ -1626,6 +2090,14 @@ function wireNavInteractions(root) {
   root.querySelectorAll("[data-kind][data-key]").forEach((element) => {
     element.addEventListener("click", () => loadPeriod(element.dataset.kind, element.dataset.key));
   });
+  root.querySelectorAll("[data-toggle-half]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const target = document.getElementById(`half-${element.dataset.toggleHalf}`);
+      const arrow = element.querySelector(".tree-arrow");
+      target.classList.toggle("open");
+      arrow.textContent = target.classList.contains("open") ? "v" : ">";
+    });
+  });
   root.querySelectorAll("[data-toggle-quarter]").forEach((element) => {
     element.addEventListener("click", () => {
       const target = document.getElementById(`quarter-${element.dataset.toggleQuarter}`);
@@ -1642,6 +2114,19 @@ function wireNavInteractions(root) {
       arrow.textContent = target.classList.contains("open") ? "v" : ">";
     });
   });
+}
+
+function parseSelectionToken(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (value.toLowerCase() === "overview") return { kind: "overview", key: "overview" };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return { kind: "day", key: value };
+  if (/^\d{4}-W\d{2}$/i.test(value)) return { kind: "week", key: value.toUpperCase() };
+  if (/^\d{4}-\d{2}$/.test(value)) return { kind: "month", key: value };
+  if (/^\d{4}-Q[1-4]$/i.test(value)) return { kind: "quarter", key: value.toUpperCase() };
+  if (/^\d{4}-H[12]$/i.test(value)) return { kind: "half", key: value.toUpperCase() };
+  if (/^\d{4}$/.test(value)) return { kind: "year", key: value };
+  return null;
 }
 
 async function buildNav() {
@@ -1669,6 +2154,26 @@ async function buildNav() {
 
 async function init() {
   document.getElementById("overview-button").addEventListener("click", () => loadPeriod("overview", "overview"));
+  const jumpInput = document.getElementById("nav-jump-input");
+  const submitJump = async () => {
+    const selection = parseSelectionToken(jumpInput.value);
+    if (!selection) {
+      jumpInput.classList.add("invalid");
+      return;
+    }
+    jumpInput.classList.remove("invalid");
+    await loadPeriod(selection.kind, selection.key);
+  };
+  document.getElementById("nav-jump-button").addEventListener("click", () => {
+    submitJump().catch((error) => console.error("jump failed", error));
+  });
+  jumpInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitJump().catch((error) => console.error("jump failed", error));
+    }
+  });
+  jumpInput.addEventListener("input", () => jumpInput.classList.remove("invalid"));
   await buildNav();
   const initial = selectionFromLocation();
   await loadPeriod(initial.kind, initial.key);

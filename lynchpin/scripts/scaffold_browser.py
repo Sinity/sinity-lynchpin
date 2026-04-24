@@ -17,9 +17,11 @@ from urllib.parse import parse_qs, urlparse
 import markdown
 import yaml
 
-SCAFFOLD_ROOT = Path(__file__).resolve().parents[2] / "artefacts" / "retrospective" / "scaffold"
-NARRATIVES_ROOT = Path(__file__).resolve().parents[2] / "artefacts" / "retrospective" / "narratives"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCAFFOLD_ROOT = REPO_ROOT / "retrospective" / "scaffold"
+NARRATIVES_ROOT = REPO_ROOT / "retrospective" / "narratives"
 ASSETS_ROOT = Path(__file__).with_name("scaffold_browser_assets")
+DEFER_JSON_BYTES = 8_000_000
 
 MONTH_NAMES = list(calendar.month_name)  # index 1..12
 HALF_FOR_MONTH = {m: "H1" if m <= 6 else "H2" for m in range(1, 13)}
@@ -73,6 +75,15 @@ def _year_dir(key: str) -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def _half_dir(key: str) -> Path | None:
+    match = re.match(r"(\d{4})-H([12])$", key)
+    if not match:
+        return None
+    year, half = match.group(1), f"H{match.group(2)}"
+    candidate = SCAFFOLD_ROOT / year / half
+    return candidate if candidate.is_dir() else None
+
+
 def _week_dir(key: str) -> Path | None:
     match = re.match(r"(\d{4})-W(\d{2})$", key)
     if not match:
@@ -103,7 +114,16 @@ def _read_json(path: Path) -> object | None:
     return None
 
 
-def _read_all_json(directory: Path | None) -> dict[str, object]:
+def _deferred_json_stub(path: Path) -> dict[str, object]:
+    return {
+        "_deferred": True,
+        "file": path.stem,
+        "bytes": path.stat().st_size,
+        "reason": "large_json",
+    }
+
+
+def _read_all_json(directory: Path | None, *, defer_large: bool = True) -> dict[str, object]:
     result: dict[str, object] = {}
     if directory is None or not directory.is_dir():
         return result
@@ -111,6 +131,9 @@ def _read_all_json(directory: Path | None) -> dict[str, object]:
     for path in sorted(directory.iterdir()):
         if path.suffix == ".json":
             seen_stems.add(path.stem)
+            if defer_large and path.stat().st_size > DEFER_JSON_BYTES:
+                result[path.stem] = _deferred_json_stub(path)
+                continue
             try:
                 result[path.stem] = json.loads(path.read_bytes())
             except Exception:
@@ -121,6 +144,9 @@ def _read_all_json(directory: Path | None) -> dict[str, object]:
                 continue
             seen_stems.add(stem)
             try:
+                if defer_large and path.stat().st_size > DEFER_JSON_BYTES:
+                    result[stem] = _deferred_json_stub(path)
+                    continue
                 with gzip.open(path, "rb") as fh:
                     result[stem] = json.loads(fh.read())
             except Exception:
@@ -185,11 +211,62 @@ def _month_parts(key: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
+def _coerce_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _range_dict(value: object) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        start = value.get("start")
+        end = value.get("end")
+        if start or end:
+            return {
+                "start": str(start) if start else "",
+                "end": str(end) if end else "",
+            }
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split("/", 1)]
+        if len(parts) == 2 and all(parts):
+            return {"start": parts[0], "end": parts[1]}
+    return None
+
+
+def _scaffold_period_range(scale: str, key: str, scaffold: dict[str, object]) -> dict[str, str] | None:
+    brief = scaffold.get("narrative_brief")
+    if isinstance(brief, dict):
+        period = _range_dict(brief.get("period"))
+        if period:
+            return period
+    manifest = scaffold.get("manifest")
+    if isinstance(manifest, dict):
+        period = _range_dict(manifest.get("data_range"))
+        if period:
+            return period
+    if scale == "day":
+        return {"start": key, "end": key}
+    return None
+
+
 def _narrative_candidates(scale: str, key: str) -> list[Path]:
     if scale == "overview":
         return [NARRATIVES_ROOT / "overview.md"]
     if scale == "year":
         return [NARRATIVES_ROOT / key / f"{key}.md"]
+    if scale == "half":
+        match = re.match(r"(\d{4})-H([12])$", key)
+        if not match:
+            return []
+        year, half = int(match.group(1)), f"H{match.group(2)}"
+        return [NARRATIVES_ROOT / str(year) / half / "half.md"]
     if scale == "quarter":
         match = re.match(r"(\d{4})-Q([1-4])$", key)
         if not match:
@@ -332,6 +409,8 @@ def _build_metric_cards(scale: str, key: str, scaffold: dict[str, object], brief
     metrics_name = {
         "week": "week_metrics",
         "month": "month_metrics",
+        "quarter": "quarter_metrics",
+        "half": "half_metrics",
         "year": "year_metrics",
     }.get(scale)
     if metrics_name:
@@ -367,6 +446,8 @@ def _build_metric_cards(scale: str, key: str, scaffold: dict[str, object], brief
     if scale == "overview":
         dominant = brief.get("dominant_threads") or {}
         trend_hooks = (brief.get("analytic_hooks") or {}).get("trend_hooks") or []
+        sources_available = ((scaffold.get("manifest") or {}).get("sources_available") or {}) if isinstance(scaffold.get("manifest"), dict) else {}
+        source_count = sum(1 for available in sources_available.values() if available) if isinstance(sources_available, dict) else len(dominant.get("source_coverage") or [])
         cards.extend(
             [
                 {"label": "Range", "value": f"{brief.get('period', {}).get('start', '?')} → {brief.get('period', {}).get('end', '?')}", "detail": "dataset span"},
@@ -374,8 +455,8 @@ def _build_metric_cards(scale: str, key: str, scaffold: dict[str, object], brief
                 {"label": "Top Provider", "value": _top_name(dominant.get("ai_providers")) or "-", "detail": "AI sessions"},
                 {
                     "label": "Coverage Sources",
-                    "value": _fmt_number(len(dominant.get("source_coverage") or [])),
-                    "detail": "tracked surfaces",
+                    "value": _fmt_number(source_count),
+                    "detail": "available in scaffold",
                 },
                 {
                     "label": "Trend Hooks",
@@ -389,6 +470,41 @@ def _build_metric_cards(scale: str, key: str, scaffold: dict[str, object], brief
     return cards
 
 
+def _build_narrative_status(scale: str, key: str, scaffold: dict[str, object], narrative: dict[str, object]) -> dict[str, object]:
+    scaffold_manifest = scaffold.get("manifest") if isinstance(scaffold.get("manifest"), dict) else {}
+    narrative_meta = narrative.get("meta") if isinstance(narrative.get("meta"), dict) else {}
+    scaffold_generated = _coerce_datetime(scaffold_manifest.get("generated_at"))
+    narrative_generated = _coerce_datetime(narrative_meta.get("generated"))
+    scaffold_range = _scaffold_period_range(scale, key, scaffold)
+    narrative_range = _range_dict(narrative_meta.get("range"))
+    reasons: list[str] = []
+    if not narrative.get("exists"):
+        return {
+            "state": "missing",
+            "reasons": ["narrative_missing"],
+            "scaffold_generated_at": scaffold_manifest.get("generated_at"),
+            "narrative_generated_at": narrative_meta.get("generated"),
+            "scaffold_range": scaffold_range,
+            "narrative_range": narrative_range,
+        }
+    if narrative_generated and scaffold_generated and narrative_generated < scaffold_generated:
+        reasons.append("generated_before_scaffold")
+    if scale == "day":
+        narrative_key = narrative_meta.get("key")
+        if narrative_key and str(narrative_key) != key:
+            reasons.append("key_mismatch")
+    elif narrative_range and scaffold_range and narrative_range != scaffold_range:
+        reasons.append("range_mismatch")
+    return {
+        "state": "stale" if reasons else "fresh",
+        "reasons": reasons,
+        "scaffold_generated_at": scaffold_manifest.get("generated_at"),
+        "narrative_generated_at": narrative_meta.get("generated"),
+        "scaffold_range": scaffold_range,
+        "narrative_range": narrative_range,
+    }
+
+
 def _build_summary(scale: str, key: str, scaffold: dict[str, object], narrative: dict[str, object], title: str) -> dict[str, object]:
     brief = scaffold.get("narrative_brief") if isinstance(scaffold.get("narrative_brief"), dict) else {}
     evidence_profile = brief.get("evidence_profile") if isinstance(brief.get("evidence_profile"), dict) else {}
@@ -396,6 +512,7 @@ def _build_summary(scale: str, key: str, scaffold: dict[str, object], narrative:
     if not data_quality_notes:
         analytic_hooks = brief.get("analytic_hooks") if isinstance(brief.get("analytic_hooks"), dict) else {}
         data_quality_notes = analytic_hooks.get("sleep_caveats") or []
+    narrative_status = _build_narrative_status(scale, key, scaffold, narrative)
     return {
         "title": title,
         "metric_cards": _build_metric_cards(scale, key, scaffold, brief),
@@ -408,6 +525,7 @@ def _build_summary(scale: str, key: str, scaffold: dict[str, object], narrative:
         "evidence_profile": evidence_profile,
         "data_quality_notes": data_quality_notes,
         "narrative_available": bool(narrative.get("exists")),
+        "narrative_status": narrative_status,
     }
 
 
@@ -420,6 +538,10 @@ def _title_for_scale(scale: str, key: str) -> str:
     if scale == "month":
         year, month = _month_parts(key) or (0, 1)
         return f"{MONTH_NAMES[month]} {year}"
+    if scale == "half":
+        match = re.match(r"(\d{4})-H([12])$", key)
+        if match:
+            return f"{match.group(1)} H{match.group(2)}"
     return key
 
 
@@ -435,6 +557,9 @@ def _resolve_period(scale: str, key: str) -> PeriodLocation:
         return PeriodLocation(scale=scale, key=key, title=title, scaffold_dir=scaffold_dir, narrative_path=_narrative_path(scale, key))
     if scale == "month":
         scaffold_dir = _month_dir(key)
+        return PeriodLocation(scale=scale, key=key, title=title, scaffold_dir=scaffold_dir, narrative_path=_narrative_path(scale, key))
+    if scale == "half":
+        scaffold_dir = _half_dir(key)
         return PeriodLocation(scale=scale, key=key, title=title, scaffold_dir=scaffold_dir, narrative_path=_narrative_path(scale, key))
     if scale == "quarter":
         scaffold_dir = _quarter_dir(key)
@@ -462,6 +587,20 @@ def _assemble_period(scale: str, key: str) -> dict[str, object]:
     }
 
 
+def _read_period_file(scale: str, key: str, file_name: str) -> object:
+    location = _resolve_period(scale, key)
+    if location.scaffold_dir is None or not location.scaffold_dir.is_dir():
+        raise FileNotFoundError(f"scaffold directory not found for {scale}:{key}")
+    safe_name = file_name.removesuffix(".json")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", safe_name):
+        raise ValueError(f"invalid scaffold file name: {file_name}")
+    path = location.scaffold_dir / f"{safe_name}.json"
+    payload = _read_json(path)
+    if payload is None:
+        raise FileNotFoundError(f"scaffold file not found: {safe_name}.json")
+    return payload
+
+
 def _api_years() -> list[str]:
     years = []
     for path in sorted(SCAFFOLD_ROOT.iterdir()):
@@ -473,64 +612,76 @@ def _api_years() -> list[str]:
 def _build_year_tree(year: str) -> dict[str, object]:
     year_dir = SCAFFOLD_ROOT / year
     if not year_dir.is_dir():
-        return {"year": year, "quarters": []}
-    quarters = []
-    for quarter_index in range(1, 5):
-        half = "H1" if quarter_index <= 2 else "H2"
-        quarter_key = f"{year}-Q{quarter_index}"
-        quarter_dir = year_dir / half / f"Q{quarter_index}"
-        if not quarter_dir.is_dir():
+        return {"year": year, "halves": []}
+    halves = []
+    for half in ("H1", "H2"):
+        half_key = f"{year}-{half}"
+        half_dir = year_dir / half
+        if not half_dir.is_dir():
             continue
-        quarter_node = {
-            "key": quarter_key,
-            "label": quarter_key,
-            "has_narrative": bool((_narrative_path("quarter", quarter_key) or Path()).exists()),
-            "months": [],
+        half_node = {
+            "key": half_key,
+            "label": half,
+            "has_narrative": bool((_narrative_path("half", half_key) or Path()).exists()),
+            "quarters": [],
         }
-        for month_index in range(1, 13):
-            if QUARTER_FOR_MONTH[month_index] != f"Q{quarter_index}":
+        quarter_indexes = (1, 2) if half == "H1" else (3, 4)
+        for quarter_index in quarter_indexes:
+            quarter_key = f"{year}-Q{quarter_index}"
+            quarter_dir = half_dir / f"Q{quarter_index}"
+            if not quarter_dir.is_dir():
                 continue
-            month_name = MONTH_NAMES[month_index]
-            month_key = f"{year}-{month_index:02d}"
-            month_dir = quarter_dir / month_name
-            if not month_dir.is_dir():
-                continue
-            month_node = {
-                "key": month_key,
-                "label": month_name,
-                "has_narrative": bool((_narrative_path("month", month_key) or Path()).exists()),
-                "weeks": [],
-                "days": [],
+            quarter_node = {
+                "key": quarter_key,
+                "label": quarter_key,
+                "has_narrative": bool((_narrative_path("quarter", quarter_key) or Path()).exists()),
+                "months": [],
             }
-            for child in sorted(month_dir.iterdir()):
-                if not child.is_dir():
+            for month_index in range(1, 13):
+                if QUARTER_FOR_MONTH[month_index] != f"Q{quarter_index}":
                     continue
-                if re.match(r"\d{4}-W\d{2}$", child.name):
-                    week_key = child.name
-                    month_node["weeks"].append(
-                        {
-                            "key": week_key,
-                            "label": _week_folder_name(week_key),
-                            "has_narrative": bool((_narrative_path("week", week_key) or Path()).exists()),
-                        }
-                    )
-                elif re.match(r"\d{4}-\d{2}-\d{2}$", child.name):
-                    day_key = child.name
-                    day_value = date.fromisoformat(day_key)
-                    month_node["days"].append(
-                        {
-                            "key": day_key,
-                            "label": f"{day_value.day:02d}",
-                            "weekday": day_value.strftime("%a"),
-                            "has_narrative": bool((_narrative_path("day", day_key) or Path()).exists()),
-                        }
-                    )
-            quarter_node["months"].append(month_node)
-        quarters.append(quarter_node)
+                month_name = MONTH_NAMES[month_index]
+                month_key = f"{year}-{month_index:02d}"
+                month_dir = quarter_dir / month_name
+                if not month_dir.is_dir():
+                    continue
+                month_node = {
+                    "key": month_key,
+                    "label": month_name,
+                    "has_narrative": bool((_narrative_path("month", month_key) or Path()).exists()),
+                    "weeks": [],
+                    "days": [],
+                }
+                for child in sorted(month_dir.iterdir()):
+                    if not child.is_dir():
+                        continue
+                    if re.match(r"\d{4}-W\d{2}$", child.name):
+                        week_key = child.name
+                        month_node["weeks"].append(
+                            {
+                                "key": week_key,
+                                "label": _week_folder_name(week_key),
+                                "has_narrative": bool((_narrative_path("week", week_key) or Path()).exists()),
+                            }
+                        )
+                    elif re.match(r"\d{4}-\d{2}-\d{2}$", child.name):
+                        day_key = child.name
+                        day_value = date.fromisoformat(day_key)
+                        month_node["days"].append(
+                            {
+                                "key": day_key,
+                                "label": f"{day_value.day:02d}",
+                                "weekday": day_value.strftime("%a"),
+                                "has_narrative": bool((_narrative_path("day", day_key) or Path()).exists()),
+                            }
+                        )
+                quarter_node["months"].append(month_node)
+            half_node["quarters"].append(quarter_node)
+        halves.append(half_node)
     return {
         "year": year,
         "has_narrative": bool((_narrative_path("year", year) or Path()).exists()),
-        "quarters": quarters,
+        "halves": halves,
     }
 
 
@@ -614,6 +765,19 @@ def serve_scaffold_browser(*, host: str = "127.0.0.1", port: int = 8766) -> None
                 self._json_or_error(lambda: _assemble_period(scale, key), context={"kind": scale, "key": key})
                 return
 
+            if parsed.path == "/api/file":
+                scale = query.get("kind", [""])[0]
+                key = query.get("key", [""])[0] or ("overview" if scale == "overview" else "")
+                file_name = query.get("file", [""])[0]
+                if not scale or not key or not file_name:
+                    self._json({"error": "kind, key, and file parameters required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._json_or_error(
+                    lambda: _read_period_file(scale, key, file_name),
+                    context={"kind": scale, "key": key, "file": file_name},
+                )
+                return
+
             if parsed.path == "/api/day":
                 key = query.get("date", [""])[0]
                 self._json_or_error(lambda: _assemble_period("day", key), context={"kind": "day", "key": key})
@@ -632,6 +796,11 @@ def serve_scaffold_browser(*, host: str = "127.0.0.1", port: int = 8766) -> None
             if parsed.path == "/api/quarter":
                 key = query.get("key", [""])[0]
                 self._json_or_error(lambda: _assemble_period("quarter", key), context={"kind": "quarter", "key": key})
+                return
+
+            if parsed.path == "/api/half":
+                key = query.get("key", [""])[0]
+                self._json_or_error(lambda: _assemble_period("half", key), context={"kind": "half", "key": key})
                 return
 
             if parsed.path == "/api/year":

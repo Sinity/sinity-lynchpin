@@ -101,6 +101,8 @@ a:hover {
 #nav-toolbar {
   padding: 14px 18px 10px;
   border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
 }
 
 .nav-action {
@@ -114,6 +116,10 @@ a:hover {
   transition: 120ms ease;
 }
 
+.nav-action-compact {
+  padding-inline: 12px;
+}
+
 .nav-action:hover {
   border-color: var(--accent);
   color: var(--text);
@@ -123,6 +129,46 @@ a:hover {
   background: rgba(85, 168, 255, 0.14);
   border-color: rgba(85, 168, 255, 0.45);
   color: var(--text);
+}
+
+.nav-jump {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.nav-input {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.nav-input::placeholder {
+  color: var(--text-muted);
+}
+
+.nav-input:focus {
+  outline: none;
+  border-color: rgba(85, 168, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(85, 168, 255, 0.12);
+}
+
+.nav-input.invalid {
+  border-color: rgba(255, 126, 132, 0.5);
+  box-shadow: 0 0 0 3px rgba(255, 126, 132, 0.12);
+}
+
+.nav-help {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.nav-help code {
+  font-family: var(--mono);
 }
 
 #nav-tree {
@@ -377,6 +423,12 @@ a:hover {
   padding: 0;
 }
 
+.overview-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .segmented {
   display: inline-flex;
   align-items: center;
@@ -442,6 +494,54 @@ a:hover {
 .story-markdown p,
 .story-markdown li {
   font-size: 15px;
+}
+
+.status-banner {
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: rgba(85, 168, 255, 0.08);
+  border: 1px solid rgba(85, 168, 255, 0.2);
+  color: var(--text-soft);
+}
+
+.status-banner.warn {
+  background: rgba(246, 182, 85, 0.08);
+  border-color: rgba(246, 182, 85, 0.22);
+}
+
+.status-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.status-banner-body {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(85, 168, 255, 0.18);
+  color: var(--text);
+}
+
+.status-pill.stale {
+  background: rgba(246, 182, 85, 0.18);
+}
+
+.status-pill.missing {
+  background: rgba(255, 126, 132, 0.16);
 }
 
 .story-markdown table,
@@ -638,6 +738,10 @@ a:hover {
   font-size: 14px;
 }
 
+.warning-item + .warning-item {
+  margin-top: 0;
+}
+
 .data-table td.num {
   text-align: right;
   font-family: var(--mono);
@@ -702,8 +806,10 @@ a:hover {
   }
 
   #nav-header p,
+  .nav-help,
   .tree-row,
   .nav-action,
+  .nav-input,
   .segmented button,
   .signal-summary,
   .warning-item,
@@ -804,6 +910,10 @@ a:hover {
   .panel-detail {
     grid-column: 2;
     grid-row: 3;
+  }
+
+  .overview-brief-grid {
+    grid-template-columns: 1fr;
   }
 }
 

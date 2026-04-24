@@ -36,6 +36,7 @@ DEFAULT_IGNORE_PATTERNS = (
     "build/**",
     "coverage/**",
     ".cache/**",
+    ".lynchpin/**",
     "artefacts/**",
     "result/**",
     "out/**",
