@@ -130,7 +130,7 @@ def detect_trend(values: Sequence[float], *, min_samples: int = 7) -> TrendResul
         z = (s + 1) / std_s
     else:
         z = 0.0
-    p_value = 2 * (1 - _norm_cdf(abs(z)))
+    p_value = 2 * norm_sf(abs(z))
 
     # Sen's slope: median of all pairwise slopes
     slopes = []
@@ -514,26 +514,28 @@ def _mad_anomaly(value: float, history: Sequence[float]) -> AnomalyResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _norm_cdf(x: float) -> float:
-    """Standard normal CDF approximation (Abramowitz & Stegun)."""
+def norm_cdf(x: float) -> float:
+    """Standard normal CDF via math.erf."""
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
 
-def _t_test_p(t_stat: float, df: int) -> float:
-    """Approximate two-tailed p-value for t-distribution using normal approximation.
+def norm_sf(x: float) -> float:
+    """Standard normal survival function P(Z > x)."""
+    return 1 - norm_cdf(x)
 
-    Accurate for df > 30. For smaller df, slightly conservative.
+
+def _t_test_p(t_stat: float, df: int) -> float:
+    """Approximate two-tailed p-value for t-distribution.
+
+    Uses scipy if available, otherwise normal approximation.
     """
     if df <= 0:
         return 1.0
-    # For large df, t → normal
-    if df > 30:
-        return 2 * (1 - _norm_cdf(abs(t_stat)))
-    # Simple approximation for small df
-    x = df / (df + t_stat ** 2)
-    # Regularized incomplete beta approximation (crude but functional)
-    p = 1 - (1 - x ** (df / 2)) ** 0.5
-    return min(max(p, 0.0), 1.0)
+    try:
+        from scipy.stats import t as t_dist  # type: ignore[import-untyped]
+        return 2 * t_dist.sf(abs(t_stat), df)
+    except ImportError:
+        return 2 * norm_sf(abs(t_stat))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
