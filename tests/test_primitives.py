@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from lynchpin.core.primitives import (
     TopN, Group, group_by_gap,
     merge_intervals, intersect_intervals, split_by_day, split_by_hour,
-    duration_s, overlaps, contains, logical_date,
+    duration_s, logical_date,
 )
 
 UTC = timezone.utc
@@ -80,10 +80,10 @@ class TestIntervals:
 
     def test_intersect(self):
         timeline = [(dt(10), dt(12)), (dt(14), dt(16))]
-        overlaps, idx = intersect_intervals(dt(11), dt(15), timeline, 0)
-        assert len(overlaps) == 2
-        assert overlaps[0] == (dt(11), dt(12))
-        assert overlaps[1] == (dt(14), dt(15))
+        results, idx = intersect_intervals(dt(11), dt(15), timeline, 0)
+        assert len(results) == 2
+        assert results[0] == (dt(11), dt(12))
+        assert results[1] == (dt(14), dt(15))
 
     def test_split_by_day(self):
         # 22:00→02:00 is within one logical day (boundary at 06:00)
@@ -113,11 +113,3 @@ class TestIntervals:
 
     def test_duration(self):
         assert duration_s((dt(10), dt(11))) == 3600.0
-
-    def test_overlaps(self):
-        assert overlaps((dt(10), dt(12)), (dt(11), dt(13)))
-        assert not overlaps((dt(10), dt(11)), (dt(12), dt(13)))
-
-    def test_contains(self):
-        assert contains((dt(10), dt(12)), dt(11))
-        assert not contains((dt(10), dt(12)), dt(13))

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from ..core.primitives import date_to_dt_range
-from .activitywatch import active_seconds_by_date
+from ..sources.activitywatch import active_seconds_by_date
 
 __all__ = [
     "DeliveryTelemetry",
@@ -36,9 +36,9 @@ class DeliveryTelemetry:
 
 
 def daily_delivery(*, start: date, end: date) -> list[DeliveryTelemetry]:
-    from .git import daily_activity as git_daily
-    from .terminal import shell_sessions
-    from .polylogue import daily_activity as chat_daily
+    from ..sources.git import daily_activity as git_daily
+    from ..sources.terminal import shell_sessions
+    from ..sources.polylogue import daily_activity as chat_daily
 
     active_map = {d: s / 3600 for d, s in active_seconds_by_date(start, end).items()}
 

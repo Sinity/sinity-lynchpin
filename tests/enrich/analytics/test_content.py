@@ -1,4 +1,4 @@
-from lynchpin.enrichment.analytics.content import content_profile, topic_drift
+from lynchpin.enrich.metrics.content import content_profile, topic_drift
 
 def test_content_profile_empty():
     result = content_profile([])

@@ -1,4 +1,4 @@
-from lynchpin.enrichment.analytics.productivity import productivity_model, optimal_work_windows
+from lynchpin.enrich.metrics.productivity import productivity_model, optimal_work_windows
 
 def test_productivity_model_no_data():
     result = productivity_model(["a", "b"], [[None, None]], [0.0])

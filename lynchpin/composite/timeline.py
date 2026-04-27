@@ -53,7 +53,7 @@ def timeline(*, start: date, end: date) -> list[TimelineEvent]:
 
 def _aw_events(s_dt: datetime, e_dt: datetime) -> Iterator[TimelineEvent]:
     try:
-        from .activitywatch import app_sessions
+        from ..sources.activitywatch import app_sessions
     except Exception:
         return
     for sess in app_sessions(start=s_dt, end=e_dt):
@@ -73,7 +73,7 @@ def _aw_events(s_dt: datetime, e_dt: datetime) -> Iterator[TimelineEvent]:
 
 def _git_events(start: date, end: date) -> Iterator[TimelineEvent]:
     try:
-        from .git import commit_facts
+        from ..sources.git import commit_facts
     except Exception:
         return
     for f in commit_facts(start=start, end=end):
@@ -87,7 +87,7 @@ def _git_events(start: date, end: date) -> Iterator[TimelineEvent]:
 
 def _terminal_events(s_dt: datetime, e_dt: datetime) -> Iterator[TimelineEvent]:
     try:
-        from .terminal import shell_sessions
+        from ..sources.terminal import shell_sessions
     except Exception:
         return
     for sess in shell_sessions(start=s_dt, end=e_dt):
@@ -104,7 +104,7 @@ def _terminal_events(s_dt: datetime, e_dt: datetime) -> Iterator[TimelineEvent]:
 
 def _chat_events(start: date, end: date) -> Iterator[TimelineEvent]:
     try:
-        from .polylogue import iter_session_profiles
+        from ..sources.polylogue import iter_session_profiles
     except Exception:
         return
     for p in iter_session_profiles():
@@ -128,7 +128,7 @@ def _chat_events(start: date, end: date) -> Iterator[TimelineEvent]:
 
 def _sleep_events(start: date, end: date) -> Iterator[TimelineEvent]:
     try:
-        from .sleep import entries_in_range, sleep_architecture
+        from ..sources.sleep import entries_in_range, sleep_architecture
     except Exception:
         return
     arch_by_date = {a.date: a for a in sleep_architecture(start=start, end=end)}

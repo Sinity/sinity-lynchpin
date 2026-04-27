@@ -125,17 +125,17 @@ def _safe_fetch(fn, *args, default=None, **kwargs):
 
 def build_day_features(start: date, end: date) -> list[DayFeatures]:
     """Assemble per-day feature vectors from all available sources (31 numeric fields)."""
-    from .activitywatch import active_seconds_by_date, deep_work, sustained_focus, fragmentation, attention, app_sessions
-    from .git import daily_activity
-    from .terminal import shell_sessions
-    from .polylogue import daily_activity as chat_daily
-    from .sleep import entries as sleep_entries
-    from .spotify import daily_listening
-    from .reddit import daily_activity as reddit_daily
-    from .health import daily_steps, daily_vitality, daily_health_summary
-    from .web import daily_browsing
-    from .exports import daily_messenger_activity, daily_raindrop_activity
-    from .substance import daily_summary as substance_daily
+    from ..sources.activitywatch import active_seconds_by_date, deep_work, sustained_focus, fragmentation, attention, app_sessions
+    from ..sources.git import daily_activity
+    from ..sources.terminal import shell_sessions
+    from ..sources.polylogue import daily_activity as chat_daily
+    from ..sources.sleep import entries as sleep_entries
+    from ..sources.spotify import daily_listening
+    from ..sources.reddit import daily_activity as reddit_daily
+    from ..sources.health import daily_steps, daily_vitality, daily_health_summary
+    from ..sources.web import daily_browsing
+    from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
+    from ..sources.substance import daily_summary as substance_daily
 
     s_dt, e_dt = date_to_dt_range(start, end)
 

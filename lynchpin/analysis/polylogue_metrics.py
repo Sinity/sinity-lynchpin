@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
-from .core.textshape import compute_repetition_metrics
-from .core.io import save_json
+from ._utils.textshape import compute_repetition_metrics
+from ._utils.io import save_json
 from .evidence_bundles import discover_bundle_records, preferred_bundle, read_bundle_json, read_bundle_csv_rows
 
 SKIP_DIRS = {

@@ -92,13 +92,13 @@ class DaySummary:
 
 def day_summary(d: date) -> Optional[DaySummary]:
     """Build a complete day summary from all available sources."""
-    from .activity_segments import segment_day
-    from .polylogue import work_events, day_session_summaries
-    from .git import commit_facts, daily_activity
-    from .terminal import shell_sessions
+    from .segments import segment_day
+    from ..sources.polylogue import work_events, day_session_summaries
+    from ..sources.git import commit_facts, daily_activity
+    from ..sources.terminal import shell_sessions
     from .sleep_infer import infer_sleep
-    from .activitywatch import active_seconds_by_date
-    from .health import daily_health_summary, nap_sessions
+    from ..sources.activitywatch import active_seconds_by_date
+    from ..sources.health import daily_health_summary, nap_sessions
 
     def dt_key(dt: datetime) -> float:
         return dt.timestamp() if dt.tzinfo else dt.replace(tzinfo=timezone.utc).timestamp()

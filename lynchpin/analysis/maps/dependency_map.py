@@ -6,7 +6,7 @@ import subprocess
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from ..core.io import resolve_analysis_path, save_json, save_text
+from .._utils.io import resolve_analysis_path, save_json, save_text
 
 
 def _run_cargo_metadata(repo_dir):

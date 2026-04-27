@@ -1,4 +1,4 @@
-from lynchpin.enrichment.analytics.cross_source import sleep_productivity_link
+from lynchpin.enrich.metrics.cross_source import sleep_productivity_link
 
 def test_sleep_link_empty():
     result = sleep_productivity_link([], [])

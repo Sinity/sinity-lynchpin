@@ -495,7 +495,7 @@ def _load_aw_derived(start: date, end: date, coverage: dict[str, DateSpan] | Non
 
 def _build_features_verbose(start: date, end: date, coverage: dict[str, DateSpan] | None = None):
     """Wrapper around build_day_features that prints per-source progress."""
-    from ..sources.patterns import _safe_fetch, DayFeatures
+    from ..composite.statistics import _safe_fetch, DayFeatures
     from ..core.parse import iter_dates
 
     def _load(label, fn, *args, **kwargs):
@@ -2037,7 +2037,7 @@ def _baseline_comparison(d: date, metrics: dict[str, float], all_features: list 
         lookback_start = d - timedelta(days=30)
         features = [f for f in all_features if lookback_start <= f.date < d]
     else:
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         lookback_start = d - timedelta(days=30)
         features = _safe(build_day_features, lookback_start, d - timedelta(days=1), default=[])
 
@@ -2118,7 +2118,7 @@ class BatchSources:
             conversation_transcripts,
         )
         from ..sources.terminal import shell_sessions
-        from ..sources.sleep_infer import infer_sleep
+        from ..composite.sleep_infer import infer_sleep
         from ..sources.health import (
             daily_steps, daily_health_summary, heart_rate_measurements, daily_stress,
             calorie_burns, nap_sessions, activity_summaries, movement_records,
@@ -2272,7 +2272,7 @@ def _minutes_between(start: datetime, end: datetime) -> float:
 
 def _work_sessions_from_batch(batch: BatchSources, min_duration_min: float = 10) -> list:
     """Reconstruct work sessions from already loaded AW/git/shell/Polylogue data."""
-    from ..sources.timeline import TimelineEvent, WorkSession
+    from ..composite.timeline import TimelineEvent, WorkSession
 
     events: list[TimelineEvent] = []
     for sess in batch.app_sessions:
@@ -2424,7 +2424,7 @@ def _day_summary_from_batch(
     naps_day: list,
 ):
     """Build the two-track day summary from already loaded day slices."""
-    from ..sources.day_summary import DaySummary, HumanSegment, AIBlock, OverlapInsight
+    from ..composite.day_brief import DaySummary, HumanSegment, AIBlock, OverlapInsight
 
     human_segments = ()
     if seg:
@@ -2596,7 +2596,7 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         poly_sessions = batch._poly_sessions_by_date.get(d, [])
         poly_transcripts = batch._poly_transcripts_by_date.get(d, [])
         # Per-day AW segmentation is only useful on days with AW activity.
-        from ..sources.activity_segments import segment_day
+        from ..composite.segments import segment_day
         if active_h > 0:
             seg = batch._segments_by_date.get(d)
             if seg is None:
@@ -2625,11 +2625,11 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
             deep_work, fragmentation, attention, circadian,
             sustained_focus, daily_activity as aw_daily,
         )
-        from ..sources.activity_segments import segment_day
+        from ..composite.segments import segment_day
         from ..sources.git import commit_facts, daily_activity as git_daily, commit_sessions, github_context_for_commits
         from ..sources.polylogue import work_events, day_session_summaries
         from ..sources.terminal import shell_sessions
-        from ..sources.sleep_infer import infer_sleep
+        from ..composite.sleep_infer import infer_sleep
         from ..sources.sleep import sleep_stages as sleep_stages_fn, sleep_architecture as sleep_architecture_fn
         from ..sources.health import (
             daily_steps, daily_health_summary, heart_rate_measurements, daily_stress,
@@ -2638,8 +2638,8 @@ def generate_day(d: date, output: Path, *, force: bool = False, all_features: li
         )
         from ..sources.web import daily_browsing
         from ..sources.exports import daily_messenger_activity, daily_raindrop_activity
-        from ..sources.timeline import work_sessions as ws_fn
-        from ..sources.day_summary import day_summary
+        from ..composite.timeline import work_sessions as ws_fn
+        from ..composite.day_brief import day_summary
         from ..sources.substance import entries_for_date as substance_for_date
         from ..sources.clipboard import entries_in_range as clipboard_entries
         from ..sources.irc import conversations_in_range as irc_conversations
@@ -2849,7 +2849,7 @@ def generate_week(week_key: str, output: Path, *, force: bool = False,
         from ..sources.sleep import entries_in_range as sleep_range, sleep_architecture
         from ..sources.health import daily_health_summary
         from ..sources.web import daily_browsing
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         active_map = _safe(active_seconds_by_date, s, e, default={})
         git_act = _safe(git_daily, start=s, end=e, default=[])
         git_facts = _safe(commit_facts, start=s, end=e, default=[])
@@ -2861,23 +2861,23 @@ def generate_week(week_key: str, output: Path, *, force: bool = False,
         browsing = _safe(daily_browsing, start=s, end=e, default=[])
         features = _safe(build_day_features, s, e, default=[])
 
-    from ..sources.patterns import weekly_rhythm, activity_trends
+    from ..composite.statistics import weekly_rhythm, activity_trends
     rhythm = _safe(weekly_rhythm, features, default=None) if features else None
     trends = _safe(activity_trends, features, default={}) if features else {}
 
     if batch:
-        from ..sources.activity_segments import transition_bigrams
+        from ..composite.segments import transition_bigrams
         hourly = [c for c in batch.circadian if s <= c.date <= e]
         transitions = _safe(transition_bigrams, _segments_from_batch(batch, s, e), default=None)
     else:
-        from ..sources.intraday import clock_hour_profile
-        from ..sources.activity_segments import segment_range, transition_bigrams
+        from ..composite.intraday import clock_hour_profile
+        from ..composite.segments import segment_range, transition_bigrams
         hourly = _safe(clock_hour_profile, start=s, end=e, default=[])
         segs = _safe(segment_range, start=s, end=e, default=[])
         transitions = _safe(transition_bigrams, segs, default=None)
 
     # Day type clustering
-    from ..sources.patterns import day_type_clusters
+    from ..composite.statistics import day_type_clusters
     clusters = _safe(day_type_clusters, features, default=[]) if len(features) >= 3 else []
 
     # Sleep × activity
@@ -3026,7 +3026,7 @@ def generate_month(month_key: str, output: Path, *, force: bool = False,
         from ..sources.sleep import entries_in_range as sleep_range, sleep_architecture
         from ..sources.health import daily_steps, daily_health_summary
         from ..sources.web import daily_browsing
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         active_map = _safe(active_seconds_by_date, s, e, default={})
         git_act = _safe(git_daily, start=s, end=e, default=[])
         poly_summaries = _safe(day_session_summaries, start=s, end=e, default=[])
@@ -3039,7 +3039,7 @@ def generate_month(month_key: str, output: Path, *, force: bool = False,
         features = _safe(build_day_features, s, e, default=[])
 
     # Run analytics on the pre-sliced features (no source re-query)
-    from ..sources.patterns import FullAnalysis, weekly_rhythm, productivity_drivers, work_regime_changes, day_type_clusters, activity_trends, day_anomalies
+    from ..composite.statistics import FullAnalysis, weekly_rhythm, productivity_drivers, work_regime_changes, day_type_clusters, activity_trends, day_anomalies
     analysis = None
     if features:
         analysis = FullAnalysis(
@@ -3053,10 +3053,10 @@ def generate_month(month_key: str, output: Path, *, force: bool = False,
         )
 
     if batch:
-        from ..sources.activity_segments import transition_bigrams
+        from ..composite.segments import transition_bigrams
         transitions = _safe(transition_bigrams, _segments_from_batch(batch, s, e), default=None)
     else:
-        from ..sources.activity_segments import segment_range, transition_bigrams
+        from ..composite.segments import segment_range, transition_bigrams
         segs = _safe(segment_range, start=s, end=e, default=[])
         transitions = _safe(transition_bigrams, segs, default=None)
 
@@ -3189,7 +3189,7 @@ def generate_quarter(quarter_key: str, output: Path, *, force: bool = False,
 
     t0 = time.monotonic()
 
-    from ..sources.patterns import activity_trends, work_regime_changes
+    from ..composite.statistics import activity_trends, work_regime_changes
 
     s, e = period.start, period.end
 
@@ -3203,7 +3203,7 @@ def generate_quarter(quarter_key: str, output: Path, *, force: bool = False,
         sleep_arch = [sl for sl in batch.sleep_architecture if hasattr(sl, 'date') and s <= sl.date <= e]
         health = [h for h in batch.health_summary if s <= h.date <= e]
     else:
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         from ..sources.git import daily_activity as git_daily
         from ..sources.activitywatch import active_seconds_by_date
         from ..sources.polylogue import day_session_summaries, work_events
@@ -3307,7 +3307,7 @@ def generate_half(half_key: str, output: Path, *, force: bool = False,
         return False
     t0 = time.monotonic()
 
-    from ..sources.patterns import activity_trends
+    from ..composite.statistics import activity_trends
 
     s, e = period.start, period.end
 
@@ -3321,7 +3321,7 @@ def generate_half(half_key: str, output: Path, *, force: bool = False,
         sleep_arch = [sl for sl in batch.sleep_architecture if hasattr(sl, 'date') and s <= sl.date <= e]
         health = [h for h in batch.health_summary if s <= h.date <= e]
     else:
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         from ..sources.git import daily_activity as git_daily
         from ..sources.activitywatch import active_seconds_by_date
         from ..sources.polylogue import day_session_summaries, work_events
@@ -3418,7 +3418,7 @@ def generate_year(year_key: str, output: Path, *, force: bool = False,
 
     t0 = time.monotonic()
 
-    from ..sources.patterns import activity_trends
+    from ..composite.statistics import activity_trends
 
     s, e = period.start, min(period.end, date.today())
 
@@ -3432,7 +3432,7 @@ def generate_year(year_key: str, output: Path, *, force: bool = False,
         sleep_arch = [sl for sl in batch.sleep_architecture if hasattr(sl, 'date') and s <= sl.date <= e]
         health = [h for h in batch.health_summary if s <= h.date <= e]
     else:
-        from ..sources.patterns import build_day_features
+        from ..composite.statistics import build_day_features
         from ..sources.git import daily_activity as git_daily
         from ..sources.activitywatch import active_seconds_by_date
         from ..sources.polylogue import day_session_summaries, work_events
@@ -3554,7 +3554,7 @@ def generate_overview(
     t0 = time.monotonic()
 
     from ..core.config import get_config
-    from ..sources.patterns import build_day_features, activity_trends, work_regime_changes
+    from ..composite.statistics import build_day_features, activity_trends, work_regime_changes
     from ..sources.git import daily_activity as git_daily, repos
     from ..sources.activitywatch import active_seconds_by_date
     from ..sources.polylogue import daily_activity as chat_daily, iter_session_profiles
@@ -3710,10 +3710,10 @@ def generate_overview(
     # Global transition matrix (via proper source module)
     global_transitions = None
     if batch:
-        from ..sources.activity_segments import transition_bigrams
+        from ..composite.segments import transition_bigrams
         global_transitions = _safe(transition_bigrams, _segments_from_batch(batch, s, e), default=None)
     else:
-        from ..sources.activity_segments import segment_range, transition_bigrams
+        from ..composite.segments import segment_range, transition_bigrams
         all_segs = _safe(segment_range, start=s, end=e, default=[])
         global_transitions = _safe(transition_bigrams, all_segs, default=None)
 

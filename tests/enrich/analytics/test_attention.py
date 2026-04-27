@@ -1,4 +1,4 @@
-from lynchpin.enrichment.analytics.attention import attention_transition_matrix, sustainability_curve
+from lynchpin.enrich.metrics.attention import attention_transition_matrix, sustainability_curve
 
 def test_attention_transition_empty():
     result = attention_transition_matrix([])

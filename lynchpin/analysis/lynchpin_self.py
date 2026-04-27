@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from .core.io import save_json
+from ._utils.io import save_json
 
 @dataclass
 class ModuleStats:

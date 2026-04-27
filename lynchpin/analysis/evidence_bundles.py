@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
-from .core.io import save_json
+from ._utils.io import save_json
 
 _DUPLICATE_RE = re.compile(r" \((\d+)\)$")
 

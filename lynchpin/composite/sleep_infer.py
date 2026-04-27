@@ -64,8 +64,8 @@ def infer_sleep(
     active. That case is flagged rather than dropped, because many real nights
     are long YouTube/music playback with no keyboard input.
     """
-    from .activitywatch import active_intervals
-    from .sleep import entries_in_range, sleep_architecture
+    from ..sources.activitywatch import active_intervals
+    from ..sources.sleep import entries_in_range, sleep_architecture
 
     if include_media is None:
         include_media = True
@@ -291,7 +291,7 @@ def _overlap_minutes(start: datetime, end: datetime, intervals: list[tuple[datet
 
 def _keypress_evidence(start: datetime, end: datetime) -> tuple[int, str]:
     try:
-        from .keylog import has_coverage, keypress_count
+        from ..sources.keylog import has_coverage, keypress_count
         covered = has_coverage(start=start, end=end)
         count = keypress_count(start=start, end=end) if covered else 0
     except Exception:
@@ -301,7 +301,7 @@ def _keypress_evidence(start: datetime, end: datetime) -> tuple[int, str]:
 
 def _media_intervals(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
     try:
-        from .activitywatch import window_events
+        from ..sources.activitywatch import window_events
     except Exception:
         return []
     start_local = as_local(start)

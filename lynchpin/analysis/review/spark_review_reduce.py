@@ -4,7 +4,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from ..core.io import load_json, resolve_analysis_path, save_json
+from .._utils.io import load_json, resolve_analysis_path, save_json
 
 
 def _result_files(results_dir):

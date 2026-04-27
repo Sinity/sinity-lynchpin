@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 import subprocess
-from ..core import git
+from .._utils import git
 
 
 _COMMIT_TYPE_RE = re.compile(

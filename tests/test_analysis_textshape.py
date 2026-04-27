@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lynchpin.analysis.core.textshape import compute_repetition_metrics, normalize_code_line
+from lynchpin.analysis._utils.textshape import compute_repetition_metrics, normalize_code_line
 
 
 def test_normalize_code_line_strips_literals_comments_and_case() -> None:

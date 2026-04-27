@@ -1,4 +1,4 @@
-from lynchpin.enrichment.features import ALL_FEATURES, get_features
+from lynchpin.enrich.features import ALL_FEATURES, get_features
 
 
 def test_all_features_have_metadata():
@@ -27,7 +27,7 @@ def test_feature_functions_exist():
 
 
 from datetime import date
-from lynchpin.enrichment.features import FeatureStore, FeatureMatrix
+from lynchpin.enrich.features import FeatureStore, FeatureMatrix
 
 
 def test_feature_store_empty():

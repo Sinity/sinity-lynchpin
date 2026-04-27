@@ -47,8 +47,8 @@ class IntradayProfile:
 
 def clock_hour_profile(*, start: date, end: date) -> list[HourlyProfile]:
     """Hourly activity profile by absolute clock hour (0-23)."""
-    from .activitywatch import active_intervals, app_sessions
-    from .git import commit_facts
+    from ..sources.activitywatch import active_intervals, app_sessions
+    from ..sources.git import commit_facts
 
     s_dt, e_dt = date_to_dt_range(start, end)
 
@@ -87,7 +87,7 @@ def clock_hour_profile(*, start: date, end: date) -> list[HourlyProfile]:
         hour_commits[h] += 1
 
     # Sustained focus per clock hour
-    from .activitywatch import sustained_focus
+    from ..sources.activitywatch import sustained_focus
     sf_blocks = sustained_focus(start=s_dt, end=e_dt)
     hour_focus: dict[int, float] = defaultdict(float)
     for b in sf_blocks:
@@ -115,9 +115,9 @@ def clock_hour_profile(*, start: date, end: date) -> list[HourlyProfile]:
 
 def wake_hour_profile(*, start: date, end: date) -> list[HourlyProfile]:
     """Hourly profile relative to wake time (hour 0 = just woke up)."""
-    from .activitywatch import active_intervals, sustained_focus
-    from .git import commit_facts
-    from .sleep import entries_in_range
+    from ..sources.activitywatch import active_intervals, sustained_focus
+    from ..sources.git import commit_facts
+    from ..sources.sleep import entries_in_range
 
     s_dt, e_dt = date_to_dt_range(start, end)
 
@@ -213,7 +213,7 @@ def intraday_profile(*, start: date, end: date) -> IntradayProfile:
     peak_wake = max(range(len(wake)), key=lambda h: wake[h].active_min) if wake else 0
 
     # Average wake hour from sleep data
-    from .sleep import entries_in_range
+    from ..sources.sleep import entries_in_range
     wake_hours = []
     for e in entries_in_range(start, end):
         if e.total_minutes >= 60 and e.segments and e.segments[-1].end != datetime.min:

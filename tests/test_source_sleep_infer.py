@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from lynchpin.sources.activitywatch import AWEvent
 from lynchpin.sources.sleep import SleepEntry, SleepSegment
-from lynchpin.sources.sleep_infer import infer_sleep
+from lynchpin.composite.sleep_infer import infer_sleep
 
 UTC = timezone.utc
 

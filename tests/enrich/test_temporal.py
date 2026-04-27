@@ -1,4 +1,4 @@
-from lynchpin.enrichment.temporal import (
+from lynchpin.enrich.temporal import (
     decompose_stl, bootstrap_ci, granger_causality,
     rolling_correlation, period_compare,
 )

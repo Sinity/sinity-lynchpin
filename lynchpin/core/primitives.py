@@ -216,12 +216,8 @@ def duration_s(interval: Interval) -> float:
     return max((interval[1] - interval[0]).total_seconds(), 0.0)
 
 
-def overlaps(a: Interval, b: Interval) -> bool:
-    return a[0] < b[1] and b[0] < a[1]
 
 
-def contains(span: Interval, point: datetime) -> bool:
-    return span[0] <= point < span[1]
 
 
 def date_to_dt_range(start: date, end: date) -> tuple[datetime, datetime]:

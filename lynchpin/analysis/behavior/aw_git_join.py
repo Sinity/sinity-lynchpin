@@ -5,8 +5,8 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from ..core.commit_stats import collect_commit_stats, parse_iso_datetime
-from ..core.io import save_json
+from .._utils.commit_stats import collect_commit_stats, parse_iso_datetime
+from .._utils.io import save_json
 from ..canonical import load_analysis_spec
 
 NS_PER_SECOND = 1_000_000_000

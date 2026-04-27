@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .core.io import resolve_analysis_path
+from ._utils.io import resolve_analysis_path
 from .ecosystem_dashboard import run_ecosystem_dashboard
 
 
