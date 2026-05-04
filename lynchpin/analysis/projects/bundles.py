@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ...core.cache import write_text_if_changed
 from ...core.projects import project_profiles
+from .velocity_analysis import _noop
 
 BUNDLE_ROOT = Path("/realm/project/_context-project-bundles")
 DEFAULT_LOGS_COUNT = 30
@@ -82,10 +83,6 @@ PROJECT_SPECS["sinex-target-vision"] = ProjectSpec(
     ),
 )
 LogFn = Callable[[str], None]
-
-
-def _noop(_message: str) -> None:
-    pass
 
 
 def utc_now() -> str:

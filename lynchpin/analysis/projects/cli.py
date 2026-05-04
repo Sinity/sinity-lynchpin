@@ -115,6 +115,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recent commit count for summary shards; empty means full history.",
     )
 
+    chisel = subparsers.add_parser(
+        "chisel",
+        help="Build XML repomix snapshots with semantic splitting and GitHub issue commentary.",
+    )
+    chisel.add_argument(
+        "--projects",
+        default="",
+        help="Whitespace-separated project names (default: all registered).",
+    )
+    chisel.add_argument(
+        "--output-root",
+        type=lambda s: Path(s) if s.strip() else None,
+        default=None,
+        help="Output directory (default: /realm/inbox/store/next/<timestamp>).",
+    )
+    chisel.add_argument(
+        "--max-workers", type=int, default=4,
+        help="Max parallel repos (default: 4).",
+    )
+    chisel.add_argument(
+        "--list", action="store_true",
+        help="List available project plans and exit.",
+    )
+
     return parser
 
 
@@ -162,6 +186,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             log=print,
         )
         print(f"Rich project bundle index written to {Path(index['output_root']) / 'index.json'}")
+        return 0
+
+    if args.command == "chisel":
+        from .chisel import build_chisel_bundles
+        if args.list:
+            from .chisel import REPO_PLANS
+            print("Available chisel projects:\n")
+            for name, plan in sorted(REPO_PLANS.items()):
+                slices_str = ", ".join(s.name for s in plan.slices)
+                print(f"  {name}")
+                print(f"    path:   {plan.path}")
+                print(f"    github: {plan.github_slug or '—'}")
+                print(f"    slices: {slices_str}")
+                if plan.extra_copy:
+                    copies = ", ".join(f"{s}→{d}" for s, d in plan.extra_copy)
+                    print(f"    copies: {copies}")
+                print()
+            return 0
+        build_chisel_bundles(
+            project_names=_split_names(args.projects),
+            output_root=args.output_root,
+            max_workers=args.max_workers,
+        )
         return 0
 
     parser.error(f"unknown command: {args.command}")

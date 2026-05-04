@@ -8,13 +8,6 @@ def count_lines(filepath):
     except Exception:
         return 0
 
-def read_head(filepath, chars=3000):
-    """Safely read the head of a file for marker checks."""
-    try:
-        with open(filepath, 'r', errors='ignore') as f:
-            return f.read(chars).lower()
-    except Exception:
-        return ""
 
 def walk_files(base_dir, skip_dirs=None, target_exts=None, exclude_exts=None):
     """

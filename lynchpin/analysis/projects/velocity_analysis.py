@@ -47,15 +47,6 @@ AGGREGATE_PALETTE = [
 ]
 
 
-def _skip_common(filename: str) -> bool:
-    """Common skip logic for all projects."""
-    for ext in SKIP_EXTENSIONS:
-        if filename.endswith(f".{ext}"):
-            return True
-    for path in SKIP_PATHS:
-        if filename.startswith(path):
-            return True
-    return False
 
 
 def module_from_path(filename: str) -> str:

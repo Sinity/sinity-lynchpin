@@ -1,15 +1,19 @@
-"""Narrative query surface — chat-friendly access to v2 annotated spans.
+"""Narrative query surface — chat-friendly access to v2 annotated spans + v3 analytics.
 
-Import: from lynchpin.narrative import query, day_brief, week_story
+Import: from lynchpin.narrative import query, day_brief, week_story, day_v3
 
-The v2 spans (from GPT 5.5 Pro) use DuckDB STRUCT types with dot notation:
-  semantic.activity, semantic.attention_level, semantic.context_sentence
-  time.local_date, time.duration_s, time.start_s, time.part_of_day
-  memory.story_priority, memory.memory_anchor, memory.why_it_mattered
-  behavior.productive_score, behavior.deep_work_candidate
-  context_window.transition_from_previous, context_window.transition_to_next
-  episode_context.episode_label, episode_context.episode_thesis
-  literal_parse.domains, literal_parse.command, literal_parse.file_paths
+The v2 spans (from GPT 5.5 Pro) provide story-level detail: memory anchors,
+episode context, transitions. The v3 analytics (from deep_analysis bundle)
+provide statistical layer: active-hour-normalized activity breakdowns, day
+archetypes, anomaly scores, circadian profiles, and cross-source correlations.
+
+Combine them:
+    from lynchpin.narrative import day_v3
+    d = day_v3(date(2026, 1, 15))
+    # d.v2_spans → narrative-worthy moments
+    # d.v3_metrics → active-hour-normalized statistics
+    # d.anomaly → None or anomaly details
+    # d.archetype → day type label
 """
 from __future__ import annotations
 
@@ -37,6 +41,24 @@ class NarrativeResult:
     evidence: list[dict]
     spans: list[dict]
     stats: dict
+
+
+@dataclass(frozen=True)
+class DayV3Result:
+    """Combined v2 narrative + v3 analytics for a single day."""
+    date: date
+    label: str               # "Monday March 15, 2026"
+    # v2 — story-level detail
+    v2_spans: list[dict]
+    high_priority_count: int
+    memory_anchors: list[str]
+    episode_label: str | None
+    # v3 — statistical layer (None if outside v3 window)
+    v3_metrics: dict | None
+    archetype: str | None
+    anomaly: dict | None
+    # Derived summary
+    summary: str              # 1-2 sentence natural-language summary
 
 
 # ── Query ─────────────────────────────────────────────────────────────────
@@ -190,6 +212,101 @@ def week_story(d: date | None = None) -> NarrativeResult:
                      for day, d in sorted(daily.items())},
             "top_transitions": dict(sorted(transitions.items(), key=lambda x: -x[1])[:10]),
         },
+    )
+
+
+# ── V3-enriched day ────────────────────────────────────────────────────────
+
+def day_v3(d: date) -> DayV3Result:
+    """Single day enriched with both v2 narrative spans and v3 analytics.
+
+    This is the primary entry point for day-level LLM consumption — it combines
+    story-worthy moments (v2) with statistical context (v3) in one call.
+    """
+    # ── v2: narrative spans ──────────────────────────────────────────────
+    v2_result = query(start=d, end=d, story_priority="notable", limit=50)
+    v2_spans = v2_result.spans
+
+    anchors = []
+    for s in v2_spans:
+        a = s.get("memory_anchor", "")
+        if a and a != "None" and a not in anchors:
+            anchors.append(a)
+
+    high_n = sum(1 for s in v2_spans if s.get("story_priority") == "high")
+
+    episode = None
+    for s in v2_spans:
+        ep = s.get("episode_label", "")
+        if ep and ep != "None":
+            episode = str(ep)
+            break
+
+    # ── v3: daily metrics ────────────────────────────────────────────────
+    v3_metrics = None
+    archetype = None
+    anomaly = None
+    try:
+        from .v3 import daily as v3_daily, anomaly_for_date
+        dm = v3_daily(d)
+        if dm is not None:
+            v3_metrics = {
+                "active_hours": dm.active_hours,
+                "productive_h": dm.productive_h,
+                "productive_ratio": dm.productive_ratio,
+                "deep_candidate_h": dm.deep_candidate_h,
+                "deep_ratio": dm.deep_ratio,
+                "nsfw_h": dm.nsfw_h,
+                "nsfw_ratio": dm.nsfw_ratio,
+                "fragmentation": dm.fragmentation,
+                "activity_entropy_bits": dm.activity_entropy_bits,
+                "switches_per_active_h": dm.switches_per_active_h,
+                "top_activities": dm.top_activities,
+                "top_topics": dm.top_topics,
+                "top_macros": dm.top_macros,
+                "sleep_hours": dm.sleep_hours,
+                "sleep_score": dm.sleep_score,
+                "stress_avg": dm.stress_avg,
+                "heart_rate_avg": dm.heart_rate_avg,
+                "steps": dm.steps,
+                "commit_count": dm.commit_count,
+                "shell_commands": dm.shell_commands,
+                "ai_session_count": dm.ai_session_count,
+            }
+            archetype = dm.archetype_label
+
+        anom = anomaly_for_date(d)
+        if anom is not None:
+            anomaly = {
+                "outlier_score": anom.outlier_score,
+                "reasons": anom.reasons[:5],
+            }
+    except Exception:
+        pass
+
+    # ── Build summary ────────────────────────────────────────────────────
+    parts = [d.strftime("%A %B %d, %Y")]
+    if v3_metrics:
+        ah = v3_metrics["active_hours"]
+        pr = v3_metrics["productive_ratio"]
+        parts.append(f"{ah:.1f}h active, {pr:.0%} productive")
+        if archetype:
+            parts.append(f"({archetype})")
+    parts.append(f"{len(v2_spans)} narrative spans, {high_n} high-priority")
+    if anchors:
+        parts.append(f"Key: {'; '.join(anchors[:3])}")
+
+    return DayV3Result(
+        date=d,
+        label=d.strftime("%A %B %d, %Y"),
+        v2_spans=v2_spans,
+        high_priority_count=high_n,
+        memory_anchors=anchors,
+        episode_label=episode,
+        v3_metrics=v3_metrics,
+        archetype=archetype,
+        anomaly=anomaly,
+        summary=". ".join(parts),
     )
 
 

@@ -24,7 +24,6 @@ from .bundles import (
     PROJECT_SPECS,
     ProjectSpec,
     LogFn,
-    _noop,
     git_state,
     project_ignore_patterns,
     repomix_version,
@@ -32,6 +31,7 @@ from .bundles import (
     run_command,
     utc_now,
 )
+from .velocity_analysis import _noop
 
 RICH_BUNDLE_ROOT = BUNDLE_ROOT / "rich"
 RICH_INDEX_SCHEMA = "project-context-rich-bundle-index-v1"

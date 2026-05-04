@@ -37,3 +37,10 @@ project-bundles output_root="/realm/project/_context-project-bundles" projects="
 # Materialize richer structural project bundles with git-history shards.
 project-bundles-rich output_root="/realm/project/_context-project-bundles/rich" projects="" patch_window="10" summary_window="100" patch_commits="200" summary_commits="":
     python -m lynchpin.analysis.projects rich-bundles --output-root "{{output_root}}" --projects "{{projects}}" --patch-window "{{patch_window}}" --summary-window "{{summary_window}}" --patch-commits "{{patch_commits}}" --summary-commits "{{summary_commits}}"
+
+# Build XML repomix snapshots with semantic splitting + issues + git log.
+chisel projects="" output_root="" max_workers="4":
+    python -m lynchpin.analysis.projects chisel \
+        --projects "{{projects}}" \
+        --output-root "{{output_root}}" \
+        --max-workers {{max_workers}}

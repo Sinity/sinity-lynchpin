@@ -782,7 +782,7 @@ EOF
             export R_LIBS_USER=$PWD/.rlib
             export MY_CONFIG=$PWD/config
             export PYTHONPATH=$PWD:/realm/project/polylogue:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
-            echo "Loaded sinity-lynchpin devshell with Python ${pythonEnv.pythonVersion} and R support."
+            echo "Loaded sinity-lynchpin devshell with Python ${pythonEnv.pythonVersion} and R support.  chisel → just chisel  (XML snapshots)"
           '';
         };
       }
