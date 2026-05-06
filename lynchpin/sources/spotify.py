@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Iterator, Optional
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
@@ -41,12 +41,12 @@ class SpotifyStreamingSummary:
     tracks: dict[str, Counter[str]]
 
 
-def _stream_files(root: Optional[Path] = None) -> List[Path]:
+def _stream_files(root: Optional[Path] = None) -> list[Path]:
     cfg = get_config()
     resolved = root or cfg.spotify_root
     if not resolved.exists():
         return []
-    files: List[Path] = []
+    files: list[Path] = []
     account_dir = resolved / "Spotify Account Data"
     if account_dir.exists():
         files.extend(sorted(account_dir.glob("StreamingHistory*.json")))
@@ -56,9 +56,13 @@ def _stream_files(root: Optional[Path] = None) -> List[Path]:
     return files
 
 
-@persistent_cache("spotify_streams", depends_on=lambda root=None: files_signature(_stream_files(root)))
-def _load_streams(root: Optional[Path]) -> List[SpotifyStream]:
-    rows: List[SpotifyStream] = []
+def _stream_files_signature(root: Optional[Path] = None) -> object:
+    return files_signature(_stream_files(root))
+
+
+@persistent_cache("spotify_streams", depends_on=_stream_files_signature)
+def _load_streams(root: Optional[Path] = None) -> list[SpotifyStream]:
+    rows: list[SpotifyStream] = []
     for path in _stream_files(root):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -75,8 +79,8 @@ def _load_streams(root: Optional[Path]) -> List[SpotifyStream]:
                     artist=_extract_artist(entry),
                     track=_extract_track(entry),
                     ms_played=int(entry.get("msPlayed") or entry.get("ms_played") or 0),
-                    platform=entry.get("platform"),
-                    context=entry.get("reason_start") or entry.get("reason_end") or entry.get("offline"),
+                    platform=_optional_str(entry.get("platform")),
+                    context=_optional_str(entry.get("reason_start") or entry.get("reason_end") or entry.get("offline")),
                     source_file=str(path),
                 )
             )
@@ -93,9 +97,9 @@ def summarize_streaming(
     *,
     root: Optional[Path] = None,
 ) -> SpotifyStreamingSummary:
-    hours: Dict[str, float] = defaultdict(float)
-    per_month_artists: Dict[str, Counter[str]] = defaultdict(Counter)
-    per_month_tracks: Dict[str, Counter[str]] = defaultdict(Counter)
+    hours: dict[str, float] = defaultdict(float)
+    per_month_artists: dict[str, Counter[str]] = defaultdict(Counter)
+    per_month_tracks: dict[str, Counter[str]] = defaultdict(Counter)
 
     for stream in iter_streams(root=root):
         if stream.end_time is None:
@@ -116,11 +120,11 @@ def summarize_streaming(
     )
 
 
-def top_names(per_month_counts: Dict[str, Counter[str]], month: str, *, limit: int = 3) -> list[str]:
+def top_names(per_month_counts: dict[str, Counter[str]], month: str, *, limit: int = 3) -> list[str]:
     return [name for name, _ in per_month_counts.get(month, Counter()).most_common(limit)]
 
 
-def _parse_time(entry: dict) -> Optional[datetime]:
+def _parse_time(entry: dict[object, object]) -> Optional[datetime]:
     if "endTime" in entry:
         raw = entry["endTime"]
         if isinstance(raw, str):
@@ -138,7 +142,7 @@ def _parse_time(entry: dict) -> Optional[datetime]:
     return None
 
 
-def _extract_artist(entry: dict) -> str:
+def _extract_artist(entry: dict[object, object]) -> str:
     for key in ("artistName", "master_metadata_album_artist_name", "episode_show_name"):
         value = entry.get(key)
         if isinstance(value, str):
@@ -146,7 +150,7 @@ def _extract_artist(entry: dict) -> str:
     return ""
 
 
-def _extract_track(entry: dict) -> str:
+def _extract_track(entry: dict[object, object]) -> str:
     for key in ("trackName", "master_metadata_track_name", "episode_name", "audiobook_title"):
         value = entry.get(key)
         if isinstance(value, str):
@@ -187,20 +191,22 @@ def listening_sessions(*, gap_minutes: float = 30, root: Optional[Path] = None) 
 
     streams = sorted(
         (s for s in iter_streams(root=root) if s.end_time is not None),
-        key=lambda s: s.end_time,
+        key=_stream_end_time,
     )
     result: list[ListeningSession] = []
     for g in group_by_gap(
         streams,
-        start_of=lambda s: s.end_time - timedelta(milliseconds=max(s.ms_played, 1000)),
-        end_of=lambda s: s.end_time,
+        start_of=lambda s: _stream_end_time(s) - timedelta(milliseconds=max(s.ms_played, 1000)),
+        end_of=_stream_end_time,
         max_gap=gap_minutes * 60,
     ):
         artists = TopN(1)
         tracks = TopN(1)
         for s in g.items:
-            if s.artist: artists.add(s.artist, s.ms_played)
-            if s.track: tracks.add(s.track, s.ms_played)
+            if s.artist:
+                artists.add(s.artist, s.ms_played)
+            if s.track:
+                tracks.add(s.track, s.ms_played)
         total_ms = sum(s.ms_played for s in g.items)
         result.append(ListeningSession(
             start=g.start, end=g.end, duration_min=round(total_ms / 60_000, 1),
@@ -216,12 +222,15 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
     """Daily listening aggregation: hours, top artists/tracks, unique counts."""
     from ..core.primitives import TopN
 
-    by_day: Dict[date, list[SpotifyStream]] = defaultdict(list)
+    by_day: dict[date, list[SpotifyStream]] = defaultdict(list)
     for s in iter_streams(root=root):
-        if s.end_time is None: continue
+        if s.end_time is None:
+            continue
         d = s.end_time.date()
-        if start and d < start: continue
-        if end and d > end: continue
+        if start and d < start:
+            continue
+        if end and d > end:
+            continue
         by_day[d].append(s)
 
     result: list[DailyListening] = []
@@ -246,3 +255,13 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
             unique_artists=len(artist_set), unique_tracks=len(track_set),
         ))
     return result
+
+
+def _stream_end_time(stream: SpotifyStream) -> datetime:
+    if stream.end_time is None:
+        raise ValueError("SpotifyStream.end_time is required for session grouping")
+    return stream.end_time
+
+
+def _optional_str(value: object) -> str | None:
+    return str(value) if value not in (None, "") else None

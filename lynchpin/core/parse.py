@@ -6,7 +6,8 @@ import os
 from functools import lru_cache
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Optional
+from datetime import tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -115,8 +116,10 @@ def safe_float(value: object) -> Optional[float]:
     """Coerce anything to float, or None."""
     if value is None:
         return None
-    try:
+    if isinstance(value, (int, float)):
         return float(value)
+    try:
+        return float(str(value))
     except (ValueError, TypeError):
         return None
 
@@ -140,7 +143,7 @@ def safe_int(value: object) -> Optional[int]:
 
 
 @lru_cache(maxsize=1)
-def local_tz():
+def local_tz() -> tzinfo:
     """Get the local timezone with historical DST rules when available."""
     from datetime import timezone
     candidates = []

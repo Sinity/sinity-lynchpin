@@ -12,7 +12,6 @@ from ...core.cache import write_text_if_changed
 from ...sources.web import (
     WebHistoryRawEntry,
     iter_gestalt_events,
-    iter_raw_file_entries,
     load_raw_file,
     normalize_url,
     raw_files,

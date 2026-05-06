@@ -16,14 +16,15 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import Callable, Iterable, ParamSpec, Tuple, TypeVar
+from typing import Any, Callable, Iterable, ParamSpec, Tuple, TypeVar, cast
 
+from .config import get_config
+
+_cachew: Any
 try:
     from cachew import cachew as _cachew
 except ImportError:  # pragma: no cover - exercised when running outside devshell
     _cachew = None
-
-from .config import get_config
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -54,7 +55,7 @@ def persistent_cache(
         if logger is not None:
             kwargs["logger"] = logger
 
-        return _cachew(**kwargs)(func)
+        return cast(Callable[P, T], _cachew(**kwargs)(func))
 
     return decorator
 

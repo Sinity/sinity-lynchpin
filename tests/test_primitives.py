@@ -1,28 +1,38 @@
 """Tests for core/primitives.py: TopN, group_by_gap, interval arithmetic."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from lynchpin.core.primitives import (
-    TopN, Group, group_by_gap,
+    TopN, group_by_gap,
     merge_intervals, intersect_intervals, split_by_day, split_by_hour,
     duration_s, logical_date,
 )
 
 UTC = timezone.utc
-def dt(h, m=0): return datetime(2026, 3, 15, h, m, tzinfo=UTC)
+
+
+def dt(h, m=0):
+    return datetime(2026, 3, 15, h, m, tzinfo=UTC)
 
 
 class TestTopN:
     def test_basic(self):
         t = TopN(3)
-        t.add("a", 10); t.add("b", 5); t.add("c", 3); t.add("d", 1)
+        t.add("a", 10)
+        t.add("b", 5)
+        t.add("c", 3)
+        t.add("d", 1)
         assert t.dominant == "a"
         assert len(t.items) == 3
         assert t.items[0] == ("a", 10)
         assert t.total == 19
 
     def test_merge(self):
-        a = TopN(2); a.add("x", 10); a.add("y", 5)
-        b = TopN(2); b.add("x", 3); b.add("z", 8)
+        a = TopN(2)
+        a.add("x", 10)
+        a.add("y", 5)
+        b = TopN(2)
+        b.add("x", 3)
+        b.add("z", 8)
         merged = a.merge(b)
         assert merged.dominant == "x"
         assert merged.items[0] == ("x", 13)

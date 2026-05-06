@@ -1,11 +1,11 @@
-"""Tests for lynchpin.analysis.comparison and canonical pure helper functions."""
+"""Tests for lynchpin.analysis.ecosystem.comparison and canonical pure helper functions."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
 
-from lynchpin.analysis.comparison import _parse_date, _rolling_best
+from lynchpin.analysis.ecosystem.comparison import _parse_date, _rolling_best
 
 
 # ---------------------------------------------------------------------------

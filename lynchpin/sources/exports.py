@@ -14,18 +14,19 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import timezone
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Callable, Iterable, Iterator, Optional, TypeVar
 
 import yaml
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.cache import files_signature
 from ..core.config import get_config
-from ..core.parse import parse_datetime, parse_date_from_any, parse_int, parse_float, safe_int, month_key, in_month_range
+from ..core.parse import in_month_range, month_key, parse_date_from_any, parse_datetime, parse_float, parse_int, safe_int
 
 __all__ = [
     "GoodreadsBook",
@@ -78,9 +79,9 @@ class GoodreadsBook:
     pages: Optional[int]
     year_published: Optional[int]
     original_year_published: Optional[int]
-    date_read: Optional[datetime]
-    date_added: Optional[datetime]
-    shelves: List[str]
+    date_read: Optional[date]
+    date_added: Optional[date]
+    shelves: list[str]
     exclusive_shelf: str
     my_review: str
     private_notes: str
@@ -98,19 +99,19 @@ def _resolve_goodreads_library(path: Optional[Path]) -> Optional[Path]:
     return candidate if candidate.exists() else None
 
 
-def _goodreads_library_signature(path: Optional[Path]) -> Tuple[str, Tuple[str, int | None, int | None]]:
+def _goodreads_library_signature(path: Optional[Path] = None) -> object:
     resolved = _resolve_goodreads_library(path)
     if not resolved:
         return ("", ("", None, None))
     return (str(resolved), file_signature(resolved))
 
 
-@persistent_cache("goodreads_library", depends_on=lambda path=None: _goodreads_library_signature(path))
-def _load_goodreads_books(path: Optional[Path]) -> List[GoodreadsBook]:
+@persistent_cache("goodreads_library", depends_on=_goodreads_library_signature)
+def _load_goodreads_books(path: Optional[Path] = None) -> list[GoodreadsBook]:
     resolved = _resolve_goodreads_library(path)
     if resolved is None:
         return []
-    books: List[GoodreadsBook] = []
+    books: list[GoodreadsBook] = []
     with resolved.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
@@ -127,14 +128,14 @@ def summarize_goodreads_library(
     end_month: str,
     *,
     path: Optional[Path] = None,
-) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, Counter[str]], Dict[str, Counter[str]]]:
-    read_counts: Dict[str, int] = defaultdict(int)
-    added_counts: Dict[str, int] = defaultdict(int)
-    per_month_authors_read: Dict[str, Counter[str]] = defaultdict(Counter)
-    per_month_titles_read: Dict[str, Counter[str]] = defaultdict(Counter)
+) -> tuple[dict[str, int], dict[str, int], dict[str, Counter[str]], dict[str, Counter[str]]]:
+    read_counts: dict[str, int] = defaultdict(int)
+    added_counts: dict[str, int] = defaultdict(int)
+    per_month_authors_read: dict[str, Counter[str]] = defaultdict(Counter)
+    per_month_titles_read: dict[str, Counter[str]] = defaultdict(Counter)
     for book in iter_goodreads_books(path):
         if book.date_read is not None:
-            month = month_key(book.date_read)
+            month = _date_month_key(book.date_read)
             if in_month_range(month, start_month, end_month):
                 read_counts[month] += 1
                 if book.author:
@@ -143,14 +144,14 @@ def summarize_goodreads_library(
                     per_month_titles_read[month][book.title] += 1
 
         if book.date_added is not None:
-            month = month_key(book.date_added)
+            month = _date_month_key(book.date_added)
             if in_month_range(month, start_month, end_month):
                 added_counts[month] += 1
 
     return read_counts, added_counts, per_month_authors_read, per_month_titles_read
 
 
-def _goodreads_row_to_book(row: Dict[str, str], source: Path) -> GoodreadsBook:
+def _goodreads_row_to_book(row: dict[str, str], source: Path) -> GoodreadsBook:
     shelves = _goodreads_split_csv_field(row.get("Bookshelves") or "")
     return GoodreadsBook(
         book_id=(row.get("Book Id") or "").strip(),
@@ -181,7 +182,7 @@ def _goodreads_row_to_book(row: Dict[str, str], source: Path) -> GoodreadsBook:
 parse_date = parse_date_from_any
 
 
-def _goodreads_split_csv_field(raw: str) -> List[str]:
+def _goodreads_split_csv_field(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
@@ -192,6 +193,10 @@ def _goodreads_normalize_isbn(raw: str) -> str:
     if cleaned.startswith("='") and cleaned.endswith("'"):
         cleaned = cleaned[2:-1]
     return cleaned.strip()
+
+
+def _date_month_key(value: date) -> str:
+    return f"{value.year:04d}-{value.month:02d}"
 
 
 
@@ -211,13 +216,13 @@ class RaindropBookmark:
     title: str
     url: str
     folder: str
-    tags: List[str]
+    tags: list[str]
     created: Optional[datetime]
     note: str
     excerpt: str
     cover: Optional[str]
     favorite: bool
-    raw: dict
+    raw: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -228,12 +233,12 @@ class RaindropExport:
     is_default: bool
 
 
-def list_raindrop_exports(root: Optional[Path] = None) -> List[RaindropExport]:
+def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
     cfg = get_config()
     base = Path(root) if root else cfg.raindrop_dir
     if not base.exists():
         return []
-    exports: List[RaindropExport] = []
+    exports: list[RaindropExport] = []
     for path in sorted(base.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True):
         stat = path.stat()
         label = path.stem
@@ -241,7 +246,7 @@ def list_raindrop_exports(root: Optional[Path] = None) -> List[RaindropExport]:
             RaindropExport(
                 label=label,
                 path=path,
-                mtime=datetime.fromtimestamp(stat.st_mtime, tz=__import__('datetime').timezone.utc),
+                mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
                 is_default=cfg.raindrop_csv is not None and path == cfg.raindrop_csv,
             )
         )
@@ -290,7 +295,7 @@ def iter_raindrop_bookmarks_by_name(name: str, root: Optional[Path] = None) -> I
             yield from iter_raindrop_bookmarks(export.path)
 
 
-def iter_raindrop_bookmarks_all(root: Optional[Path] = None) -> Iterator[Tuple[RaindropExport, RaindropBookmark]]:
+def iter_raindrop_bookmarks_all(root: Optional[Path] = None) -> Iterator[tuple[RaindropExport, RaindropBookmark]]:
     """Iterate all exports, yielding (export, bookmark) pairs."""
     for export in list_raindrop_exports(root):
         for bookmark in iter_raindrop_bookmarks(export.path):
@@ -313,7 +318,7 @@ def summarize_raindrop_bookmarks(
     return dict(counts)
 
 
-def _raindrop_parse_tags(raw: Optional[str]) -> List[str]:
+def _raindrop_parse_tags(raw: Optional[str]) -> list[str]:
     if not raw:
         return []
     separators = [",", ";"]
@@ -366,14 +371,14 @@ def daily_raindrop_activity(*, start: date, end: date) -> list[RaindropDayActivi
 @dataclass(frozen=True)
 class MessengerThread:
     thread_name: str
-    participants: List[str]
+    participants: list[str]
     source: str
 
 
 @dataclass(frozen=True)
 class MessengerMessage:
     thread_name: str
-    participants: List[str]
+    participants: list[str]
     sender: str
     timestamp: Optional[datetime]
     text: Optional[str]
@@ -408,7 +413,7 @@ def _resolve_fbmessenger_export_dir(root: Path) -> Optional[Path]:
     return fallback[0]
 
 
-def _fbmessenger_thread_files(paths: Optional[list[Path]]) -> List[Path]:
+def _fbmessenger_thread_files(paths: Optional[list[Path]]) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).is_file()]
     cfg = get_config()
@@ -421,18 +426,19 @@ def _fbmessenger_thread_files(paths: Optional[list[Path]]) -> List[Path]:
     return sorted(messages_dir.glob("*.json"))
 
 
-def _fbmessenger_thread_signature(paths: Optional[list[Path]]) -> Tuple[Tuple[str, ...], str]:
+def _fbmessenger_thread_signature(paths: Optional[list[Path]] = None) -> object:
     resolved = _fbmessenger_thread_files(paths)
-    from ..core.cache import files_signature
     return tuple(str(path) for path in resolved), files_signature(resolved)
 
 
-@persistent_cache("fbmessenger_threads", depends_on=lambda paths=None: _fbmessenger_thread_signature(paths))
-def _load_fbmessenger_threads(paths: Optional[list[Path]]) -> List[MessengerThread]:
-    threads: List[MessengerThread] = []
+@persistent_cache("fbmessenger_threads", depends_on=_fbmessenger_thread_signature)
+def _load_fbmessenger_threads(paths: Optional[list[Path]] = None) -> list[MessengerThread]:
+    threads: list[MessengerThread] = []
     for path in _fbmessenger_thread_files(paths):
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
+        if not isinstance(data, dict):
+            continue
         participants = [_fbmessenger_clean_text(p) for p in list(data.get("participants", []) or [])]
         thread_name = _fbmessenger_clean_text(data.get("threadName") or path.stem)
         threads.append(
@@ -449,20 +455,21 @@ def iter_fbmessenger_threads(paths: Optional[list[Path]] = None) -> Iterator[Mes
     yield from _load_fbmessenger_threads(paths)
 
 
-@persistent_cache("fbmessenger_messages", depends_on=lambda paths=None: _fbmessenger_thread_signature(paths))
-def _load_fbmessenger_messages(paths: Optional[list[Path]]) -> List[MessengerMessage]:
-    messages: List[MessengerMessage] = []
+@persistent_cache("fbmessenger_messages", depends_on=_fbmessenger_thread_signature)
+def _load_fbmessenger_messages(paths: Optional[list[Path]] = None) -> list[MessengerMessage]:
+    messages: list[MessengerMessage] = []
     for path in _fbmessenger_thread_files(paths):
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
+        if not isinstance(data, dict):
+            continue
         participants = [_fbmessenger_clean_text(p) for p in list(data.get("participants", []) or [])]
         thread_name = _fbmessenger_clean_text(data.get("threadName") or path.stem)
         for message in data.get("messages", []) or []:
             ts_raw = message.get("timestamp")
             timestamp = None
             if isinstance(ts_raw, (int, float)):
-                from datetime import timezone as tz_module
-                timestamp = datetime.fromtimestamp(ts_raw / 1000.0, tz=tz_module.utc)
+                timestamp = datetime.fromtimestamp(ts_raw / 1000.0, tz=timezone.utc)
             messages.append(
                 MessengerMessage(
                     thread_name=thread_name,
@@ -484,9 +491,9 @@ def iter_fbmessenger_messages(paths: Optional[list[Path]] = None) -> Iterator[Me
     yield from _load_fbmessenger_messages(paths)
 
 
-def _fbmessenger_clean_text(value: Optional[str]) -> Optional[str]:
+def _fbmessenger_clean_text(value: object) -> str:
     if value is None:
-        return None
+        return ""
     if not isinstance(value, str):
         return str(value)
     return value.encode("utf-8", "replace").decode("utf-8")
@@ -545,6 +552,7 @@ def daily_messenger_activity(*, start: date, end: date) -> list[MessengerDayActi
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 TextTokenizer = Callable[[str], Iterable[str]]
+T = TypeVar("T")
 
 
 @dataclass
@@ -557,7 +565,7 @@ class WykopLinkComment:
     link_id: Optional[int]
     link_title: str
     link_url: str
-    tags: List[str]
+    tags: list[str]
 
 
 @dataclass
@@ -566,7 +574,7 @@ class WykopEntry:
     created_at: Optional[datetime]
     url: str
     content: str
-    tags: List[str]
+    tags: list[str]
     votes_up: Optional[int]
     votes_down: Optional[int]
 
@@ -638,15 +646,15 @@ def summarize_wykop_activity(
             for token in tokenize_text(entry.content):
                 entry_tokens[month][token] += 1
 
-    for comment in iter_wykop_entry_comments(username=username, path=entry_comments_path):
-        if comment.created_at is None:
+    for entry_comment in iter_wykop_entry_comments(username=username, path=entry_comments_path):
+        if entry_comment.created_at is None:
             continue
-        month = month_key(comment.created_at)
+        month = month_key(entry_comment.created_at)
         if not in_month_range(month, start_month, end_month):
             continue
         entry_comment_counts[month] += 1
-        if tokenize_text and comment.content:
-            for token in tokenize_text(comment.content):
+        if tokenize_text and entry_comment.content:
+            for token in tokenize_text(entry_comment.content):
                 entry_comment_tokens[month][token] += 1
 
     return WykopActivitySummary(
@@ -691,25 +699,29 @@ def iter_wykop_entry_comments(
     return iter(_load_wykop_entry_comments(path))
 
 
-@persistent_cache("wykop_link_comments", depends_on=lambda path: file_signature(path))
-def _load_wykop_link_comments(path: Path) -> List[WykopLinkComment]:
+def _wykop_file_signature(path: Path) -> object:
+    return file_signature(path)
+
+
+@persistent_cache("wykop_link_comments", depends_on=_wykop_file_signature)
+def _load_wykop_link_comments(path: Path) -> list[WykopLinkComment]:
     return _wykop_read_jsonl(path, _wykop_parse_link_comment)
 
 
-@persistent_cache("wykop_entries", depends_on=lambda path: file_signature(path))
-def _load_wykop_entries(path: Path) -> List[WykopEntry]:
+@persistent_cache("wykop_entries", depends_on=_wykop_file_signature)
+def _load_wykop_entries(path: Path) -> list[WykopEntry]:
     return _wykop_read_jsonl(path, _wykop_parse_entry)
 
 
-@persistent_cache("wykop_entry_comments", depends_on=lambda path: file_signature(path))
-def _load_wykop_entry_comments(path: Path) -> List[WykopEntryComment]:
+@persistent_cache("wykop_entry_comments", depends_on=_wykop_file_signature)
+def _load_wykop_entry_comments(path: Path) -> list[WykopEntryComment]:
     return _wykop_read_jsonl(path, _wykop_parse_entry_comment)
 
 
-def _wykop_read_jsonl(path: Path, mapper) -> List:
+def _wykop_read_jsonl(path: Path, mapper: Callable[[dict[str, object]], T | None]) -> list[T]:
     if not path.exists():
         return []
-    rows = []
+    rows: list[T] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -719,13 +731,15 @@ def _wykop_read_jsonl(path: Path, mapper) -> List:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(payload, dict):
+                continue
             mapped = mapper(payload)
             if mapped is not None:
                 rows.append(mapped)
     return rows
 
 
-def _wykop_parse_link_comment(payload: Dict[str, object]) -> Optional[WykopLinkComment]:
+def _wykop_parse_link_comment(payload: dict[str, object]) -> Optional[WykopLinkComment]:
     comment_id = safe_int(payload.get("comment_id"))
     if comment_id is None:
         return None
@@ -742,7 +756,7 @@ def _wykop_parse_link_comment(payload: Dict[str, object]) -> Optional[WykopLinkC
     )
 
 
-def _wykop_parse_entry(payload: Dict[str, object]) -> Optional[WykopEntry]:
+def _wykop_parse_entry(payload: dict[str, object]) -> Optional[WykopEntry]:
     entry_id = safe_int(payload.get("entry_id"))
     if entry_id is None:
         return None
@@ -757,7 +771,7 @@ def _wykop_parse_entry(payload: Dict[str, object]) -> Optional[WykopEntry]:
     )
 
 
-def _wykop_parse_entry_comment(payload: Dict[str, object]) -> Optional[WykopEntryComment]:
+def _wykop_parse_entry_comment(payload: dict[str, object]) -> Optional[WykopEntryComment]:
     comment_id = safe_int(payload.get("comment_id"))
     if comment_id is None:
         return None
@@ -806,8 +820,8 @@ class DendronNote:
     path: Path  # Relative path from the vault root
     id: Optional[str]
     title: str
-    tags: List[str]
-    frontmatter: Dict[str, object]
+    tags: list[str]
+    frontmatter: dict[str, object]
     body: str
 
 
@@ -845,7 +859,7 @@ def iter_dendron_notes(root: Optional[Path] = None) -> Iterator[DendronNote]:
     return generator()
 
 
-def _dendron_split_frontmatter(text: str) -> Tuple[Dict[str, object], str]:
+def _dendron_split_frontmatter(text: str) -> tuple[dict[str, object], str]:
     if not text.startswith("---"):
         return {}, text
     lines = text.splitlines()
@@ -867,7 +881,7 @@ def _dendron_split_frontmatter(text: str) -> Tuple[Dict[str, object], str]:
     return {}, text
 
 
-def _dendron_derive_title(frontmatter: Dict[str, object], body: str, rel: Path) -> str:
+def _dendron_derive_title(frontmatter: dict[str, object], body: str, rel: Path) -> str:
     for key in ("title", "id", "aliases"):
         value = frontmatter.get(key)
         if isinstance(value, str) and value.strip():
@@ -891,12 +905,12 @@ def _dendron_first_heading(body: str) -> Optional[str]:
     return None
 
 
-def _dendron_normalise_tags(frontmatter: Dict[str, object]) -> List[str]:
+def _dendron_normalise_tags(frontmatter: dict[str, object]) -> list[str]:
     tags = frontmatter.get("tags")
     if isinstance(tags, str):
         return [tag.strip() for tag in tags.split() if tag.strip()]
     if isinstance(tags, list):
-        out: List[str] = []
+        out: list[str] = []
         for tag in tags:
             if isinstance(tag, str) and tag.strip():
                 out.append(tag.strip())

@@ -707,7 +707,6 @@ def process_vitality(dry_run: bool = False) -> int:
     # GDPR cloud: Health Vitality Score (much richer, keyed by datauuid)
     gdpr_by_date: dict[str, dict] = {}
     for row in read_gdpr_cloud_csvs("Health Vitality Score"):
-        uuid = row.get('datauuid', '')
         day_time = row.get('day_time', '')
         ts = day_time[:10] if day_time else (row.get('create_time') or '')[:10]
         if not ts or ts < '2000':

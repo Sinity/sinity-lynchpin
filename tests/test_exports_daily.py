@@ -1,8 +1,6 @@
 from datetime import date
 
 from lynchpin.sources.exports import (
-    MessengerDayActivity,
-    RaindropDayActivity,
     daily_messenger_activity,
     daily_raindrop_activity,
 )

@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import parse_datetime as _parse_dt, parse_date_from_any as _parse_date, safe_float as _safe_float
@@ -76,9 +76,12 @@ class SleepEntry:
 
     @property
     def quality_label(self) -> str:
-        if self.avg_score is None: return "unknown"
-        if self.avg_score >= 80: return "good"
-        if self.avg_score >= 60: return "fair"
+        if self.avg_score is None:
+            return "unknown"
+        if self.avg_score >= 80:
+            return "good"
+        if self.avg_score >= 60:
+            return "fair"
         return "poor"
 
 
@@ -112,7 +115,7 @@ class SleepArchitecture:
 _PROCESSED = Path("/realm/data/exports/health/processed")
 
 
-def _load_jsonl(filename: str):
+def _load_jsonl(filename: str) -> Iterator[dict[str, object]]:
     path = _PROCESSED / filename
     if not path.exists():
         return
@@ -120,7 +123,9 @@ def _load_jsonl(filename: str):
         for line in f:
             line = line.strip()
             if line:
-                yield json.loads(line)
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    yield payload
 
 
 def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
@@ -151,9 +156,12 @@ def entries() -> Iterator[SleepEntry]:
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if not line: continue
-            try: rec = json.loads(line)
-            except json.JSONDecodeError: continue
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
             # Handle both metric field names
             metrics = rec.get("sleep_metrics") or rec.get("metrics") or {}
@@ -238,7 +246,7 @@ def entries_in_range(start: date, end: date) -> list[SleepEntry]:
 
 def sleep_stages(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SleepStageRecord]:
     """Sleep stage records from Samsung Health GDPR export."""
-    result = []
+    result: list[SleepStageRecord] = []
     for r in _load_jsonl("health_sleep_stages.jsonl"):
         st = _parse_dt(r.get("start_time"))
         et = _parse_dt(r.get("end_time"))
@@ -251,12 +259,13 @@ def sleep_stages(*, start: Optional[date] = None, end: Optional[date] = None) ->
         if not stage or not sleep_id:
             continue
         dur = r.get("duration_minutes")
+        duration_min = _safe_float(dur)
         result.append(SleepStageRecord(
             start=st,
             end=et,
-            stage=stage,
-            sleep_id=sleep_id,
-            duration_min=float(dur) if dur is not None else max((et - st).total_seconds() / 60, 0),
+            stage=str(stage),
+            sleep_id=str(sleep_id),
+            duration_min=duration_min if duration_min is not None else max((et - st).total_seconds() / 60, 0),
         ))
     return result
 

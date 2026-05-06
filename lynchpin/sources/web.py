@@ -17,15 +17,16 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field as dataclass_field
+from datetime import date as _date_type, datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Iterable, Iterator, Optional, TextIO
 from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from ..core.cache import file_digest, files_digest, persistent_cache
 from ..core.config import get_config
+from ..core.primitives import TopN
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +176,10 @@ class WebHistoryEntry:
     record_json: str
     source_file: str
 
-    def to_record(self) -> Dict[str, object]:
+    def to_record(self) -> dict[str, object]:
         data = json.loads(self.record_json)
+        if not isinstance(data, dict):
+            return {"_source_file": self.source_file}
         data["_source_file"] = self.source_file
         return data
 
@@ -198,7 +201,8 @@ class WebHistoryRawEntry:
     source_file: str
 
     def payload(self) -> dict[str, object]:
-        return json.loads(self.payload_json)
+        data = json.loads(self.payload_json)
+        return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +256,7 @@ def normalize_url(url: str) -> str:
         return url.strip()
 
 
-def _strip_tracking_params(query: dict, host: str) -> dict:
+def _strip_tracking_params(query: dict[str, list[str]], host: str) -> dict[str, list[str]]:
     keep = SPECIAL_PARAM_WHITELIST.get(host.split(":")[0], set())
     return {
         k: v for k, v in query.items()
@@ -274,7 +278,7 @@ def _normalize_domain(netloc: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> List[Path]:
+def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> list[Path]:
     cfg = get_config()
     fallback = ndjson or cfg.webhistory_ndjson
     if root is None and fallback and Path(fallback).exists():
@@ -294,12 +298,13 @@ def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -
     return []
 
 
-@persistent_cache(
-    "webhistory_entries",
-    depends_on=lambda root=None, ndjson=None: files_digest(_history_files(root, ndjson)),
-)
-def _load_entries(root: Optional[Path], ndjson: Optional[Path]) -> List[WebHistoryEntry]:
-    entries: List[WebHistoryEntry] = []
+def _history_files_signature(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> object:
+    return files_digest(_history_files(root, ndjson))
+
+
+@persistent_cache("webhistory_entries", depends_on=_history_files_signature)
+def _load_entries(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> list[WebHistoryEntry]:
+    entries: list[WebHistoryEntry] = []
     for file in _history_files(root, ndjson):
         for visit in _iter_file_visits(file):
             record = {
@@ -321,7 +326,7 @@ def iter_entries(
     end_date: Optional[str] = None,
     root: Optional[Path] = None,
     ndjson: Optional[Path] = None,
-) -> Iterator[Dict[str, object]]:
+) -> Iterator[dict[str, object]]:
     for entry in _load_entries(root, ndjson):
         if start_date and entry.date < start_date:
             continue
@@ -345,11 +350,11 @@ _RAW_SUFFIX_PRIORITY = {
 def raw_files(
     root: Optional[Path] = None,
     files: Optional[list[str]] = None,
-) -> List[Path]:
+) -> list[Path]:
     cfg = get_config()
     base = root or cfg.webhistory_raw_dir
     if files:
-        paths: List[Path] = []
+        paths: list[Path] = []
         for file in files:
             candidate = Path(file)
             if not candidate.is_absolute():
@@ -371,12 +376,16 @@ def raw_files(
     return sorted(candidates, key=lambda p: (p.stem, _RAW_SUFFIX_PRIORITY.get(p.suffix.lower(), 99), p.name))
 
 
-@persistent_cache("webhistory_raw_file", depends_on=lambda path, signature: signature)
+def _raw_file_signature(path: Path, signature: tuple[str, int | None, int | None, str | None]) -> object:
+    return path, signature
+
+
+@persistent_cache("webhistory_raw_file", depends_on=_raw_file_signature)
 def _load_raw_file(
     path: Path,
-    _signature: tuple[str, int | None, int | None, str | None],
-) -> List[WebHistoryRawEntry]:
-    entries: List[WebHistoryRawEntry] = []
+    signature: tuple[str, int | None, int | None, str | None],
+) -> list[WebHistoryRawEntry]:
+    entries: list[WebHistoryRawEntry] = []
     suffix = path.suffix.lower()
     if suffix in {".json", ".ndjson", ".jsonl"}:
         entries.extend(_load_raw_json(path))
@@ -399,7 +408,7 @@ def iter_raw_entries(
 def iter_raw_file_entries(
     root: Optional[Path] = None,
     files: Optional[list[str]] = None,
-) -> Iterator[tuple[Path, List[WebHistoryRawEntry]]]:
+) -> Iterator[tuple[Path, list[WebHistoryRawEntry]]]:
     for path in raw_files(root, files):
         yield path, load_raw_file(path)
 
@@ -407,7 +416,7 @@ def iter_raw_file_entries(
 def load_raw_file(
     path: Path,
     signature: Optional[tuple[str, int | None, int | None, str | None]] = None,
-) -> List[WebHistoryRawEntry]:
+) -> list[WebHistoryRawEntry]:
     if signature is None:
         signature = file_digest(path)
     return _load_raw_file(path, signature)
@@ -450,7 +459,7 @@ def _load_raw_json(path: Path) -> Iterable[WebHistoryRawEntry]:
 
 
 def _load_raw_csv(path: Path) -> Iterable[WebHistoryRawEntry]:
-    entries: List[WebHistoryRawEntry] = []
+    entries: list[WebHistoryRawEntry] = []
     with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
@@ -483,7 +492,7 @@ def _load_raw_csv(path: Path) -> Iterable[WebHistoryRawEntry]:
                 or ""
             )
             payload = dict(row)
-            entries.append(_make_entry(dt, url, title, payload, path))
+            entries.append(_make_entry(dt, str(url or ""), str(title or ""), payload, path))
     return entries
 
 
@@ -521,8 +530,10 @@ def _entry_from_payload(payload: dict[str, object], path: Path) -> WebHistoryRaw
                 break
     if not dt:
         return None
-    url = payload.get("url") if isinstance(payload.get("url"), str) else ""
-    title = payload.get("title") if isinstance(payload.get("title"), str) else ""
+    raw_url = payload.get("url")
+    raw_title = payload.get("title")
+    url = raw_url if isinstance(raw_url, str) else ""
+    title = raw_title if isinstance(raw_title, str) else ""
     return _make_entry(dt, url, title, payload, path)
 
 
@@ -619,7 +630,7 @@ def _iter_jsonl_visits(path: Path, source: str) -> Iterator[WebHistoryVisit]:
         yield from _iter_jsonl_from_handle(fh, source)
 
 
-def _iter_jsonl_from_handle(fh, source: str) -> Iterator[WebHistoryVisit]:
+def _iter_jsonl_from_handle(fh: TextIO, source: str) -> Iterator[WebHistoryVisit]:
     parse_errors = 0
     for line in fh:
         raw = line.strip()
@@ -639,16 +650,18 @@ def _iter_jsonl_from_handle(fh, source: str) -> Iterator[WebHistoryVisit]:
         logger.warning("webhistory: %d JSON parse errors in %s", parse_errors, source)
 
 
-def _visit_from_dict(obj: dict, source: str) -> Optional[WebHistoryVisit]:
+def _visit_from_dict(obj: dict[str, Any], source: str) -> Optional[WebHistoryVisit]:
     dt = payload_timestamp(obj)
     if dt is None:
         return None
-    url = obj.get("url") if isinstance(obj.get("url"), str) else ""
-    title = obj.get("title") if isinstance(obj.get("title"), str) else ""
+    raw_url = obj.get("url")
+    raw_title = obj.get("title")
+    url = raw_url if isinstance(raw_url, str) else ""
+    title = raw_title if isinstance(raw_title, str) else ""
     return WebHistoryVisit(timestamp=dt, url=url, title=title, source=source)
 
 
-def _parse_csv_dt(row: dict) -> Optional[datetime]:
+def _parse_csv_dt(row: dict[str, str | None]) -> Optional[datetime]:
     # Chrome CSV: date + time columns (local time)
     date_raw = (row.get("date") or "").strip()
     time_raw = (row.get("time") or "").strip()
@@ -682,11 +695,11 @@ def _parse_csv_dt(row: dict) -> Optional[datetime]:
 # ---------------------------------------------------------------------------
 
 
-SummarizationResult = Tuple[
-    Dict[str, int],
-    Dict[str, Counter[str]],
-    Dict[str, Counter[str]],
-    Dict[str, Counter[str]],
+SummarizationResult = tuple[
+    dict[str, int],
+    dict[str, Counter[str]],
+    dict[str, Counter[str]],
+    dict[str, Counter[str]],
 ]
 
 
@@ -701,10 +714,10 @@ def summarize_ndjson(path: Path, start_month: str, end_month: str) -> Summarizat
 def summarize_events_by_month(
     events: Iterable[WebHistoryVisit], start_month: str, end_month: str,
 ) -> SummarizationResult:
-    counts: Dict[str, int] = defaultdict(int)
-    per_month_domains: Dict[str, Counter[str]] = defaultdict(Counter)
-    per_month_reddit_subs: Dict[str, Counter[str]] = defaultdict(Counter)
-    per_month_title_tokens: Dict[str, Counter[str]] = defaultdict(Counter)
+    counts: dict[str, int] = defaultdict(int)
+    per_month_domains: dict[str, Counter[str]] = defaultdict(Counter)
+    per_month_reddit_subs: dict[str, Counter[str]] = defaultdict(Counter)
+    per_month_title_tokens: dict[str, Counter[str]] = defaultdict(Counter)
 
     for event in events:
         month = f"{event.timestamp.year:04d}-{event.timestamp.month:02d}"
@@ -745,7 +758,7 @@ _TOPIC_STOPWORDS = {
 }
 
 
-def _tokenize_topic(text: str) -> List[str]:
+def _tokenize_topic(text: str) -> list[str]:
     return [
         tok for tok in re.findall(r"[\w]+", text.lower(), flags=re.UNICODE)
         if tok not in _TOPIC_STOPWORDS and len(tok) >= 3 and not tok.isdigit()
@@ -756,17 +769,20 @@ def _tokenize_topic(text: str) -> List[str]:
 # Daily browsing aggregation
 # ---------------------------------------------------------------------------
 
-from datetime import date as _date_type
-from ..core.primitives import TopN
-
-
 @dataclass(frozen=True)
 class WebDayActivity:
     date: _date_type
     visit_count: int
     unique_domains: int
-    top_domains: tuple[tuple[str, int], ...]
+    top_domains: tuple[tuple[str, float], ...]
     top_titles: tuple[str, ...]
+
+
+@dataclass
+class _WebDayBucket:
+    count: int = 0
+    domains: TopN = dataclass_field(default_factory=lambda: TopN(10))
+    titles: TopN = dataclass_field(default_factory=lambda: TopN(5))
 
 
 def _iter_all_visits(
@@ -794,28 +810,26 @@ def _iter_all_visits(
 
 def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity]:
     """Daily web browsing aggregation: visits, domains, top sites."""
-    by_day: Dict[_date_type, Dict] = defaultdict(
-        lambda: {"count": 0, "domains": TopN(10), "titles": TopN(5)}
-    )
+    by_day: defaultdict[_date_type, _WebDayBucket] = defaultdict(_WebDayBucket)
     for v in _iter_all_visits(start=start, end=end):
         d = v.timestamp.date()
         bucket = by_day[d]
-        bucket["count"] += 1
+        bucket.count += 1
         domain = _normalize_domain(urlparse(v.url or "").netloc)
         if domain:
-            bucket["domains"].add(domain)
+            bucket.domains.add(domain)
         if v.title:
-            bucket["titles"].add(v.title[:80])
+            bucket.titles.add(v.title[:80])
 
     result: list[WebDayActivity] = []
     for d in sorted(by_day):
         bucket = by_day[d]
         result.append(WebDayActivity(
             date=d,
-            visit_count=bucket["count"],
-            unique_domains=len(bucket["domains"]._counts),
-            top_domains=bucket["domains"].items,
-            top_titles=tuple(t for t, _ in bucket["titles"].items),
+            visit_count=bucket.count,
+            unique_domains=len(bucket.domains._counts),
+            top_domains=bucket.domains.items,
+            top_titles=tuple(t for t, _ in bucket.titles.items),
         ))
     return result
 

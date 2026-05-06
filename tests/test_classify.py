@@ -1,6 +1,6 @@
 """Tests for core/classify.py: mode, project, topic attribution."""
 
-from lynchpin.core.classify import classify, resolve_project, extract_topics, Attribution
+from lynchpin.core.classify import classify, resolve_project, extract_topics
 
 
 class TestClassify:
@@ -50,6 +50,12 @@ class TestResolveProject:
     def test_path(self):
         assert resolve_project("/realm/project/sinex/src/main.rs") == "sinex"
 
+    def test_target_vision_path(self):
+        assert resolve_project("/realm/project/sinex-target-vision/README.md") == "sinex-target-vision"
+
+    def test_inactive_path_is_not_current_project(self):
+        assert resolve_project("/realm/project/_inactive/codex") is None
+
     def test_none(self):
         assert resolve_project("/tmp/random") is None
 
@@ -68,5 +74,4 @@ class TestTopics:
 
     def test_empty(self):
         assert extract_topics("") == []
-
 

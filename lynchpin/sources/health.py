@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
 
@@ -251,7 +251,7 @@ class NapSession:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _load_jsonl(filename: str):
+def _load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
     path = _PROCESSED / filename
     if not path.exists():
         return
@@ -259,7 +259,9 @@ def _load_jsonl(filename: str):
         for line in f:
             line = line.strip()
             if line:
-                yield json.loads(line)
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    yield payload
 
 
 def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
@@ -675,53 +677,53 @@ def daily_health_summary(*, start: Optional[date] = None, end: Optional[date] = 
 
     # Stress
     stress_by_day: dict[date, list[int]] = defaultdict(list)
-    for m in stress_measurements(start=start, end=end):
-        if m.score is not None:
-            stress_by_day[m.timestamp.date()].append(m.score)
-            all_dates.add(m.timestamp.date())
+    for stress in stress_measurements(start=start, end=end):
+        if stress.score is not None:
+            stress_by_day[stress.timestamp.date()].append(stress.score)
+            all_dates.add(stress.timestamp.date())
 
     # Heart rate
     hr_by_day: dict[date, list[float]] = defaultdict(list)
-    for m in heart_rate_measurements(start=start, end=end):
-        hr_by_day[m.timestamp.date()].append(m.heart_rate)
-        all_dates.add(m.timestamp.date())
+    for heart_rate in heart_rate_measurements(start=start, end=end):
+        hr_by_day[heart_rate.timestamp.date()].append(heart_rate.heart_rate)
+        all_dates.add(heart_rate.timestamp.date())
 
     # HRV
     hrv_by_day: dict[date, list[float]] = defaultdict(list)
-    for m in hrv_measurements(start=start, end=end):
-        if m.rmssd_avg is not None:
-            hrv_by_day[m.timestamp.date()].append(m.rmssd_avg)
-            all_dates.add(m.timestamp.date())
+    for hrv in hrv_measurements(start=start, end=end):
+        if hrv.rmssd_avg is not None:
+            hrv_by_day[hrv.timestamp.date()].append(hrv.rmssd_avg)
+            all_dates.add(hrv.timestamp.date())
 
     # SpO2
     spo2_by_day: dict[date, list[float]] = defaultdict(list)
-    for m in spo2_measurements(start=start, end=end):
-        spo2_by_day[m.timestamp.date()].append(m.spo2)
-        all_dates.add(m.timestamp.date())
+    for spo2 in spo2_measurements(start=start, end=end):
+        spo2_by_day[spo2.timestamp.date()].append(spo2.spo2)
+        all_dates.add(spo2.timestamp.date())
 
     # Respiratory
     resp_by_day: dict[date, list[float]] = defaultdict(list)
-    for m in respiratory_rate(start=start, end=end):
-        resp_by_day[m.timestamp.date()].append(m.avg_rate)
-        all_dates.add(m.timestamp.date())
+    for respiratory in respiratory_rate(start=start, end=end):
+        resp_by_day[respiratory.timestamp.date()].append(respiratory.avg_rate)
+        all_dates.add(respiratory.timestamp.date())
 
     # Floors
     floors_by_day: dict[date, float] = defaultdict(float)
-    for m in floors_climbed(start=start, end=end):
-        floors_by_day[m.timestamp.date()] += m.floors
-        all_dates.add(m.timestamp.date())
+    for floor in floors_climbed(start=start, end=end):
+        floors_by_day[floor.timestamp.date()] += floor.floors
+        all_dates.add(floor.timestamp.date())
 
     # Skin temperature
     skin_by_day: dict[date, list[float]] = defaultdict(list)
-    for m in skin_temperature(start=start, end=end):
-        skin_by_day[m.timestamp.date()].append(m.temperature)
-        all_dates.add(m.timestamp.date())
+    for skin in skin_temperature(start=start, end=end):
+        skin_by_day[skin.timestamp.date()].append(skin.temperature)
+        all_dates.add(skin.timestamp.date())
 
     # Snoring
     snoring_by_day: dict[date, int] = defaultdict(int)
-    for m in snoring_records(start=start, end=end):
-        snoring_by_day[m.start.date()] += m.duration_s
-        all_dates.add(m.start.date())
+    for snore in snoring_records(start=start, end=end):
+        snoring_by_day[snore.start.date()] += snore.duration_s
+        all_dates.add(snore.start.date())
 
     # Vitality
     vitality_by_day: dict[date, float] = {}
@@ -736,10 +738,10 @@ def daily_health_summary(*, start: Optional[date] = None, end: Optional[date] = 
         cal_by_day[c.date] = c.calories
         all_dates.add(c.date)
 
-    def _avg(vals: list) -> Optional[float]:
+    def _avg(vals: list[int] | list[float]) -> Optional[float]:
         return sum(vals) / len(vals) if vals else None
 
-    result = []
+    result: list[DailyHealthSummary] = []
     for d in sorted(all_dates):
         hr_vals = hr_by_day.get(d, [])
         stress_vals = stress_by_day.get(d, [])

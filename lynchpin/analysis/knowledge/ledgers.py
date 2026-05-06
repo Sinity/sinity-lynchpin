@@ -205,20 +205,22 @@ def write_session_ledger(
     return SessionLedgerResult(output=resolved_output, row_count=len(records), wrote=wrote)
 
 
-def load_catalog(path: Path) -> list[dict]:
+def load_catalog(path: Path) -> list[dict[str, str]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("Catalog must be a list of artefact definitions")
+    if not all(isinstance(entry, dict) for entry in payload):
+        raise ValueError("Catalog entries must be objects")
     return payload
 
 
-def validate_entry(entry: dict) -> None:
+def validate_entry(entry: dict[str, str]) -> None:
     missing = [field for field in REQUIRED_FIELDS if field not in entry]
     if missing:
         raise ValueError(f"Entry {entry.get('artifact_id')} missing {missing}")
 
 
-def build_artefacts(entries: Iterable[dict], base_dir: Path) -> list[Artefact]:
+def build_artefacts(entries: Iterable[dict[str, str]], base_dir: Path) -> list[Artefact]:
     artefacts: list[Artefact] = []
     for entry in entries:
         validate_entry(entry)

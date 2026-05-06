@@ -8,16 +8,16 @@ import tarfile
 from collections import Counter, defaultdict
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from html import unescape as html_unescape
+from types import TracebackType
 from pathlib import Path
+from typing import Callable, IO
 from ..core.parse import month_key as _month_key, in_month_range as _month_in_range
-from typing import Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ..core.config import get_config
 
 __all__ = [
     "TarReader",
@@ -190,8 +190,9 @@ def extract_youtube_video_id(url: str) -> str | None:
     if host.endswith("youtube.com"):
         if parsed.path == "/watch":
             qs = parse_qs(parsed.query)
-            vid = (qs.get("v") or [None])[0]
-            if vid:
+            values = qs.get("v")
+            if values:
+                vid = values[0]
                 return vid
         if parsed.path.startswith("/shorts/"):
             parts = parsed.path.split("/")
@@ -229,13 +230,18 @@ class TarReader:
         self._members = {member.name: member for member in self._tf.getmembers()}
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if self._tf is not None:
             self._tf.close()
         self._tf = None
         self._members = {}
 
-    def open(self, member_path: str) -> io.BufferedReader | None:
+    def open(self, member_path: str) -> IO[bytes] | None:
         if self._tf is None:
             raise RuntimeError("TarReader not opened (use as a context manager).")
         member = self._members.get(member_path)
@@ -706,7 +712,7 @@ def summarize_youtube_watch_history_month(
     *,
     takeout_titles: dict[str, str],
     oembed_cache: dict[str, dict[str, object]],
-    tokenize_text=tokenize_topic,
+    tokenize_text: Callable[[str], list[str]] = tokenize_topic,
 ) -> tuple[list[tuple[str, int]], Counter[str], Counter[str], Counter[str]]:
     top_video_ids = list(video_ids.most_common(15))
     resolved_titles = Counter(titles)
@@ -747,7 +753,7 @@ def summarize_youtube_watch_history_month(
 def phrase_topic_tokens(
     phrases: Counter[str],
     *,
-    tokenize_text=tokenize_topic,
+    tokenize_text: Callable[[str], list[str]] = tokenize_topic,
     limit: int = 200,
 ) -> Counter[str]:
     tokens: Counter[str] = Counter()
@@ -795,8 +801,10 @@ def parse_chrome_history_json_from_takeout(
         month = _month_key(dt)
         if not _month_in_range(month, start_month, end_month):
             continue
-        url = item.get("url") if isinstance(item.get("url"), str) else ""
-        title = item.get("title") if isinstance(item.get("title"), str) else ""
+        raw_url = item.get("url")
+        raw_title = item.get("title")
+        url = raw_url if isinstance(raw_url, str) else ""
+        title = raw_title if isinstance(raw_title, str) else ""
         parsed = urlparse(url)
         domain = normalize_domain(parsed.netloc)
         if domain:
@@ -1247,10 +1255,13 @@ def parse_life_takeouts(
             takeouts,
             "Takeout/Mail/All mail Including Spam and Trash.mbox",
         )
+        gmail_counts: dict[str, int]
+        gmail_from_domains: dict[str, Counter[str]]
+        gmail_subject_tokens: dict[str, Counter[str]]
         if gmail_takeout is None:
-            gmail_counts = defaultdict(int)
-            gmail_from_domains = defaultdict(Counter)
-            gmail_subject_tokens = defaultdict(Counter)
+            gmail_counts = {}
+            gmail_from_domains = {}
+            gmail_subject_tokens = {}
         else:
             gmail_takeout_path = str(gmail_takeout.tar_path)
             gmail_counts, gmail_from_domains, gmail_subject_tokens = parse_gmail_headers_from_takeout_mbox(

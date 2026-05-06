@@ -52,6 +52,14 @@ class IRCConversation:
         return self.start.date()
 
 
+@dataclass(frozen=True)
+class _ConversationHeader:
+    conversation_id: str
+    channel: str
+    start: datetime
+    end: datetime
+
+
 def _parse_stamp(value: str) -> datetime | None:
     normalized = value.replace("T", " ")
     if "-" not in normalized[:10] and len(normalized) >= 15:
@@ -88,7 +96,7 @@ def conversations_in_range(*, start: date, end: date, root: Optional[Path] = Non
 
 
 def _parse_file(path: Path) -> Iterator[IRCConversation]:
-    current: dict[str, object] | None = None
+    current: _ConversationHeader | None = None
     messages: list[IRCMessage] = []
 
     def flush() -> IRCConversation | None:
@@ -96,10 +104,10 @@ def _parse_file(path: Path) -> Iterator[IRCConversation]:
         if current is None:
             return None
         conv = IRCConversation(
-            conversation_id=str(current["conversation_id"]),
-            channel=str(current["channel"]).strip(),
-            start=current["start"],  # type: ignore[arg-type]
-            end=current["end"],  # type: ignore[arg-type]
+            conversation_id=current.conversation_id,
+            channel=current.channel.strip(),
+            start=current.start,
+            end=current.end,
             source_path=str(path),
             sinity_lines=sum(1 for msg in messages if msg.speaker.lower() == "sinity"),
             mention_lines=sum(1 for msg in messages if "sinity" in msg.text.lower()),
@@ -122,12 +130,12 @@ def _parse_file(path: Path) -> Iterator[IRCConversation]:
                 end = _parse_stamp(header.group("end"))
                 if start is None or end is None:
                     continue
-                current = {
-                    "conversation_id": header.group("id"),
-                    "channel": header.group("channel"),
-                    "start": start,
-                    "end": end,
-                }
+                current = _ConversationHeader(
+                    conversation_id=header.group("id"),
+                    channel=header.group("channel"),
+                    start=start,
+                    end=end,
+                )
                 continue
             if current is None:
                 continue

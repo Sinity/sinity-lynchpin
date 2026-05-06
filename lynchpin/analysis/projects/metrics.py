@@ -3,9 +3,9 @@ import os
 from collections import Counter
 from datetime import datetime
 
-from .._utils.io import save_json
-from .._utils.fs import walk_files
-from .._utils.git import get_log
+from ..core.io import save_json
+from ..core.fs import walk_files
+from ..core.git import get_log
 from ...core.projects import ALL_PROJECTS
 
 PROJECTS_META = {

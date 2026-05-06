@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 from ..core.primitives import date_to_dt_range, logical_date
 from ..core.parse import as_local

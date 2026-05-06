@@ -11,9 +11,8 @@ import functools
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from .projects import ALL_PROJECTS
+from .projects import ALL_PROJECTS, canonical_project_name
 
 # ── Lookup tables (the real domain knowledge) ─────────────────────────────────
 
@@ -103,7 +102,7 @@ def classify(
     source: str = "",
     kind: str = "",
     mode_hint: str | None = None,
-    evidence: dict | None = None,
+    evidence: dict[str, object] | None = None,
 ) -> Attribution:
     """Classify an activity event into (mode, project, topic).
 
@@ -220,9 +219,7 @@ def _project_from_path(text: str) -> str | None:
         return None
     normalized = text.replace("\\", "/")
     if "/realm/project/" in normalized:
-        project_name = normalized.split("/realm/project/", 1)[1].split("/", 1)[0]
-        if project_name in ALL_PROJECTS:
-            return project_name
+        return canonical_project_name(normalized)
 
     if not text.startswith(("/", "~", ".")):
         return None

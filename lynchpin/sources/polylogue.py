@@ -1,11 +1,8 @@
 """AI chat source: session profiles, daily activity, cost, work patterns.
 
-Uses polylogue's Python facade API via polylogue-python subprocess.
-Polylogue owns conversation semantics — lynchpin reads its materialized products.
-
-Falls back gracefully when the facade hits schema mismatches on legacy records
-(84% of records have a legacy inference schema that the current Pydantic model rejects).
-Uses paginated queries (limit=1000) to maximize coverage.
+Reads Polylogue's durable local archive tables directly. Product tables are
+preferred when materialized; otherwise Lynchpin derives conservative session and
+daily aggregates from conversations plus conversation_stats.
 
 Covers all providers: Claude (claude-ai, claude-code), ChatGPT, Codex, Gemini.
 """
@@ -19,12 +16,13 @@ import sqlite3
 import subprocess
 from functools import lru_cache
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
+from ..core.projects import canonical_project_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +35,13 @@ __all__ = [
     "DaySessionSummary",
     "MessageRecord",
     "ConversationTranscript",
+    "PolylogueReadiness",
     "iter_session_profiles",
     "session_profiles_for_date",
     "conversation_transcripts",
     "work_events",
     "day_session_summaries",
+    "archive_readiness",
     "daily_activity",
     "cost_summary",
     "work_pattern",
@@ -77,6 +77,25 @@ class DaySessionSummary:
     providers: dict[str, int]  # provider → session count
 
 
+@dataclass
+class _DaySummaryBucket:
+    session_count: int = 0
+    total_cost_usd: float = 0.0
+    total_messages: int = 0
+    total_words: int = 0
+    work_event_breakdown: Counter[str] = field(default_factory=Counter)
+    repos_active: set[str] = field(default_factory=set)
+    providers: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class _ProfileDayBucket:
+    session_count: int = 0
+    total_messages: int = 0
+    total_words: int = 0
+    repos_active: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class MessageRecord:
     conversation_id: str
@@ -106,6 +125,22 @@ class ConversationTranscript:
     all_message_tokens: int
 
 
+@dataclass(frozen=True)
+class PolylogueReadiness:
+    db_path: Path
+    status: str
+    reason: str
+    conversation_count: int
+    message_count: int | None
+    conversation_stats_count: int
+    session_profile_count: int
+    day_summary_count: int
+    work_event_count: int
+    provider_event_count: int | None
+    derives_profiles_from_base_tables: bool
+    derives_day_summaries_from_profiles: bool
+
+
 _POLYLOGUE_PYTHON = "polylogue-python"
 _POLYLOGUE_CLI = "polylogue"
 
@@ -114,6 +149,159 @@ def _default_polylogue_db_path() -> Path:
     from ..core.config import get_config
 
     return get_config().polylogue_db
+
+
+def _project_names_from_provider_meta(value: object) -> tuple[str, ...]:
+    if not value:
+        return ()
+    try:
+        meta = json.loads(str(value))
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(meta, dict):
+        return ()
+
+    projects: list[str] = []
+    git = meta.get("git")
+    if isinstance(git, dict):
+        repo_url = str(git.get("repository_url") or "")
+        if repo_url:
+            name = canonical_project_name(repo_url)
+            if name:
+                projects.append(name)
+
+    for path in meta.get("working_directories") or []:
+        project = canonical_project_name(str(path)) or _project_from_path(str(path))
+        if project:
+            projects.append(project)
+
+    return tuple(dict.fromkeys(projects))
+
+
+def _project_from_path(path: str) -> str | None:
+    project = canonical_project_name(path)
+    if project:
+        return project
+    if path.startswith("/tmp/"):
+        name = Path(path).name
+        return canonical_project_name(name)
+    return None
+
+
+def _canonical_projects(values: object) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    projects = [canonical_project_name(value) for value in values]
+    return tuple(dict.fromkeys(project for project in projects if project))
+
+
+def _count_table(conn: sqlite3.Connection, table_name: str) -> int | None:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+
+
+def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadiness:
+    """Report whether Lynchpin can use the current local Polylogue archive."""
+    db = _default_polylogue_db_path()
+    if not db.exists():
+        return PolylogueReadiness(
+            db_path=db,
+            status="unavailable",
+            reason="polylogue database does not exist",
+            conversation_count=0,
+            message_count=0,
+            conversation_stats_count=0,
+            session_profile_count=0,
+            day_summary_count=0,
+            work_event_count=0,
+            provider_event_count=0,
+            derives_profiles_from_base_tables=False,
+            derives_day_summaries_from_profiles=False,
+        )
+
+    try:
+        with sqlite3.connect(str(db)) as conn:
+            counts = {
+                name: _count_table(conn, name)
+                for name in (
+                    "conversations",
+                    "conversation_stats",
+                    "session_profiles",
+                    "day_session_summaries",
+                    "session_work_events",
+                )
+            }
+            if include_heavy_counts:
+                counts["messages"] = _count_table(conn, "messages")
+                counts["provider_events"] = _count_table(conn, "provider_events")
+            else:
+                counts["messages"] = None
+                counts["provider_events"] = None
+    except sqlite3.Error as exc:
+        return PolylogueReadiness(
+            db_path=db,
+            status="unavailable",
+            reason=f"sqlite read failed: {exc}",
+            conversation_count=0,
+            message_count=0,
+            conversation_stats_count=0,
+            session_profile_count=0,
+            day_summary_count=0,
+            work_event_count=0,
+            provider_event_count=0,
+            derives_profiles_from_base_tables=False,
+            derives_day_summaries_from_profiles=False,
+        )
+
+    conversation_count = counts["conversations"] or 0
+    message_count = counts["messages"]
+    stats_count = counts["conversation_stats"] or 0
+    profile_count = counts["session_profiles"] or 0
+    day_count = counts["day_session_summaries"] or 0
+    work_event_count = counts["session_work_events"] or 0
+    provider_event_count = counts["provider_events"]
+    can_derive_profiles = conversation_count > 0 and stats_count > 0
+    can_derive_days = profile_count > 0 or can_derive_profiles
+
+    if profile_count > 0 and day_count > 0 and work_event_count > 0:
+        status = "ready"
+        reason = "materialized profile, day-summary, and work-event products are populated"
+    elif can_derive_profiles and can_derive_days:
+        status = "degraded"
+        missing = []
+        if profile_count == 0:
+            missing.append("session_profiles")
+        if day_count == 0:
+            missing.append("day_session_summaries")
+        if work_event_count == 0:
+            missing.append("session_work_events")
+        reason = "base archive is usable, but product tables are empty: " + ", ".join(missing)
+    elif conversation_count > 0 or (message_count or 0) > 0:
+        status = "degraded"
+        reason = "raw archive exists, but conversation_stats are missing so derived profiles are weak"
+    else:
+        status = "unavailable"
+        reason = "polylogue archive tables are empty"
+
+    return PolylogueReadiness(
+        db_path=db,
+        status=status,
+        reason=reason,
+        conversation_count=conversation_count,
+        message_count=message_count,
+        conversation_stats_count=stats_count,
+        session_profile_count=profile_count,
+        day_summary_count=day_count,
+        work_event_count=work_event_count,
+        provider_event_count=provider_event_count,
+        derives_profiles_from_base_tables=profile_count == 0 and can_derive_profiles,
+        derives_day_summaries_from_profiles=day_count == 0 and can_derive_days,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,10 +348,10 @@ class ChatDayActivity:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Polylogue facade access via subprocess
+# Legacy Polylogue facade access via subprocess
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Paginated query script — handles legacy schema validation errors gracefully
+# Kept only for older archives that do not expose durable sqlite tables.
 _QUERY_SCRIPT = '''
 import asyncio, json, sys
 
@@ -173,7 +361,6 @@ async def main():
 
     results = []
     async with Polylogue() as p:
-        # Paginate with limit=1000 to avoid schema mismatch on legacy records
         offset = 0
         page_size = 1000
         while True:
@@ -288,6 +475,9 @@ def _profiles_from_sqlite() -> list[SessionProfile] | None:
         logger.warning("polylogue session_profiles sqlite read failed: %s", exc)
         return None
 
+    if not rows:
+        return _profiles_from_base_tables()
+
     profiles: list[SessionProfile] = []
     for row in rows:
         session_date = None
@@ -296,8 +486,8 @@ def _profiles_from_sqlite() -> list[SessionProfile] | None:
                 session_date = date.fromisoformat(str(row["canonical_session_date"]))
             except ValueError:
                 session_date = None
-        repo_names = _json_list(row["repo_names_json"])
-        repo_paths = _json_list(row["repo_paths_json"])
+        repo_names = _canonical_projects(_json_list(row["repo_names_json"]))
+        repo_paths = _canonical_projects(_json_list(row["repo_paths_json"]))
         projects = repo_names or repo_paths
         auto_tags = _json_list(row["auto_tags_json"])
         work_event_kind = None
@@ -314,21 +504,13 @@ def _profiles_from_sqlite() -> list[SessionProfile] | None:
             if not auto_tags:
                 auto_tags = tuple(str(tag) for tag in (inference.get("auto_tags") or []) if tag)
             if not projects:
-                projects = tuple(
-                    str(path)
-                    for path in (inference.get("repo_names") or inference.get("canonical_projects") or [])
-                    if path
-                )
+                projects = _canonical_projects(inference.get("repo_names") or inference.get("canonical_projects") or [])
         if row["evidence_payload_json"] and not projects:
             try:
                 evidence = json.loads(row["evidence_payload_json"] or "{}")
             except json.JSONDecodeError:
                 evidence = {}
-            projects = tuple(
-                str(path)
-                for path in (evidence.get("repo_names") or evidence.get("repo_paths") or evidence.get("cwd_paths") or [])
-                if path
-            )
+            projects = _canonical_projects(evidence.get("repo_names") or evidence.get("repo_paths") or evidence.get("cwd_paths") or [])
 
         profiles.append(SessionProfile(
             conversation_id=str(row["conversation_id"]),
@@ -341,7 +523,7 @@ def _profiles_from_sqlite() -> list[SessionProfile] | None:
             engaged_duration_ms=int(row["engaged_duration_ms"] or 0),
             wall_duration_ms=int(row["wall_duration_ms"] or 0),
             work_event_kind=work_event_kind,
-            work_event_projects=tuple(str(project) for project in projects if project),
+            work_event_projects=tuple(projects),
             total_cost_usd=float(row["total_cost_usd"] or 0),
             canonical_session_date=session_date,
             tool_use_count=int(row["tool_use_count"] or 0),
@@ -352,6 +534,73 @@ def _profiles_from_sqlite() -> list[SessionProfile] | None:
             work_event_count=int(row["work_event_count"] or 0),
             phase_count=int(row["phase_count"] or 0),
             cost_is_estimated=bool(row["cost_is_estimated"]),
+        ))
+    return profiles
+
+
+def _profiles_from_base_tables() -> list[SessionProfile] | None:
+    """Conservative profile projection from Polylogue's canonical archive rows."""
+    db = _default_polylogue_db_path()
+    if not db.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+            ).fetchone()
+            if table is None:
+                return None
+            rows = conn.execute(
+                """
+                SELECT c.conversation_id, c.provider_name, c.title,
+                       c.created_at, c.updated_at, c.sort_key, c.provider_meta,
+                       COALESCE(s.message_count, 0) AS message_count,
+                       COALESCE(s.word_count, 0) AS word_count,
+                       COALESCE(s.tool_use_count, 0) AS tool_use_count,
+                       COALESCE(s.thinking_count, 0) AS thinking_count,
+                       COALESCE(s.paste_count, 0) AS paste_count
+                FROM conversations c
+                LEFT JOIN conversation_stats s
+                  ON s.conversation_id = c.conversation_id
+                ORDER BY c.sort_key DESC, c.updated_at DESC, c.conversation_id
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("polylogue conversations sqlite read failed: %s", exc)
+        return None
+
+    profiles: list[SessionProfile] = []
+    for row in rows:
+        first = _parse_dt(row["created_at"])
+        last = _parse_dt(row["updated_at"]) or first
+        stamp = first or last
+        session_date = stamp.date() if stamp is not None else None
+        wall_duration_ms = 0
+        if first and last:
+            wall_duration_ms = max(int((last - first).total_seconds() * 1000), 0)
+        profiles.append(SessionProfile(
+            conversation_id=str(row["conversation_id"]),
+            provider=str(row["provider_name"] or ""),
+            title=str(row["title"] or ""),
+            message_count=int(row["message_count"] or 0),
+            word_count=int(row["word_count"] or 0),
+            first_message_at=first,
+            last_message_at=last,
+            engaged_duration_ms=0,
+            wall_duration_ms=wall_duration_ms,
+            work_event_kind=None,
+            work_event_projects=_project_names_from_provider_meta(row["provider_meta"]),
+            total_cost_usd=0.0,
+            canonical_session_date=session_date,
+            tool_use_count=int(row["tool_use_count"] or 0),
+            thinking_count=int(row["thinking_count"] or 0),
+            auto_tags=(),
+            substantive_count=int(row["message_count"] or 0),
+            attachment_count=0,
+            work_event_count=0,
+            phase_count=0,
+            cost_is_estimated=False,
         ))
     return profiles
 
@@ -439,7 +688,7 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
 
 
 @lru_cache(maxsize=1)
-def _token_encoder():
+def _token_encoder() -> Any | None:
     if os.environ.get("LYNCHPIN_EXACT_TOKEN_ESTIMATES") != "1":
         return None
     try:
@@ -742,38 +991,35 @@ def work_events(*, start: Optional[date] = None, end: Optional[date] = None) -> 
         if sqlite_rows is not None:
             _cached_work_events = sqlite_rows
         else:
-            _cached_work_events = []
-
-    if _cached_work_events == []:
-        try:
-            result = subprocess.run(
-                [_POLYLOGUE_PYTHON, "-c", _WORK_EVENTS_SCRIPT],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode != 0:
-                logger.warning("polylogue work_events failed: %s", result.stderr[:200])
+            try:
+                result = subprocess.run(
+                    [_POLYLOGUE_PYTHON, "-c", _WORK_EVENTS_SCRIPT],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    logger.warning("polylogue work_events failed: %s", result.stderr[:200])
+                    _cached_work_events = []
+                else:
+                    raw = json.loads(result.stdout)
+                    _cached_work_events = [
+                        WorkEvent(
+                            event_id=r["event_id"],
+                            conversation_id=r["conversation_id"],
+                            provider=r["provider"],
+                            kind=r["kind"],
+                            confidence=r.get("confidence", 0) or 0,
+                            start=_parse_dt(r.get("start_time")),
+                            end=_parse_dt(r.get("end_time")),
+                            duration_ms=r.get("duration_ms", 0),
+                            file_paths=tuple(r.get("file_paths", [])),
+                            tools_used=tuple(r.get("tools_used", [])),
+                            summary=r.get("summary", ""),
+                        )
+                        for r in raw
+                    ]
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+                logger.warning("polylogue work_events failed: %s", e)
                 _cached_work_events = []
-            else:
-                raw = json.loads(result.stdout)
-                _cached_work_events = [
-                    WorkEvent(
-                        event_id=r["event_id"],
-                        conversation_id=r["conversation_id"],
-                        provider=r["provider"],
-                        kind=r["kind"],
-                        confidence=r.get("confidence", 0) or 0,
-                        start=_parse_dt(r.get("start_time")),
-                        end=_parse_dt(r.get("end_time")),
-                        duration_ms=r.get("duration_ms", 0),
-                        file_paths=tuple(r.get("file_paths", [])),
-                        tools_used=tuple(r.get("tools_used", [])),
-                        summary=r.get("summary", ""),
-                    )
-                    for r in raw
-                ]
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
-            logger.warning("polylogue work_events failed: %s", e)
-            _cached_work_events = []
 
     events = _cached_work_events
     if start or end:
@@ -792,7 +1038,7 @@ def work_events(*, start: Optional[date] = None, end: Optional[date] = None) -> 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Day session summaries (polylogue's pre-computed daily aggregation)
+# Day session summaries
 # ══════════════════════════════════════════════════════════════════════════════
 
 _DAY_SUMMARY_SCRIPT = '''
@@ -832,11 +1078,7 @@ _cached_day_summaries: list[DaySessionSummary] | None = None
 
 
 def _day_summaries_from_sqlite() -> list[DaySessionSummary] | None:
-    """Fast local read of Polylogue's durable day summary table.
-
-    This is intentionally narrow. It should disappear once Polylogue exposes a
-    supported bulk export/query surface for downstream tools.
-    """
+    """Read Polylogue's day summary product table, deriving it if unmaterialized."""
     db = _default_polylogue_db_path()
     if not db.exists():
         return None
@@ -861,95 +1103,114 @@ def _day_summaries_from_sqlite() -> list[DaySessionSummary] | None:
         logger.warning("polylogue day_summaries sqlite read failed: %s", exc)
         return None
 
-    grouped: dict[str, dict[str, object]] = {}
+    if not rows:
+        return _day_summaries_from_profiles()
+
+    grouped: dict[str, _DaySummaryBucket] = {}
     for row in rows:
-        day = row["day"]
-        bucket = grouped.setdefault(day, {
-            "session_count": 0,
-            "total_cost_usd": 0.0,
-            "total_messages": 0,
-            "total_words": 0,
-            "work_event_breakdown": Counter(),
-            "repos_active": set(),
-            "providers": {},
-        })
+        day = str(row["day"])
+        bucket = grouped.setdefault(day, _DaySummaryBucket())
         count = int(row["conversation_count"] or 0)
-        bucket["session_count"] = int(bucket["session_count"]) + count
-        bucket["total_cost_usd"] = float(bucket["total_cost_usd"]) + float(row["total_cost_usd"] or 0)
-        bucket["total_messages"] = int(bucket["total_messages"]) + int(row["total_messages"] or 0)
-        bucket["total_words"] = int(bucket["total_words"]) + int(row["total_words"] or 0)
-        providers = bucket["providers"]
-        assert isinstance(providers, dict)
-        providers[row["provider_name"]] = count
+        bucket.session_count += count
+        bucket.total_cost_usd += float(row["total_cost_usd"] or 0)
+        bucket.total_messages += int(row["total_messages"] or 0)
+        bucket.total_words += int(row["total_words"] or 0)
+        bucket.providers[str(row["provider_name"] or "unknown")] = count
 
         try:
             breakdown = json.loads(row["work_event_breakdown_json"] or "{}")
         except json.JSONDecodeError:
             breakdown = {}
-        counter = bucket["work_event_breakdown"]
-        assert isinstance(counter, Counter)
-        counter.update({str(k): int(v) for k, v in breakdown.items()})
+        if isinstance(breakdown, dict):
+            bucket.work_event_breakdown.update({str(k): int(v) for k, v in breakdown.items()})
 
         try:
             repos = json.loads(row["repos_active_json"] or "[]")
         except json.JSONDecodeError:
             repos = []
-        repo_set = bucket["repos_active"]
-        assert isinstance(repo_set, set)
-        repo_set.update(str(repo) for repo in repos if repo)
+        if isinstance(repos, list):
+            bucket.repos_active.update(str(repo) for repo in repos if repo)
 
     return [
         DaySessionSummary(
             date=date.fromisoformat(day),
-            session_count=int(data["session_count"]),
-            total_cost_usd=float(data["total_cost_usd"]),
-            total_messages=int(data["total_messages"]),
-            total_words=int(data["total_words"]),
-            work_event_breakdown=dict(data["work_event_breakdown"]),
-            repos_active=tuple(sorted(data["repos_active"])),
-            providers=dict(data["providers"]),
+            session_count=data.session_count,
+            total_cost_usd=data.total_cost_usd,
+            total_messages=data.total_messages,
+            total_words=data.total_words,
+            work_event_breakdown=dict(data.work_event_breakdown),
+            repos_active=tuple(sorted(data.repos_active)),
+            providers=dict(data.providers),
         )
         for day, data in grouped.items()
     ]
 
 
+def _day_summaries_from_profiles() -> list[DaySessionSummary] | None:
+    profiles = _load_profiles()
+    if profiles == [] and _profiles_from_base_tables() is None:
+        return None
+
+    grouped: dict[tuple[date, str], _ProfileDayBucket] = {}
+    for profile in profiles:
+        if profile.canonical_session_date is None:
+            continue
+        key = (profile.canonical_session_date, profile.provider)
+        bucket = grouped.setdefault(key, _ProfileDayBucket())
+        bucket.session_count += 1
+        bucket.total_messages += profile.message_count
+        bucket.total_words += profile.word_count
+        bucket.repos_active.update(profile.work_event_projects)
+
+    return [
+        DaySessionSummary(
+            date=day,
+            session_count=data.session_count,
+            total_cost_usd=0.0,
+            total_messages=data.total_messages,
+            total_words=data.total_words,
+            work_event_breakdown={},
+            repos_active=tuple(sorted(data.repos_active)),
+            providers={provider: data.session_count},
+        )
+        for (day, provider), data in sorted(grouped.items(), reverse=True)
+    ]
+
+
 def day_session_summaries(*, start: Optional[date] = None, end: Optional[date] = None) -> list[DaySessionSummary]:
-    """Polylogue's pre-computed daily session aggregation."""
+    """Daily session aggregation from Polylogue product or base archive tables."""
     global _cached_day_summaries
     if _cached_day_summaries is None:
         sqlite_rows = _day_summaries_from_sqlite()
         if sqlite_rows is not None:
             _cached_day_summaries = sqlite_rows
         else:
-            _cached_day_summaries = []
-
-    if _cached_day_summaries == []:
-        try:
-            result = subprocess.run(
-                [_POLYLOGUE_PYTHON, "-c", _DAY_SUMMARY_SCRIPT],
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode != 0:
-                logger.warning("polylogue day_summaries failed: %s", result.stderr[:200])
+            try:
+                result = subprocess.run(
+                    [_POLYLOGUE_PYTHON, "-c", _DAY_SUMMARY_SCRIPT],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if result.returncode != 0:
+                    logger.warning("polylogue day_summaries failed: %s", result.stderr[:200])
+                    _cached_day_summaries = []
+                else:
+                    raw = json.loads(result.stdout)
+                    _cached_day_summaries = [
+                        DaySessionSummary(
+                            date=date.fromisoformat(r["date"]) if r.get("date") else date.min,
+                            session_count=r.get("session_count", 0),
+                            total_cost_usd=float(r.get("total_cost_usd", 0)),
+                            total_messages=r.get("total_messages", 0),
+                            total_words=r.get("total_words", 0),
+                            work_event_breakdown=r.get("work_event_breakdown", {}),
+                            repos_active=tuple(r.get("repos_active", [])),
+                            providers=r.get("providers", {}),
+                        )
+                        for r in raw if r.get("date")
+                    ]
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+                logger.warning("polylogue day_summaries failed: %s", e)
                 _cached_day_summaries = []
-            else:
-                raw = json.loads(result.stdout)
-                _cached_day_summaries = [
-                    DaySessionSummary(
-                        date=date.fromisoformat(r["date"]) if r.get("date") else date.min,
-                        session_count=r.get("session_count", 0),
-                        total_cost_usd=float(r.get("total_cost_usd", 0)),
-                        total_messages=r.get("total_messages", 0),
-                        total_words=r.get("total_words", 0),
-                        work_event_breakdown=r.get("work_event_breakdown", {}),
-                        repos_active=tuple(r.get("repos_active", [])),
-                        providers=r.get("providers", {}),
-                    )
-                    for r in raw if r.get("date")
-                ]
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
-            logger.warning("polylogue day_summaries failed: %s", e)
-            _cached_day_summaries = []
 
     summaries = _cached_day_summaries
     if start or end:
@@ -1016,7 +1277,7 @@ def _daily_activity_from_day_summaries(*, start: date, end: date) -> list[ChatDa
             providers = summary.providers
         dominant = None
         if summary.work_event_breakdown:
-            dominant = max(summary.work_event_breakdown, key=summary.work_event_breakdown.get)
+            dominant = max(summary.work_event_breakdown, key=lambda kind: summary.work_event_breakdown[kind])
         total_sessions = max(summary.session_count, 1)
         for provider, count in sorted(providers.items()):
             share = count / total_sessions
@@ -1103,29 +1364,33 @@ class WorkPattern:
     top_projects: tuple[str, ...]
 
 
+@dataclass
+class _WorkPatternBucket:
+    sessions: int = 0
+    ms: int = 0
+    cost: float = 0.0
+    projects: Counter[str] = field(default_factory=Counter)
+
+
 def work_pattern(*, start: date, end: date) -> list[WorkPattern]:
     """What kinds of work get AI assistance? Aggregated by work_event_kind."""
-    by_kind: dict[str, dict] = defaultdict(
-        lambda: {"sessions": 0, "ms": 0, "cost": 0.0, "projects": Counter()}
-    )
+    by_kind: defaultdict[str, _WorkPatternBucket] = defaultdict(_WorkPatternBucket)
     for day in day_session_summaries(start=start, end=end):
         for kind, count in day.work_event_breakdown.items():
             bucket = by_kind[kind]
-            bucket["sessions"] += count
-            bucket["ms"] += 0
-            bucket["cost"] += 0.0
+            bucket.sessions += count
             for repo in day.repos_active:
-                bucket["projects"][repo] += count
+                bucket.projects[repo] += count
     if by_kind:
         return [
             WorkPattern(
                 work_kind=kind,
-                session_count=b["sessions"],
+                session_count=b.sessions,
                 total_hours=0.0,
                 total_cost_usd=0.0,
-                top_projects=tuple(p for p, _ in b["projects"].most_common(5)),
+                top_projects=tuple(p for p, _ in b.projects.most_common(5)),
             )
-            for kind, b in sorted(by_kind.items(), key=lambda x: -x[1]["sessions"])
+            for kind, b in sorted(by_kind.items(), key=lambda x: -x[1].sessions)
         ]
 
     for p in iter_session_profiles():
@@ -1136,18 +1401,18 @@ def work_pattern(*, start: date, end: date) -> list[WorkPattern]:
             continue
         kind = p.work_event_kind or "unclassified"
         bucket = by_kind[kind]
-        bucket["sessions"] += 1
-        bucket["ms"] += p.engaged_duration_ms
-        bucket["cost"] += p.total_cost_usd
+        bucket.sessions += 1
+        bucket.ms += p.engaged_duration_ms
+        bucket.cost += p.total_cost_usd
         for proj in p.work_event_projects:
-            bucket["projects"][proj] += 1
+            bucket.projects[proj] += 1
 
     result: list[WorkPattern] = []
-    for kind, b in sorted(by_kind.items(), key=lambda x: -x[1]["ms"]):
+    for kind, b in sorted(by_kind.items(), key=lambda x: -x[1].ms):
         result.append(WorkPattern(
-            work_kind=kind, session_count=b["sessions"],
-            total_hours=round(b["ms"] / 3_600_000, 2),
-            total_cost_usd=round(b["cost"], 4),
-            top_projects=tuple(p for p, _ in b["projects"].most_common(5)),
+            work_kind=kind, session_count=b.sessions,
+            total_hours=round(b.ms / 3_600_000, 2),
+            total_cost_usd=round(b.cost, 4),
+            top_projects=tuple(p for p, _ in b.projects.most_common(5)),
         ))
     return result

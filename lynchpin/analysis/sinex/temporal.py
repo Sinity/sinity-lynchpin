@@ -1,10 +1,15 @@
 """Sinex temporal analysis and growth metrics."""
+from __future__ import annotations
+
 import os
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 import subprocess
-from .._utils import git
+from typing import cast
+
+from ..core.canonical import JsonObject
+from ..core import git
 
 
 _COMMIT_TYPE_RE = re.compile(
@@ -13,7 +18,7 @@ _COMMIT_TYPE_RE = re.compile(
 )
 
 
-def _classify_commit_type(subject):
+def _classify_commit_type(subject: str) -> str:
     match = _COMMIT_TYPE_RE.match(subject.strip())
     if match:
         return match.group(1).lower()
@@ -23,24 +28,24 @@ def _classify_commit_type(subject):
     return 'other'
 
 
-def _top_area(path):
+def _top_area(path: str) -> str:
     rel = path.replace('\\', '/')
     if '/' not in rel:
         return '(root)'
     return rel.split('/', 1)[0]
 
 
-def _resolve_default_branch(repo_dir):
+def _resolve_default_branch(repo_dir: str) -> str:
     for candidate in ('master', 'main'):
         try:
             subprocess.check_output(['git', 'rev-parse', '--verify', candidate], cwd=repo_dir, stderr=subprocess.DEVNULL)
             return candidate
-        except Exception:
+        except (OSError, subprocess.CalledProcessError):
             continue
     return 'HEAD'
 
 
-def _summarize_branch_sizes(repo_dir):
+def _summarize_branch_sizes(repo_dir: str) -> tuple[JsonObject, list[JsonObject]]:
     baseline = _resolve_default_branch(repo_dir)
     try:
         raw = subprocess.check_output(
@@ -49,11 +54,11 @@ def _summarize_branch_sizes(repo_dir):
             stderr=subprocess.DEVNULL,
             text=True,
         )
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):
         return {'mean': 0, '50%': 0, 'max': 0, 'branch_count': 0}, []
 
-    sizes = []
-    details = []
+    sizes: list[int] = []
+    details: list[JsonObject] = []
     for branch in [line.strip() for line in raw.splitlines() if line.strip()]:
         try:
             merge_base = subprocess.check_output(
@@ -72,7 +77,7 @@ def _summarize_branch_sizes(repo_dir):
                     text=True,
                 ).strip()
             )
-        except Exception:
+        except (OSError, subprocess.CalledProcessError, ValueError):
             continue
         sizes.append(unique)
         details.append({'branch': branch, 'unique_commits': unique})
@@ -85,19 +90,23 @@ def _summarize_branch_sizes(repo_dir):
         'max': float(ordered[-1]),
         'branch_count': len(ordered),
     }
-    details.sort(key=lambda row: row['unique_commits'], reverse=True)
+    details.sort(key=lambda row: int(row['unique_commits']), reverse=True)
     return summary, details[:20]
 
 
-def compute_monthly_velocity(sinex_dir):
+def _month_row() -> JsonObject:
+    return {'lines': 0, 'commits': 0, 'files': set()}
+
+
+def compute_monthly_velocity(sinex_dir: str) -> list[JsonObject]:
     """
     Computes monthly velocity for sinex (lines added to .rs files).
     Returns sorted list of {month, lines, commits, files_touched}.
     """
     print("Computing sinex monthly velocity...")
-    months = defaultdict(lambda: {'lines': 0, 'commits': 0, 'files': set()})
+    months: dict[str, JsonObject] = defaultdict(_month_row)
 
-    cur_month = None
+    cur_month: str | None = None
     for line in git.get_log(sinex_dir, branch="HEAD",
                             params=['--pretty=format:COMMIT|%aI', '--numstat']):
         line = line.strip()
@@ -116,20 +125,20 @@ def compute_monthly_velocity(sinex_dir):
             fp = parts[2]
             if fp.endswith('.rs') and 'target/' not in fp:
                 months[cur_month]['lines'] += ins
-                months[cur_month]['files'].add(fp)
+                cast(set[str], months[cur_month]['files']).add(fp)
 
-    result = []
+    result: list[JsonObject] = []
     for month, data in sorted(months.items()):
         result.append({
             'month': month,
             'lines': data['lines'],
             'commits': data['commits'],
-            'files_touched': len(data['files']),
+            'files_touched': len(cast(set[str], data['files'])),
         })
     return result
 
 
-def compute_crate_growth(sinex_dir):
+def compute_crate_growth(sinex_dir: str) -> dict[str, list[JsonObject]]:
     """
     For each crate, computes monthly line additions.
     Returns dict: crate_name -> [{month, lines}].
@@ -137,7 +146,7 @@ def compute_crate_growth(sinex_dir):
     print("Computing per-crate growth...")
 
     # Find crate dirs
-    crate_dirs = {}
+    crate_dirs: dict[str, str] = {}
     for root, dirs, files in os.walk(sinex_dir):
         if '.git' in root or 'target' in root:
             continue
@@ -151,12 +160,12 @@ def compute_crate_growth(sinex_dir):
                         if m:
                             crate_dirs[rel] = m.group(1)
                             break
-            except Exception:
+            except OSError:
                 crate_dirs[rel] = rel
 
     # Parse log
-    crate_months = {name: defaultdict(int) for name in crate_dirs.values()}
-    cur_month = None
+    crate_months: dict[str, dict[str, int]] = {name: defaultdict(int) for name in crate_dirs.values()}
+    cur_month: str | None = None
 
     for line in git.get_log(sinex_dir, branch="HEAD",
                             params=['--pretty=format:COMMIT|%aI', '--numstat']):
@@ -180,7 +189,7 @@ def compute_crate_growth(sinex_dir):
                     crate_months[crate_name][cur_month] += ins
                     break
 
-    result = {}
+    result: dict[str, list[JsonObject]] = {}
     for crate_name, months in crate_months.items():
         if not months:
             continue
@@ -191,7 +200,7 @@ def compute_crate_growth(sinex_dir):
     return result
 
 
-def compute_sinex_stats(sinex_dir):
+def compute_sinex_stats(sinex_dir: str) -> JsonObject:
     """
     Aggregated sinex development statistics.
     """
@@ -199,13 +208,13 @@ def compute_sinex_stats(sinex_dir):
 
     # Total commits
     total_commits = 0
-    first_date = None
-    last_date = None
-    active_days = set()
-    files_per_commit = []
-    churn_per_commit = []
-    commit_type_counts = defaultdict(int)
-    area_touches = defaultdict(int)
+    first_date: str | None = None
+    last_date: str | None = None
+    active_days: set[str] = set()
+    files_per_commit: list[int] = []
+    churn_per_commit: list[int] = []
+    commit_type_counts: Counter[str] = Counter()
+    area_touches: Counter[str] = Counter()
     cur_files = 0
     cur_churn = 0
 

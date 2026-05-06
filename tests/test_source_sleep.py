@@ -1,12 +1,11 @@
 """Tests for sources/sleep.py."""
 
 import json
-from datetime import date, datetime
+from datetime import date
 from types import SimpleNamespace
 
 from lynchpin.sources.sleep import (
     SleepEntry,
-    SleepSegment,
     SleepMetrics,
     entries,
     sleep_architecture,

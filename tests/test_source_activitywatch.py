@@ -3,13 +3,10 @@
 These are unit tests using synthetic data, not live DB queries.
 """
 
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timezone
 from lynchpin.sources.activitywatch import (
-    FocusSpan, AppSession, DeepWorkBlock, CircadianProfile,
-    FocusLoop, FragmentationMetrics, AttentionMetrics,
-    _merge_adjacent, _focus_stretches, _session_ctx, _deep_compatible,
+    FocusSpan, AppSession, _merge_adjacent, _focus_stretches, _session_ctx, _deep_compatible,
 )
-from lynchpin.core.primitives import TopN, group_by_gap
 
 UTC = timezone.utc
 def dt(h, m=0, s=0): return datetime(2026, 3, 15, h, m, s, tzinfo=UTC)

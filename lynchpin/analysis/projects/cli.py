@@ -6,15 +6,8 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from .bundles import BUNDLE_ROOT, DEFAULT_LOGS_COUNT, build_project_bundles
-from .rich_bundles import (
-    DEFAULT_PATCH_COMMITS,
-    DEFAULT_PATCH_WINDOW,
-    DEFAULT_SUMMARY_WINDOW,
-    RICH_BUNDLE_ROOT,
-    build_rich_project_bundles,
-)
 from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
+from ..core.io import resolve_analysis_path
 
 
 def _split_names(value: str) -> list[str] | None:
@@ -31,16 +24,9 @@ def _parse_bool(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"invalid boolean value: {value!r}")
 
 
-def _parse_optional_int(value: str) -> int | None:
-    stripped = value.strip()
-    if not stripped:
-        return None
-    return int(stripped)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Project analysis materializers for velocity and context bundles.",
+        description="Project analysis materializers for velocity and chisel snapshots.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -64,55 +50,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_bool,
         default=True,
         help="Whether to include the all-projects aggregate view.",
-    )
-
-    bundles = subparsers.add_parser(
-        "bundles",
-        help="Build repomix-backed project context bundles.",
-    )
-    bundles.add_argument("--output-root", type=Path, default=BUNDLE_ROOT)
-    bundles.add_argument(
-        "--projects",
-        default="",
-        help="Whitespace-separated project names to include.",
-    )
-    bundles.add_argument("--logs-count", type=int, default=DEFAULT_LOGS_COUNT)
-    bundles.add_argument(
-        "--include-diffs",
-        type=_parse_bool,
-        default=False,
-        help="Whether to include working-tree diffs in bundle output.",
-    )
-    bundles.add_argument(
-        "--include-compressed",
-        type=_parse_bool,
-        default=True,
-        help="Whether to emit the compressed bundle variant.",
-    )
-
-    rich = subparsers.add_parser(
-        "rich-bundles",
-        help="Build slice-aware rich project bundles with git history shards.",
-    )
-    rich.add_argument("--output-root", type=Path, default=RICH_BUNDLE_ROOT)
-    rich.add_argument(
-        "--projects",
-        default="",
-        help="Whitespace-separated project names to include.",
-    )
-    rich.add_argument("--patch-window", type=int, default=DEFAULT_PATCH_WINDOW)
-    rich.add_argument("--summary-window", type=int, default=DEFAULT_SUMMARY_WINDOW)
-    rich.add_argument(
-        "--patch-commits",
-        type=_parse_optional_int,
-        default=DEFAULT_PATCH_COMMITS,
-        help="Recent commit count for high-resolution patch shards; empty means full history.",
-    )
-    rich.add_argument(
-        "--summary-commits",
-        type=_parse_optional_int,
-        default=None,
-        help="Recent commit count for summary shards; empty means full history.",
     )
 
     chisel = subparsers.add_parser(
@@ -142,6 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_analysis_commands(subparsers: argparse._SubParsersAction) -> None:
+    cmd_cross = subparsers.add_parser('cross', help='Cross-project metric analysis')
+    cmd_cross.add_argument('--base_dir', default='/realm/project')
+    cmd_cross.add_argument('--out', default=None)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -161,31 +104,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Velocity dashboard written to {args.output}")
         else:
             print("Velocity dashboard unchanged or no repositories produced history.")
-        return 0
-
-    if args.command == "bundles":
-        index = build_project_bundles(
-            output_root=args.output_root,
-            project_names=_split_names(args.projects),
-            logs_count=args.logs_count,
-            include_diffs=args.include_diffs,
-            include_compressed=args.include_compressed,
-            log=print,
-        )
-        print(f"Project bundle index written to {Path(index['output_root']) / 'index.json'}")
-        return 0
-
-    if args.command == "rich-bundles":
-        index = build_rich_project_bundles(
-            output_root=args.output_root,
-            project_names=_split_names(args.projects),
-            patch_window=args.patch_window,
-            summary_window=args.summary_window,
-            patch_commits=args.patch_commits,
-            summary_commits=args.summary_commits,
-            log=print,
-        )
-        print(f"Rich project bundle index written to {Path(index['output_root']) / 'index.json'}")
         return 0
 
     if args.command == "chisel":
@@ -213,3 +131,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def run_analysis_command(args: argparse.Namespace) -> int | None:
+    if args.command == 'cross':
+        from . import metrics as project_metrics
+
+        out = args.out or resolve_analysis_path('cross_project_metrics.json')
+        project_metrics.run_cross_project(args.base_dir, out)
+        return 0
+
+    return None

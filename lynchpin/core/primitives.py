@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, date
 from typing import Callable, Generic, Iterable, Iterator, Sequence, TypeVar
@@ -23,24 +23,26 @@ class TopN:
 
     def __init__(self, n: int = 5) -> None:
         self._n = n
-        self._counts: Counter[str] = Counter()
+        self._counts: defaultdict[str, float] = defaultdict(float)
 
     def add(self, key: str, weight: float = 1.0) -> None:
         self._counts[key] += weight
 
     def merge(self, other: TopN) -> TopN:
         result = TopN(self._n)
-        result._counts = self._counts + other._counts
+        result._counts = defaultdict(float, self._counts)
+        for key, value in other._counts.items():
+            result._counts[key] += value
         return result
 
     @property
     def dominant(self) -> str | None:
-        top = self._counts.most_common(1)
+        top = self.items[:1]
         return top[0][0] if top else None
 
     @property
     def items(self) -> tuple[tuple[str, float], ...]:
-        return tuple(self._counts.most_common(self._n))
+        return tuple(sorted(self._counts.items(), key=lambda item: item[1], reverse=True)[: self._n])
 
     @property
     def total(self) -> float:
@@ -95,7 +97,7 @@ def group_by_gap(
 
         if gap <= max_gap and compatible(current[-1], item):
             current.append(item)
-            if item_end > current_end:
+            if current_end is None or item_end > current_end:
                 current_end = item_end
         elif (
             absorb_interruption > 0
@@ -103,9 +105,11 @@ def group_by_gap(
         ):
             current.append(item)
             interruptions += 1
-            if item_end > current_end:
+            if current_end is None or item_end > current_end:
                 current_end = item_end
         else:
+            if current_start is None or current_end is None:
+                continue
             yield Group(items=current, start=current_start, end=current_end, interruptions=interruptions)
             current = [item]
             current_start = item_start
@@ -113,6 +117,8 @@ def group_by_gap(
             interruptions = 0
 
     if current:
+        if current_start is None or current_end is None:
+            return
         yield Group(items=current, start=current_start, end=current_end, interruptions=interruptions)
 
 

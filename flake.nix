@@ -36,7 +36,8 @@
           if pkgs ? fetchFromGitHub then
             pkgs.fetchFromGitHub
           else
-            (args:
+            (
+              args:
               let
                 hash = args.hash or args.sha256;
               in
@@ -44,7 +45,8 @@
                 url = "https://github.com/${args.owner}/${args.repo}.git";
                 rev = args.rev;
                 inherit hash;
-              });
+              }
+            );
 
         # Package Python deps not in nixpkgs
         pythonPackagesOverlay = final: prev: {
@@ -139,12 +141,12 @@
               sha256 = "sha256-gSY5eP5a5dDzie7yl21wmOz3K/uAcC3ErSxZ1TJl7Ww=";
             };
             postPatch = ''
-              if [ ! -f requirements.txt ]; then
-                cat > requirements.txt <<'EOF'
-click>=8.0
-logzero
-EOF
-              fi
+                            if [ ! -f requirements.txt ]; then
+                              cat > requirements.txt <<'EOF'
+              click>=8.0
+              logzero
+              EOF
+                            fi
             '';
             propagatedBuildInputs = with final; [
               click
@@ -218,14 +220,14 @@ EOF
               sha256 = "sha256-OIVSC1ddO4T6AcvTxZ8zTFOTOQTUZnAlUfK+YaL1IqY=";
             };
             postPatch = ''
-              if [ ! -f requirements.txt ]; then
-                cat > requirements.txt <<'EOF'
-logzero
-backoff
-requests
-click
-EOF
-              fi
+                            if [ ! -f requirements.txt ]; then
+                              cat > requirements.txt <<'EOF'
+              logzero
+              backoff
+              requests
+              click
+              EOF
+                            fi
             '';
             propagatedBuildInputs = with final; [
               logzero
@@ -513,7 +515,14 @@ EOF
               sha256 = "0yh563yrqvzr4y3py6bm3csa4nq8rrx6qhlmhi0h6vfvfy4i1rpp";
             };
             propagatedBuildInputs = with prev; [
-              anyio httpx httpx-sse pydantic starlette sse-starlette pydantic-settings uvicorn
+              anyio
+              httpx
+              httpx-sse
+              pydantic
+              starlette
+              sse-starlette
+              pydantic-settings
+              uvicorn
             ];
             doCheck = false;
           };
@@ -528,7 +537,10 @@ EOF
             };
             nativeBuildInputs = with prev; [ hatchling ];
             # mcp defined in the same overlay — must reference via final, not prev
-            propagatedBuildInputs = [ prev.anyio final.mcp ];
+            propagatedBuildInputs = [
+              prev.anyio
+              final.mcp
+            ];
             doCheck = false;
           };
         };
@@ -545,6 +557,8 @@ EOF
             jupyterlab
             matplotlib
             markdown
+            mypy
+            types-pyyaml
             numpy
             pandas
             polars

@@ -14,8 +14,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional
 
-from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
+from ..core.projects import canonical_project_name
 from ..core.primitives import TopN, group_by_gap, date_to_dt_range
 
 __all__ = [
@@ -80,9 +80,11 @@ def commands(*, start: Optional[datetime] = None, end: Optional[datetime] = None
         clauses: List[str] = []
         params: List[object] = []
         if start:
-            clauses.append("timestamp >= ?"); params.append(_to_unit(start, unit))
+            clauses.append("timestamp >= ?")
+            params.append(_to_unit(start, unit))
         if end:
-            clauses.append("timestamp < ?"); params.append(_to_unit(end, unit))
+            clauses.append("timestamp < ?")
+            params.append(_to_unit(end, unit))
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY timestamp"
@@ -130,15 +132,19 @@ def shell_sessions(*, start: datetime, end: datetime, gap_seconds: float = 300) 
 
 def _extract_project(cwd: str) -> Optional[str]:
     m = _PROJECT_RE.search(cwd)
-    return m.group(1) if m else None
+    return canonical_project_name(m.group(1)) if m else None
 
 
 def _categorise_command(cwd: str) -> str:
     lowered = cwd.strip().lower()
-    if "project/sinex" in lowered or lowered.rstrip("/").endswith("sinex"): return "development:sinex"
-    if "sinnix" in lowered: return "infrastructure:sinnix"
-    if "/realm/project/" in lowered: return "development:other"
-    if lowered.startswith(("/realm/home", "/home")): return "home"
+    if "project/sinex" in lowered or lowered.rstrip("/").endswith("sinex"):
+        return "development:sinex"
+    if "sinnix" in lowered:
+        return "infrastructure:sinnix"
+    if "/realm/project/" in lowered:
+        return "development:other"
+    if lowered.startswith(("/realm/home", "/home")):
+        return "home"
     return "misc"
 
 
@@ -198,22 +204,30 @@ def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
 
 def _detect_unit(conn: sqlite3.Connection) -> str:
     row = conn.execute("SELECT timestamp FROM history ORDER BY timestamp DESC LIMIT 1").fetchone()
-    if not row: return "s"
+    if not row:
+        return "s"
     v = int(row[0])
-    if v > 10**14: return "ns"
-    if v > 10**11: return "ms"
+    if v > 10**14:
+        return "ns"
+    if v > 10**11:
+        return "ms"
     return "s"
 
 def _to_unit(dt: datetime, unit: str) -> int:
     ts = dt.astimezone(timezone.utc).timestamp()
-    if unit == "ns": return int(ts * 1_000_000_000)
-    if unit == "ms": return int(ts * 1_000)
+    if unit == "ns":
+        return int(ts * 1_000_000_000)
+    if unit == "ms":
+        return int(ts * 1_000)
     return int(ts)
 
 def _from_unit(value: int, unit: str) -> datetime:
-    if unit == "ns": seconds = value / 1_000_000_000
-    elif unit == "ms": seconds = value / 1_000
-    else: seconds = value
+    if unit == "ns":
+        seconds = value / 1_000_000_000
+    elif unit == "ms":
+        seconds = value / 1_000
+    else:
+        seconds = value
     return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
 
@@ -238,7 +252,6 @@ class DailyTerminalActivity:
 def daily_terminal_activity(*, start: date, end: date) -> list[DailyTerminalActivity]:
     """Daily terminal usage: commands, errors, projects, command categories."""
     from collections import defaultdict
-    from ..core.primitives import TopN
 
     s_dt, e_dt = date_to_dt_range(start, end)
     sessions = shell_sessions(start=s_dt, end=e_dt)

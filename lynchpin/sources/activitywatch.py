@@ -17,19 +17,18 @@ import functools
 import json
 import math
 import sqlite3
+from collections import defaultdict
 from bisect import bisect_left
-from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Sequence
+from typing import Any, Dict, Iterator, Optional, Sequence, TypeVar
 
-from ..core.cache import file_signature, persistent_cache
-from ..core.classify import classify, Attribution
+from ..core.classify import classify
 from ..core.title_features import extract_title_features
 from ..core.config import get_config
 from ..core.primitives import (
-    TopN, Group, group_by_gap,
+    TopN, group_by_gap,
     merge_intervals, intersect_intervals, split_by_day, split_by_hour, duration_s,
     Interval,
 )
@@ -38,6 +37,7 @@ from ..core.parse import as_local
 __all__ = [
     "AWEvent",
     "FocusSpan",
+    "ProjectFocusDay",
     "FocusTimelineSpan",
     "AppSession",
     "DeepWorkBlock",
@@ -53,6 +53,7 @@ __all__ = [
     "afk_intervals",
     "active_seconds_by_date",
     "focus_spans",
+    "project_focus_days",
     "focus_timeline",
     "app_sessions",
     "deep_work",
@@ -109,9 +110,9 @@ def events(
             yield AWEvent(bucket=bucket, start=s, end=e, data=data)
 
 
-def window_events(**kw) -> Iterator[AWEvent]: return events("aw-watcher-window_", **kw)
-def afk_events(**kw) -> Iterator[AWEvent]: return events("aw-watcher-afk_", **kw)
-def web_events(**kw) -> Iterator[AWEvent]: return events("aw-watcher-web_", **kw)
+def window_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-window_", **kw)
+def afk_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-afk_", **kw)
+def web_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-web_", **kw)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -175,6 +176,13 @@ class FocusSpan:
 
 
 @dataclass(frozen=True)
+class ProjectFocusDay:
+    date: date
+    project: str
+    duration_s: float
+
+
+@dataclass(frozen=True)
 class FocusTimelineSpan:
     start: datetime
     end: datetime
@@ -196,6 +204,9 @@ class FocusTimelineSpan:
         return self.start.date()
 
 
+_FocusCountSpan = TypeVar("_FocusCountSpan", FocusSpan, FocusTimelineSpan)
+
+
 @dataclass(frozen=True)
 class _WindowSpan:
     start: datetime
@@ -211,6 +222,22 @@ def focus_spans(*, start: datetime, end: datetime, min_duration_s: float = 0.0) 
     return list(_focus_spans_cached(as_local(start), as_local(end), min_duration_s))
 
 
+def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDay]:
+    """Aggregate focused ActivityWatch window time by logical day and project."""
+    active = active_intervals(start, end)
+    totals: dict[tuple[date, str], float] = defaultdict(float)
+    for window in _window_spans(as_local(start), as_local(end), active=active, min_duration_s=0.0):
+        if not window.project:
+            continue
+        for day, segment in split_by_day(window.start, window.end):
+            totals[(day, window.project)] += duration_s(segment)
+    return [
+        ProjectFocusDay(date=day, project=project, duration_s=round(seconds, 3))
+        for (day, project), seconds in sorted(totals.items())
+        if seconds > 0
+    ]
+
+
 @functools.lru_cache(maxsize=16)
 def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple[FocusSpan, ...]:
     active = active_intervals(start, end)
@@ -220,11 +247,14 @@ def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple
     # Collect all boundary points
     boundaries = {start, end}
     for s, e in active:
-        boundaries.add(max(s, start)); boundaries.add(min(e, end))
+        boundaries.add(max(s, start))
+        boundaries.add(min(e, end))
     for s, e in afk:
-        boundaries.add(max(s, start)); boundaries.add(min(e, end))
+        boundaries.add(max(s, start))
+        boundaries.add(min(e, end))
     for w in windows:
-        boundaries.add(max(w.start, start)); boundaries.add(min(w.end, end))
+        boundaries.add(max(w.start, start))
+        boundaries.add(min(w.end, end))
     # Day boundaries
     cursor = datetime.combine(start.date(), time.min, tzinfo=start.tzinfo) + timedelta(days=1)
     while cursor < end:
@@ -385,6 +415,7 @@ def _window_spans(
     iv_idx = 0
     start_local = as_local(start)
     end_local = as_local(end)
+    classification_cache: dict[tuple[str, str, str, str], tuple[str | None, str | None]] = {}
     for evt_start, evt_end, evt in timed:
         if not evt.data.get("app"):
             continue
@@ -392,17 +423,24 @@ def _window_spans(
         if title.lower() == "application not responding":
             continue
         app = str(evt.data["app"])
-        attr = classify(app=app, title=title, cwd=str(evt.data.get("cwd") or ""),
-                        url=str(evt.data.get("url") or ""), source="activitywatch.window")
-        # Enrich with title feature extraction — better project + AI detection
-        feat = extract_title_features(app, title)
-        project = attr.project or feat.project
-        mode = attr.mode if attr.mode != "unknown" else None
-        # Title features can improve mode when classify returns unknown
-        if mode is None and feat.domain_category:
-            mode = feat.domain_category
-        if mode is None and feat.is_ai_tool:
-            mode = "coding"
+        cwd = str(evt.data.get("cwd") or "")
+        url = str(evt.data.get("url") or "")
+        cache_key = (app, title, cwd, url)
+        cached = classification_cache.get(cache_key)
+        if cached is None:
+            attr = classify(app=app, title=title, cwd=cwd, url=url, source="activitywatch.window")
+            # Enrich with title feature extraction — better project + AI detection
+            feat = extract_title_features(app, title)
+            project = attr.project or feat.project
+            mode = attr.mode if attr.mode != "unknown" else None
+            # Title features can improve mode when classify returns unknown
+            if mode is None and feat.domain_category:
+                mode = feat.domain_category
+            if mode is None and feat.is_ai_tool:
+                mode = "coding"
+            cached = (mode, project)
+            classification_cache[cache_key] = cached
+        mode, project = cached
         if active is None:
             overlaps = [(max(evt_start, start_local), min(evt_end, end_local))]
         else:
@@ -489,13 +527,13 @@ def _count_presses_in_intervals(
 
 
 def _attach_keypress_counts(
-    spans: Sequence[FocusSpan | FocusTimelineSpan],
+    spans: Sequence[_FocusCountSpan],
     *,
     start: datetime,
     end: datetime,
     keylog_state: str | None = None,
     press_times: Sequence[datetime] | None = None,
-) -> list[FocusSpan | FocusTimelineSpan]:
+) -> list[_FocusCountSpan]:
     if not spans:
         return []
     if press_times is None or keylog_state is None:
@@ -639,14 +677,17 @@ def app_sessions(*, start: datetime, end: datetime, min_duration_s: float = 60) 
         title_dur: dict[str, float] = {}
         for s in g.items:
             d = s.duration_s
-            if s.mode: modes.add(s.mode, d)
-            if s.project: projects.add(s.project, d)
-            title_dur[s.title] = title_dur.get(s.title, 0) + d
-        top_title = max(title_dur, key=title_dur.get) if title_dur else ""
+            if s.mode:
+                modes.add(s.mode, d)
+            if s.project:
+                projects.add(s.project, d)
+            title = s.title or ""
+            title_dur[title] = title_dur.get(title, 0) + d
+        top_title = max(title_dur, key=lambda title: title_dur[title]) if title_dur else ""
         sessions.append(AppSession(
-            app=g.items[0].app, start=g.start, end=g.end, duration_s=round(wall, 3),
+            app=g.items[0].app or "", start=g.start, end=g.end, duration_s=round(wall, 3),
             title_dominant=top_title,
-            titles=tuple(sorted(title_dur, key=title_dur.get, reverse=True)),
+            titles=tuple(sorted(title_dur, key=lambda title: title_dur[title], reverse=True)),
             mode=modes.dominant, project=projects.dominant, interruptions=g.interruptions,
         ))
     return sessions
@@ -682,8 +723,10 @@ def deep_work(*, start: datetime, end: datetime, min_minutes: float = 30, max_in
         if wall / 60 >= min_minutes and ratio >= (1 - max_interruption_ratio):
             modes, projects = TopN(1), TopN(1)
             for s in g.items:
-                if s.mode: modes.add(s.mode, s.duration_s)
-                if s.project: projects.add(s.project, s.duration_s)
+                if s.mode:
+                    modes.add(s.mode, s.duration_s)
+                if s.project:
+                    projects.add(s.project, s.duration_s)
             switches = sum(1 for a, b in zip(g.items, g.items[1:]) if a.app != b.app)
             blocks.append(DeepWorkBlock(
                 start=g.start, end=g.end, duration_min=round(wall / 60, 1),
@@ -694,8 +737,10 @@ def deep_work(*, start: datetime, end: datetime, min_minutes: float = 30, max_in
 
 
 def _deep_compatible(a: AppSession, b: AppSession) -> bool:
-    if a.project and b.project: return a.project == b.project
-    if a.mode and b.mode: return a.mode == b.mode and a.mode in _PRODUCTIVE_MODES
+    if a.project and b.project:
+        return a.project == b.project
+    if a.mode and b.mode:
+        return a.mode == b.mode and a.mode in _PRODUCTIVE_MODES
     return False
 
 
@@ -725,8 +770,10 @@ def circadian(*, start: date, end: date) -> list[CircadianProfile]:
                 recovery += mins
             else:
                 active += mins
-                if span.mode: modes.add(span.mode, mins)
-                if span.project: projects.add(span.project, mins)
+                if span.mode:
+                    modes.add(span.mode, mins)
+                if span.project:
+                    projects.add(span.project, mins)
             buckets[key] = (modes, projects, active, recovery)
     result: list[CircadianProfile] = []
     for (d, h), (modes, projects, active, recovery) in sorted(buckets.items()):
@@ -764,18 +811,22 @@ def loops(*, start: datetime, end: datetime, min_spans: int = 4, max_gap: float 
         while i <= len(ds) - min_spans:
             first, second = ds[i], ds[i + 1] if i + 1 < len(ds) else None
             if second is None or _ctx(first) == _ctx(second):
-                i += 1; continue
+                i += 1
+                continue
             if (second.start - first.end).total_seconds() > max_gap:
-                i += 1; continue
+                i += 1
+                continue
             ctx_a, ctx_b = _ctx(first), _ctx(second)
             collected = [first, second]
             expected = ctx_a
             j = i + 2
             while j < len(ds):
                 span = ds[j]
-                if (span.start - collected[-1].end).total_seconds() > max_gap: break
+                if (span.start - collected[-1].end).total_seconds() > max_gap:
+                    break
                 ctx = _ctx(span)
-                if ctx not in {ctx_a, ctx_b} or ctx != expected: break
+                if ctx not in {ctx_a, ctx_b} or ctx != expected:
+                    break
                 collected.append(span)
                 expected = ctx_b if expected == ctx_a else ctx_a
                 j += 1
@@ -784,7 +835,8 @@ def loops(*, start: datetime, end: datetime, min_spans: int = 4, max_gap: float 
                 if dur >= 8:
                     projects = TopN(1)
                     for s in collected:
-                        if s.project: projects.add(s.project, s.duration_s)
+                        if s.project:
+                            projects.add(s.project, s.duration_s)
                     result.append(FocusLoop(
                         date=day, start=collected[0].start, end=collected[-1].end,
                         duration_min=round(dur, 1), span_count=len(collected),
@@ -793,7 +845,8 @@ def loops(*, start: datetime, end: datetime, min_spans: int = 4, max_gap: float 
                         context_b=f"{second.app}::{second.title}",
                         dominant_project=projects.dominant,
                     ))
-                    i = j; continue
+                    i = j
+                    continue
             i += 1
     return result
 
@@ -824,9 +877,11 @@ def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
 
     result: list[FragmentationMetrics] = []
     for day, ds in sorted(by_day.items()):
-        if len(ds) < 2: continue
+        if len(ds) < 2:
+            continue
         stretches = _focus_stretches(ds)
-        if not stretches: continue
+        if not stretches:
+            continue
         longest = max(stretches)
         total = sum(stretches)
         result.append(FragmentationMetrics(
@@ -839,7 +894,8 @@ def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
 
 
 def _focus_stretches(sessions: Sequence[AppSession]) -> list[float]:
-    if not sessions: return []
+    if not sessions:
+        return []
     stretches: list[float] = []
     key = _session_ctx(sessions[0])
     mins = sessions[0].duration_s / 60
@@ -859,8 +915,10 @@ def _focus_stretches(sessions: Sequence[AppSession]) -> list[float]:
 
 
 def _session_ctx(s: AppSession) -> str:
-    if s.project: return f"project:{s.project}"
-    if s.mode: return f"mode:{s.mode}"
+    if s.project:
+        return f"project:{s.project}"
+    if s.mode:
+        return f"mode:{s.mode}"
     return f"app:{s.app}"
 
 
@@ -882,20 +940,22 @@ def attention(*, start: date, end: date) -> list[AttentionMetrics]:
     spans = focus_spans(start=s, end=e, min_duration_s=60)
     by_day: dict[date, dict[str, float]] = {}
     for span in spans:
-        if span.kind != "focused" or not span.project: continue
+        if span.kind != "focused" or not span.project:
+            continue
         bucket = by_day.setdefault(span.date, {})
         bucket[span.project] = bucket.get(span.project, 0) + span.duration_s
 
     result: list[AttentionMetrics] = []
     for day, projects in sorted(by_day.items()):
-        if not projects: continue
+        if not projects:
+            continue
         total = sum(projects.values())
         probs = [v / total for v in projects.values()]
         entropy = -sum(p * math.log2(p) for p in probs if p > 0)
         sorted_vals = sorted(projects.values())
         n = len(sorted_vals)
         gini = (2 * sum((i + 1) * v for i, v in enumerate(sorted_vals)) / (n * total) - (n + 1) / n) if n > 0 and total > 0 else 0
-        top = max(projects, key=projects.get)
+        top = max(projects, key=lambda project: projects[project])
         result.append(AttentionMetrics(date=day, entropy=round(entropy, 3), gini=round(gini, 3), top_project=top, project_count=n))
     return result
 
@@ -935,8 +995,10 @@ def sustained_focus(*, start: datetime, end: datetime, min_minutes: float = 25) 
             continue
         modes, projects = TopN(1), TopN(1)
         for s in g.items:
-            if s.mode: modes.add(s.mode, s.duration_s)
-            if s.project: projects.add(s.project, s.duration_s)
+            if s.mode:
+                modes.add(s.mode, s.duration_s)
+            if s.project:
+                projects.add(s.project, s.duration_s)
         switches = sum(1 for a, b in zip(g.items, g.items[1:]) if a.app != b.app)
         blocks.append(SustainedFocus(
             start=g.start, end=g.end, duration_min=round(wall / 60, 1),

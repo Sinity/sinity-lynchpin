@@ -1,9 +1,8 @@
 """Tests for sources/terminal.py — Atuin commands, shell sessions, recordings."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from lynchpin.sources.terminal import (
-    AtuinCommand, ShellSession, TerminalRecording,
-    _extract_project, _categorise_command, _detect_unit, _to_unit, _from_unit,
+    _extract_project, _categorise_command, _to_unit, _from_unit,
 )
 
 UTC = timezone.utc
@@ -18,6 +17,12 @@ class TestExtractProject:
 
     def test_lynchpin(self):
         assert _extract_project("/realm/project/sinity-lynchpin") == "sinity-lynchpin"
+
+    def test_rejects_inactive_namespace_as_project(self):
+        assert _extract_project("/realm/project/_inactive/codex") is None
+
+    def test_target_vision(self):
+        assert _extract_project("/realm/project/sinex-target-vision") == "sinex-target-vision"
 
 
 class TestCategorise:

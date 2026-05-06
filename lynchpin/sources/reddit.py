@@ -3,14 +3,15 @@ from __future__ import annotations
 import csv
 import logging
 from collections import Counter, defaultdict
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
 from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int
+from ..core.primitives import TopN
 
 logger = logging.getLogger(__name__)
 TextTokenizer = Callable[[str], Iterable[str]]
@@ -148,7 +149,7 @@ def summarize_activity(
     )
 
 
-def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> List[Path]:
+def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
     cfg = get_config()
@@ -159,14 +160,18 @@ def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> List[Path]
     return [target] if target.exists() else []
 
 
-def _path_sig(paths: Optional[Sequence[Path]], filename: str) -> Tuple[Tuple[str, ...], str]:
+def _path_sig(paths: Optional[Sequence[Path]], filename: str) -> object:
     resolved = _resolve_paths(paths, filename)
     return tuple(str(p) for p in resolved), files_signature(resolved)
 
 
-@persistent_cache("reddit_comments", depends_on=lambda paths=None: _path_sig(paths, "comments.csv"))
-def _load_comments(paths: Optional[Sequence[Path]]) -> List[RedditComment]:
-    comments: List[RedditComment] = []
+def _comments_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "comments.csv")
+
+
+@persistent_cache("reddit_comments", depends_on=_comments_sig)
+def _load_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditComment]:
+    comments: list[RedditComment] = []
     for path in _resolve_paths(paths, "comments.csv"):
         comments.extend(_read_comment_csv(path))
     return comments
@@ -176,9 +181,13 @@ def iter_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditComm
     yield from _load_comments(paths)
 
 
-@persistent_cache("reddit_posts", depends_on=lambda paths=None: _path_sig(paths, "posts.csv"))
-def _load_posts(paths: Optional[Sequence[Path]]) -> List[RedditPost]:
-    posts: List[RedditPost] = []
+def _posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "posts.csv")
+
+
+@persistent_cache("reddit_posts", depends_on=_posts_sig)
+def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
+    posts: list[RedditPost] = []
     for path in _resolve_paths(paths, "posts.csv"):
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
@@ -204,23 +213,25 @@ def iter_posts(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditPost]:
     yield from _load_posts(paths)
 
 
-@persistent_cache(
-    "reddit_saved_posts",
-    depends_on=lambda paths=None: _path_sig(paths, "saved_posts.csv"),
-)
-def _load_saved_posts(paths: Optional[Sequence[Path]]) -> List[RedditSavedItem]:
-    saved: List[RedditSavedItem] = []
+def _saved_posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "saved_posts.csv")
+
+
+@persistent_cache("reddit_saved_posts", depends_on=_saved_posts_sig)
+def _load_saved_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditSavedItem]:
+    saved: list[RedditSavedItem] = []
     for path in _resolve_paths(paths, "saved_posts.csv"):
         saved.extend(_read_saved_csv(path, "post"))
     return saved
 
 
-@persistent_cache(
-    "reddit_saved_comments",
-    depends_on=lambda paths=None: _path_sig(paths, "saved_comments.csv"),
-)
-def _load_saved_comments(paths: Optional[Sequence[Path]]) -> List[RedditSavedItem]:
-    saved: List[RedditSavedItem] = []
+def _saved_comments_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "saved_comments.csv")
+
+
+@persistent_cache("reddit_saved_comments", depends_on=_saved_comments_sig)
+def _load_saved_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditSavedItem]:
+    saved: list[RedditSavedItem] = []
     for path in _resolve_paths(paths, "saved_comments.csv"):
         saved.extend(_read_saved_csv(path, "comment"))
     return saved
@@ -234,23 +245,25 @@ def iter_saved_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[Redd
     yield from _load_saved_comments(paths)
 
 
-@persistent_cache(
-    "reddit_comment_votes",
-    depends_on=lambda paths=None: _path_sig(paths, "comment_votes.csv"),
-)
-def _load_comment_votes(paths: Optional[Sequence[Path]]) -> List[RedditVote]:
-    votes: List[RedditVote] = []
+def _comment_votes_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "comment_votes.csv")
+
+
+@persistent_cache("reddit_comment_votes", depends_on=_comment_votes_sig)
+def _load_comment_votes(paths: Optional[Sequence[Path]] = None) -> list[RedditVote]:
+    votes: list[RedditVote] = []
     for path in _resolve_paths(paths, "comment_votes.csv"):
         votes.extend(_read_vote_csv(path, "comment"))
     return votes
 
 
-@persistent_cache(
-    "reddit_post_votes",
-    depends_on=lambda paths=None: _path_sig(paths, "post_votes.csv"),
-)
-def _load_post_votes(paths: Optional[Sequence[Path]]) -> List[RedditVote]:
-    votes: List[RedditVote] = []
+def _post_votes_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    return _path_sig(paths, "post_votes.csv")
+
+
+@persistent_cache("reddit_post_votes", depends_on=_post_votes_sig)
+def _load_post_votes(paths: Optional[Sequence[Path]] = None) -> list[RedditVote]:
+    votes: list[RedditVote] = []
     for path in _resolve_paths(paths, "post_votes.csv"):
         votes.extend(_read_vote_csv(path, "post"))
     return votes
@@ -264,14 +277,14 @@ def iter_post_votes(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditVo
     yield from _load_post_votes(paths)
 
 
-def _message_paths(paths: Optional[Sequence[Path]] = None) -> List[Path]:
+def _message_paths(paths: Optional[Sequence[Path]] = None) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
     cfg = get_config()
     export_dir = cfg.reddit_export_dir
     if not export_dir:
         return []
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     for filename in ("messages_archive_headers.csv", "message_headers.csv"):
         path = export_dir / filename
         if path.exists():
@@ -279,15 +292,14 @@ def _message_paths(paths: Optional[Sequence[Path]] = None) -> List[Path]:
     return candidates
 
 
-@persistent_cache(
-    "reddit_message_headers",
-    depends_on=lambda paths=None: (
-        tuple(str(p) for p in _message_paths(paths)),
-        files_signature(_message_paths(paths)),
-    ),
-)
-def _load_message_headers(paths: Optional[Sequence[Path]]) -> List[RedditMessageHeader]:
-    messages: List[RedditMessageHeader] = []
+def _message_headers_sig(paths: Optional[Sequence[Path]] = None) -> object:
+    resolved = _message_paths(paths)
+    return tuple(str(p) for p in resolved), files_signature(resolved)
+
+
+@persistent_cache("reddit_message_headers", depends_on=_message_headers_sig)
+def _load_message_headers(paths: Optional[Sequence[Path]] = None) -> list[RedditMessageHeader]:
+    messages: list[RedditMessageHeader] = []
     for path in _message_paths(paths):
         messages.extend(_read_message_headers_csv(path))
     return messages
@@ -383,29 +395,41 @@ class RedditDayActivity:
     total_words: int
 
 
+@dataclass
+class _RedditDayBucket:
+    comments: int = 0
+    posts: int = 0
+    subs: TopN = field(default_factory=lambda: TopN(5))
+    words: int = 0
+
+
 def daily_activity(*, start: date, end: date) -> list[RedditDayActivity]:
     """Daily Reddit engagement: comments, posts, subreddits."""
     from collections import defaultdict
-    from ..core.primitives import TopN
 
-    by_day: dict[date, dict] = defaultdict(lambda: {"comments": 0, "posts": 0, "subs": TopN(5), "words": 0})
+    by_day: defaultdict[date, _RedditDayBucket] = defaultdict(_RedditDayBucket)
     for comment in iter_comments():
-        if comment.created is None: continue
+        if comment.created is None:
+            continue
         d = comment.created.date()
-        if d < start or d > end: continue
-        by_day[d]["comments"] += 1
-        by_day[d]["subs"].add(comment.subreddit or "unknown", 1)
-        by_day[d]["words"] += len(comment.body.split()) if comment.body else 0
+        if d < start or d > end:
+            continue
+        bucket = by_day[d]
+        bucket.comments += 1
+        bucket.subs.add(comment.subreddit or "unknown", 1)
+        bucket.words += len(comment.body.split()) if comment.body else 0
     for post in iter_posts():
-        if post.created is None: continue
+        if post.created is None:
+            continue
         d = post.created.date()
-        if d < start or d > end: continue
-        by_day[d]["posts"] += 1
+        if d < start or d > end:
+            continue
+        by_day[d].posts += 1
 
     return [
         RedditDayActivity(
-            date=d, comment_count=v["comments"], post_count=v["posts"],
-            top_subreddits=tuple(s for s, _ in v["subs"].items), total_words=v["words"],
+            date=d, comment_count=v.comments, post_count=v.posts,
+            top_subreddits=tuple(s for s, _ in v.subs.items), total_words=v.words,
         )
         for d, v in sorted(by_day.items())
     ]
@@ -416,9 +440,11 @@ def subreddit_distribution(*, start: date, end: date) -> list[tuple[str, int, fl
     from collections import Counter
     subs: Counter[str] = Counter()
     for comment in iter_comments():
-        if comment.created is None: continue
+        if comment.created is None:
+            continue
         d = comment.created.date()
-        if d < start or d > end: continue
+        if d < start or d > end:
+            continue
         subs[comment.subreddit or "unknown"] += 1
     total = sum(subs.values())
     return [(s, c, round(c / total * 100, 1)) for s, c in subs.most_common(20)] if total else []

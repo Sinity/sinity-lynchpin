@@ -168,14 +168,19 @@ def period_label(scale: Any, key: str) -> str:
 
 def key_for_date(scale: Any, value: date) -> str:
     n = normalize_scale(scale)
-    if n == "day": return value.isoformat()
+    if n == "day":
+        return value.isoformat()
     if n == "week":
         iso = value.isocalendar()
         return f"{iso.year}-W{iso.week:02d}"
-    if n == "month": return value.strftime("%Y-%m")
-    if n == "quarter": return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
-    if n == "half": return f"{value.year}-H{'1' if value.month <= 6 else '2'}"
-    if n == "year": return str(value.year)
+    if n == "month":
+        return value.strftime("%Y-%m")
+    if n == "quarter":
+        return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
+    if n == "half":
+        return f"{value.year}-H{'1' if value.month <= 6 else '2'}"
+    if n == "year":
+        return str(value.year)
     raise ValueError(f"Unsupported period scale: {scale!r}")
 
 
@@ -197,30 +202,36 @@ def period_keys_in_range(scale: Any, start: date, end: date) -> list[str]:
 
 def _parse_week_key(key: str) -> tuple[int, int]:
     m = re.fullmatch(r"(\d{4})-W(\d{1,2})", key)
-    if not m: raise ValueError(f"Invalid week key: {key}")
+    if not m:
+        raise ValueError(f"Invalid week key: {key}")
     year, week = int(m.group(1)), int(m.group(2))
     date.fromisocalendar(year, week, 1)
     return year, week
 
 def _parse_month_key(key: str) -> tuple[int, int]:
     m = re.fullmatch(r"(\d{4})-(\d{2})", key)
-    if not m: raise ValueError(f"Invalid month key: {key}")
+    if not m:
+        raise ValueError(f"Invalid month key: {key}")
     year, month = int(m.group(1)), int(m.group(2))
-    if not 1 <= month <= 12: raise ValueError(f"Invalid month key: {key}")
+    if not 1 <= month <= 12:
+        raise ValueError(f"Invalid month key: {key}")
     return year, month
 
 def _parse_quarter_key(key: str) -> tuple[int, int]:
     m = re.fullmatch(r"(\d{4})-Q([1-4])", key)
-    if not m: raise ValueError(f"Invalid quarter key: {key}")
+    if not m:
+        raise ValueError(f"Invalid quarter key: {key}")
     return int(m.group(1)), int(m.group(2))
 
 def _parse_half_key(key: str) -> tuple[int, str]:
     m = re.fullmatch(r"(\d{4})-(H[12])", key)
-    if not m: raise ValueError(f"Invalid half key: {key}")
+    if not m:
+        raise ValueError(f"Invalid half key: {key}")
     return int(m.group(1)), m.group(2)
 
 def _parse_year_key(key: str) -> int:
-    if not re.fullmatch(r"\d{4}", key): raise ValueError(f"Invalid year key: {key}")
+    if not re.fullmatch(r"\d{4}", key):
+        raise ValueError(f"Invalid year key: {key}")
     return int(key)
 
 def _month_end(year: int, month: int) -> date:

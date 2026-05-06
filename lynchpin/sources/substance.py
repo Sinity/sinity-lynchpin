@@ -7,13 +7,12 @@ Covers nootropics, stimulants, and other tracked substances with timestamps and 
 from __future__ import annotations
 
 import csv
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Optional
 
-from ..core.config import get_config
 
 __all__ = [
     "SubstanceEntry",

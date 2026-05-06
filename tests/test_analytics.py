@@ -5,7 +5,6 @@ import random
 from lynchpin.core.analytics import (
     detect_trend, detect_changepoints, detect_periodicity,
     cross_correlate, cluster_days, anomaly_score,
-    TrendResult, ChangePoint, PeriodicComponent, CorrelationResult, DayCluster, AnomalyResult,
 )
 
 

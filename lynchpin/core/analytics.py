@@ -10,9 +10,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass, field
-from datetime import date
-from itertools import combinations
-from typing import Optional, Sequence
+from typing import Sequence
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -110,11 +108,13 @@ def detect_trend(values: Sequence[float], *, min_samples: int = 7) -> TrendResul
     for i in range(n - 1):
         for j in range(i + 1, n):
             diff = values[j] - values[i]
-            if diff > 0: s += 1
-            elif diff < 0: s -= 1
+            if diff > 0:
+                s += 1
+            elif diff < 0:
+                s -= 1
 
     # Variance of S (with tie correction)
-    unique_vals = {}
+    unique_vals: dict[float, int] = {}
     for v in values:
         unique_vals[v] = unique_vals.get(v, 0) + 1
     tie_correction = sum(t * (t - 1) * (2 * t + 5) for t in unique_vals.values() if t > 1)
@@ -265,10 +265,14 @@ def detect_periodicity(values: Sequence[float], *, min_period: float = 2, max_pe
 
 
 def _period_label(period: float) -> str:
-    if 6.5 <= period <= 7.5: return "weekly"
-    if 13 <= period <= 15: return "biweekly"
-    if 28 <= period <= 32: return "monthly"
-    if 88 <= period <= 95: return "quarterly"
+    if 6.5 <= period <= 7.5:
+        return "weekly"
+    if 13 <= period <= 15:
+        return "biweekly"
+    if 28 <= period <= 32:
+        return "monthly"
+    if 88 <= period <= 95:
+        return "quarterly"
     return f"~{period:.0f}-day"
 
 
@@ -382,7 +386,7 @@ def cluster_days(
         for col, key in enumerate(all_keys):
             centroid[key] = round(statistics.mean(matrix[m][col] for m in members), 3)
         # Auto-label from top feature
-        top_feature = max(centroid, key=centroid.get) if centroid else "unknown"
+        top_feature = max(centroid, key=lambda key: centroid[key]) if centroid else "unknown"
         result.append(DayCluster(
             cluster_id=cid, label=f"cluster_{cid}_{top_feature}",
             size=len(members), centroid=centroid, members=members,
@@ -403,7 +407,7 @@ def _kmeans(matrix: list[list[float]], k: int, max_iter: int = 50) -> list[int]:
             centroids.append(matrix[random.randint(0, n - 1)][:])
             continue
         r = random.random() * total
-        cumsum = 0
+        cumsum = 0.0
         for i, d in enumerate(dists):
             cumsum += d
             if cumsum >= r:
@@ -533,7 +537,7 @@ def _t_test_p(t_stat: float, df: int) -> float:
         return 1.0
     try:
         from scipy.stats import t as t_dist  # type: ignore[import-untyped]
-        return 2 * t_dist.sf(abs(t_stat), df)
+        return float(2 * t_dist.sf(abs(t_stat), df))
     except ImportError:
         return 2 * norm_sf(abs(t_stat))
 
@@ -593,7 +597,7 @@ def _hmm_regimes(
 ) -> RegimeResult:
     """HMM regime detection using hmmlearn."""
     import numpy as np
-    from hmmlearn.hmm import GaussianHMM
+    from hmmlearn.hmm import GaussianHMM  # type: ignore[import-untyped]
 
     X = np.array(normed)
     model = GaussianHMM(
