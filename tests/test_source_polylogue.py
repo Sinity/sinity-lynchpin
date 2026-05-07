@@ -183,6 +183,26 @@ def test_session_profiles_derive_from_base_tables_when_products_empty(monkeypatc
     assert profiles[0].work_event_projects == ("sinity-lynchpin",)
 
 
+def test_session_profiles_derive_logical_day_from_base_tables(monkeypatch, tmp_path):
+    db = tmp_path / "polylogue.db"
+    _write_base_polylogue_db(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            UPDATE conversations
+            SET created_at = ?, updated_at = ?
+            WHERE conversation_id = ?
+            """,
+            ("2026-04-23T03:00:00+02:00", "2026-04-23T03:30:00+02:00", "codex:1"),
+        )
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(polylogue, "_cached_profiles", None)
+
+    profiles = list(polylogue.iter_session_profiles())
+
+    assert profiles[0].canonical_session_date == date(2026, 4, 22)
+
+
 def test_session_profiles_canonicalize_base_table_project_fragments(monkeypatch, tmp_path):
     db = tmp_path / "polylogue.db"
     _write_base_polylogue_db(db)

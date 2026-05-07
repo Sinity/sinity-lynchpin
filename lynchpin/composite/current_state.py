@@ -16,10 +16,11 @@ from typing import Sequence
 
 from ..core.projects import ALL_PROJECTS
 from ..core.projects import canonical_project_name
+from ..core.projects import project_path
 from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, fetch_issues, fetch_prs, repo_slug
 from ..sources.polylogue import PolylogueReadiness, archive_readiness
 from .evidence import CostClass, SourceReadinessReport
-from .evidence_graph import EvidenceGraph, build_evidence_graph, render_evidence_graph_summary
+from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph, render_evidence_graph_summary
 from .movement import MovementSummary, movement_summary, render_movement_summary
 from .source_readiness import render_source_readiness, source_readiness
 from .work_correlation import (
@@ -99,10 +100,7 @@ def project_inventory(
     """Return local project checkout state for registry and discovered repos."""
     candidates: dict[Path, tuple[str, bool]] = {}
     for name, entry in ALL_PROJECTS.items():
-        path = Path(entry.path)
-        if not path.is_absolute():
-            path = Path("/realm/project") / path
-        candidates[path.resolve()] = (name, entry.active)
+        candidates[project_path(name)] = (name, entry.active)
 
     if include_unregistered:
         for root in roots or (Path("/realm/project"),):
@@ -124,6 +122,8 @@ def active_project_inventory(*, max_age_days: int = 45) -> tuple[ProjectInventor
     for item in project_inventory():
         if not item.exists or not item.is_git_repo:
             continue
+        if not item.active_registry_entry and _is_inactive_path(item.path):
+            continue
         if item.active_registry_entry or item.dirty:
             items.append(item)
             continue
@@ -139,6 +139,7 @@ def project_github_frontier(
     *,
     open_limit: int = 100,
     closed_limit: int = 40,
+    closed_pr_limit: int = 40,
 ) -> tuple[ProjectGitHubFrontier, ...]:
     """Fetch open/recently closed GitHub work frontier for inventory items."""
     frontiers: list[ProjectGitHubFrontier] = []
@@ -152,6 +153,7 @@ def project_github_frontier(
             fetch_issues(item.path, state="open", limit=open_limit),
             fetch_issues(item.path, state="closed", limit=closed_limit),
             fetch_prs(item.path, state="open", limit=open_limit),
+            fetch_prs(item.path, state="closed", limit=closed_pr_limit),
         ):
             statuses.append(result.status)
             if result.reason:
@@ -322,6 +324,10 @@ def evidence_pack_markdown(pack: CurrentStateEvidencePack) -> str:
         "",
         analysis_products_markdown(pack.evidence_graph),
         "",
+        "## Analysis Claims",
+        "",
+        analysis_claims_markdown(pack.evidence_graph),
+        "",
         "## Correlation Coverage",
         "",
         render_work_correlation_summary(pack.correlation_summary),
@@ -360,19 +366,44 @@ def analysis_products_markdown(graph: EvidenceGraph) -> str:
     rows = tuple(node for node in graph.nodes if node.kind == "analysis_artifact")
     if not rows:
         return "_No generated analysis artifacts were surfaced._"
+    grouped: dict[str, list[EvidenceNode]] = {}
+    for node in rows:
+        payload = node.payload or {}
+        artifact = str(payload.get("name") or node.summary)
+        grouped.setdefault(artifact, []).append(node)
     lines = [
-        "| Project | Artifact | Kind | Generated | Brief | Keys |",
+        "| Artifact | Projects | Kind | Generated | Brief | Keys |",
         "|---|---|---|---|---|---|",
     ]
-    for node in sorted(rows, key=lambda item: (item.project or "", item.summary)):
+    for artifact, nodes in sorted(grouped.items()):
+        node = nodes[0]
         payload = node.payload or {}
         keys = payload.get("top_level_keys") or ()
         generated = payload.get("generated_at") or ""
-        artifact = str(payload.get("name") or node.summary).replace("|", "\\|")
+        artifact_cell = artifact.replace("|", "\\|")
+        projects = ", ".join(sorted({item.project or "" for item in nodes if item.project}))
         brief = str(payload.get("brief") or "").replace("|", "\\|")
         lines.append(
-            f"| {node.project or ''} | {artifact} | {payload.get('kind') or ''} | {generated} | {brief} | {', '.join(keys)} |"
+            f"| {artifact_cell} | {projects} | {payload.get('kind') or ''} | {generated} | {brief} | {', '.join(keys)} |"
         )
+    return "\n".join(lines)
+
+
+def analysis_claims_markdown(graph: EvidenceGraph) -> str:
+    rows = tuple(node for node in graph.nodes if node.kind == "analysis_claim")
+    if not rows:
+        return "_No generated analysis claims were surfaced._"
+    lines = [
+        "| Project | Type | Confidence | Claim |",
+        "|---|---|---:|---|",
+    ]
+    for node in sorted(rows, key=lambda item: (item.project or "", item.summary)):
+        payload = node.payload or {}
+        claim_type = str(payload.get("claim_type") or "analysis_claim").replace("|", "\\|")
+        confidence = payload.get("confidence")
+        confidence_text = f"{float(confidence):.2f}" if isinstance(confidence, (int, float)) else ""
+        summary = node.summary.replace("|", "\\|")
+        lines.append(f"| {node.project or ''} | {claim_type} | {confidence_text} | {summary} |")
     return "\n".join(lines)
 
 
@@ -423,6 +454,10 @@ def _filter_inventory(
     if not selected:
         return tuple(inventory)
     return tuple(item for item in inventory if canonical_project_name(item.name) in selected)
+
+
+def _is_inactive_path(path: Path) -> bool:
+    return "_inactive" in path.parts
 
 
 def _frontier_item(project: str, item: GitHubItem) -> ProjectGitHubFrontierItem:

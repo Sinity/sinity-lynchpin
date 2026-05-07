@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, cast
 
 from ..composite.context_pack import ContextPackMode, context_pack, render_context_pack
 from ..core.parse import as_local
+from ..core.serialization import jsonable
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,7 +72,7 @@ def render_current_state(
         persist_semantic=persist_semantic,
     )
     if json_output:
-        return json.dumps(_jsonable(pack), indent=2, sort_keys=True)
+        return json.dumps(jsonable(pack), indent=2, sort_keys=True)
     return render_context_pack(pack)
 
 
@@ -106,20 +105,6 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid date: {value!r}") from exc
-
-
-def _jsonable(value: Any) -> Any:
-    if is_dataclass(value):
-        return _jsonable(asdict(cast(Any, value)))
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, Path):
-        return str(value)
-    return value
 
 
 if __name__ == "__main__":

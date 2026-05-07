@@ -9,6 +9,7 @@ from lynchpin.composite.work_correlation import (
     render_work_day_correlations,
     strongest_work_correlations,
     summarize_work_correlations,
+    work_day_correlations,
 )
 from lynchpin.sources.github import GitHubActor, GitHubItem
 
@@ -108,6 +109,26 @@ def test_render_work_day_correlations_keeps_source_columns() -> None:
     assert "AI Sessions" in rendered
     assert "Raw Log" in rendered
     assert "polylogue" in rendered
+
+
+def test_render_work_day_correlations_compacts_large_github_ref_lists() -> None:
+    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
+    rows = correlate_work_days(
+        git_facts=[
+            SimpleNamespace(
+                repo="polylogue",
+                commit=str(number),
+                authored_at=when,
+                subject=f"fix: compact refs (#{number})",
+            )
+            for number in range(1, 11)
+        ],
+    )
+
+    rendered = render_work_day_correlations(rows)
+
+    assert "pr#1, pr#2, pr#3, pr#4, pr#5, pr#6, pr#7, pr#8 (+2 more)" in rendered
+    assert "pr#9" not in rendered
 
 
 def test_correlate_work_days_extracts_raw_log_project_mentions() -> None:
@@ -301,3 +322,33 @@ def test_correlate_work_days_accepts_github_context_dicts() -> None:
     assert rows[0].sources == ("git", "github")
     assert rows[0].github_refs == ("pr#843",)
     assert rows[0].github_lifecycles["pr_closed"] == 1
+
+
+def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items() -> None:
+    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
+    from lynchpin.composite.evidence_graph import EvidenceGraph, EvidenceNode
+
+    graph = EvidenceGraph(
+        start=when.date(),
+        end=when.date(),
+        generated_at=when,
+        mode="local-fast",
+        nodes=(
+            EvidenceNode(
+                id="github:sinity-lynchpin:pr:3",
+                kind="github_ref",
+                source="github_ref",
+                date=when.date(),
+                project="sinity-lynchpin",
+                summary="pr #3",
+                payload={"kind": "pr", "number": 3, "lifecycle": "referenced"},
+            ),
+        ),
+        edges=(),
+        caveats=(),
+    )
+
+    rows = work_day_correlations(start=when.date(), end=when.date(), graph=graph)
+
+    assert rows[0].sources == ("github_ref",)
+    assert rows[0].github_refs == ("pr#3",)

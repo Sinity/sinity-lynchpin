@@ -1,0 +1,27 @@
+rules:
+  - id: lynchpin-network-call-in-analysis
+    languages: [python]
+    severity: WARNING
+    message: >
+      Network call inside lynchpin.analysis. Analysis is meant to be a
+      deterministic local materialization layer over source modules. Network
+      calls belong in lynchpin.sources.* (where source readiness is tracked)
+      or in dedicated frontier/network modes. If this call is intentional,
+      the producer must record a source-readiness caveat alongside its
+      artifact.
+    paths:
+      include:
+        - "lynchpin/analysis/**/*.py"
+      exclude:
+        - "lynchpin/analysis/**/test_*.py"
+    pattern-either:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.patch(...)
+      - pattern: requests.head(...)
+      - pattern: requests.request(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: httpx.get(...)
+      - pattern: httpx.post(...)

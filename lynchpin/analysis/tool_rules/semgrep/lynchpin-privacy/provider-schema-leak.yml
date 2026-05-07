@@ -1,0 +1,28 @@
+rules:
+  - id: lynchpin-provider-schema-in-canonical-row
+    languages: [python]
+    severity: WARNING
+    message: >
+      Provider-specific schema fields (provider_meta, provider_payload,
+      raw_message_provider, conversation_provider_meta, _polylogue_internal)
+      are being read inside what look like canonical, provider-neutral
+      rows. Canonical domain rows must consume typed, normalized fields
+      from the source facade — not provider-internal blobs. If this is a
+      legitimate translation point, move it into a sources/<provider>.py
+      adapter and have the canonical caller consume the typed result.
+    paths:
+      include:
+        - "lynchpin/composite/**/*.py"
+        - "lynchpin/analysis/**/*.py"
+      exclude:
+        - "lynchpin/sources/polylogue.py"
+        - "lynchpin/sources/github.py"
+        - "lynchpin/sources/takeout.py"
+    pattern-either:
+      - pattern: $OBJ.provider_meta
+      - pattern: $OBJ.provider_payload
+      - pattern: $OBJ.raw_message_provider
+      - pattern: $OBJ["provider_meta"]
+      - pattern: $OBJ["provider_payload"]
+      - pattern: $OBJ.get("provider_meta", ...)
+      - pattern: $OBJ.get("provider_payload", ...)

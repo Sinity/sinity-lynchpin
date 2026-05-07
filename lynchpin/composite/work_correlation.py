@@ -238,9 +238,24 @@ def _correlations_from_graph(graph: object, *, start: date, end: date) -> tuple[
 def render_work_day_correlations(rows: Sequence[CorrelatedWorkDay]) -> str:
     lines = ['| Date | Project | Sources | Commits | GitHub | AI Sessions | Raw Log | Focus h | Shell cmds |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for row in rows:
-        github = ', '.join(row.github_refs)
+        github = _format_refs(row.github_refs)
         lines.append('| {date} | {project} | {sources} | {commits} | {github} | {ai} | {raw_log} | {focus:.2f} | {shell} |'.format(date=row.date.isoformat(), project=row.project, sources=', '.join(row.sources), commits=row.commit_count, github=github, ai=row.ai_session_count, raw_log=row.raw_log_count, focus=row.focus_minutes / 60.0, shell=row.shell_command_count))
     return '\n'.join(lines)
+
+def _format_refs(refs: Sequence[str], *, limit: int=8) -> str:
+    ordered = tuple(sorted(refs, key=_ref_sort_key))
+    if len(ordered) <= limit:
+        return ', '.join(ordered)
+    return f"{', '.join(ordered[:limit])} (+{len(ordered) - limit} more)"
+
+def _ref_sort_key(ref: str) -> tuple[str, int, str]:
+    kind, sep, number = ref.partition('#')
+    if sep:
+        try:
+            return (kind, int(number), ref)
+        except ValueError:
+            pass
+    return (ref, 0, ref)
 
 def render_work_correlation_summary(summary: WorkCorrelationSummary) -> str:
     """Render coverage counters in a stable, compact Markdown shape."""

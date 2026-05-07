@@ -1,0 +1,14 @@
+id: python-bare-except-return-default
+language: python
+severity: warning
+message: "Broad except returning default/empty — potential silent failure"
+rule:
+  all:
+    - kind: except_clause
+      regex: "except Exception"
+    - has:
+        any:
+          - regex: "return\\s+None"
+          - regex: "return\\s+\\[\\s*\\]"
+          - regex: "return\\s+\\{\\s*\\}"
+          - regex: "return\\s+\\(\\s*\\)"

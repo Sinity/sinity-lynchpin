@@ -1,0 +1,10 @@
+id: rust-unwrap-in-runtime
+language: rust
+severity: warning
+message: ".unwrap() in non-test code"
+rule:
+  pattern: "$_.unwrap()"
+  not:
+    inside:
+      kind: function_item
+      regex: "test"

@@ -10,11 +10,11 @@ from ..core.parse import as_local, parse_datetime
 from ..core.project_mentions import projects_mentioned_in_text
 from ..core.primitives import date_to_dt_range, logical_date
 from ..core.projects import canonical_project_name
-from ..sources.analysis_artifacts import latest_artifacts
+from ..sources.analysis_artifacts import analysis_claims, latest_artifacts
 from ..sources.github import GitHubActor, GitHubComment, GitHubItem, GitHubItemKind, GitHubItemState, GitHubLabel, classify_lifecycle, extract_commit_refs
 from .evidence import CostClass, EvidenceCaveat, EvidenceProvenance
 from .source_readiness import source_readiness
-EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'raw_log', 'focus_day', 'focus_span', 'terminal_session', 'analysis_artifact']
+EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
 EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project']
 
 @dataclass(frozen=True)
@@ -84,8 +84,39 @@ class EvidenceGraph:
     def node_map(self) -> dict[str, EvidenceNode]:
         return {node.id: node for node in self.nodes}
 
-def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast') -> EvidenceGraph:
-    """Build a local evidence graph for a date range."""
+@dataclass
+class RefreshContext:
+    """Per-refresh memoization for graph construction.
+
+    Holds a cache of base evidence graphs keyed by ``(start, end, mode,
+    projects)`` so that ``project_velocity_windows`` and
+    ``current_state_context`` can share work without going through a
+    global cache. Opt-in: callers must thread the same ``RefreshContext``
+    through both consumers; otherwise behavior is identical to the
+    pre-7E path.
+    """
+    _cache: dict[tuple[date, date, str, tuple[str, ...]], 'EvidenceGraph'] = None
+
+    def __post_init__(self) -> None:
+        if self._cache is None:
+            object.__setattr__(self, '_cache', {})
+
+    def base_graph(self, *, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast') -> 'EvidenceGraph':
+        key = (start, end, mode, tuple(sorted(projects)) if projects else ())
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        graph = build_base_evidence_graph(start=start, end=end, projects=projects, mode=mode)
+        self._cache[key] = graph
+        return graph
+
+def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast') -> EvidenceGraph:
+    """Build the base evidence graph: every source except generated analysis
+    artifacts and claims.
+
+    Used by callers — like ``project_velocity_windows._correlation_rows`` —
+    that must not see the analysis overlay they are about to write.
+    """
     selected = _selected_projects(projects)
     nodes: list[EvidenceNode] = []
     edges: list[EvidenceEdge] = []
@@ -95,7 +126,41 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
     _add_raw_log(nodes, start=start, end=end, selected=selected)
     _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
     _add_terminal(nodes, start=start, end=end, selected=selected)
-    _add_analysis_artifacts(nodes, edges, end=end, selected=selected)
+    _add_web(nodes, start=start, end=end, selected=selected)
+    _add_health(nodes, start=start, end=end)
+    _add_temporal_signals(nodes, start=start, end=end)
+    _add_readiness(nodes, end=end)
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now)
+
+def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast', exclude_analysis_artifacts: Sequence[str]=(), refresh_context: RefreshContext | None=None) -> EvidenceGraph:
+    """Build a local evidence graph for a date range.
+
+    If ``refresh_context`` is supplied, the base layer is reused from the
+    context's cache; otherwise the base is built fresh.
+    """
+    selected = _selected_projects(projects)
+    if refresh_context is not None:
+        base = refresh_context.base_graph(start=start, end=end, projects=projects, mode=mode)
+        nodes = list(base.nodes)
+        edges = list(base.edges)
+    else:
+        nodes = []
+        edges = []
+        _add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
+        _add_polylogue(nodes, start=start, end=end, selected=selected)
+        _add_raw_log(nodes, start=start, end=end, selected=selected)
+        _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
+        _add_terminal(nodes, start=start, end=end, selected=selected)
+        _add_web(nodes, start=start, end=end, selected=selected)
+        _add_health(nodes, start=start, end=end)
+        _add_temporal_signals(nodes, start=start, end=end)
+        _add_readiness(nodes, end=end)
+    now = datetime.now().astimezone()
+    _add_analysis_artifacts(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+    _add_analysis_claims(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now)
+
+def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     edges.extend((edge for edge in _same_project_day_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
@@ -107,7 +172,7 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple((edge for edge in _dedupe_edges(edges) if edge.source_id in node_ids and edge.target_id in node_ids))
-    return EvidenceGraph(start=start, end=end, generated_at=now, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
+    return EvidenceGraph(start=start, end=end, generated_at=generated_at, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
 
 def render_evidence_graph_summary(graph: EvidenceGraph) -> str:
     """Render compact graph coverage for prompt-facing reports."""
@@ -239,7 +304,7 @@ def _add_raw_log(nodes: list[EvidenceNode], *, start: date, end: date, selected:
             nodes.append(EvidenceNode(id=f'raw-log:{entry.source_path}:{entry.line_no}:{project}', kind='raw_log', source='raw_log', date=logical_date(entry.timestamp), project=project, start=entry.timestamp, end=entry.timestamp, summary=entry.text[:240], payload={'line_no': entry.line_no, 'source_path': entry.source_path, 'text': entry.text}, provenance=EvidenceProvenance('raw_log', 'local-fast', path=entry.source_path)))
 
 def _add_focus(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str], mode: CostClass) -> None:
-    from ..sources.activitywatch import focus_timeline, project_focus_days
+    from ..sources.activitywatch import attention, circadian, deep_work, focus_timeline, fragmentation, loops, project_focus_days
     start_dt, end_dt = date_to_dt_range(start, end)
     if mode != 'local-fast':
         for idx, span in enumerate(focus_timeline(start=start_dt, end=end_dt, min_duration_s=60.0)):
@@ -254,6 +319,28 @@ def _add_focus(nodes: list[EvidenceNode], *, start: date, end: date, selected: s
             if title:
                 summary_bits.append(title[:120])
             nodes.append(EvidenceNode(id=f'aw-focus-span:{span.start.isoformat()}:{idx}:{project}', kind='focus_span', source='activitywatch', date=logical_date(span.start), project=project, start=span.start, end=span.end, summary=' — '.join(summary_bits), payload={'duration_s': span.duration_s, 'app': span.app, 'title': span.title, 'mode': span.mode, 'span_source': span.source, 'keypress_count': span.keypress_count, 'keylog_state': span.keylog_state}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
+        for idx, block in enumerate(deep_work(start=start_dt, end=end_dt)):
+            project = _normalize_project(block.project)
+            if block.focus_ratio < 0.5 or not _include_project(project, selected):
+                continue
+            nodes.append(EvidenceNode(id=f'aw-deep-work:{block.start.isoformat()}:{idx}', kind='deep_work_block', source='activitywatch', date=logical_date(block.start), project=project, start=block.start, end=block.end, summary=f'deep work {block.duration_min:.0f}m ({block.mode}, ratio={block.focus_ratio:.2f})', payload={'duration_min': round(block.duration_min, 1), 'focus_ratio': round(block.focus_ratio, 2), 'mode': block.mode, 'app_switches': block.app_switches}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
+        for idx, profile in enumerate(circadian(start=start, end=end)):
+            project = _normalize_project(profile.dominant_project)
+            if not _include_project(project, selected):
+                continue
+            nodes.append(EvidenceNode(id=f'aw-circadian:{profile.date.isoformat()}:{project}', kind='circadian_profile', source='activitywatch', date=profile.date, project=project, summary=f'circadian: peak hour={profile.hour}, dominant={profile.dominant_mode}', payload={'peak_hour': profile.hour, 'active_min': profile.active_min, 'dominant_mode': profile.dominant_mode}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
+        for idx, loop in enumerate(loops(start=start_dt, end=end_dt)):
+            project = _normalize_project(loop.dominant_project)
+            if loop.span_count < 2 or not _include_project(project, selected):
+                continue
+            nodes.append(EvidenceNode(id=f'aw-loop:{loop.date.isoformat()}:{idx}', kind='focus_loop', source='activitywatch', date=loop.date, project=project, summary=f'focus loop: {loop.switch_count} switches {loop.context_a}↔{loop.context_b}, {loop.duration_min:.0f}m', payload={'switch_count': loop.switch_count, 'span_count': loop.span_count, 'context_a': loop.context_a, 'context_b': loop.context_b, 'duration_min': round(loop.duration_min, 1)}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
+        for frag in fragmentation(start=start, end=end):
+            nodes.append(EvidenceNode(id=f'aw-frag:{frag.date.isoformat()}', kind='fragmentation_day', source='activitywatch', date=frag.date, project=None, summary=f'fragmentation: {frag.total_switches} switches, avg focus={frag.avg_focus_min:.0f}m, longest={frag.longest_focus_min:.0f}m', payload={'total_switches': frag.total_switches, 'avg_focus_min': round(frag.avg_focus_min, 1), 'longest_focus_min': round(frag.longest_focus_min, 1), 'fragmentation_index': round(frag.fragmentation, 2)}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
+        for attn in attention(start=start, end=end):
+            project = _normalize_project(attn.top_project)
+            if not _include_project(project, selected):
+                continue
+            nodes.append(EvidenceNode(id=f'aw-attn:{attn.date.isoformat()}:{project}', kind='attention_day', source='activitywatch', date=attn.date, project=project, summary=f'attention: entropy={attn.entropy:.2f}, gini={attn.gini:.2f}, top={attn.top_project}', payload={'entropy': round(attn.entropy, 2), 'gini': round(attn.gini, 2), 'top_project': attn.top_project, 'project_count': attn.project_count}, provenance=EvidenceProvenance('activitywatch', 'local-heavy')))
         return
     for focus in project_focus_days(start=start_dt, end=end_dt):
         project = _normalize_project(focus.project)
@@ -261,18 +348,80 @@ def _add_focus(nodes: list[EvidenceNode], *, start: date, end: date, selected: s
             continue
         nodes.append(EvidenceNode(id=f'aw-focus:{focus.date}:{project}', kind='focus_day', source='activitywatch', date=focus.date, project=project, summary=f'{project} focus {focus.duration_s / 3600:.2f}h', payload={'duration_s': focus.duration_s}, provenance=EvidenceProvenance('activitywatch', 'local-fast')))
 
+def _add_web(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]) -> None:
+    from ..sources.web import daily_browsing
+    try:
+        days = daily_browsing(start=start, end=end)
+    except Exception:
+        return
+    for day in days:
+        if day.visit_count == 0:
+            continue
+        top_domains = [(d, round(p, 3)) for d, p in day.top_domains[:5]]
+        domain_names = [d for d, _ in top_domains]
+        project = _domain_project(domain_names[0]) if domain_names else None
+        if not _include_project(project, selected):
+            project = None
+        nodes.append(EvidenceNode(id=f'web:{day.date.isoformat()}', kind='web_domain_day', source='web', date=day.date, project=project, summary=f"{day.visit_count} visits, {day.unique_domains} domains, top: {', '.join(domain_names[:3])}", payload={'visit_count': day.visit_count, 'unique_domains': day.unique_domains, 'top_domains': top_domains, 'top_titles': list(day.top_titles[:3])}, provenance=EvidenceProvenance('web', 'local-fast'), caveats=(EvidenceCaveat('web', 'partial', 'Web domain data is domain-level; individual page content is not inspected.'),)))
+
+def _domain_project(domain: str) -> str | None:
+    mapping = {'github.com': None, 'gitlab.com': None, 'chatgpt.com': None, 'claude.ai': None, 'aistudio.google.com': None, 'lesswrong.com': None, 'stackoverflow.com': None, 'reddit.com': None, 'youtube.com': None, 'docs.rs': None, 'pypi.org': None, 'crates.io': None, 'nixos.org': None}
+    return mapping.get(domain)
+
+def _add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
+    from .health_bridge import build_health_evidence, build_sleep_evidence, build_sleep_productivity_links
+    for sq in build_sleep_evidence(start=start, end=end):
+        nodes.append(EvidenceNode(id=sq.id, kind='sleep_quality', source='sleep', date=sq.date, project=None, summary=sq.summary, payload=sq.payload, provenance=EvidenceProvenance('sleep', 'local-heavy')))
+    for hm in build_health_evidence(start=start, end=end):
+        nodes.append(EvidenceNode(id=hm.id, kind='health_metric', source='health', date=hm.date, project=None, summary=hm.summary, payload=hm.payload, provenance=EvidenceProvenance('health', 'local-heavy')))
+    for link in build_sleep_productivity_links(start=start, end=end):
+        nodes.append(EvidenceNode(id=link.id, kind='sleep_quality', source='sleep', date=link.sleep_date, project=None, summary=link.summary, payload=link.payload, provenance=EvidenceProvenance('sleep', 'local-heavy')))
+
+def _add_readiness(nodes: list[EvidenceNode], *, end: date) -> None:
+    """Build a forecast for the day after ``end`` and emit it as a graph node.
+
+    Failures and degraded fits surface as a ``readiness_forecast`` node with
+    ``status="unavailable"`` so the consumer always sees source-readiness
+    context, never a silent gap.
+    """
+    from .readiness import build_readiness_forecast, readiness_payload
+    target = end + timedelta(days=1)
+    try:
+        result = build_readiness_forecast(target_date=target)
+    except Exception as exc:
+        nodes.append(EvidenceNode(id=f'readiness:{target.isoformat()}:error', kind='readiness_forecast', source='readiness', date=target, project=None, summary=f'readiness forecast unavailable ({type(exc).__name__})', payload={'status': 'error', 'reason': str(exc)[:200]}, provenance=EvidenceProvenance('readiness', 'local-fast')))
+        return
+    payload = readiness_payload(result)
+    if payload['status'] == 'available':
+        summary = f"forecast: {payload['predicted_deep_work_min']:.0f} min deep work on {target.isoformat()} (95% CI {payload['ci_low']:.0f}–{payload['ci_high']:.0f}, r²={payload['r_squared']:.2f}, n={payload['sample_n']})"
+    else:
+        summary = f"readiness forecast {payload['status']}: {payload.get('reason', '')}"
+    nodes.append(EvidenceNode(id=f"readiness:{target.isoformat()}:{payload['status']}", kind='readiness_forecast', source='readiness', date=target, project=None, summary=summary, payload=payload, provenance=EvidenceProvenance('readiness', 'local-fast')))
+
+def _add_temporal_signals(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
+    from .temporal_signals import detect_temporal_signals
+    kind_map: dict[str, EvidenceNodeKind] = {'temporal_changepoint': 'temporal_changepoint', 'temporal_trend': 'temporal_trend', 'temporal_anomaly': 'temporal_anomaly', 'temporal_rhythm': 'temporal_rhythm'}
+    for idx, event in enumerate(detect_temporal_signals(start=start, end=end)):
+        node_kind = kind_map.get(event.kind)
+        if node_kind is None:
+            continue
+        nodes.append(EvidenceNode(id=f'temporal:{event.kind}:{event.signal}:{event.event_date.isoformat()}:{idx}', kind=node_kind, source='temporal', date=event.event_date, project=None, summary=event.summary, payload=event.payload, provenance=EvidenceProvenance('temporal', 'local-fast')))
+
 def _add_terminal(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]) -> None:
     from ..sources.terminal import shell_sessions
+    from .terminal_patterns import detect_patterns
     start_dt, end_dt = date_to_dt_range(start, end)
     for idx, session in enumerate(shell_sessions(start=start_dt, end=end_dt)):
         project = _normalize_project(session.project)
         if not _include_project(project, selected):
             continue
         nodes.append(EvidenceNode(id=f'terminal:{session.start.isoformat()}:{idx}:{project}', kind='terminal_session', source='terminal', date=logical_date(session.start), project=project, start=session.start, end=session.end, summary=f'{session.command_count} commands in {session.cwd}', payload={'cwd': session.cwd, 'duration_s': session.duration_s, 'command_count': session.command_count, 'error_count': session.error_count, 'category': session.category}, provenance=EvidenceProvenance('terminal', 'local-fast')))
+    for idx, pattern in enumerate(detect_patterns(start=start, end=end, projects=tuple(selected) if selected else None)):
+        nodes.append(EvidenceNode(id=f'terminal-pattern:{pattern.date.isoformat()}:{idx}:{pattern.kind}', kind='terminal_pattern', source='terminal', date=pattern.date, project=_normalize_project(pattern.project), summary=pattern.summary, payload={'kind': pattern.kind, 'cwd': pattern.cwd, 'command_count': pattern.command_count, 'error_count': pattern.error_count, 'duration_s': pattern.duration_s, 'top_commands': pattern.top_commands, 'confidence': pattern.confidence}, provenance=EvidenceProvenance('terminal', 'local-fast')))
 
-def _add_analysis_artifacts(nodes: list[EvidenceNode], edges: list[EvidenceEdge], *, end: date, selected: set[str]) -> None:
+def _add_analysis_artifacts(nodes: list[EvidenceNode], edges: list[EvidenceEdge], *, end: date, selected: set[str], exclude_names: frozenset[str]) -> None:
     projects = selected or None
-    artifacts = latest_artifacts(projects=projects)
+    artifacts = tuple((artifact for artifact in latest_artifacts(projects=projects) if artifact.name not in exclude_names))
     by_name = {artifact.name: artifact for artifact in artifacts}
     for artifact in artifacts:
         generated_at = artifact.generated_at.isoformat() if artifact.generated_at is not None else None
@@ -293,10 +442,20 @@ def _add_analysis_artifacts(nodes: list[EvidenceNode], edges: list[EvidenceEdge]
                         continue
                     edges.append(EvidenceEdge(node_id, f'analysis:{reference}:{reference_project}', 'references', f'analysis artifact references {reference}', 0.8))
 
+def _add_analysis_claims(nodes: list[EvidenceNode], edges: list[EvidenceEdge], *, end: date, selected: set[str], exclude_names: frozenset[str]) -> None:
+    projects = selected or None
+    for claim in analysis_claims(projects=projects, exclude_names=exclude_names):
+        if not _include_project(claim.project, selected):
+            continue
+        node_id = f'analysis-claim:{claim.id}'
+        nodes.append(EvidenceNode(id=node_id, kind='analysis_claim', source='analysis', date=end, project=claim.project, summary=claim.summary, payload={'claim_type': claim.claim_type, 'artifact_name': claim.artifact_name, 'confidence': claim.confidence, 'generated_at': claim.generated_at.isoformat() if claim.generated_at is not None else None, **claim.payload}, provenance=EvidenceProvenance('analysis', 'local-fast', path=claim.artifact_name)))
+        artifact_node_id = f'analysis:{claim.artifact_name}:{claim.project}'
+        edges.append(EvidenceEdge(node_id, artifact_node_id, 'references', f'analysis claim extracted from {claim.artifact_name}', claim.confidence))
+
 def _same_project_day_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge, ...]:
     grouped: dict[tuple[date, str], list[EvidenceNode]] = defaultdict(list)
     for node in nodes:
-        if node.kind == 'analysis_artifact':
+        if node.kind in {'analysis_artifact', 'analysis_claim'}:
             continue
         if node.project:
             grouped[node.date, node.project].append(node)
@@ -325,7 +484,7 @@ def _temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge
 def _temporal_proximity_edges(nodes: Sequence[EvidenceNode], *, max_gap_min: int=90) -> tuple[EvidenceEdge, ...]:
     grouped: dict[tuple[date, str], list[EvidenceNode]] = defaultdict(list)
     for node in nodes:
-        if node.kind == 'analysis_artifact' or node.project is None or node.start is None:
+        if node.kind in {'analysis_artifact', 'analysis_claim'} or node.project is None or node.start is None:
             continue
         grouped[node.date, node.project].append(node)
     edges: list[EvidenceEdge] = []
@@ -352,7 +511,7 @@ def _temporal_proximity_edges(nodes: Sequence[EvidenceNode], *, max_gap_min: int
     return tuple(edges)
 
 def _github_ref_node(*, project: str, kind: str, number: int, day: date) -> EvidenceNode:
-    return EvidenceNode(id=_github_ref_id(project, kind, number), kind='github_ref', source='github', date=day, project=project, summary=f'{kind} #{number}', payload={'kind': kind, 'number': number, 'lifecycle': 'referenced'}, provenance=EvidenceProvenance('github', 'local-fast'), caveats=(EvidenceCaveat('github', 'partial', 'Commit referenced this GitHub item, but full issue/PR lifecycle may not be fetched.'),))
+    return EvidenceNode(id=_github_ref_id(project, kind, number), kind='github_ref', source='github_ref', date=day, project=project, summary=f'{kind} #{number}', payload={'kind': kind, 'number': number, 'lifecycle': 'referenced'}, provenance=EvidenceProvenance('github_ref', 'local-fast'), caveats=(EvidenceCaveat('github', 'partial', 'Commit referenced this GitHub item, but full issue/PR lifecycle may not be fetched.'),))
 
 def _github_item_node(item: GitHubItem) -> EvidenceNode:
     project = _normalize_project(item.repo or (item.slug.rsplit('/', 1)[-1] if item.slug else None))

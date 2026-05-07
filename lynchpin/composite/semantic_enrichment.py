@@ -10,12 +10,13 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict, deque
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Sequence
 from ..core.config import get_config
 from ..core.projects import canonical_project_name
+from ..core.serialization import jsonable
 from .evidence import EvidenceCaveat, EvidenceProvenance
 from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph
 SemanticMode = Literal['deterministic']
@@ -271,20 +272,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute('\n        CREATE TABLE IF NOT EXISTS semantic_moments (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            moment_id TEXT, date TEXT, project TEXT, cluster_id TEXT,\n            title TEXT, summary TEXT, score REAL, payload_json TEXT\n        )\n        ')
 
 def _json(value: object) -> str:
-    return json.dumps(_jsonable(value), sort_keys=True)
-
-def _jsonable(value: object) -> object:
-    if is_dataclass(value) and (not isinstance(value, type)):
-        return _jsonable(asdict(value))
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, Path):
-        return str(value)
-    return value
+    return json.dumps(jsonable(value), sort_keys=True)
 
 def _project_key(projects: object) -> str:
     if isinstance(projects, str):

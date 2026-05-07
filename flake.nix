@@ -638,6 +638,10 @@
             pydantic
             aiosqlite
             claude-agent-sdk
+            tree-sitter
+            tree-sitter-python
+            tree-sitter-rust
+            pytest
           ]
         );
 
@@ -732,7 +736,7 @@
 
           pythonImportsCheck = [
             "lynchpin"
-            "lynchpin.scripts.scaffold_browser"
+            "lynchpin.scripts.current_state"
           ];
           doCheck = false;
           dontCheckRuntimeDeps = true;
@@ -769,6 +773,9 @@
               ripgrep
               fd
               just
+              semgrep
+              cargo-machete
+              cargo-geiger
             ])
             ++ rustToolchain
             ++ [

@@ -1,0 +1,9 @@
+id: python-subprocess-no-timeout
+language: python
+severity: warning
+message: "subprocess call without explicit timeout"
+rule:
+  all:
+    - pattern: "subprocess.run($$$)"
+    - not:
+        regex: "timeout\\s*="

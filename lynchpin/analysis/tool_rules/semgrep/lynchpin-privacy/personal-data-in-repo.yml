@@ -1,0 +1,20 @@
+rules:
+  - id: lynchpin-personal-data-written-to-repo
+    languages: [python]
+    severity: WARNING
+    message: >
+      Looks like personal data (email/phone/SSN-shaped string) is being
+      embedded as a literal and written to a repo-tracked path. The lynchpin
+      privacy invariant is that raw personal data stays under /realm/data/...
+      and only typed, redacted, or derived rows reach the repo. If this is
+      a user fixture or a deliberate test, exclude with a comment naming
+      the constraint that justifies it.
+    paths:
+      include:
+        - "lynchpin/**/*.py"
+      exclude:
+        - "lynchpin/**/test_*.py"
+        - "tests/**"
+    pattern-either:
+      - pattern-regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+      - pattern-regex: '\+?\d{1,3}[\s\-]?\(?\d{2,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}'

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
+from ..core.primitives import logical_date
 from ..core.projects import canonical_project_name
 
 logger = logging.getLogger(__name__)
@@ -575,7 +576,7 @@ def _profiles_from_base_tables() -> list[SessionProfile] | None:
         first = _parse_dt(row["created_at"])
         last = _parse_dt(row["updated_at"]) or first
         stamp = first or last
-        session_date = stamp.date() if stamp is not None else None
+        session_date = logical_date(stamp) if stamp is not None else None
         wall_duration_ms = 0
         if first and last:
             wall_duration_ms = max(int((last - first).total_seconds() * 1000), 0)

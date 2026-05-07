@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from typing import Literal, Sequence
 
 from ..core.projects import canonical_project_name
+from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
 from .evidence import EvidenceCaveat, dedupe_caveats
-from .evidence_graph import EvidenceGraph, build_evidence_graph, render_evidence_relations, render_evidence_timeline
+from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph, render_evidence_relations, render_evidence_timeline
 from .semantic_enrichment import SemanticEnrichment, build_semantic_enrichment, render_semantic_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
@@ -36,6 +37,9 @@ class ContextPack:
     dataset_correlations: tuple[DatasetCorrelation, ...]
     claims: tuple[WorkEvidenceClaim, ...]
     projects: tuple[ProjectContextSlice, ...]
+    salient_chains: tuple[CausalChain, ...]
+    salient_anomalies: tuple[EvidenceNode, ...]
+    readiness_forecast: EvidenceNode | None
     caveats: tuple[EvidenceCaveat, ...]
 
 
@@ -47,6 +51,7 @@ def context_pack(
     mode: ContextPackMode = "local-fast",
     semantic: bool = False,
     persist_semantic: bool = False,
+    exclude_analysis_artifacts: Sequence[str] = (),
 ) -> ContextPack:
     """Build an LLM-facing context pack with explicit mode/caveats."""
     graph = build_evidence_graph(
@@ -54,6 +59,7 @@ def context_pack(
         end=end.date(),
         projects=projects,
         mode=mode,
+        exclude_analysis_artifacts=exclude_analysis_artifacts,
     )
     return graph_context_pack(
         graph,
@@ -86,6 +92,9 @@ def graph_context_pack(
     slices = _project_slices(evidence_pack.work_correlations, projects=projects)
     dataset_rows = dataset_correlations(graph, limit=16)
     claims = supported_work_claims(evidence_pack.work_correlations, graph=graph, limit=24)
+    chains = _select_top_chains(graph, limit=5)
+    anomalies = _select_top_anomalies(graph, limit=5)
+    readiness = _select_readiness(graph)
     return ContextPack(
         start=start,
         end=end,
@@ -97,6 +106,9 @@ def graph_context_pack(
         dataset_correlations=dataset_rows,
         claims=claims,
         projects=slices,
+        salient_chains=chains,
+        salient_anomalies=anomalies,
+        readiness_forecast=readiness,
         caveats=_pack_caveats(evidence_pack=evidence_pack, graph=graph),
     )
 
@@ -130,6 +142,21 @@ def render_context_pack(pack: ContextPack) -> str:
         render_supported_work_claims(pack.claims[:12]),
         "",
     ]
+    if pack.salient_chains or pack.salient_anomalies or pack.readiness_forecast is not None:
+        lines.extend(["## Temporal Signals", ""])
+        if pack.readiness_forecast is not None:
+            lines.append(f"**Readiness:** {pack.readiness_forecast.summary}")
+            lines.append("")
+        if pack.salient_anomalies:
+            lines.append("**Anomalies:**")
+            for n in pack.salient_anomalies:
+                lines.append(f"- {n.date.isoformat()} — {n.summary}")
+            lines.append("")
+        if pack.salient_chains:
+            lines.append("**Causal chains:**")
+            for c in pack.salient_chains:
+                lines.append(f"- {c.date.isoformat()} — {c.summary} (confidence {c.confidence:.0%})")
+            lines.append("")
     if pack.semantic_enrichment is not None:
         lines.extend(
             [
@@ -195,9 +222,32 @@ def _project_caveats(rows: Sequence[CorrelatedWorkDay]) -> tuple[EvidenceCaveat,
         caveats.append(EvidenceCaveat("correlation", "partial", "Project rows have only single-source support in this window."))
     if any("github" in row.sources for row in rows):
         caveats.append(EvidenceCaveat("github", "partial", "GitHub rows require lifecycle interpretation before workload conclusions."))
+    if any("github_ref" in row.sources for row in rows):
+        caveats.append(EvidenceCaveat("github_ref", "partial", "GitHub refs are commit-subject references unless network frontier evidence is enabled."))
     if any("polylogue" in row.sources for row in rows):
         caveats.append(EvidenceCaveat("polylogue", "partial", "AI chat rows should be inspected as pointers, not verbatim transcript evidence."))
     return tuple(caveats)
+
+
+def _select_top_chains(graph: EvidenceGraph, *, limit: int) -> tuple[CausalChain, ...]:
+    chains = detect_chains(graph.nodes, max_gap_minutes=60)
+    return tuple(sorted(chains, key=lambda c: c.confidence, reverse=True)[:limit])
+
+
+def _select_top_anomalies(graph: EvidenceGraph, *, limit: int) -> tuple[EvidenceNode, ...]:
+    anomalies = [n for n in graph.nodes if n.kind == "temporal_anomaly"]
+    anomalies.sort(
+        key=lambda n: float(n.payload.get("score", 0)) if n.payload else 0.0,
+        reverse=True,
+    )
+    return tuple(anomalies[:limit])
+
+
+def _select_readiness(graph: EvidenceGraph) -> EvidenceNode | None:
+    for n in graph.nodes:
+        if n.kind == "readiness_forecast":
+            return n
+    return None
 
 
 def _pack_caveats(*, evidence_pack: CurrentStateEvidencePack, graph: EvidenceGraph) -> tuple[EvidenceCaveat, ...]:
