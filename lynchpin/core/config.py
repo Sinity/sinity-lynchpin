@@ -24,6 +24,7 @@ from typing import Optional
 @dataclass(frozen=True)
 class LynchpinConfig:
     repo_root: Path
+    local_root: Path
     sinnix_root: Path
     data_root: Path
     captures_root: Path
@@ -71,6 +72,7 @@ class LynchpinConfig:
     clipboard_export_files: tuple[Path, ...]
     irc_root: Path
     raw_log_file: Path
+    calendar_jsonl: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -99,6 +101,7 @@ class LynchpinConfig:
             "clipboard": self.clipboard_live_file.exists() or any(path.exists() for path in self.clipboard_export_files),
             "irc": self.irc_root.exists(),
             "raw_log": self.raw_log_file.exists(),
+            "calendar": self.calendar_jsonl.exists(),
         }
 
     @classmethod
@@ -165,6 +168,11 @@ class LynchpinConfig:
         webhistory_ndjson = webhistory_ndjson_path if webhistory_ndjson_path.exists() else None
 
         sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", exports_root / "health/processed/sleep_merged.jsonl"))
+        # M.12: processed calendar JSONL produced by an upstream ingestion
+        # pass over Google Takeout / iCal / future sinex calendar capture.
+        calendar_jsonl = Path(os.environ.get(
+            "LYNCHPIN_CALENDAR_JSONL", exports_root / "google/processed/calendar.jsonl"
+        ))
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
@@ -233,7 +241,7 @@ class LynchpinConfig:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
-            repo_root=repo_root, sinnix_root=sinnix_root, data_root=data_root,
+            repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
             captures_root=captures_root, exports_root=exports_root, libraries_root=libraries_root,
             knowledgebase_root=knowledgebase_root,
             knowledge_archive_root=knowledge_archive_root,
@@ -264,6 +272,7 @@ class LynchpinConfig:
             clipboard_export_files=clipboard_export_files,
             irc_root=irc_root,
             raw_log_file=raw_log_file,
+            calendar_jsonl=calendar_jsonl,
         )
 
 

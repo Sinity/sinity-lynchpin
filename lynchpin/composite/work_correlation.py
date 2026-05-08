@@ -26,6 +26,12 @@ class _MutableCorrelatedWorkDay:
     github_refs: set[str] = field(default_factory=set)
     github_lifecycle_refs: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     ai_conversation_ids: set[str] = field(default_factory=set)
+    ai_event_kind_breakdown: Counter[str] = field(default_factory=Counter)
+    ai_event_kind_weighted: dict[str, float] = field(default_factory=dict)
+    ai_session_kind_breakdown: Counter[str] = field(default_factory=Counter)
+    ai_session_kind_weighted: dict[str, float] = field(default_factory=dict)
+    ai_event_conversations: set[str] = field(default_factory=set)
+    ai_session_kind_by_conversation: dict[str, tuple[str, int]] = field(default_factory=dict)
     raw_log_refs: set[str] = field(default_factory=set)
     focus_minutes: float = 0.0
     shell_minutes: float = 0.0
@@ -49,6 +55,8 @@ class CorrelatedWorkDay:
     shell_minutes: float
     shell_command_count: int
     sources: tuple[str, ...]
+    ai_kind_breakdown: tuple[tuple[str, int], ...] = ()
+    ai_kind_weighted: tuple[tuple[str, float], ...] = ()
 
     @property
     def source_count(self) -> int:
@@ -57,6 +65,15 @@ class CorrelatedWorkDay:
     @property
     def has_cross_source_support(self) -> bool:
         return self.source_count >= 2
+
+    @property
+    def dominant_ai_kind(self) -> str | None:
+        """Top kind by weighted score, breaking ties by raw count."""
+        if not self.ai_kind_weighted:
+            return None
+        weighted = dict(self.ai_kind_weighted)
+        raw = dict(self.ai_kind_breakdown)
+        return max(weighted, key=lambda k: (weighted[k], raw.get(k, 0)))
 
 @dataclass(frozen=True)
 class WorkCorrelationSummary:
@@ -153,10 +170,18 @@ def correlate_work_days(*, git_facts: Sequence[object]=(), github_items: Sequenc
         session_date = logical_date(first_message_at) if first_message_at is not None else getattr(session, 'canonical_session_date', None)
         if session_date is None:
             continue
+        session_kind_value: str | None = getattr(session, 'work_event_kind', None)
+        message_count = int(getattr(session, 'message_count', 0) or 0)
+        conv_id = str(getattr(session, 'conversation_id', ''))
         for project in _projects_from_ai_session(session):
             bucket = row(session_date, project)
             bucket.sources.add('polylogue')
-            bucket.ai_conversation_ids.add(str(getattr(session, 'conversation_id', '')))
+            bucket.ai_conversation_ids.add(conv_id)
+            if session_kind_value:
+                bucket.ai_session_kind_breakdown[session_kind_value] += 1
+                bucket.ai_session_kind_weighted[session_kind_value] = bucket.ai_session_kind_weighted.get(session_kind_value, 0.0) + _session_kind_weight(message_count)
+                if conv_id:
+                    bucket.ai_session_kind_by_conversation[conv_id] = (session_kind_value, message_count)
     for entry in raw_log_entries:
         timestamp = getattr(entry, 'timestamp', None)
         if timestamp is None:
@@ -325,8 +350,39 @@ def render_dataset_correlations(rows: Sequence[DatasetCorrelation]) -> str:
         lines.append('| {sources} | {score:.2f} | {relations} | {projects} | {dates} | {examples} |'.format(sources=' + '.join(row.sources), score=row.score, relations=_format_counts(row.relation_counts), projects=', '.join(row.projects), dates=', '.join((day.isoformat() for day in row.dates[:5])), examples='<br>'.join((_markdown_cell(example) for example in row.examples))))
     return '\n'.join(lines)
 
+def _session_kind_weight(message_count: int) -> float:
+    """Arc B.1 weight for session-level kind observations.
+
+    Sessions with ≤2 messages are usually one-shot prompts, agent task
+    notifications, or incidental rows; weight them at 0.25 so they don't
+    drown out substantive sessions. Larger sessions count fully.
+    """
+    return 0.25 if message_count <= 2 else 1.0
+
+def _merge_kind_counters(event_breakdown: Counter[str], event_weighted: dict[str, float], event_conversations: set[str], session_breakdown: Counter[str], session_weighted: dict[str, float], session_kind_by_conversation: dict[str, tuple[str, int]]) -> tuple[Counter[str], dict[str, float]]:
+    """Merge event-level (preferred) and session-level (fallback) kind counters.
+
+    Per-event kinds always win when the same conversation has produced any
+    event nodes in this window. Conversations without event nodes fall back
+    to their session-level kind.
+    """
+    breakdown: Counter[str] = Counter(event_breakdown)
+    weighted: dict[str, float] = dict(event_weighted)
+    if not session_breakdown:
+        return (breakdown, weighted)
+    for conv_id, (kind, msg_count) in session_kind_by_conversation.items():
+        if conv_id in event_conversations:
+            continue
+        breakdown[kind] += 1
+        weighted[kind] = weighted.get(kind, 0.0) + _session_kind_weight(msg_count)
+    if not event_breakdown and (not session_kind_by_conversation):
+        breakdown = Counter(session_breakdown)
+        weighted = dict(session_weighted)
+    return (breakdown, weighted)
+
 def _freeze(row: _MutableCorrelatedWorkDay) -> CorrelatedWorkDay:
-    return CorrelatedWorkDay(date=row.date, project=row.project, commit_count=len({sha for sha in row.commit_shas if sha}), commit_shas=tuple(sorted((sha for sha in row.commit_shas if sha))), commit_subjects=tuple(row.commit_subjects), github_refs=tuple(sorted(row.github_refs)), github_lifecycles={lifecycle: len(refs) for lifecycle, refs in sorted(row.github_lifecycle_refs.items())}, ai_session_count=len({cid for cid in row.ai_conversation_ids if cid}), ai_conversation_ids=tuple(sorted((cid for cid in row.ai_conversation_ids if cid))), raw_log_count=len(row.raw_log_refs), raw_log_refs=tuple(sorted(row.raw_log_refs)), focus_minutes=round(row.focus_minutes, 2), shell_minutes=round(row.shell_minutes, 2), shell_command_count=row.shell_command_count, sources=tuple(sorted(row.sources)))
+    breakdown, weighted = _merge_kind_counters(row.ai_event_kind_breakdown, row.ai_event_kind_weighted, row.ai_event_conversations, row.ai_session_kind_breakdown, row.ai_session_kind_weighted, row.ai_session_kind_by_conversation)
+    return CorrelatedWorkDay(date=row.date, project=row.project, commit_count=len({sha for sha in row.commit_shas if sha}), commit_shas=tuple(sorted((sha for sha in row.commit_shas if sha))), commit_subjects=tuple(row.commit_subjects), github_refs=tuple(sorted(row.github_refs)), github_lifecycles={lifecycle: len(refs) for lifecycle, refs in sorted(row.github_lifecycle_refs.items())}, ai_session_count=len({cid for cid in row.ai_conversation_ids if cid}), ai_conversation_ids=tuple(sorted((cid for cid in row.ai_conversation_ids if cid))), ai_kind_breakdown=tuple(sorted(breakdown.items(), key=lambda kv: (-kv[1], kv[0]))), ai_kind_weighted=tuple(((kind, round(weight, 3)) for kind, weight in sorted(weighted.items(), key=lambda kv: (-kv[1], kv[0])))), raw_log_count=len(row.raw_log_refs), raw_log_refs=tuple(sorted(row.raw_log_refs)), focus_minutes=round(row.focus_minutes, 2), shell_minutes=round(row.shell_minutes, 2), shell_command_count=row.shell_command_count, sources=tuple(sorted(row.sources)))
 
 def _freeze_dataset_correlation(bucket: _MutableDatasetCorrelation) -> DatasetCorrelation:
     relation_variety = len(bucket.relation_counts)

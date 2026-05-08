@@ -43,6 +43,69 @@ def dedupe_caveats(caveats: tuple[EvidenceCaveat, ...]) -> tuple[EvidenceCaveat,
     return tuple(result)
 
 
+# ── M.16: Multi-layer caveat propagation ─────────────────────────────────────
+
+
+# Per-status confidence multiplier when a caveat from that status appears in a
+# composite claim (causal chain, dataset correlation, supported work claim, …).
+# `missing` and `blocked` apply hard floors — when source data is gone, no
+# confidence value is meaningful — but we still preserve the caveat record.
+_STATUS_DEGRADATION: dict[ReadinessStatus, float] = {
+    "available": 1.00,
+    "partial":   0.90,
+    "stale":     0.85,
+    "missing":   0.40,
+    "blocked":   0.40,
+}
+
+
+def propagate_caveats(
+    *caveat_sources: tuple[EvidenceCaveat, ...],
+) -> tuple[EvidenceCaveat, ...]:
+    """Union caveats across multiple node/edge/claim payloads.
+
+    Order-preserving across sources, dedup-aware. Use when a composite
+    artifact (causal chain, dataset correlation, closure-chain, etc.)
+    spans multiple evidence layers and the reader needs to see ALL the
+    relevant warnings, not just the first layer's.
+    """
+    flat: list[EvidenceCaveat] = []
+    for caveats in caveat_sources:
+        flat.extend(caveats)
+    return dedupe_caveats(tuple(flat))
+
+
+def degrade_confidence(
+    base_confidence: float,
+    caveats: tuple[EvidenceCaveat, ...],
+    *,
+    floor: float = 0.10,
+) -> float:
+    """Combine multipliers across all caveats; clamp at ``floor``.
+
+    A claim that crosses three "partial" layers gets `0.90 ** 3 = 0.729×`
+    of its original confidence, plus the caveats themselves are visible
+    to the reader. Multiple caveats from the *same* source/status are
+    combined once via :func:`dedupe_caveats` so a noisy single source
+    doesn't compound.
+    """
+    if base_confidence <= 0.0:
+        return 0.0
+    deduped = dedupe_caveats(caveats)
+    multiplier = 1.0
+    for caveat in deduped:
+        multiplier *= _STATUS_DEGRADATION.get(caveat.status, 1.0)
+    return max(floor, base_confidence * multiplier)
+
+
+def caveat_summary(caveats: tuple[EvidenceCaveat, ...]) -> dict[str, int]:
+    """Compact rollup: status → count, useful for headers and badges."""
+    summary: dict[str, int] = {}
+    for caveat in dedupe_caveats(caveats):
+        summary[caveat.status] = summary.get(caveat.status, 0) + 1
+    return summary
+
+
 @dataclass(frozen=True)
 class SourceReadiness:
     """Availability, freshness, and caveats for one source."""

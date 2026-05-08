@@ -389,6 +389,8 @@ def _package_support(
         for issue_num in refs.get("issues") or ():
             expected_refs.add(f"issue#{issue_num}")
 
+    package_top_surfaces = tuple(str(s) for s in (package.get("top_surfaces") or ()) if s)
+
     has_handles = bool(commit_shas or expected_refs or first_date)
     empty_result: dict[str, Any] = {
         "support_days": 0,
@@ -402,7 +404,9 @@ def _package_support(
         "shell_command_count": 0,
         "raw_log_count": 0,
         "github_ref_count": 0,
-        "match_reasons": {"commit_overlap": 0, "github_ref_overlap": 0, "date_overlap": 0},
+        "match_reasons": {"commit_overlap": 0, "github_ref_overlap": 0, "date_overlap": 0, "kind_match": 0},
+        "kind_breakdown": {},
+        "kind_breakdown_weighted": {},
         "support_level": "weak",
         "caveats": [],
     }
@@ -435,6 +439,8 @@ def _package_support(
     source_counter: Counter[str] = Counter()
     source_pair_counter: Counter[str] = Counter()
     lifecycle_counter: Counter[str] = Counter()
+    kind_breakdown_counter: Counter[str] = Counter()
+    kind_weighted_acc: dict[str, float] = {}
     ai_session_count = 0
     focus_minutes = 0.0
     shell_command_count = 0
@@ -447,6 +453,11 @@ def _package_support(
         support_days.add(day_str)
         if "commit_overlap" in reasons or "github_ref_overlap" in reasons:
             strong_match_days.add(day_str)
+        # Arc B.3: kind_match reason fires when the row's dominant kind
+        # plausibly aligns with the package's surface mix (tests/ ↔ testing,
+        # docs/ ↔ research/conversation, manifests ↔ implementation).
+        if _kind_aligns_with_surfaces(row.ai_kind_breakdown, package_top_surfaces):
+            reasons.add("kind_match")
         for reason in reasons:
             reason_counter[reason] += 1
         source_counter.update(row.sources)
@@ -455,6 +466,10 @@ def _package_support(
                 pair = f"{left}+{right}" if left <= right else f"{right}+{left}"
                 source_pair_counter[pair] += 1
         lifecycle_counter.update(row.github_lifecycles)
+        for kind, count in row.ai_kind_breakdown:
+            kind_breakdown_counter[kind] += count
+        for kind, weight in row.ai_kind_weighted:
+            kind_weighted_acc[kind] = kind_weighted_acc.get(kind, 0.0) + weight
         ai_session_count += row.ai_session_count
         focus_minutes += row.focus_minutes
         shell_command_count += row.shell_command_count
@@ -490,10 +505,48 @@ def _package_support(
             "commit_overlap": reason_counter["commit_overlap"],
             "github_ref_overlap": reason_counter["github_ref_overlap"],
             "date_overlap": reason_counter["date_overlap"],
+            "kind_match": reason_counter["kind_match"],
         },
+        "kind_breakdown": dict(kind_breakdown_counter),
+        "kind_breakdown_weighted": {k: round(v, 2) for k, v in kind_weighted_acc.items()},
         "support_level": support_level,
         "caveats": caveats,
     }
+
+
+_KIND_TO_SURFACE_HINTS: dict[str, tuple[str, ...]] = {
+    "testing": ("tests", "test", "spec", "fixtures"),
+    "research": ("docs", "doc"),
+    "conversation": ("docs", "doc"),
+    "implementation": ("src", "lib", "lynchpin", "polylogue"),
+    "review": ("review", "rfc"),
+    "debugging": ("src", "lib"),
+    "dependency_management": ("Cargo.toml", "pyproject.toml", "package.json", "flake.nix"),
+}
+
+
+def _kind_aligns_with_surfaces(
+    kind_breakdown: tuple[tuple[str, int], ...],
+    top_surfaces: tuple[str, ...],
+) -> bool:
+    """True iff the dominant kind plausibly aligns with the package's surfaces.
+
+    Conservative: requires both that a kind has at least one observation in
+    this row AND that one of its surface hints appears in any package
+    surface path. Returns False on empty inputs so absence is never spun
+    into a kind_match.
+    """
+    if not kind_breakdown or not top_surfaces:
+        return False
+    surfaces_lower = tuple(s.lower() for s in top_surfaces)
+    for kind, count in kind_breakdown:
+        if count <= 0:
+            continue
+        for hint in _KIND_TO_SURFACE_HINTS.get(kind, ()):
+            hint_lower = hint.lower()
+            if any(hint_lower in surface for surface in surfaces_lower):
+                return True
+    return False
 
 
 def _support_level(*, micro: _Micro, meso: _Meso, support: _Support) -> str:

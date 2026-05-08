@@ -1,11 +1,14 @@
 """Range-scoped evidence graph for current-state and narrative analysis."""
 from __future__ import annotations
+import logging
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Sequence
+log = logging.getLogger(__name__)
 from ..core.parse import as_local, parse_datetime
 from ..core.project_mentions import projects_mentioned_in_text
 from ..core.primitives import date_to_dt_range, logical_date
@@ -14,8 +17,8 @@ from ..sources.analysis_artifacts import analysis_claims, latest_artifacts
 from ..sources.github import GitHubActor, GitHubComment, GitHubItem, GitHubItemKind, GitHubItemState, GitHubLabel, classify_lifecycle, extract_commit_refs
 from .evidence import CostClass, EvidenceCaveat, EvidenceProvenance
 from .source_readiness import source_readiness
-EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
-EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project']
+EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'ai_work_event', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
+EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project', 'file_overlap', 'tool_overlap', 'symbol_overlap']
 
 @dataclass(frozen=True)
 class EvidenceNode:
@@ -123,6 +126,7 @@ def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str]
     now = datetime.now().astimezone()
     _add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
     _add_polylogue(nodes, start=start, end=end, selected=selected)
+    _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
     _add_raw_log(nodes, start=start, end=end, selected=selected)
     _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
     _add_terminal(nodes, start=start, end=end, selected=selected)
@@ -148,6 +152,7 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
         edges = []
         _add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
         _add_polylogue(nodes, start=start, end=end, selected=selected)
+        _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
         _add_raw_log(nodes, start=start, end=end, selected=selected)
         _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
         _add_terminal(nodes, start=start, end=end, selected=selected)
@@ -165,6 +170,19 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
     edges.extend((edge for edge in _same_project_day_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_proximity_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+    if os.environ.get('LYNCHPIN_SUBSTRATE_OVERLAP') == '1':
+        overlap_refresh_id = f'overlap:{generated_at.isoformat()}'
+        try:
+            sql_edges = _overlap_edges_via_substrate(nodes, refresh_id=overlap_refresh_id)
+            edges.extend((edge for edge in sql_edges if edge.source_id in node_ids and edge.target_id in node_ids))
+        except Exception as exc:
+            log.warning('substrate overlap path failed; falling back to Python: %s', exc)
+            edges.extend((edge for edge in _polylogue_work_event_file_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+            edges.extend((edge for edge in _polylogue_work_event_symbol_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+    else:
+        edges.extend((edge for edge in _polylogue_work_event_file_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+        edges.extend((edge for edge in _polylogue_work_event_symbol_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+    edges.extend((edge for edge in _polylogue_work_event_tool_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     readiness = source_readiness(start=start, end=end, include_heavy_counts=mode != 'local-fast', include_github_frontier=mode == 'network')
     caveats = tuple(readiness.caveats)
     if mode == 'local-fast':
@@ -172,7 +190,27 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple((edge for edge in _dedupe_edges(edges) if edge.source_id in node_ids and edge.target_id in node_ids))
-    return EvidenceGraph(start=start, end=end, generated_at=generated_at, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
+    graph = EvidenceGraph(start=start, end=end, generated_at=generated_at, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
+    if os.environ.get('LYNCHPIN_SUBSTRATE_WRITE') == '1':
+        _promote_to_substrate(graph)
+    return graph
+
+def _promote_to_substrate(graph: 'EvidenceGraph') -> None:
+    """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
+    try:
+        from lynchpin.duck import connect, apply_schema
+        from lynchpin.duck.promote import promote_evidence_graph
+    except ImportError as exc:
+        log.warning('DuckDB substrate unavailable: %s', exc)
+        return
+    refresh_id = f'graph:{graph.start.isoformat()}:{graph.end.isoformat()}:{graph.mode}:{graph.generated_at.isoformat()}'
+    try:
+        with connect() as conn:
+            apply_schema(conn)
+            counts = promote_evidence_graph(conn, refresh_id=refresh_id, graph=graph)
+            log.info('Promoted evidence graph to substrate: %s (refresh_id=%s)', counts, refresh_id)
+    except Exception as exc:
+        log.warning('Failed to promote evidence graph to substrate: %s', exc)
 
 def render_evidence_graph_summary(graph: EvidenceGraph) -> str:
     """Render compact graph coverage for prompt-facing reports."""
@@ -295,6 +333,57 @@ def _add_polylogue(nodes: list[EvidenceNode], *, start: date, end: date, selecte
                 continue
             nodes.append(EvidenceNode(id=f"polylogue:{session.conversation_id}:{project or 'unattributed'}", kind='ai_session', source='polylogue', date=session_date, project=project, start=session.first_message_at, end=session.last_message_at, summary=session.title or f'{session.provider} session', payload={'conversation_id': session.conversation_id, 'provider': session.provider, 'message_count': session.message_count, 'word_count': session.word_count, 'engaged_duration_ms': session.engaged_duration_ms, 'tool_use_count': session.tool_use_count, 'work_event_kind': session.work_event_kind}, provenance=EvidenceProvenance('polylogue', 'local-fast'), caveats=(EvidenceCaveat('polylogue', 'partial', 'Session node may be derived from base archive tables when product rows are empty.'),)))
 
+def _add_polylogue_work_events(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str], mode: CostClass) -> None:
+    """Promote Polylogue's ``session_work_events`` rows into per-event nodes.
+
+    Each work event becomes one node per project it touches; project attribution
+    is resolved from ``file_paths`` first (most specific), then from the parent
+    session's ``work_event_projects`` (built once per call), then dropped if the
+    user has selected projects and we have nothing.
+
+    ``local-fast`` filters to ``confidence >= 0.6`` to keep noisy heuristic
+    events out of cheap context packs; ``local-heavy`` and ``network`` admit
+    everything (the kind/confidence caveats stay attached either way).
+    """
+    from ..core.classify import resolve_project
+    from ..sources.polylogue import session_profiles_for_date, work_events
+    from .work_event_kind import overlay_label
+    confidence_floor = 0.6 if mode == 'local-fast' else 0.0
+    session_projects: dict[str, tuple[str, ...]] = {}
+    for session in session_profiles_for_date(start=start, end=end + timedelta(days=1)):
+        projects = tuple((project for project in (_normalize_project(p) for p in session.work_event_projects) if project))
+        if not projects:
+            projects = _projects_from_text(session.title)
+        session_projects[session.conversation_id] = projects
+    for event in work_events(start=start, end=end + timedelta(days=1)):
+        if event.start is None:
+            continue
+        if event.confidence < confidence_floor:
+            continue
+        event_projects: list[str] = []
+        for path in event.file_paths:
+            project = resolve_project(path)
+            if project and project not in event_projects:
+                event_projects.append(project)
+        if not event_projects:
+            for project in session_projects.get(event.conversation_id, ()):
+                if project and project not in event_projects:
+                    event_projects.append(project)
+        event_date = logical_date(event.start)
+        label = overlay_label(polylogue_kind=event.kind, polylogue_confidence=float(event.confidence or 0.0), file_paths=event.file_paths, tools_used=event.tools_used, duration_ms=int(event.duration_ms or 0))
+        target_projects: list[str | None] = list(event_projects) if event_projects else [None]
+        for project in target_projects:
+            if project is not None and (not _include_project(project, selected)):
+                continue
+            if project is None and selected:
+                continue
+            parent_session_id = f"polylogue:{event.conversation_id}:{project or 'unattributed'}"
+            summary = (event.summary or f'{event.kind} ({event.provider})')[:240]
+            event_caveats: list[EvidenceCaveat] = [EvidenceCaveat('polylogue', 'partial', 'Work-event boundaries and kind labels are heuristic; see Lynchpin re-classifier overlay (Arc K).')]
+            if label.source == 'disagreement':
+                event_caveats.append(EvidenceCaveat('lynchpin_overlay', 'partial', f"Polylogue says '{label.polylogue_kind}', overlay says '{label.overlay_kind}' — using overlay (stronger features)."))
+            nodes.append(EvidenceNode(id=f"polylogue:we:{event.event_id}:{project or 'unattributed'}", kind='ai_work_event', source='polylogue', date=event_date, project=project, start=event.start, end=event.end, summary=summary, payload={'event_id': event.event_id, 'conversation_id': event.conversation_id, 'provider': event.provider, 'kind': label.kind, 'kind_confidence': label.confidence, 'kind_source': label.source, 'kind_tier': label.tier, 'polylogue_kind': label.polylogue_kind, 'polylogue_confidence': label.polylogue_confidence, 'overlay_kind': label.overlay_kind, 'overlay_confidence': label.overlay_confidence, 'duration_ms': event.duration_ms, 'file_paths': list(event.file_paths), 'tools_used': list(event.tools_used), 'parent_session_id': parent_session_id}, provenance=EvidenceProvenance('polylogue', mode), caveats=tuple(event_caveats)))
+
 def _add_raw_log(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]) -> None:
     from ..sources.raw_log import entries_in_range
     for entry in entries_in_range(start=start, end=end):
@@ -415,7 +504,7 @@ def _add_terminal(nodes: list[EvidenceNode], *, start: date, end: date, selected
         project = _normalize_project(session.project)
         if not _include_project(project, selected):
             continue
-        nodes.append(EvidenceNode(id=f'terminal:{session.start.isoformat()}:{idx}:{project}', kind='terminal_session', source='terminal', date=logical_date(session.start), project=project, start=session.start, end=session.end, summary=f'{session.command_count} commands in {session.cwd}', payload={'cwd': session.cwd, 'duration_s': session.duration_s, 'command_count': session.command_count, 'error_count': session.error_count, 'category': session.category}, provenance=EvidenceProvenance('terminal', 'local-fast')))
+        nodes.append(EvidenceNode(id=f'terminal:{session.start.isoformat()}:{idx}:{project}', kind='terminal_session', source='terminal', date=logical_date(session.start), project=project, start=session.start, end=session.end, summary=f'{session.command_count} commands in {session.cwd}', payload={'cwd': session.cwd, 'duration_s': session.duration_s, 'command_count': session.command_count, 'error_count': session.error_count, 'category': session.category, 'commands_summary': list(session.commands_summary)}, provenance=EvidenceProvenance('terminal', 'local-fast')))
     for idx, pattern in enumerate(detect_patterns(start=start, end=end, projects=tuple(selected) if selected else None)):
         nodes.append(EvidenceNode(id=f'terminal-pattern:{pattern.date.isoformat()}:{idx}:{pattern.kind}', kind='terminal_pattern', source='terminal', date=pattern.date, project=_normalize_project(pattern.project), summary=pattern.summary, payload={'kind': pattern.kind, 'cwd': pattern.cwd, 'command_count': pattern.command_count, 'error_count': pattern.error_count, 'duration_s': pattern.duration_s, 'top_commands': pattern.top_commands, 'confidence': pattern.confidence}, provenance=EvidenceProvenance('terminal', 'local-fast')))
 
@@ -479,6 +568,265 @@ def _temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge
                 continue
             if left.end > right.start and right.end > left.start:
                 edges.append(EvidenceEdge(left.id, right.id, 'temporal_overlap', f'{left.source} overlaps {right.source}', 0.7))
+    return tuple(edges)
+_TOOL_COMMAND_TOKENS: dict[str, tuple[str, ...]] = {'Bash': ('pytest', 'cargo', 'just', 'npm', 'git', 'make', 'nix', 'ruff', 'mypy'), 'Edit': (), 'Read': (), 'Write': ()}
+
+def _extract_overlap_sources_from_nodes(nodes: Sequence[EvidenceNode]) -> 'tuple[list[Any], list[Any], list[dict[str, Any]]]':
+    """Extract typed source rows from EvidenceNode payloads for substrate promotion.
+
+    Returns (work_events, commit_facts, symbol_change_rows). Skips nodes whose
+    payload doesn't carry enough data — partial promotion is fine; SQL views
+    will simply not produce edges for missing rows, matching Python semantics.
+    """
+    from datetime import datetime as _dt
+    from ..sources.git import GitCommitFact
+    from ..sources.polylogue import WorkEvent
+    work_events: list[WorkEvent] = []
+    commit_facts: list[GitCommitFact] = []
+    for node in nodes:
+        payload = node.payload or {}
+        if node.kind == 'ai_work_event':
+            event_id = payload.get('event_id')
+            conversation_id = payload.get('conversation_id')
+            if not event_id or not conversation_id:
+                continue
+            file_paths = tuple((p for p in payload.get('file_paths') or [] if p))
+            tools_used = tuple((t for t in payload.get('tools_used') or [] if t))
+            duration_ms = int(payload.get('duration_ms') or 0)
+            kind = str(payload.get('kind') or 'unknown')
+            confidence = float(payload.get('kind_confidence') or payload.get('confidence') or 0.0)
+            provider = str(payload.get('provider') or '')
+            summary = node.summary or ''
+            work_events.append(WorkEvent(event_id=str(event_id), conversation_id=str(conversation_id), provider=provider, kind=kind, confidence=confidence, start=node.start, end=node.end, duration_ms=duration_ms, file_paths=file_paths, tools_used=tools_used, summary=summary))
+        elif node.kind == 'commit':
+            sha = payload.get('commit') or payload.get('sha')
+            if not sha or not node.project:
+                continue
+            paths = tuple((p for p in payload.get('paths') or [] if p))
+            authored_at = node.start or _dt.combine(node.date, _dt.min.time())
+            commit_facts.append(GitCommitFact(repo=node.project, commit=str(sha), authored_at=authored_at, author=str(payload.get('author') or ''), subject=str(payload.get('subject') or node.summary or ''), lines_added=int(payload.get('lines_added') or 0), lines_deleted=int(payload.get('lines_deleted') or 0), lines_changed=int(payload.get('lines_changed') or 0), files_changed=int(payload.get('files_changed') or len(paths)), paths=paths, path_roots=tuple((p for p in payload.get('path_roots') or [] if p))))
+    symbol_changes = _load_symbol_changes_index()
+    symbol_rows: list[dict[str, Any]] = []
+    for entries in symbol_changes.values():
+        symbol_rows.extend(entries)
+    return (work_events, commit_facts, symbol_rows)
+
+def _overlap_edges_via_substrate(nodes: Sequence[EvidenceNode], *, refresh_id: str) -> tuple[EvidenceEdge, ...]:
+    """Promote overlap-source data + compute file/symbol overlap edges via SQL.
+
+    Used when LYNCHPIN_SUBSTRATE_OVERLAP=1. Produces edges equivalent to:
+        _polylogue_work_event_file_overlap_edges(nodes)
+      + _polylogue_work_event_symbol_overlap_edges(nodes)
+
+    The third overlap (tool_overlap) is unchanged — terminal_session is not
+    yet a substrate table.
+    """
+    from lynchpin.duck import connect, apply_schema
+    from lynchpin.duck.promote import promote_ai_work_events, promote_commits, promote_symbol_changes
+    from lynchpin.duck.reader import compute_file_overlap_edges, compute_symbol_overlap_edges
+    work_events, commit_facts, symbol_rows = _extract_overlap_sources_from_nodes(nodes)
+    if not work_events or not commit_facts:
+        return ()
+    project_by_event_id: dict[str, str | None] = {}
+    for node in nodes:
+        if node.kind == 'ai_work_event':
+            event_id = (node.payload or {}).get('event_id')
+            if event_id:
+                project_by_event_id[str(event_id)] = node.project
+
+    def _project_resolver(ev: Any) -> str | None:
+        return project_by_event_id.get(ev.event_id)
+    edges: list[EvidenceEdge] = []
+    with connect() as conn:
+        apply_schema(conn)
+        promote_commits(conn, refresh_id=refresh_id, facts=commit_facts)
+        promote_ai_work_events(conn, refresh_id=refresh_id, events=work_events, project_resolver=_project_resolver)
+        if symbol_rows:
+            promote_symbol_changes(conn, refresh_id=refresh_id, rows=symbol_rows)
+        edges.extend(compute_file_overlap_edges(conn, we_refresh_id=refresh_id, commit_refresh_id=refresh_id))
+        edges.extend(compute_symbol_overlap_edges(conn, we_refresh_id=refresh_id, commit_refresh_id=refresh_id))
+    return tuple(edges)
+
+def _polylogue_work_event_file_overlap_edges(nodes: Sequence[EvidenceNode], *, max_gap_hours: float=24.0) -> tuple[EvidenceEdge, ...]:
+    """Bridge ai_work_event ↔ commit on shared file paths within ±max_gap_hours.
+
+    Only emits when both endpoints share a project. Weight is high (0.85)
+    because file-path overlap is a strong corroboration signal — much tighter
+    than the same_project_day fallback. Caveat for the heuristic kind labels
+    rides on the work-event node itself.
+    """
+    commits_by_project: dict[str, list[EvidenceNode]] = defaultdict(list)
+    for node in nodes:
+        if node.kind != 'commit' or node.project is None:
+            continue
+        commits_by_project[node.project].append(node)
+    if not commits_by_project:
+        return ()
+    edges: list[EvidenceEdge] = []
+    max_gap_s = max_gap_hours * 3600
+    for we_node in nodes:
+        if we_node.kind != 'ai_work_event' or we_node.project is None or we_node.start is None:
+            continue
+        we_files = {str(p) for p in (we_node.payload or {}).get('file_paths', []) if p}
+        if not we_files:
+            continue
+        we_at = _node_anchor_time(we_node)
+        if we_at is None:
+            continue
+        for commit_node in commits_by_project.get(we_node.project, ()):
+            commit_at = _node_anchor_time(commit_node)
+            if commit_at is None:
+                continue
+            if abs((commit_at - we_at).total_seconds()) > max_gap_s:
+                continue
+            commit_files = {str(p) for p in (commit_node.payload or {}).get('paths', []) if p}
+            shared = we_files & commit_files
+            if not shared:
+                continue
+            preview = ', '.join(sorted(shared)[:3])
+            evidence = f'shared paths: {preview}' + ('' if len(shared) <= 3 else f' (+{len(shared) - 3})')
+            edges.append(EvidenceEdge(we_node.id, commit_node.id, 'file_overlap', evidence, weight=0.85))
+    return tuple(edges)
+
+def _polylogue_work_event_symbol_overlap_edges(nodes: Sequence[EvidenceNode], *, max_gap_hours: float=24.0) -> tuple[EvidenceEdge, ...]:
+    """M.14 — symbol-level cousin of file_overlap.
+
+    Bridges ``ai_work_event`` ↔ ``commit`` only when the commit actually
+    modified a symbol in a file the AI touched. This is tighter than
+    file_overlap, which fires on any shared file path regardless of whether
+    that file's symbols changed. Edge weight 0.95 (highest in the graph)
+    because a same-symbol intersection is the strongest causal-shape
+    evidence Lynchpin can produce.
+
+    Reads ``active_symbol_changes`` rows from the most recent run when
+    available; gracefully no-ops when the artifact is empty (e.g.
+    tree-sitter grammars unavailable). Path-level overlap STILL fires via
+    ``_polylogue_work_event_file_overlap_edges`` so callers don't lose
+    coverage when symbol data is missing.
+    """
+    symbol_changes_by_commit = _load_symbol_changes_index()
+    if not symbol_changes_by_commit:
+        return ()
+    commits_by_project: dict[str, list[EvidenceNode]] = defaultdict(list)
+    for node in nodes:
+        if node.kind != 'commit' or node.project is None:
+            continue
+        commits_by_project[node.project].append(node)
+    if not commits_by_project:
+        return ()
+    edges: list[EvidenceEdge] = []
+    max_gap_s = max_gap_hours * 3600
+    for we_node in nodes:
+        if we_node.kind != 'ai_work_event' or we_node.project is None or we_node.start is None:
+            continue
+        we_files = {str(p) for p in (we_node.payload or {}).get('file_paths', []) if p}
+        if not we_files:
+            continue
+        we_at = _node_anchor_time(we_node)
+        if we_at is None:
+            continue
+        for commit_node in commits_by_project.get(we_node.project, ()):
+            commit_at = _node_anchor_time(commit_node)
+            if commit_at is None:
+                continue
+            if abs((commit_at - we_at).total_seconds()) > max_gap_s:
+                continue
+            sha = (commit_node.payload or {}).get('commit') or ''
+            changed_symbols = symbol_changes_by_commit.get(sha) or []
+            if not changed_symbols:
+                continue
+            overlapping = [sym for sym in changed_symbols if any((_path_match(sym.get('path'), p) for p in we_files))]
+            if not overlapping:
+                continue
+            symbol_names = sorted({s.get('qualified_name', '?') for s in overlapping if s.get('qualified_name')})
+            preview = ', '.join(symbol_names[:3])
+            evidence = f'shared symbols: {preview}'
+            if len(symbol_names) > 3:
+                evidence += f' (+{len(symbol_names) - 3})'
+            edges.append(EvidenceEdge(we_node.id, commit_node.id, 'symbol_overlap', evidence, weight=0.95))
+    return tuple(edges)
+
+def _load_symbol_changes_index() -> dict[str, list[dict[str, Any]]]:
+    """Load and index ``active_symbol_changes.json`` events by commit SHA.
+
+    Returns empty when the artifact is missing or empty (e.g. tree-sitter
+    grammars unavailable). Caller must be prepared for an empty result.
+    """
+    from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
+    try:
+        payload = load_json_if_exists(resolve_analysis_path('active_symbol_changes.json')) or {}
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    events = payload.get('events') or []
+    if not isinstance(events, list):
+        return {}
+    by_sha: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in events:
+        if not isinstance(entry, dict):
+            continue
+        sha = entry.get('sha')
+        if sha:
+            by_sha[str(sha)].append(entry)
+    return dict(by_sha)
+
+def _path_match(symbol_path: object, ai_file_path: str) -> bool:
+    """True when the AI's reference resolves to the symbol's path.
+
+    AI work-event file_paths can be absolute (``/realm/project/x/src/foo.py``)
+    or repo-relative (``src/foo.py``); the symbol-changes artifact carries
+    repo-relative paths. Match by suffix to bridge both shapes.
+    """
+    if not symbol_path or not ai_file_path:
+        return False
+    sym = str(symbol_path).strip().lstrip('/')
+    ai = str(ai_file_path).strip().lstrip('/')
+    if not sym or not ai:
+        return False
+    return ai.endswith(sym) or sym.endswith(ai)
+
+def _polylogue_work_event_tool_overlap_edges(nodes: Sequence[EvidenceNode], *, max_gap_min: float=60.0) -> tuple[EvidenceEdge, ...]:
+    """Bridge ai_work_event ↔ terminal_session when AI tools and shell commands
+    plausibly co-occur within ±max_gap_min, on the same project.
+
+    Heuristic: AI used Bash and the terminal session's top commands include a
+    matching token (pytest/cargo/just/...). Co-occurrence — not authorship.
+    Weight is intentionally lower than file_overlap (0.5) to reflect that.
+    """
+    terminals_by_project: dict[str, list[EvidenceNode]] = defaultdict(list)
+    for node in nodes:
+        if node.kind != 'terminal_session' or node.project is None or node.start is None:
+            continue
+        terminals_by_project[node.project].append(node)
+    if not terminals_by_project:
+        return ()
+    edges: list[EvidenceEdge] = []
+    max_gap_s = max_gap_min * 60
+    for we_node in nodes:
+        if we_node.kind != 'ai_work_event' or we_node.project is None or we_node.start is None:
+            continue
+        tools_used = {str(t) for t in (we_node.payload or {}).get('tools_used', []) if t}
+        candidate_tokens: set[str] = set()
+        for tool in tools_used:
+            candidate_tokens.update(_TOOL_COMMAND_TOKENS.get(tool, ()))
+        if not candidate_tokens:
+            continue
+        we_at = _node_anchor_time(we_node)
+        if we_at is None:
+            continue
+        for term_node in terminals_by_project.get(we_node.project, ()):
+            term_at = _node_anchor_time(term_node)
+            if term_at is None:
+                continue
+            if abs((term_at - we_at).total_seconds()) > max_gap_s:
+                continue
+            commands = {str(c).split()[0] for c in (term_node.payload or {}).get('commands_summary', []) if c}
+            shared = candidate_tokens & commands
+            if not shared:
+                continue
+            preview = ', '.join(sorted(shared)[:3])
+            edges.append(EvidenceEdge(we_node.id, term_node.id, 'tool_overlap', f'co-occurring commands: {preview} (heuristic, not authorship)', weight=0.5))
     return tuple(edges)
 
 def _temporal_proximity_edges(nodes: Sequence[EvidenceNode], *, max_gap_min: int=90) -> tuple[EvidenceEdge, ...]:

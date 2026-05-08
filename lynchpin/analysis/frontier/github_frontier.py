@@ -49,6 +49,12 @@ class _FrontierItem:
     inactivity_days: int | None = None
     inactivity_bucket: str = "unknown"
     caveats: list[str] = field(default_factory=list)
+    # Arc B.4: kind-based intent vs execution hint. Set on open issues when
+    # the project's recent AI-work-event mix is dominated by planning /
+    # research with no implementation / testing observed — distinguishing
+    # "still in intent stage" from "stalled execution."
+    lifecycle_hint: str | None = None
+    lifecycle_hint_reasons: tuple[str, ...] = ()
 
 
 def build_active_github_frontier(
@@ -68,6 +74,10 @@ def build_active_github_frontier(
 
     repos = _active_github_repos(snapshot_payload, selected=set(projects or ()))
     package_pr_map = _package_pr_map(work_payload)
+    # Arc B.4: per-project AI kind mix in the same window. Lazily computed
+    # only when there's at least one repo to classify, since
+    # `work_day_correlations` over real archives is heavy.
+    project_kind_mix: dict[str, dict[str, int]] | None = None
 
     project_rows: list[dict[str, Any]] = []
     for repo_path_str, project_name in sorted(repos.items()):
@@ -95,6 +105,9 @@ def build_active_github_frontier(
         all_items = open_issues + open_prs + closed_issues + closed_prs
         _link_packages(all_items, package_pr_map.get(project_name, {}))
         _annotate_inactivity(all_items, reference=end)
+        if project_kind_mix is None:
+            project_kind_mix = _project_kind_mix(start=start, end=end)
+        _annotate_kind_hint(all_items, project_kind_mix.get(project_name))
 
         lifecycle_counts: Counter[str] = Counter()
         inactivity_counts: Counter[str] = Counter()
@@ -269,12 +282,73 @@ def _item_row(item: _FrontierItem) -> dict[str, Any]:
         "lifecycle": item.lifecycle,
         "lifecycle_confidence": item.lifecycle_confidence,
         "lifecycle_reasons": item.lifecycle_reasons,
+        "lifecycle_hint": item.lifecycle_hint,
+        "lifecycle_hint_reasons": item.lifecycle_hint_reasons,
         "linked_packages": item.linked_packages,
         "comment_count": item.comment_count,
         "inactivity_days": item.inactivity_days,
         "inactivity_bucket": item.inactivity_bucket,
         "caveats": item.caveats,
     }
+
+
+_INTENT_KINDS: frozenset[str] = frozenset({"planning", "research", "conversation"})
+_EXECUTION_KINDS: frozenset[str] = frozenset({"implementation", "testing", "debugging", "refactoring"})
+
+
+def _project_kind_mix(*, start: date, end: date) -> dict[str, dict[str, int]]:
+    """Aggregate AI work-event kinds per project over the analysis window.
+
+    Best-effort: if the correlation graph build fails (heavy/slow/missing
+    sources) we silently return an empty dict so the frontier still renders.
+    Caller treats absence as 'no hint available'.
+    """
+    try:
+        from ...composite.work_correlation import work_day_correlations
+
+        rows = work_day_correlations(start=start, end=end)
+    except Exception:
+        return {}
+    mix: dict[str, dict[str, int]] = {}
+    for row in rows:
+        bucket = mix.setdefault(row.project, {})
+        for kind, count in row.ai_kind_breakdown:
+            bucket[kind] = bucket.get(kind, 0) + count
+    return mix
+
+
+def _annotate_kind_hint(
+    items: list[_FrontierItem],
+    project_kinds: dict[str, int] | None,
+) -> None:
+    """Mark open frontier issues whose project shows intent activity but no
+    execution as `lifecycle_hint=design_or_open_loop`.
+
+    Conservative: only fires on open issues classified open_frontier or
+    tracking_or_horizon, when the project window has at least one intent-kind
+    observation and zero execution-kind observations. Closed items are left
+    alone (their state already encodes the conclusion).
+    """
+    if not project_kinds:
+        return
+    intent_count = sum(project_kinds.get(kind, 0) for kind in _INTENT_KINDS)
+    execution_count = sum(project_kinds.get(kind, 0) for kind in _EXECUTION_KINDS)
+    if intent_count == 0 or execution_count > 0:
+        return
+    for item in items:
+        if item.state != "open":
+            continue
+        if item.lifecycle not in ("open_frontier", "tracking_or_horizon", "unclear"):
+            continue
+        item.lifecycle_hint = "design_or_open_loop"
+        intent_summary = ", ".join(
+            f"{kind}×{project_kinds[kind]}"
+            for kind in _INTENT_KINDS
+            if project_kinds.get(kind)
+        )
+        item.lifecycle_hint_reasons = (
+            f"project AI mix is intent-only ({intent_summary}), no implementation/testing/debugging/refactoring observed",
+        )
 
 
 def _annotate_inactivity(items: list[_FrontierItem], *, reference: date) -> None:

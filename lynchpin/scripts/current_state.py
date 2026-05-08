@@ -9,6 +9,10 @@ from datetime import date, datetime, time
 from pathlib import Path
 
 from ..composite.context_pack import ContextPackMode, context_pack, render_context_pack
+from ..composite.current_state_timeline import (
+    build_current_state_timeline,
+    render_current_state_timeline,
+)
 from ..core.parse import as_local
 from ..core.serialization import jsonable
 
@@ -46,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Render structured JSON instead of Markdown")
     parser.add_argument("--output", "-o", type=Path, help="Write Markdown to this path instead of stdout")
+    parser.add_argument(
+        "--timeline-output",
+        type=Path,
+        help=(
+            "Also write a chronological day-by-day timeline (M.10) to this path."
+            " Sibling artifact of the context pack, citation-rich."
+        ),
+    )
     return parser
 
 
@@ -59,6 +71,7 @@ def render_current_state(
     semantic: bool = False,
     persist_semantic: bool = False,
     json_output: bool = False,
+    timeline_output: Path | None = None,
 ) -> str:
     start_dt = as_local(datetime.combine(start, time.min))
     end_dt = as_local(datetime.combine(end, time.max))
@@ -71,6 +84,11 @@ def render_current_state(
         semantic=semantic,
         persist_semantic=persist_semantic,
     )
+    if timeline_output is not None:
+        timeline = build_current_state_timeline(pack.graph, start=start, end=end)
+        timeline_md = render_current_state_timeline(timeline)
+        timeline_output.parent.mkdir(parents=True, exist_ok=True)
+        timeline_output.write_text(timeline_md + "\n", encoding="utf-8")
     if json_output:
         return json.dumps(jsonable(pack), indent=2, sort_keys=True)
     return render_context_pack(pack)
@@ -91,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         semantic=args.semantic,
         persist_semantic=args.persist_semantic,
         json_output=args.json,
+        timeline_output=args.timeline_output,
     )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

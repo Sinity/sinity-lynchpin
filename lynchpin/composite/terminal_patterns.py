@@ -2,6 +2,13 @@
 
 Detects build/fix loops, retry spirals, long-running commands, and
 context switches from Atuin shell session data.
+
+The current ``ShellSession`` dataclass exposes only summary statistics
+(``commands_summary`` top-N prefixes, counts, duration). Pattern detection
+needs the raw ``AtuinCommand`` list, so this module queries the source's
+``commands()`` iterator directly and assigns each command to its parent
+session by matching cwd + timestamp window. ShellSession remains
+summary-shape; this module composes the two.
 """
 
 from __future__ import annotations
@@ -11,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from ..sources.terminal import shell_sessions
+from ..sources.terminal import AtuinCommand, ShellSession
 
 
 @dataclass(frozen=True)
@@ -34,26 +41,48 @@ def detect_patterns(
     end: date,
     projects: Sequence[str] | None = None,
 ) -> tuple[TerminalPattern, ...]:
-    """Detect terminal patterns from shell sessions in a date range."""
-    sessions = shell_sessions(start=start, end=end)
+    """Detect terminal patterns from shell sessions in a date range.
+
+    Sessions provide cwd / project / window; raw ``AtuinCommand`` rows are
+    pulled separately from the source and assigned per-session by cwd + time
+    range. Empty sessions are skipped.
+    """
+    from ..core.primitives import date_to_dt_range
+    from ..sources.terminal import commands, shell_sessions
+
+    start_dt, end_dt = date_to_dt_range(start, end)
+    sessions = shell_sessions(start=start_dt, end=end_dt)
+    if not sessions:
+        return ()
 
     chosen = set(projects or ())
+    selected = [session for session in sessions if not chosen or session.project in chosen]
+    if not selected:
+        return ()
+
+    # Pull raw atuin rows once, bucket by cwd, then assign to whichever session
+    # window the timestamp falls into.
+    earliest = min(session.start for session in selected)
+    latest = max(session.end for session in selected)
+    by_cwd: dict[str, list[AtuinCommand]] = defaultdict(list)
+    for cmd in commands(start=earliest, end=latest):
+        by_cwd[cmd.cwd or "(unknown)"].append(cmd)
+
     patterns: list[TerminalPattern] = []
-
-    for session in sessions:
-        if chosen and session.project not in chosen:
+    for session in selected:
+        cmds = [
+            cmd
+            for cmd in by_cwd.get(session.cwd, ())
+            if session.start <= cmd.timestamp <= session.end
+        ]
+        if len(cmds) < 2:
             continue
-        if not session.commands:
-            continue
-
-        patterns.extend(_detect_in_session(session))
-
+        patterns.extend(_detect_in_session(session, cmds))
     return tuple(patterns)
 
 
-def _detect_in_session(session) -> list[TerminalPattern]:
+def _detect_in_session(session: ShellSession, cmds: list[AtuinCommand]) -> list[TerminalPattern]:
     patterns: list[TerminalPattern] = []
-    cmds = list(session.commands)
     if len(cmds) < 2:
         return patterns
 
@@ -61,29 +90,10 @@ def _detect_in_session(session) -> list[TerminalPattern]:
     project = session.project
     session_date = _session_date(cmds)
 
-    # Build/fix loop: error exits → success on same cwd
-    bf_patterns = _detect_build_fix_loops(
-        cmds, cwd, project, session_date,
-    )
-    patterns.extend(bf_patterns)
-
-    # Retry spirals: same command prefix ≥3 times, non-zero exits
-    rs_patterns = _detect_retry_spirals(
-        cmds, cwd, project, session_date,
-    )
-    patterns.extend(rs_patterns)
-
-    # Long-running: command duration >60s
-    lr_patterns = _detect_long_running(
-        cmds, cwd, project, session_date,
-    )
-    patterns.extend(lr_patterns)
-
-    # Context switches: rapid cwd changes
-    cs_patterns = _detect_context_switches(
-        session, session_date,
-    )
-    patterns.extend(cs_patterns)
+    patterns.extend(_detect_build_fix_loops(cmds, cwd, project, session_date))
+    patterns.extend(_detect_retry_spirals(cmds, cwd, project, session_date))
+    patterns.extend(_detect_long_running(cmds, cwd, project, session_date))
+    patterns.extend(_detect_context_switches(session, session_date))
 
     return patterns
 
@@ -197,14 +207,11 @@ def _detect_long_running(
 
 
 def _detect_context_switches(
-    session, session_date: date,
+    session: ShellSession, session_date: date,
 ) -> list[TerminalPattern]:
     patterns: list[TerminalPattern] = []
-    if hasattr(session, "command_count") and session.command_count >= 8:
-        error_rate = (
-            session.error_count / session.command_count
-            if session.command_count else 0
-        )
+    if session.command_count >= 8:
+        error_rate = session.error_count / session.command_count if session.command_count else 0.0
         patterns.append(TerminalPattern(
             kind="context_switch",
             date=session_date,
@@ -212,12 +219,8 @@ def _detect_context_switches(
             project=session.project,
             command_count=session.command_count,
             error_count=session.error_count,
-            duration_s=session.duration_min * 60 if hasattr(session, "duration_min") else 0,
-            top_commands=tuple(
-                session.top_commands[:5]
-                if hasattr(session, "top_commands")
-                else ()
-            ),
+            duration_s=session.duration_s,
+            top_commands=tuple(session.commands_summary[:5]),
             confidence=0.5 + min(0.3, error_rate * 0.5),
             summary=(
                 f"High-activity session: {session.command_count} commands, "
@@ -243,10 +246,11 @@ def _command_prefix(cmd) -> str:
 
 
 def _cmd_duration(cmd) -> float | None:
-    dur = getattr(cmd, "duration", None)
-    if dur is not None:
+    """Return command duration in seconds. AtuinCommand stores nanoseconds."""
+    dur_ns = getattr(cmd, "duration_ns", None)
+    if dur_ns is not None:
         try:
-            return float(dur)
+            return float(dur_ns) / 1_000_000_000
         except (TypeError, ValueError):
             pass
     return None
