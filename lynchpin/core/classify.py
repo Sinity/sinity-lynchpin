@@ -226,7 +226,13 @@ def _project_from_path(text: str) -> str | None:
     if any(ch.isspace() for ch in text):
         return None
 
-    raw_path = Path(text).expanduser()
+    try:
+        raw_path = Path(text).expanduser()
+    except RuntimeError:
+        # expanduser fails when HOME is not visible at the C level
+        # (nix wrapper environment). Fall back to os.environ.
+        import os as _os
+        raw_path = Path(text.replace("~", _os.environ.get("HOME", "/home/sinity"), 1) if text.startswith("~") else text)
     for name, project_path in _PROJECT_RESOLVED_PATHS:
         try:
             raw_path.relative_to(project_path)

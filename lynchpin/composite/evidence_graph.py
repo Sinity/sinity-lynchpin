@@ -170,7 +170,10 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
     edges.extend((edge for edge in _same_project_day_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_proximity_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
-    if os.environ.get('LYNCHPIN_SUBSTRATE_OVERLAP') == '1':
+    if os.environ.get('LYNCHPIN_SUBSTRATE_OVERLAP') == '0':
+        edges.extend((edge for edge in _polylogue_work_event_file_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+        edges.extend((edge for edge in _polylogue_work_event_symbol_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+    else:
         overlap_refresh_id = f'overlap:{generated_at.isoformat()}'
         try:
             sql_edges = _overlap_edges_via_substrate(nodes, refresh_id=overlap_refresh_id)
@@ -179,9 +182,6 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
             log.warning('substrate overlap path failed; falling back to Python: %s', exc)
             edges.extend((edge for edge in _polylogue_work_event_file_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
             edges.extend((edge for edge in _polylogue_work_event_symbol_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
-    else:
-        edges.extend((edge for edge in _polylogue_work_event_file_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
-        edges.extend((edge for edge in _polylogue_work_event_symbol_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _polylogue_work_event_tool_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     readiness = source_readiness(start=start, end=end, include_heavy_counts=mode != 'local-fast', include_github_frontier=mode == 'network')
     caveats = tuple(readiness.caveats)
@@ -191,8 +191,7 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple((edge for edge in _dedupe_edges(edges) if edge.source_id in node_ids and edge.target_id in node_ids))
     graph = EvidenceGraph(start=start, end=end, generated_at=generated_at, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
-    if os.environ.get('LYNCHPIN_SUBSTRATE_WRITE') == '1':
-        _promote_to_substrate(graph)
+    _promote_to_substrate(graph)
     return graph
 
 def _promote_to_substrate(graph: 'EvidenceGraph') -> None:

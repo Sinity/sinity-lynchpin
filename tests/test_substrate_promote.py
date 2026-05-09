@@ -144,9 +144,17 @@ def _make_symbol_entry(sha: str, qualified_name: str) -> dict:
 def test_substrate_promote_handles_missing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Run with non-existent JSON paths — must NOT raise; returns empty or zero counts."""
+    """Run with non-existent JSON paths — must NOT raise; returns dict.
+
+    The AI-work-events source pulls from the real polylogue archive so it
+    may return real data; that's fine — the test asserts that missing
+    JSON files don't crash the promote, not that every source yields 0.
+    """
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     _reload_config(monkeypatch)
+
+    import lynchpin.sources.polylogue as polylogue_src
+    monkeypatch.setattr(polylogue_src, "work_events", lambda *a, **kw: [])
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
 
@@ -156,9 +164,12 @@ def test_substrate_promote_handles_missing_files(
         symbol_changes_file=str(tmp_path / "nonexistent_sym.json"),
         write_evidence_graph=False,
     )
-    # Must return dict (possibly empty or all-zero) and not raise.
+    # Must return dict and not raise.
     assert isinstance(counts, dict)
-    assert all(v == 0 for v in counts.values())
+    # JSON-based sources all missing → counts should all be 0 (or absent)
+    assert counts.get("commits", 0) == 0
+    assert counts.get("file_changes", 0) == 0
+    assert counts.get("symbols", 0) == 0
 
 
 def test_substrate_promote_swallows_errors(

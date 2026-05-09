@@ -41,3 +41,25 @@ chisel projects="" output_root="" max_workers="4":
         --projects "{{projects}}" \
         --output-root "{{output_root}}" \
         --max-workers {{max_workers}}
+
+    # --- Tool inventory (H.3) -----------------------------------------------------------
+
+    # List all Lynchpin tools: MCP tools, CLI entry points, analysis scripts.
+    tool-inventory:
+        @echo "=== CLI Entry Points ==="
+        @echo "  current-state       python -m lynchpin.scripts.current_state"
+        @echo "  refresh             python -m lynchpin.analysis refresh"
+        @echo "  process-health      python -m lynchpin.scripts.process_health"
+        @echo "  velocity            python -m lynchpin.analysis.projects velocity"
+        @echo "  chisel              python -m lynchpin.analysis.projects chisel"
+        @echo ""
+        @echo "=== MCP Tools (18) ==="
+        @echo "  python -m lynchpin.mcp  # Start MCP server"
+        @echo ""
+        @echo "  query_substrate | list_substrate_tables | substrate_readiness_report"
+        @echo "  project_day_correlations | closure_chain_walks | file/symbol_overlap_edges"
+        @echo "  context_pack_diff | velocity_series | substrate_gap_draft"
+        @echo "  substrate_confidence_matrix | kind_audit | pr_review_rows"
+        @echo ""
+        @echo "=== Dev ==="
+        @echo "  just test | just lint | just typecheck | just check"
