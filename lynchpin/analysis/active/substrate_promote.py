@@ -32,6 +32,7 @@ SOURCE_SYMBOLS = "symbols"
 SOURCE_AI_WORK_EVENTS = "ai_work_events"
 SOURCE_EVIDENCE_GRAPH = "evidence_graph"
 SOURCE_PR_REVIEW = "pr_review"
+SOURCE_CALENDAR = "calendar"
 
 
 def run_substrate_promote(
@@ -114,12 +115,13 @@ def _do_promote(
 ) -> dict[str, int]:
     from lynchpin.duck.connection import apply_schema, connect, substrate_path
     from lynchpin.duck.promote import (
-        promote_commits,
-        promote_file_changes,
         promote_ai_work_events,
+        promote_calendar_events,
+        promote_commits,
+        promote_evidence_graph,
+        promote_file_changes,
         promote_pr_review_rows,
         promote_symbol_changes,
-        promote_evidence_graph,
     )
     from lynchpin.composite.work_event_kind import overlay_label
 
@@ -416,6 +418,45 @@ def _do_promote(
                         status="empty", reason="no PR rows in payload",
                         row_count=0,
                     )
+
+        # ── calendar_events: best-effort promotion from JSONL source ──────────
+        try:
+            from lynchpin.sources.calendar import iter_events
+            from pathlib import Path
+            from lynchpin.core.config import get_config
+
+            cal_path = get_config().calendar_jsonl
+            events = list(iter_events(start=window_start, end=window_end))
+            if events:
+                counts["calendar_events"] = promote_calendar_events(
+                    conn, refresh_id=refresh_id, events=events,
+                )
+                _record_status(
+                    conn, refresh_id=refresh_id, source=SOURCE_CALENDAR,
+                    status="ok", reason=None,
+                    row_count=counts["calendar_events"],
+                    window_start=window_start, window_end=window_end,
+                )
+            else:
+                cal_exists = cal_path.exists()
+                status = "unavailable" if not cal_exists else "empty"
+                reason = (
+                    f"calendar JSONL not found at {cal_path}"
+                    if not cal_exists
+                    else "no calendar events in window"
+                )
+                _record_status(
+                    conn, refresh_id=refresh_id, source=SOURCE_CALENDAR,
+                    status=status, reason=reason, row_count=0,
+                    window_start=window_start, window_end=window_end,
+                )
+        except Exception as exc:
+            log.warning("substrate_promote: calendar promotion skipped: %s", exc)
+            _record_status(
+                conn, refresh_id=refresh_id, source=SOURCE_CALENDAR,
+                status="error", reason=str(exc), row_count=0,
+                window_start=window_start, window_end=window_end,
+            )
 
     log.info(
         "substrate promotion complete: refresh_id=%s counts=%s",

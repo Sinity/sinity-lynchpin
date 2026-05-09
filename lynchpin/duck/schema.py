@@ -26,6 +26,7 @@ Conventions:
 from __future__ import annotations
 
 DROP_STATEMENTS: tuple[str, ...] = (
+    "DROP TABLE IF EXISTS calendar_event",
     "DROP TABLE IF EXISTS substrate_source_status",
     "DROP TABLE IF EXISTS evidence_edge",
     "DROP TABLE IF EXISTS evidence_node",
@@ -194,6 +195,35 @@ DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX pr_review_row_state ON pr_review_row(state)",
     "CREATE INDEX pr_review_row_merged_at ON pr_review_row(merged_at)",
     "CREATE INDEX pr_review_row_refresh_id ON pr_review_row(refresh_id)",
+
+    # ────────────────────────────────────────────────────────────────────
+    # calendar_event (M.12) — calendar events from any source
+    # ────────────────────────────────────────────────────────────────────
+    # Degraded-mode contract: when the calendar JSONL file is absent,
+    # the promoter records 'unavailable' rather than erroring. The table
+    # exists so MCP tools can query it; rows appear when upstream
+    # ingestion produces the processed file.
+    """
+    CREATE TABLE calendar_event (
+        uid              VARCHAR NOT NULL,
+        calendar         VARCHAR,
+        summary          VARCHAR,
+        start_at         TIMESTAMPTZ,
+        end_at           TIMESTAMPTZ,
+        all_day          BOOLEAN NOT NULL DEFAULT FALSE,
+        location         VARCHAR,
+        attendees        VARCHAR[] NOT NULL DEFAULT [],
+        description      VARCHAR,
+        status           VARCHAR,
+        created_at       TIMESTAMPTZ,
+        updated_at       TIMESTAMPTZ,
+        refresh_id       VARCHAR NOT NULL,
+        materialized_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (uid, refresh_id)
+    )
+    """,
+    "CREATE INDEX calendar_event_start ON calendar_event(start_at)",
+    "CREATE INDEX calendar_event_refresh_id ON calendar_event(refresh_id)",
 )
 
 
@@ -302,6 +332,7 @@ DOMAIN_TABLES: tuple[str, ...] = (
     "ai_work_event",
     "symbol_change",
     "pr_review_row",
+    "calendar_event",
     "evidence_graph_build",
     "evidence_node",
     "evidence_edge",

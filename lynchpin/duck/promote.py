@@ -269,6 +269,7 @@ def promote_symbol_changes(
     conn.execute("DELETE FROM symbol_change WHERE refresh_id = ?", [refresh_id])
 
     tuples: list[tuple[Any, ...]] = []
+    seen: set[tuple[str, str, str]] = set()  # dedupe (sha, path, qualified_name)
     for r in rows:
         sha = r.get("sha") or ""
         project = r.get("project") or ""
@@ -285,6 +286,10 @@ def promote_symbol_changes(
         if row_date is None:
             continue  # Skip rows without a parseable date.
 
+        key = (sha, r.get("path") or "", r.get("qualified_name") or "")
+        if key in seen:
+            continue
+        seen.add(key)
         tuples.append((
             sha,
             project,
@@ -388,120 +393,6 @@ def promote_pr_review_rows(
         )
     log.debug("promote_pr_review_rows: %d rows for refresh_id=%s", len(tuples), refresh_id)
     return len(tuples)
-
-
-# ── promote_all_from_sources ──────────────────────────────────────────────────
-
-
-def promote_all_from_sources(
-    *,
-    refresh_id: str,
-    start: date,
-    end: date,
-    projects: tuple[str, ...] | None = None,
-) -> dict[str, int]:
-    """Open substrate, ensure schema, promote everything from sources.
-
-    Returns per-table row counts.
-
-    Sources that are unavailable (no data, missing JSON files) are promoted
-    with count 0 and a debug-level warning — they don't abort the run.
-    """
-    from lynchpin.duck.connection import apply_schema, substrate_path
-    from lynchpin.duck.connection import connect
-
-    counts: dict[str, int] = {
-        "commit_fact": 0,
-        "file_change_fact": 0,
-        "ai_work_event": 0,
-        "symbol_change": 0,
-        "pr_review_row": 0,
-    }
-
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
-
-        # ── git commits ────────────────────────────────────────────────────
-        try:
-            from lynchpin.sources.git import commit_facts, file_change_facts
-            proj_seq = list(projects) if projects else None
-            facts_iter = commit_facts(start=start, end=end)
-            counts["commit_fact"] = promote_commits(
-                conn,
-                refresh_id=refresh_id,
-                facts=facts_iter,
-            )
-            file_facts_iter = file_change_facts(start=start, end=end)
-            counts["file_change_fact"] = promote_file_changes(
-                conn,
-                refresh_id=refresh_id,
-                facts=file_facts_iter,
-            )
-        except Exception as exc:
-            log.warning("promote_all: git source failed: %s", exc)
-
-        # ── ai work events ─────────────────────────────────────────────────
-        try:
-            from lynchpin.sources.polylogue import work_events
-            from lynchpin.composite.work_event_kind import overlay_label
-
-            def _classify(ev: Any) -> Any:
-                return overlay_label(
-                    polylogue_kind=ev.kind,
-                    polylogue_confidence=float(ev.confidence or 0.0),
-                    file_paths=ev.file_paths,
-                    tools_used=ev.tools_used,
-                    duration_ms=int(ev.duration_ms or 0),
-                )
-
-            wevents = work_events(start=start, end=end)
-            counts["ai_work_event"] = promote_ai_work_events(
-                conn,
-                refresh_id=refresh_id,
-                events=wevents,
-                classifier=_classify,
-            )
-        except Exception as exc:
-            log.warning("promote_all: polylogue work_events failed: %s", exc)
-
-        # ── symbol changes ─────────────────────────────────────────────────
-        try:
-            from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path
-
-            sym_path = resolve_analysis_path("active_symbol_changes.json")
-            payload = load_json_if_exists(sym_path)
-            if payload:
-                sym_rows = payload.get("events") or []
-                if projects:
-                    sym_rows = [r for r in sym_rows if r.get("project") in projects]
-                counts["symbol_change"] = promote_symbol_changes(
-                    conn, refresh_id=refresh_id, rows=sym_rows,
-                )
-            else:
-                log.debug("promote_all: active_symbol_changes.json missing — skipping")
-        except Exception as exc:
-            log.warning("promote_all: symbol_changes failed: %s", exc)
-
-        # ── pr review rows ─────────────────────────────────────────────────
-        try:
-            from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path
-
-            pr_path = resolve_analysis_path("active_pr_review_topology.json")
-            payload = load_json_if_exists(pr_path)
-            if payload:
-                pr_rows = payload.get("prs") or []
-                if projects:
-                    pr_rows = [r for r in pr_rows if r.get("project") in projects]
-                counts["pr_review_row"] = promote_pr_review_rows(
-                    conn, refresh_id=refresh_id, rows=pr_rows,
-                )
-            else:
-                log.debug("promote_all: active_pr_review_topology.json missing — skipping")
-        except Exception as exc:
-            log.warning("promote_all: pr_review failed: %s", exc)
-
-    return counts
-
 
 # ── evidence_graph ────────────────────────────────────────────────────────────
 
@@ -639,12 +530,57 @@ def promote_evidence_graph(
     return {"build": 1, "nodes": len(node_rows), "edges": len(edge_rows)}
 
 
+# ── calendar_event ─────────────────────────────────────────────────────────────
+
+
+def promote_calendar_events(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    events: Iterable[Any],
+) -> int:
+    """INSERT calendar_event rows, idempotent on refresh_id (Arc M.12)."""
+    conn.execute("DELETE FROM calendar_event WHERE refresh_id = ?", [refresh_id])
+
+    rows: list[tuple[Any, ...]] = []
+    for ev in events:
+        rows.append((
+            ev.uid or "",
+            getattr(ev, "calendar", None),
+            ev.summary or "",
+            ev.start_at,
+            ev.end_at,
+            bool(getattr(ev, "all_day", False)),
+            getattr(ev, "location", ""),
+            list(getattr(ev, "attendees", []) or []),
+            getattr(ev, "description", None),
+            getattr(ev, "status", None),
+            getattr(ev, "created_at", None),
+            getattr(ev, "updated_at", None),
+            refresh_id,
+        ))
+
+    if rows:
+        conn.executemany(
+            """
+            INSERT INTO calendar_event (
+                uid, calendar, summary, start_at, end_at, all_day,
+                location, attendees, description, status,
+                created_at, updated_at, refresh_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    log.debug("promote_calendar_events: %d rows for refresh_id=%s", len(rows), refresh_id)
+    return len(rows)
+
+
 __all__ = [
+    "promote_calendar_events",
     "promote_commits",
     "promote_file_changes",
     "promote_ai_work_events",
     "promote_symbol_changes",
     "promote_pr_review_rows",
-    "promote_all_from_sources",
     "promote_evidence_graph",
 ]

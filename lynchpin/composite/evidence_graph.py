@@ -644,6 +644,9 @@ def _overlap_edges_via_substrate(nodes: Sequence[EvidenceNode], *, refresh_id: s
             promote_symbol_changes(conn, refresh_id=refresh_id, rows=symbol_rows)
         edges.extend(compute_file_overlap_edges(conn, we_refresh_id=refresh_id, commit_refresh_id=refresh_id))
         edges.extend(compute_symbol_overlap_edges(conn, we_refresh_id=refresh_id, commit_refresh_id=refresh_id))
+        conn.execute('DELETE FROM symbol_change WHERE refresh_id = ?', [refresh_id])
+        conn.execute('DELETE FROM ai_work_event WHERE refresh_id = ?', [refresh_id])
+        conn.execute('DELETE FROM commit_fact WHERE refresh_id = ?', [refresh_id])
     return tuple(edges)
 
 def _polylogue_work_event_file_overlap_edges(nodes: Sequence[EvidenceNode], *, max_gap_hours: float=24.0) -> tuple[EvidenceEdge, ...]:

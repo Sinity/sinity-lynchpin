@@ -57,6 +57,7 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "evidence_node",
         "evidence_edge",
         "substrate_source_status",
+        "calendar_event",
     }
     assert expected == table_names
 
