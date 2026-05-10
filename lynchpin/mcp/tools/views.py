@@ -8,7 +8,7 @@ cause ``issubclass('str', Context)`` → TypeError.
 from dataclasses import asdict
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools.substrate import _json_safe, _latest_refresh_id
+from lynchpin.mcp.tools._utils import json_safe as _json_safe, latest_refresh_id as _latest_refresh_id, best_refresh_id
 
 def _dc_to_dict(obj: Any) -> dict[str, Any]:
     """Convert a dataclass to a JSON-serialisable dict.
@@ -33,8 +33,8 @@ def _dc_to_dict(obj: Any) -> dict[str, Any]:
 @app.tool()
 def project_day_correlations(refresh_id: str | None=None, start: str | None=None, end: str | None=None, projects: list[str] | None=None, min_source_count: int | None=None) -> list[dict[str, Any]]:
     from datetime import date as _date
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import load_project_day_correlations
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import load_project_day_correlations
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
@@ -47,7 +47,7 @@ def project_day_correlations(refresh_id: str | None=None, start: str | None=None
 def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, min_chain_depth: int | None=None) -> list[dict[str, Any]]:
     """Query the issue_closure_chain_walk view.
 
-    Wraps ``lynchpin.duck.reader.load_issue_closure_chain_walks``.
+    Wraps ``lynchpin.substrate.reader.load_issue_closure_chain_walks``.
 
     Parameters:
         refresh_id:     filter to a specific evidence-graph build.
@@ -57,8 +57,8 @@ def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, m
     Returns list of dicts with keys: refresh_id, root_id, project,
     issue_number, reachable_node_ids, chain_depth, reachable_count.
     """
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import load_issue_closure_chain_walks
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import load_issue_closure_chain_walks
     path = substrate_path()
     with connect(path) as conn:
         rows = load_issue_closure_chain_walks(conn, refresh_id=refresh_id, project=project, min_chain_depth=min_chain_depth)
@@ -78,8 +78,8 @@ def file_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str | 
     Returns list of dicts with keys: source_id, target_id, relation,
     evidence, weight.
     """
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import compute_file_overlap_edges
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import compute_file_overlap_edges
     path = substrate_path()
     with connect(path) as conn:
         edges = compute_file_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
@@ -99,8 +99,8 @@ def symbol_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str 
     Returns list of dicts with keys: source_id, target_id, relation,
     evidence, weight.
     """
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import compute_symbol_overlap_edges
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import compute_symbol_overlap_edges
     path = substrate_path()
     with connect(path) as conn:
         edges = compute_symbol_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
@@ -110,7 +110,7 @@ def symbol_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str 
 def pr_review_rows(projects: list[str] | None=None, states: list[str] | None=None, only_with_friction: bool=False, refresh_id: str | None=None) -> list[dict[str, Any]]:
     """Read the pr_review_row substrate table.
 
-    Wraps ``lynchpin.duck.reader.load_pr_review_rows``.
+    Wraps ``lynchpin.substrate.reader.load_pr_review_rows``.
 
     Parameters:
         projects:          filter by project name list; None = all.
@@ -126,8 +126,8 @@ def pr_review_rows(projects: list[str] | None=None, states: list[str] | None=Non
     time_to_first_review_minutes, time_to_close_minutes,
     time_to_merge_minutes, final_decision, friction_signals.
     """
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import load_pr_review_rows
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import load_pr_review_rows
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
     sts: tuple[str, ...] | None = tuple(states) if states else None
     path = substrate_path()
@@ -156,7 +156,7 @@ def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) ->
             "source_status_diffs": [...],
         }
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         refresh_ids = [r[0] for r in conn.execute('SELECT DISTINCT refresh_id FROM substrate_source_status ORDER BY recorded_at').fetchall()]
     if len(refresh_ids) < 1:
@@ -190,169 +190,6 @@ def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) ->
     return diffs
 
 @app.tool()
-def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None, window_days: int=7) -> list[dict[str, Any]]:
-    """Project velocity time-series with rolling windows (Arc D.4).
-
-    SQL window functions over project_day_correlation. Returns daily commit
-    counts with rolling average and cumulative count per project.
-
-    Parameters:
-        projects:     filter to specific projects; None = all.
-        refresh_id:   snapshot to query; default = most recent promote.
-        window_days:  rolling-average window size (default 7).
-
-    Returns:
-        [{"project": str, "date": "YYYY-MM-DD", "commit_count": int,
-          "rolling_avg": float, "cumulative": int, "source_count": int}]
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    path = substrate_path()
-    with connect(path, read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return []
-    proj_filter = ''
-    params: list[Any] = [refresh_id]
-    if projects:
-        placeholders = ','.join(['?'] * len(projects))
-        proj_filter = f'AND project IN ({placeholders})'
-        params.extend(projects)
-    with connect(path, read_only=True) as conn:
-        sql = f'\n            SELECT project, date, commit_count,\n                   ROUND(AVG(commit_count) OVER (\n                       PARTITION BY project ORDER BY date\n                       ROWS BETWEEN {int(window_days) - 1} PRECEDING AND CURRENT ROW\n                   ), 1) AS rolling_avg,\n                   SUM(commit_count) OVER (\n                       PARTITION BY project ORDER BY date\n                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n                   ) AS cumulative,\n                   source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}\n            ORDER BY project, date\n        '
-        rows = conn.execute(sql, params).fetchall()
-    cols = ['project', 'date', 'commit_count', 'rolling_avg', 'cumulative', 'source_count']
-    return [{c: _json_safe(v) for c, v in zip(cols, row)} for row in rows]
-
-@app.tool()
-def substrate_gap_draft() -> dict[str, Any]:
-    """Read substrate_source_status and emit a tracker-issue draft (Arc E.3).
-
-    Identifies sources that are 'unavailable' or 'error' in the latest refresh
-    and produces a structured draft suitable for a GitHub issue. Never
-    auto-creates issues — the output is text for the user to review.
-
-    Returns:
-        {
-            "needs_attention": bool,
-            "draft_title": str | None,
-            "draft_body": str | None,
-            "gaps": [{"source": str, "status": str, "reason": str}],
-            "all_sources_healthy": bool,
-        }
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        refresh_id = _latest_refresh_id(conn)
-        if refresh_id is None:
-            return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
-        gaps = conn.execute("SELECT source, status, reason, row_count FROM substrate_source_status WHERE refresh_id = ? AND status IN ('unavailable', 'error') ORDER BY source", [refresh_id]).fetchall()
-        gap_list = [{'source': r[0], 'status': r[1], 'reason': r[2], 'row_count': r[3]} for r in gaps]
-        if not gap_list:
-            return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
-        draft_title = f'substrate: {len(gap_list)} source(s) unavailable or errored'
-        lines = [f'## Substrate gap report — {refresh_id}', '', f'{len(gap_list)} source(s) need attention:', '']
-        for g in gap_list:
-            lines.append(f"- **{g['source']}** — `{g['status']}`" + (f": {g['reason']}" if g['reason'] else ''))
-        lines.extend(['', '### Action', '', 'Run `substrate_readiness_report` to review, then:'])
-        for g in gap_list:
-            if g['source'] == 'pr_review':
-                lines.append('- `pr_review`: run `pr_review_topology` to generate `active_pr_review_topology.json`.')
-            elif g['source'] == 'symbols':
-                lines.append('- `symbols`: install tree-sitter grammars in the nix environment, then re-run `active_symbol_changes`.')
-            else:
-                lines.append(f"- `{g['source']}`: investigate — `{g.get('reason', 'unknown')}`")
-        return {'needs_attention': True, 'draft_title': draft_title, 'draft_body': '\n'.join(lines), 'gaps': gap_list, 'all_sources_healthy': False}
-
-@app.tool()
-def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
-    """Per-dimension confidence scores for the substrate (Arc M.17).
-
-    Aggregates across evidence_node metadata, substrate_source_status,
-    and evidence_graph_build caveats to produce a per-source confidence
-    score based on row count, source freshness, cross-source agreement,
-    and caveat count.
-
-    Parameters:
-        refresh_id: snapshot to assess; default = latest promote.
-
-    Returns:
-        {
-            "refresh_id": str,
-            "dimensions": [
-                {"source": str, "node_count": int, "project_count": int,
-                 "date_span_days": int, "has_caveats": bool,
-                 "status": "ok|empty|unavailable|error"},
-            ],
-            "summary": {"total_nodes": int, "source_count": int,
-                        "healthy_source_count": int, "confidence_pct": float},
-        }
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return {'error': 'no promote runs'}
-        dimensions = []
-        for row in conn.execute("\n            SELECT\n                source,\n                COUNT(*) AS node_count,\n                COUNT(DISTINCT project) AS project_count,\n                COALESCE(DATE_DIFF('day', MIN(date), MAX(date)), 0) AS date_span_days,\n                COALESCE(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END), 0) > 0 AS has_caveats\n            FROM evidence_node\n            WHERE refresh_id = ?\n            GROUP BY source\n            ORDER BY node_count DESC\n        ", [refresh_id]).fetchall():
-            dimensions.append({'source': row[0], 'node_count': row[1], 'project_count': row[2], 'date_span_days': row[3], 'has_caveats': bool(row[4])})
-        status_map = {}
-        for srow in conn.execute('SELECT source, status FROM substrate_source_status WHERE refresh_id = ?', [refresh_id]).fetchall():
-            status_map[srow[0]] = srow[1]
-        for dim in dimensions:
-            dim['status'] = status_map.get(dim['source'], 'unknown')
-        total_nodes = sum((d['node_count'] for d in dimensions))
-        healthy = sum((1 for d in dimensions if d['status'] == 'ok'))
-        confidence = healthy / max(len(dimensions), 1) * 100
-    return {'refresh_id': refresh_id, 'dimensions': dimensions, 'summary': {'total_nodes': total_nodes, 'source_count': len(dimensions), 'healthy_source_count': healthy, 'confidence_pct': round(confidence, 1)}}
-
-@app.tool()
-def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
-    """Polylogue-vs-Lynchpin kind audit (Arc K.1).
-
-    Reads ai_work_event.kind_* columns to surface agreement rates,
-    disagreement cases, tier distributions, and per-kind confidence
-    breakdowns. This is the quantitative foundation for the boundary doc
-    (K.4) — how often does the lynchpin overlay disagree with polylogue's
-    raw classification?
-
-    Parameters:
-        refresh_id: promote snapshot (default: latest).
-
-    Returns:
-        {
-            "refresh_id": str,
-            "total": int,
-            "tier_distribution": {"high": N, "medium": N, "low": N},
-            "source_distribution": {"agreement": N, "disagreement": N,
-                                     "polylogue": N, "lynchpin_overlay": N},
-            "disagreement_rate": float,
-            "top_disagreements": [{"kind": str, "polylogue_kind": str,
-                                    "overlay_kind": str, "count": int}],
-            "per_kind_confidence": [{"kind": str, "count": int,
-                                      "avg_confidence": float}],
-        }
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return {'error': 'no promote runs'}
-        total = conn.execute('SELECT COUNT(*) FROM ai_work_event WHERE refresh_id = ?', [refresh_id]).fetchone()[0]
-        tiers = {}
-        for r in conn.execute('SELECT kind_tier, COUNT(*) FROM ai_work_event WHERE refresh_id = ? GROUP BY kind_tier', [refresh_id]).fetchall():
-            tiers[r[0] or 'null'] = r[1]
-        sources = {}
-        for r in conn.execute('SELECT kind_source, COUNT(*) FROM ai_work_event WHERE refresh_id = ? GROUP BY kind_source', [refresh_id]).fetchall():
-            sources[r[0] or 'null'] = r[1]
-        disagreements = conn.execute('\n            SELECT kind, polylogue_kind, overlay_kind, COUNT(*) AS cnt\n            FROM ai_work_event\n            WHERE refresh_id = ?\n              AND polylogue_kind IS NOT NULL\n              AND overlay_kind IS NOT NULL\n              AND polylogue_kind != overlay_kind\n            GROUP BY kind, polylogue_kind, overlay_kind\n            ORDER BY cnt DESC LIMIT 10\n        ', [refresh_id]).fetchall()
-        per_kind = conn.execute('\n            SELECT kind, COUNT(*) AS cnt,\n                   ROUND(AVG(kind_confidence), 2) AS avg_conf\n            FROM ai_work_event\n            WHERE refresh_id = ? AND kind IS NOT NULL\n            GROUP BY kind ORDER BY cnt DESC LIMIT 20\n        ', [refresh_id]).fetchall()
-    disagree_count = sources.get('disagreement', 0)
-    return {'refresh_id': refresh_id, 'total': total, 'tier_distribution': tiers, 'source_distribution': sources, 'disagreement_rate': round(disagree_count / max(total, 1), 3), 'top_disagreements': [{'kind': r[0], 'polylogue_kind': r[1], 'overlay_kind': r[2], 'count': r[3]} for r in disagreements], 'per_kind_confidence': [{'kind': r[0], 'count': r[1], 'avg_confidence': r[2]} for r in per_kind]}
-
-@app.tool()
 def project_relationship_graph(refresh_id: str | None=None, min_edge_count: int=1) -> list[dict[str, Any]]:
     """Cross-project evidence edge graph (Arc M.11).
 
@@ -368,7 +205,7 @@ def project_relationship_graph(refresh_id: str | None=None, min_edge_count: int=
     Returns:
         [{"source_project": str, "target_project": str, "edge_count": int}]
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
@@ -377,98 +214,6 @@ def project_relationship_graph(refresh_id: str | None=None, min_edge_count: int=
                 return []
         rows = conn.execute('\n            SELECT ns.project AS proj_a, nt.project AS proj_b,\n                   COUNT(*) AS edge_count\n            FROM evidence_edge e\n            JOIN evidence_node ns\n              ON ns.id = e.source_id AND ns.refresh_id = e.refresh_id\n            JOIN evidence_node nt\n              ON nt.id = e.target_id AND nt.refresh_id = e.refresh_id\n            WHERE ns.project IS NOT NULL\n              AND nt.project IS NOT NULL\n              AND ns.project != nt.project\n              AND e.refresh_id = ?\n            GROUP BY ns.project, nt.project\n            HAVING COUNT(*) >= ?\n            ORDER BY edge_count DESC\n        ', [refresh_id, int(min_edge_count)]).fetchall()
     return [{'source_project': r[0], 'target_project': r[1], 'edge_count': r[2]} for r in rows]
-
-@app.tool()
-def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
-    """Auto-summary of project velocity over the latest refresh window (Arc M.6).
-
-    Aggregates project_day_correlation into a narrative summary: total
-    commits, active days, peak day, per-project breakdown, and the
-    dominant project. Renders as structured text suitable for inclusion
-    in a context pack or seed note.
-
-    Parameters:
-        projects:   filter to specific projects; None = top 8 by commits.
-        refresh_id: snapshot (default: latest).
-
-    Returns:
-        {
-            "window": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
-            "total_commits": int,
-            "total_active_days": int,
-            "peak": {"project": str, "date": "YYYY-MM-DD", "commits": int},
-            "projects": [{"project": str, "commits": int, "active_days": int}],
-            "summary_text": str,
-        }
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return {'error': 'no promote runs'}
-        win = conn.execute('\n            SELECT MIN(date), MAX(date)\n            FROM project_day_correlation WHERE refresh_id = ?\n        ', [refresh_id]).fetchone()
-        proj_filter = ''
-        params: list[Any] = [refresh_id]
-        if projects:
-            placeholders = ','.join(['?'] * len(projects))
-            proj_filter = f'AND project IN ({placeholders})'
-            params.extend(projects)
-        proj_rows = conn.execute(f'\n            SELECT project,\n                   SUM(commit_count) AS commits,\n                   COUNT(*) AS active_days,\n                   ROUND(AVG(commit_count), 1) AS avg_daily\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}\n            GROUP BY project ORDER BY commits DESC\n        ', params).fetchall()
-        peak = conn.execute(f'\n            SELECT project, date, commit_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? {proj_filter}\n            ORDER BY commit_count DESC LIMIT 1\n        ', params).fetchone()
-        total_commits = sum((r[1] for r in proj_rows))
-        total_days = sum((r[2] for r in proj_rows))
-        projects_list = [{'project': r[0], 'commits': r[1], 'active_days': r[2], 'avg_daily': r[3]} for r in proj_rows]
-        if proj_rows:
-            top = proj_rows[0]
-            lines = [f'In the window {win[0]} → {win[1]}: {total_commits} commits across {len(proj_rows)} projects ({total_days} active project-days).', '', f'**{top[0]}** led with {top[1]} commits over {top[2]} active days (avg {top[3]}/day).']
-            if peak:
-                lines.append(f'Peak day: **{peak[0]}** on {peak[1]} ({peak[2]} commits).')
-            if len(proj_rows) > 1:
-                rest = [f'**{p[0]}** ({p[1]} commits)' for p in proj_rows[1:4]]
-                lines.append(f"Also active: {', '.join(rest)}.")
-            if len(proj_rows) > 4:
-                lines.append(f'(+{len(proj_rows) - 4} more projects with lower activity)')
-            summary = '\n'.join(lines)
-        else:
-            summary = 'No project activity in this window.'
-    return {'window': {'start': _json_safe(win[0]), 'end': _json_safe(win[1])}, 'total_commits': total_commits, 'total_active_days': total_days, 'peak': {'project': peak[0], 'date': _json_safe(peak[1]), 'commits': peak[2]} if peak else None, 'projects': projects_list, 'summary_text': summary}
-
-@app.tool()
-def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) -> dict[str, Any]:
-    """Symbol survival at HEAD — which work packages persist? (Arc D.3)
-
-    Self-joins symbol_change on qualified_name: symbols whose latest
-    change_type is not a deletion are considered surviving. Groups by
-    project + date to compute per-day survival rates.
-
-    Parameters:
-        refresh_id:  snapshot (default: latest).
-        min_symbols: minimum symbol count per project-day to include.
-
-    Returns:
-        {
-            "refresh_id": str,
-            "total_symbols": int,
-            "surviving": int,
-            "overall_survival_rate": float,
-            "per_project_day": [
-                {"project": str, "date": str, "total": int,
-                 "surviving": int, "rate": float}
-            ],
-        }
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return {'error': 'no promote runs'}
-        total = conn.execute('SELECT COUNT(*) FROM symbol_change WHERE refresh_id = ?', [refresh_id]).fetchone()[0]
-        rows = conn.execute("\n            WITH ranked AS (\n                SELECT project, date, qualified_name, change_type,\n                       ROW_NUMBER() OVER (\n                           PARTITION BY qualified_name\n                           ORDER BY date DESC, sha DESC\n                       ) AS rn\n                FROM symbol_change\n                WHERE refresh_id = ?\n            ),\n            latest AS (\n                SELECT project, date, qualified_name, change_type\n                FROM ranked WHERE rn = 1\n            )\n            SELECT project, date,\n                   COUNT(*) AS total_syms,\n                   SUM(CASE WHEN change_type != 'D' THEN 1 ELSE 0 END) AS surviving\n            FROM latest\n            GROUP BY project, date\n            HAVING COUNT(*) >= ?\n            ORDER BY date, project\n        ", [refresh_id, int(min_symbols)]).fetchall()
-        surviving_total = sum((r[3] for r in rows))
-        per_day = [{'project': r[0], 'date': _json_safe(r[1]), 'total': r[2], 'surviving': r[3], 'rate': round(r[3] / max(r[2], 1), 3)} for r in rows]
-    return {'refresh_id': refresh_id, 'total_symbols': total, 'surviving': surviving_total, 'overall_survival_rate': round(surviving_total / max(total, 1), 3), 'per_project_day': per_day}
 
 @app.tool()
 def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
@@ -494,7 +239,7 @@ def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -
             "friction_breakdown": [{"project": str, "signal": str, "count": int}],
         }
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
@@ -531,7 +276,7 @@ def calendar_events(start: str | None=None, end: str | None=None, calendar: str 
           "location", "attendees", "description", "status"}]
     """
     from datetime import date as _date
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     sql = 'SELECT uid, calendar, summary, start_at, end_at, all_day, location, attendees, description, status FROM calendar_event WHERE 1=1'
     params: list[Any] = []
     with connect(substrate_path(), read_only=True) as conn:
@@ -572,7 +317,7 @@ def refactor_candidates(project: str | None=None, refresh_id: str | None=None, m
           "similarity": float, "date": str, "sha": str}]
     """
     from difflib import SequenceMatcher
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
@@ -604,40 +349,6 @@ def refactor_candidates(project: str | None=None, refresh_id: str | None=None, m
     return candidates[:50]
 
 @app.tool()
-def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
-    """Symbol-level churn per project per day (Phase B.1).
-
-    Extends commit-count velocity with symbol-change dimensions: added,
-    deleted, modified, renamed per project-day. Joins symbol_change to
-    project_day_correlation for a unified velocity surface.
-
-    Parameters:
-        projects:   filter to specific projects; None = all.
-        refresh_id: snapshot (default: latest).
-
-    Returns:
-        [{"project": str, "date": str, "commit_count": int,
-          "symbols_added": int, "symbols_modified": int,
-          "symbols_renamed": int, "symbols_total": int}]
-    """
-    from lynchpin.duck.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
-            if refresh_id is None:
-                return []
-        outer_filter = ''
-        inner_filter = ''
-        params: list[Any] = [refresh_id, refresh_id]
-        if projects:
-            placeholders = ','.join(['?'] * len(projects))
-            outer_filter = f'AND p.project IN ({placeholders})'
-            inner_filter = f'AND project IN ({placeholders})'
-            params = [refresh_id, *projects, refresh_id, *projects]
-        rows = conn.execute(f"\n            SELECT COALESCE(p.project, s.project) AS project,\n                   COALESCE(p.date, s.date) AS date,\n                   COALESCE(p.commit_count, 0) AS commit_count,\n                   COALESCE(sym.added, 0) AS symbols_added,\n                   COALESCE(sym.modified, 0) AS symbols_modified,\n                   COALESCE(sym.renamed, 0) AS symbols_renamed,\n                   COALESCE(sym.total, 0) AS symbols_total\n            FROM project_day_correlation p\n            FULL OUTER JOIN (\n                SELECT project, date,\n                       SUM(CASE WHEN change_type = 'A' THEN 1 ELSE 0 END) AS added,\n                       SUM(CASE WHEN change_type = 'M' THEN 1 ELSE 0 END) AS modified,\n                       SUM(CASE WHEN change_type = 'R' THEN 1 ELSE 0 END) AS renamed,\n                       COUNT(*) AS total\n                FROM symbol_change\n                WHERE refresh_id = ? {inner_filter}\n                GROUP BY project, date\n            ) sym ON p.project = sym.project AND p.date = sym.date\n               AND p.refresh_id = ?\n            {outer_filter}\n            ORDER BY project, date\n        ", params).fetchall()
-    return [{'project': r[0], 'date': _json_safe(r[1]), 'commit_count': r[2], 'symbols_added': r[3], 'symbols_modified': r[4], 'symbols_renamed': r[5], 'symbols_total': r[6]} for r in rows]
-
-@app.tool()
 def file_hotspots(top_n: int=20, project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
     """Churn hotspots — most frequently changed files/directories (Phase B.2).
 
@@ -653,7 +364,7 @@ def file_hotspots(top_n: int=20, project: str | None=None, refresh_id: str | Non
         [{"path_root": str, "commits": int, "file_changes": int,
           "project_count": int, "top_project": str}]
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
@@ -668,194 +379,259 @@ def file_hotspots(top_n: int=20, project: str | None=None, refresh_id: str | Non
     return [{'path_root': r[0], 'commits': r[1], 'file_changes': r[2], 'project_count': r[3], 'top_project': r[4]} for r in rows]
 
 @app.tool()
-def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> dict[str, Any]:
-    """Commit time-of-day × day-of-week patterns per project (Phase B.3).
+def conventional_commits(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Conventional commit distribution per project.
 
-    Groups commit_fact by hour and weekday to surface work rhythms:
-    morning vs night coding, weekend vs weekday sprints.
-
-    Parameters:
-        project:    filter to one project; None = all.
-        refresh_id: snapshot (default: latest).
-
-    Returns:
-        {
-            "hourly": [{"hour": 0-23, "count": int}],
-            "weekday": [{"weekday": 0-6, "name": "Mon", "count": int}],
-            "peak_hour": int, "peak_weekday": str,
-        }
+    Breaks down commit_fact by conventional_kind (feat/fix/refactor/etc.)
+    per project. Which projects are feature-heavy vs fix-heavy?
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
-                return {'hourly': [], 'weekday': [], 'peak_hour': None, 'peak_weekday': None}
+                return []
         proj_filter = 'AND project = ?' if project else ''
         params: list[Any] = [refresh_id]
         if project:
             params.append(project)
-        hourly = conn.execute(f'\n            SELECT EXTRACT(HOUR FROM authored_at)::INTEGER AS hr,\n                   COUNT(*) AS cnt\n            FROM commit_fact\n            WHERE refresh_id = ? {proj_filter}\n            GROUP BY hr ORDER BY hr\n        ', params).fetchall()
-        weekday_names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-        weekday = conn.execute(f'\n            SELECT EXTRACT(DOW FROM authored_at)::INTEGER AS dow,\n                   COUNT(*) AS cnt\n            FROM commit_fact\n            WHERE refresh_id = ? {proj_filter}\n            GROUP BY dow ORDER BY dow\n        ', params).fetchall()
-    peak_hour = max(hourly, key=lambda r: r[1])[0] if hourly else None
-    peak_dow = max(weekday, key=lambda r: r[1]) if weekday else None
-    return {'hourly': [{'hour': r[0], 'count': r[1]} for r in hourly], 'weekday': [{'weekday': r[0], 'name': weekday_names[r[0]], 'count': r[1]} for r in weekday], 'peak_hour': peak_hour, 'peak_weekday': weekday_names[peak_dow[0]] if peak_dow else None}
+        rows = conn.execute(f'\n            SELECT project, conventional_kind, COUNT(*) AS cnt,\n                   ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(PARTITION BY project), 1) AS pct\n            FROM commit_fact\n            WHERE refresh_id = ? AND conventional_kind IS NOT NULL {proj_filter}\n            GROUP BY project, conventional_kind\n            ORDER BY project, cnt DESC\n        ', params).fetchall()
+    return [{'project': r[0], 'kind': r[1], 'count': r[2], 'pct': r[3]} for r in rows]
 
 @app.tool()
-def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
-    from lynchpin.duck.connection import connect, substrate_path
-    RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low', 'calendar': 'medium'}
+def ai_tool_usage(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """AI tool usage patterns from work events.
+
+    Which tools (Edit, Write, Bash, Read, etc.) appear most in AI work
+    events? Per-project breakdown with counts.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
                 return []
-        rows = conn.execute('\n            SELECT source,\n                   COUNT(*) AS node_count,\n                   ROUND(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END)\n                         * 100.0 / COUNT(*), 1) AS caveated_pct\n            FROM evidence_node\n            WHERE refresh_id = ?\n            GROUP BY source\n            ORDER BY node_count DESC\n        ', [refresh_id]).fetchall()
+        proj_filter = 'AND project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        rows = conn.execute(f'\n            WITH unnested AS (\n                SELECT project, UNNEST(tools_used) AS tool\n                FROM ai_work_event\n                WHERE refresh_id = ? AND len(tools_used) > 0 {proj_filter}\n            )\n            SELECT project, tool, COUNT(*) AS cnt\n            FROM unnested GROUP BY project, tool ORDER BY project, cnt DESC\n        ', params).fetchall()
+    return [{'project': r[0], 'tool': r[1], 'count': r[2]} for r in rows]
+
+@app.tool()
+def breaking_changes(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Breaking change tracker per project.
+
+    Lists commits flagged as breaking changes, sorted most recent first.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return []
+        proj_filter = 'AND project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        rows = conn.execute(f'\n            SELECT project, sha, subject, authored_at\n            FROM commit_fact\n            WHERE refresh_id = ? AND breaking_change = TRUE {proj_filter}\n            ORDER BY authored_at DESC\n        ', params).fetchall()
+    return [{'project': r[0], 'sha': r[1][:8], 'subject': r[2][:80], 'date': _json_safe(r[3])} for r in rows]
+
+@app.tool()
+def review_bottlenecks(min_rounds: int=2, min_review_hours: float=24.0, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Code review bottleneck detection.
+
+    Flags PRs that took >min_rounds review rounds or >min_review_hours
+    to first review. Surfaces friction-heavy PRs.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return []
+        rows = conn.execute('\n            SELECT project, number, title, url, author,\n                   review_round_count,\n                   ROUND(time_to_first_review_minutes/60.0, 1) AS review_hours,\n                   changes_requested_count, approval_count, friction_signals\n            FROM pr_review_row\n            WHERE refresh_id = ?\n              AND (review_round_count >= ? OR time_to_first_review_minutes >= ?)\n            ORDER BY review_round_count DESC, time_to_first_review_minutes DESC\n            LIMIT 50\n        ', [refresh_id, int(min_rounds), float(min_review_hours) * 60]).fetchall()
+    return [{'project': r[0], 'number': r[1], 'title': r[2][:80], 'url': r[3], 'author': r[4], 'rounds': r[5], 'review_hours': r[6], 'changes_requested': r[7], 'approvals': r[8], 'friction_signals': r[9]} for r in rows]
+
+@app.tool()
+def source_correlation(refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Cross-source correlation matrix.
+
+    Which evidence sources co-occur on the same project-day? Produces
+    a source×source matrix showing which data dimensions cluster together.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return []
+        rows = conn.execute('\n            WITH source_days AS (\n                SELECT DISTINCT source, project, date\n                FROM evidence_node\n                WHERE refresh_id = ? AND project IS NOT NULL\n            )\n            SELECT a.source AS source_a, b.source AS source_b,\n                   COUNT(*) AS co_occurring_days\n            FROM source_days a\n            JOIN source_days b ON a.project=b.project AND a.date=b.date AND a.source<b.source\n            GROUP BY a.source, b.source\n            HAVING COUNT(*) >= 3\n            ORDER BY co_occurring_days DESC\n        ', [refresh_id]).fetchall()
+    return [{'source_a': r[0], 'source_b': r[1], 'co_occurring_days': r[2]} for r in rows]
+
+@app.tool()
+def commit_kind_attribution(refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Commit kind × AI attribution correlation.
+
+    Do AI-assisted commits use different conventional kinds than
+    non-attributed commits? Groups by conventional_kind.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return []
+        rows = conn.execute('\n            SELECT conventional_kind, COUNT(*) AS total,\n                   SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END) AS ai_assisted,\n                   ROUND(SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS ai_pct\n            FROM commit_fact\n            WHERE refresh_id = ? AND conventional_kind IS NOT NULL\n            GROUP BY conventional_kind\n            ORDER BY total DESC\n        ', [refresh_id]).fetchall()
+    return [{'kind': r[0], 'total': r[1], 'ai_assisted': r[2], 'ai_pct': r[3]} for r in rows]
+
+@app.tool()
+def export_staleness() -> list[dict[str, Any]]:
+    """Export/data staleness dashboard.
+
+    Reports freshness of each data source. Sources with data older than
+    30 days are flagged as stale with remediation recommendations.
+    """
+    from lynchpin.core.config import get_config
+    cfg = get_config()
+    sources = cfg.available_sources()
+    known_stale = {'spotify': ('Oct 2025', 'Request new Spotify GDPR export'), 'reddit': ('Mar 2025', 'Request new Reddit GDPR export'), 'sleep': ('Jul 2025', 'Re-sync Samsung Health data'), 'webhistory': ('Mar 2026', 'Re-enable browser history capture'), 'messenger': ('Mar 2025', 'Request new Facebook GDPR export'), 'raindrop': ('Mar 2025', 'Request new Raindrop export')}
     results = []
-    for r in rows:
-        base = RELIABILITY.get(r[0], 'low')
-        caveat_pct = r[2] or 0.0
-        if caveat_pct > 20 and base == 'high':
-            tier = 'medium'
-        elif caveat_pct > 20 and base == 'medium':
-            tier = 'low'
+    for name, available in sorted(sources.items()):
+        info = known_stale.get(name)
+        if info:
+            results.append({'source': name, 'available': available, 'last_known_data': info[0], 'stale': True, 'recommendation': info[1]})
         else:
-            tier = base
-        results.append({'source': r[0], 'node_count': r[1], 'caveated_pct': caveat_pct, 'reliability_base': base, 'confidence_tier': tier})
+            results.append({'source': name, 'available': available, 'last_known_data': None, 'stale': False, 'recommendation': None})
     return results
 
 @app.tool()
-def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) -> list[dict[str, Any]]:
-    """Cross-source anomaly detection per project-day (Phase B.5).
+def cross_source_lag(project: str | None=None, refresh_id: str | None=None) -> dict[str, Any]:
+    """AI→commit time lag distribution.
 
-    Flags project-days where one evidence dimension is anomalously
-    high or low relative to others:
-    - commits without AI sessions (manual/unassisted work)
-    - AI sessions without commits (exploration that didn't ship)
-    - focus without git activity (reading/debugging)
-    - git activity without focus (automated/CI commits)
-
-    Parameters:
-        refresh_id:       snapshot (default: latest).
-        threshold_sigma:  z-score threshold for flagging (default 2.0).
-
-    Returns:
-        [{"project": str, "date": str, "anomaly_type": str,
-          "commit_count": int, "ai_count": int, "focus_min": float,
-          "source_count": int, "detail": str}]
+    For AI-attributed commits, computes the time between AI work event
+    start and commit. Returns min/median/mean/max lag in hours.
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return {'error': 'no data'}
+        proj_filter = 'AND c.project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        stats = conn.execute(f'\n            SELECT COUNT(*),\n                   ROUND(MIN(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1),\n                   ROUND(QUANTILE_CONT(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)),0.5)/3600.0,1),\n                   ROUND(AVG(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1),\n                   ROUND(MAX(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1)\n            FROM commit_fact c\n            JOIN ai_work_event we ON c.project=we.project AND list_has_any(c.paths, we.file_paths)\n            WHERE c.refresh_id=? AND c.ai_attribution IS NOT NULL\n              AND we.start_ts IS NOT NULL AND len(c.paths)>0 {proj_filter}\n        ', params).fetchone()
+    return {'pairs': stats[0] if stats else 0, 'min_hours': stats[1], 'median_hours': stats[2], 'mean_hours': stats[3], 'max_hours': stats[4]}
+
+@app.tool()
+def project_health(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Project health composite score (exploration round 3).
+
+    Combines velocity, review quality, churn, and symbol activity into
+    a per-project health card. Each dimension is scored against the
+    project's own baseline.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
                 return []
-        rows = conn.execute('\n            SELECT project, date, commit_count, ai_work_event_count,\n                   focus_seconds, source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND source_count >= 3\n        ', [refresh_id]).fetchall()
-    if not rows:
-        return []
-    from collections import defaultdict
-    proj_commits: dict[str, list[int]] = defaultdict(list)
-    proj_ai: dict[str, list[int]] = defaultdict(list)
-    proj_focus: dict[str, list[float]] = defaultdict(list)
-    for r in rows:
-        p = r[0]
-        proj_commits[p].append(r[2])
-        proj_ai[p].append(r[3])
-        if r[4] is not None:
-            proj_focus[p].append(r[4])
-
-    def _z(val: float, vals: list[float]) -> float:
-        if len(vals) < 2:
-            return 0.0
-        mean = sum(vals) / len(vals)
-        std = (sum(((v - mean) ** 2 for v in vals)) / len(vals)) ** 0.5
-        return abs((val - mean) / std) if std > 0 else 0.0
-    anomalies = []
-    for r in rows:
-        proj, d, commits, ai, focus_sec, src = r
-        c_vals = proj_commits.get(proj, [])
-        a_vals = proj_ai.get(proj, [])
-        f_vals = proj_focus.get(proj, [])
-        if commits > 0 and ai == 0 and c_vals and (_z(commits, c_vals) > threshold_sigma):
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'commits_without_ai', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f'{commits} commits with 0 AI sessions — manual/unassisted work'})
-        if ai > 0 and commits == 0 and a_vals and (_z(ai, a_vals) > threshold_sigma):
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'ai_without_commits', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f"{ai} AI work events with 0 commits — exploration that didn't ship"})
-        if (focus_sec or 0) > 0 and commits == 0 and f_vals:
-            fz = _z(focus_sec or 0, f_vals)
-            if fz > threshold_sigma:
-                anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'focus_without_git', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f'{round((focus_sec or 0) / 60, 1)} focus-minutes with 0 commits — reading/debugging'})
-    anomalies.sort(key=lambda a: (a['project'], a['date']))
-    return anomalies
+        proj_filter = 'WHERE project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        rows = conn.execute(f"\n            SELECT p.project,\n                   COALESCE(SUM(p.commit_count),0) AS commits,\n                   COUNT(DISTINCT p.date) AS active_days,\n                   COALESCE(pr.pr_count,0) AS prs,\n                   COALESCE(ROUND(pr.avg_merge_hours,1),0) AS avg_merge_hours,\n                   COALESCE(sym.symbol_changes,0) AS symbol_changes,\n                   COALESCE(ROUND(sym.churn_rate,1),0) AS daily_churn_rate\n            FROM project_day_correlation p\n            LEFT JOIN (\n                SELECT project, COUNT(*) AS pr_count,\n                       AVG(time_to_merge_minutes)/60.0 AS avg_merge_hours\n                FROM pr_review_row WHERE refresh_id=?\n                GROUP BY project\n            ) pr ON p.project=pr.project\n            LEFT JOIN (\n                SELECT project, COUNT(*) AS symbol_changes,\n                       COUNT(*)*1.0/COUNT(DISTINCT date) AS churn_rate\n                FROM symbol_change WHERE refresh_id=?\n                GROUP BY project\n            ) sym ON p.project=sym.project\n            WHERE p.refresh_id=? AND p.commit_count>0 {proj_filter.replace('WHERE', 'AND')}\n            GROUP BY p.project, pr.pr_count, pr.avg_merge_hours,\n                     sym.symbol_changes, sym.churn_rate\n            ORDER BY commits DESC\n        ", [refresh_id, refresh_id, refresh_id] + ([project] if project else [])).fetchall()
+    return [{'project': r[0], 'commits': r[1], 'active_days': r[2], 'prs': r[3], 'avg_merge_hours': r[4], 'symbol_changes': r[5], 'daily_churn_rate': r[6]} for r in rows]
 
 @app.tool()
-def promote_analysis_product(title: str, path: str, refresh_id: str | None=None, dry_run: bool=False) -> dict[str, Any]:
-    """Register an analysis product as an evidence node (Phase C.1).
+def daily_rhythm_fingerprint(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Daily rhythm fingerprint per project (exploration round 5).
 
-    Context packs, current-state reports, and narrative outputs are
-    themselves evidence. This tool promotes them into the evidence_node
-    table so they can be queried alongside source data.
-
-    Parameters:
-        title:      display title.
-        path:       file path to product.
-        refresh_id: snapshot to anchor to (default: latest).
-        dry_run:    preview without writing.
-
-    Returns:
-        {"promoted": bool, "node_id": str, "dry_run": bool}
+    Classifies projects by work pattern: morning, afternoon, evening,
+    night-owl, weekend-warrior, 9-to-5. Based on commit time-of-day
+    and day-of-week distributions.
     """
-    import json as _json
-    from datetime import datetime as _dt, timezone as _tz
-    from lynchpin.duck.connection import connect, substrate_path, apply_schema
-    now = _dt.now(_tz.utc)
-    node_id = f"analysis_product:{title.replace(' ', '_')}:{now.strftime('%Y%m%d')}"
-    if dry_run:
-        return {'promoted': False, 'node_id': node_id, 'dry_run': True}
-    with connect(substrate_path(), read_only=False) as conn:
-        apply_schema(conn)
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
-                return {'promoted': False, 'node_id': node_id, 'error': 'no promote runs'}
-        conn.execute('DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?', [refresh_id, node_id])
-        conn.execute("\n            INSERT INTO evidence_node (\n                refresh_id, id, kind, source, date, project,\n                summary, start_ts, end_ts, url, payload, provenance, caveats\n            ) VALUES (?, ?, 'analysis_product', 'analysis',\n                      CURRENT_DATE, NULL, ?, ?, ?, NULL, ?, NULL, '[]')\n        ", [refresh_id, node_id, title, now, now, _json.dumps({'title': title, 'path': path, 'generated_at': now.isoformat()})])
-    return {'promoted': True, 'node_id': node_id, 'dry_run': False}
+                return []
+        proj_filter = 'AND project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        rows = conn.execute(f'\n            WITH hourly AS (\n                SELECT project,\n                       EXTRACT(HOUR FROM authored_at)::INTEGER AS hr,\n                       COUNT(*) AS cnt\n                FROM commit_fact\n                WHERE refresh_id = ? {proj_filter}\n                GROUP BY project, hr\n            ),\n            dowly AS (\n                SELECT project,\n                       EXTRACT(DOW FROM authored_at)::INTEGER AS dow,\n                       COUNT(*) AS cnt\n                FROM commit_fact\n                WHERE refresh_id = ? {proj_filter}\n                GROUP BY project, dow\n            )\n            SELECT h.project,\n                   SUM(CASE WHEN h.hr BETWEEN 5 AND 11 THEN h.cnt ELSE 0 END) AS morning,\n                   SUM(CASE WHEN h.hr BETWEEN 12 AND 16 THEN h.cnt ELSE 0 END) AS afternoon,\n                   SUM(CASE WHEN h.hr BETWEEN 17 AND 21 THEN h.cnt ELSE 0 END) AS evening,\n                   SUM(CASE WHEN h.hr>=22 OR h.hr<=4 THEN h.cnt ELSE 0 END) AS night,\n                   SUM(CASE WHEN d.dow>=5 THEN d.cnt ELSE 0 END) AS weekend,\n                   SUM(CASE WHEN d.dow<=4 THEN d.cnt ELSE 0 END) AS weekday,\n                   COUNT(*) AS total\n            FROM hourly h\n            JOIN dowly d ON h.project=d.project\n            GROUP BY h.project\n            ORDER BY total DESC\n        ', [refresh_id] + ([project] if project else []) + [refresh_id] + ([project] if project else [])).fetchall()
+    results = []
+    for r in rows:
+        proj = r[0]
+        morning, afternoon, evening, night = (r[1], r[2], r[3], r[4])
+        weekend, weekday, total = (r[5], r[6], r[7])
+        mpct = morning * 100.0 / max(total, 1)
+        epct = evening * 100.0 / max(total, 1)
+        npct = night * 100.0 / max(total, 1)
+        wpct = weekend * 100.0 / max(total, 1)
+        if wpct > 30:
+            pattern = 'weekend-warrior'
+        elif npct > 25:
+            pattern = 'night-owl'
+        elif mpct > 45:
+            pattern = 'morning-person'
+        elif epct > 40:
+            pattern = 'evening-coder'
+        else:
+            pattern = '9-to-5'
+        results.append({'project': proj, 'total_commits': total, 'morning_pct': round(mpct, 1), 'afternoon_pct': round(r[2] * 100.0 / max(total, 1), 1), 'evening_pct': round(epct, 1), 'night_pct': round(npct, 1), 'weekend_pct': round(wpct, 1), 'pattern': pattern})
+    return results
 
 @app.tool()
-def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -> dict[str, Any]:
-    """Substrate health trend across refresh snapshots (Phase C.2).
+def symbol_churn_hotspots(top_n: int=20, project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Symbol churn hotspot detection (exploration round 2).
 
-    Compares latest refresh with prior one; emits alert when confidence
-    drops > alert_threshold_pct. Builds on substrate_source_status.
+    Files with the highest symbol turnover rate. Ranks paths by
+    number of distinct symbols changed, grouped by path root.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _latest_refresh_id(conn)
+            if refresh_id is None:
+                return []
+        proj_filter = 'AND project = ?' if project else ''
+        params: list[Any] = [refresh_id]
+        if project:
+            params.append(project)
+        params.append(int(top_n))
+        rows = conn.execute(f"\n            SELECT path,\n                   COUNT(DISTINCT qualified_name) AS symbols,\n                   COUNT(DISTINCT sha) AS commits,\n                   COUNT(*) AS changes,\n                   COUNT(DISTINCT project) AS projects\n            FROM symbol_change\n            WHERE refresh_id = ? AND path IS NOT NULL AND path != ''\n              {proj_filter}\n            GROUP BY path\n            ORDER BY symbols DESC\n            LIMIT ?\n        ", params).fetchall()
+    return [{'path': r[0], 'symbols': r[1], 'commits': r[2], 'changes': r[3], 'projects': r[4]} for r in rows]
+
+@app.tool()
+def spotify_daily(start: str | None=None, end: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Daily Spotify listening stats from the spotify_daily table.
 
     Parameters:
-        refresh_id:         latest snapshot (default: most recent).
-        alert_threshold_pct: drop percentage that triggers alert.
-
-    Returns:
-        {"current": str, "prior": str, "confidence_current": float,
-         "confidence_prior": float, "delta": float, "alert": bool,
-         "gaps_current": int, "gaps_prior": int}
+        start:      ISO date filter (YYYY-MM-DD).
+        end:        ISO date filter (YYYY-MM-DD).
+        refresh_id: snapshot (default: latest with data).
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from datetime import date as _date
+    from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
-        refresh_ids = [r[0] for r in conn.execute('SELECT DISTINCT refresh_id FROM substrate_source_status ORDER BY recorded_at').fetchall()]
-    if len(refresh_ids) < 2:
-        return {'alert': False, 'detail': 'need 2+ refresh snapshots for trend', 'current': refresh_ids[-1] if refresh_ids else None, 'prior': None}
-    current = refresh_id or refresh_ids[-1]
-    prior = refresh_ids[-2]
-    with connect(substrate_path(), read_only=True) as conn:
-
-        def _conf(rid):
-            rows = conn.execute('SELECT status, COUNT(*) FROM substrate_source_status WHERE refresh_id = ? GROUP BY status', [rid]).fetchall()
-            statuses = {r[0]: r[1] for r in rows}
-            total = sum(statuses.values())
-            ok_count = statuses.get('ok', 0)
-            gaps = statuses.get('unavailable', 0) + statuses.get('error', 0)
-            return (ok_count / max(total, 1) * 100, gaps)
-        conf_curr, gaps_curr = _conf(current)
-        conf_prior, gaps_prior = _conf(prior)
-        delta = conf_curr - conf_prior
-        alert = delta < -alert_threshold_pct
-    return {'current': current, 'prior': prior, 'confidence_current': round(conf_curr, 1), 'confidence_prior': round(conf_prior, 1), 'delta': round(delta, 1), 'alert': alert, 'gaps_current': gaps_curr, 'gaps_prior': gaps_prior}
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'spotify_daily')
+            if refresh_id is None:
+                return []
+        sql = 'SELECT date, track_count, minutes_played, unique_artists, unique_tracks, top_artists, top_tracks FROM spotify_daily WHERE refresh_id = ?'
+        params: list[Any] = [refresh_id]
+        if start:
+            sql += ' AND date >= ?'
+            params.append(_date.fromisoformat(start))
+        if end:
+            sql += ' AND date <= ?'
+            params.append(_date.fromisoformat(end))
+        sql += ' ORDER BY date'
+        rows = conn.execute(sql, params).fetchall()
+    return [{'date': _json_safe(r[0]), 'track_count': r[1], 'minutes_played': r[2], 'unique_artists': r[3], 'unique_tracks': r[4], 'top_artists': r[5], 'top_tracks': r[6]} for r in rows]

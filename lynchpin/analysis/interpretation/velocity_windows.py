@@ -9,8 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any
 
-from ...composite.evidence_graph import build_base_evidence_graph
-from ...composite.work_correlation import CorrelatedWorkDay, work_day_correlations
+from ...graph.evidence_graph import build_base_evidence_graph
+from ...graph.work_correlation import CorrelatedWorkDay, work_day_correlations
 from ..active.git_facts import build_active_commit_facts
 from ..change.work_packages import build_active_work_packages
 from ..core.io import load_json_if_exists, resolve_analysis_path, save_json

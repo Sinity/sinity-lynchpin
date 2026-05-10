@@ -304,7 +304,7 @@ def _project_kind_mix(*, start: date, end: date) -> dict[str, dict[str, int]]:
     Caller treats absence as 'no hint available'.
     """
     try:
-        from ...composite.work_correlation import work_day_correlations
+        from ...graph.work_correlation import work_day_correlations
 
         rows = work_day_correlations(start=start, end=end)
     except Exception:

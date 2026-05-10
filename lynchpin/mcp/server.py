@@ -24,8 +24,10 @@ app = FastMCP(
 )
 
 # Tools register themselves via @app.tool() decorators in submodules.
-# Import order matters: substrate first (defines query_substrate used by views).
+# Import order: substrate first, then domain modules.
 from lynchpin.mcp.tools import substrate as _substrate  # noqa: E402, F401
-from lynchpin.mcp.tools import views as _views  # noqa: E402, F401
+from lynchpin.mcp.tools import views as _views          # noqa: E402, F401
+from lynchpin.mcp.tools import velocity as _velocity    # noqa: E402, F401
+from lynchpin.mcp.tools import health as _health        # noqa: E402, F401
 
 __all__ = ["app"]

@@ -7,7 +7,7 @@ This module is the shared home for:
 - Dendron-style note reads rooted at `/realm/project/knowledgebase/`.
 
 It stays read-only. Refresh and acquisition workflows belong under
-`lynchpin.scripts.*`.
+`lynchpin.cli.*`.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 `persistent_cache` stores cachew sqlite files under the configured
 knowledgebase-backed runtime cache. Use it only for deterministic readers:
 source modules remain read-only, while explicit writes and network refreshes
-belong under `lynchpin.analysis` or `lynchpin.scripts`.
+belong under `lynchpin.analysis` or `lynchpin.cli`.
 
 Prefer `file_signature` / `files_signature` when path, mtime, and size are
 enough to invalidate cached results. Use `file_digest` / `files_digest` when

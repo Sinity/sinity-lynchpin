@@ -33,6 +33,7 @@ SOURCE_AI_WORK_EVENTS = "ai_work_events"
 SOURCE_EVIDENCE_GRAPH = "evidence_graph"
 SOURCE_PR_REVIEW = "pr_review"
 SOURCE_CALENDAR = "calendar"
+SOURCE_SPOTIFY_DAILY = "spotify_daily"
 
 
 def run_substrate_promote(
@@ -113,9 +114,10 @@ def _do_promote(
     refresh_id: str | None,
     write_evidence_graph: bool,
 ) -> dict[str, int]:
-    from lynchpin.duck.connection import apply_schema, connect, substrate_path
-    from lynchpin.duck.promote import (
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.promote import (
         promote_ai_work_events,
+        promote_spotify_daily,
         promote_calendar_events,
         promote_commits,
         promote_evidence_graph,
@@ -123,7 +125,7 @@ def _do_promote(
         promote_pr_review_rows,
         promote_symbol_changes,
     )
-    from lynchpin.composite.work_event_kind import overlay_label
+    from lynchpin.graph.work_event_kind import overlay_label
 
     refresh_id = refresh_id or f"dag:{datetime.now(timezone.utc).isoformat()}"
     counts: dict[str, int] = {}
@@ -143,7 +145,8 @@ def _do_promote(
 
         # ── commits: read JSON, hydrate to GitCommitFact, promote ────────────
         try:
-            commit_facts = list(_load_commit_facts(commit_facts_file))
+            commit_facts, commit_annotations = _load_commit_facts(commit_facts_file)
+            commit_facts = list(commit_facts)
         except Exception as exc:
             log.warning("substrate_promote: commit facts hydration failed: %s", exc)
             _record_status(
@@ -151,11 +154,13 @@ def _do_promote(
                 status="error", reason=str(exc), row_count=0,
             )
             commit_facts = []
+            commit_annotations = {}
 
         if commit_facts:
             try:
                 counts["commits"] = promote_commits(
                     conn, refresh_id=refresh_id, facts=commit_facts,
+                    annotations=commit_annotations,
                 )
                 _record_status(
                     conn, refresh_id=refresh_id, source=SOURCE_COMMITS,
@@ -184,7 +189,8 @@ def _do_promote(
 
         # ── file_changes: same pattern ────────────────────────────────────────
         try:
-            fc_facts = list(_load_file_change_facts(file_changes_file))
+            fc_facts, fc_annotations = _load_file_change_facts(file_changes_file)
+            fc_facts = list(fc_facts)
         except Exception as exc:
             log.warning("substrate_promote: file change hydration failed: %s", exc)
             _record_status(
@@ -192,11 +198,13 @@ def _do_promote(
                 status="error", reason=str(exc), row_count=0,
             )
             fc_facts = []
+            fc_annotations = {}
 
         if fc_facts:
             try:
                 counts["file_changes"] = promote_file_changes(
                     conn, refresh_id=refresh_id, facts=fc_facts,
+                    annotations=fc_annotations,
                 )
                 _record_status(
                     conn, refresh_id=refresh_id, source=SOURCE_FILE_CHANGES,
@@ -340,7 +348,7 @@ def _do_promote(
         # ── evidence graph: build + promote ───────────────────────────────────
         if write_evidence_graph:
             try:
-                from lynchpin.composite.evidence_graph import build_evidence_graph
+                from lynchpin.graph.evidence_graph import build_evidence_graph
 
                 graph = build_evidence_graph(
                     start=window_start, end=window_end, mode="local-fast",
@@ -422,7 +430,6 @@ def _do_promote(
         # ── calendar_events: best-effort promotion from JSONL source ──────────
         try:
             from lynchpin.sources.calendar import iter_events
-            from pathlib import Path
             from lynchpin.core.config import get_config
 
             cal_path = get_config().calendar_jsonl
@@ -458,6 +465,36 @@ def _do_promote(
                 window_start=window_start, window_end=window_end,
             )
 
+        # ── spotify_daily: best-effort promotion from streaming history ──────
+        try:
+            from lynchpin.sources.spotify import iter_streams
+
+            streams = list(iter_streams())
+            if streams:
+                counts["spotify_daily"] = promote_spotify_daily(
+                    conn, refresh_id=refresh_id, streams=streams,
+                )
+                _record_status(
+                    conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
+                    status="ok", reason=None,
+                    row_count=counts["spotify_daily"],
+                    window_start=window_start, window_end=window_end,
+                )
+            else:
+                _record_status(
+                    conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
+                    status="empty", reason="no Spotify streams in window",
+                    row_count=0,
+                    window_start=window_start, window_end=window_end,
+                )
+        except Exception as exc:
+            log.warning("substrate_promote: spotify_daily promotion skipped: %s", exc)
+            _record_status(
+                conn, refresh_id=refresh_id, source=SOURCE_SPOTIFY_DAILY,
+                status="error", reason=str(exc), row_count=0,
+                window_start=window_start, window_end=window_end,
+            )
+
     log.info(
         "substrate promotion complete: refresh_id=%s counts=%s",
         refresh_id, counts,
@@ -466,21 +503,26 @@ def _do_promote(
 
 
 def _load_commit_facts(path: str):
-    """Hydrate active_commit_facts.json → Iterable[GitCommitFact].
+    """Hydrate active_commit_facts.json → (facts, annotations).
 
-    The JSON schema uses ``timestamp`` (ISO string) for authored_at and stores
-    ``path_roots`` as ``dict[str, int]`` (root → change count).  Line counts
-    are intentionally absent from the fast active facts surface; they will be
-    zero in the substrate row (source: churn_caveat in methodology).
+    Returns (Iterable[GitCommitFact], dict[str, dict]) where annotations
+    maps commit sha → enrichment fields from the JSON (conventional_*,
+    github_refs, categories, change_types, classified_files_changed,
+    parent_count, default_branch, head).
+
+    Line counts are zero (churn_caveat: not present in active facts).
     """
     from lynchpin.sources.git import GitCommitFact
 
     p = Path(path)
     if not p.exists():
-        return
+        return [], {}
     with p.open() as f:
         data = json.load(f)
+    facts: list[GitCommitFact] = []
+    annotations: dict[str, dict] = {}
     for entry in data.get("commits", []):
+        sha = entry.get("sha") or ""
         ts_raw = entry.get("timestamp") or ""
         try:
             authored_at = datetime.fromisoformat(ts_raw)
@@ -492,50 +534,74 @@ def _load_commit_facts(path: str):
             if isinstance(path_roots_raw, dict)
             else tuple(path_roots_raw)
         )
-        yield GitCommitFact(
+        facts.append(GitCommitFact(
             repo=entry.get("project") or "",
-            commit=entry.get("sha") or "",
+            commit=sha,
             authored_at=authored_at,
             author=entry.get("author") or "",
             subject=entry.get("subject") or "",
-            lines_added=0,   # not present in active facts (churn_caveat)
+            lines_added=0,
             lines_deleted=0,
             lines_changed=0,
             files_changed=int(entry.get("files_changed") or 0),
             paths=tuple(entry.get("paths") or ()),
             path_roots=path_roots_tuple,
-        )
+        ))
+        annotations[sha] = {
+            "conventional_kind": entry.get("conventional_kind"),
+            "conventional_scope": entry.get("conventional_scope"),
+            "conventional_signature": entry.get("conventional_signature"),
+            "breaking_change": entry.get("breaking_change", False),
+            "github_refs": entry.get("github_refs"),
+            "categories": entry.get("categories"),
+            "change_types": entry.get("change_types"),
+            "classified_files_changed": entry.get("classified_files_changed"),
+            "parent_count": entry.get("parent_count"),
+            "default_branch": entry.get("default_branch"),
+            "head": entry.get("head"),
+        }
+    return facts, annotations
 
 
 def _load_file_change_facts(path: str):
-    """Hydrate active_file_change_facts.json → Iterable[GitFileChangeFact].
+    """Hydrate active_file_change_facts.json → (facts, annotations).
 
-    Line counts are absent from the active file-change facts surface for the
-    same reason as commits; they are stored as zero.
+    Returns (Iterable[GitFileChangeFact], dict[(sha, path), dict]) where
+    annotations maps (sha, path) → {change_type, status_code, previous_path}.
     """
     from lynchpin.sources.git import GitFileChangeFact
 
     p = Path(path)
     if not p.exists():
-        return
+        return [], {}
     with p.open() as f:
         data = json.load(f)
+    facts: list[GitFileChangeFact] = []
+    annotations: dict[tuple[str, str], dict] = {}
     for entry in data.get("file_changes", []):
+        sha = entry.get("sha") or ""
+        fpath = entry.get("path") or ""
         ts_raw = entry.get("timestamp") or ""
         try:
             authored_at = datetime.fromisoformat(ts_raw)
         except (ValueError, TypeError):
             continue
-        yield GitFileChangeFact(
+        facts.append(GitFileChangeFact(
             repo=entry.get("project") or "",
-            commit=entry.get("sha") or "",
+            commit=sha,
             authored_at=authored_at,
-            path=entry.get("path") or "",
+            path=fpath,
             path_root=entry.get("path_root") or "",
-            lines_added=0,   # not present in active facts (churn_caveat)
+            lines_added=0,
             lines_deleted=0,
             lines_changed=0,
-        )
+        ))
+        annotations[(sha, fpath)] = {
+            "change_type": entry.get("change_type"),
+            "status_code": entry.get("status_code"),
+            "previous_path": entry.get("previous_path"),
+        }
+    return facts, annotations
 
 
 def _load_symbol_change_rows(path: str):

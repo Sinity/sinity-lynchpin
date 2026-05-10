@@ -2,7 +2,7 @@
 heart rate, skin temperature, floors, mood, snoring, and daily aggregates.
 
 Reads from processed JSONL files under /realm/data/exports/health/processed/.
-Run `python -m lynchpin.scripts.process_health` to refresh from raw exports.
+Run `python -m lynchpin.cli.process_health` to refresh from raw exports.
 
 Sleep data is in the separate `sleep` module (richer, with SAA fusion + AW inference).
 """

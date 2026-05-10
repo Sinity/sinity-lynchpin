@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Iterable
 
-from ...composite.work_event_kind import overlay_label
+from ...graph.work_event_kind import overlay_label
 from ...sources.polylogue import WorkEvent, work_events
 from ..core.io import resolve_analysis_path, save_json
 

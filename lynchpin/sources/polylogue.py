@@ -545,13 +545,8 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
 
 @lru_cache(maxsize=1)
 def _token_encoder() -> Any | None:
-    if os.environ.get("LYNCHPIN_EXACT_TOKEN_ESTIMATES") != "1":
-        return None
     try:
         import tiktoken
-    except ImportError:
-        return None
-    try:
         return tiktoken.get_encoding("cl100k_base")
     except Exception:
         return None
@@ -721,7 +716,7 @@ class ConversationLineage:
 
     Polylogue's ``conversations`` table tracks branching natively via
     ``parent_id`` and ``branch_type`` (continuation / sidechain / fork /
-    subagent). This shape exposes those columns to composite consumers.
+    subagent). This shape exposes those columns to graph consumers.
     """
     conversation_id: str
     parent_conversation_id: Optional[str]

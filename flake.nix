@@ -5,6 +5,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     nixpkgs-rust.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    polylogueSrc = {
+      url = "github:Sinity/polylogue/master";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -13,6 +17,7 @@
       nixpkgs,
       nixpkgs-rust,
       flake-utils,
+      polylogueSrc,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -523,8 +528,76 @@
               sse-starlette
               pydantic-settings
               uvicorn
+              python-multipart
             ];
             doCheck = false;
+          };
+
+          sqlite-vec = prev.buildPythonPackage rec {
+            pname = "sqlite_vec";
+            version = "0.1.9";
+            format = "wheel";
+            src = pkgs.fetchurl {
+              url = "https://files.pythonhosted.org/packages/6f/ad/6afd073b0f817b3e03f9e37ad626ae341805891f23c74b5292818f49ac63/sqlite_vec-0.1.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl";
+              sha256 = "11kpis9wiwai28ii6l4hcs5iyikxzhpyxzbmmyy7k7mlj1wp458m";
+            };
+            doCheck = false;
+            dontCheckRuntimeDeps = true;
+          };
+
+          polylogue = prev.buildPythonPackage {
+            pname = "polylogue";
+            version = "0.1.0";
+            pyproject = true;
+            src = polylogueSrc;
+
+            postPatch = ''
+              cat > polylogue/_build_info.py << 'BUILDEOF'
+              from __future__ import annotations
+              BUILD_COMMIT = "${polylogueSrc.rev or polylogueSrc.shortRev or "unknown"}"
+              BUILD_DIRTY = False
+              BUILDEOF
+            '';
+
+            build-system = with prev; [
+              hatchling
+            ];
+
+            dependencies = with final; [
+              google-auth-oauthlib
+              google-api-python-client
+              google-auth-httplib2
+              httpx
+              h2
+              rich
+              textual
+              jinja2
+              markdown-it-py
+              pygments
+              ijson
+              sqlite-vec
+              questionary
+              click
+              tenacity
+              dateparser
+              orjson
+              structlog
+              pydantic
+              aiosqlite
+              mcp
+              pyyaml
+              watchfiles
+              nh3
+              cryptography
+              python-multipart
+              typing-extensions
+            ];
+
+            doCheck = false;
+            pythonImportsCheck = [
+              "polylogue"
+            ];
+            dontCheckRuntimeDeps = true;
           };
 
           claude-agent-sdk = prev.buildPythonPackage rec {
@@ -638,6 +711,7 @@
             pydantic
             aiosqlite
             claude-agent-sdk
+            polylogue
             tree-sitter
             tree-sitter-python
             tree-sitter-rust
@@ -732,11 +806,12 @@
             pyyaml
             tiktoken
             typer
+            polylogue
           ];
 
           pythonImportsCheck = [
             "lynchpin"
-            "lynchpin.scripts.current_state"
+            "lynchpin.cli.current_state"
           ];
           doCheck = false;
           dontCheckRuntimeDeps = true;
@@ -802,7 +877,7 @@
             export JUPYTER_PATH=$PWD/.jupyter
             export R_LIBS_USER=$PWD/.rlib
             export MY_CONFIG=$PWD/config
-            export PYTHONPATH=$PWD:/realm/project/polylogue:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
+            export PYTHONPATH=$PWD:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
             echo "Loaded sinity-lynchpin devshell with Python ${pythonEnv.pythonVersion} and R support.  chisel → just chisel  (XML snapshots)"
           '';
         };

@@ -5,7 +5,7 @@ Read-only access over the canonical webhistory roots:
 - deduped canonical segments under `/realm/data/captures/webhistory/gestalt/data/`
 - merged NDJSON under `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson`
 
-Use `lynchpin.scripts.webhistory.webhistory` for explicit dedup, compare, and
+Use `lynchpin.cli.webhistory.webhistory` for explicit dedup, compare, and
 materialization workflows. This module stays purely read-only.
 """
 

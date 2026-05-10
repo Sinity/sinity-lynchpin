@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Sequence, cast
 
-from ...composite.context_pack import ContextPackMode, context_pack, render_context_pack
+from ...graph.context_pack import ContextPackMode, context_pack, render_context_pack
 from ...core.parse import as_local
 from ...core.serialization import jsonable
 from ..core.io import save_json, save_text

@@ -58,36 +58,8 @@ def _is_select_only(sql: str) -> bool:
     return not tokens.intersection(_DISALLOWED_TOKENS)
 
 
-def _json_safe(value: Any) -> Any:
-    """Recursively convert a DuckDB result value to a JSON-serialisable type."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, bytes):
-        return base64.b64encode(value).decode("ascii")
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    # int, float, str, bool — JSON-native
-    return value
-
-
-def _latest_refresh_id(conn: Any) -> str | None:
-    """Return the most recent refresh_id from substrate_source_status.
-
-    Shared by all view-backed MCP tools to avoid the duplicated
-    ``SELECT refresh_id ... ORDER BY recorded_at DESC LIMIT 1``
-    pattern (18 copies across views.py and substrate.py as of 2026-05-09).
-    """
-    row = conn.execute(
-        "SELECT refresh_id FROM substrate_source_status "
-        "ORDER BY recorded_at DESC LIMIT 1"
-    ).fetchone()
-    return row[0] if row else None
+from lynchpin.mcp.tools._utils import json_safe as _json_safe
+from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +92,7 @@ def query_substrate(
 
     max_rows is capped at 10 000.
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     if not _is_select_only(sql):
         raise ValueError(
@@ -159,7 +131,7 @@ def list_substrate_tables() -> list[dict[str, Any]]:
     Tables are returned in alphabetical order. Only user tables are included
     (information_schema and pg_catalog system tables are excluded).
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
@@ -241,7 +213,7 @@ def substrate_readiness_report() -> dict[str, Any]:
     Returns {"substrate_version": ..., "latest_refresh_id": null, "sources": [],
     "summary": {...all-zero}} when the substrate has no promote history yet.
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
@@ -359,7 +331,7 @@ def substrate_source_status(
         [{"refresh_id", "source", "status", "reason", "row_count",
           "window_start", "window_end", "recorded_at"}], ordered by source.
     """
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
@@ -399,7 +371,7 @@ def list_evidence_graph_builds(
 ) -> list[dict[str, Any]]:
     """List evidence-graph builds stored in the substrate.
 
-    Wraps ``lynchpin.duck.reader.list_evidence_graph_builds``.
+    Wraps ``lynchpin.substrate.reader.list_evidence_graph_builds``.
 
     Parameters:
         start: ISO date string (YYYY-MM-DD) — filter by exact start_date.
@@ -423,8 +395,8 @@ def list_evidence_graph_builds(
     """
     from datetime import date as _date
 
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import list_evidence_graph_builds as _list_builds
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import list_evidence_graph_builds as _list_builds
 
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
@@ -466,8 +438,8 @@ def load_evidence_graph_summary(
     """
     from datetime import date as _date
 
-    from lynchpin.duck.connection import connect, substrate_path
-    from lynchpin.duck.reader import load_evidence_graph as _load_graph
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.reader import load_evidence_graph as _load_graph
 
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
@@ -570,7 +542,7 @@ def ai_attribution_backfill(
     import json as _json
     from datetime import datetime as _dt, timezone as _tz
 
-    from lynchpin.duck.connection import connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
@@ -635,4 +607,109 @@ def ai_attribution_backfill(
             {"sha": r[0][:8], "subject": r[2][:60], "matched_events": r[3]}
             for r in (matches[:10] if matches else [])
         ],
+    }
+
+
+# ── Substrate Prune ──────────────────────────────────────────────────────────
+
+
+@app.tool()
+def substrate_prune(
+    keep_builds: int = 3,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Prune old evidence graph builds to reclaim disk space.
+
+    Deletes evidence_graph_build rows (and their nodes/edges) older than
+    the most recent N builds. Keeps the latest `keep_builds` manual
+    promotes and discards test/graph/overlap builds.
+
+    Parameters:
+        keep_builds: number of most recent builds to keep.
+        dry_run:     preview without deleting (default True).
+
+    Returns:
+        {"builds_before": N, "builds_after": N, "nodes_deleted": N,
+         "edges_deleted": N, "dry_run": bool}
+    """
+    from lynchpin.substrate.connection import connect, substrate_path, apply_schema
+
+    with connect(substrate_path(), read_only=True) as conn:
+        builds_before = conn.execute(
+            "SELECT COUNT(*) FROM evidence_graph_build"
+        ).fetchone()[0]
+        nodes_before = conn.execute(
+            "SELECT COUNT(*) FROM evidence_node"
+        ).fetchone()[0]
+        edges_before = conn.execute(
+            "SELECT COUNT(*) FROM evidence_edge"
+        ).fetchone()[0]
+
+        # Find refresh_ids to keep (latest N + manual promotes)
+        manual = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT refresh_id FROM evidence_graph_build "
+                "WHERE refresh_id NOT LIKE 'graph:%' "
+                "AND refresh_id NOT LIKE 'overlap:%' "
+                "ORDER BY generated_at DESC LIMIT ?",
+                [keep_builds],
+            ).fetchall()
+        ]
+
+        # Also keep the most recent test/graph build (for local development)
+        latest_test = conn.execute(
+            "SELECT refresh_id FROM evidence_graph_build "
+            "WHERE refresh_id LIKE 'graph:%' "
+            "ORDER BY generated_at DESC LIMIT 1"
+        ).fetchone()
+        if latest_test:
+            manual.append(latest_test[0])
+
+        to_delete = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT refresh_id FROM evidence_graph_build "
+                "WHERE refresh_id NOT IN ({seq})".format(
+                    seq=",".join(["?"] * len(manual))
+                ),
+                manual,
+            ).fetchall()
+        ] if manual else []
+
+    if dry_run:
+        return {
+            "builds_before": builds_before,
+            "builds_after": builds_before - len(to_delete),
+            "nodes_before": nodes_before,
+            "edges_before": edges_before,
+            "builds_to_delete": len(to_delete),
+            "dry_run": True,
+        }
+
+    with connect(substrate_path(), read_only=False) as conn:
+        for rid in to_delete:
+            conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [rid])
+            conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [rid])
+            conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [rid])
+
+    with connect(substrate_path(), read_only=True) as conn:
+        builds_after = conn.execute(
+            "SELECT COUNT(*) FROM evidence_graph_build"
+        ).fetchone()[0]
+        nodes_after = conn.execute(
+            "SELECT COUNT(*) FROM evidence_node"
+        ).fetchone()[0]
+        edges_after = conn.execute(
+            "SELECT COUNT(*) FROM evidence_edge"
+        ).fetchone()[0]
+
+        # Vacuum to reclaim space
+        conn.execute("CHECKPOINT")
+
+    return {
+        "builds_before": builds_before,
+        "builds_after": builds_after,
+        "builds_deleted": builds_before - builds_after,
+        "nodes_deleted": nodes_before - nodes_after,
+        "edges_deleted": edges_before - edges_after,
+        "dry_run": False,
     }
