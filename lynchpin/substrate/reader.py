@@ -82,6 +82,40 @@ def load_commit_facts(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=N
         results.append(GitCommitFact(repo=repo, commit=sha, authored_at=authored_at, author=author or '', subject=subject or '', lines_added=lines_added, lines_deleted=lines_deleted, lines_changed=lines_changed, files_changed=files_changed, paths=tuple(paths) if paths else (), path_roots=tuple(path_roots) if path_roots else ()))
     return results
 
+def read_commit_facts(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, projects: tuple[str, ...] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
+    """Return a payload dict matching ``active_commit_facts.json`` shape.
+
+    Queries ``commit_fact`` and wraps results in
+    ``{"commits": [...], "projects": [...], "window": {...}}``
+    so downstream consumers (ai_attribution, work_packages) see the same
+    structure they get from the JSON file.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    _add_date_filter('authored_at', start, end, clauses, params)
+    _add_in_filter('project', projects, clauses, params)
+    if refresh_id is not None:
+        clauses.append('refresh_id = ?')
+        params.append(refresh_id)
+    where = _build_where(clauses, params)
+    sql = f'\n        SELECT\n            sha, repo, project, authored_at, author, subject,\n            lines_added, lines_deleted, lines_changed, files_changed,\n            paths, path_roots, conventional_kind, conventional_scope,\n            conventional_signature, github_refs, categories, change_types,\n            classified_files_changed, parent_count, default_branch,\n        FROM commit_fact\n        {where}\n        ORDER BY authored_at\n    '
+    rows = conn.execute(sql, params).fetchall()
+    commits: list[dict[str, Any]] = []
+    seen_projects: dict[str, dict[str, Any]] = {}
+    actual_start: str | None = None
+    actual_end: str | None = None
+    for sha, repo, project, authored_at, author, subject, lines_added, lines_deleted, lines_changed, files_changed, paths, path_roots, conv_kind, conv_scope, conv_signature, github_refs, categories, change_types, classified_files_changed, parent_count, default_branch in rows:
+        ts = authored_at.isoformat() if isinstance(authored_at, datetime) else str(authored_at)
+        d = authored_at.date().isoformat() if isinstance(authored_at, datetime) else ts[:10]
+        if actual_start is None or d < actual_start:
+            actual_start = d
+        if actual_end is None or d > actual_end:
+            actual_end = d
+        commits.append({'project': project, 'sha': sha, 'short_sha': sha[:7], 'timestamp': ts, 'date': d, 'subject': subject or '', 'author': author or '', 'conventional_kind': conv_kind or 'other', 'conventional_scope': conv_scope or '', 'conventional_signature': conv_signature or 'other', 'paths': list(paths) if paths else [], 'path_roots': list(path_roots) if path_roots else [], 'categories': list(categories) if isinstance(categories, list) else categories if categories else [], 'github_refs': github_refs or {}, 'change_types': list(change_types) if isinstance(change_types, list) else change_types if change_types else [], 'classified_files_changed': classified_files_changed or 0, 'lines_added': lines_added or 0, 'lines_deleted': lines_deleted or 0, 'lines_changed': lines_changed or 0, 'files_changed': files_changed or 0, 'default_branch': default_branch or 'main'})
+        if project and project not in seen_projects:
+            seen_projects[project] = {'project': project, 'default_branch': default_branch or 'main'}
+    return {'commits': commits, 'projects': list(seen_projects.values()), 'window': {'start': actual_start or (start.isoformat() if start else ''), 'end': actual_end or (end.isoformat() if end else '')}}
+
 def load_file_change_facts(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, projects: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
     """SELECT and hydrate ``file_change_fact`` rows to ``GitFileChangeFact``."""
     from lynchpin.sources.git import GitFileChangeFact

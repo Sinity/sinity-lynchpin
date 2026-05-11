@@ -72,13 +72,9 @@ def test_high_density_three_long_overlapping_events(monkeypatch, tmp_path):
                duration_min=50, file_paths=("/realm/project/polylogue/src/foo.py",))
         for i in range(3)
     )
-    facts_file = tmp_path / "active_commit_facts.json"
-    import json
-    facts_file.write_text(json.dumps(commit))
-
     payload = build_active_ai_assist_density(
         start=date(2026, 5, 7), end=date(2026, 5, 7),
-        commit_facts_file=facts_file,
+        commit_payload=commit,
         work_events_iter=tuple(events),
     )
     assert payload["summary"]["high"] == 1
@@ -98,13 +94,9 @@ def test_medium_density_one_overlapping_event(tmp_path):
         _event(event_id="we1", start=base, duration_min=45,
                file_paths=("/realm/project/polylogue/src/foo.py",)),
     )
-    facts_file = tmp_path / "active_commit_facts.json"
-    import json
-    facts_file.write_text(json.dumps(commit))
-
     payload = build_active_ai_assist_density(
         start=date(2026, 5, 7), end=date(2026, 5, 7),
-        commit_facts_file=facts_file,
+        commit_payload=commit,
         work_events_iter=events,
     )
     assert payload["commits"][0]["ai_assist_density"] == "medium"
@@ -124,13 +116,9 @@ def test_low_density_same_day_session_no_file_overlap(tmp_path):
         _event(event_id="we1", start=base, duration_min=20,
                file_paths=("/realm/project/polylogue/src/foo.py",)),
     )
-    facts_file = tmp_path / "active_commit_facts.json"
-    import json
-    facts_file.write_text(json.dumps(commit))
-
     payload = build_active_ai_assist_density(
         start=date(2026, 5, 7), end=date(2026, 5, 7),
-        commit_facts_file=facts_file,
+        commit_payload=commit,
         work_events_iter=events,
     )
     assert payload["commits"][0]["ai_assist_density"] == "low"
@@ -144,13 +132,9 @@ def test_none_density_no_ai_signal(tmp_path):
         sha="abc", project="polylogue", timestamp=base,
         paths=("/realm/project/polylogue/src/foo.py",),
     )
-    facts_file = tmp_path / "active_commit_facts.json"
-    import json
-    facts_file.write_text(json.dumps(commit))
-
     payload = build_active_ai_assist_density(
         start=date(2026, 5, 7), end=date(2026, 5, 7),
-        commit_facts_file=facts_file,
+        commit_payload=commit,
         work_events_iter=(),
     )
     assert payload["commits"][0]["ai_assist_density"] == "none"
@@ -170,13 +154,9 @@ def test_low_tier_caveat_when_majority_low_confidence(tmp_path):
         _event(event_id="we2", start=base, duration_min=15,
                file_paths=("/realm/project/polylogue/src/foo.py",), confidence=0.4),
     )
-    facts_file = tmp_path / "active_commit_facts.json"
-    import json
-    facts_file.write_text(json.dumps(commit))
-
     payload = build_active_ai_assist_density(
         start=date(2026, 5, 7), end=date(2026, 5, 7),
-        commit_facts_file=facts_file,
+        commit_payload=commit,
         work_events_iter=events,
     )
     row = payload["commits"][0]

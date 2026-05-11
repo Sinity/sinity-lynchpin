@@ -15,7 +15,9 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ...substrate.reader import read_commit_facts
+from ...substrate.connection import connect, substrate_path
+from ..core.io import resolve_analysis_path, save_json
 
 
 _OPERATION_LABELS = (
@@ -53,14 +55,19 @@ def build_active_commit_hunks(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
     max_commits: int = 80,
 ) -> dict[str, Any]:
     """Extract structured diff hunks for top commits in the window."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    commit_payload = _load_payload(commit_facts_file or resolve_analysis_path("active_commit_facts.json"))
+    with connect(substrate_path()) as conn:
+        commit_payload = read_commit_facts(
+            conn,
+            start=start,
+            end=end,
+            projects=tuple(projects) if projects else None,
+        )
     commits = _list(commit_payload, "commits")
     selected = set(projects or ())
 
@@ -116,14 +123,19 @@ def build_active_commit_semantics(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
     max_commits: int = 40,
 ) -> dict[str, Any]:
     """Classify semantic operations for top commits in the window."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    commit_payload = _load_payload(commit_facts_file or resolve_analysis_path("active_commit_facts.json"))
+    with connect(substrate_path()) as conn:
+        commit_payload = read_commit_facts(
+            conn,
+            start=start,
+            end=end,
+            projects=tuple(projects) if projects else None,
+        )
     commits = _list(commit_payload, "commits")
     selected = set(projects or ())
 
@@ -201,11 +213,8 @@ def run_active_commit_hunks(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    payload = build_active_commit_hunks(
-        start=start, end=end, projects=projects, commit_facts_file=commit_facts_file,
-    )
+    payload = build_active_commit_hunks(start=start, end=end, projects=projects)
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
 
@@ -216,11 +225,8 @@ def run_active_commit_semantics(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    payload = build_active_commit_semantics(
-        start=start, end=end, projects=projects, commit_facts_file=commit_facts_file,
-    )
+    payload = build_active_commit_semantics(start=start, end=end, projects=projects)
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
 
@@ -466,11 +472,6 @@ def _counter_dict(value: object) -> Counter[str]:
                 continue
         return c
     return Counter()
-
-
-def _load_payload(path: str | PathLike[str]) -> dict[str, Any] | None:
-    payload = load_json_if_exists(path)
-    return payload if isinstance(payload, dict) else None
 
 
 def _list(payload: dict[str, Any] | None, key: str) -> list[Any]:

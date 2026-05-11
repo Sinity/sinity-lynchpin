@@ -433,7 +433,11 @@ def _add_focus(nodes: list[EvidenceNode], *, start: date, end: date, selected: s
 def _add_web(nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]) -> None:
     try:
         days = daily_browsing(start=start, end=end)
+    except FileNotFoundError:
+        log.warning('webhistory NDJSON not found — skipping web evidence nodes')
+        return
     except Exception:
+        log.exception('daily_browsing failed — skipping web evidence nodes')
         return
     for day in days:
         if day.visit_count == 0:
@@ -579,16 +583,8 @@ def _temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge
 _TOOL_COMMAND_TOKENS: dict[str, tuple[str, ...]] = {'Bash': ('pytest', 'cargo', 'just', 'npm', 'git', 'make', 'nix', 'ruff', 'mypy'), 'Edit': (), 'Read': (), 'Write': ()}
 
 def _load_symbol_changes_index() -> dict[str, list[dict[str, Any]]]:
-    """Load and index active_symbol_changes.json events by commit SHA.
-
-    Returns empty when the artifact is missing or empty (e.g. tree-sitter
-    grammars unavailable). Caller must be prepared for an empty result.
-    """
     from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
-    try:
-        payload = load_json_if_exists(resolve_analysis_path('active_symbol_changes.json')) or {}
-    except Exception:
-        return {}
+    payload = load_json_if_exists(resolve_analysis_path('active_symbol_changes.json')) or {}
     if not isinstance(payload, dict):
         return {}
     events = payload.get('events') or []

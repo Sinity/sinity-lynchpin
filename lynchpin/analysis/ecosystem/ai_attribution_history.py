@@ -45,23 +45,25 @@ from typing import Any, Iterable, Sequence
 
 from ...sources.polylogue import SessionProfile, iter_session_profiles
 from ..active.ai_attribution import _classify_commit, _index_sessions, _parse_date, _parse_dt
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ...substrate.reader import read_commit_facts
+from ...substrate.connection import connect, substrate_path
+from ..core.io import resolve_analysis_path, save_json
 
 
 def build_active_ai_attribution_history(
     *,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
+    commit_payload: dict[str, Any] | None = None,
     session_profiles: Iterable[SessionProfile] | None = None,
 ) -> dict[str, Any]:
-    """Build the longitudinal series. Reads the full commit-facts artifact
-    (which already covers all available history) and the full polylogue
+    """Build the longitudinal series. Reads from the substrate commit_fact
+    table (which covers all available history) and the full polylogue
     archive. No date bounds because the point is the trend across all of
     it."""
 
-    commit_payload = _dict(load_json_if_exists(
-        commit_facts_file or resolve_analysis_path("active_commit_facts.json")
-    ))
+    if commit_payload is None:
+        with connect(substrate_path()) as conn:
+            commit_payload = read_commit_facts(conn)
     selected = set(projects or ())
 
     # Index sessions across ALL of polylogue history, not the last 31 days.
@@ -200,18 +202,10 @@ def run_active_ai_attribution_history(
     out_file: str | PathLike[str],
     *,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    payload = build_active_ai_attribution_history(
-        projects=projects,
-        commit_facts_file=commit_facts_file,
-    )
+    payload = build_active_ai_attribution_history(projects=projects)
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = [

@@ -31,7 +31,9 @@ from typing import Any, Iterable, Sequence
 from ...core.primitives import logical_date
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import WorkEvent, work_events
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ...substrate.reader import read_commit_facts
+from ...substrate.connection import connect, substrate_path
+from ..core.io import resolve_analysis_path, save_json
 
 
 _HIGH_EVENT_THRESHOLD = 3
@@ -45,15 +47,20 @@ def build_active_ai_assist_density(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
+    commit_payload: dict[str, Any] | None = None,
     work_events_iter: Iterable[WorkEvent] | None = None,
 ) -> dict[str, Any]:
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    commit_payload = _dict(load_json_if_exists(
-        commit_facts_file or resolve_analysis_path("active_commit_facts.json")
-    ))
+    if commit_payload is None:
+        with connect(substrate_path()) as conn:
+            commit_payload = read_commit_facts(
+                conn,
+                start=start,
+                end=end,
+                projects=tuple(projects) if projects else None,
+            )
     selected = {canonical_project_name(p) or p for p in (projects or ())}
 
     events = tuple(work_events_iter) if work_events_iter is not None else tuple(
@@ -139,11 +146,8 @@ def run_active_ai_assist_density(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    payload = build_active_ai_assist_density(
-        start=start, end=end, projects=projects, commit_facts_file=commit_facts_file,
-    )
+    payload = build_active_ai_assist_density(start=start, end=end, projects=projects)
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
 
@@ -277,10 +281,6 @@ def _parse_date(value: object) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = [

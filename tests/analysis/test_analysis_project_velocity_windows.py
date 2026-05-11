@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
-from lynchpin.analysis.projects.project_velocity_windows import build_project_velocity_windows
+from lynchpin.analysis.interpretation.velocity_windows import build_project_velocity_windows
 from lynchpin.graph.work_correlation import CorrelatedWorkDay
 
 

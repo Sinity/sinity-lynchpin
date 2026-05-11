@@ -1,10 +1,6 @@
 """AI co-authorship backfill via polylogue session join.
 
-CLAUDE.md notes that Co-Authored-By trailer detection sits at ~50% coverage
-because some repos (notably sinex) don't use the trailer. The fix the file
-explicitly recommends is cross-referencing with polylogue sessions.
-
-This module joins ``active_commit_facts.json`` against
+Joins commit facts from the DuckDB substrate against
 ``polylogue.iter_session_profiles()`` to attribute each commit at one of three
 confidence bands:
 
@@ -27,7 +23,9 @@ from typing import Any, Iterable, Sequence
 
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import SessionProfile, iter_session_profiles
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ...substrate.reader import read_commit_facts
+from ...substrate.connection import connect, substrate_path
+from ..core.io import resolve_analysis_path, save_json
 
 
 def build_active_ai_attribution(
@@ -35,14 +33,18 @@ def build_active_ai_attribution(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
     session_profiles: Iterable[SessionProfile] | None = None,
 ) -> dict[str, Any]:
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    commit_payload = _dict(load_json_if_exists(
-        commit_facts_file or resolve_analysis_path("active_commit_facts.json")))
+    with connect(substrate_path()) as conn:
+        commit_payload = read_commit_facts(
+            conn,
+            start=start,
+            end=end,
+            projects=tuple(projects) if projects else None,
+        )
     selected = set(projects or ())
 
     sessions_by_project_day, session_windows = _index_sessions(
@@ -112,7 +114,7 @@ def build_active_ai_attribution(
             "no polylogue session profiles in window; attribution will fall back to 'none' for all commits"
         )
     if not commit_payload.get("commits"):
-        caveats.append("active_commit_facts payload is empty for the selected window")
+        caveats.append("commit_fact substrate table is empty for the selected window")
     caveats.append(
         "Co-Authored-By trailer detection is not consulted here — those commits would still appear "
         "as 'none' from the polylogue side; combine with sources.git ai_coauthored for fuller coverage"
@@ -122,7 +124,7 @@ def build_active_ai_attribution(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "methodology": {
-            "join": "active_commit_facts × polylogue.iter_session_profiles on (canonical project, timestamp window)",
+            "join": "commit_fact × polylogue.iter_session_profiles on (canonical project, timestamp window)",
             "high": "session.first_message_at <= commit.timestamp <= session.last_message_at",
             "medium": "any session for the same project landed on the same calendar day",
             "none": "no overlapping session — does not exclude Co-Authored-By trailer evidence",
@@ -147,11 +149,9 @@ def run_active_ai_attribution(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
     payload = build_active_ai_attribution(
         start=start, end=end, projects=projects,
-        commit_facts_file=commit_facts_file,
     )
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
@@ -209,9 +209,6 @@ def _index_sessions(
             if selected and project not in selected:
                 continue
             same_day[(project, session_day)].append((profile.conversation_id, provider))
-            # window-based high-confidence matching only when message timestamps exist;
-            # codex profiles record canonical_session_date but no first_message_at, so
-            # they fall through to medium (same-day) attribution.
             if session_start is not None and session_end is not None:
                 windows[project].append(
                     (session_start, session_end, profile.conversation_id, provider)
@@ -235,10 +232,6 @@ def _parse_date(value: object) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = ["build_active_ai_attribution", "run_active_ai_attribution"]

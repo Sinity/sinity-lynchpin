@@ -17,7 +17,6 @@ rules:
       exclude:
         - "lynchpin/sources/polylogue.py"
         - "lynchpin/sources/github.py"
-        - "lynchpin/sources/takeout.py"
     pattern-either:
       - pattern: $OBJ.provider_meta
       - pattern: $OBJ.provider_payload

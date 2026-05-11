@@ -53,21 +53,16 @@ def run_substrate_promote(
     changes, symbol changes) and live polylogue work_events for the current
     window, then promotes all to DuckDB.
 
-    Returns per-table row counts.  Errors are logged and swallowed — the
-    refresh DAG must remain green even if the substrate is unavailable.
+    Returns per-table row counts.
     """
-    try:
-        return _do_promote(
-            commit_facts_file=commit_facts_file,
-            file_changes_file=file_changes_file,
-            symbol_changes_file=symbol_changes_file,
-            pr_review_file=pr_review_file,
-            refresh_id=refresh_id,
-            write_evidence_graph=write_evidence_graph,
-        )
-    except Exception as exc:
-        log.warning("substrate promotion failed (refresh continues): %s", exc)
-        return {}
+    return _do_promote(
+        commit_facts_file=commit_facts_file,
+        file_changes_file=file_changes_file,
+        symbol_changes_file=symbol_changes_file,
+        pr_review_file=pr_review_file,
+        refresh_id=refresh_id,
+        write_evidence_graph=write_evidence_graph,
+    )
 
 
 def _record_status(

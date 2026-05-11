@@ -22,7 +22,7 @@ from ..interpretation.rust_dependency_hygiene import run_active_rust_dependency_
 from ..interpretation.semantic_static_findings import run_active_semantic_static_findings
 from ..interpretation.shape import run_active_guardrails, run_active_hotspots
 from ..interpretation.structural_findings import run_active_structural_findings
-from .project_velocity_windows import run_project_velocity_windows
+from ..interpretation.velocity_windows import run_project_velocity_windows
 from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
 from ..core.io import resolve_analysis_path
 
@@ -318,13 +318,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "active-work-packages":
         out = args.out or resolve_analysis_path("active_work_packages.json")
-        commit_facts = args.commit_facts or resolve_analysis_path("active_commit_facts.json")
         run_active_work_packages(
             out,
             start=args.start,
             end=args.end,
             projects=args.project,
-            commit_facts_file=commit_facts,
         )
         return 0
 
@@ -376,13 +374,11 @@ def run_analysis_command(args: argparse.Namespace) -> int | None:
 
     if args.command == "active-work-packages":
         out = args.out or resolve_analysis_path("active_work_packages.json")
-        commit_facts = args.commit_facts or resolve_analysis_path("active_commit_facts.json")
         run_active_work_packages(
             out,
             start=args.start,
             end=args.end,
             projects=args.project,
-            commit_facts_file=commit_facts,
         )
         return 0
 
@@ -489,7 +485,6 @@ def run_analysis_command(args: argparse.Namespace) -> int | None:
         run_active_commit_semantics(
             out,
             start=args.start, end=args.end, projects=args.project,
-            commit_facts_file=args.commit_facts or resolve_analysis_path("active_commit_facts.json"),
         )
         return 0
 
@@ -498,7 +493,6 @@ def run_analysis_command(args: argparse.Namespace) -> int | None:
         run_active_ai_attribution(
             out,
             start=args.start, end=args.end, projects=args.project,
-            commit_facts_file=args.commit_facts or resolve_analysis_path("active_commit_facts.json"),
         )
         return 0
 

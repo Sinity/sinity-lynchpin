@@ -11,8 +11,9 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..active.git_facts import build_active_commit_facts
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ...substrate.reader import read_commit_facts
+from ...substrate.connection import connect, substrate_path
+from ..core.io import resolve_analysis_path, save_json
 
 _DEFAULT_GAP_DAYS = 2
 
@@ -66,17 +67,21 @@ def build_active_work_packages(
     end: date | None = None,
     projects: Sequence[str] | None = None,
     commit_payload: Mapping[str, Any] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    """Build active work packages from active commit facts."""
+    """Build active work packages from commit facts."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
-    payload = dict(commit_payload or _load_or_build_commit_payload(
-        start=start,
-        end=end,
-        projects=projects,
-        commit_facts_file=commit_facts_file,
-    ))
+
+    if commit_payload is None:
+        with connect(substrate_path()) as conn:
+            commit_payload = read_commit_facts(
+                conn,
+                start=start,
+                end=end,
+                projects=tuple(projects) if projects else None,
+            )
+
+    payload = dict(commit_payload)
     project_meta = _project_meta(payload)
     rows = _commit_rows(payload)
     grouped: dict[str, list[_CommitRow]] = defaultdict(list)
@@ -116,11 +121,7 @@ def build_active_work_packages(
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "window": {
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "git_history": "active_commit_facts/default-branch first-parent",
-        },
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
         "methodology": {
             "project_scope": "active project registry unless projects are explicitly selected",
             "unit_selection_order": [
@@ -133,7 +134,6 @@ def build_active_work_packages(
             "linkage_policy": "packages are commit-rooted; non-git evidence should link later by refs, time, project, and surface",
             "caveat": "work packages are landed-code units, not value judgments or final task lifecycle classifications",
         },
-        "inputs": {"active_commit_facts": str(commit_facts_file or "active_commit_facts.json")},
         "projects": sorted(project_rows, key=lambda row: str(row["project"])),
         "summary": _summary(packages, project_rows),
     }
@@ -145,37 +145,11 @@ def run_active_work_packages(
     start: date | None = None,
     end: date | None = None,
     projects: Sequence[str] | None = None,
-    commit_facts_file: str | PathLike[str] | None = None,
 ) -> dict[str, Any]:
-    """Materialize active work packages from active commit facts."""
-    payload = build_active_work_packages(
-        start=start,
-        end=end,
-        projects=projects,
-        commit_facts_file=commit_facts_file,
-    )
+    """Materialize active work packages from substrate commit facts."""
+    payload = build_active_work_packages(start=start, end=end, projects=projects)
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload
-
-
-def _load_or_build_commit_payload(
-    *,
-    start: date,
-    end: date,
-    projects: Sequence[str] | None,
-    commit_facts_file: str | PathLike[str] | None,
-) -> Mapping[str, Any]:
-    if commit_facts_file is not None:
-        payload = load_json_if_exists(commit_facts_file)
-        if isinstance(payload, dict):
-            return payload
-    default_path = Path(resolve_analysis_path("active_commit_facts.json"))
-    payload = load_json_if_exists(default_path)
-    if isinstance(payload, dict):
-        window = payload.get("window")
-        if isinstance(window, dict) and window.get("start") == start.isoformat() and window.get("end") == end.isoformat():
-            return payload
-    return build_active_commit_facts(start=start, end=end, projects=projects)
 
 
 def _project_meta(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -223,6 +197,9 @@ def _commit_rows(payload: Mapping[str, Any]) -> tuple[_CommitRow, ...]:
             )
         )
     return tuple(sorted(rows, key=lambda item: (item.project, item.timestamp, item.sha)))
+
+
+# ── clustering logic (unchanged) ──────────────────────────────────────
 
 
 def _packages_for_project(project: str, commits: Sequence[_CommitRow], *, project_path: Path) -> list[dict[str, Any]]:

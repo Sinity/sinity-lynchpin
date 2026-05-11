@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta, timezone
 
 from lynchpin.analysis.ecosystem.ai_attribution_history import (
@@ -49,34 +48,28 @@ def _commit(*, sha: str, project: str, day: date, hour: int = 12) -> dict:
     }
 
 
-def test_monthly_aggregation_groups_commits_by_year_month(tmp_path):
-    facts_file = tmp_path / "active_commit_facts.json"
+def test_monthly_aggregation_groups_commits_by_year_month():
     payload = {"commits": [
         _commit(sha="m1c1", project="demo", day=date(2026, 5, 5)),
         _commit(sha="m1c2", project="demo", day=date(2026, 5, 15)),
         _commit(sha="m2c1", project="demo", day=date(2026, 6, 1)),
     ]}
-    facts_file.write_text(json.dumps(payload))
     out = build_active_ai_attribution_history(
-        commit_facts_file=facts_file,
-        session_profiles=(),  # no AI signal
+        commit_payload=payload,
+        session_profiles=(),
     )
     by_month = {row["month"]: row for row in out["monthly"]}
     assert by_month["2026-05"]["total_commits"] == 2
     assert by_month["2026-06"]["total_commits"] == 1
-    # No sessions → all commits attribute to "none"
     assert by_month["2026-05"]["attributed_none"] == 2
     assert by_month["2026-06"]["ai_ratio"] == 0.0
 
 
-def test_high_attribution_when_session_window_overlaps_commit(tmp_path):
-    facts_file = tmp_path / "active_commit_facts.json"
+def test_high_attribution_when_session_window_overlaps_commit():
     commit_day = date(2026, 5, 7)
-    facts_file.write_text(json.dumps({
-        "commits": [_commit(sha="abc", project="polylogue", day=commit_day, hour=12)],
-    }))
+    payload = {"commits": [_commit(sha="abc", project="polylogue", day=commit_day, hour=12)]}
     out = build_active_ai_attribution_history(
-        commit_facts_file=facts_file,
+        commit_payload=payload,
         session_profiles=[_profile(conv_id="c1", day=commit_day, duration_min=120)],
     )
     by_month = {row["month"]: row for row in out["monthly"]}
@@ -84,21 +77,17 @@ def test_high_attribution_when_session_window_overlaps_commit(tmp_path):
     assert row["attributed_high"] == 1
     assert row["attributed_none"] == 0
     assert row["ai_ratio"] == 1.0
-    # Kind from work_event_kind on the supporting session
     assert "implementation" in row["dominant_kinds"]
 
 
-def test_project_totals_aggregate_across_months(tmp_path):
-    facts_file = tmp_path / "active_commit_facts.json"
-    facts_file.write_text(json.dumps({
-        "commits": [
-            _commit(sha="a", project="demo", day=date(2026, 4, 5)),
-            _commit(sha="b", project="demo", day=date(2026, 5, 5)),
-            _commit(sha="c", project="demo", day=date(2026, 6, 5)),
-        ],
-    }))
+def test_project_totals_aggregate_across_months():
+    payload = {"commits": [
+        _commit(sha="a", project="demo", day=date(2026, 4, 5)),
+        _commit(sha="b", project="demo", day=date(2026, 5, 5)),
+        _commit(sha="c", project="demo", day=date(2026, 6, 5)),
+    ]}
     out = build_active_ai_attribution_history(
-        commit_facts_file=facts_file,
+        commit_payload=payload,
         session_profiles=(),
     )
     project = next(row for row in out["project_totals"] if row["project"] == "demo")
@@ -107,32 +96,26 @@ def test_project_totals_aggregate_across_months(tmp_path):
     assert project["ai_ratio"] == 0.0
 
 
-def test_window_reflects_actual_commit_date_span(tmp_path):
-    facts_file = tmp_path / "active_commit_facts.json"
-    facts_file.write_text(json.dumps({
-        "commits": [
-            _commit(sha="early", project="demo", day=date(2024, 3, 15)),
-            _commit(sha="late", project="demo", day=date(2026, 5, 7)),
-        ],
-    }))
+def test_window_reflects_actual_commit_date_span():
+    payload = {"commits": [
+        _commit(sha="early", project="demo", day=date(2024, 3, 15)),
+        _commit(sha="late", project="demo", day=date(2026, 5, 7)),
+    ]}
     out = build_active_ai_attribution_history(
-        commit_facts_file=facts_file,
+        commit_payload=payload,
         session_profiles=(),
     )
     assert out["window"]["start"] == "2024-03"
     assert out["window"]["end"] == "2026-05"
 
 
-def test_project_filter_isolates_selected(tmp_path):
-    facts_file = tmp_path / "active_commit_facts.json"
-    facts_file.write_text(json.dumps({
-        "commits": [
-            _commit(sha="a", project="alpha", day=date(2026, 5, 5)),
-            _commit(sha="b", project="beta", day=date(2026, 5, 5)),
-        ],
-    }))
+def test_project_filter_isolates_selected():
+    payload = {"commits": [
+        _commit(sha="a", project="alpha", day=date(2026, 5, 5)),
+        _commit(sha="b", project="beta", day=date(2026, 5, 5)),
+    ]}
     out = build_active_ai_attribution_history(
-        commit_facts_file=facts_file,
+        commit_payload=payload,
         session_profiles=(),
         projects=["alpha"],
     )
@@ -140,9 +123,9 @@ def test_project_filter_isolates_selected(tmp_path):
     assert {row["project"] for row in out["project_totals"]} == {"alpha"}
 
 
-def test_empty_input_yields_empty_payload(tmp_path):
+def test_empty_input_yields_empty_payload():
     out = build_active_ai_attribution_history(
-        commit_facts_file=tmp_path / "missing.json",
+        commit_payload={"commits": []},
         session_profiles=(),
     )
     assert out["monthly"] == []

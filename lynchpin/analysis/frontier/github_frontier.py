@@ -6,6 +6,7 @@ classification, recently closed items, and work-package cross-references.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from ...sources.github import (
 )
 from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
 
+log = logging.getLogger(__name__)
 
 _RECENT_CLOSED_DAYS = 30
 
@@ -308,6 +310,7 @@ def _project_kind_mix(*, start: date, end: date) -> dict[str, dict[str, int]]:
 
         rows = work_day_correlations(start=start, end=end)
     except Exception:
+        log.warning("work_day_correlations failed — AI kind mix unavailable for frontier")
         return {}
     mix: dict[str, dict[str, int]] = {}
     for row in rows:
