@@ -73,6 +73,9 @@ class LynchpinConfig:
     irc_root: Path
     raw_log_file: Path
     calendar_jsonl: Path
+    machine_capture_root: Path
+    machine_host_root: Path
+    machine_telemetry_db: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -102,6 +105,7 @@ class LynchpinConfig:
             "irc": self.irc_root.exists(),
             "raw_log": self.raw_log_file.exists(),
             "calendar": self.calendar_jsonl.exists(),
+            "machine": self.machine_telemetry_db.exists(),
         }
 
     @classmethod
@@ -206,7 +210,7 @@ class LynchpinConfig:
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", captures_root / "keylog"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
-        dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/project/knowledgebase"))
+        dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/data/knowledgebase"))
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
@@ -226,17 +230,21 @@ class LynchpinConfig:
             for item in os.environ.get(
                 "LYNCHPIN_CLIPBOARD_EXPORT_FILES",
                 ":".join([
-                    str(exports_root / "clipse/clipse-archive-20260201/clipboard_history.json"),
-                    str(exports_root / "clipse/clipse_bck/clipse-config-20260112-000626/clipboard_history.json"),
-                    str(exports_root / "chatlog_bck/raw/_archive/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
+                    str(exports_root / "clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
+                    str(exports_root / "clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
+                    str(exports_root / "chatlog/raw/legacy-raw/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
                 ]),
             ).split(":")
             if item
         )
         irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", captures_root / "comms/irc"))
         raw_log_file = Path(os.environ.get(
-            "LYNCHPIN_RAW_LOG_FILE", "/realm/project/knowledgebase/logs.raw-log.md"
+            "LYNCHPIN_RAW_LOG_FILE", "/realm/data/knowledgebase/logs.raw-log.md"
         ))
+        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", captures_root / "machine"))
+        machine_host = os.environ.get("LYNCHPIN_MACHINE_HOST", "sinnix-prime")
+        machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", machine_capture_root))
+        machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -273,6 +281,9 @@ class LynchpinConfig:
             irc_root=irc_root,
             raw_log_file=raw_log_file,
             calendar_jsonl=calendar_jsonl,
+            machine_capture_root=machine_capture_root,
+            machine_host_root=machine_host_root,
+            machine_telemetry_db=machine_telemetry_db,
         )
 
 

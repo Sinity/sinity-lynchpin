@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 7
+SUBSTRATE_VERSION = 11
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 

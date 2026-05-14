@@ -171,9 +171,8 @@ def test_query_substrate_truncates_at_max_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """1500-row result with max_rows=100 → truncated=True, len(rows)==100."""
-    import lynchpin.substrate.connection as duck_conn
 
-    db_path = _setup_substrate(tmp_path, monkeypatch)
+    _setup_substrate(tmp_path, monkeypatch)
 
     # Generate 1500 rows via a values CTE — no writes to substrate needed
     # Use a DuckDB generate_series expression
@@ -290,7 +289,6 @@ def test_list_evidence_graph_builds_with_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """After promoting a graph build, list returns one entry with expected keys."""
-    import lynchpin.substrate.connection as duck_conn
 
     db_path = _setup_substrate(tmp_path, monkeypatch)
 
@@ -355,7 +353,10 @@ def test_project_day_correlations_returns_dataclass_dict(
     """After promoting commit facts that land in the view, returns dicts with expected keys."""
     import json as _json
 
-    db_path = _setup_substrate(tmp_path, monkeypatch)
+    _setup_substrate(tmp_path, monkeypatch)
+    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
 
     # Write a minimal commit-facts JSON and promote
     cf_payload = {
@@ -479,6 +480,8 @@ def test_mcp_tools_registered() -> None:
     from lynchpin.mcp.tools.views import (
         closure_chain_walks,
         file_overlap_edges,
+        machine_metrics_daily,
+        machine_service_state_summary,
         pr_review_rows,
         project_day_correlations,
         symbol_overlap_edges,
@@ -496,6 +499,8 @@ def test_mcp_tools_registered() -> None:
         file_overlap_edges,
         symbol_overlap_edges,
         pr_review_rows,
+        machine_metrics_daily,
+        machine_service_state_summary,
     ]:
         assert callable(fn)
 
@@ -532,6 +537,9 @@ def test_readiness_report_after_successful_promote(
     """
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     _reload_config(monkeypatch)
+    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
 
     cf_file = tmp_path / "commit_facts.json"
     cf_file.write_text(json.dumps({

@@ -1,0 +1,151 @@
+"""Machine experiment manifests captured by Sinnix.
+
+Each experiment run is a directory under the host machine capture root:
+``experiments/<run_id>/manifest.json``. The manifest stores the treatment,
+workload, git state, and pre/post machine state for one benchmark or stress
+run. Lynchpin keeps raw JSON intact and promotes typed rows into DuckDB so
+experiments can be joined to the telemetry stream.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from ..core.config import get_config
+
+__all__ = [
+    "MachineExperimentRun",
+    "experiment_root",
+    "experiment_runs",
+]
+
+
+@dataclass(frozen=True)
+class MachineExperimentRun:
+    run_id: str
+    host: str
+    workload: str
+    command: tuple[str, ...]
+    cwd: str | None
+    started_at: datetime
+    ended_at: datetime | None
+    exit_status: int | None
+    service_profile: str | None
+    cache_profile: str | None
+    planned_treatment: dict[str, Any]
+    git_root: str | None
+    git_head: str | None
+    git_branch: str | None
+    git_dirty: bool | None
+    pre_state: dict[str, Any]
+    post_state: dict[str, Any]
+    notes: tuple[str, ...]
+    manifest_path: Path
+
+
+def experiment_root(path: Path | None = None) -> Path:
+    """Return the canonical experiment manifest root for the configured host."""
+    return path or get_config().machine_host_root / "experiments"
+
+
+def _as_utc(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _as_dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
+
+
+def _within_window(started_at: datetime, start: date | None, end: date | None) -> bool:
+    day = started_at.date()
+    if start is not None and day < start:
+        return False
+    if end is not None and day > end:
+        return False
+    return True
+
+
+def _read_manifest(path: Path) -> MachineExperimentRun | None:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    started_at = _as_utc(payload.get("started_at"))
+    if started_at is None:
+        return None
+
+    git = _as_dict(payload.get("git"))
+    return MachineExperimentRun(
+        run_id=str(payload.get("run_id") or path.parent.name),
+        host=str(payload.get("host") or ""),
+        workload=str(payload.get("workload") or ""),
+        command=_as_tuple(payload.get("command")),
+        cwd=str(payload["cwd"]) if payload.get("cwd") is not None else None,
+        started_at=started_at,
+        ended_at=_as_utc(payload.get("ended_at")),
+        exit_status=(
+            int(payload["exit_status"])
+            if payload.get("exit_status") is not None
+            else None
+        ),
+        service_profile=(
+            str(payload["service_profile"])
+            if payload.get("service_profile") is not None
+            else None
+        ),
+        cache_profile=(
+            str(payload["cache_profile"])
+            if payload.get("cache_profile") is not None
+            else None
+        ),
+        planned_treatment=_as_dict(payload.get("planned_treatment")),
+        git_root=str(git["root"]) if git.get("root") is not None else None,
+        git_head=str(git["head"]) if git.get("head") is not None else None,
+        git_branch=str(git["branch"]) if git.get("branch") is not None else None,
+        git_dirty=bool(git["dirty"]) if git.get("dirty") is not None else None,
+        pre_state=_as_dict(payload.get("pre_state")),
+        post_state=_as_dict(payload.get("post_state")),
+        notes=_as_tuple(payload.get("notes")),
+        manifest_path=path,
+    )
+
+
+def experiment_runs(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    root: Path | None = None,
+) -> Iterator[MachineExperimentRun]:
+    """Yield valid machine experiment manifests ordered by start time."""
+    base = experiment_root(root)
+    if not base.exists():
+        return
+    runs: list[MachineExperimentRun] = []
+    for manifest in base.glob("*/manifest.json"):
+        run = _read_manifest(manifest)
+        if run is None or not _within_window(run.started_at, start, end):
+            continue
+        runs.append(run)
+    for run in sorted(runs, key=lambda item: (item.started_at, item.run_id)):
+        yield run

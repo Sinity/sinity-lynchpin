@@ -23,7 +23,7 @@ Column-shape notes:
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 if TYPE_CHECKING:
     import duckdb
 _TIER_RANK_SQL = "CASE kind_tier WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END"
@@ -116,6 +116,72 @@ def read_commit_facts(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=N
             seen_projects[project] = {'project': project, 'default_branch': default_branch or 'main'}
     return {'commits': commits, 'projects': list(seen_projects.values()), 'window': {'start': actual_start or (start.isoformat() if start else ''), 'end': actual_end or (end.isoformat() if end else '')}}
 
+def load_machine_metric_samples(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, hosts: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
+    """SELECT and hydrate machine telemetry rows from ``machine_metric_sample``."""
+    from lynchpin.sources.machine import MachineMetricSample
+    clauses: list[str] = []
+    params: list[Any] = []
+    _add_date_filter('observed_at', start, end, clauses, params)
+    _add_in_filter('host', hosts, clauses, params)
+    if refresh_id is not None:
+        clauses.append('refresh_id = ?')
+        params.append(refresh_id)
+    where = _build_where(clauses, params)
+    sql = f'\n        SELECT\n            observed_at, host, boot_id, source, source_schema_version,\n            cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,\n            gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,\n            gpu_pstate, gpu_pcie_gen, gpu_pcie_width,\n            load_1m, mem_avail_mb, io_psi_some_avg10, io_psi_full_avg10,\n            latency_oversleep_ms, dstate_task_count, gap_codes\n        FROM machine_metric_sample\n        {where}\n        ORDER BY observed_at\n    '
+    rows = conn.execute(sql, params).fetchall()
+    return [MachineMetricSample(observed_at=row[0], host=row[1], boot_id=row[2], source=row[3], source_schema_version=int(row[4]), cpu_package_w=row[5], cpu_core_w=row[6], cpu_pkg_c=row[7], cpu_max_core_c=row[8], gpu_power_w=row[9], gpu_fan_pct=row[10], gpu_temp_c=row[11], gpu_util_pct=row[12], gpu_pstate=row[13], gpu_pcie_gen=row[14], gpu_pcie_width=row[15], load_1m=row[16], mem_avail_mb=row[17], io_psi_some_avg10=row[18], io_psi_full_avg10=row[19], latency_oversleep_ms=row[20], dstate_task_count=row[21], gap_codes=tuple(row[22] or [])) for row in rows]
+
+def load_machine_experiment_runs(conn: 'duckdb.DuckDBPyConnection', *, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """SELECT machine experiment manifest rows from ``machine_experiment_run``."""
+    where = ''
+    params: list[Any] = []
+    if refresh_id is not None:
+        where = 'WHERE refresh_id = ?'
+        params.append(refresh_id)
+    result = conn.execute(f'\n        SELECT\n            run_id, host, workload, command, cwd,\n            started_at, ended_at, exit_status,\n            service_profile, cache_profile, planned_treatment,\n            git_root, git_head, git_branch, git_dirty,\n            pre_state, post_state, notes, manifest_path, refresh_id\n        FROM machine_experiment_run\n        {where}\n        ORDER BY started_at, run_id\n        ', params).fetchall()
+    columns = [desc[0] for desc in conn.description or []]
+    return [dict(zip(columns, row, strict=True)) for row in result]
+
+def load_machine_network_samples(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, hosts: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
+    """SELECT and hydrate integrated network probes from ``machine_network_sample``."""
+    from lynchpin.sources.machine import MachineNetworkSample
+    clauses: list[str] = []
+    params: list[Any] = []
+    _add_date_filter('observed_at', start, end, clauses, params)
+    _add_in_filter('host', hosts, clauses, params)
+    if refresh_id is not None:
+        clauses.append('refresh_id = ?')
+        params.append(refresh_id)
+    where = _build_where(clauses, params)
+    rows = conn.execute(f'\n        SELECT\n            observed_at, host, boot_id, source_schema_version,\n            interface, gateway_ip, ping, bloat, iface, nic, tcp,\n            dns_ms, pmtu_1492, conntrack, gap_codes\n        FROM machine_network_sample\n        {where}\n        ORDER BY observed_at\n        ', params).fetchall()
+
+    def json_obj(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if value in (None, ''):
+            return {}
+        if isinstance(value, str):
+            import json
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {'value': parsed}
+        return {'value': value}
+    return [MachineNetworkSample(observed_at=row[0], host=row[1], boot_id=row[2], source_schema_version=int(row[3]), interface=row[4], gateway_ip=row[5], ping=json_obj(row[6]), bloat=json_obj(row[7]) if row[7] is not None else None, iface=json_obj(row[8]), nic=json_obj(row[9]), tcp=json_obj(row[10]), dns_ms=row[11], pmtu_1492=row[12], conntrack=json_obj(row[13]), gap_codes=tuple(row[14] or [])) for row in rows]
+
+def load_machine_service_states(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, hosts: tuple[str, ...] | None=None, units: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
+    """SELECT and hydrate systemd/user-unit samples from ``machine_service_state``."""
+    from lynchpin.sources.machine import MachineServiceState
+    clauses: list[str] = []
+    params: list[Any] = []
+    _add_date_filter('observed_at', start, end, clauses, params)
+    _add_in_filter('host', hosts, clauses, params)
+    _add_in_filter('unit', units, clauses, params)
+    if refresh_id is not None:
+        clauses.append('refresh_id = ?')
+        params.append(refresh_id)
+    where = _build_where(clauses, params)
+    rows = conn.execute(f'\n        SELECT\n            observed_at, host, boot_id, unit, scope,\n            active_state, sub_state, main_pid, control_group,\n            memory_current_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes\n        FROM machine_service_state\n        {where}\n        ORDER BY observed_at, scope, unit\n        ', params).fetchall()
+    return [MachineServiceState(observed_at=row[0], host=row[1], boot_id=row[2], unit=row[3], scope=row[4], active_state=row[5], sub_state=row[6], main_pid=row[7], control_group=row[8], memory_current_bytes=row[9], cpu_usage_nsec=row[10], io_read_bytes=row[11], io_write_bytes=row[12]) for row in rows]
+
 def load_file_change_facts(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, projects: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
     """SELECT and hydrate ``file_change_fact`` rows to ``GitFileChangeFact``."""
     from lynchpin.sources.git import GitFileChangeFact
@@ -176,7 +242,7 @@ def load_ai_work_event_labels(conn: 'duckdb.DuckDBPyConnection', *, refresh_id: 
     discards. Useful for callers that want to inspect or render classification
     metadata.
     """
-    from lynchpin.graph.work_event_kind import KindSource, ConfidenceTier, WorkEventKindLabel
+    from lynchpin.graph.work_event_kind import WorkEventKindLabel
     clauses: list[str] = []
     params: list[Any] = []
     if refresh_id is not None:
@@ -286,9 +352,10 @@ def _hydrate_payload(raw: Any) -> 'dict[str, Any] | None':
     if raw is None:
         return None
     if isinstance(raw, dict):
-        return raw
+        return cast(dict[str, Any], raw)
     if isinstance(raw, str):
-        return _json.loads(raw)
+        parsed = _json.loads(raw)
+        return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else None
     return None
 
 def list_evidence_graph_builds(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, mode: str | None=None) -> list[dict[str, Any]]:

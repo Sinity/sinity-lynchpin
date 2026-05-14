@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -49,7 +48,7 @@ def promote_commits(
     refresh_id: str,
     facts: Iterable[Any],  # Iterable[GitCommitFact]
     project_lookup: Callable[[str], str | None] | None = None,
-    annotations: Mapping[str, dict] | None = None,
+    annotations: Mapping[str, dict[str, Any]] | None = None,
 ) -> int:
     """INSERT commit rows, idempotent on refresh_id.  Returns rows written.
 
@@ -145,7 +144,7 @@ def promote_file_changes(
     refresh_id: str,
     facts: Iterable[Any],  # Iterable[GitFileChangeFact]
     project_lookup: Callable[[str], str | None] | None = None,
-    annotations: Mapping[tuple[str, str], dict] | None = None,
+    annotations: Mapping[tuple[str, str], dict[str, Any]] | None = None,
 ) -> int:
     """INSERT file-change rows, idempotent on refresh_id.
 
@@ -429,7 +428,7 @@ def promote_evidence_graph(
     *,
     refresh_id: str,
     graph: Any,  # EvidenceGraph — imported lazily to avoid circular imports
-    projects: "Sequence[str]" = (),
+    projects: Sequence[str] = (),
 ) -> dict[str, int]:
     """Idempotently promote an EvidenceGraph to substrate.
 
@@ -439,10 +438,6 @@ def promote_evidence_graph(
 
     Returns: {"build": 1, "nodes": N, "edges": M}.
     """
-    # Lazy imports to avoid circular dependency — promote.py is consumed by
-    # composite modules that themselves import from composite.evidence_graph.
-    from collections.abc import Sequence  # noqa: PLC0415
-
     # ── idempotent delete (children first) ────────────────────────────────
     conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
     conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [refresh_id])
@@ -657,11 +652,249 @@ def promote_spotify_daily(
     return len(rows)
 
 
+# ── machine_metric_sample ────────────────────────────────────────────────────
+
+
+def promote_machine_metric_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_metric_sample rows, idempotent on refresh_id."""
+    conn.execute("DELETE FROM machine_metric_sample WHERE refresh_id = ?", [refresh_id])
+
+    total = 0
+    rows: list[tuple[Any, ...]] = []
+
+    def flush() -> None:
+        nonlocal total
+        if not rows:
+            return
+        conn.executemany(
+            """
+            INSERT INTO machine_metric_sample (
+                observed_at, host, boot_id, source, source_schema_version,
+                cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,
+                gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,
+                gpu_pstate, gpu_pcie_gen, gpu_pcie_width,
+                load_1m, mem_avail_mb, io_psi_some_avg10, io_psi_full_avg10,
+                latency_oversleep_ms, dstate_task_count, gap_codes, refresh_id
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?
+            )
+            """,
+            rows,
+        )
+        total += len(rows)
+        rows.clear()
+
+    for sample in samples:
+        rows.append((
+            sample.observed_at,
+            sample.host,
+            sample.boot_id,
+            sample.source,
+            int(sample.source_schema_version),
+            sample.cpu_package_w,
+            sample.cpu_core_w,
+            sample.cpu_pkg_c,
+            sample.cpu_max_core_c,
+            sample.gpu_power_w,
+            sample.gpu_fan_pct,
+            sample.gpu_temp_c,
+            sample.gpu_util_pct,
+            sample.gpu_pstate,
+            sample.gpu_pcie_gen,
+            sample.gpu_pcie_width,
+            sample.load_1m,
+            sample.mem_avail_mb,
+            sample.io_psi_some_avg10,
+            sample.io_psi_full_avg10,
+            sample.latency_oversleep_ms,
+            sample.dstate_task_count,
+            list(sample.gap_codes),
+            refresh_id,
+        ))
+        if len(rows) >= 50_000:
+            flush()
+
+    flush()
+    log.debug("promote_machine_metric_samples: %d rows for refresh_id=%s", total, refresh_id)
+    return total
+
+
+def promote_machine_service_states(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    states: Iterable[Any],
+) -> int:
+    """INSERT machine_service_state rows, idempotent on refresh_id."""
+    conn.execute("DELETE FROM machine_service_state WHERE refresh_id = ?", [refresh_id])
+
+    total = 0
+    rows: list[tuple[Any, ...]] = []
+
+    def flush() -> None:
+        nonlocal total
+        if not rows:
+            return
+        conn.executemany(
+            """
+            INSERT INTO machine_service_state (
+                observed_at, host, boot_id, unit, scope,
+                active_state, sub_state, main_pid, control_group,
+                memory_current_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes,
+                refresh_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        total += len(rows)
+        rows.clear()
+
+    for state in states:
+        rows.append((
+            state.observed_at,
+            state.host,
+            state.boot_id,
+            state.unit,
+            state.scope,
+            state.active_state,
+            state.sub_state,
+            state.main_pid,
+            state.control_group,
+            state.memory_current_bytes,
+            state.cpu_usage_nsec,
+            state.io_read_bytes,
+            state.io_write_bytes,
+            refresh_id,
+        ))
+        if len(rows) >= 50_000:
+            flush()
+
+    flush()
+    log.debug("promote_machine_service_states: %d rows for refresh_id=%s", total, refresh_id)
+    return total
+
+
+def promote_machine_network_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_network_sample rows, idempotent on refresh_id."""
+    conn.execute("DELETE FROM machine_network_sample WHERE refresh_id = ?", [refresh_id])
+
+    rows: list[tuple[Any, ...]] = []
+    for sample in samples:
+        rows.append((
+            sample.observed_at,
+            sample.host,
+            sample.boot_id,
+            int(sample.source_schema_version),
+            sample.interface,
+            sample.gateway_ip,
+            json.dumps(sample.ping),
+            json.dumps(sample.bloat) if sample.bloat is not None else None,
+            json.dumps(sample.iface),
+            json.dumps(sample.nic),
+            json.dumps(sample.tcp),
+            sample.dns_ms,
+            sample.pmtu_1492,
+            json.dumps(sample.conntrack),
+            list(sample.gap_codes),
+            refresh_id,
+        ))
+
+    if rows:
+        conn.executemany(
+            """
+            INSERT INTO machine_network_sample (
+                observed_at, host, boot_id, source_schema_version,
+                interface, gateway_ip, ping, bloat, iface, nic, tcp,
+                dns_ms, pmtu_1492, conntrack, gap_codes, refresh_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    log.debug("promote_machine_network_samples: %d rows for refresh_id=%s", len(rows), refresh_id)
+    return len(rows)
+
+
+def promote_machine_experiment_runs(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    runs: Iterable[Any],
+) -> int:
+    """INSERT machine_experiment_run rows, idempotent on refresh_id."""
+    conn.execute("DELETE FROM machine_experiment_run WHERE refresh_id = ?", [refresh_id])
+
+    rows: list[tuple[Any, ...]] = []
+    for run in runs:
+        rows.append((
+            run.run_id,
+            run.host,
+            run.workload,
+            list(run.command),
+            run.cwd,
+            run.started_at,
+            run.ended_at,
+            run.exit_status,
+            run.service_profile,
+            run.cache_profile,
+            json.dumps(run.planned_treatment),
+            run.git_root,
+            run.git_head,
+            run.git_branch,
+            run.git_dirty,
+            json.dumps(run.pre_state),
+            json.dumps(run.post_state),
+            list(run.notes),
+            str(run.manifest_path),
+            refresh_id,
+        ))
+
+    if rows:
+        conn.executemany(
+            """
+            INSERT INTO machine_experiment_run (
+                run_id, host, workload, command, cwd,
+                started_at, ended_at, exit_status,
+                service_profile, cache_profile, planned_treatment,
+                git_root, git_head, git_branch, git_dirty,
+                pre_state, post_state, notes, manifest_path, refresh_id
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?
+            )
+            """,
+            rows,
+        )
+    log.debug("promote_machine_experiment_runs: %d rows for refresh_id=%s", len(rows), refresh_id)
+    return len(rows)
+
+
 __all__ = [
     "promote_calendar_events",
     "promote_commits",
     "promote_file_changes",
     "promote_ai_work_events",
+    "promote_machine_experiment_runs",
+    "promote_machine_metric_samples",
+    "promote_machine_network_samples",
+    "promote_machine_service_states",
     "promote_spotify_daily",
     "promote_symbol_changes",
     "promote_pr_review_rows",
