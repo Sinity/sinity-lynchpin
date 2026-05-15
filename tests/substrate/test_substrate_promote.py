@@ -12,13 +12,32 @@ Covers:
 
 from __future__ import annotations
 
-import importlib
 import json
 import pytest
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 UTC = timezone.utc
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Substrate-promotion unit tests must not ingest live personal archives."""
+    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.network_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="ready",
+            reason="isolated test fixture",
+        ),
+    )
+    monkeypatch.setattr("lynchpin.sources.machine.service_states", lambda *args, **kwargs: iter(()))
 
 
 def _reload_config(monkeypatch: pytest.MonkeyPatch | None = None) -> None:

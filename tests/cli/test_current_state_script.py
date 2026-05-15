@@ -1,5 +1,7 @@
 from datetime import date
 import json
+from pathlib import Path
+import subprocess
 
 from lynchpin.cli import current_state
 
@@ -24,6 +26,7 @@ def test_render_current_state_delegates_to_context_pack(monkeypatch):
     assert calls["start"].date() == date(2026, 5, 1)
     assert calls["end"].date() == date(2026, 5, 5)
     assert calls["mode"] == "network"
+    assert calls["prefer_substrate"] is True
 
 
 def test_current_state_script_writes_output(monkeypatch, tmp_path):
@@ -70,6 +73,20 @@ def test_render_current_state_can_render_context_pack(monkeypatch):
     assert calls["projects"] == ["lynchpin"]
     assert calls["semantic"] is True
     assert calls["persist_semantic"] is True
+
+
+def test_current_state_tool_targets_cli_module():
+    result = subprocess.run(
+        [str(Path("tool/current-state")), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "current-state" in result.stdout
+    assert "lynchpin.scripts" not in result.stderr
 
 
 def test_render_current_state_github_frontier_promotes_context_pack_to_network(monkeypatch):

@@ -32,8 +32,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Sequence
 
-from .evidence import EvidenceCaveat
-from .evidence_graph import EvidenceGraph, EvidenceNode
+from ..core.evidence import EvidenceCaveat
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 
 
 ClosureStatus = Literal["complete", "partial", "broken", "orphaned"]

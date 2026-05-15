@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 from lynchpin.graph.project_relationships import (
     build_project_relationships,
     render_project_relationships,

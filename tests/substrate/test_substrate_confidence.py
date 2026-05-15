@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from lynchpin.graph.evidence import (
+from lynchpin.core.evidence import (
     SourceReadiness,
     SourceReadinessReport,
 )
-from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 from lynchpin.graph.substrate_confidence import (
     build_substrate_confidence_matrix,
     render_substrate_confidence_matrix,

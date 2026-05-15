@@ -26,8 +26,9 @@ from ..core.periods import (
     parse_period,
     period_keys_in_range,
 )
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from .causal_chains import CausalChain, detect_chains
-from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph
+from .evidence_graph import build_evidence_graph
 
 ROLE_ARC_OPENER = "arc_opener"
 ROLE_CRISIS = "crisis"

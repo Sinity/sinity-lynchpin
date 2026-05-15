@@ -625,34 +625,22 @@
         pythonEnv = python.withPackages (
           ps: with ps; [
             black
-            ipykernel
             ipython
-            jupyterlab
-            matplotlib
             markdown
             mypy
             types-pyyaml
             numpy
-            pandas
-            polars
-            pyarrow
-            pyspark
             requests
             rich
             scikit-learn
             scipy
-            seaborn
-            statsmodels
             hmmlearn
             tqdm
             typer
             duckdb
-            datasette
             click
             cachew
             plotly
-            markdown
-            beautifulsoup4
             decorator
             lxml
             networkx
@@ -660,10 +648,8 @@
             pillow
             dulwich
             more-itertools
-            kompress
             platformdirs
             typing-extensions
-            gitpython
             workalendar
             orgparse
             geopy
@@ -683,34 +669,14 @@
             orjson
             simplejson
             six
-            aenum
             attrs
-            paho-mqtt
-            python-xlib
-            fbchat
-            browserexport
-            browser-cookie3
-            sqlite-backup
-            python-tcxparser
-            google-takeout-parser
-            pushshift-comment-export
-            endoapi
-            endoexport
-            ghexport
-            rexport
-            goodrexport
-            fbmessengerexport
-            activitywatch
-            taskwarrior
-            aw-watcher-window
-            active_window
             pygithub
-            praw
             structlog
             tiktoken
             pydantic
             aiosqlite
             claude-agent-sdk
+            mcp
             polylogue
             tree-sitter
             tree-sitter-python
@@ -719,17 +685,35 @@
           ]
         );
 
-        rEnv = pkgs.rWrapper.override {
-          packages = with pkgs.rPackages; [
-            tidyverse
-            data_table
-            arrow
+        baseDevPackages =
+          (with pkgs; [
+            pythonEnv
             duckdb
-            janitor
-            lubridate
-            remotes
-          ];
-        };
+            sqlite
+            git
+            gh
+            jq
+            yq
+            ripgrep
+            fd
+            just
+            ruff
+            semgrep
+            tokei
+            cargo-machete
+            cargo-geiger
+            cargo-audit
+          ])
+          ++ rustToolchain
+          ++ (with pkgs; [
+            gnumake
+          ]);
+        baseShellHook = ''
+          export PYTHONBREAKPOINT=ipdb.set_trace
+          export PYTHONUSERBASE=$PWD/.pyuser
+          export MY_CONFIG=$PWD/config
+          export PYTHONPATH=$PWD:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
+        '';
         lynchpinPackage = python.pkgs.buildPythonPackage {
           pname = "lynchpin";
           version = "0.1.0";
@@ -835,50 +819,13 @@
 
         devShells.default = pkgs.mkShell {
           name = "sinity-lynchpin";
-          packages =
-            (with pkgs; [
-              pythonEnv
-              rEnv
-              duckdb
-              sqlite
-              git
-              gh
-              jq
-              yq
-              ripgrep
-              fd
-              just
-              semgrep
-              cargo-machete
-              cargo-geiger
-            ])
-            ++ rustToolchain
-            ++ [
-              pkgsRust.nodejs_22
-            ]
-            ++ (with pkgs; [
-              go
-              gnumake
-              cmake
-              graphviz
-              imagemagick
-              ffmpeg
-              deno
-              pandoc
-              uv
-              pre-commit
-              gnuplot
-              gnome-keyring
-            ]);
+          packages = baseDevPackages;
 
-          shellHook = ''
-            export PYTHONBREAKPOINT=ipdb.set_trace
-            export PYTHONUSERBASE=$PWD/.pyuser
-            export JUPYTER_PATH=$PWD/.jupyter
-            export R_LIBS_USER=$PWD/.rlib
-            export MY_CONFIG=$PWD/config
-            export PYTHONPATH=$PWD:$PWD/external/hpi:$PWD/external/hpi-madelinecameron:$PWD/external/hpi-purarue:$PWD/external/hpi-sinity''${PYTHONPATH:+:$PYTHONPATH}
-            echo "Loaded sinity-lynchpin devshell with Python ${pythonEnv.pythonVersion} and R support.  chisel → just chisel  (XML snapshots)"
+          shellHook = baseShellHook + ''
+            export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
+            if [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
+              "$PWD/tool/devshell-motd"
+            fi
           '';
         };
       }

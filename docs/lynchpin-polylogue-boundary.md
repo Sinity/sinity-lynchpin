@@ -21,7 +21,7 @@
 - **Substrate** — DuckDB mirror of polylogue's work events (plus git, AW,
   terminal, health, etc.) for cross-source SQL joins. polylogue data is
   *promoted* into the substrate, not used directly.
-- **Re-classifier overlay** (`composite/work_event_kind.py`) — three feature
+- **Re-classifier overlay** (`lynchpin/graph/work_event_kind.py`) — three feature
   extractors (path, tools, duration) produce consensus labels with confidence
   tiers (high/medium/low). The overlay may disagree with polylogue's raw
   classification; disagreement is tracked in `kind_source`.
@@ -63,7 +63,7 @@
 | Event | Lynchpin action |
 |---|---|
 | Polylogue schema version bump | Bump `inputs.polylogue` in sinnix flake; no lynchpin code change needed (facade absorbs). |
-| New polylogue inference product (e.g., embeddings) | Add promoter in `lynchpin/duck/promote.py`; add substrate table; wire into MCP. |
+| New polylogue inference product (e.g., embeddings) | Add promoter in `lynchpin/substrate/promote.py`; add substrate table; wire into MCP. |
 | Polylogue retires a product | Deprecate corresponding lynchpin promoter + remove substrate table (next `SUBSTRATE_VERSION` bump). |
 | Lynchpin adds a new re-classifier feature | Add extractor to `work_event_kind.py`; column already exists in `ai_work_event` schema. |
 

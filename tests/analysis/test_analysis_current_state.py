@@ -10,6 +10,7 @@ class _FakePack:
     start: datetime
     mode: str
     projects: tuple[str, ...]
+    graph: str = "graph"
 
 
 def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, tmp_path):
@@ -21,6 +22,12 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
 
     monkeypatch.setattr(current_state, "context_pack", fake_context_pack)
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: f"# pack {pack.mode}")
+    promoted = {}
+    monkeypatch.setattr(
+        current_state,
+        "_promote_current_state_graph",
+        lambda graph, **kwargs: promoted.update({"graph": graph, **kwargs}),
+    )
 
     out = tmp_path / "current_state_context_pack.json"
     markdown_out = tmp_path / "current_state_context_pack.md"
@@ -45,6 +52,9 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
     assert payload["projects"] == ["lynchpin"]
     assert json.loads(out.read_text(encoding="utf-8"))["projects"] == ["lynchpin"]
     assert markdown_out.read_text(encoding="utf-8") == "# pack local-heavy\n"
+    assert promoted["graph"] == "graph"
+    assert promoted["mode"] == "local-heavy"
+    assert promoted["projects"] == ("lynchpin",)
 
 
 def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch, tmp_path):
@@ -52,9 +62,10 @@ def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch,
     monkeypatch.setattr(
         current_state,
         "context_pack",
-        lambda **kwargs: calls.update(kwargs) or {"mode": kwargs["mode"]},
+        lambda **kwargs: calls.update(kwargs) or _FakePack(start=kwargs["start"], mode=kwargs["mode"], projects=()),
     )
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: "# pack")
+    monkeypatch.setattr(current_state, "_promote_current_state_graph", lambda *args, **kwargs: None)
 
     current_state.run_current_state_analysis(
         start=date(2026, 5, 1),

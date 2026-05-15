@@ -43,12 +43,50 @@ def run_current_state_analysis(
         semantic=semantic,
         persist_semantic=persist_semantic,
         exclude_analysis_artifacts=CURRENT_STATE_ARTIFACT_NAMES,
+        prefer_substrate=False,
     )
     payload = cast(dict[str, Any], jsonable(pack))
+    payload["substrate_materialization"] = _promote_current_state_graph(
+        pack.graph,
+        start=start,
+        end=end,
+        mode=effective_mode,
+        projects=projects,
+    )
     save_json(out_file, payload, sort_keys=True)
     if markdown_out is not None:
         save_text(markdown_out, render_context_pack(pack) + "\n")
     return payload
+
+
+def _promote_current_state_graph(
+    graph: Any,
+    *,
+    start: date,
+    end: date,
+    mode: ContextPackMode,
+    projects: Sequence[str] | None,
+) -> dict[str, Any]:
+    """Promote materialized current-state packs and return explicit status."""
+    project_key = ",".join(sorted(projects or ())) if projects else "all"
+    refresh_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
+    try:
+        from lynchpin.substrate import apply_schema, connect
+        from lynchpin.substrate.promote import promote_evidence_graph
+    except ImportError as exc:
+        return {"status": "unavailable", "refresh_id": refresh_id, "reason": f"substrate import failed: {exc}"}
+    try:
+        with connect() as conn:
+            apply_schema(conn)
+            promote_evidence_graph(
+                conn,
+                refresh_id=refresh_id,
+                graph=graph,
+                projects=tuple(sorted(projects or ())),
+            )
+    except Exception as exc:
+        return {"status": "failed", "refresh_id": refresh_id, "reason": str(exc)}
+    return {"status": "promoted", "refresh_id": refresh_id, "reason": "stored in DuckDB substrate"}
 
 
 __all__ = ["CURRENT_STATE_ARTIFACT_NAMES", "run_current_state_analysis"]

@@ -1,7 +1,7 @@
 """Health, audit, and anomaly MCP tools."""
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import json_safe as _json_safe, latest_refresh_id as _latest_refresh_id, best_refresh_id
+from lynchpin.mcp.tools._utils import json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
 
 @app.tool()
 def substrate_gap_draft() -> dict[str, Any]:

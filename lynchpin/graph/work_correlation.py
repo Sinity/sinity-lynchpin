@@ -242,7 +242,8 @@ def summarize_work_correlations(rows: Sequence[CorrelatedWorkDay]) -> WorkCorrel
 
 def work_day_correlations(*, start: date, end: date, include_github_context: bool=False, graph: object | None=None) -> tuple[CorrelatedWorkDay, ...]:
     """Load local sources and return project/day correlations for a date window."""
-    from .evidence_graph import EvidenceGraph, build_evidence_graph
+    from ..core.evidence_graph import EvidenceGraph
+    from .evidence_graph import build_evidence_graph
     evidence_graph = graph
     if evidence_graph is None:
         evidence_graph = build_evidence_graph(start=start, end=end, mode='network' if include_github_context else 'local-fast')
@@ -309,7 +310,8 @@ def dataset_correlations(graph: object | None, *, limit: int=12, include_analysi
     """Summarize direct cross-dataset support from graph relations."""
     if graph is None:
         return ()
-    from .evidence_graph import EvidenceGraph, evidence_relations
+    from ..core.evidence_graph import EvidenceGraph
+    from .evidence_graph import evidence_relations
     if not isinstance(graph, EvidenceGraph):
         return ()
     grouped: dict[tuple[str, str], _MutableDatasetCorrelation] = {}
@@ -394,7 +396,8 @@ def _freeze_dataset_correlation(bucket: _MutableDatasetCorrelation) -> DatasetCo
 def _relations_by_project_day(graph: object | None) -> dict[tuple[date, str], tuple[_RelationSupport, ...]]:
     if graph is None:
         return {}
-    from .evidence_graph import EvidenceGraph, evidence_relations
+    from ..core.evidence_graph import EvidenceGraph
+    from .evidence_graph import evidence_relations
     if not isinstance(graph, EvidenceGraph):
         return {}
     grouped: dict[tuple[date, str], dict[str, _RelationSupport]] = defaultdict(dict)

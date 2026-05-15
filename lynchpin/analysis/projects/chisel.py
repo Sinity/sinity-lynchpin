@@ -118,7 +118,7 @@ def _plan(name: str, path: str, github_slug: str | None, *slices: Slice, compres
 _plan('sinex', '/realm/project/sinex', 'Sinity/sinex', Slice('core-crates', 'Runtime daemons — gateway and ingest daemon', ('crate/core/**',)), Slice('lib-crates', 'Shared libraries — db, primitives, macros, node-sdk, schema', ('crate/lib/**',)), Slice('root-and-config', 'Build metadata, configuration, schemas, top-level docs', ('Cargo.toml', 'Cargo.lock', 'README.md', 'AGENTS.md', 'config/**', 'schemas/**')), Slice('nodes-and-cli', 'Deployable nodes, CLI, xtask, CI, scripts', ('crate/nodes/**', 'crate/cli/**', 'xtask/**', '.github/**', 'scripts/**', 'justfile')), Slice('nixos-deployment', 'NixOS modules, flake, deployment surfaces', ('nixos/**', 'flake.nix', 'rustfmt.toml')), Slice('docs', 'Documentation', ('docs/**', 'xtask/docs/**', 'CLAUDE.md', 'CONTRIBUTING.md')), Slice('tests', 'Test suites and verification', ('tests/**', 'crate/tests/**')))
 _plan('sinnix', '/realm/project/sinnix', 'Sinity/sinnix', Slice('hosts-and-modules', 'Host profiles, Nix modules, flake composition', ('hosts/**', 'modules/**', 'flake/**', 'flake.nix')), Slice('scripts-and-dots', 'Scripts, dotfiles, agent control plane, CI', ('scripts/**', 'dots/**', '.github/**', 'README.md', 'CLAUDE.md')))
 _plan('polylogue', '/realm/project/polylogue', 'Sinity/polylogue', Slice('core-and-storage', 'Core library, storage backends, schemas, sources', ('polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'README.md')), Slice('cli-mcp-and-operations', 'CLI, MCP server, operational automation, UI glue', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/ui/**', 'scripts/**', '.github/**', 'AGENTS.md')), Slice('rendering-and-site', 'Rendering engine, site generation, demos, templates', ('polylogue/rendering/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'demos/**')), Slice('docs', 'Documentation', ('docs/**', 'CLAUDE.md', 'CHANGELOG.md')), Slice('tests-and-qa', 'Tests and QA campaigns', ('tests/**', 'qa/**')))
-_plan('knowledgebase', '/realm/project/knowledgebase', 'Sinity/knowledgebase', Slice('permanent', 'Authored knowledge: reflections, ideas, concepts, self-analysis, MOCs', ('permanent.*',)), Slice('extrinsic-chatlogs-reports', 'AI chatlogs and analysis reports', ('extrinsic.chatlog.*', 'extrinsic.report.*', 'extrinsic.psychometry.*')), Slice('extrinsic-docs-comms', 'External documents, psychometric tests, communications', ('extrinsic.doc.*', 'extrinsic.comms.*', 'extrinsic.misc.*')), Slice('logs-inbox-archive', 'Journals, raw logs, inbox captures, archived notes', ('logs.*', 'inbox.*', 'archive.*')), Slice('infrastructure', 'Vault machinery: schemas, scripts, templates, projects, config', ('schemas/**', 'scripts/**', 'templates.*', 'projects.*', 'root.md', 'root.schema.yml', 'CLAUDE.md', 'dendron.yml', 'plan.txt', 'README.md')), compressed=False, extra_ignore=('store/**', 'assets/**', '90_special/**', '.gitignore'), extra_copy=(('logs.raw-log.md', 'raw-log-copy.md'),))
+_plan('knowledgebase', '/realm/data/knowledgebase', 'Sinity/knowledgebase', Slice('permanent', 'Authored knowledge: reflections, ideas, concepts, self-analysis, MOCs', ('permanent.*',)), Slice('extrinsic-chatlogs-reports', 'AI chatlogs and analysis reports', ('extrinsic.chatlog.*', 'extrinsic.report.*', 'extrinsic.psychometry.*')), Slice('extrinsic-docs-comms', 'External documents, psychometric tests, communications', ('extrinsic.doc.*', 'extrinsic.comms.*', 'extrinsic.misc.*')), Slice('logs-inbox-archive', 'Journals, raw logs, inbox captures, archived notes', ('logs.*', 'inbox.*', 'archive.*')), Slice('infrastructure', 'Vault machinery: schemas, scripts, templates, projects, config', ('schemas/**', 'scripts/**', 'templates.*', 'projects.*', 'root.md', 'root.schema.yml', 'CLAUDE.md', 'dendron.yml', 'plan.txt', 'README.md')), compressed=False, extra_ignore=('store/**', 'assets/**', '90_special/**', '.gitignore'), extra_copy=(('logs.raw-log.md', 'raw-log-copy.md'),))
 
 def _ignore_str(plan: RepoPlan, slice: Slice | None=None) -> str:
     patterns = list(DEFAULT_IGNORE) + list(plan.extra_ignore)
@@ -268,6 +268,56 @@ def _copy_extras(plan: RepoPlan, out_dir: Path) -> int:
             total += dst.stat().st_size
             _print(f'  [dim]copy: {src_rel} → {dst_name} ({_fmt_bytes(dst.stat().st_size)})[/dim]')
     return total
+_TREE_PRUNE_DIRS = {'.git', '.direnv', '.venv', 'node_modules', 'target', 'result', 'vendor'}
+
+def _generate_portable_sidecars(plan: RepoPlan, out_dir: Path) -> tuple[list[str], int]:
+    """Write portable GPT-Pro sidecars absent from Chisel's XML surfaces."""
+    sidecars: list[str] = []
+    total_bytes = 0
+    bundle_path = out_dir / f'{plan.name}.bundle'
+    bundle = _run(['git', 'bundle', 'create', str(bundle_path), '--all'], cwd=plan.path)
+    if bundle.returncode == 0 and bundle_path.exists():
+        _print(f'  [green]✓[/green] {bundle_path.name} ([dim]{_fmt_bytes(bundle_path.stat().st_size)}[/dim])')
+        sidecars.append(bundle_path.name)
+        total_bytes += bundle_path.stat().st_size
+    else:
+        details = (bundle.stderr or bundle.stdout or 'git bundle failed').strip()
+        _print(f'  [yellow]⚠[/yellow] {plan.name}: {details}')
+    archive_path = out_dir / f'{plan.name}-HEAD.tar.gz'
+    archive = _run(['git', 'archive', '--format=tar.gz', f'--prefix={plan.name}/', 'HEAD', '-o', str(archive_path)], cwd=plan.path)
+    if archive.returncode == 0 and archive_path.exists():
+        _print(f'  [green]✓[/green] {archive_path.name} ([dim]{_fmt_bytes(archive_path.stat().st_size)}[/dim])')
+        sidecars.append(archive_path.name)
+        total_bytes += archive_path.stat().st_size
+    else:
+        details = (archive.stderr or archive.stdout or 'git archive failed').strip()
+        _print(f'  [yellow]⚠[/yellow] {plan.name}: {details}')
+    tree_path = out_dir / f'{plan.name}-repo-tree.txt'
+    tree_path.write_text(_repo_tree(plan.path, max_depth=3), encoding='utf-8')
+    _print(f'  [green]✓[/green] {tree_path.name} ([dim]{_fmt_bytes(tree_path.stat().st_size)}[/dim])')
+    sidecars.append(tree_path.name)
+    total_bytes += tree_path.stat().st_size
+    return (sidecars, total_bytes)
+
+def _repo_tree(root: Path, *, max_depth: int) -> str:
+    rows: list[str] = ['.']
+
+    def walk(path: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            children = sorted(path.iterdir(), key=lambda child: (not child.is_dir(), child.name.lower()))
+        except OSError:
+            return
+        for child in children:
+            if child.is_dir() and child.name in _TREE_PRUNE_DIRS:
+                continue
+            rel = child.relative_to(root)
+            rows.append(f'./{rel.as_posix()}' + ('/' if child.is_dir() else ''))
+            if child.is_dir():
+                walk(child, depth + 1)
+    walk(root, 1)
+    return '\n'.join(rows) + '\n'
 
 def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at: str, slice_workers: int) -> dict:
     """Build all slices + compressed + issues + git-log for one repo."""
@@ -294,8 +344,12 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         futures[f] = ('git-log', plan.name)
         f = ex.submit(_generate_issues, plan, out_dir, generated_at)
         futures[f] = ('issues', plan.name)
+        f = ex.submit(_generate_portable_sidecars, plan, out_dir)
+        futures[f] = ('sidecars', plan.name)
         gitlog_commits = 0
         issues_open = issues_closed = 0
+        sidecars_done: list[str] = []
+        sidecars_bytes = 0
         for future in as_completed(futures):
             kind, label = futures[future]
             try:
@@ -314,6 +368,10 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
                     if result is not None:
                         name, size = result
                         slices_done.append((name, size))
+                elif kind == 'sidecars':
+                    names, size = result
+                    sidecars_done.extend(names)
+                    sidecars_bytes += size
             except Exception as e:
                 msg = str(e)
                 errors.append(f'{kind}: {msg}')
@@ -328,8 +386,8 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         for e in xml_errors:
             _print(f'  [red]✗ XML invalid:[/red] {e}')
     elapsed = (dt.datetime.now() - t0).total_seconds()
-    total_bytes = sum((s[1] for s in slices_done)) + extra_bytes
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
+    total_bytes = sum((s[1] for s in slices_done)) + extra_bytes + sidecars_bytes
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict:
     repomix_bin = _require_repomix()

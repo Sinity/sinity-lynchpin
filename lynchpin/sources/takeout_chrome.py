@@ -50,14 +50,14 @@ def iter_takeout_chrome_visits(
 
 
 def _parse_old_format(
-    entries: list[dict], label: str
+    entries: list[dict[str, object]], label: str
 ) -> Iterator[WebHistoryVisit]:
     for entry in entries:
-        url = (entry.get("url") or "").strip()
+        url = str(entry.get("url") or "").strip()
         if not url or url.startswith("chrome://") or url.startswith("about:"):
             continue
         try:
-            dt = _unix_to_datetime(int(entry["time_usec"]))
+            dt = _unix_to_datetime(int(str(entry["time_usec"])))
         except (KeyError, ValueError, OSError, OverflowError):
             continue
         yield WebHistoryVisit(
@@ -69,16 +69,23 @@ def _parse_old_format(
 
 
 def _parse_new_format(
-    sessions: list[dict], label: str
+    sessions: list[dict[str, object]], label: str
 ) -> Iterator[WebHistoryVisit]:
     for session in sessions:
-        tab = session.get("tab", {})
-        for nav in tab.get("navigation", []):
-            url = (nav.get("virtual_url") or nav.get("url") or "").strip()
+        tab = session.get("tab")
+        if not isinstance(tab, dict):
+            continue
+        navigations = tab.get("navigation")
+        if not isinstance(navigations, list):
+            continue
+        for nav in navigations:
+            if not isinstance(nav, dict):
+                continue
+            url = str(nav.get("virtual_url") or nav.get("url") or "").strip()
             if not url or url.startswith("chrome://") or url.startswith("about:"):
                 continue
             try:
-                dt = _unix_to_datetime(int(nav["timestamp_msec"]), divisor=1000.0)
+                dt = _unix_to_datetime(int(str(nav["timestamp_msec"])), divisor=1000.0)
             except (KeyError, ValueError, OSError, OverflowError):
                 continue
             yield WebHistoryVisit(

@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 UTC = timezone.utc
 
@@ -59,6 +60,11 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "substrate_source_status",
         "calendar_event",
         "spotify_daily",
+        "machine_metric_sample",
+        "machine_gpu_sample",
+        "machine_network_sample",
+        "machine_service_state",
+        "machine_experiment_run",
     }
     assert expected == table_names
 
@@ -401,7 +407,7 @@ def test_promote_ai_work_events_with_classifier(tmp_path: Path) -> None:
     """Promote with a stub classifier; labels land in ai_work_event; load_ai_work_event_labels works."""
     promote_mod, reader_mod = _try_import_promote_reader()
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.graph.work_event_kind import WorkEventKindLabel
+    from lynchpin.core.work_event_kind import WorkEventKindLabel
 
     stub_label = WorkEventKindLabel(
         kind="implementation",
@@ -444,7 +450,7 @@ def test_load_ai_work_events_min_kind_tier(tmp_path: Path) -> None:
     """Load with min_kind_tier='medium' returns only medium+high rows (2 of 3)."""
     promote_mod, reader_mod = _try_import_promote_reader()
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.graph.work_event_kind import WorkEventKindLabel
+    from lynchpin.core.work_event_kind import WorkEventKindLabel
 
     def _classifier_by_tier(tier: str):
         def _clf(event):
@@ -610,8 +616,8 @@ def _make_evidence_graph(
     mode: str = "local-fast",
     node_suffix: str = "",
 ) -> "Any":  # EvidenceGraph
-    from lynchpin.graph.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
-    from lynchpin.graph.evidence import EvidenceCaveat, EvidenceProvenance
+    from lynchpin.core.evidence import EvidenceCaveat, EvidenceProvenance
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 
     generated_at = datetime(2026, 5, 7, 12, 0, 0, tzinfo=UTC)
 
@@ -837,8 +843,8 @@ def test_finalize_graph_writes_to_substrate(
     import lynchpin.core.config as cfg_mod
     importlib.reload(cfg_mod)
 
-    from lynchpin.graph.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode, _finalize_graph
-    from lynchpin.graph.evidence import EvidenceCaveat
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.graph.evidence_graph import _finalize_graph
 
     nodes = [
         EvidenceNode(
@@ -893,7 +899,6 @@ def test_finalize_graph_substrate_write_fails_silently(
 ) -> None:
     """_finalize_graph returns a valid graph even when the substrate write fails."""
     pytest.skip("Needs config-cache reload after env gate removal")
-    import importlib
 
     # Point substrate to an unwriteable location.
     unwriteable = tmp_path / "no_such_dir" / "substrate.duckdb"
@@ -901,7 +906,8 @@ def test_finalize_graph_substrate_write_fails_silently(
     import lynchpin.substrate.connection as duck_conn
     monkeypatch.setattr(duck_conn, "substrate_path", lambda: unwriteable)
 
-    from lynchpin.graph.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode, _finalize_graph
+    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
+    from lynchpin.graph.evidence_graph import _finalize_graph
 
     nodes = [
         EvidenceNode(

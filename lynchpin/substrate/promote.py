@@ -6,7 +6,7 @@ Each promoter is idempotent on ``refresh_id``:
 
 Re-running with the same ``refresh_id`` produces identical row counts.
 
-Schema: ``lynchpin/duck/schema.py`` (phase 2.1 tables).
+Schema: ``lynchpin/substrate/schema.py``.
 """
 
 from __future__ import annotations
@@ -679,6 +679,11 @@ def promote_machine_metric_samples(
                 gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,
                 gpu_pstate, gpu_pcie_gen, gpu_pcie_width,
                 load_1m, mem_avail_mb, io_psi_some_avg10, io_psi_full_avg10,
+                io_psi_some_avg60, io_psi_some_avg300, io_psi_some_total_us,
+                io_psi_full_avg60, io_psi_full_avg300, io_psi_full_total_us,
+                cpu_psi_some_avg60, cpu_psi_some_avg300, cpu_psi_some_total_us,
+                memory_psi_some_avg60, memory_psi_some_avg300, memory_psi_some_total_us,
+                memory_psi_full_avg60, memory_psi_full_avg300, memory_psi_full_total_us,
                 latency_oversleep_ms, dstate_task_count, gap_codes, refresh_id
             ) VALUES (
                 ?, ?, ?, ?, ?,
@@ -686,6 +691,11 @@ def promote_machine_metric_samples(
                 ?, ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
                 ?, ?, ?, ?
             )
             """,
@@ -716,6 +726,21 @@ def promote_machine_metric_samples(
             sample.mem_avail_mb,
             sample.io_psi_some_avg10,
             sample.io_psi_full_avg10,
+            sample.io_psi_some_avg60,
+            sample.io_psi_some_avg300,
+            sample.io_psi_some_total_us,
+            sample.io_psi_full_avg60,
+            sample.io_psi_full_avg300,
+            sample.io_psi_full_total_us,
+            sample.cpu_psi_some_avg60,
+            sample.cpu_psi_some_avg300,
+            sample.cpu_psi_some_total_us,
+            sample.memory_psi_some_avg60,
+            sample.memory_psi_some_avg300,
+            sample.memory_psi_some_total_us,
+            sample.memory_psi_full_avg60,
+            sample.memory_psi_full_avg300,
+            sample.memory_psi_full_total_us,
             sample.latency_oversleep_ms,
             sample.dstate_task_count,
             list(sample.gap_codes),
@@ -781,6 +806,63 @@ def promote_machine_service_states(
 
     flush()
     log.debug("promote_machine_service_states: %d rows for refresh_id=%s", total, refresh_id)
+    return total
+
+
+def promote_machine_gpu_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_gpu_sample rows, idempotent on refresh_id."""
+    conn.execute("DELETE FROM machine_gpu_sample WHERE refresh_id = ?", [refresh_id])
+
+    total = 0
+    rows: list[tuple[Any, ...]] = []
+
+    def flush() -> None:
+        nonlocal total
+        if not rows:
+            return
+        conn.executemany(
+            """
+            INSERT INTO machine_gpu_sample (
+                observed_at, host, boot_id, source,
+                gpu_power_w, gpu_power_limit_w, gpu_temp_c, gpu_fan_pct,
+                gpu_util_pct, gpu_mem_util_pct, gpu_clock_mhz, gpu_mem_clock_mhz,
+                gpu_pstate, gpu_pcie_gen, gpu_pcie_width, refresh_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        total += len(rows)
+        rows.clear()
+
+    for sample in samples:
+        rows.append((
+            sample.observed_at,
+            sample.host,
+            sample.boot_id,
+            sample.source,
+            sample.gpu_power_w,
+            sample.gpu_power_limit_w,
+            sample.gpu_temp_c,
+            sample.gpu_fan_pct,
+            sample.gpu_util_pct,
+            sample.gpu_mem_util_pct,
+            sample.gpu_clock_mhz,
+            sample.gpu_mem_clock_mhz,
+            sample.gpu_pstate,
+            sample.gpu_pcie_gen,
+            sample.gpu_pcie_width,
+            refresh_id,
+        ))
+        if len(rows) >= 50_000:
+            flush()
+
+    flush()
+    log.debug("promote_machine_gpu_samples: %d rows for refresh_id=%s", total, refresh_id)
     return total
 
 
@@ -892,6 +974,7 @@ __all__ = [
     "promote_file_changes",
     "promote_ai_work_events",
     "promote_machine_experiment_runs",
+    "promote_machine_gpu_samples",
     "promote_machine_metric_samples",
     "promote_machine_network_samples",
     "promote_machine_service_states",

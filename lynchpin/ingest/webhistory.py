@@ -13,14 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..core.cache import file_digest, write_text_if_changed
 from ..core.config import get_config
-from ..sources.browser_db import BROWSER_DB_KINDS, iter_browser_db_visits
+from ..sources.browser_db import iter_browser_db_visits
 from ..sources.takeout_chrome import iter_takeout_chrome_visits
 from ..sources.web import (
     WebHistoryVisit,
@@ -202,7 +200,7 @@ def dedup_raw_files(
         return reports
 
     for raw_path in sorted(raw_dir.iterdir()):
-        if not raw_path.suffix in (".json", ".csv", ".ndjson", ".jsonl"):
+        if raw_path.suffix not in (".json", ".csv", ".ndjson", ".jsonl"):
             continue
         if "_unique_" in raw_path.name:
             continue

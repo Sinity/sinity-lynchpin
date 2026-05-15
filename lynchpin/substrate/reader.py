@@ -127,9 +127,23 @@ def load_machine_metric_samples(conn: 'duckdb.DuckDBPyConnection', *, start: dat
         clauses.append('refresh_id = ?')
         params.append(refresh_id)
     where = _build_where(clauses, params)
-    sql = f'\n        SELECT\n            observed_at, host, boot_id, source, source_schema_version,\n            cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,\n            gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,\n            gpu_pstate, gpu_pcie_gen, gpu_pcie_width,\n            load_1m, mem_avail_mb, io_psi_some_avg10, io_psi_full_avg10,\n            latency_oversleep_ms, dstate_task_count, gap_codes\n        FROM machine_metric_sample\n        {where}\n        ORDER BY observed_at\n    '
+    sql = f'\n        SELECT\n            observed_at, host, boot_id, source, source_schema_version,\n            cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,\n            gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,\n            gpu_pstate, gpu_pcie_gen, gpu_pcie_width,\n            load_1m, mem_avail_mb, io_psi_some_avg10, io_psi_full_avg10,\n            io_psi_some_avg60, io_psi_some_avg300, io_psi_some_total_us,\n            io_psi_full_avg60, io_psi_full_avg300, io_psi_full_total_us,\n            cpu_psi_some_avg60, cpu_psi_some_avg300, cpu_psi_some_total_us,\n            memory_psi_some_avg60, memory_psi_some_avg300, memory_psi_some_total_us,\n            memory_psi_full_avg60, memory_psi_full_avg300, memory_psi_full_total_us,\n            latency_oversleep_ms, dstate_task_count, gap_codes\n        FROM machine_metric_sample\n        {where}\n        ORDER BY observed_at\n    '
     rows = conn.execute(sql, params).fetchall()
-    return [MachineMetricSample(observed_at=row[0], host=row[1], boot_id=row[2], source=row[3], source_schema_version=int(row[4]), cpu_package_w=row[5], cpu_core_w=row[6], cpu_pkg_c=row[7], cpu_max_core_c=row[8], gpu_power_w=row[9], gpu_fan_pct=row[10], gpu_temp_c=row[11], gpu_util_pct=row[12], gpu_pstate=row[13], gpu_pcie_gen=row[14], gpu_pcie_width=row[15], load_1m=row[16], mem_avail_mb=row[17], io_psi_some_avg10=row[18], io_psi_full_avg10=row[19], latency_oversleep_ms=row[20], dstate_task_count=row[21], gap_codes=tuple(row[22] or [])) for row in rows]
+    return [MachineMetricSample(observed_at=row[0], host=row[1], boot_id=row[2], source=row[3], source_schema_version=int(row[4]), cpu_package_w=row[5], cpu_core_w=row[6], cpu_pkg_c=row[7], cpu_max_core_c=row[8], gpu_power_w=row[9], gpu_fan_pct=row[10], gpu_temp_c=row[11], gpu_util_pct=row[12], gpu_pstate=row[13], gpu_pcie_gen=row[14], gpu_pcie_width=row[15], load_1m=row[16], mem_avail_mb=row[17], io_psi_some_avg10=row[18], io_psi_full_avg10=row[19], io_psi_some_avg60=row[20], io_psi_some_avg300=row[21], io_psi_some_total_us=row[22], io_psi_full_avg60=row[23], io_psi_full_avg300=row[24], io_psi_full_total_us=row[25], cpu_psi_some_avg60=row[26], cpu_psi_some_avg300=row[27], cpu_psi_some_total_us=row[28], memory_psi_some_avg60=row[29], memory_psi_some_avg300=row[30], memory_psi_some_total_us=row[31], memory_psi_full_avg60=row[32], memory_psi_full_avg300=row[33], memory_psi_full_total_us=row[34], latency_oversleep_ms=row[35], dstate_task_count=row[36], gap_codes=tuple(row[37] or [])) for row in rows]
+
+def load_machine_gpu_samples(conn: 'duckdb.DuckDBPyConnection', *, start: date | None=None, end: date | None=None, hosts: tuple[str, ...] | None=None, refresh_id: str | None=None) -> list[Any]:
+    """SELECT and hydrate 1 Hz GPU telemetry from ``machine_gpu_sample``."""
+    from lynchpin.sources.machine import MachineGpuSample
+    clauses: list[str] = []
+    params: list[Any] = []
+    _add_date_filter('observed_at', start, end, clauses, params)
+    _add_in_filter('host', hosts, clauses, params)
+    if refresh_id is not None:
+        clauses.append('refresh_id = ?')
+        params.append(refresh_id)
+    where = _build_where(clauses, params)
+    rows = conn.execute(f'\n        SELECT\n            observed_at, host, boot_id, source,\n            gpu_power_w, gpu_power_limit_w, gpu_temp_c, gpu_fan_pct,\n            gpu_util_pct, gpu_mem_util_pct, gpu_clock_mhz, gpu_mem_clock_mhz,\n            gpu_pstate, gpu_pcie_gen, gpu_pcie_width\n        FROM machine_gpu_sample\n        {where}\n        ORDER BY observed_at\n        ', params).fetchall()
+    return [MachineGpuSample(observed_at=row[0], host=row[1], boot_id=row[2], source=row[3], gpu_power_w=row[4], gpu_power_limit_w=row[5], gpu_temp_c=row[6], gpu_fan_pct=row[7], gpu_util_pct=row[8], gpu_mem_util_pct=row[9], gpu_clock_mhz=row[10], gpu_mem_clock_mhz=row[11], gpu_pstate=row[12], gpu_pcie_gen=row[13], gpu_pcie_width=row[14]) for row in rows]
 
 def load_machine_experiment_runs(conn: 'duckdb.DuckDBPyConnection', *, refresh_id: str | None=None) -> list[dict[str, Any]]:
     """SELECT machine experiment manifest rows from ``machine_experiment_run``."""
@@ -242,7 +256,7 @@ def load_ai_work_event_labels(conn: 'duckdb.DuckDBPyConnection', *, refresh_id: 
     discards. Useful for callers that want to inspect or render classification
     metadata.
     """
-    from lynchpin.graph.work_event_kind import WorkEventKindLabel
+    from lynchpin.core.work_event_kind import WorkEventKindLabel
     clauses: list[str] = []
     params: list[Any] = []
     if refresh_id is not None:
@@ -298,7 +312,7 @@ def load_pr_review_rows(conn: 'duckdb.DuckDBPyConnection', *, projects: tuple[st
     ``review_decisions``, ``reviewers``, and ``friction_signals`` (``VARCHAR[]``)
     are converted from list to tuple.
     """
-    from lynchpin.analysis.frontier.pr_review_topology import PrReviewRow
+    from lynchpin.core.pr_review import PrReviewRow
     clauses: list[str] = []
     params: list[Any] = []
     _add_in_filter('project', projects, clauses, params)
@@ -321,7 +335,7 @@ def load_pr_review_rows(conn: 'duckdb.DuckDBPyConnection', *, projects: tuple[st
 
 def _hydrate_provenance(prov: Any) -> 'Any | None':
     """Convert a DuckDB STRUCT dict to EvidenceProvenance, or None if all nulls."""
-    from lynchpin.graph.evidence import EvidenceProvenance
+    from lynchpin.core.evidence import EvidenceProvenance
     if prov is None:
         return None
     if not isinstance(prov, dict):
@@ -333,7 +347,7 @@ def _hydrate_provenance(prov: Any) -> 'Any | None':
 def _hydrate_caveats(raw: Any) -> 'tuple[Any, ...]':
     """Convert a JSON column (list[dict] or str) to tuple[EvidenceCaveat, ...]."""
     import json as _json
-    from lynchpin.graph.evidence import EvidenceCaveat
+    from lynchpin.core.evidence import EvidenceCaveat
     if raw is None:
         return ()
     if isinstance(raw, str):
@@ -399,7 +413,7 @@ def compute_file_overlap_edges(conn: 'duckdb.DuckDBPyConnection', *, we_refresh_
     list; we sort in Python to guarantee deterministic evidence strings
     (list_intersect does not guarantee order).
     """
-    from lynchpin.graph.evidence_graph import EvidenceEdge
+    from lynchpin.core.evidence_graph import EvidenceEdge
     from lynchpin.substrate.views import ensure_views
     ensure_views(conn)
     clauses: list[str] = ['overlap_count > 0']
@@ -434,7 +448,7 @@ def compute_symbol_overlap_edges(conn: 'duckdb.DuckDBPyConnection', *, we_refres
     ``shared_symbols`` from ``ARRAY_AGG(DISTINCT ...)`` is a Python list with
     non-deterministic order; we sort in Python before formatting.
     """
-    from lynchpin.graph.evidence_graph import EvidenceEdge
+    from lynchpin.core.evidence_graph import EvidenceEdge
     from lynchpin.substrate.views import ensure_views
     ensure_views(conn)
     clauses: list[str] = ['symbol_count > 0']
@@ -477,7 +491,7 @@ def load_evidence_graph(conn: 'duckdb.DuckDBPyConnection', *, refresh_id: str | 
     - ``caveats`` JSON: DuckDB returns a list of dicts or a JSON string;
       we normalise both paths.
     """
-    from lynchpin.graph.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
     if refresh_id is not None:
         build_rows = conn.execute('SELECT refresh_id, start_date, end_date, mode, generated_at, caveats FROM evidence_graph_build WHERE refresh_id = ?', [refresh_id]).fetchall()
     else:

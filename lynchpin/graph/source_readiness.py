@@ -3,17 +3,21 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 from ..core.config import get_config
+from ..core.evidence import CostClass, ReadinessStatus, SourceReadiness, SourceReadinessReport
 from ..sources.analysis_artifacts import artifact_inventory
-from ..sources.polylogue import archive_readiness
-from .evidence import CostClass, ReadinessStatus, SourceReadiness, SourceReadinessReport
 _STALE_AFTER_DAYS = 45
 
-def source_readiness(*, start: date, end: date, include_heavy_counts: bool=False, include_github_frontier: bool=False) -> SourceReadinessReport:
+def archive_readiness(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.polylogue import archive_readiness as impl
+    return impl(*args, **kwargs)
+
+def source_readiness(*, start: date, end: date, include_heavy_counts: bool=False, include_github_frontier: bool=False, include_analysis_inventory: bool=True) -> SourceReadinessReport:
     """Return a compact readiness report for analysis-relevant sources."""
     cfg = get_config()
     available = cfg.available_sources()
-    items: list[SourceReadiness] = [_path_source('activitywatch', available['activitywatch'], cfg.activitywatch_db, 'ActivityWatch focus database is present', 'ActivityWatch focus database is missing'), _path_source('terminal', available['atuin'], cfg.atuin_db, 'Atuin shell history database is present', 'Atuin shell history database is missing'), _path_source('git', cfg.sinnix_root.parent.exists(), cfg.sinnix_root.parent, 'local project git repositories are read live', 'project checkout root is missing'), _polylogue_source(include_heavy_counts=include_heavy_counts), _path_source('raw_log', available['raw_log'], cfg.raw_log_file, 'knowledgebase raw-log is present', 'knowledgebase raw-log is missing', count_fn=_line_count), _path_source('browser', available['webhistory'], cfg.webhistory_ndjson or cfg.webhistory_dir, 'browser history export/capture is present', 'browser history export/capture is missing', freshness_path=cfg.webhistory_ndjson or cfg.webhistory_dir), _path_source('sleep', available['sleep'], cfg.sleep_jsonl, 'sleep processed export is present', 'sleep processed export is missing', freshness_path=cfg.sleep_jsonl), _path_source('health', cfg.samsung_gdpr_cloud_dir.exists(), cfg.samsung_gdpr_cloud_dir, 'Samsung health export root is present', 'Samsung health export root is missing'), _path_source('spotify', available['spotify'], cfg.spotify_root, 'Spotify processed export is present', 'Spotify processed export is missing', freshness_path=cfg.spotify_root), _path_source('reddit', available['reddit'], cfg.reddit_export_dir, 'Reddit processed export is present', 'Reddit processed export is missing', freshness_path=cfg.reddit_export_dir), _path_source('messenger', available['fbmessenger'], cfg.fbmessenger_gdpr_root if cfg.fbmessenger_gdpr_root.exists() else cfg.fbmessenger_db, 'Facebook Messenger export/database is present', 'Facebook Messenger export/database is missing'), _path_source('raindrop', available['raindrop'], cfg.raindrop_csv, 'Raindrop CSV export is present', 'Raindrop CSV export is missing', freshness_path=cfg.raindrop_csv), _path_source('substance', (cfg.exports_root / 'health/processed/substance_log_unified.csv').exists(), cfg.exports_root / 'health/processed/substance_log_unified.csv', 'substance log is present', 'substance log is missing'), _analysis_source(), SourceReadiness(source='github', status='available' if include_github_frontier else 'partial', reason='GitHub frontier fetch is enabled for this analysis' if include_github_frontier else 'GitHub is optional network evidence; use --github-frontier to fetch/cache it', cost='network', path=None, caveats=() if include_github_frontier else ('disabled outside network mode',))]
+    items: list[SourceReadiness] = [_path_source('activitywatch', available['activitywatch'], cfg.activitywatch_db, 'ActivityWatch focus database is present', 'ActivityWatch focus database is missing'), _path_source('terminal', available['atuin'], cfg.atuin_db, 'Atuin shell history database is present', 'Atuin shell history database is missing'), _path_source('git', cfg.sinnix_root.parent.exists(), cfg.sinnix_root.parent, 'local project git repositories are read live', 'project checkout root is missing'), _polylogue_source(include_heavy_counts=include_heavy_counts), _path_source('raw_log', available['raw_log'], cfg.raw_log_file, 'knowledgebase raw-log is present', 'knowledgebase raw-log is missing', count_fn=_line_count), _path_source('browser', available['webhistory'], cfg.webhistory_ndjson or cfg.webhistory_dir, 'browser history export/capture is present', 'browser history export/capture is missing', freshness_path=cfg.webhistory_ndjson or cfg.webhistory_dir), _path_source('sleep', available['sleep'], cfg.sleep_jsonl, 'sleep processed export is present', 'sleep processed export is missing', freshness_path=cfg.sleep_jsonl), _path_source('health', cfg.samsung_gdpr_cloud_dir.exists(), cfg.samsung_gdpr_cloud_dir, 'Samsung health export root is present', 'Samsung health export root is missing'), _path_source('spotify', available['spotify'], cfg.spotify_root, 'Spotify processed export is present', 'Spotify processed export is missing', freshness_path=cfg.spotify_root), _path_source('reddit', available['reddit'], cfg.reddit_export_dir, 'Reddit processed export is present', 'Reddit processed export is missing', freshness_path=cfg.reddit_export_dir), _path_source('messenger', available['fbmessenger'], cfg.fbmessenger_gdpr_root if cfg.fbmessenger_gdpr_root.exists() else cfg.fbmessenger_db, 'Facebook Messenger export/database is present', 'Facebook Messenger export/database is missing'), _path_source('raindrop', available['raindrop'], cfg.raindrop_csv, 'Raindrop CSV export is present', 'Raindrop CSV export is missing', freshness_path=cfg.raindrop_csv), _path_source('substance', (cfg.exports_root / 'health/processed/substance_log_unified.csv').exists(), cfg.exports_root / 'health/processed/substance_log_unified.csv', 'substance log is present', 'substance log is missing'), _machine_source(), _analysis_source(include_inventory=include_analysis_inventory), SourceReadiness(source='github', status='available' if include_github_frontier else 'partial', reason='GitHub frontier fetch is enabled for this analysis' if include_github_frontier else 'GitHub is optional network evidence; use --github-frontier to fetch/cache it', cost='network', path=None, caveats=() if include_github_frontier else ('disabled outside network mode',))]
     return SourceReadinessReport(start=start, end=end, generated_at=datetime.now(timezone.utc), sources=tuple(sorted(items, key=lambda item: item.source)))
 
 def render_source_readiness(report: SourceReadinessReport) -> str:
@@ -60,10 +64,12 @@ def _polylogue_source(*, include_heavy_counts: bool) -> SourceReadiness:
         caveats.append('work-event products are unavailable; chat semantics are limited')
     return SourceReadiness(source='polylogue', status=status, reason=readiness.reason, cost='local-heavy' if include_heavy_counts else 'local-fast', path=str(readiness.db_path), count=readiness.conversation_count, caveats=tuple(caveats))
 
-def _analysis_source() -> SourceReadiness:
+def _analysis_source(*, include_inventory: bool) -> SourceReadiness:
     cfg = get_config()
     if not cfg.analysis_output_dir.exists():
         return SourceReadiness(source='analysis', status='missing', reason='generated analysis artifact root is missing', cost='local-fast', path=str(cfg.analysis_output_dir))
+    if not include_inventory:
+        return SourceReadiness(source='analysis', status='partial', reason='generated analysis artifact root is present; inventory was not scanned', cost='local-fast', path=str(cfg.analysis_output_dir), last_date=_mtime_date(cfg.analysis_output_dir), caveats=('artifact inventory skipped in local-fast mode',))
     artifacts = artifact_inventory(cfg.analysis_output_dir)
     readable = tuple((item for item in artifacts if item.status == 'available'))
     partial = tuple((item for item in artifacts if item.status != 'available'))
@@ -72,6 +78,19 @@ def _analysis_source() -> SourceReadiness:
     reason = 'generated analysis artifacts are present' if readable else 'generated analysis artifact root contains no readable artifacts'
     latest = max((item.modified_at.date() for item in artifacts), default=None)
     return SourceReadiness(source='analysis', status=status, reason=reason, cost='local-fast', path=str(cfg.analysis_output_dir), count=len(readable), last_date=latest, caveats=caveats)
+
+def _machine_source() -> SourceReadiness:
+    from ..sources.machine import readiness as machine_readiness
+    ready = machine_readiness()
+    if ready.status == 'ready':
+        status: ReadinessStatus = 'available'
+        path = ready.live_db
+        caveats: tuple[str, ...] = ()
+    else:
+        status = 'missing'
+        path = ready.live_db
+        caveats = ()
+    return SourceReadiness(source='machine', status=status, reason=ready.reason, cost='local-fast', path=str(path), count=ready.live_rows if ready.live_rows else None, last_date=_mtime_date(path), caveats=caveats)
 
 def _mtime_date(path: Path) -> date | None:
     try:

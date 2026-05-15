@@ -6,11 +6,11 @@ time with issubclass(param.annotation, Context); PEP 563 string annotations
 cause ``issubclass('str', Context)`` → TypeError.
 """
 
-import base64
-from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from lynchpin.mcp.server import app
+from lynchpin.mcp.tools._utils import json_safe as _json_safe
+from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
 
 # ---------------------------------------------------------------------------
 # JSON serialisation helpers
@@ -56,11 +56,6 @@ def _is_select_only(sql: str) -> bool:
     # Token scan: split on non-alphanumeric chars, check each word
     tokens = {t.lower() for t in re.split(r"\W+", stripped) if t}
     return not tokens.intersection(_DISALLOWED_TOKENS)
-
-
-from lynchpin.mcp.tools._utils import json_safe as _json_safe
-from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
-
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -632,7 +627,7 @@ def substrate_prune(
         {"builds_before": N, "builds_after": N, "nodes_deleted": N,
          "edges_deleted": N, "dry_run": bool}
     """
-    from lynchpin.substrate.connection import connect, substrate_path, apply_schema
+    from lynchpin.substrate.connection import connect, substrate_path
 
     with connect(substrate_path(), read_only=True) as conn:
         builds_before = conn.execute(

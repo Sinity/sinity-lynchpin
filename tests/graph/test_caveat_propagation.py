@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from lynchpin.graph.causal_chains import detect_chains
-from lynchpin.graph.evidence import (
+from lynchpin.core.evidence import (
     EvidenceCaveat,
     caveat_summary,
     degrade_confidence,
     propagate_caveats,
 )
-from lynchpin.graph.evidence_graph import EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceNode
 
 UTC = timezone.utc
 

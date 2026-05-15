@@ -8,7 +8,7 @@ from lynchpin.graph.current_state_timeline import (
     build_current_state_timeline,
     render_current_state_timeline,
 )
-from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 
 UTC = timezone.utc
 

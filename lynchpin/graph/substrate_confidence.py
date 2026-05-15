@@ -27,8 +27,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Sequence
-from .evidence import SourceReadinessReport
-from .evidence_graph import EvidenceGraph
+from ..core.evidence import SourceReadinessReport
+from ..core.evidence_graph import EvidenceGraph
 from .work_correlation import CorrelatedWorkDay
 Tier = Literal['high', 'medium', 'low', 'absent', 'n_a']
 

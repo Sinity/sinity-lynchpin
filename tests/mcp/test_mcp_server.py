@@ -4,8 +4,8 @@ Verifies:
 - query_substrate: SELECT passes, DDL/DML rejected, truncation, JSON safety
 - list_substrate_tables: returns known tables
 - list_evidence_graph_builds: empty substrate → [], with build → 1 row
-- project_day_correlations: reader wrapper returns list[dict] with expected keys
-- closure_chain_walks: reader wrapper returns list[dict]
+- project_day_correlations: reader returns list[dict] with expected keys
+- closure_chain_walks: reader returns list[dict]
 - pr_review_rows: filter-by-state works
 
 Tool functions are imported directly (FastMCP decorators don't break direct calls).
@@ -32,6 +32,27 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch) -> None:
     import lynchpin.core.config as cfg_mod
     cfg_mod._CONFIG = None
     monkeypatch.setattr(cfg_mod, "_CONFIG", None, raising=False)
+
+
+def _stub_live_promote_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.service_states", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine.network_samples", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda: type("MachineReadiness", (), {
+            "status": "empty",
+            "reason": "test fixture",
+            "live_db": tmp_path / "telemetry.sqlite",
+            "live_rows": 0,
+        })(),
+    )
+    monkeypatch.setattr("lynchpin.sources.machine_experiments.experiment_runs", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.machine_experiments.experiment_root", lambda: tmp_path / "experiments")
 
 
 def _dt(y: int, m: int, d: int, h: int = 12) -> datetime:
@@ -354,9 +375,7 @@ def test_project_day_correlations_returns_dataclass_dict(
     import json as _json
 
     _setup_substrate(tmp_path, monkeypatch)
-    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
+    _stub_live_promote_sources(monkeypatch, tmp_path)
 
     # Write a minimal commit-facts JSON and promote
     cf_payload = {
@@ -537,9 +556,7 @@ def test_readiness_report_after_successful_promote(
     """
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     _reload_config(monkeypatch)
-    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
+    _stub_live_promote_sources(monkeypatch, tmp_path)
 
     cf_file = tmp_path / "commit_facts.json"
     cf_file.write_text(json.dumps({

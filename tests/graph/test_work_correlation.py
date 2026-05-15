@@ -57,7 +57,7 @@ def test_correlate_work_days_joins_project_day_evidence() -> None:
             SimpleNamespace(
                 timestamp=when,
                 text="lynchpin current-state correlation work",
-                source_path="/realm/project/knowledgebase/logs.raw-log.md",
+                source_path="/realm/data/knowledgebase/logs.raw-log.md",
                 line_no=42,
             )
         ],
@@ -86,7 +86,7 @@ def test_correlate_work_days_joins_project_day_evidence() -> None:
     assert row.github_lifecycles["executed"] == 1
     assert row.ai_session_count == 1
     assert row.raw_log_count == 1
-    assert row.raw_log_refs == ("/realm/project/knowledgebase/logs.raw-log.md:42",)
+    assert row.raw_log_refs == ("/realm/data/knowledgebase/logs.raw-log.md:42",)
     assert row.focus_minutes == 60
     assert row.shell_command_count == 4
     assert row.sources == ("activitywatch", "git", "github", "polylogue", "raw_log", "terminal")
@@ -326,7 +326,7 @@ def test_correlate_work_days_accepts_github_context_dicts() -> None:
 
 def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items() -> None:
     when = datetime(2026, 5, 5, 12, tzinfo=UTC)
-    from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 
     graph = EvidenceGraph(
         start=when.date(),

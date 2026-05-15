@@ -1,98 +1,25 @@
 """Range-scoped evidence graph for current-state and narrative analysis."""
 from __future__ import annotations
 import logging
-import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Sequence
-log = logging.getLogger(__name__)
+from typing import TYPE_CHECKING, Any, Sequence
 from ..core.parse import as_local, parse_datetime
 from ..core.project_mentions import projects_mentioned_in_text
 from ..core.primitives import date_to_dt_range, logical_date
 from ..core.projects import canonical_project_name
+from ..core.evidence import CostClass, EvidenceCaveat, EvidenceProvenance
+from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode, EvidenceNodeKind, EvidenceRelation, EvidenceRelationEntry, EvidenceTimelineEntry
 from ..sources.analysis_artifacts import analysis_claims, latest_artifacts
 from ..sources.github import GitHubActor, GitHubComment, GitHubItem, GitHubItemKind, GitHubItemState, GitHubLabel, classify_lifecycle, extract_commit_refs
-from .evidence import CostClass, EvidenceCaveat, EvidenceProvenance
 from .source_readiness import source_readiness
-from ..sources.activitywatch import attention, circadian, deep_work, focus_timeline, fragmentation, loops, project_focus_days
-from ..sources.git import GitCommitFact, commit_facts, github_context_for_commits
-from ..sources.polylogue import WorkEvent, session_profiles_for_date, work_events
-from ..sources.raw_log import entries_in_range
-from ..sources.spotify import iter_streams
-from ..sources.terminal import shell_sessions
-from ..sources.web import daily_browsing
-EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'ai_work_event', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'listening_session', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
-EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project', 'file_overlap', 'tool_overlap', 'symbol_overlap']
-
-@dataclass(frozen=True)
-class EvidenceNode:
-    id: str
-    kind: EvidenceNodeKind
-    source: str
-    date: date
-    project: str | None
-    summary: str
-    start: datetime | None = None
-    end: datetime | None = None
-    url: str | None = None
-    payload: dict[str, Any] | None = None
-    provenance: EvidenceProvenance | None = None
-    caveats: tuple[EvidenceCaveat, ...] = ()
-
-@dataclass(frozen=True)
-class EvidenceEdge:
-    source_id: str
-    target_id: str
-    relation: EvidenceRelation
-    evidence: str
-    weight: float = 1.0
-
-@dataclass(frozen=True)
-class EvidenceTimelineEntry:
-    node_id: str
-    date: date
-    when: datetime | None
-    project: str | None
-    source: str
-    kind: EvidenceNodeKind
-    summary: str
-
-@dataclass(frozen=True)
-class EvidenceRelationEntry:
-    source_node_id: str
-    target_node_id: str
-    source_source: str
-    target_source: str
-    relation: EvidenceRelation
-    evidence: str
-    weight: float
-    date: date
-    project: str | None
-    source_summary: str
-    target_summary: str
-
-@dataclass(frozen=True)
-class EvidenceGraph:
-    start: date
-    end: date
-    generated_at: datetime
-    mode: CostClass
-    nodes: tuple[EvidenceNode, ...]
-    edges: tuple[EvidenceEdge, ...]
-    caveats: tuple[EvidenceCaveat, ...]
-
-    def nodes_by_project_day(self) -> dict[tuple[date, str], tuple[EvidenceNode, ...]]:
-        grouped: dict[tuple[date, str], list[EvidenceNode]] = defaultdict(list)
-        for node in self.nodes:
-            if node.project:
-                grouped[node.date, node.project].append(node)
-        return {key: tuple(value) for key, value in grouped.items()}
-
-    def node_map(self) -> dict[str, EvidenceNode]:
-        return {node.id: node for node in self.nodes}
+if TYPE_CHECKING:
+    from ..sources.git import GitCommitFact
+    from ..sources.polylogue import WorkEvent
+log = logging.getLogger(__name__)
 
 @dataclass
 class RefreshContext:
@@ -120,7 +47,67 @@ class RefreshContext:
         self._cache[key] = graph
         return graph
 
-def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast') -> EvidenceGraph:
+def attention(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import attention as impl
+    return impl(*args, **kwargs)
+
+def circadian(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import circadian as impl
+    return impl(*args, **kwargs)
+
+def deep_work(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import deep_work as impl
+    return impl(*args, **kwargs)
+
+def focus_timeline(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import focus_timeline as impl
+    return impl(*args, **kwargs)
+
+def fragmentation(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import fragmentation as impl
+    return impl(*args, **kwargs)
+
+def loops(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import loops as impl
+    return impl(*args, **kwargs)
+
+def project_focus_days(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch import project_focus_days as impl
+    return impl(*args, **kwargs)
+
+def commit_facts(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.git import commit_facts as impl
+    return impl(*args, **kwargs)
+
+def github_context_for_commits(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.git import github_context_for_commits as impl
+    return impl(*args, **kwargs)
+
+def session_profiles_for_date(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.polylogue import session_profiles_for_date as impl
+    return impl(*args, **kwargs)
+
+def work_events(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.polylogue import work_events as impl
+    return impl(*args, **kwargs)
+
+def entries_in_range(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.raw_log import entries_in_range as impl
+    return impl(*args, **kwargs)
+
+def iter_streams(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.spotify import iter_streams as impl
+    return impl(*args, **kwargs)
+
+def shell_sessions(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.terminal import shell_sessions as impl
+    return impl(*args, **kwargs)
+
+def daily_browsing(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.web import daily_browsing as impl
+    return impl(*args, **kwargs)
+
+def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast', promote: bool=False) -> EvidenceGraph:
     """Build the base evidence graph: every source except generated analysis
     artifacts and claims.
 
@@ -133,18 +120,21 @@ def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str]
     now = datetime.now().astimezone()
     _add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
     _add_polylogue(nodes, start=start, end=end, selected=selected)
-    _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
+    if mode != 'local-fast':
+        _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
     _add_raw_log(nodes, start=start, end=end, selected=selected)
     _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
     _add_terminal(nodes, start=start, end=end, selected=selected)
     _add_web(nodes, start=start, end=end, selected=selected)
-    _add_spotify(nodes, start=start, end=end, selected=selected)
+    if mode != 'local-fast':
+        _add_spotify(nodes, start=start, end=end, selected=selected)
     _add_health(nodes, start=start, end=end)
-    _add_temporal_signals(nodes, start=start, end=end)
-    _add_readiness(nodes, end=end)
-    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now)
+    if mode != 'local-fast':
+        _add_temporal_signals(nodes, start=start, end=end)
+        _add_readiness(nodes, end=end)
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, promote=promote)
 
-def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast', exclude_analysis_artifacts: Sequence[str]=(), refresh_context: RefreshContext | None=None) -> EvidenceGraph:
+def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, mode: CostClass='local-fast', exclude_analysis_artifacts: Sequence[str]=(), refresh_context: RefreshContext | None=None, promote: bool=False) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
 
     If ``refresh_context`` is supplied, the base layer is reused from the
@@ -160,37 +150,43 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
         edges = []
         _add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
         _add_polylogue(nodes, start=start, end=end, selected=selected)
-        _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
+        if mode != 'local-fast':
+            _add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode=mode)
         _add_raw_log(nodes, start=start, end=end, selected=selected)
         _add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
         _add_terminal(nodes, start=start, end=end, selected=selected)
         _add_web(nodes, start=start, end=end, selected=selected)
         _add_health(nodes, start=start, end=end)
-        _add_temporal_signals(nodes, start=start, end=end)
-        _add_readiness(nodes, end=end)
+        if mode != 'local-fast':
+            _add_temporal_signals(nodes, start=start, end=end)
+            _add_readiness(nodes, end=end)
     now = datetime.now().astimezone()
-    _add_analysis_artifacts(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
-    _add_analysis_claims(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
-    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now)
+    if mode != 'local-fast':
+        _add_analysis_artifacts(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+        _add_analysis_claims(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, promote=promote)
 
-def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime) -> EvidenceGraph:
+def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime, promote: bool=False) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     edges.extend((edge for edge in _same_project_day_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
     edges.extend((edge for edge in _temporal_proximity_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
-    overlap_refresh_id = f'overlap:{generated_at.isoformat()}'
-    sql_edges = _overlap_edges_via_substrate(nodes, refresh_id=overlap_refresh_id)
-    edges.extend((edge for edge in sql_edges if edge.source_id in node_ids and edge.target_id in node_ids))
-    edges.extend((edge for edge in _polylogue_work_event_tool_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
-    readiness = source_readiness(start=start, end=end, include_heavy_counts=mode != 'local-fast', include_github_frontier=mode == 'network')
+    if mode != 'local-fast':
+        overlap_refresh_id = f'overlap:{generated_at.isoformat()}'
+        sql_edges = _overlap_edges_via_substrate(nodes, refresh_id=overlap_refresh_id)
+        edges.extend((edge for edge in sql_edges if edge.source_id in node_ids and edge.target_id in node_ids))
+        edges.extend((edge for edge in _polylogue_work_event_tool_overlap_edges(nodes) if edge.source_id in node_ids and edge.target_id in node_ids))
+    readiness = source_readiness(start=start, end=end, include_heavy_counts=mode != 'local-fast', include_github_frontier=mode == 'network', include_analysis_inventory=mode != 'local-fast')
     caveats = tuple(readiness.caveats)
     if mode == 'local-fast':
         caveats += (EvidenceCaveat('evidence_graph', 'partial', 'local-fast graph uses daily focus aggregates and commit-referenced GitHub refs only.'),)
+        caveats += (EvidenceCaveat('evidence_graph', 'partial', 'local-fast omits heavyweight analysis overlays, temporal-signal detection, readiness forecasting, Spotify scans, and Polylogue work-event detail unless a materialized substrate graph is loaded.'),)
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple((edge for edge in _dedupe_edges(edges) if edge.source_id in node_ids and edge.target_id in node_ids))
     graph = EvidenceGraph(start=start, end=end, generated_at=generated_at, mode=mode, nodes=tuple(sorted(deduped_nodes, key=lambda node: (node.date, node.project or '', node.source, node.id))), edges=deduped_edges, caveats=caveats)
-    _promote_to_substrate(graph)
+    if promote:
+        _promote_to_substrate(graph)
     return graph
 
 def _promote_to_substrate(graph: 'EvidenceGraph') -> None:
@@ -460,8 +456,11 @@ def _add_spotify(nodes: list[EvidenceNode], *, start: date, end: date, selected:
         return
     by_day: dict[date, list[Any]] = defaultdict(list)
     for s in streams:
-        d = logical_date(s.end_time) if hasattr(s, 'end_time') else None
-        if d and start <= d <= end:
+        end_time = getattr(s, 'end_time', None)
+        if end_time is None:
+            continue
+        d = logical_date(end_time)
+        if start <= d <= end:
             by_day[d].append(s)
     for d, day_streams in by_day.items():
         top_artists = Counter((s.artist for s in day_streams if hasattr(s, 'artist'))).most_common(5)
@@ -607,6 +606,8 @@ def _extract_overlap_sources_from_nodes(nodes: Sequence[EvidenceNode]) -> 'tuple
     will simply not produce edges for missing rows, matching Python semantics.
     """
     from datetime import datetime as _dt
+    from ..sources.git import GitCommitFact
+    from ..sources.polylogue import WorkEvent
     work_events: list[WorkEvent] = []
     commit_facts: list[GitCommitFact] = []
     for node in nodes:
@@ -647,7 +648,7 @@ def _overlap_edges_via_substrate(nodes: Sequence[EvidenceNode], *, refresh_id: s
     The third overlap (tool_overlap) is unchanged — terminal_session is not
     yet a substrate table.
     """
-    from lynchpin.substrate import connect, apply_schema
+    from lynchpin.substrate import apply_schema
     from lynchpin.substrate.promote import promote_ai_work_events, promote_commits, promote_symbol_changes
     from lynchpin.substrate.reader import compute_file_overlap_edges, compute_symbol_overlap_edges
     work_events, commit_facts, symbol_rows = _extract_overlap_sources_from_nodes(nodes)
@@ -900,4 +901,4 @@ def _dedupe_edges(edges: Sequence[EvidenceEdge]) -> tuple[EvidenceEdge, ...]:
         left, right = sorted((edge.source_id, edge.target_id))
         by_key[left, right, edge.relation] = edge
     return tuple(by_key.values())
-__all__ = ['EvidenceEdge', 'EvidenceGraph', 'EvidenceNode', 'EvidenceNodeKind', 'EvidenceRelationEntry', 'EvidenceTimelineEntry', 'EvidenceRelation', 'build_evidence_graph', 'evidence_relations', 'evidence_timeline', 'render_evidence_graph_summary', 'render_evidence_relations', 'render_evidence_timeline']
+__all__ = ['build_evidence_graph', 'evidence_relations', 'evidence_timeline', 'render_evidence_graph_summary', 'render_evidence_relations', 'render_evidence_timeline']

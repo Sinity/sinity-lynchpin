@@ -47,7 +47,7 @@ def project_day_correlations(refresh_id: str | None=None, start: str | None=None
 def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, min_chain_depth: int | None=None) -> list[dict[str, Any]]:
     """Query the issue_closure_chain_walk view.
 
-    Wraps ``lynchpin.substrate.reader.load_issue_closure_chain_walks``.
+    Uses ``lynchpin.substrate.reader.load_issue_closure_chain_walks``.
 
     Parameters:
         refresh_id:     filter to a specific evidence-graph build.
@@ -170,8 +170,10 @@ def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) ->
         tables = ('commit_fact', 'file_change_fact', 'ai_work_event', 'symbol_change', 'pr_review_row', 'evidence_node', 'evidence_edge')
         for table in tables:
             try:
-                a = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id = ?', [refresh_a]).fetchone()[0]
-                b = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id = ?', [refresh_b]).fetchone()[0]
+                a_row = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id = ?', [refresh_a]).fetchone()
+                b_row = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id = ?', [refresh_b]).fetchone()
+                a = a_row[0] if a_row else 0
+                b = b_row[0] if b_row else 0
                 diffs[table] = {'a': a, 'b': b, 'delta': b - a}
             except Exception:
                 diffs[table] = {'a': -1, 'b': -1, 'delta': 0, 'error': f'table {table} may not have refresh_id column'}
@@ -523,7 +525,9 @@ def cross_source_lag(project: str | None=None, refresh_id: str | None=None) -> d
         if project:
             params.append(project)
         stats = conn.execute(f'\n            SELECT COUNT(*),\n                   ROUND(MIN(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1),\n                   ROUND(QUANTILE_CONT(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)),0.5)/3600.0,1),\n                   ROUND(AVG(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1),\n                   ROUND(MAX(ABS(EXTRACT(EPOCH FROM c.authored_at-we.start_ts)))/3600.0,1)\n            FROM commit_fact c\n            JOIN ai_work_event we ON c.project=we.project AND list_has_any(c.paths, we.file_paths)\n            WHERE c.refresh_id=? AND c.ai_attribution IS NOT NULL\n              AND we.start_ts IS NOT NULL AND len(c.paths)>0 {proj_filter}\n        ', params).fetchone()
-    return {'pairs': stats[0] if stats else 0, 'min_hours': stats[1], 'median_hours': stats[2], 'mean_hours': stats[3], 'max_hours': stats[4]}
+    if stats is None:
+        return {'pairs': 0, 'min_hours': None, 'median_hours': None, 'mean_hours': None, 'max_hours': None}
+    return {'pairs': stats[0], 'min_hours': stats[1], 'median_hours': stats[2], 'mean_hours': stats[3], 'max_hours': stats[4]}
 
 @app.tool()
 def project_health(project: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
@@ -568,8 +572,8 @@ def daily_rhythm_fingerprint(project: str | None=None, refresh_id: str | None=No
     results = []
     for r in rows:
         proj = r[0]
-        morning, afternoon, evening, night = (r[1], r[2], r[3], r[4])
-        weekend, weekday, total = (r[5], r[6], r[7])
+        morning, evening, night = (r[1], r[3], r[4])
+        weekend, total = (r[5], r[7])
         mpct = morning * 100.0 / max(total, 1)
         epct = evening * 100.0 / max(total, 1)
         npct = night * 100.0 / max(total, 1)
@@ -635,3 +639,71 @@ def spotify_daily(start: str | None=None, end: str | None=None, refresh_id: str 
         sql += ' ORDER BY date'
         rows = conn.execute(sql, params).fetchall()
     return [{'date': _json_safe(r[0]), 'track_count': r[1], 'minutes_played': r[2], 'unique_artists': r[3], 'unique_tracks': r[4], 'top_artists': r[5], 'top_tracks': r[6]} for r in rows]
+
+@app.tool()
+def machine_metrics_daily(start: str | None=None, end: str | None=None, host: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Daily machine telemetry rollup from the machine_metric_sample table.
+
+    Parameters:
+        start:      ISO date filter (YYYY-MM-DD).
+        end:        ISO date filter (YYYY-MM-DD).
+        host:       optional host filter.
+        refresh_id: snapshot (default: latest with data).
+    """
+    from datetime import date as _date
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'machine_metric_sample')
+            if refresh_id is None:
+                return []
+        sql = '\n            SELECT\n                observed_at::DATE AS day,\n                host,\n                COUNT(*) AS samples,\n                AVG(cpu_package_w) AS avg_cpu_package_w,\n                MAX(cpu_package_w) AS max_cpu_package_w,\n                AVG(gpu_power_w) AS avg_gpu_power_w,\n                MAX(gpu_power_w) AS max_gpu_power_w,\n                AVG(io_psi_some_avg10) AS avg_io_psi_some_avg10,\n                MAX(io_psi_some_avg10) AS max_io_psi_some_avg10,\n                AVG(latency_oversleep_ms) AS avg_latency_oversleep_ms,\n                MAX(latency_oversleep_ms) AS max_latency_oversleep_ms,\n                MAX(dstate_task_count) AS max_dstate_task_count\n            FROM machine_metric_sample\n            WHERE refresh_id = ?\n        '
+        params: list[Any] = [refresh_id]
+        if start:
+            sql += ' AND observed_at::DATE >= ?'
+            params.append(_date.fromisoformat(start))
+        if end:
+            sql += ' AND observed_at::DATE <= ?'
+            params.append(_date.fromisoformat(end))
+        if host:
+            sql += ' AND host = ?'
+            params.append(host)
+        sql += ' GROUP BY day, host ORDER BY day, host'
+        rows = conn.execute(sql, params).fetchall()
+    return [{'date': _json_safe(row[0]), 'host': row[1], 'samples': row[2], 'avg_cpu_package_w': row[3], 'max_cpu_package_w': row[4], 'avg_gpu_power_w': row[5], 'max_gpu_power_w': row[6], 'avg_io_psi_some_avg10': row[7], 'max_io_psi_some_avg10': row[8], 'avg_latency_oversleep_ms': row[9], 'max_latency_oversleep_ms': row[10], 'max_dstate_task_count': row[11]} for row in rows]
+
+@app.tool()
+def machine_service_state_summary(start: str | None=None, end: str | None=None, host: str | None=None, unit: str | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """Summarize sampled systemd/user-unit state from machine_service_state.
+
+    Parameters:
+        start:      ISO date filter (YYYY-MM-DD).
+        end:        ISO date filter (YYYY-MM-DD).
+        host:       optional host filter.
+        unit:       optional exact unit filter.
+        refresh_id: snapshot (default: latest with data).
+    """
+    from datetime import date as _date
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'machine_service_state')
+            if refresh_id is None:
+                return []
+        sql = "\n            SELECT\n                host,\n                unit,\n                scope,\n                COUNT(*) AS samples,\n                SUM(CASE WHEN active_state = 'active' THEN 1 ELSE 0 END) AS active_samples,\n                MAX(memory_current_bytes) AS max_memory_current_bytes,\n                MAX(cpu_usage_nsec) AS max_cpu_usage_nsec,\n                MAX(io_read_bytes) AS max_io_read_bytes,\n                MAX(io_write_bytes) AS max_io_write_bytes,\n                MIN(observed_at) AS first_observed_at,\n                MAX(observed_at) AS last_observed_at\n            FROM machine_service_state\n            WHERE refresh_id = ?\n        "
+        params: list[Any] = [refresh_id]
+        if start:
+            sql += ' AND observed_at::DATE >= ?'
+            params.append(_date.fromisoformat(start))
+        if end:
+            sql += ' AND observed_at::DATE <= ?'
+            params.append(_date.fromisoformat(end))
+        if host:
+            sql += ' AND host = ?'
+            params.append(host)
+        if unit:
+            sql += ' AND unit = ?'
+            params.append(unit)
+        sql += ' GROUP BY host, unit, scope ORDER BY host, scope, unit'
+        rows = conn.execute(sql, params).fetchall()
+    return [{'host': row[0], 'unit': row[1], 'scope': row[2], 'samples': row[3], 'active_samples': row[4], 'max_memory_current_bytes': row[5], 'max_cpu_usage_nsec': row[6], 'max_io_read_bytes': row[7], 'max_io_write_bytes': row[8], 'first_observed_at': _json_safe(row[9]), 'last_observed_at': _json_safe(row[10])} for row in rows]

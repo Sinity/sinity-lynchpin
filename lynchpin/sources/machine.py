@@ -18,18 +18,20 @@ from typing import Iterator
 from ..core.config import get_config
 
 __all__ = [
+    "MachineGpuSample",
     "MachineMetricSample",
     "MachineNetworkSample",
     "MachineServiceState",
     "MachineSourceReadiness",
     "MachineTelemetrySchemaError",
+    "gpu_samples",
     "readiness",
     "metric_samples",
     "network_samples",
     "service_states",
 ]
 
-EXPECTED_METRIC_COLUMNS = (
+BASE_METRIC_COLUMNS = (
     "observed_at",
     "host",
     "boot_id",
@@ -52,6 +54,24 @@ EXPECTED_METRIC_COLUMNS = (
     "latency_oversleep_ms",
     "dstate_task_count",
     "gap_codes_json",
+)
+
+OPTIONAL_METRIC_COLUMNS = (
+    "cpu_psi_some_avg60",
+    "cpu_psi_some_avg300",
+    "cpu_psi_some_total_us",
+    "io_psi_some_avg60",
+    "io_psi_some_avg300",
+    "io_psi_some_total_us",
+    "io_psi_full_avg60",
+    "io_psi_full_avg300",
+    "io_psi_full_total_us",
+    "memory_psi_some_avg60",
+    "memory_psi_some_avg300",
+    "memory_psi_some_total_us",
+    "memory_psi_full_avg60",
+    "memory_psi_full_avg300",
+    "memory_psi_full_total_us",
 )
 
 EXPECTED_SERVICE_STATE_COLUMNS = (
@@ -88,6 +108,23 @@ EXPECTED_NETWORK_COLUMNS = (
     "gap_codes_json",
 )
 
+EXPECTED_GPU_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "gpu_power_w",
+    "gpu_power_limit_w",
+    "gpu_temp_c",
+    "gpu_fan_pct",
+    "gpu_util_pct",
+    "gpu_mem_util_pct",
+    "gpu_clock_mhz",
+    "gpu_mem_clock_mhz",
+    "gpu_pstate",
+    "gpu_pcie_gen",
+    "gpu_pcie_width",
+)
+
 
 class MachineTelemetrySchemaError(RuntimeError):
     """Live SQLite telemetry does not match the Sinnix producer contract."""
@@ -122,10 +159,44 @@ class MachineMetricSample:
     load_1m: float | None = None
     mem_avail_mb: int | None = None
     io_psi_some_avg10: float | None = None
+    io_psi_some_avg60: float | None = None
+    io_psi_some_avg300: float | None = None
+    io_psi_some_total_us: float | None = None
     io_psi_full_avg10: float | None = None
+    io_psi_full_avg60: float | None = None
+    io_psi_full_avg300: float | None = None
+    io_psi_full_total_us: float | None = None
+    cpu_psi_some_avg60: float | None = None
+    cpu_psi_some_avg300: float | None = None
+    cpu_psi_some_total_us: float | None = None
+    memory_psi_some_avg60: float | None = None
+    memory_psi_some_avg300: float | None = None
+    memory_psi_some_total_us: float | None = None
+    memory_psi_full_avg60: float | None = None
+    memory_psi_full_avg300: float | None = None
+    memory_psi_full_total_us: float | None = None
     latency_oversleep_ms: float | None = None
     dstate_task_count: int | None = None
     gap_codes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MachineGpuSample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source: str
+    gpu_power_w: float | None = None
+    gpu_power_limit_w: float | None = None
+    gpu_temp_c: float | None = None
+    gpu_fan_pct: float | None = None
+    gpu_util_pct: float | None = None
+    gpu_mem_util_pct: float | None = None
+    gpu_clock_mhz: float | None = None
+    gpu_mem_clock_mhz: float | None = None
+    gpu_pstate: str | None = None
+    gpu_pcie_gen: int | None = None
+    gpu_pcie_width: int | None = None
 
 
 @dataclass(frozen=True)
@@ -181,16 +252,45 @@ def _connect_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
 
 
+def _default_route_interface() -> str | None:
+    route = Path("/proc/net/route")
+    try:
+        for line in route.read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 0x2:
+                return fields[0]
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+    ).fetchone() is not None
+
+
 def _validate_metric_schema(conn: sqlite3.Connection) -> None:
     columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(metric_sample)").fetchall()
     }
-    missing = tuple(column for column in EXPECTED_METRIC_COLUMNS if column not in columns)
+    missing = tuple(column for column in BASE_METRIC_COLUMNS if column not in columns)
     if missing:
         raise MachineTelemetrySchemaError(
             "metric_sample is missing expected columns: " + ", ".join(missing)
         )
+
+
+def _metric_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(metric_sample)").fetchall()
+    }
+    return BASE_METRIC_COLUMNS + tuple(
+        column for column in OPTIONAL_METRIC_COLUMNS if column in columns
+    )
 
 
 def _validate_service_state_schema(conn: sqlite3.Connection) -> None:
@@ -217,6 +317,18 @@ def _validate_network_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _validate_gpu_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(gpu_sample)").fetchall()
+    }
+    missing = tuple(column for column in EXPECTED_GPU_COLUMNS if column not in columns)
+    if missing:
+        raise MachineTelemetrySchemaError(
+            "gpu_sample is missing expected columns: " + ", ".join(missing)
+        )
+
+
 def _count_sqlite_rows(path: Path, table: str) -> int:
     if not path.exists():
         return 0
@@ -228,6 +340,17 @@ def _count_sqlite_rows(path: Path, table: str) -> int:
                 _validate_service_state_schema(conn)
             elif table == "network_sample":
                 _validate_network_schema(conn)
+            elif table == "gpu_sample":
+                _validate_gpu_schema(conn)
+            if table == "network_sample":
+                default_interface = _default_route_interface()
+                if default_interface:
+                    return int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM network_sample WHERE interface = ?",
+                            [default_interface],
+                        ).fetchone()[0]
+                    )
             return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     except (sqlite3.Error, MachineTelemetrySchemaError):
         return 0
@@ -263,17 +386,18 @@ def metric_samples(*, start: date | None = None, end: date | None = None, path: 
     if end is not None:
         where.append("date(observed_at) <= ?")
         params.append(end.isoformat())
-    sql = "SELECT " + ", ".join(EXPECTED_METRIC_COLUMNS) + " FROM metric_sample"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY observed_at"
     with _connect_readonly(db) as conn:
         _validate_metric_schema(conn)
+        sql = "SELECT " + ", ".join(_metric_columns(conn)) + " FROM metric_sample"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at"
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = _as_utc(row["observed_at"])
             if observed_at is None:
                 continue
+            row_keys = row.keys()
             try:
                 gaps = tuple(json.loads(row["gap_codes_json"] or "[]"))
             except (json.JSONDecodeError, TypeError):
@@ -298,7 +422,40 @@ def metric_samples(*, start: date | None = None, end: date | None = None, path: 
                 load_1m=row["load_1m"],
                 mem_avail_mb=row["mem_avail_mb"],
                 io_psi_some_avg10=row["io_psi_some_avg10"],
+                io_psi_some_avg60=row["io_psi_some_avg60"] if "io_psi_some_avg60" in row_keys else None,
+                io_psi_some_avg300=row["io_psi_some_avg300"] if "io_psi_some_avg300" in row_keys else None,
+                io_psi_some_total_us=(
+                    row["io_psi_some_total_us"] if "io_psi_some_total_us" in row_keys else None
+                ),
                 io_psi_full_avg10=row["io_psi_full_avg10"],
+                io_psi_full_avg60=row["io_psi_full_avg60"] if "io_psi_full_avg60" in row_keys else None,
+                io_psi_full_avg300=row["io_psi_full_avg300"] if "io_psi_full_avg300" in row_keys else None,
+                io_psi_full_total_us=(
+                    row["io_psi_full_total_us"] if "io_psi_full_total_us" in row_keys else None
+                ),
+                cpu_psi_some_avg60=row["cpu_psi_some_avg60"] if "cpu_psi_some_avg60" in row_keys else None,
+                cpu_psi_some_avg300=row["cpu_psi_some_avg300"] if "cpu_psi_some_avg300" in row_keys else None,
+                cpu_psi_some_total_us=(
+                    row["cpu_psi_some_total_us"] if "cpu_psi_some_total_us" in row_keys else None
+                ),
+                memory_psi_some_avg60=(
+                    row["memory_psi_some_avg60"] if "memory_psi_some_avg60" in row_keys else None
+                ),
+                memory_psi_some_avg300=(
+                    row["memory_psi_some_avg300"] if "memory_psi_some_avg300" in row_keys else None
+                ),
+                memory_psi_some_total_us=(
+                    row["memory_psi_some_total_us"] if "memory_psi_some_total_us" in row_keys else None
+                ),
+                memory_psi_full_avg60=(
+                    row["memory_psi_full_avg60"] if "memory_psi_full_avg60" in row_keys else None
+                ),
+                memory_psi_full_avg300=(
+                    row["memory_psi_full_avg300"] if "memory_psi_full_avg300" in row_keys else None
+                ),
+                memory_psi_full_total_us=(
+                    row["memory_psi_full_total_us"] if "memory_psi_full_total_us" in row_keys else None
+                ),
                 latency_oversleep_ms=row["latency_oversleep_ms"],
                 dstate_task_count=row["dstate_task_count"],
                 gap_codes=gaps,
@@ -345,17 +502,12 @@ def service_states(*, start: date | None = None, end: date | None = None, path: 
             )
 
 
-def _json_obj(value: str | None) -> dict[str, object]:
-    if not value:
-        return {}
-    try:
-        parsed = json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return {"_parse_error": True}
-    return parsed if isinstance(parsed, dict) else {"value": parsed}
-
-
-def network_samples(*, start: date | None = None, end: date | None = None, path: Path | None = None) -> Iterator[MachineNetworkSample]:
+def gpu_samples(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+) -> Iterator[MachineGpuSample]:
     db = path or get_config().machine_telemetry_db
     if not db.exists():
         return
@@ -367,6 +519,69 @@ def network_samples(*, start: date | None = None, end: date | None = None, path:
     if end is not None:
         where.append("date(observed_at) <= ?")
         params.append(end.isoformat())
+    sql = "SELECT " + ", ".join(EXPECTED_GPU_COLUMNS) + " FROM gpu_sample"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY observed_at"
+    with _connect_readonly(db) as conn:
+        if not _table_exists(conn, "gpu_sample"):
+            return
+        _validate_gpu_schema(conn)
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(sql, params):
+            observed_at = _as_utc(row["observed_at"])
+            if observed_at is None:
+                continue
+            yield MachineGpuSample(
+                observed_at=observed_at,
+                host=row["host"],
+                boot_id=row["boot_id"],
+                source="machine.telemetry.gpu",
+                gpu_power_w=row["gpu_power_w"],
+                gpu_power_limit_w=row["gpu_power_limit_w"],
+                gpu_temp_c=row["gpu_temp_c"],
+                gpu_fan_pct=row["gpu_fan_pct"],
+                gpu_util_pct=row["gpu_util_pct"],
+                gpu_mem_util_pct=row["gpu_mem_util_pct"],
+                gpu_clock_mhz=row["gpu_clock_mhz"],
+                gpu_mem_clock_mhz=row["gpu_mem_clock_mhz"],
+                gpu_pstate=row["gpu_pstate"],
+                gpu_pcie_gen=row["gpu_pcie_gen"],
+                gpu_pcie_width=row["gpu_pcie_width"],
+            )
+
+
+def _json_obj(value: str | None) -> dict[str, object]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {"_parse_error": True}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def network_samples(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+) -> Iterator[MachineNetworkSample]:
+    db = path or get_config().machine_telemetry_db
+    if not db.exists():
+        return
+    where: list[str] = []
+    params: list[object] = []
+    if start is not None:
+        where.append("date(observed_at) >= ?")
+        params.append(start.isoformat())
+    if end is not None:
+        where.append("date(observed_at) <= ?")
+        params.append(end.isoformat())
+    default_interface = _default_route_interface()
+    if default_interface is not None:
+        where.append("interface = ?")
+        params.append(default_interface)
     sql = "SELECT " + ", ".join(EXPECTED_NETWORK_COLUMNS) + " FROM network_sample"
     if where:
         sql += " WHERE " + " AND ".join(where)

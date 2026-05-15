@@ -1,21 +1,17 @@
 """AI chat source: session profiles, daily activity, cost, work patterns.
 
 Reads Polylogue's typed Python facade (SyncPolylogue). Product tables are
-preferred when materialized; the facade handles any base-tables fallback
-internally.
+owned by Polylogue; Lynchpin consumes the public insight/readiness surfaces.
 
 Covers all providers: Claude (claude-ai, claude-code), ChatGPT, Codex, Gemini.
 
-Boundary note: archive_readiness() is the one deliberate exception — it reads
-sqlite directly because it must work when the facade itself is broken (e.g.,
-schema-version mismatch, pydantic validation error on legacy records). Every
-other function in this module uses _polylogue_client().
 """
 
 from __future__ import annotations
 
+import json
 import logging
-import os
+import warnings
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -26,13 +22,11 @@ from typing import Any, Iterator, Optional
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.projects import canonical_project_name
 
-# Imports kept for the deliberate archive_readiness escape hatch only.
-import sqlite3
-
-from polylogue.insights.archive import (
-    SessionProfileInsightQuery,
-    SessionWorkEventInsightQuery,
-    DaySessionSummaryInsightQuery,
+warnings.filterwarnings(
+    "ignore",
+    message=r'Field "model_name" in .* has conflict with protected namespace "model_"',
+    category=UserWarning,
+    module=r"pydantic\._internal\._fields",
 )
 
 logger = logging.getLogger(__name__)
@@ -162,12 +156,11 @@ def _default_polylogue_db_path() -> Path:
 
 
 @lru_cache(maxsize=1)
-def _polylogue_client():
+def _polylogue_client() -> Any:
     """Return process-singleton SyncPolylogue facade.
 
-    See feedback_polylogue_api.md and the boundary doc: lynchpin consumes
-    polylogue's typed Python facade rather than raw sqlite, with the explicit
-    exception of ``archive_readiness`` (escape-hatch readiness probe).
+    Lynchpin consumes Polylogue's typed Python facade rather than its archive
+    database schema.
     """
     from polylogue.api.sync import SyncPolylogue
 
@@ -184,7 +177,6 @@ def _reset_polylogue_client_for_tests() -> None:
 
 
 def _project_names_from_provider_meta(value: object) -> tuple[str, ...]:
-    import json
     if not value:
         return ()
     try:
@@ -211,6 +203,18 @@ def _project_names_from_provider_meta(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(projects))
 
 
+def _json_list(value: object) -> tuple[str, ...]:
+    if not value:
+        return ()
+    try:
+        decoded = json.loads(str(value))
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(str(item) for item in decoded if item not in (None, ""))
+
+
 def _project_from_path(path: str) -> str | None:
     project = canonical_project_name(path)
     if project:
@@ -228,106 +232,52 @@ def _canonical_projects(values: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(project for project in projects if project))
 
 
-def _count_table(conn: sqlite3.Connection, table_name: str) -> int | None:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,),
-    ).fetchone()
-    if row is None:
-        return None
-    return int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
-
-
 def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadiness:
-    """Report whether Lynchpin can use the current local Polylogue archive.
-
-    Deliberate inversion of the facade rule: archive_readiness is a probe that
-    must function during facade failure (e.g., schema-version mismatch, pydantic
-    validation error on legacy records). Every other function in this module uses
-    _polylogue_client(). Keep this function on raw sqlite.
-
-    Note: _polylogue_client().health_check() (Polylogue P.2) returns a
-    ReadinessReport with a checks list (OutcomeCheck objects). Mapping its
-    check names back to the specific table counts in PolylogueReadiness would be
-    fragile; the sqlite escape-hatch path below remains the right primary read.
-    """
+    """Report whether Lynchpin can use the current local Polylogue archive."""
     db = _default_polylogue_db_path()
-    if not db.exists():
-        return PolylogueReadiness(
-            db_path=db,
-            status="unavailable",
-            reason="polylogue database does not exist",
-            conversation_count=0,
-            message_count=0,
-            conversation_stats_count=0,
-            session_profile_count=0,
-            day_summary_count=0,
-            work_event_count=0,
-            provider_event_count=0,
-            derives_profiles_from_base_tables=False,
-            derives_day_summaries_from_profiles=False,
-        )
-
     try:
-        with sqlite3.connect(str(db)) as conn:
-            counts = {
-                name: _count_table(conn, name)
-                for name in (
-                    "conversations",
-                    "conversation_stats",
-                    "session_profiles",
-                    "day_session_summaries",
-                    "session_work_events",
-                )
-            }
-            if include_heavy_counts:
-                counts["messages"] = _count_table(conn, "messages")
-                counts["provider_events"] = _count_table(conn, "provider_events")
-            else:
-                counts["messages"] = None
-                counts["provider_events"] = None
-    except sqlite3.Error as exc:
+        from polylogue.insights.readiness import InsightReadinessQuery
+
+        report = _polylogue_client().insight_readiness_report(
+            InsightReadinessQuery(
+                insights=("session_profiles", "day_session_summaries", "session_work_events")
+            )
+        )
+    except Exception as exc:
         return PolylogueReadiness(
             db_path=db,
             status="unavailable",
-            reason=f"sqlite read failed: {exc}",
+            reason=f"polylogue readiness facade failed: {exc}",
             conversation_count=0,
-            message_count=0,
+            message_count=None,
             conversation_stats_count=0,
             session_profile_count=0,
             day_summary_count=0,
             work_event_count=0,
-            provider_event_count=0,
+            provider_event_count=None,
             derives_profiles_from_base_tables=False,
             derives_day_summaries_from_profiles=False,
         )
 
-    conversation_count = counts["conversations"] or 0
-    message_count = counts["messages"]
-    stats_count = counts["conversation_stats"] or 0
-    profile_count = counts["session_profiles"] or 0
-    day_count = counts["day_session_summaries"] or 0
-    work_event_count = counts["session_work_events"] or 0
-    provider_event_count = counts["provider_events"]
-    can_derive_profiles = conversation_count > 0 and stats_count > 0
-    can_derive_days = profile_count > 0 or can_derive_profiles
+    entries = {entry.insight_name: entry for entry in report.insights}
+    profile = entries.get("session_profiles")
+    day = entries.get("day_session_summaries")
+    work_event = entries.get("session_work_events")
+    profile_count = _readiness_row_count(profile)
+    day_count = _readiness_row_count(day)
+    work_event_count = _readiness_row_count(work_event)
+    degraded_entries = tuple(
+        entry
+        for entry in (profile, day, work_event)
+        if entry is not None and entry.verdict not in {"ready", "empty"}
+    )
 
-    if profile_count > 0 and day_count > 0 and work_event_count > 0:
+    if profile_count > 0 and day_count > 0 and work_event_count > 0 and not degraded_entries:
         status = "ready"
         reason = "materialized profile, day-summary, and work-event products are populated"
-    elif can_derive_profiles and can_derive_days:
+    elif report.total_conversations > 0 or profile_count > 0 or day_count > 0 or work_event_count > 0:
         status = "degraded"
-        missing = []
-        if profile_count == 0:
-            missing.append("session_profiles")
-        if day_count == 0:
-            missing.append("day_session_summaries")
-        if work_event_count == 0:
-            missing.append("session_work_events")
-        reason = "base archive is usable, but product tables are empty: " + ", ".join(missing)
-    elif conversation_count > 0 or (message_count or 0) > 0:
-        status = "degraded"
-        reason = "raw archive exists, but conversation_stats are missing so derived profiles are weak"
+        reason = _readiness_reason(entries)
     else:
         status = "unavailable"
         reason = "polylogue archive tables are empty"
@@ -336,16 +286,37 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         db_path=db,
         status=status,
         reason=reason,
-        conversation_count=conversation_count,
-        message_count=message_count,
-        conversation_stats_count=stats_count,
+        conversation_count=report.total_conversations,
+        message_count=None,
+        conversation_stats_count=profile.expected_row_count if profile is not None and profile.expected_row_count is not None else 0,
         session_profile_count=profile_count,
         day_summary_count=day_count,
         work_event_count=work_event_count,
-        provider_event_count=provider_event_count,
-        derives_profiles_from_base_tables=profile_count == 0 and can_derive_profiles,
-        derives_day_summaries_from_profiles=day_count == 0 and can_derive_days,
+        provider_event_count=None,
+        derives_profiles_from_base_tables=False,
+        derives_day_summaries_from_profiles=False,
     )
+
+
+def _readiness_row_count(entry: Any | None) -> int:
+    return int(entry.row_count) if entry is not None else 0
+
+
+def _readiness_reason(entries: dict[str, Any]) -> str:
+    missing = []
+    degraded = []
+    for name in ("session_profiles", "day_session_summaries", "session_work_events"):
+        entry = entries.get(name)
+        if entry is None or entry.row_count == 0:
+            missing.append(name)
+        elif entry.verdict not in {"ready", "empty"}:
+            degraded.append(f"{name}={entry.verdict}")
+    parts = []
+    if missing:
+        parts.append("missing or empty products: " + ", ".join(missing))
+    if degraded:
+        parts.append("degraded products: " + ", ".join(degraded))
+    return "; ".join(parts) if parts else "polylogue insight readiness is degraded"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -408,6 +379,8 @@ def _profiles_from_facade() -> list[SessionProfile] | None:
     _canonical_projects().
     """
     try:
+        from polylogue.insights.archive import SessionProfileInsightQuery
+
         insights = _polylogue_client().list_session_profile_insights(
             SessionProfileInsightQuery(limit=None)
         )
@@ -415,104 +388,96 @@ def _profiles_from_facade() -> list[SessionProfile] | None:
         logger.warning("polylogue list_session_profile_insights failed: %s", exc)
         return None
 
-    if not insights:
-        return []
+    return [_session_profile_from_insight(insight) for insight in insights]
 
-    profiles: list[SessionProfile] = []
-    for insight in insights:
-        evidence = insight.evidence
-        inference = insight.inference
 
-        # ── timestamps ──────────────────────────────────────────────────────
-        first_message_at: Optional[datetime] = None
-        last_message_at: Optional[datetime] = None
-        canonical_session_date: Optional[date] = None
-        if evidence is not None:
-            first_message_at = _parse_dt(evidence.first_message_at)
-            last_message_at = _parse_dt(evidence.last_message_at)
-            if evidence.canonical_session_date:
-                try:
-                    canonical_session_date = date.fromisoformat(evidence.canonical_session_date)
-                except ValueError:
-                    canonical_session_date = None
+def _session_profile_from_insight(insight: Any) -> SessionProfile:
+    evidence = insight.evidence
+    inference = insight.inference
 
-        # ── work_event_kind: most-common kind in inference.work_events ──────
-        work_event_kind: Optional[str] = None
-        if inference is not None and inference.work_events:
-            kinds = [
-                str(ev["kind"])
-                for ev in inference.work_events
-                if isinstance(ev, dict) and ev.get("kind")
-            ]
-            if kinds:
-                work_event_kind = Counter(kinds).most_common(1)[0][0]
+    first_message_at: Optional[datetime] = None
+    last_message_at: Optional[datetime] = None
+    canonical_session_date: Optional[date] = None
+    if evidence is not None:
+        first_message_at = _parse_dt(evidence.first_message_at)
+        last_message_at = _parse_dt(evidence.last_message_at)
+        if evidence.canonical_session_date:
+            try:
+                canonical_session_date = date.fromisoformat(evidence.canonical_session_date)
+            except ValueError:
+                canonical_session_date = None
 
-        # ── work_event_projects: inference.repo_names > evidence paths ──────
-        projects: tuple[str, ...] = ()
-        if inference is not None:
-            projects = _canonical_projects(inference.repo_names)
-        if not projects and evidence is not None:
-            projects = _canonical_projects(evidence.repo_paths or evidence.cwd_paths)
+    work_event_kind: Optional[str] = None
+    if inference is not None and inference.work_events:
+        kinds = [
+            str(ev["kind"])
+            for ev in inference.work_events
+            if isinstance(ev, dict) and ev.get("kind")
+        ]
+        if kinds:
+            work_event_kind = Counter(kinds).most_common(1)[0][0]
 
-        # ── auto_tags: from inference ────────────────────────────────────────
-        auto_tags: tuple[str, ...] = ()
-        if inference is not None:
-            auto_tags = tuple(str(tag) for tag in inference.auto_tags if tag)
+    projects: tuple[str, ...] = ()
+    if inference is not None:
+        projects = _canonical_projects(inference.repo_names)
+    if not projects and evidence is not None:
+        projects = _canonical_projects(evidence.repo_paths or evidence.cwd_paths)
 
-        # ── numeric fields from evidence ─────────────────────────────────────
-        message_count = 0
-        word_count = 0
-        total_cost_usd = 0.0
-        cost_is_estimated = False
-        tool_use_count = 0
-        thinking_count = 0
-        substantive_count = 0
-        attachment_count = 0
-        wall_duration_ms = 0
-        if evidence is not None:
-            message_count = evidence.message_count
-            word_count = evidence.word_count
-            total_cost_usd = evidence.total_cost_usd
-            cost_is_estimated = evidence.cost_is_estimated
-            tool_use_count = evidence.tool_use_count
-            thinking_count = evidence.thinking_count
-            substantive_count = evidence.substantive_count
-            attachment_count = evidence.attachment_count
-            wall_duration_ms = evidence.wall_duration_ms
+    auto_tags: tuple[str, ...] = ()
+    if inference is not None:
+        auto_tags = tuple(str(tag) for tag in inference.auto_tags if tag)
 
-        # ── numeric fields from inference ────────────────────────────────────
-        engaged_duration_ms = 0
-        work_event_count = 0
-        phase_count = 0
-        if inference is not None:
-            engaged_duration_ms = inference.engaged_duration_ms
-            work_event_count = inference.work_event_count
-            phase_count = inference.phase_count
+    message_count = 0
+    word_count = 0
+    total_cost_usd = 0.0
+    cost_is_estimated = False
+    tool_use_count = 0
+    thinking_count = 0
+    substantive_count = 0
+    attachment_count = 0
+    wall_duration_ms = 0
+    if evidence is not None:
+        message_count = evidence.message_count
+        word_count = evidence.word_count
+        total_cost_usd = evidence.total_cost_usd
+        cost_is_estimated = evidence.cost_is_estimated
+        tool_use_count = evidence.tool_use_count
+        thinking_count = evidence.thinking_count
+        substantive_count = evidence.substantive_count
+        attachment_count = evidence.attachment_count
+        wall_duration_ms = evidence.wall_duration_ms
 
-        profiles.append(SessionProfile(
-            conversation_id=insight.conversation_id,
-            provider=insight.provider_name,
-            title=str(insight.title or ""),
-            message_count=message_count,
-            word_count=word_count,
-            first_message_at=first_message_at,
-            last_message_at=last_message_at,
-            engaged_duration_ms=engaged_duration_ms,
-            wall_duration_ms=wall_duration_ms,
-            work_event_kind=work_event_kind,
-            work_event_projects=projects,
-            total_cost_usd=total_cost_usd,
-            canonical_session_date=canonical_session_date,
-            tool_use_count=tool_use_count,
-            thinking_count=thinking_count,
-            auto_tags=auto_tags,
-            substantive_count=substantive_count,
-            attachment_count=attachment_count,
-            work_event_count=work_event_count,
-            phase_count=phase_count,
-            cost_is_estimated=cost_is_estimated,
-        ))
-    return profiles
+    engaged_duration_ms = 0
+    work_event_count = 0
+    phase_count = 0
+    if inference is not None:
+        engaged_duration_ms = inference.engaged_duration_ms
+        work_event_count = inference.work_event_count
+        phase_count = inference.phase_count
+
+    return SessionProfile(
+        conversation_id=insight.conversation_id,
+        provider=insight.provider_name,
+        title=str(insight.title or ""),
+        message_count=message_count,
+        word_count=word_count,
+        first_message_at=first_message_at,
+        last_message_at=last_message_at,
+        engaged_duration_ms=engaged_duration_ms,
+        wall_duration_ms=wall_duration_ms,
+        work_event_kind=work_event_kind,
+        work_event_projects=projects,
+        total_cost_usd=total_cost_usd,
+        canonical_session_date=canonical_session_date,
+        tool_use_count=tool_use_count,
+        thinking_count=thinking_count,
+        auto_tags=auto_tags,
+        substantive_count=substantive_count,
+        attachment_count=attachment_count,
+        work_event_count=work_event_count,
+        phase_count=phase_count,
+        cost_is_estimated=cost_is_estimated,
+    )
 
 
 def _load_profiles() -> list[SessionProfile]:
@@ -530,6 +495,10 @@ def iter_session_profiles() -> Iterator[SessionProfile]:
 
 
 def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]:
+    bounded = _session_profiles_from_facade(start=start, end=end)
+    if bounded is not None:
+        return bounded
+
     result: list[SessionProfile] = []
     for profile in iter_session_profiles():
         session_date = profile.canonical_session_date
@@ -541,6 +510,25 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
         if start <= session_date <= end:
             result.append(profile)
     return result
+
+
+def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProfile] | None:
+    """Read date-bounded session profiles through Polylogue's public facade."""
+    try:
+        from polylogue.insights.archive import SessionProfileInsightQuery
+
+        insights = _polylogue_client().list_session_profile_insights(
+            SessionProfileInsightQuery(
+                session_date_since=start.isoformat(),
+                session_date_until=end.isoformat(),
+                limit=None,
+            )
+        )
+    except Exception as exc:
+        logger.warning("polylogue bounded session profile facade read failed: %s", exc)
+        return None
+
+    return [_session_profile_from_insight(insight) for insight in insights]
 
 
 @lru_cache(maxsize=1)
@@ -801,12 +789,22 @@ def archive_stats() -> dict[str, object]:
 _cached_work_events: list[WorkEvent] | None = None
 
 
-def _work_events_from_facade() -> list[WorkEvent] | None:
+def _work_events_from_facade(
+    *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+) -> list[WorkEvent] | None:
     """Load Polylogue's durable work-event insights via the typed facade."""
+    from polylogue.insights.archive import SessionWorkEventInsightQuery
+
+    query_model: Any = SessionWorkEventInsightQuery
+    query = query_model(
+        session_date_since=start.isoformat() if start else None,
+        session_date_until=end.isoformat() if end else None,
+        limit=None,
+    )
     try:
-        insights = _polylogue_client().list_session_work_event_insights(
-            SessionWorkEventInsightQuery(limit=None)
-        )
+        insights = _polylogue_client().list_session_work_event_insights(query)
     except Exception as exc:
         logger.warning("polylogue list_session_work_event_insights failed: %s", exc)
         return None
@@ -835,6 +833,11 @@ def _work_events_from_facade() -> list[WorkEvent] | None:
 
 def work_events(*, start: Optional[date] = None, end: Optional[date] = None) -> list[WorkEvent]:
     """Load work events from the Polylogue facade."""
+    if start is not None or end is not None:
+        bounded = _work_events_from_facade(start=start, end=end)
+        if bounded is not None:
+            return bounded
+
     global _cached_work_events
     if _cached_work_events is None:
         _cached_work_events = _work_events_from_facade() or []
@@ -870,6 +873,8 @@ def _day_summaries_from_facade() -> list[DaySessionSummary] | None:
     table is unmaterialised.
     """
     try:
+        from polylogue.insights.archive import DaySessionSummaryInsightQuery
+
         insights = _polylogue_client().list_day_session_summary_insights(
             DaySessionSummaryInsightQuery(limit=None)
         )

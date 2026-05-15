@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
 
-from .evidence import EvidenceCaveat
+from ..core.evidence import EvidenceCaveat
 from .work_correlation import CorrelatedWorkDay, work_day_correlations
 
 

@@ -12,15 +12,15 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
+from ..core.evidence import CostClass, SourceReadinessReport
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import ALL_PROJECTS
 from ..core.projects import canonical_project_name
 from ..core.projects import project_path
 from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, fetch_issues, fetch_prs, repo_slug
-from ..sources.polylogue import PolylogueReadiness, archive_readiness
-from .evidence import CostClass, SourceReadinessReport
-from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph, render_evidence_graph_summary
+from .evidence_graph import build_evidence_graph, render_evidence_graph_summary
 from .movement import MovementSummary, movement_summary, render_movement_summary
 from .source_readiness import render_source_readiness, source_readiness
 from .work_correlation import (
@@ -32,6 +32,9 @@ from .work_correlation import (
     summarize_work_correlations,
     work_day_correlations,
 )
+
+if TYPE_CHECKING:
+    from ..sources.polylogue import PolylogueReadiness
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,12 @@ class CurrentStateEvidencePack:
     correlation_summary: WorkCorrelationSummary
     movement: MovementSummary
     github_frontiers: tuple[ProjectGitHubFrontier, ...] = ()
+
+
+def archive_readiness(*args: Any, **kwargs: Any) -> "PolylogueReadiness":
+    from ..sources.polylogue import archive_readiness as impl
+
+    return impl(*args, **kwargs)
 
 
 def project_inventory(
@@ -187,7 +196,8 @@ def current_state_evidence_pack(
     effective_mode: CostClass = mode or (graph.mode if graph is not None else "network" if include_github_frontier else "local-fast")
     include_github = include_github_frontier or effective_mode == "network"
     selected = _selected_projects(projects)
-    inventory = _filter_inventory(active_project_inventory(), selected=selected)
+    inventory_source = _selected_project_inventory(selected) if selected else active_project_inventory()
+    inventory = _filter_inventory(inventory_source, selected=selected)
     evidence_graph = graph or build_evidence_graph(
         start=start_date,
         end=end_date,
@@ -205,6 +215,7 @@ def current_state_evidence_pack(
         end=end_date,
         include_heavy_counts=effective_mode != "local-fast",
         include_github_frontier=include_github,
+        include_analysis_inventory=effective_mode != "local-fast",
     )
     return CurrentStateEvidencePack(
         start=start,
@@ -434,6 +445,14 @@ def _inventory_one(name: str, path: Path, active: bool) -> ProjectInventoryItem:
         github_slug=repo_slug(path),
         active_registry_entry=active,
     )
+
+
+def _selected_project_inventory(selected: set[str]) -> tuple[ProjectInventoryItem, ...]:
+    items: list[ProjectInventoryItem] = []
+    for name in sorted(selected):
+        entry = ALL_PROJECTS.get(name)
+        items.append(_inventory_one(name, project_path(name), entry.active if entry else True))
+    return tuple(items)
 
 
 def _selected_projects(projects: Sequence[str] | None) -> set[str]:

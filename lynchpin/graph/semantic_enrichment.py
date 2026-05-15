@@ -15,10 +15,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Sequence
 from ..core.config import get_config
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from ..core.serialization import jsonable
-from .evidence import EvidenceCaveat, EvidenceProvenance
-from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph
+from ..core.evidence import EvidenceCaveat, EvidenceProvenance
+from .evidence_graph import build_evidence_graph
 SemanticMode = Literal['deterministic']
 SemanticCategory = Literal['activity', 'artifact', 'intent', 'decision', 'blocker', 'question', 'risk', 'energy', 'workload', 'source_quality']
 

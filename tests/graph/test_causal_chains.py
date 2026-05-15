@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from lynchpin.graph.causal_chains import detect_chains
-from lynchpin.graph.evidence_graph import EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceNode
 
 UTC = timezone.utc
 
@@ -125,8 +125,7 @@ def test_ai_debug_to_build_fix_to_fix_chain():
     assert matched[0].node_kinds == ("ai_work_event", "terminal_pattern", "commit")
 
 
-def test_legacy_terminal_fix_test_template_still_fires():
-    """The Arc C.1 changes must not regress the existing pre-existing templates."""
+def test_terminal_fix_test_template_still_fires():
     base = datetime(2026, 5, 7, 12, tzinfo=UTC)
     pattern = _node(
         node_id="tp1", kind="terminal_pattern", start=base,

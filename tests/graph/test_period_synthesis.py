@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from lynchpin.graph.evidence_graph import (
+from lynchpin.core.evidence_graph import (
     EvidenceGraph,
     EvidenceNode,
 )

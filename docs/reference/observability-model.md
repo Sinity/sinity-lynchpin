@@ -35,7 +35,7 @@ The machine-readable version lives in
 | Input | Owner | Role | Current action |
 | --- | --- | --- | --- |
 | `machine.telemetry` | Sinnix | Canonical raw capture | Promote live SQLite samples into `machine_metric_sample` and `machine_service_state`. |
-| `machine.power_watchdog_legacy` | Sinnix | Legacy backfill | Migrated into `captures/machine/legacy/*.parquet` and backfilled into `machine_metric_sample`. |
+| `machine.power_watchdog_legacy` | Sinnix | Legacy backfill | Backfilled into `machine_metric_sample`; migrated parquet/manifests moved out of active captures into `/realm/inbox/quarantine/20260515/machine-legacy-power-watchdog-unified/`. |
 | `machine.below` | Sinnix | Operational view | Keep short-retention time-travel history; export bounded incident/experiment windows only. |
 | `machine.network` | Sinnix | Canonical raw capture | Integrated into `captures/machine/telemetry.sqlite` as `network_sample`, promoted into `machine_network_sample`. |
 | `machine.sinnix_observe` | Sinnix | Derived/operator report | Keep as a report, not a canonical dataset. Shrink as sources get first-class tables. |
@@ -60,7 +60,7 @@ The machine-readable version lives in
 
 1. Keep network probing inside machine telemetry; `/realm/data/captures/network`
    is a retired source after historical JSONL is imported.
-2. Add a Sinex self-observation source that reads stable telemetry rollups.
+2. Add a Sinex self-observation source and substrate table that reads stable telemetry rollups.
 3. Reduce `sinnix-observe` to a thin report over first-class sources.
 4. For benchmark claims, use randomized run manifests and join telemetry by
    timestamp. Do not compare uncontrolled time periods causally.

@@ -1,4 +1,4 @@
-"""Filesystem helpers shared by legacy analysis commands."""
+"""Filesystem helpers shared by analysis commands."""
 
 from __future__ import annotations
 

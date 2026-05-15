@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 from lynchpin.graph.context_pack import context_pack, graph_context_pack, render_context_pack
 from lynchpin.graph.current_state import CurrentStateEvidencePack
-from lynchpin.graph.evidence import EvidenceCaveat, SourceReadiness, SourceReadinessReport
-from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence import EvidenceCaveat, SourceReadiness, SourceReadinessReport
+from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 from lynchpin.graph.movement import movement_summary, render_movement_summary
 from lynchpin.graph.work_correlation import CorrelatedWorkDay, WorkCorrelationSummary
 from lynchpin.sources.polylogue import PolylogueReadiness

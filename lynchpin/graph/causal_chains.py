@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
-from .evidence import EvidenceCaveat, degrade_confidence, propagate_caveats
-from .evidence_graph import EvidenceNode
+from ..core.evidence import EvidenceCaveat, degrade_confidence, propagate_caveats
+from ..core.evidence_graph import EvidenceNode
 
 
 @dataclass(frozen=True)
@@ -27,9 +27,6 @@ class CausalChain:
     confidence: float
     summary: str
     payload: dict[str, Any]
-    # M.16: caveats propagated from the constituent nodes. Reader can see
-    # every layer's warning at chain-rendering time. Default empty so older
-    # callers / tests don't have to construct a tuple explicitly.
     caveats: tuple[EvidenceCaveat, ...] = ()
 
 
@@ -38,7 +35,7 @@ _CHAIN_TEMPLATES = (
         "type": "terminal_fix_test",
         "sequence": ("terminal_pattern", "commit", "commit"),
         "max_gap_minutes": 45,
-        "require_pattern_kind": "build_fix_loop",
+        "require_pattern_kinds": ("build_fix_loop", None, None),
         "require_conventional_kinds": (None, "fix", "test"),
         "label": "build/fix loop → fix commit → test addition",
     },
@@ -58,7 +55,7 @@ _CHAIN_TEMPLATES = (
         "type": "terminal_error_fix",
         "sequence": ("terminal_pattern", "commit"),
         "max_gap_minutes": 30,
-        "require_pattern_kind": "retry_spiral",
+        "require_pattern_kinds": ("retry_spiral", None),
         "require_conventional_kinds": (None, "fix"),
         "label": "terminal retry → fix commit",
     },
@@ -93,8 +90,7 @@ _CHAIN_TEMPLATES = (
         "sequence": ("ai_work_event", "terminal_pattern", "commit"),
         "max_gap_minutes": 90,
         "require_event_kinds": ("debugging", None, None),
-        "require_pattern_kind_index": 1,  # terminal_pattern is index 1
-        "require_pattern_kind": "build_fix_loop",
+        "require_pattern_kinds": (None, "build_fix_loop", None),
         "require_conventional_kinds": (None, None, "fix"),
         "label": "AI debug → build/fix loop → fix commit",
     },
@@ -209,17 +205,16 @@ def _match_template(
 def _check_template_constraints(
     nodes: list[EvidenceNode], template: dict,
 ) -> bool:
-    pattern_kind = template.get("require_pattern_kind")
-    if pattern_kind:
-        # Default index 0 (back-compat with templates that put the pattern
-        # node first); allow `require_pattern_kind_index` for templates that
-        # place terminal_pattern in a non-leading position.
-        idx = int(template.get("require_pattern_kind_index", 0))
-        if idx >= len(nodes):
-            return False
-        payload = getattr(nodes[idx], "payload", None) or {}
-        if payload.get("kind") != pattern_kind:
-            return False
+    pattern_kinds = template.get("require_pattern_kinds")
+    if pattern_kinds:
+        for idx, expected in enumerate(pattern_kinds):
+            if expected is None:
+                continue
+            if idx >= len(nodes):
+                return False
+            payload = getattr(nodes[idx], "payload", None) or {}
+            if payload.get("kind") != expected:
+                return False
 
     conv_kinds = template.get("require_conventional_kinds")
     if conv_kinds:

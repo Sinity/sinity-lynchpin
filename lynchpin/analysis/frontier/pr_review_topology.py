@@ -40,41 +40,14 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from ...core.pr_review import PrReviewRow
 from ...sources.github import (
     GitHubItem,
+    GitHubReview,
     fetch_pr,
     fetch_prs,
 )
 from ..core.io import resolve_analysis_path, save_json
-
-
-@dataclass(frozen=True)
-class PrReviewRow:
-    """Per-PR review-thread snapshot."""
-    project: str
-    number: int
-    title: str
-    state: str
-    url: str | None
-    author: str | None
-    created_at: str | None
-    closed_at: str | None
-    merged_at: str | None
-    review_count: int
-    review_decisions: tuple[str, ...]      # ordered by submitted_at
-    review_round_count: int                 # distinct submissions per reviewer
-    reviewer_count: int
-    reviewers: tuple[str, ...]
-    review_comment_count: int
-    top_level_comment_count: int
-    changes_requested_count: int
-    approval_count: int
-    dismissed_count: int
-    time_to_first_review_minutes: float | None
-    time_to_close_minutes: float | None
-    time_to_merge_minutes: float | None
-    final_decision: str
-    friction_signals: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -242,7 +215,7 @@ def _summarize_pr(*, project: str, item: GitHubItem, reference: date) -> PrRevie
     )
 
 
-def _review_round_count(reviews: Sequence) -> int:
+def _review_round_count(reviews: Sequence[GitHubReview]) -> int:
     """A 'round' = one review submission per reviewer.
 
     Two reviews from the same reviewer at different times are two rounds.
@@ -270,7 +243,7 @@ def _friction_signals(
     *,
     item: GitHubItem,
     rounds: int,
-    reviews: Sequence,
+    reviews: Sequence[GitHubReview],
     approvals: int,
     changes: int,
     time_to_first_review: float | None,
@@ -374,16 +347,16 @@ def _resolve_repo_iter(
     for row in projects or ():
         if not isinstance(row, dict):
             continue
-        project = row.get("project")
+        row_project = row.get("project")
         path_str = row.get("path")
-        if not project or not path_str:
+        if not isinstance(row_project, str) or not isinstance(path_str, str):
             continue
         repo_path = Path(path_str)
         if not repo_path.is_dir():
             continue
-        if selected and project not in selected:
+        if selected and row_project not in selected:
             continue
-        yield project, _fetch_pr_items(repo_path, start=start)
+        yield row_project, _fetch_pr_items(repo_path, start=start)
 
 
 def _fetch_pr_items(repo_path: Path, *, start: date) -> Iterable[GitHubItem]:
@@ -467,7 +440,6 @@ def _slo_to_dict(slo: ProjectReviewSLO) -> dict[str, Any]:
 
 
 __all__ = [
-    "PrReviewRow",
     "ProjectReviewSLO",
     "build_active_pr_review_topology",
     "run_active_pr_review_topology",

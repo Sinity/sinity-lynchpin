@@ -1,4 +1,4 @@
-"""Shared evidence contracts for high-level Lynchpin analysis products."""
+"""Shared evidence contracts used across graph, substrate, and analysis layers."""
 
 from __future__ import annotations
 
@@ -43,32 +43,19 @@ def dedupe_caveats(caveats: tuple[EvidenceCaveat, ...]) -> tuple[EvidenceCaveat,
     return tuple(result)
 
 
-# ── M.16: Multi-layer caveat propagation ─────────────────────────────────────
-
-
-# Per-status confidence multiplier when a caveat from that status appears in a
-# composite claim (causal chain, dataset correlation, supported work claim, …).
-# `missing` and `blocked` apply hard floors — when source data is gone, no
-# confidence value is meaningful — but we still preserve the caveat record.
 _STATUS_DEGRADATION: dict[ReadinessStatus, float] = {
     "available": 1.00,
-    "partial":   0.90,
-    "stale":     0.85,
-    "missing":   0.40,
-    "blocked":   0.40,
+    "partial": 0.90,
+    "stale": 0.85,
+    "missing": 0.40,
+    "blocked": 0.40,
 }
 
 
 def propagate_caveats(
     *caveat_sources: tuple[EvidenceCaveat, ...],
 ) -> tuple[EvidenceCaveat, ...]:
-    """Union caveats across multiple node/edge/claim payloads.
-
-    Order-preserving across sources, dedup-aware. Use when a composite
-    artifact (causal chain, dataset correlation, closure-chain, etc.)
-    spans multiple evidence layers and the reader needs to see ALL the
-    relevant warnings, not just the first layer's.
-    """
+    """Union caveats across multiple node/edge/claim payloads."""
     flat: list[EvidenceCaveat] = []
     for caveats in caveat_sources:
         flat.extend(caveats)
@@ -81,29 +68,21 @@ def degrade_confidence(
     *,
     floor: float = 0.10,
 ) -> float:
-    """Combine multipliers across all caveats; clamp at ``floor``.
-
-    A claim that crosses three "partial" layers gets `0.90 ** 3 = 0.729×`
-    of its original confidence, plus the caveats themselves are visible
-    to the reader. Multiple caveats from the *same* source/status are
-    combined once via :func:`dedupe_caveats` so a noisy single source
-    doesn't compound.
-    """
+    """Combine multipliers across all caveats; clamp at ``floor``."""
     if base_confidence <= 0.0:
         return 0.0
-    deduped = dedupe_caveats(caveats)
     multiplier = 1.0
-    for caveat in deduped:
+    for caveat in dedupe_caveats(caveats):
         multiplier *= _STATUS_DEGRADATION.get(caveat.status, 1.0)
     return max(floor, base_confidence * multiplier)
 
 
 def caveat_summary(caveats: tuple[EvidenceCaveat, ...]) -> dict[str, int]:
     """Compact rollup: status → count, useful for headers and badges."""
-    summary: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for caveat in dedupe_caveats(caveats):
-        summary[caveat.status] = summary.get(caveat.status, 0) + 1
-    return summary
+        counts[caveat.status] = counts.get(caveat.status, 0) + 1
+    return counts
 
 
 @dataclass(frozen=True)
@@ -150,10 +129,13 @@ class SourceReadinessReport:
 
 __all__ = [
     "CostClass",
-    "dedupe_caveats",
+    "SourceReadiness",
     "EvidenceCaveat",
     "EvidenceProvenance",
     "ReadinessStatus",
-    "SourceReadiness",
     "SourceReadinessReport",
+    "caveat_summary",
+    "dedupe_caveats",
+    "degrade_confidence",
+    "propagate_caveats",
 ]

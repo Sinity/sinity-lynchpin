@@ -3,8 +3,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from .causal_chains import CausalChain, detect_chains
-from .evidence_graph import EvidenceGraph, EvidenceNode
 from .issue_closure_chain import IssueClosureChain, detect_closure_chains
 
 @dataclass(frozen=True)

@@ -10,7 +10,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 UTC = timezone.utc
 

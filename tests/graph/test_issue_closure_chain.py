@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from lynchpin.graph.evidence_graph import EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 from lynchpin.graph.issue_closure_chain import (
     closure_chain_summary,
     detect_closure_chains,

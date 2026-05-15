@@ -20,34 +20,10 @@ Three confidence tiers (`high`/`medium`/`low`) propagate downstream — see
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Literal
+from typing import Iterable
 
-
-KindSource = Literal["polylogue", "lynchpin_overlay", "agreement", "disagreement"]
-ConfidenceTier = Literal["high", "medium", "low"]
-
-
-@dataclass(frozen=True)
-class WorkEventKindLabel:
-    """A single classification of a Polylogue work-event by either side.
-
-    `kind` and `confidence` are the consensus values: when Polylogue and the
-    Lynchpin overlay agree, we boost confidence; when they disagree, the
-    overlay wins on a feature-strength basis but the Polylogue label is
-    preserved in `polylogue_kind` so callers can render both. `tier` is the
-    round-tripped weight bucket Arc B/Arc A.4 read.
-    """
-    kind: str
-    confidence: float
-    source: KindSource
-    tier: ConfidenceTier
-    polylogue_kind: str | None
-    polylogue_confidence: float
-    overlay_kind: str | None
-    overlay_confidence: float
-    features: dict[str, Any]
+from ..core.work_event_kind import ConfidenceTier, KindSource, WorkEventKindLabel
 
 
 # ── Feature extractors ───────────────────────────────────────────────────────
@@ -222,9 +198,6 @@ def tier_weight(tier: ConfidenceTier) -> float:
 
 
 __all__ = [
-    "ConfidenceTier",
-    "KindSource",
-    "WorkEventKindLabel",
     "overlay_label",
     "tier_weight",
 ]

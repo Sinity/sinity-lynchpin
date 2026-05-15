@@ -36,6 +36,7 @@ SOURCE_PR_REVIEW = "pr_review"
 SOURCE_CALENDAR = "calendar"
 SOURCE_SPOTIFY_DAILY = "spotify_daily"
 SOURCE_MACHINE = "machine"
+SOURCE_MACHINE_GPU = "machine_gpu_sample"
 SOURCE_MACHINE_NETWORK = "machine_network_sample"
 SOURCE_MACHINE_SERVICE_STATE = "machine_service_state"
 SOURCE_MACHINE_EXPERIMENTS = "machine_experiments"
@@ -126,6 +127,7 @@ def _do_promote(
         promote_evidence_graph,
         promote_file_changes,
         promote_machine_experiment_runs,
+        promote_machine_gpu_samples,
         promote_machine_metric_samples,
         promote_machine_network_samples,
         promote_machine_service_states,
@@ -505,7 +507,7 @@ def _do_promote(
 
         # ── machine telemetry: live SQLite capture ───────────────────────────
         try:
-            from lynchpin.sources.machine import metric_samples, network_samples, readiness as machine_readiness, service_states
+            from lynchpin.sources.machine import gpu_samples, metric_samples, network_samples, readiness as machine_readiness, service_states
 
             machine_ready = machine_readiness()
             live_count = promote_machine_metric_samples(
@@ -532,6 +534,19 @@ def _do_promote(
                 status="ok" if service_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
                 reason=machine_ready.reason,
                 row_count=service_count,
+                window_start=window_start, window_end=window_end,
+            )
+            gpu_count = promote_machine_gpu_samples(
+                conn,
+                refresh_id=refresh_id,
+                samples=gpu_samples(start=window_start, end=window_end),
+            )
+            counts["machine_gpu_samples"] = gpu_count
+            _record_status(
+                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_GPU,
+                status="ok" if gpu_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                reason=machine_ready.reason,
+                row_count=gpu_count,
                 window_start=window_start, window_end=window_end,
             )
             network_count = promote_machine_network_samples(
@@ -737,6 +752,7 @@ __all__ = [
     "SOURCE_EVIDENCE_GRAPH",
     "SOURCE_PR_REVIEW",
     "SOURCE_MACHINE",
+    "SOURCE_MACHINE_GPU",
     "SOURCE_MACHINE_SERVICE_STATE",
     "SOURCE_MACHINE_EXPERIMENTS",
 ]

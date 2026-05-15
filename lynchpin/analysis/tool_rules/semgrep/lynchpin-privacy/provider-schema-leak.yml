@@ -12,7 +12,7 @@ rules:
       adapter and have the canonical caller consume the typed result.
     paths:
       include:
-        - "lynchpin/composite/**/*.py"
+        - "lynchpin/graph/**/*.py"
         - "lynchpin/analysis/**/*.py"
       exclude:
         - "lynchpin/sources/polylogue.py"

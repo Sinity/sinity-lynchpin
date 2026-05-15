@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${LYNCHPIN_REPO_ROOT:-$PWD}"
+cd "$repo_root"
+
+branch="$(git branch --show-current 2>/dev/null || true)"
+if [[ -z "$branch" ]]; then
+  branch="$(git rev-parse --short HEAD 2>/dev/null || printf 'no-git')"
+fi
+
+status="$(git status --porcelain=v1 --untracked-files=normal 2>/dev/null || true)"
+staged=0
+unstaged=0
+untracked=0
+if [[ -n "$status" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "${line:0:2}" == "??" ]]; then
+      untracked=$((untracked + 1))
+      continue
+    fi
+    [[ "${line:0:1}" != " " ]] && staged=$((staged + 1))
+    [[ "${line:1:1}" != " " ]] && unstaged=$((unstaged + 1))
+  done <<< "$status"
+fi
+
+mark_path() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "$path" ]]; then
+    printf '%s:ok' "$label"
+  else
+    printf '%s:missing' "$label"
+  fi
+}
+
+size_mb() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    local bytes
+    bytes="$(stat -c '%s' "$path" 2>/dev/null || printf '0')"
+    awk -v bytes="$bytes" 'BEGIN { printf "%.1fM", bytes / 1048576 }'
+  else
+    printf 'missing'
+  fi
+}
+
+local_root="${LYNCHPIN_LOCAL_ROOT:-$repo_root/.lynchpin}"
+substrate="${local_root}/duck/substrate.duckdb"
+aw_db="${LYNCHPIN_ACTIVITYWATCH_DB:-$HOME/.local/share/activitywatch/aw-server-rust/sqlite.db}"
+atuin_db="${LYNCHPIN_ATUIN_DB:-$HOME/.local/share/atuin/history.db}"
+polylogue_db="${POLYLOGUE_DB_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/polylogue.db}"
+
+printf 'lynchpin dev | branch %s | py %s\n' "$branch" "${LYNCHPIN_DEV_PYTHON:-3.12}"
+printf 'worktree    | staged %d | unstaged %d | untracked %d\n' "$staged" "$unstaged" "$untracked"
+printf 'substrate   | %s | %s\n' "$substrate" "$(size_mb "$substrate")"
+printf 'sources     | %s | %s | %s\n' \
+  "$(mark_path aw "$aw_db")" \
+  "$(mark_path atuin "$atuin_db")" \
+  "$(mark_path polylogue "$polylogue_db")"
+printf 'commands    | just check | tool/current-state --start YYYY-MM-DD --end YYYY-MM-DD | just tool-inventory\n'

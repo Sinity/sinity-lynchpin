@@ -18,6 +18,11 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         gpu_power_w=28.0,
         gpu_pcie_gen=1,
         gpu_pcie_width=16,
+        io_psi_some_avg60=0.3,
+        io_psi_some_avg300=0.4,
+        io_psi_some_total_us=12345.0,
+        cpu_psi_some_avg60=0.1,
+        memory_psi_full_total_us=67890.0,
         gap_codes=("fan.hwmon_unavailable",),
     )
     with connect(db) as conn:
@@ -25,7 +30,9 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         assert promote_machine_metric_samples(conn, refresh_id="r1", samples=[sample]) == 1
         row = conn.execute(
             """
-            SELECT host, cpu_package_w, gpu_power_w, gpu_pcie_gen, gap_codes
+            SELECT host, cpu_package_w, gpu_power_w, gpu_pcie_gen,
+                   io_psi_some_avg60, cpu_psi_some_avg60,
+                   memory_psi_full_total_us, gap_codes
             FROM machine_metric_sample
             WHERE refresh_id = 'r1'
             """
@@ -36,9 +43,13 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     assert row[1] == 16.5
     assert row[2] == 28.0
     assert row[3] == 1
-    assert row[4] == ["fan.hwmon_unavailable"]
+    assert row[4] == 0.3
+    assert row[5] == 0.1
+    assert row[6] == 67890.0
+    assert row[7] == ["fan.hwmon_unavailable"]
     assert len(loaded) == 1
     assert loaded[0].host == "sinnix-prime"
+    assert loaded[0].io_psi_some_total_us == 12345.0
     assert loaded[0].gap_codes == ("fan.hwmon_unavailable",)
 
 
@@ -79,6 +90,41 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
     assert loaded[0]["run_id"] == "run-1"
     assert loaded[0]["command"] == ["xtask", "test"]
     assert loaded[0]["planned_treatment"] == '{"turbo": "on"}'
+
+
+def test_promote_machine_gpu_samples_round_trip(tmp_path):
+    from lynchpin.sources.machine import MachineGpuSample
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.promote import promote_machine_gpu_samples
+    from lynchpin.substrate.reader import load_machine_gpu_samples
+
+    db = tmp_path / "sub.duckdb"
+    sample = MachineGpuSample(
+        observed_at=datetime(2026, 5, 12, 12, 0, 1, tzinfo=timezone.utc),
+        host="sinnix-prime",
+        boot_id="boot-a",
+        source="machine.telemetry.gpu",
+        gpu_power_w=30.0,
+        gpu_power_limit_w=320.0,
+        gpu_temp_c=41.0,
+        gpu_fan_pct=0.0,
+        gpu_util_pct=4.0,
+        gpu_mem_util_pct=2.0,
+        gpu_clock_mhz=210.0,
+        gpu_mem_clock_mhz=405.0,
+        gpu_pstate="P8",
+        gpu_pcie_gen=4,
+        gpu_pcie_width=16,
+    )
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert promote_machine_gpu_samples(conn, refresh_id="r1", samples=[sample]) == 1
+        loaded = load_machine_gpu_samples(conn, refresh_id="r1")
+
+    assert len(loaded) == 1
+    assert loaded[0].gpu_power_w == 30.0
+    assert loaded[0].gpu_pcie_gen == 4
+    assert loaded[0].gpu_pcie_width == 16
 
 
 def test_promote_machine_service_states_round_trip(tmp_path):

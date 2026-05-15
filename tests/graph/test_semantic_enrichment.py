@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
-from lynchpin.graph.evidence import EvidenceCaveat
-from lynchpin.graph.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+from lynchpin.core.evidence import EvidenceCaveat
+from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 from lynchpin.graph.semantic_enrichment import build_semantic_enrichment, render_semantic_summary, save_semantic_enrichment
 UTC = timezone.utc
 

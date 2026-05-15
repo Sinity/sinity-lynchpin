@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Literal, Sequence
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
+from typing import Literal, Sequence, cast
 
+from ..core.evidence import EvidenceCaveat, dedupe_caveats
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
-from .evidence import EvidenceCaveat, dedupe_caveats
-from .evidence_graph import EvidenceGraph, EvidenceNode, build_evidence_graph, render_evidence_relations, render_evidence_timeline
+from .evidence_graph import build_evidence_graph, render_evidence_relations, render_evidence_timeline
 from .semantic_enrichment import SemanticEnrichment, build_semantic_enrichment, render_semantic_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
@@ -52,15 +53,28 @@ def context_pack(
     semantic: bool = False,
     persist_semantic: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
+    prefer_substrate: bool = False,
 ) -> ContextPack:
     """Build an LLM-facing context pack with explicit mode/caveats."""
-    graph = build_evidence_graph(
-        start=start.date(),
-        end=end.date(),
-        projects=projects,
-        mode=mode,
-        exclude_analysis_artifacts=exclude_analysis_artifacts,
-    )
+    graph = None
+    substrate_caveat = None
+    if prefer_substrate:
+        graph, substrate_caveat = _load_substrate_graph(
+            start=start.date(),
+            end=end.date(),
+            projects=projects,
+            mode=mode,
+        )
+    if graph is None:
+        graph = build_evidence_graph(
+            start=start.date(),
+            end=end.date(),
+            projects=projects,
+            mode=mode,
+            exclude_analysis_artifacts=exclude_analysis_artifacts,
+        )
+        if substrate_caveat is not None:
+            graph = replace(graph, caveats=dedupe_caveats(graph.caveats + (substrate_caveat,)))
     return graph_context_pack(
         graph,
         start=start,
@@ -69,6 +83,57 @@ def context_pack(
         semantic=semantic,
         persist_semantic=persist_semantic,
     )
+
+
+def _load_substrate_graph(
+    *,
+    start: date,
+    end: date,
+    projects: Sequence[str] | None,
+    mode: ContextPackMode,
+) -> tuple[EvidenceGraph | None, EvidenceCaveat | None]:
+    """Load a previously materialized graph from DuckDB when available."""
+    try:
+        from lynchpin.substrate import connect
+        from lynchpin.substrate.reader import load_evidence_graph
+    except ImportError as exc:
+        return None, EvidenceCaveat("substrate", "missing", f"DuckDB substrate import failed: {exc}")
+    try:
+        with connect(read_only=True) as conn:
+            graph = load_evidence_graph(
+                conn,
+                refresh_id=_current_state_refresh_id(
+                    start=start,
+                    end=end,
+                    mode=mode,
+                    projects=projects,
+                ),
+            )
+            if graph is not None:
+                return cast(EvidenceGraph, graph), None
+            graph = load_evidence_graph(
+                conn,
+                start=start,
+                end=end,
+                mode=mode,
+                projects=tuple(projects) if projects else None,
+            )
+    except Exception as exc:
+        return None, EvidenceCaveat("substrate", "partial", f"DuckDB substrate read failed; rebuilt live graph: {exc}")
+    if graph is None:
+        return None, EvidenceCaveat("substrate", "partial", "No materialized DuckDB graph matched; rebuilt live graph.")
+    return cast(EvidenceGraph, graph), None
+
+
+def _current_state_refresh_id(
+    *,
+    start: date,
+    end: date,
+    mode: ContextPackMode,
+    projects: Sequence[str] | None,
+) -> str:
+    project_key = ",".join(sorted(projects or ())) if projects else "all"
+    return f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
 
 
 def graph_context_pack(

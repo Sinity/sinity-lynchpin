@@ -7,14 +7,36 @@ import json
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
+from typing import Any, Literal
 
-from ..graph.context_pack import ContextPackMode, context_pack, render_context_pack
-from ..graph.current_state_timeline import (
-    build_current_state_timeline,
-    render_current_state_timeline,
-)
 from ..core.parse import as_local
 from ..core.serialization import jsonable
+
+ContextPackMode = Literal["local-fast", "local-heavy", "network"]
+
+
+def context_pack(*args: Any, **kwargs: Any) -> Any:
+    from ..graph.context_pack import context_pack as impl
+
+    return impl(*args, **kwargs)
+
+
+def render_context_pack(*args: Any, **kwargs: Any) -> str:
+    from ..graph.context_pack import render_context_pack as impl
+
+    return impl(*args, **kwargs)
+
+
+def build_current_state_timeline(*args: Any, **kwargs: Any) -> Any:
+    from ..graph.current_state_timeline import build_current_state_timeline as impl
+
+    return impl(*args, **kwargs)
+
+
+def render_current_state_timeline(*args: Any, **kwargs: Any) -> str:
+    from ..graph.current_state_timeline import render_current_state_timeline as impl
+
+    return impl(*args, **kwargs)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +105,7 @@ def render_current_state(
         mode=effective_mode,
         semantic=semantic,
         persist_semantic=persist_semantic,
+        prefer_substrate=True,
     )
     if timeline_output is not None:
         timeline = build_current_state_timeline(pack.graph, start=start, end=end)

@@ -4,7 +4,7 @@ This module is the shared home for:
 
 - Goodreads and Raindrop exports under `/realm/data/exports/...`,
 - Facebook Messenger and Wykop processed/raw trees,
-- Dendron-style note reads rooted at `/realm/project/knowledgebase/`.
+- Dendron-style note reads rooted at `/realm/data/knowledgebase/`.
 
 It stays read-only. Refresh and acquisition workflows belong under
 `lynchpin.cli.*`.

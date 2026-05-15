@@ -243,7 +243,12 @@ class LynchpinConfig:
         ))
         machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", captures_root / "machine"))
         machine_host = os.environ.get("LYNCHPIN_MACHINE_HOST", "sinnix-prime")
-        machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", machine_capture_root))
+        default_machine_host_root = (
+            machine_capture_root
+            if (machine_capture_root / "telemetry.sqlite").exists()
+            else machine_capture_root / machine_host
+        )
+        machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", default_machine_host_root))
         machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
