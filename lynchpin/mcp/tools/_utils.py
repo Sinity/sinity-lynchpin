@@ -7,8 +7,12 @@ circular coupling between substrate.py and views.py.
 from __future__ import annotations
 
 import base64
+import re
+from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def json_safe(value: Any) -> Any:
@@ -28,6 +32,12 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def dataclass_to_json_dict(obj: Any) -> dict[str, Any]:
+    """Convert a dataclass instance to a JSON-serialisable dict."""
+    d = asdict(obj)
+    return {k: json_safe(v) for k, v in d.items()}
+
+
 def latest_refresh_id(conn: Any) -> str | None:
     """Return the most recent refresh_id from substrate_source_status.
 
@@ -41,6 +51,7 @@ def latest_refresh_id(conn: Any) -> str | None:
     ).fetchone()
     return row[0] if row else None
 
+
 def best_refresh_id(conn: Any, table: str) -> str | None:
     """Return the most recent refresh_id that has rows in `table`.
 
@@ -48,7 +59,23 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
     queries the target table directly. Fixes the refresh_id mismatch where
     domain tables and evidence nodes use different promote runs.
     """
+    if not _IDENTIFIER_RE.fullmatch(table):
+        raise ValueError(f"invalid substrate table identifier: {table!r}")
+
+    columns = {
+        str(row[0])
+        for row in conn.execute(f"DESCRIBE {table}").fetchall()
+    }
+    if "materialized_at" in columns:
+        order_expr = "MAX(materialized_at)"
+    elif "recorded_at" in columns:
+        order_expr = "MAX(recorded_at)"
+    elif "date" in columns:
+        order_expr = "MAX(date), COUNT(*)"
+    else:
+        order_expr = "refresh_id"
     row = conn.execute(
-        f"SELECT refresh_id FROM {table} GROUP BY refresh_id ORDER BY MAX(materialized_at) DESC LIMIT 1"
+        f"SELECT refresh_id FROM {table} "
+        f"GROUP BY refresh_id ORDER BY {order_expr} DESC LIMIT 1"
     ).fetchone()
     return row[0] if row else None

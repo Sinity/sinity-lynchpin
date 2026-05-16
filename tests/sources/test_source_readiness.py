@@ -1,7 +1,15 @@
 from datetime import date
 
+import pytest
+
 from lynchpin.graph.source_readiness import render_source_readiness, source_readiness
+from lynchpin.sources.freshness import SourceFreshness
 from lynchpin.sources.polylogue import PolylogueReadiness
+
+
+@pytest.fixture(autouse=True)
+def _empty_freshness_contract(monkeypatch):
+    monkeypatch.setattr("lynchpin.graph.source_readiness.source_freshness", lambda: ())
 
 
 def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
@@ -234,3 +242,91 @@ def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
     assert analysis.status == "available"
     assert analysis.count == 1
     assert analysis.path == str(analysis_dir)
+
+
+def test_source_readiness_uses_observed_freshness_not_directory_mtime(
+    monkeypatch, tmp_path
+):
+    spotify_dir = tmp_path / "spotify"
+    spotify_dir.mkdir()
+
+    class Config:
+        activitywatch_db = tmp_path / "aw.db"
+        atuin_db = tmp_path / "atuin.db"
+        sinnix_root = tmp_path / "sinnix"
+        raw_log_file = tmp_path / "logs.raw-log.md"
+        repo_root = tmp_path / "repo"
+        analysis_output_dir = tmp_path / "analysis"
+        webhistory_ndjson = None
+        webhistory_dir = tmp_path / "web"
+        sleep_jsonl = tmp_path / "sleep.jsonl"
+        samsung_gdpr_cloud_dir = tmp_path / "health"
+        spotify_root = spotify_dir
+        reddit_export_dir = tmp_path / "reddit"
+        fbmessenger_gdpr_root = tmp_path / "messenger"
+        fbmessenger_db = tmp_path / "messenger.sqlite"
+        raindrop_csv = tmp_path / "raindrop.csv"
+        exports_root = tmp_path / "exports"
+
+        def available_sources(self):
+            return {
+                "activitywatch": False,
+                "atuin": False,
+                "git_baseline": False,
+                "webhistory": False,
+                "sleep": False,
+                "codex": False,
+                "reddit": False,
+                "spotify": True,
+                "polylogue": True,
+                "fbmessenger": False,
+                "asciinema": False,
+                "keylog": False,
+                "goodreads": False,
+                "raindrop": False,
+                "wykop": False,
+                "dendron": False,
+                "samsung_gdpr_cloud": False,
+                "clipboard": False,
+                "irc": False,
+                "raw_log": False,
+            }
+
+    readiness = PolylogueReadiness(
+        db_path=tmp_path / "polylogue.db",
+        status="ready",
+        reason="ready",
+        conversation_count=10,
+        message_count=None,
+        conversation_stats_count=10,
+        session_profile_count=10,
+        day_summary_count=10,
+        work_event_count=10,
+        provider_event_count=10,
+        derives_profiles_from_base_tables=False,
+        derives_day_summaries_from_profiles=False,
+    )
+
+    monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
+    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_heavy_counts=False: readiness)
+    monkeypatch.setattr(
+        "lynchpin.graph.source_readiness.source_freshness",
+        lambda: (
+            SourceFreshness(
+                source="spotify",
+                available=True,
+                last_observed=date(2025, 12, 18),
+                basis="substrate",
+                stale=True,
+                recommendation="Request new Spotify GDPR export",
+                path=None,
+            ),
+        ),
+    )
+
+    report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
+    spotify = report.by_source()["spotify"]
+
+    assert spotify.status == "stale"
+    assert spotify.last_date == date(2025, 12, 18)
+    assert spotify.caveats == ("latest observed data is 149 days old (substrate)",)

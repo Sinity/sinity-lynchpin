@@ -17,16 +17,27 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field as dataclass_field
 from datetime import date as _date_type, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, TextIO
-from urllib.parse import parse_qs, urlencode, urlparse
-from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 from ..core.cache import file_digest, files_digest, persistent_cache
 from ..core.config import get_config
-from ..core.primitives import TopN
+from .web_models import (
+    WebDayActivity,
+    WebHistoryEntry,
+    WebHistoryRawEntry,
+    WebHistoryVisit,
+    _WebDayBucket,
+)
+from .web_timestamps import (
+    CHROME_CSV_LOCAL_TZ,
+    WEBHISTORY_TIMESTAMP_FIELDS,
+    parse_webhistory_timestamp,
+    payload_timestamp,
+)
+from .web_urls import _normalize_domain, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -62,223 +73,23 @@ except OverflowError:
 # Constants (from webhistory_common.py)
 # ---------------------------------------------------------------------------
 
-CHROME_CSV_LOCAL_TZ = ZoneInfo("Europe/Warsaw")
-
-WEBHISTORY_TIMESTAMP_FIELDS = (
-    "iso_time",
-    "time",
-    "visit_time",
-    "visitTime",
-    "lastVisitTime",
-    "timestamp",
-    "DateTime",
-    "date",
-)
-
-_WEBHISTORY_NUMERIC_DIVISORS = (
-    (10**18, 1_000_000_000.0),
-    (10**15, 1_000_000.0),
-    (10**12, 1_000.0),
-)
-
-
-# ---------------------------------------------------------------------------
-# Timestamp parsing (from webhistory_common.py)
-# ---------------------------------------------------------------------------
-
-
-def parse_webhistory_timestamp(value: object) -> datetime | None:
-    if isinstance(value, (int, float)):
-        return _parse_webhistory_numeric_timestamp(float(value))
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = _parse_webhistory_iso_timestamp(text)
-        if dt is not None:
-            return dt
-        dt = _parse_webhistory_slash_timestamp(text)
-        if dt is not None:
-            return dt
-        try:
-            return _parse_webhistory_numeric_timestamp(float(text))
-        except ValueError:
-            return None
-    return None
-
-
-def payload_timestamp(payload: dict[str, object]) -> datetime | None:
-    for field in WEBHISTORY_TIMESTAMP_FIELDS:
-        value = payload.get(field)
-        if value in (None, ""):
-            continue
-        dt = parse_webhistory_timestamp(value)
-        if dt is not None:
-            return dt
-    return None
-
-
-def _parse_webhistory_numeric_timestamp(value: float) -> datetime | None:
-    magnitude = abs(value)
-    divisors = [1.0]
-    for threshold, divisor in _WEBHISTORY_NUMERIC_DIVISORS:
-        if magnitude >= threshold:
-            divisors = [divisor, 1.0]
-            break
-    for divisor in divisors:
-        try:
-            return datetime.fromtimestamp(value / divisor, tz=timezone.utc)
-        except (OSError, OverflowError, ValueError):
-            continue
-    return None
-
-
-def _parse_webhistory_iso_timestamp(value: str) -> datetime | None:
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def _parse_webhistory_slash_timestamp(value: str) -> datetime | None:
-    """Parse US-format date/time strings from Chrome CSV exports.
-
-    Chrome CSV exports write timestamps in local time without timezone info.
-    We treat them as local time (CHROME_CSV_LOCAL_TZ) and convert to UTC.
-    """
-    for fmt in (
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%y %H:%M:%S",
-        "%m/%d/%y %H:%M",
-    ):
-        try:
-            naive = datetime.strptime(value, fmt)
-            return naive.replace(tzinfo=CHROME_CSV_LOCAL_TZ).astimezone(timezone.utc)
-        except ValueError:
-            continue
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Data types (from webhistory.py)
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class WebHistoryEntry:
-    date: str
-    record_json: str
-    source_file: str
-
-    def to_record(self) -> dict[str, object]:
-        data = json.loads(self.record_json)
-        if not isinstance(data, dict):
-            return {"_source_file": self.source_file}
-        data["_source_file"] = self.source_file
-        return data
-
-
-@dataclass(frozen=True)
-class WebHistoryVisit:
-    timestamp: datetime
-    url: str
-    title: str
-    source: str
-
-
-@dataclass(frozen=True)
-class WebHistoryRawEntry:
-    timestamp: datetime
-    url: str
-    title: str
-    payload_json: str
-    source_file: str
-
-    def payload(self) -> dict[str, object]:
-        data = json.loads(self.payload_json)
-        return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
 # URL normalization (from webhistory.py)
 # ---------------------------------------------------------------------------
 
-TRACKING_PREFIXES = {
-    "utm_", "fbclid", "gclid", "igshid", "yclid", "dclid", "ref_", "spm",
-    "sc_", "mc_", "mkt_", "pk_campaign", "pk_kwd", "ga_", "gs_",
-    "ved", "ei", "sa", "rlz", "dpr", "biw", "bih",
-}
-
-SPECIAL_PARAM_WHITELIST = {
-    "youtube.com": {"v", "list", "t"},
-    "youtu.be": {"v", "t"},
-    "github.com": {"ref", "sha"},
-    "reddit.com": {"sort", "type", "t"},
-    "twitter.com": {"s", "q"},
-}
-
-
-def normalize_url(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(url.strip())
-        if not parsed.netloc:
-            return url.strip()
-        scheme = (parsed.scheme or "https").lower()
-        if scheme not in ("http", "https"):
-            return url.strip()
-        host = _normalize_domain(parsed.netloc)
-        path = parsed.path or "/"
-        if len(path) > 1 and path.endswith("/"):
-            path = path[:-1]
-        query = parse_qs(parsed.query, keep_blank_values=True)
-        cleaned = _strip_tracking_params(query, host)
-        if host == "youtu.be" and path.lstrip("/"):
-            vid = path.lstrip("/")
-            host = "youtube.com"
-            path = "/watch"
-            if "v" not in cleaned:
-                cleaned["v"] = [vid]
-            cleaned = _strip_tracking_params(cleaned, host)
-        query_str = urlencode(cleaned, doseq=True)
-        rebuilt = f"https://{host}{path}"
-        if query_str:
-            rebuilt += f"?{query_str}"
-        return rebuilt
-    except Exception:
-        return url.strip()
-
-
-def _strip_tracking_params(query: dict[str, list[str]], host: str) -> dict[str, list[str]]:
-    keep = SPECIAL_PARAM_WHITELIST.get(host.split(":")[0], set())
-    return {
-        k: v for k, v in query.items()
-        if k in keep or not any(k.startswith(p) for p in TRACKING_PREFIXES)
-    }
-
-
-def _normalize_domain(netloc: str) -> str:
-    netloc = netloc.strip().lower()
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-    if ":" in netloc:
-        netloc = netloc.split(":", 1)[0]
-    return netloc
-
-
 # ---------------------------------------------------------------------------
 # Cached entry loading (from webhistory.py)
 # ---------------------------------------------------------------------------
 
 
-def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> list[Path]:
+def _history_files(
+    root: Optional[Path] = None, ndjson: Optional[Path] = None
+) -> list[Path]:
     cfg = get_config()
     fallback = ndjson or cfg.webhistory_ndjson
     if root is None and fallback and Path(fallback).exists():
@@ -298,12 +109,16 @@ def _history_files(root: Optional[Path] = None, ndjson: Optional[Path] = None) -
     return []
 
 
-def _history_files_signature(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> object:
+def _history_files_signature(
+    root: Optional[Path] = None, ndjson: Optional[Path] = None
+) -> object:
     return files_digest(_history_files(root, ndjson))
 
 
 @persistent_cache("webhistory_entries", depends_on=_history_files_signature)
-def _load_entries(root: Optional[Path] = None, ndjson: Optional[Path] = None) -> list[WebHistoryEntry]:
+def _load_entries(
+    root: Optional[Path] = None, ndjson: Optional[Path] = None
+) -> list[WebHistoryEntry]:
     entries: list[WebHistoryEntry] = []
     for file in _history_files(root, ndjson):
         for visit in _iter_file_visits(file):
@@ -313,11 +128,13 @@ def _load_entries(root: Optional[Path] = None, ndjson: Optional[Path] = None) ->
                 "iso_time": visit.timestamp.isoformat(),
                 "source": file.name,
             }
-            entries.append(WebHistoryEntry(
-                date=visit.timestamp.date().isoformat(),
-                record_json=json.dumps(record, ensure_ascii=False),
-                source_file=str(file),
-            ))
+            entries.append(
+                WebHistoryEntry(
+                    date=visit.timestamp.date().isoformat(),
+                    record_json=json.dumps(record, ensure_ascii=False),
+                    source_file=str(file),
+                )
+            )
     return entries
 
 
@@ -373,10 +190,15 @@ def raw_files(
         if not suffixes.intersection({".csv", ".json", ".ndjson", ".jsonl"}):
             continue
         candidates.append(path)
-    return sorted(candidates, key=lambda p: (p.stem, _RAW_SUFFIX_PRIORITY.get(p.suffix.lower(), 99), p.name))
+    return sorted(
+        candidates,
+        key=lambda p: (p.stem, _RAW_SUFFIX_PRIORITY.get(p.suffix.lower(), 99), p.name),
+    )
 
 
-def _raw_file_signature(path: Path, signature: tuple[str, int | None, int | None, str | None]) -> object:
+def _raw_file_signature(
+    path: Path, signature: tuple[str, int | None, int | None, str | None]
+) -> object:
     return path, signature
 
 
@@ -486,17 +308,18 @@ def _load_raw_csv(path: Path) -> Iterable[WebHistoryRawEntry]:
                 or ""
             )
             title = (
-                row.get("title")
-                or row.get("pagetitle")
-                or row.get("PageTitle")
-                or ""
+                row.get("title") or row.get("pagetitle") or row.get("PageTitle") or ""
             )
             payload = dict(row)
-            entries.append(_make_entry(dt, str(url or ""), str(title or ""), payload, path))
+            entries.append(
+                _make_entry(dt, str(url or ""), str(title or ""), payload, path)
+            )
     return entries
 
 
-def _entries_from_objects(objs: Iterable[object], path: Path) -> Iterator[WebHistoryRawEntry]:
+def _entries_from_objects(
+    objs: Iterable[object], path: Path
+) -> Iterator[WebHistoryRawEntry]:
     for obj in objs:
         if not isinstance(obj, dict):
             continue
@@ -505,7 +328,9 @@ def _entries_from_objects(objs: Iterable[object], path: Path) -> Iterator[WebHis
             yield entry
 
 
-def _entries_from_lines(lines: Iterable[str], path: Path) -> Iterator[WebHistoryRawEntry]:
+def _entries_from_lines(
+    lines: Iterable[str], path: Path
+) -> Iterator[WebHistoryRawEntry]:
     for raw in lines:
         raw = raw.strip()
         if not raw:
@@ -521,7 +346,9 @@ def _entries_from_lines(lines: Iterable[str], path: Path) -> Iterator[WebHistory
             yield entry
 
 
-def _entry_from_payload(payload: dict[str, object], path: Path) -> WebHistoryRawEntry | None:
+def _entry_from_payload(
+    payload: dict[str, object], path: Path
+) -> WebHistoryRawEntry | None:
     dt = None
     for field in WEBHISTORY_TIMESTAMP_FIELDS:
         if field in payload and payload[field] not in (None, ""):
@@ -587,8 +414,15 @@ def _iter_csv_visits(path: Path) -> Iterator[WebHistoryVisit]:
             dt = _parse_csv_dt(row)
             if dt is None:
                 continue
-            url = row.get("url") or row.get("NavigatedToUrl") or row.get("navigatedtourl") or ""
-            title = row.get("title") or row.get("PageTitle") or row.get("pagetitle") or ""
+            url = (
+                row.get("url")
+                or row.get("NavigatedToUrl")
+                or row.get("navigatedtourl")
+                or ""
+            )
+            title = (
+                row.get("title") or row.get("PageTitle") or row.get("pagetitle") or ""
+            )
             yield WebHistoryVisit(timestamp=dt, url=url, title=title, source=str(path))
 
 
@@ -667,10 +501,17 @@ def _parse_csv_dt(row: dict[str, str | None]) -> Optional[datetime]:
     time_raw = (row.get("time") or "").strip()
     if date_raw and time_raw:
         stamp = f"{date_raw} {time_raw}"
-        for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%y %H:%M:%S", "%m/%d/%y %H:%M"):
+        for fmt in (
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%Y %H:%M",
+            "%m/%d/%y %H:%M:%S",
+            "%m/%d/%y %H:%M",
+        ):
             try:
                 naive = datetime.strptime(stamp, fmt)
-                return naive.replace(tzinfo=CHROME_CSV_LOCAL_TZ).astimezone(timezone.utc)
+                return naive.replace(tzinfo=CHROME_CSV_LOCAL_TZ).astimezone(
+                    timezone.utc
+                )
             except ValueError:
                 continue
 
@@ -703,16 +544,22 @@ SummarizationResult = tuple[
 ]
 
 
-def summarize_gestalt_dir(root: Path, start_month: str, end_month: str) -> SummarizationResult:
+def summarize_gestalt_dir(
+    root: Path, start_month: str, end_month: str
+) -> SummarizationResult:
     return summarize_events_by_month(iter_gestalt_events(root), start_month, end_month)
 
 
-def summarize_ndjson(path: Path, start_month: str, end_month: str) -> SummarizationResult:
+def summarize_ndjson(
+    path: Path, start_month: str, end_month: str
+) -> SummarizationResult:
     return summarize_events_by_month(iter_ndjson_events(path), start_month, end_month)
 
 
 def summarize_events_by_month(
-    events: Iterable[WebHistoryVisit], start_month: str, end_month: str,
+    events: Iterable[WebHistoryVisit],
+    start_month: str,
+    end_month: str,
 ) -> SummarizationResult:
     counts: dict[str, int] = defaultdict(int)
     per_month_domains: dict[str, Counter[str]] = defaultdict(Counter)
@@ -745,22 +592,90 @@ def summarize_events_by_month(
 
 _TOPIC_STOPWORDS = {
     # English
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-    "has", "have", "he", "her", "his", "if", "in", "is", "it", "its", "me",
-    "my", "not", "of", "on", "or", "our", "ours", "she", "so", "that", "the",
-    "their", "them", "then", "there", "they", "this", "to", "was", "we",
-    "were", "what", "when", "where", "which", "who", "why", "will", "with",
-    "you", "your",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "he",
+    "her",
+    "his",
+    "if",
+    "in",
+    "is",
+    "it",
+    "its",
+    "me",
+    "my",
+    "not",
+    "of",
+    "on",
+    "or",
+    "our",
+    "ours",
+    "she",
+    "so",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "they",
+    "this",
+    "to",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "you",
+    "your",
     # Polish
-    "ale", "bo", "byc", "co", "czy", "dla", "jak", "ja", "jest", "juz",
-    "mnie", "na", "nie", "od", "po", "sie", "sa", "ta", "tak", "tu", "wy",
-    "za", "ze",
+    "ale",
+    "bo",
+    "byc",
+    "co",
+    "czy",
+    "dla",
+    "jak",
+    "ja",
+    "jest",
+    "juz",
+    "mnie",
+    "na",
+    "nie",
+    "od",
+    "po",
+    "sie",
+    "sa",
+    "ta",
+    "tak",
+    "tu",
+    "wy",
+    "za",
+    "ze",
 }
 
 
 def _tokenize_topic(text: str) -> list[str]:
     return [
-        tok for tok in re.findall(r"[\w]+", text.lower(), flags=re.UNICODE)
+        tok
+        for tok in re.findall(r"[\w]+", text.lower(), flags=re.UNICODE)
         if tok not in _TOPIC_STOPWORDS and len(tok) >= 3 and not tok.isdigit()
     ]
 
@@ -769,24 +684,10 @@ def _tokenize_topic(text: str) -> list[str]:
 # Daily browsing aggregation
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class WebDayActivity:
-    date: _date_type
-    visit_count: int
-    unique_domains: int
-    top_domains: tuple[tuple[str, float], ...]
-    top_titles: tuple[str, ...]
-
-
-@dataclass
-class _WebDayBucket:
-    count: int = 0
-    domains: TopN = dataclass_field(default_factory=lambda: TopN(10))
-    titles: TopN = dataclass_field(default_factory=lambda: TopN(5))
-
 
 def _iter_all_visits(
-    start: Optional[_date_type] = None, end: Optional[_date_type] = None,
+    start: Optional[_date_type] = None,
+    end: Optional[_date_type] = None,
 ) -> Iterator[WebHistoryVisit]:
     """Yield WebHistoryVisit from gestalt dir or NDJSON, filtered by date range."""
     cfg = get_config()
@@ -824,18 +725,23 @@ def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity
     result: list[WebDayActivity] = []
     for d in sorted(by_day):
         bucket = by_day[d]
-        result.append(WebDayActivity(
-            date=d,
-            visit_count=bucket.count,
-            unique_domains=len(bucket.domains._counts),
-            top_domains=bucket.domains.items,
-            top_titles=tuple(t for t, _ in bucket.titles.items),
-        ))
+        result.append(
+            WebDayActivity(
+                date=d,
+                visit_count=bucket.count,
+                unique_domains=len(bucket.domains._counts),
+                top_domains=bucket.domains.items,
+                top_titles=tuple(t for t, _ in bucket.titles.items),
+            )
+        )
     return result
 
 
 def domain_breakdown(
-    *, start: _date_type, end: _date_type, top_n: int = 20,
+    *,
+    start: _date_type,
+    end: _date_type,
+    top_n: int = 20,
 ) -> list[tuple[str, int, float]]:
     """Top domains by visit count over a date range: (domain, count, pct)."""
     domains: Counter[str] = Counter()

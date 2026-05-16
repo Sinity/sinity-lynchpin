@@ -20,12 +20,14 @@ from lynchpin.core.analytics import (
     detect_trend,
 )
 from lynchpin.analysis.core.io import save_json
+from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 
 
 @dataclass(frozen=True)
 class MachineCoverage:
     sample_count: int
+    pcie_state_sample_count: int
     first_observed_at: datetime | None
     last_observed_at: datetime | None
     sources: dict[str, int]
@@ -39,6 +41,7 @@ class DailyMachineTelemetry:
     avg_load_1m: float | None
     p95_load_1m: float | None
     min_mem_avail_mb: int | None
+    max_swap_used_mb: int | None
     avg_io_psi_some: float | None
     avg_io_psi_full: float | None
     avg_gpu_power_w: float | None
@@ -56,6 +59,7 @@ class HardwareRegime:
     avg_io_psi_some: float | None
     avg_io_psi_full: float | None
     min_mem_avail_mb: int | None
+    max_swap_used_mb: int | None
     avg_gpu_power_w: float | None
     load_ratio_vs_best_link: float | None
     io_full_ratio_vs_best_link: float | None
@@ -155,10 +159,15 @@ def _window_clause(start: date | None, end: date | None) -> tuple[str, list[Any]
 
 def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineCoverage:
     where, params = _window_clause(start, end)
+    metric_rows = latest_machine_rows("machine_metric_sample")
     row = conn.execute(
         f"""
-        SELECT count(*), min(observed_at), max(observed_at)
-        FROM machine_metric_sample
+        SELECT
+            count(*),
+            count(*) FILTER (WHERE gpu_pcie_gen IS NOT NULL AND gpu_pcie_width IS NOT NULL),
+            min(observed_at),
+            max(observed_at)
+        FROM ({metric_rows})
         {where}
         """,
         params,
@@ -166,7 +175,7 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineCove
     source_rows = conn.execute(
         f"""
         SELECT source, count(*)
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         GROUP BY source
         ORDER BY count(*) DESC
@@ -176,7 +185,7 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineCove
     refresh_rows = conn.execute(
         f"""
         SELECT refresh_id, count(*)
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         GROUP BY refresh_id
         ORDER BY count(*) DESC
@@ -185,8 +194,9 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineCove
     ).fetchall()
     return MachineCoverage(
         sample_count=int(row[0]),
-        first_observed_at=row[1],
-        last_observed_at=row[2],
+        pcie_state_sample_count=int(row[1]),
+        first_observed_at=row[2],
+        last_observed_at=row[3],
         sources={str(source): int(count) for source, count in source_rows},
         refreshes={str(refresh): int(count) for refresh, count in refresh_rows},
     )
@@ -194,6 +204,7 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineCove
 
 def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMachineTelemetry]:
     where, params = _window_clause(start, end)
+    metric_rows = latest_machine_rows("machine_metric_sample")
     rows = conn.execute(
         f"""
         SELECT
@@ -202,11 +213,12 @@ def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMach
             avg(load_1m) AS avg_load_1m,
             quantile_cont(load_1m, 0.95) AS p95_load_1m,
             min(mem_avail_mb) AS min_mem_avail_mb,
+            max(swap_used_mb) AS max_swap_used_mb,
             avg(coalesce(io_psi_some_avg10, io_psi_some_avg60)) AS avg_io_psi_some,
             avg(coalesce(io_psi_full_avg10, io_psi_full_avg60)) AS avg_io_psi_full,
             avg(gpu_power_w) AS avg_gpu_power_w,
             avg(gpu_pcie_gen) AS avg_gpu_pcie_gen
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         GROUP BY day
         ORDER BY day
@@ -220,10 +232,11 @@ def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMach
             avg_load_1m=_round(row[2]),
             p95_load_1m=_round(row[3]),
             min_mem_avail_mb=None if row[4] is None else int(row[4]),
-            avg_io_psi_some=_round(row[5]),
-            avg_io_psi_full=_round(row[6]),
-            avg_gpu_power_w=_round(row[7]),
-            avg_gpu_pcie_gen=_round(row[8]),
+            max_swap_used_mb=None if row[5] is None else int(row[5]),
+            avg_io_psi_some=_round(row[6]),
+            avg_io_psi_full=_round(row[7]),
+            avg_gpu_power_w=_round(row[8]),
+            avg_gpu_pcie_gen=_round(row[9]),
         )
         for row in rows
     ]
@@ -231,6 +244,8 @@ def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMach
 
 def _hardware_regimes(conn: Any, *, start: date | None, end: date | None) -> list[HardwareRegime]:
     where, params = _window_clause(start, end)
+    regime_where = where + " AND gpu_pcie_gen IS NOT NULL AND gpu_pcie_width IS NOT NULL" if where else "WHERE gpu_pcie_gen IS NOT NULL AND gpu_pcie_width IS NOT NULL"
+    metric_rows = latest_machine_rows("machine_metric_sample")
     rows = conn.execute(
         f"""
         SELECT
@@ -243,9 +258,10 @@ def _hardware_regimes(conn: Any, *, start: date | None, end: date | None) -> lis
             avg(coalesce(io_psi_some_avg10, io_psi_some_avg60)),
             avg(coalesce(io_psi_full_avg10, io_psi_full_avg60)),
             min(mem_avail_mb),
+            max(swap_used_mb),
             avg(gpu_power_w)
-        FROM machine_metric_sample
-        {where}
+        FROM ({metric_rows})
+        {regime_where}
         GROUP BY gpu_pcie_gen, gpu_pcie_width
         ORDER BY sample_count DESC
         """,
@@ -256,8 +272,8 @@ def _hardware_regimes(conn: Any, *, start: date | None, end: date | None) -> lis
     baseline_io_full = baseline[7] if baseline else None
     return [
         HardwareRegime(
-            gpu_pcie_gen=None if row[0] is None else int(row[0]),
-            gpu_pcie_width=None if row[1] is None else int(row[1]),
+            gpu_pcie_gen=int(row[0]),
+            gpu_pcie_width=int(row[1]),
             sample_count=int(row[2]),
             first_observed_at=row[3],
             last_observed_at=row[4],
@@ -265,7 +281,8 @@ def _hardware_regimes(conn: Any, *, start: date | None, end: date | None) -> lis
             avg_io_psi_some=_round(row[6]),
             avg_io_psi_full=_round(row[7]),
             min_mem_avail_mb=None if row[8] is None else int(row[8]),
-            avg_gpu_power_w=_round(row[9]),
+            max_swap_used_mb=None if row[9] is None else int(row[9]),
+            avg_gpu_power_w=_round(row[10]),
             load_ratio_vs_best_link=_ratio(row[5], baseline_load),
             io_full_ratio_vs_best_link=_ratio(row[7], baseline_io_full),
         )
@@ -277,6 +294,7 @@ def _signals(daily: list[DailyMachineTelemetry]) -> list[MachineSignalAnalysis]:
     series = {
         "p95_load_1m": [row.p95_load_1m for row in daily],
         "min_mem_avail_mb": [row.min_mem_avail_mb for row in daily],
+        "max_swap_used_mb": [row.max_swap_used_mb for row in daily],
         "avg_io_psi_full": [row.avg_io_psi_full for row in daily],
         "avg_gpu_power_w": [row.avg_gpu_power_w for row in daily],
     }
@@ -304,6 +322,7 @@ def _correlations(daily: list[DailyMachineTelemetry]) -> list[MachineCorrelation
         ("avg_gpu_pcie_gen", "p95_load_1m"),
         ("avg_io_psi_full", "p95_load_1m"),
         ("min_mem_avail_mb", "p95_load_1m"),
+        ("max_swap_used_mb", "p95_load_1m"),
         ("avg_gpu_power_w", "p95_load_1m"),
     ]
     result: list[MachineCorrelation] = []
@@ -336,15 +355,15 @@ def _caveats(
         return ["machine_metric_sample has no rows for this window"]
     if len(daily) < 7:
         caveats.append("daily statistical tests are underpowered with fewer than 7 covered days")
-    if any(regime.gpu_pcie_gen is None for regime in hardware_regimes):
-        caveats.append("some legacy rows do not carry PCIe state")
+    if coverage.pcie_state_sample_count < coverage.sample_count:
+        caveats.append("rows without PCIe state are excluded from hardware-regime comparisons")
     if "machine.stability_lab.power_watchdog" in coverage.sources:
         caveats.append("stability-lab rows are short controlled slices, not continuous telemetry")
-    if not any(regime.gpu_pcie_gen is not None for regime in hardware_regimes):
+    if not hardware_regimes:
         caveats.append("no PCIe state exists in this window")
     if statistics.mean(row.sample_count for row in daily) < 10:
         caveats.append("average daily sample count is low")
-    caveats.append("below process/cgroup attribution is not yet joined into this analysis")
+    caveats.append("process/cgroup attribution lives in machine_below_attribution.json and is not folded into telemetry baselines")
     return caveats
 
 

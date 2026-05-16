@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 13
+SUBSTRATE_VERSION = 14
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 
@@ -66,6 +66,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     or stale, drops all tables and re-applies the full DDL. Otherwise no-op.
     """
     from lynchpin.substrate.schema import DDL_STATEMENTS, DROP_STATEMENTS
+    from lynchpin.substrate.views import ensure_views
 
     conn.execute(
         """
@@ -89,3 +90,4 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],
         )
+    ensure_views(conn)

@@ -352,3 +352,73 @@ def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items(
 
     assert rows[0].sources == ("github_ref",)
     assert rows[0].github_refs == ("pr#3",)
+
+
+def test_work_day_correlations_do_not_infer_kind_from_ai_session() -> None:
+    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
+    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
+
+    graph = EvidenceGraph(
+        start=when.date(),
+        end=when.date(),
+        generated_at=when,
+        mode="local-fast",
+        nodes=(
+            EvidenceNode(
+                id="ai-session:1",
+                kind="ai_session",
+                source="polylogue",
+                date=when.date(),
+                project="sinity-lynchpin",
+                summary="session-level inferred implementation",
+                payload={
+                    "conversation_id": "conv-1",
+                    "work_event_kind": "implementation",
+                    "message_count": 12,
+                },
+            ),
+        ),
+        edges=(),
+        caveats=(),
+    )
+
+    rows = work_day_correlations(start=when.date(), end=when.date(), graph=graph)
+
+    assert rows[0].ai_session_count == 1
+    assert rows[0].ai_kind_breakdown == ()
+    assert rows[0].dominant_ai_kind is None
+
+
+def test_work_day_correlations_use_event_level_ai_kind() -> None:
+    when = datetime(2026, 5, 5, 12, tzinfo=UTC)
+    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
+
+    graph = EvidenceGraph(
+        start=when.date(),
+        end=when.date(),
+        generated_at=when,
+        mode="local-fast",
+        nodes=(
+            EvidenceNode(
+                id="ai-event:1",
+                kind="ai_work_event",
+                source="polylogue",
+                date=when.date(),
+                project="sinity-lynchpin",
+                summary="implemented substrate repair",
+                payload={
+                    "conversation_id": "conv-1",
+                    "kind": "implementation",
+                    "kind_tier": "high",
+                },
+            ),
+        ),
+        edges=(),
+        caveats=(),
+    )
+
+    rows = work_day_correlations(start=when.date(), end=when.date(), graph=graph)
+
+    assert rows[0].ai_kind_breakdown == (("implementation", 1),)
+    assert rows[0].ai_kind_weighted == (("implementation", 1.0),)
+    assert rows[0].dominant_ai_kind == "implementation"

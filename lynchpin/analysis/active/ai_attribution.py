@@ -23,7 +23,7 @@ from typing import Any, Iterable, Sequence
 
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import SessionProfile, iter_session_profiles
-from ...substrate.reader import read_commit_facts
+from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
 from ..core.io import resolve_analysis_path, save_json
 
@@ -49,7 +49,9 @@ def build_active_ai_attribution(
 
     sessions_by_project_day, session_windows = _index_sessions(
         session_profiles if session_profiles is not None else iter_session_profiles(),
-        start=start, end=end, selected=selected,
+        start=start,
+        end=end,
+        selected=selected,
     )
 
     rows: list[dict[str, Any]] = []
@@ -81,32 +83,38 @@ def build_active_ai_attribution(
             for prov in supporting_providers:
                 project_providers[project][prov] += 1
                 overall_providers[prov] += 1
-        rows.append({
-            "project": project,
-            "sha": sha,
-            "short_sha": commit.get("short_sha"),
-            "date": commit.get("date"),
-            "timestamp": commit.get("timestamp"),
-            "subject": subject[:160],
-            "ai_attribution": attribution,
-            "supporting_session_ids": [sid for sid, _ in supporting[:8]],
-            "supporting_providers": supporting_providers,
-            "supporting_session_count": len(supporting),
-        })
+        rows.append(
+            {
+                "project": project,
+                "sha": sha,
+                "short_sha": commit.get("short_sha"),
+                "date": commit.get("date"),
+                "timestamp": commit.get("timestamp"),
+                "subject": subject[:160],
+                "ai_attribution": attribution,
+                "supporting_session_ids": [sid for sid, _ in supporting[:8]],
+                "supporting_providers": supporting_providers,
+                "supporting_session_count": len(supporting),
+            }
+        )
 
     project_summary = []
     for project in sorted(project_counters):
         counts = project_counters[project]
         total = sum(counts.values()) or 1
-        project_summary.append({
-            "project": project,
-            "commit_count": sum(counts.values()),
-            "high": counts.get("high", 0),
-            "medium": counts.get("medium", 0),
-            "none": counts.get("none", 0),
-            "ai_assisted_ratio": round((counts.get("high", 0) + counts.get("medium", 0)) / total, 3),
-            "providers": dict(project_providers[project].most_common()),
-        })
+        project_summary.append(
+            {
+                "project": project,
+                "commit_count": sum(counts.values()),
+                "high": counts.get("high", 0),
+                "medium": counts.get("medium", 0),
+                "none": counts.get("none", 0),
+                "ai_assisted_ratio": round(
+                    (counts.get("high", 0) + counts.get("medium", 0)) / total, 3
+                ),
+                "providers": dict(project_providers[project].most_common()),
+            }
+        )
 
     caveats: list[str] = []
     if not session_windows:
@@ -151,7 +159,9 @@ def run_active_ai_attribution(
     projects: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     payload = build_active_ai_attribution(
-        start=start, end=end, projects=projects,
+        start=start,
+        end=end,
+        projects=projects,
     )
     save_json(resolve_analysis_path(out_file), payload, sort_keys=True)
     return payload

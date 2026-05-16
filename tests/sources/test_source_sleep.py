@@ -11,7 +11,6 @@ from lynchpin.sources.sleep import (
     sleep_architecture,
     sleep_stages,
     _parse_dt,
-    _parse_date,
     _safe_float,
 )
 
@@ -36,10 +35,6 @@ class TestHelpers:
         assert _parse_dt("2026-03-15T10:00:00+01:00") is not None
         assert _parse_dt(None) is None
         assert _parse_dt("") is None
-
-    def test_parse_date(self):
-        assert _parse_date("2026-03-15") == date(2026, 3, 15)
-        assert _parse_date(None) is None
 
     def test_safe_float(self):
         assert _safe_float(3.14) == 3.14
@@ -71,6 +66,22 @@ def test_entries_preserve_sleep_metrics(tmp_path, monkeypatch):
     assert result[0].metrics.sleep_efficiency == 91.0
     assert result[0].metrics.total_deep_duration == 100.0
     assert result[0].metrics.stage_count == 16
+
+
+def test_entries_ignore_legacy_metrics_shape(tmp_path, monkeypatch):
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    sleep_file.write_text(json.dumps({
+        "start": "2026-03-15T02:00:00+01:00",
+        "end": "2026-03-15T10:00:00+01:00",
+        "metrics": {
+            "sleep_score": 82,
+            "sleep_duration": 480,
+        },
+        "sh_datauuid": "legacy",
+    }) + "\n")
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+
+    assert list(entries()) == []
 
 
 def test_sleep_stages_loader(monkeypatch):

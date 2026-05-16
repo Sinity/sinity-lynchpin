@@ -56,11 +56,21 @@ def _stream_files(root: Optional[Path] = None) -> list[Path]:
     return files
 
 
-def _stream_files_signature(root: Optional[Path] = None) -> object:
-    return files_signature(_stream_files(root))
+def _stream_files_signature(*args: object, **kwargs: object) -> object:
+    root = kwargs.get("root")
+    if root is None and args:
+        root = args[0]
+    root_path: Optional[Path]
+    if root is None:
+        root_path = None
+    elif isinstance(root, Path):
+        root_path = root
+    else:
+        root_path = Path(str(root))
+    return files_signature(_stream_files(root_path))
 
 
-@persistent_cache("spotify_streams", depends_on=_stream_files_signature)
+@persistent_cache("spotify_streams", depends_on=_stream_files_signature)  # type: ignore[arg-type]
 def _load_streams(root: Optional[Path] = None) -> list[SpotifyStream]:
     rows: list[SpotifyStream] = []
     for path in _stream_files(root):

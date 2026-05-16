@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 from .evidence import CostClass, EvidenceCaveat, EvidenceProvenance
-EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'ai_work_event', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'listening_session', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
-EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project', 'file_overlap', 'tool_overlap', 'symbol_overlap']
+EvidenceNodeKind = Literal['commit', 'github_issue', 'github_pr', 'github_ref', 'ai_session', 'ai_work_event', 'raw_log', 'focus_day', 'focus_span', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day', 'terminal_session', 'terminal_pattern', 'machine_episode', 'machine_context_window', 'machine_below_attribution', 'machine_baseline', 'machine_experiment_claim', 'listening_session', 'web_domain_day', 'sleep_quality', 'health_metric', 'temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm', 'readiness_forecast', 'analysis_artifact', 'analysis_claim']
+EvidenceRelation = Literal['references', 'same_project_day', 'temporal_overlap', 'temporal_proximity', 'mentions_project', 'file_overlap', 'tool_overlap', 'symbol_overlap', 'overlaps_machine_pressure', 'below_supports_episode', 'baseline_deviation', 'experiment_claim_support']
 
 @dataclass(frozen=True)
 class EvidenceNode:

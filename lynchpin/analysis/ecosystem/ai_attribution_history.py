@@ -44,8 +44,13 @@ from os import PathLike
 from typing import Any, Iterable, Sequence
 
 from ...sources.polylogue import SessionProfile, iter_session_profiles
-from ..active.ai_attribution import _classify_commit, _index_sessions, _parse_date, _parse_dt
-from ...substrate.reader import read_commit_facts
+from ..active.ai_attribution import (
+    _classify_commit,
+    _index_sessions,
+    _parse_date,
+    _parse_dt,
+)
+from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
 from ..core.io import resolve_analysis_path, save_json
 
@@ -68,12 +73,15 @@ def build_active_ai_attribution_history(
 
     # Index sessions across ALL of polylogue history, not the last 31 days.
     profiles = (
-        list(session_profiles) if session_profiles is not None else list(iter_session_profiles())
+        list(session_profiles)
+        if session_profiles is not None
+        else list(iter_session_profiles())
     )
     if profiles:
         # Find the actual span of available session data.
         session_dates = [
-            p.canonical_session_date for p in profiles
+            p.canonical_session_date
+            for p in profiles
             if p.canonical_session_date is not None
         ]
         if session_dates:
@@ -87,7 +95,10 @@ def build_active_ai_attribution_history(
         session_end = date.today()
 
     sessions_by_project_day, session_windows = _index_sessions(
-        profiles, start=session_start, end=session_end, selected=selected,
+        profiles,
+        start=session_start,
+        end=session_end,
+        selected=selected,
     )
 
     # Per (month, project) rollup.
@@ -105,7 +116,9 @@ def build_active_ai_attribution_history(
         lambda: {"total_commits": 0, "high": 0, "medium": 0, "none": 0}
     )
 
-    profile_kind_by_id = {p.conversation_id: p.work_event_kind for p in profiles if p.work_event_kind}
+    profile_kind_by_id = {
+        p.conversation_id: p.work_event_kind for p in profiles if p.work_event_kind
+    }
 
     for commit in commit_payload.get("commits") or []:
         if not isinstance(commit, dict):
@@ -149,16 +162,18 @@ def build_active_ai_attribution_history(
         total = data["total_commits"]
         attributed = data["attributed_high"] + data["attributed_medium"]
         ratio = attributed / total if total else 0.0
-        monthly_rows.append({
-            "month": month,
-            "project": project,
-            "total_commits": total,
-            "attributed_high": data["attributed_high"],
-            "attributed_medium": data["attributed_medium"],
-            "attributed_none": data["attributed_none"],
-            "ai_ratio": round(ratio, 3),
-            "dominant_kinds": dict(data["kind_counts"].most_common(5)),
-        })
+        monthly_rows.append(
+            {
+                "month": month,
+                "project": project,
+                "total_commits": total,
+                "attributed_high": data["attributed_high"],
+                "attributed_medium": data["attributed_medium"],
+                "attributed_none": data["attributed_none"],
+                "ai_ratio": round(ratio, 3),
+                "dominant_kinds": dict(data["kind_counts"].most_common(5)),
+            }
+        )
 
     project_total_rows: list[dict[str, Any]] = []
     for project in sorted(project_totals):
@@ -166,14 +181,16 @@ def build_active_ai_attribution_history(
         total = data["total_commits"]
         attributed = data["high"] + data["medium"]
         ratio = attributed / total if total else 0.0
-        project_total_rows.append({
-            "project": project,
-            "total_commits": total,
-            "high": data["high"],
-            "medium": data["medium"],
-            "none": data["none"],
-            "ai_ratio": round(ratio, 3),
-        })
+        project_total_rows.append(
+            {
+                "project": project,
+                "total_commits": total,
+                "high": data["high"],
+                "medium": data["medium"],
+                "none": data["none"],
+                "ai_ratio": round(ratio, 3),
+            }
+        )
 
     if overall_dates:
         window_start = f"{min(overall_dates).year:04d}-{min(overall_dates).month:02d}"

@@ -104,8 +104,9 @@ def test_loader_failure_is_silent() -> None:
 
 
 def test_evidence_graph_includes_temporal_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Smoke test that _add_temporal_signals fires when wired into the graph."""
+    """Smoke test that add_temporal_signals fires when wired into the graph."""
     from lynchpin.graph import evidence_graph as eg
+    from lynchpin.graph import evidence_system_signals
 
     history_start = date(2026, 4, 1)
     window_start = date(2026, 4, 29)
@@ -122,6 +123,6 @@ def test_evidence_graph_includes_temporal_nodes(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(ts, "default_signal_specs", lambda: fake_specs)
 
     nodes: list[eg.EvidenceNode] = []
-    eg._add_temporal_signals(nodes, start=window_start, end=end)
+    evidence_system_signals.add_temporal_signals(nodes, start=window_start, end=end)
     kinds = {n.kind for n in nodes}
     assert "temporal_anomaly" in kinds

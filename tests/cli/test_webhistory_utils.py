@@ -10,11 +10,11 @@ from lynchpin.sources.web import (
     _normalize_domain,
     _parse_csv_dt,
     _tokenize_topic,
-    normalize_url,
     iter_gestalt_events,
-)
-from lynchpin.sources.web import (
+    normalize_url,
     parse_webhistory_timestamp,
+)
+from lynchpin.sources.web_timestamps import (
     _parse_webhistory_slash_timestamp,
 )
 
@@ -22,6 +22,7 @@ from lynchpin.sources.web import (
 # ---------------------------------------------------------------------------
 # _parse_csv_dt (Chrome CSV local-time parsing)
 # ---------------------------------------------------------------------------
+
 
 class TestParseCsvDt:
     def test_slash_format_parsed(self) -> None:
@@ -84,6 +85,7 @@ class TestParseCsvDt:
 # _parse_webhistory_slash_timestamp (from webhistory_common)
 # ---------------------------------------------------------------------------
 
+
 class TestSlashTimestamp:
     def test_local_to_utc_winter(self) -> None:
         result = _parse_webhistory_slash_timestamp("12/04/2025 21:35:53")
@@ -97,6 +99,7 @@ class TestSlashTimestamp:
 # ---------------------------------------------------------------------------
 # parse_webhistory_timestamp (JSON/numeric/ISO)
 # ---------------------------------------------------------------------------
+
 
 class TestParseWebhistoryTimestamp:
     def test_millisecond_timestamp_parsed(self) -> None:
@@ -146,6 +149,7 @@ class TestParseWebhistoryTimestamp:
 # _normalize_domain
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeDomain:
     def test_www_stripped(self) -> None:
         assert _normalize_domain("www.github.com") == "github.com"
@@ -174,6 +178,7 @@ class TestNormalizeDomain:
 # ---------------------------------------------------------------------------
 # normalize_url
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeUrl:
     def test_tracking_params_stripped(self) -> None:
@@ -206,6 +211,7 @@ class TestNormalizeUrl:
 # _tokenize_topic
 # ---------------------------------------------------------------------------
 
+
 class TestTokenizeTopic:
     def test_stopwords_filtered(self) -> None:
         result = _tokenize_topic("the quick brown fox")
@@ -228,6 +234,7 @@ class TestTokenizeTopic:
 # iter_gestalt_events
 # ---------------------------------------------------------------------------
 
+
 class TestIterGestaltEvents:
     def test_edge_style_csv_file_supported(self, tmp_path) -> None:
         path = tmp_path / "history.csv"
@@ -240,16 +247,21 @@ class TestIterGestaltEvents:
         assert len(visits) == 1
         assert visits[0].url == "https://www.qutebrowser.org/doc/changelog.html"
         assert visits[0].title == "Change Log | qutebrowser"
-        assert visits[0].timestamp == datetime(2023, 11, 23, 16, 52, 21, 618000, tzinfo=timezone.utc)
+        assert visits[0].timestamp == datetime(
+            2023, 11, 23, 16, 52, 21, 618000, tzinfo=timezone.utc
+        )
 
     def test_jsonl_visit_time_file_supported(self, tmp_path) -> None:
         path = tmp_path / "history.jsonl"
         path.write_text(
-            json.dumps({
-                "url": "https://example.com/path?utm_source=test",
-                "title": "Example",
-                "visit_time": "2026-03-17T10:00:00+00:00",
-            }) + "\n",
+            json.dumps(
+                {
+                    "url": "https://example.com/path?utm_source=test",
+                    "title": "Example",
+                    "visit_time": "2026-03-17T10:00:00+00:00",
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
         visits = list(iter_gestalt_events(tmp_path))
@@ -259,18 +271,25 @@ class TestIterGestaltEvents:
     def test_ndjson_json_file_supported(self, tmp_path) -> None:
         path = tmp_path / "history.json"
         path.write_text(
-            "\n".join([
-                json.dumps({
-                    "url": "https://example.com/a",
-                    "title": "A",
-                    "visit_time": "2026-03-17T10:00:00+00:00",
-                }),
-                json.dumps({
-                    "url": "https://example.com/b",
-                    "title": "B",
-                    "visitTime": 1773717025870.549,
-                }),
-            ]) + "\n",
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "url": "https://example.com/a",
+                            "title": "A",
+                            "visit_time": "2026-03-17T10:00:00+00:00",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "url": "https://example.com/b",
+                            "title": "B",
+                            "visitTime": 1773717025870.549,
+                        }
+                    ),
+                ]
+            )
+            + "\n",
             encoding="utf-8",
         )
         visits = list(iter_gestalt_events(tmp_path))
@@ -281,10 +300,20 @@ class TestIterGestaltEvents:
     def test_json_array_file_supported(self, tmp_path) -> None:
         path = tmp_path / "history.json"
         path.write_text(
-            json.dumps([
-                {"url": "https://example.com/1", "title": "One", "visitTime": 1742000000000},
-                {"url": "https://example.com/2", "title": "Two", "visitTime": 1742000001000},
-            ]),
+            json.dumps(
+                [
+                    {
+                        "url": "https://example.com/1",
+                        "title": "One",
+                        "visitTime": 1742000000000,
+                    },
+                    {
+                        "url": "https://example.com/2",
+                        "title": "Two",
+                        "visitTime": 1742000001000,
+                    },
+                ]
+            ),
             encoding="utf-8",
         )
         visits = list(iter_gestalt_events(tmp_path))

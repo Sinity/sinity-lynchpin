@@ -1,14 +1,8 @@
 """Google Takeout Chrome History JSON reader.
 
-Handles two formats Google has used:
-
-- **Old** (pre-2024): ``BrowserHistory.json`` — top-level ``"Browser History"``
-  array of objects with ``time_usec`` (UNIX epoch microseconds — despite the
-  name, Takeout converts Chrome's internal WebKit epoch to UNIX epoch).
-
-- **New** (2024+): ``History.json`` — top-level ``"Session"`` array of tab
-  objects; each tab has ``navigation`` entries with ``timestamp_msec``
-  (UNIX epoch milliseconds), ``virtual_url``, ``title``, ``page_transition``.
+Handles the current ``History.json`` format: top-level ``"Session"`` array of
+tab objects; each tab has ``navigation`` entries with ``timestamp_msec``
+(UNIX epoch milliseconds), ``virtual_url``, ``title``, ``page_transition``.
 """
 
 from __future__ import annotations
@@ -35,7 +29,8 @@ def iter_takeout_chrome_visits(
 ) -> Iterator[WebHistoryVisit]:
     """Yield WebHistoryVisit objects from a Google Takeout Chrome History JSON.
 
-    Auto-detects old vs new format by top-level keys.
+    Ignores unsupported legacy Takeout shapes; backfill old exports before
+    feeding them to Lynchpin.
     """
     label = source_label or f"takeout:{path.name}"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -43,29 +38,8 @@ def iter_takeout_chrome_visits(
     if not isinstance(data, dict):
         return
 
-    if "Browser History" in data:
-        yield from _parse_old_format(data["Browser History"], label)
-    elif "Session" in data:
+    if "Session" in data:
         yield from _parse_new_format(data["Session"], label)
-
-
-def _parse_old_format(
-    entries: list[dict[str, object]], label: str
-) -> Iterator[WebHistoryVisit]:
-    for entry in entries:
-        url = str(entry.get("url") or "").strip()
-        if not url or url.startswith("chrome://") or url.startswith("about:"):
-            continue
-        try:
-            dt = _unix_to_datetime(int(str(entry["time_usec"])))
-        except (KeyError, ValueError, OSError, OverflowError):
-            continue
-        yield WebHistoryVisit(
-            timestamp=dt,
-            url=url,
-            title=str(entry.get("title") or ""),
-            source=label,
-        )
 
 
 def _parse_new_format(

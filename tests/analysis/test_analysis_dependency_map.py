@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from lynchpin.analysis.maps.dependency_map import (
     _compute_degrees,
+    _run_cargo_metadata,
     _transitive_reachability,
 )
 
@@ -88,6 +89,17 @@ class TestComputeDegrees:
         result = _compute_degrees(["A", "B", "orphan"], [("A", "B")])
         assert "orphan" in result
         assert result["orphan"]["total_degree"] == 0
+
+
+def test_cargo_metadata_unavailable_is_structured(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: None if name == "cargo" else "/bin/tool")
+
+    payload = _run_cargo_metadata("/tmp/missing")
+
+    assert payload["workspace_members"] == []
+    assert payload["packages"] == []
+    assert payload["_lynchpin_status"] == "unavailable"
+    assert payload["_lynchpin_reason"] == "cargo not found on PATH"
 
 
 # ---------------------------------------------------------------------------

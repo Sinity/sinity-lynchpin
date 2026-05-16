@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..core.config import get_config
-from ..core.parse import parse_datetime as _parse_dt, parse_date_from_any as _parse_date, safe_float as _safe_float
+from ..core.parse import parse_datetime as _parse_dt, safe_float as _safe_float
 from ..core.primitives import logical_date
 
 __all__ = [
@@ -142,12 +142,7 @@ def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
 
 
 def entries() -> Iterator[SleepEntry]:
-    """Yield sleep entries from sleep_merged.jsonl.
-
-    Handles both formats:
-    - sleep_all_nights format: sleep_metrics, saa_metrics, canonical_id, source
-    - legacy sleep_merged format: metrics, sh_datauuid
-    """
+    """Yield sleep entries from canonical sleep_merged.jsonl records."""
     cfg = get_config()
     path = cfg.sleep_jsonl
     if not path.exists():
@@ -163,25 +158,22 @@ def entries() -> Iterator[SleepEntry]:
             except json.JSONDecodeError:
                 continue
 
-            # Handle both metric field names
-            metrics = rec.get("sleep_metrics") or rec.get("metrics") or {}
+            metrics = rec.get("sleep_metrics")
+            if not isinstance(metrics, dict):
+                continue
 
-            # Samsung Health format
-            start_dt = _parse_dt(rec.get("start_local") or rec.get("start"))
-            end_dt = _parse_dt(rec.get("end_local") or rec.get("end"))
+            start_dt = _parse_dt(rec.get("start_local"))
+            end_dt = _parse_dt(rec.get("end_local"))
 
-            # Duration: from metrics, record field, or computed
-            total_min = float(metrics.get("sleep_duration") or rec.get("total_minutes") or 0)
+            total_min = float(metrics.get("sleep_duration") or 0)
             if total_min == 0 and start_dt and end_dt:
                 total_min = max((end_dt - start_dt).total_seconds() / 60, 0)
 
-            # Score
-            score = _safe_float(metrics.get("sleep_score") or rec.get("avg_score"))
+            score = _safe_float(metrics.get("sleep_score"))
 
-            # Date: from start time or explicit date field
-            d = start_dt.date() if start_dt else _parse_date(rec.get("date"))
-            if d is None:
+            if start_dt is None:
                 continue
+            d = start_dt.date()
 
             # Build segments (Samsung format has one implicit segment per record)
             segments: list[SleepSegment] = []
@@ -213,7 +205,7 @@ def entries() -> Iterator[SleepEntry]:
             sleep_metrics = SleepMetrics(
                 sleep_score=score,
                 sleep_duration=_safe_float(metrics.get("sleep_duration")),
-                sleep_efficiency=_safe_float(metrics.get("sleep_efficiency") or metrics.get("efficiency")),
+                sleep_efficiency=_safe_float(metrics.get("sleep_efficiency")),
                 sleep_cycle=_safe_float(metrics.get("sleep_cycle")),
                 physical_recovery=_safe_float(metrics.get("physical_recovery")),
                 mental_recovery=_safe_float(metrics.get("mental_recovery")),

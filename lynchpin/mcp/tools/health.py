@@ -1,7 +1,7 @@
 """Health, audit, and anomaly MCP tools."""
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import best_refresh_id as _best_refresh_id, json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
 
 @app.tool()
 def substrate_gap_draft() -> dict[str, Any]:
@@ -70,7 +70,7 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
     from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_refresh_id(conn, 'evidence_node')
             if refresh_id is None:
                 return {'error': 'no promote runs'}
         dimensions = []
@@ -173,7 +173,7 @@ def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
     RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low', 'calendar': 'medium'}
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_refresh_id(conn, 'evidence_node')
             if refresh_id is None:
                 return []
         rows = conn.execute('\n            SELECT source,\n                   COUNT(*) AS node_count,\n                   ROUND(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END)\n                         * 100.0 / COUNT(*), 1) AS caveated_pct\n            FROM evidence_node\n            WHERE refresh_id = ?\n            GROUP BY source\n            ORDER BY node_count DESC\n        ', [refresh_id]).fetchall()
@@ -213,10 +213,10 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
     from lynchpin.substrate.connection import connect, substrate_path
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
             if refresh_id is None:
                 return []
-        rows = conn.execute('\n            SELECT project, date, commit_count, ai_work_event_count,\n                   focus_seconds, source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND source_count >= 3\n        ', [refresh_id]).fetchall()
+        rows = conn.execute('\n            SELECT project, date, commit_count, ai_work_event_count,\n                   focus_seconds, source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND source_count >= 1\n        ', [refresh_id]).fetchall()
     if not rows:
         return []
     from collections import defaultdict
@@ -242,14 +242,15 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
         c_vals = proj_commits.get(proj, [])
         a_vals = proj_ai.get(proj, [])
         f_vals = proj_focus.get(proj, [])
-        if commits > 0 and ai == 0 and c_vals and (_z(commits, c_vals) > threshold_sigma):
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'commits_without_ai', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f'{commits} commits with 0 AI sessions — manual/unassisted work'})
-        if ai > 0 and commits == 0 and a_vals and (_z(ai, a_vals) > threshold_sigma):
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'ai_without_commits', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f"{ai} AI work events with 0 commits — exploration that didn't ship"})
-        if (focus_sec or 0) > 0 and commits == 0 and f_vals:
-            fz = _z(focus_sec or 0, f_vals)
-            if fz > threshold_sigma:
-                anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'focus_without_git', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'detail': f'{round((focus_sec or 0) / 60, 1)} focus-minutes with 0 commits — reading/debugging'})
+        commit_z = _z(commits, c_vals)
+        ai_z = _z(ai, a_vals)
+        focus_z = _z(focus_sec or 0, f_vals)
+        if commits > 0 and ai == 0:
+            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'commits_without_ai_event', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(commit_z, 3), 'detail': f'{commits} commits with 0 project-attributed AI work events; interpret as an attribution gap until ai_work_event.project coverage is healthy'})
+        if ai > 0 and commits == 0 and (ai_z > threshold_sigma):
+            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'ai_without_commits', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(ai_z, 3), 'detail': f"{ai} AI work events with 0 commits — exploration that didn't ship"})
+        if (focus_sec or 0) > 0 and commits == 0:
+            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'focus_without_git', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(focus_z, 3), 'detail': f'{round((focus_sec or 0) / 60, 1)} focus-minutes with 0 commits — reading, debugging, planning, or delayed materialization'})
     anomalies.sort(key=lambda a: (a['project'], a['date']))
     return anomalies
 

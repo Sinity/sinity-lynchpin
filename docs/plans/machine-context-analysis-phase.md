@@ -22,12 +22,13 @@ Already present:
   treating `/var/log/below/store` as a data lake.
 - MCP exposes daily machine metric and service-state summaries.
 
-Main gap:
+Current state:
 
-The analysis layer does not yet join machine telemetry to the work/activity
-timeline. It can say "load/PSI/PCIe state looked like this", but not yet
-"this exact development window was CPU-bound, memory-pressured, IO-stalled,
-network-failed, GPU-link-limited, or dominated by a specific cgroup/process".
+The analysis layer can detect episodes, join them to work/activity windows,
+attach bounded below captures, build observational baselines, and produce
+manifest-backed experiment claim packs. The remaining work is consolidation:
+make sure these stable outputs appear in the current-state/context-pack surface
+and keep refining statistical quality as the dataset grows.
 
 ## Phase Shape
 
@@ -42,11 +43,11 @@ Episode kinds:
 - `memory_pressure`
 - `io_pressure`
 - `scheduler_latency`
+- `blocked_task_pressure`
 - `gpu_power_or_thermal`
 - `gpu_link_regime`
 - `network_degraded`
 - `service_instability`
-- `capture_gap`
 
 Each episode should carry:
 
@@ -94,6 +95,7 @@ Output:
 
 - Python API: `lynchpin.analysis.machine.context`
 - JSON artifact: `machine_context_windows.json`
+- CLI command: `python -m lynchpin.analysis machine-context`
 - MCP read tool: `machine_context_windows`
 
 Acceptance:
@@ -116,6 +118,9 @@ Rules:
 
 Output:
 
+- Python API: `lynchpin.analysis.machine.attribution`
+- JSON artifact: `machine_below_attribution.json`
+- CLI command: `python -m lynchpin.analysis machine-below-attribution`
 - process/cgroup top contributors on machine episodes
 - "unattributed" caveat when machine pressure exists without below coverage
 - capture window inventory and coverage report
@@ -145,6 +150,7 @@ Output:
 
 - Python API: `lynchpin.analysis.machine.experiments`
 - JSON artifact: `machine_experiment_claims.json`
+- CLI command: `python -m lynchpin.analysis machine-experiments`
 - MCP read tool: `machine_experiment_claims`
 
 Acceptance:
@@ -178,6 +184,7 @@ Output:
 
 - Python API: `lynchpin.analysis.machine.baselines`
 - JSON artifact: `machine_observational_baselines.json`
+- CLI command: `python -m lynchpin.analysis machine-baselines`
 - narrative-ready summaries for context packs
 
 Acceptance:

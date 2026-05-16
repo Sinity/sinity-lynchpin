@@ -14,25 +14,42 @@ API surface.
 from __future__ import annotations
 
 import functools
-import json
 import math
-import sqlite3
 from collections import defaultdict
 from bisect import bisect_left
-from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Sequence, TypeVar
+from dataclasses import replace
+from datetime import date, datetime, time, timedelta
+from typing import Iterator, Sequence, TypeVar
 
 from ..core.classify import classify
 from ..core.title_features import extract_title_features
-from ..core.config import get_config
 from ..core.primitives import (
-    TopN, group_by_gap,
-    merge_intervals, intersect_intervals, split_by_day, split_by_hour, duration_s,
+    TopN,
+    group_by_gap,
+    merge_intervals,
+    intersect_intervals,
+    split_by_day,
+    split_by_hour,
+    duration_s,
     Interval,
 )
 from ..core.parse import as_local
+from .activitywatch_models import (
+    AWDayActivity,
+    AWEvent,
+    AppSession,
+    AttentionMetrics,
+    CircadianProfile,
+    DeepWorkBlock,
+    FocusLoop,
+    FocusSpan,
+    FocusTimelineSpan,
+    FragmentationMetrics,
+    ProjectFocusDay,
+    SustainedFocus,
+    _WindowSpan,
+)
+from .activitywatch_raw import afk_events, events, web_events, window_events
 
 __all__ = [
     "AWEvent",
@@ -70,49 +87,6 @@ __all__ = [
 # ══════════════════════════════════════════════════════════════════════════════
 # Layer 0: Raw SQLite access
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass
-class AWEvent:
-    bucket: str
-    start: datetime
-    end: datetime
-    data: Dict[str, object]
-
-
-def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    path = Path(db_path).expanduser() if db_path else get_config().activitywatch_db
-    return sqlite3.connect(str(path))
-
-
-def events(
-    bucket_prefix: str, *, start: datetime, end: datetime, db_path: Optional[Path] = None
-) -> Iterator[AWEvent]:
-    since_ns = int(start.timestamp() * 1_000_000_000)
-    until_ns = int(end.timestamp() * 1_000_000_000)
-    query = (
-        "SELECT b.name, e.starttime, e.endtime, e.data "
-        "FROM events e JOIN buckets b ON b.id = e.bucketrow "
-        "WHERE b.name LIKE ? AND e.starttime < ? AND e.endtime > ? ORDER BY e.starttime"
-    )
-    with _connect(db_path) as conn:
-        for bucket, start_ns, end_ns, payload in conn.execute(query, (f"{bucket_prefix}%", until_ns, since_ns)):
-            if start_ns is None or end_ns is None:
-                continue
-            s = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-            e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
-            data: Dict[str, object] = {}
-            if payload:
-                try:
-                    data = json.loads(payload if isinstance(payload, str) else payload.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                    pass
-            yield AWEvent(bucket=bucket, start=s, end=e, data=data)
-
-
-def window_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-window_", **kw)
-def afk_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-afk_", **kw)
-def web_events(**kw: Any) -> Iterator[AWEvent]: return events("aw-watcher-web_", **kw)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,70 +128,12 @@ def active_seconds_by_date(start: date, end: date) -> dict[date, float]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@dataclass(frozen=True)
-class FocusSpan:
-    start: datetime
-    end: datetime
-    kind: str  # "focused" | "afk" | "active_unknown"
-    app: str | None
-    title: str | None
-    mode: str | None
-    project: str | None
-    keypress_count: int = 0
-    keylog_state: str = "not_requested"
-
-    @property
-    def duration_s(self) -> float:
-        return max((self.end - self.start).total_seconds(), 0)
-
-    @property
-    def date(self) -> date:
-        return self.start.date()
-
-
-@dataclass(frozen=True)
-class ProjectFocusDay:
-    date: date
-    project: str
-    duration_s: float
-
-
-@dataclass(frozen=True)
-class FocusTimelineSpan:
-    start: datetime
-    end: datetime
-    kind: str  # "focused" | "afk" | "active_unknown" | "coverage_gap"
-    app: str | None
-    title: str | None
-    mode: str | None
-    project: str | None
-    source: str
-    keypress_count: int = 0
-    keylog_state: str = "not_requested"
-
-    @property
-    def duration_s(self) -> float:
-        return max((self.end - self.start).total_seconds(), 0)
-
-    @property
-    def date(self) -> date:
-        return self.start.date()
-
-
 _FocusCountSpan = TypeVar("_FocusCountSpan", FocusSpan, FocusTimelineSpan)
 
 
-@dataclass(frozen=True)
-class _WindowSpan:
-    start: datetime
-    end: datetime
-    app: str
-    title: str
-    mode: str | None
-    project: str | None
-
-
-def focus_spans(*, start: datetime, end: datetime, min_duration_s: float = 0.0) -> list[FocusSpan]:
+def focus_spans(
+    *, start: datetime, end: datetime, min_duration_s: float = 0.0
+) -> list[FocusSpan]:
     """AFK-trimmed classified focus timeline."""
     return list(_focus_spans_cached(as_local(start), as_local(end), min_duration_s))
 
@@ -226,7 +142,9 @@ def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDa
     """Aggregate focused ActivityWatch window time by logical day and project."""
     active = active_intervals(start, end)
     totals: dict[tuple[date, str], float] = defaultdict(float)
-    for window in _window_spans(as_local(start), as_local(end), active=active, min_duration_s=0.0):
+    for window in _window_spans(
+        as_local(start), as_local(end), active=active, min_duration_s=0.0
+    ):
         if not window.project:
             continue
         for day, segment in split_by_day(window.start, window.end):
@@ -239,7 +157,9 @@ def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDa
 
 
 @functools.lru_cache(maxsize=16)
-def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple[FocusSpan, ...]:
+def _focus_spans_cached(
+    start: datetime, end: datetime, min_dur: float
+) -> tuple[FocusSpan, ...]:
     active = active_intervals(start, end)
     afk = afk_intervals(start, end)
     windows = _window_spans(start, end, active=active, min_duration_s=0.0)
@@ -256,7 +176,9 @@ def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple
         boundaries.add(max(w.start, start))
         boundaries.add(min(w.end, end))
     # Day boundaries
-    cursor = datetime.combine(start.date(), time.min, tzinfo=start.tzinfo) + timedelta(days=1)
+    cursor = datetime.combine(start.date(), time.min, tzinfo=start.tzinfo) + timedelta(
+        days=1
+    )
     while cursor < end:
         boundaries.add(cursor)
         cursor += timedelta(days=1)
@@ -278,19 +200,61 @@ def _focus_spans_cached(start: datetime, end: datetime, min_dur: float) -> tuple
 
         # Priority: AFK → window → active_unknown
         if afk_idx < len(afk) and afk[afk_idx][0] <= left and afk[afk_idx][1] >= right:
-            spans.append(FocusSpan(start=left, end=right, kind="afk", app=None, title=None, mode=None, project=None))
-        elif w_idx < len(windows) and windows[w_idx].start <= left and windows[w_idx].end >= right:
+            spans.append(
+                FocusSpan(
+                    start=left,
+                    end=right,
+                    kind="afk",
+                    app=None,
+                    title=None,
+                    mode=None,
+                    project=None,
+                )
+            )
+        elif (
+            w_idx < len(windows)
+            and windows[w_idx].start <= left
+            and windows[w_idx].end >= right
+        ):
             w = windows[w_idx]
-            spans.append(FocusSpan(start=left, end=right, kind="focused", app=w.app, title=w.title, mode=w.mode, project=w.project))
-        elif a_idx < len(active) and active[a_idx][0] <= left and active[a_idx][1] >= right:
-            spans.append(FocusSpan(start=left, end=right, kind="active_unknown", app=None, title=None, mode=None, project=None))
+            spans.append(
+                FocusSpan(
+                    start=left,
+                    end=right,
+                    kind="focused",
+                    app=w.app,
+                    title=w.title,
+                    mode=w.mode,
+                    project=w.project,
+                )
+            )
+        elif (
+            a_idx < len(active)
+            and active[a_idx][0] <= left
+            and active[a_idx][1] >= right
+        ):
+            spans.append(
+                FocusSpan(
+                    start=left,
+                    end=right,
+                    kind="active_unknown",
+                    app=None,
+                    title=None,
+                    mode=None,
+                    project=None,
+                )
+            )
 
     merged = [s for s in _merge_adjacent(spans) if s.duration_s >= min_dur]
     return tuple(_attach_keypress_counts(merged, start=start, end=end))
 
 
 def focus_timeline(
-    *, start: datetime, end: datetime, heal_afk: bool = True, min_duration_s: float = 0.0,
+    *,
+    start: datetime,
+    end: datetime,
+    heal_afk: bool = True,
+    min_duration_s: float = 0.0,
 ) -> list[FocusTimelineSpan]:
     """Prompt-facing focus timeline with explicit AFK coverage gaps."""
     start_local = as_local(start)
@@ -316,7 +280,8 @@ def focus_timeline(
         gap_windows = _intersect_window_spans(raw_windows, gap_start, gap_end)
         gap_keypresses = (
             _count_presses_in_intervals(press_times, [(gap_start, gap_end)])[0]
-            if press_times else 0
+            if press_times
+            else 0
         )
         if heal_afk and gap_keypresses > 0:
             if gap_windows:
@@ -334,16 +299,18 @@ def focus_timeline(
                     for window in gap_windows
                 )
             else:
-                gap_spans.append(FocusTimelineSpan(
-                    start=gap_start,
-                    end=gap_end,
-                    kind="active_unknown",
-                    app=None,
-                    title=None,
-                    mode=None,
-                    project=None,
-                    source="afk_gap_healed",
-                ))
+                gap_spans.append(
+                    FocusTimelineSpan(
+                        start=gap_start,
+                        end=gap_end,
+                        kind="active_unknown",
+                        app=None,
+                        title=None,
+                        mode=None,
+                        project=None,
+                        source="afk_gap_healed",
+                    )
+                )
             continue
 
         if gap_windows:
@@ -361,18 +328,23 @@ def focus_timeline(
                 for window in gap_windows
             )
         else:
-            gap_spans.append(FocusTimelineSpan(
-                start=gap_start,
-                end=gap_end,
-                kind="coverage_gap",
-                app=None,
-                title=None,
-                mode=None,
-                project=None,
-                source="aw_afk_missing",
-            ))
+            gap_spans.append(
+                FocusTimelineSpan(
+                    start=gap_start,
+                    end=gap_end,
+                    kind="coverage_gap",
+                    app=None,
+                    title=None,
+                    mode=None,
+                    project=None,
+                    source="aw_afk_missing",
+                )
+            )
 
-    ordered = sorted([*base, *gap_spans], key=lambda span: (span.start, span.end, span.kind, span.source))
+    ordered = sorted(
+        [*base, *gap_spans],
+        key=lambda span: (span.start, span.end, span.kind, span.source),
+    )
     merged = [
         span
         for span in _merge_timeline_adjacent(ordered)
@@ -388,7 +360,11 @@ def focus_timeline(
 
 
 def _window_spans(
-    start: datetime, end: datetime, *, active: list[Interval] | None, min_duration_s: float,
+    start: datetime,
+    end: datetime,
+    *,
+    active: list[Interval] | None,
+    min_duration_s: float,
 ) -> list[_WindowSpan]:
     """Window events, optionally intersected with AFK-active intervals.
 
@@ -415,7 +391,9 @@ def _window_spans(
     iv_idx = 0
     start_local = as_local(start)
     end_local = as_local(end)
-    classification_cache: dict[tuple[str, str, str, str], tuple[str | None, str | None]] = {}
+    classification_cache: dict[
+        tuple[str, str, str, str], tuple[str | None, str | None]
+    ] = {}
     for evt_start, evt_end, evt in timed:
         if not evt.data.get("app"):
             continue
@@ -428,7 +406,9 @@ def _window_spans(
         cache_key = (app, title, cwd, url)
         cached = classification_cache.get(cache_key)
         if cached is None:
-            attr = classify(app=app, title=title, cwd=cwd, url=url, source="activitywatch.window")
+            attr = classify(
+                app=app, title=title, cwd=cwd, url=url, source="activitywatch.window"
+            )
             # Enrich with title feature extraction — better project + AI detection
             feat = extract_title_features(app, title)
             project = attr.project or feat.project
@@ -447,16 +427,24 @@ def _window_spans(
             overlaps, iv_idx = intersect_intervals(evt_start, evt_end, active, iv_idx)
         for ov_start, ov_end in overlaps:
             for day, (seg_s, seg_e) in split_by_day(ov_start, ov_end):
-                raw_spans.append(_WindowSpan(
-                    start=seg_s, end=seg_e, app=app, title=title,
-                    mode=mode, project=project,
-                ))
+                raw_spans.append(
+                    _WindowSpan(
+                        start=seg_s,
+                        end=seg_e,
+                        app=app,
+                        title=title,
+                        mode=mode,
+                        project=project,
+                    )
+                )
     # Linearize merges consecutive same-app spans; filter short ones after merge
     merged = _linearize_windows(raw_spans)
     return [w for w in merged if (w.end - w.start).total_seconds() >= min_duration_s]
 
 
-def _attributed_windows(start: datetime, end: datetime, active: list[Interval]) -> list[_WindowSpan]:
+def _attributed_windows(
+    start: datetime, end: datetime, active: list[Interval]
+) -> list[_WindowSpan]:
     return _window_spans(start, end, active=active, min_duration_s=10.0)
 
 
@@ -483,7 +471,9 @@ def _coverage_gaps(start: datetime, end: datetime) -> list[Interval]:
     return [(left, right) for left, right in gaps if right > left]
 
 
-def _intersect_window_spans(spans: Sequence[_WindowSpan], start: datetime, end: datetime) -> list[_WindowSpan]:
+def _intersect_window_spans(
+    spans: Sequence[_WindowSpan], start: datetime, end: datetime
+) -> list[_WindowSpan]:
     result: list[_WindowSpan] = []
     for span in spans:
         if span.end <= start:
@@ -497,7 +487,9 @@ def _intersect_window_spans(spans: Sequence[_WindowSpan], start: datetime, end: 
     return _linearize_windows(result)
 
 
-def _keypress_timestamps(start: datetime, end: datetime) -> tuple[tuple[datetime, ...], str]:
+def _keypress_timestamps(
+    start: datetime, end: datetime
+) -> tuple[tuple[datetime, ...], str]:
     try:
         from .keylog import has_coverage, keypresses
     except Exception:
@@ -512,7 +504,8 @@ def _keypress_timestamps(start: datetime, end: datetime) -> tuple[tuple[datetime
 
 
 def _count_presses_in_intervals(
-    press_times: Sequence[datetime], intervals: Sequence[Interval],
+    press_times: Sequence[datetime],
+    intervals: Sequence[Interval],
 ) -> list[int]:
     if not intervals:
         return []
@@ -539,8 +532,11 @@ def _attach_keypress_counts(
     if press_times is None or keylog_state is None:
         press_times, keylog_state = _keypress_timestamps(start, end)
     counts = (
-        _count_presses_in_intervals(press_times, [(span.start, span.end) for span in spans])
-        if press_times else [0] * len(spans)
+        _count_presses_in_intervals(
+            press_times, [(span.start, span.end) for span in spans]
+        )
+        if press_times
+        else [0] * len(spans)
     )
     return [
         replace(span, keypress_count=count, keylog_state=keylog_state)
@@ -570,7 +566,11 @@ def _linearize_windows(spans: Sequence[_WindowSpan]) -> list[_WindowSpan]:
 
 
 def _win_score(s: _WindowSpan) -> tuple[int, int, float]:
-    return (1 if s.project else 0, 1 if s.mode else 0, (s.end - s.start).total_seconds())
+    return (
+        1 if s.project else 0,
+        1 if s.mode else 0,
+        (s.end - s.start).total_seconds(),
+    )
 
 
 def _append_or_merge_win(target: list[_WindowSpan], span: _WindowSpan) -> None:
@@ -578,9 +578,14 @@ def _append_or_merge_win(target: list[_WindowSpan], span: _WindowSpan) -> None:
         return
     if target:
         prev = target[-1]
-        if (prev.app == span.app and prev.title == span.title and prev.mode == span.mode
-                and prev.project == span.project and prev.start.date() == span.start.date()
-                and prev.end >= span.start):
+        if (
+            prev.app == span.app
+            and prev.title == span.title
+            and prev.mode == span.mode
+            and prev.project == span.project
+            and prev.start.date() == span.start.date()
+            and prev.end >= span.start
+        ):
             target[-1] = replace(prev, end=max(prev.end, span.end))
             return
     target.append(span)
@@ -591,12 +596,23 @@ def _merge_adjacent(spans: Sequence[FocusSpan]) -> Iterator[FocusSpan]:
         return
     current = spans[0]
     for s in spans[1:]:
-        if (current.kind == s.kind and current.app == s.app and current.title == s.title
-                and current.mode == s.mode and current.project == s.project
-                and current.date == s.date and current.end >= s.start):
+        if (
+            current.kind == s.kind
+            and current.app == s.app
+            and current.title == s.title
+            and current.mode == s.mode
+            and current.project == s.project
+            and current.date == s.date
+            and current.end >= s.start
+        ):
             current = FocusSpan(
-                start=current.start, end=max(current.end, s.end), kind=current.kind,
-                app=current.app, title=current.title, mode=current.mode, project=current.project,
+                start=current.start,
+                end=max(current.end, s.end),
+                kind=current.kind,
+                app=current.app,
+                title=current.title,
+                mode=current.mode,
+                project=current.project,
                 keypress_count=current.keypress_count + s.keypress_count,
                 keylog_state=current.keylog_state,
             )
@@ -606,7 +622,9 @@ def _merge_adjacent(spans: Sequence[FocusSpan]) -> Iterator[FocusSpan]:
     yield current
 
 
-def _merge_timeline_adjacent(spans: Sequence[FocusTimelineSpan]) -> Iterator[FocusTimelineSpan]:
+def _merge_timeline_adjacent(
+    spans: Sequence[FocusTimelineSpan],
+) -> Iterator[FocusTimelineSpan]:
     if not spans:
         return
     current = spans[0]
@@ -646,28 +664,21 @@ def _merge_timeline_adjacent(spans: Sequence[FocusTimelineSpan]) -> Iterator[Foc
 # ── App sessions ──────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class AppSession:
-    app: str
-    start: datetime
-    end: datetime
-    duration_s: float
-    title_dominant: str
-    titles: tuple[str, ...]
-    mode: str | None
-    project: str | None
-    interruptions: int
-
-
-def app_sessions(*, start: datetime, end: datetime, min_duration_s: float = 60) -> list[AppSession]:
+def app_sessions(
+    *, start: datetime, end: datetime, min_duration_s: float = 60
+) -> list[AppSession]:
     spans = [
-        s for s in focus_spans(start=start, end=end, min_duration_s=10.0)
+        s
+        for s in focus_spans(start=start, end=end, min_duration_s=10.0)
         if s.kind == "focused" and s.app and s.title
     ]
     sessions: list[AppSession] = []
     for g in group_by_gap(
-        spans, start_of=lambda s: s.start, end_of=lambda s: s.end,
-        max_gap=120, absorb_interruption=30,
+        spans,
+        start_of=lambda s: s.start,
+        end_of=lambda s: s.end,
+        max_gap=120,
+        absorb_interruption=30,
         compatible=lambda a, b: a.app == b.app and a.date == b.date,
     ):
         wall = duration_s((g.start, g.end))
@@ -683,13 +694,24 @@ def app_sessions(*, start: datetime, end: datetime, min_duration_s: float = 60) 
                 projects.add(s.project, d)
             title = s.title or ""
             title_dur[title] = title_dur.get(title, 0) + d
-        top_title = max(title_dur, key=lambda title: title_dur[title]) if title_dur else ""
-        sessions.append(AppSession(
-            app=g.items[0].app or "", start=g.start, end=g.end, duration_s=round(wall, 3),
-            title_dominant=top_title,
-            titles=tuple(sorted(title_dur, key=lambda title: title_dur[title], reverse=True)),
-            mode=modes.dominant, project=projects.dominant, interruptions=g.interruptions,
-        ))
+        top_title = (
+            max(title_dur, key=lambda title: title_dur[title]) if title_dur else ""
+        )
+        sessions.append(
+            AppSession(
+                app=g.items[0].app or "",
+                start=g.start,
+                end=g.end,
+                duration_s=round(wall, 3),
+                title_dominant=top_title,
+                titles=tuple(
+                    sorted(title_dur, key=lambda title: title_dur[title], reverse=True)
+                ),
+                mode=modes.dominant,
+                project=projects.dominant,
+                interruptions=g.interruptions,
+            )
+        )
     return sessions
 
 
@@ -698,23 +720,25 @@ def app_sessions(*, start: datetime, end: datetime, min_duration_s: float = 60) 
 _PRODUCTIVE_MODES = {"coding", "research", "writing", "planning", "chat"}
 
 
-@dataclass(frozen=True)
-class DeepWorkBlock:
-    start: datetime
-    end: datetime
-    duration_min: float
-    project: str | None
-    mode: str
-    focus_ratio: float
-    app_switches: int
-
-
-def deep_work(*, start: datetime, end: datetime, min_minutes: float = 30, max_interruption_ratio: float = 0.15) -> list[DeepWorkBlock]:
-    productive = [s for s in app_sessions(start=start, end=end) if s.project or (s.mode or "") in _PRODUCTIVE_MODES]
+def deep_work(
+    *,
+    start: datetime,
+    end: datetime,
+    min_minutes: float = 30,
+    max_interruption_ratio: float = 0.15,
+) -> list[DeepWorkBlock]:
+    productive = [
+        s
+        for s in app_sessions(start=start, end=end)
+        if s.project or (s.mode or "") in _PRODUCTIVE_MODES
+    ]
     blocks: list[DeepWorkBlock] = []
     for g in group_by_gap(
-        productive, start_of=lambda s: s.start, end_of=lambda s: s.end,
-        max_gap=600, absorb_interruption=300,
+        productive,
+        start_of=lambda s: s.start,
+        end_of=lambda s: s.end,
+        max_gap=600,
+        absorb_interruption=300,
         compatible=_deep_compatible,
     ):
         wall = duration_s((g.start, g.end))
@@ -728,11 +752,17 @@ def deep_work(*, start: datetime, end: datetime, min_minutes: float = 30, max_in
                 if s.project:
                     projects.add(s.project, s.duration_s)
             switches = sum(1 for a, b in zip(g.items, g.items[1:]) if a.app != b.app)
-            blocks.append(DeepWorkBlock(
-                start=g.start, end=g.end, duration_min=round(wall / 60, 1),
-                project=projects.dominant, mode=modes.dominant or "unknown",
-                focus_ratio=round(ratio, 3), app_switches=switches,
-            ))
+            blocks.append(
+                DeepWorkBlock(
+                    start=g.start,
+                    end=g.end,
+                    duration_min=round(wall / 60, 1),
+                    project=projects.dominant,
+                    mode=modes.dominant or "unknown",
+                    focus_ratio=round(ratio, 3),
+                    app_switches=switches,
+                )
+            )
     return blocks
 
 
@@ -747,16 +777,6 @@ def _deep_compatible(a: AppSession, b: AppSession) -> bool:
 # ── Circadian profiles ────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class CircadianProfile:
-    date: date
-    hour: int
-    active_min: float
-    recovery_min: float
-    dominant_mode: str | None
-    dominant_project: str | None
-
-
 def circadian(*, start: date, end: date) -> list[CircadianProfile]:
     s = datetime.combine(start, time.min)
     e = datetime.combine(end + timedelta(days=1), time.min)
@@ -764,7 +784,9 @@ def circadian(*, start: date, end: date) -> list[CircadianProfile]:
     for span in focus_spans(start=s, end=e, min_duration_s=30):
         for hour, seg in split_by_hour(span.start, span.end):
             key = (span.date, hour)
-            modes, projects, active, recovery = buckets.get(key, (TopN(1), TopN(1), 0.0, 0.0))
+            modes, projects, active, recovery = buckets.get(
+                key, (TopN(1), TopN(1), 0.0, 0.0)
+            )
             mins = duration_s(seg) / 60
             if span.kind == "afk":
                 recovery += mins
@@ -778,28 +800,28 @@ def circadian(*, start: date, end: date) -> list[CircadianProfile]:
     result: list[CircadianProfile] = []
     for (d, h), (modes, projects, active, recovery) in sorted(buckets.items()):
         if active > 0 or recovery > 0:
-            result.append(CircadianProfile(d, h, round(active, 1), round(recovery, 1), modes.dominant, projects.dominant))
+            result.append(
+                CircadianProfile(
+                    d,
+                    h,
+                    round(active, 1),
+                    round(recovery, 1),
+                    modes.dominant,
+                    projects.dominant,
+                )
+            )
     return result
 
 
 # ── Focus loops (A↔B alternation) ────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class FocusLoop:
-    date: date
-    start: datetime
-    end: datetime
-    duration_min: float
-    span_count: int
-    switch_count: int
-    context_a: str
-    context_b: str
-    dominant_project: str | None
-
-
-def loops(*, start: datetime, end: datetime, min_spans: int = 4, max_gap: float = 180) -> list[FocusLoop]:
-    spans = [s for s in focus_spans(start=start, end=end) if s.kind == "focused" and s.app]
+def loops(
+    *, start: datetime, end: datetime, min_spans: int = 4, max_gap: float = 180
+) -> list[FocusLoop]:
+    spans = [
+        s for s in focus_spans(start=start, end=end) if s.kind == "focused" and s.app
+    ]
     by_day: dict[date, list[FocusSpan]] = {}
     for s in spans:
         by_day.setdefault(s.date, []).append(s)
@@ -837,14 +859,19 @@ def loops(*, start: datetime, end: datetime, min_spans: int = 4, max_gap: float 
                     for s in collected:
                         if s.project:
                             projects.add(s.project, s.duration_s)
-                    result.append(FocusLoop(
-                        date=day, start=collected[0].start, end=collected[-1].end,
-                        duration_min=round(dur, 1), span_count=len(collected),
-                        switch_count=len(collected) - 1,
-                        context_a=f"{first.app}::{first.title}",
-                        context_b=f"{second.app}::{second.title}",
-                        dominant_project=projects.dominant,
-                    ))
+                    result.append(
+                        FocusLoop(
+                            date=day,
+                            start=collected[0].start,
+                            end=collected[-1].end,
+                            duration_min=round(dur, 1),
+                            span_count=len(collected),
+                            switch_count=len(collected) - 1,
+                            context_a=f"{first.app}::{first.title}",
+                            context_b=f"{second.app}::{second.title}",
+                            dominant_project=projects.dominant,
+                        )
+                    )
                     i = j
                     continue
             i += 1
@@ -856,15 +883,6 @@ def _ctx(s: FocusSpan) -> tuple[str | None, str | None]:
 
 
 # ── Fragmentation ─────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class FragmentationMetrics:
-    date: date
-    total_switches: int
-    avg_focus_min: float
-    longest_focus_min: float
-    fragmentation: float  # 0=focused, 1=scattered
 
 
 def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
@@ -884,12 +902,17 @@ def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
             continue
         longest = max(stretches)
         total = sum(stretches)
-        result.append(FragmentationMetrics(
-            date=day, total_switches=len(ds) - 1,
-            avg_focus_min=round(total / len(stretches), 1),
-            longest_focus_min=round(longest, 1),
-            fragmentation=round(max(0, min(1, 1 - longest / total)), 3) if total > 0 else 0,
-        ))
+        result.append(
+            FragmentationMetrics(
+                date=day,
+                total_switches=len(ds) - 1,
+                avg_focus_min=round(total / len(stretches), 1),
+                longest_focus_min=round(longest, 1),
+                fragmentation=round(max(0, min(1, 1 - longest / total)), 3)
+                if total > 0
+                else 0,
+            )
+        )
     return result
 
 
@@ -925,15 +948,6 @@ def _session_ctx(s: AppSession) -> str:
 # ── Project attention ─────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class AttentionMetrics:
-    date: date
-    entropy: float
-    gini: float
-    top_project: str | None
-    project_count: int
-
-
 def attention(*, start: date, end: date) -> list[AttentionMetrics]:
     s = datetime.combine(start, time.min)
     e = datetime.combine(end + timedelta(days=1), time.min)
@@ -954,31 +968,33 @@ def attention(*, start: date, end: date) -> list[AttentionMetrics]:
         entropy = -sum(p * math.log2(p) for p in probs if p > 0)
         sorted_vals = sorted(projects.values())
         n = len(sorted_vals)
-        gini = (2 * sum((i + 1) * v for i, v in enumerate(sorted_vals)) / (n * total) - (n + 1) / n) if n > 0 and total > 0 else 0
+        gini = (
+            (
+                2 * sum((i + 1) * v for i, v in enumerate(sorted_vals)) / (n * total)
+                - (n + 1) / n
+            )
+            if n > 0 and total > 0
+            else 0
+        )
         top = max(projects, key=lambda project: projects[project])
-        result.append(AttentionMetrics(date=day, entropy=round(entropy, 3), gini=round(gini, 3), top_project=top, project_count=n))
+        result.append(
+            AttentionMetrics(
+                date=day,
+                entropy=round(entropy, 3),
+                gini=round(gini, 3),
+                top_project=top,
+                project_count=n,
+            )
+        )
     return result
 
 
 # ── Sustained focus (mode-agnostic) ──────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class SustainedFocus:
-    """A sustained period of computer activity without significant AFK breaks.
-
-    Unlike deep_work, this doesn't filter by mode — it measures ANY sustained
-    active period. The mode/project are informational, not filtering criteria.
-    """
-    start: datetime
-    end: datetime
-    duration_min: float
-    dominant_mode: str | None
-    dominant_project: str | None
-    app_switches: int
-
-
-def sustained_focus(*, start: datetime, end: datetime, min_minutes: float = 25) -> list[SustainedFocus]:
+def sustained_focus(
+    *, start: datetime, end: datetime, min_minutes: float = 25
+) -> list[SustainedFocus]:
     """Find sustained active periods — any app, any mode, just continuous activity.
 
     Groups active intervals with max 10-minute gaps. Returns blocks >= min_minutes.
@@ -987,7 +1003,9 @@ def sustained_focus(*, start: datetime, end: datetime, min_minutes: float = 25) 
     sessions = app_sessions(start=start, end=end)
     blocks: list[SustainedFocus] = []
     for g in group_by_gap(
-        sessions, start_of=lambda s: s.start, end_of=lambda s: s.end,
+        sessions,
+        start_of=lambda s: s.start,
+        end_of=lambda s: s.end,
         max_gap=600,  # 10 min gap max
     ):
         wall = duration_s((g.start, g.end))
@@ -1000,27 +1018,20 @@ def sustained_focus(*, start: datetime, end: datetime, min_minutes: float = 25) 
             if s.project:
                 projects.add(s.project, s.duration_s)
         switches = sum(1 for a, b in zip(g.items, g.items[1:]) if a.app != b.app)
-        blocks.append(SustainedFocus(
-            start=g.start, end=g.end, duration_min=round(wall / 60, 1),
-            dominant_mode=modes.dominant, dominant_project=projects.dominant,
-            app_switches=switches,
-        ))
+        blocks.append(
+            SustainedFocus(
+                start=g.start,
+                end=g.end,
+                duration_min=round(wall / 60, 1),
+                dominant_mode=modes.dominant,
+                dominant_project=projects.dominant,
+                app_switches=switches,
+            )
+        )
     return blocks
 
 
 # ── Daily activity (composite) ──────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class AWDayActivity:
-    date: date
-    active_hours: float
-    deep_work_min: float
-    fragmentation_score: float
-    project_count: int
-    dominant_mode: str | None
-    dominant_project: str | None
-    hourly_active: tuple[float, ...]  # 24 floats: active minutes per hour
 
 
 def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
@@ -1067,14 +1078,16 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     for d in all_dates:
         if d < start or d > end:
             continue
-        result.append(AWDayActivity(
-            date=d,
-            active_hours=round(active_map.get(d, 0) / 3600, 2),
-            deep_work_min=round(dw_by_day.get(d, 0), 1),
-            fragmentation_score=round(frag_by_day.get(d, 0), 3),
-            project_count=att_by_day.get(d, 0),
-            dominant_mode=mode_by_day.get(d),
-            dominant_project=proj_by_day.get(d),
-            hourly_active=tuple(hourly.get(d, [0.0] * 24)),
-        ))
+        result.append(
+            AWDayActivity(
+                date=d,
+                active_hours=round(active_map.get(d, 0) / 3600, 2),
+                deep_work_min=round(dw_by_day.get(d, 0), 1),
+                fragmentation_score=round(frag_by_day.get(d, 0), 3),
+                project_count=att_by_day.get(d, 0),
+                dominant_mode=mode_by_day.get(d),
+                dominant_project=proj_by_day.get(d),
+                hourly_active=tuple(hourly.get(d, [0.0] * 24)),
+            )
+        )
     return result

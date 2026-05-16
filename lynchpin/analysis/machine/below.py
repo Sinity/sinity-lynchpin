@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import statistics
-from typing import Any
+from typing import Any, Sequence
 
 from lynchpin.analysis.core.io import save_json
 
@@ -36,6 +36,8 @@ class BelowEntitySummary:
     kind: str
     key: str
     sample_count: int
+    first_observed_at: datetime | None
+    last_observed_at: datetime | None
     avg_cpu_pct: float | None
     max_cpu_pct: float | None
     max_rss_mb: float | None
@@ -44,8 +46,11 @@ class BelowEntitySummary:
 
 @dataclass(frozen=True)
 class BelowAnalysis:
+    window_count: int
     system: list[BelowSystemSummary]
+    top_process_count: int
     top_processes: list[BelowEntitySummary]
+    top_cgroup_count: int
     top_cgroups: list[BelowEntitySummary]
     caveats: list[str]
 
@@ -66,9 +71,13 @@ def analyze_below_exports(
     if not system:
         caveats.append("no bounded below system exports found")
     caveats.append("live /var/log/below store is not promoted wholesale; export bounded windows for incidents and experiments")
+    system_rows = [row for row in system if row is not None]
     return BelowAnalysis(
-        system=[row for row in system if row is not None],
+        window_count=len(system_rows),
+        system=system_rows,
+        top_process_count=len(processes),
         top_processes=processes,
+        top_cgroup_count=len(cgroups),
         top_cgroups=cgroups,
         caveats=caveats,
     )
@@ -107,8 +116,11 @@ def _system_summary(report: Path) -> BelowSystemSummary | None:
     available = [_parse_gb(row.get("Available")) for row in rows]
     running = [_parse_int(row.get("Running Procs")) for row in rows]
     oom = [_parse_int(row.get("OOM Kills")) for row in rows]
-    timestamps = [_parse_below_datetime(row.get("Datetime")) for row in rows]
-    timestamps = [ts for ts in timestamps if ts is not None]
+    timestamps: list[datetime] = [
+        ts for row in rows
+        for ts in (_parse_below_datetime(row.get("Datetime")),)
+        if ts is not None
+    ]
     return BelowSystemSummary(
         capture_id=report.parent.name,
         sample_count=len(rows),
@@ -126,6 +138,7 @@ def _system_summary(report: Path) -> BelowSystemSummary | None:
 def _entity_summaries(reports: list[Path], kind: str, *, top_n: int) -> list[BelowEntitySummary]:
     filename = "below-top-processes.csv" if kind == "process" else "below-top-cgroups.csv"
     grouped: dict[tuple[str, str], dict[str, list[float]]] = {}
+    timestamps: dict[tuple[str, str], list[datetime]] = {}
     counts: dict[tuple[str, str], int] = {}
     for report in reports:
         path = report / filename
@@ -139,6 +152,9 @@ def _entity_summaries(reports: list[Path], kind: str, *, top_n: int) -> list[Bel
             group_key = (capture_id, key)
             counts[group_key] = counts.get(group_key, 0) + 1
             entry = grouped.setdefault(group_key, {"cpu": [], "rss": [], "mem": []})
+            observed_at = _parse_below_datetime(row.get("Datetime"))
+            if observed_at is not None:
+                timestamps.setdefault(group_key, []).append(observed_at)
             cpu_col = "CPU" if kind == "process" else "CPU Usage"
             cpu = _parse_pct(row.get(cpu_col))
             if cpu is not None:
@@ -155,6 +171,8 @@ def _entity_summaries(reports: list[Path], kind: str, *, top_n: int) -> list[Bel
             kind=kind,
             key=key,
             sample_count=counts[(capture_id, key)],
+            first_observed_at=min(timestamps.get((capture_id, key), ()), default=None),
+            last_observed_at=max(timestamps.get((capture_id, key), ()), default=None),
             avg_cpu_pct=_mean(values["cpu"]),
             max_cpu_pct=_max(values["cpu"]),
             max_rss_mb=_max(values["rss"]),
@@ -239,12 +257,12 @@ def _parse_mb(value: str | None) -> float | None:
     return number
 
 
-def _mean(values: list[float | None]) -> float | None:
+def _mean(values: Sequence[float | None]) -> float | None:
     valid = [value for value in values if value is not None]
     return None if not valid else round(statistics.mean(valid), 4)
 
 
-def _quantile(values: list[float | None], q: float) -> float | None:
+def _quantile(values: Sequence[float | None], q: float) -> float | None:
     valid = sorted(value for value in values if value is not None)
     if not valid:
         return None
@@ -252,7 +270,7 @@ def _quantile(values: list[float | None], q: float) -> float | None:
     return round(valid[idx], 4)
 
 
-def _min(values: list[float | None]) -> float | None:
+def _min(values: Sequence[float | None]) -> float | None:
     valid = [value for value in values if value is not None]
     return None if not valid else min(valid)
 

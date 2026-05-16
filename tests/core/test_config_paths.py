@@ -56,3 +56,22 @@ def test_legacy_exported_roots_are_not_live_write_targets(monkeypatch, tmp_path:
     assert "__lynchpin_exported" not in cfg.session_registry_dir.parts
     assert "__lynchpin_exported" not in cfg.analysis_output_dir.parts
     assert "__lynchpin_exported" not in cfg.baseline_dir.parts
+
+
+def test_packaged_nix_store_repo_root_defaults_to_checkout_local_root(monkeypatch, tmp_path: Path) -> None:
+    checkout = Path("/realm/project/sinity-lynchpin")
+    original_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self == checkout:
+            return True
+        return original_exists(self)
+
+    monkeypatch.setenv("LYNCHPIN_REPO_ROOT", "/nix/store/source-lynchpin")
+    monkeypatch.delenv("LYNCHPIN_LOCAL_ROOT", raising=False)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    cfg = LynchpinConfig.from_env()
+
+    assert cfg.local_root == Path("/realm/project/sinity-lynchpin/.lynchpin")
+    assert cfg.cache_dir == Path("/realm/project/sinity-lynchpin/.lynchpin/cache/lynchpin")

@@ -1,8 +1,8 @@
 """Python dependency hygiene via pip-audit.
 
 Closes the gap left by Phase 4d (cargo-audit for Rust): runs
-``pip-audit --strict --format json`` against each active Python project's
-``pyproject.toml`` (or ``requirements.txt`` fallback), parses advisories,
+``pip-audit --strict --format json`` against each active Python project
+directory (or ``requirements.txt`` fallback), parses advisories,
 and cross-references against ``active_python_import_graph.json`` to
 mark each advisory as direct or transitive.
 
@@ -17,6 +17,7 @@ Hard invariants:
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import subprocess
@@ -32,6 +33,21 @@ from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
 _TIMEOUT_S = 300
 _PYPROJECT = "pyproject.toml"
 _REQUIREMENTS_NAMES = ("requirements.txt", "requirements.lock", "requirements-dev.txt")
+_IGNORED_PATH_PARTS = {
+    ".agent",
+    ".direnv",
+    ".git",
+    ".lynchpin",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "result",
+}
 
 
 def build_active_python_dependency_hygiene(
@@ -74,10 +90,11 @@ def build_active_python_dependency_hygiene(
             if audit_path else
             {"available": False, "reason": "pip-audit not on PATH"}
         )
+        imported_modules = _external_import_modules(path, project_internal_modules.get(name, set()))
         annotated = _annotate_advisories(
             audit_block.get("advisories") or [],
             direct_deps=direct_deps,
-            internal_modules=project_internal_modules.get(name, set()),
+            imported_modules=imported_modules,
         )
         audit_block["advisories"] = annotated
         rows.append({
@@ -86,12 +103,16 @@ def build_active_python_dependency_hygiene(
             "manifest": manifest.name,
             "manifest_kind": kind,
             "direct_dependency_count": len(direct_deps),
+            "observed_external_import_count": len(imported_modules),
+            "observed_external_imports": sorted(imported_modules)[:50],
             "audit": audit_block,
             "caveats": [
                 "pip-audit consults the OSV/PyPI advisory feed; freshly disclosed CVEs may "
                 "not yet appear",
                 "direct vs transitive marking compares advisory package against the manifest's "
-                "declared dependencies — extras and groups are not currently introspected",
+                "declared dependencies",
+                "observed import matching uses normalized top-level import names; packages whose "
+                "distribution name differs from import name may be undercounted",
             ],
         })
 
@@ -103,6 +124,8 @@ def build_active_python_dependency_hygiene(
             "manifest_priority": "pyproject.toml first, then requirements*.txt",
             "direct_vs_transitive": "advisory.package matched against the manifest's direct "
                                     "dependency name list",
+            "observed_imports": "Python AST top-level imports, excluding internal modules "
+                                "and generated/cache directories",
             "lockfile_safety": "pip-audit invocation is read-only; never mutates the manifest",
         },
         "projects": rows,
@@ -209,10 +232,42 @@ def _internal_module_index(import_graph: dict[str, Any]) -> dict[str, set[str]]:
     return out
 
 
+def _python_files(root: Path) -> list[Path]:
+    return sorted(
+        p for p in root.rglob("*.py")
+        if not any(part in _IGNORED_PATH_PARTS for part in p.relative_to(root).parts)
+    )
+
+
+def _external_import_modules(root: Path, internal_modules: set[str]) -> set[str]:
+    internal_top_level = {module.split(".", 1)[0] for module in internal_modules}
+    imports: set[str] = set()
+    for path in _python_files(root):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top_level = alias.name.split(".", 1)[0]
+                    if top_level and top_level not in internal_top_level:
+                        imports.add(_normalize_import_name(top_level))
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                top_level = node.module.split(".", 1)[0]
+                if top_level and top_level not in internal_top_level:
+                    imports.add(_normalize_import_name(top_level))
+    return imports
+
+
+def _normalize_import_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
 def _run_audit(*, audit_path: str, manifest: Path, kind: str | None) -> dict[str, Any]:
-    cmd = [audit_path, "--strict", "--format", "json"]
+    cmd = [audit_path, "--strict", "--format", "json", "--progress-spinner", "off"]
     if kind == "pyproject":
-        cmd.extend(["--requirement", str(manifest)])
+        cmd.append(str(manifest.parent))
     else:
         cmd.extend(["--requirement", str(manifest)])
     try:
@@ -265,7 +320,7 @@ def _annotate_advisories(
     advisories: list[dict[str, Any]],
     *,
     direct_deps: set[str],
-    internal_modules: set[str],
+    imported_modules: set[str],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for adv in advisories:
@@ -273,7 +328,7 @@ def _annotate_advisories(
         adv_copy = dict(adv)
         adv_copy["direct"] = package in direct_deps
         adv_copy["transitive"] = not adv_copy["direct"]
-        adv_copy["consumed_in_project_modules"] = package in internal_modules
+        adv_copy["observed_import"] = package in imported_modules
         out.append(adv_copy)
     return out
 

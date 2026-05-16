@@ -12,6 +12,7 @@ from ..active.git_facts import run_active_git_facts
 from ..active.snapshot import run_active_project_snapshot
 from ..change.commit_capsules import run_active_commit_semantics
 from ..change.work_packages import run_active_work_packages
+from ..code_index.python_analysis import run_active_python_complexity, run_active_python_import_graph
 from ..code_index.symbol_changes import run_active_symbol_changes
 from ..code_index.symbol_diffs import run_active_symbol_diffs
 from ..code_index.symbol_index import run_active_symbol_index
@@ -112,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_analysis_commands(subparsers: argparse._SubParsersAction) -> None:
+def add_analysis_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     cmd_cross = subparsers.add_parser('cross', help='Cross-project metric analysis')
     cmd_cross.add_argument('--base_dir', default='/realm/project')
     cmd_cross.add_argument('--out', default=None)
@@ -125,6 +126,21 @@ def add_analysis_commands(subparsers: argparse._SubParsersAction) -> None:
     cmd_active_snapshot.add_argument("--end", type=_parse_date, default=None)
     cmd_active_snapshot.add_argument("--project", action="append", default=[])
     cmd_active_snapshot.add_argument("--out", default=None)
+
+    cmd_python_complexity = subparsers.add_parser(
+        "active-python-complexity",
+        help="Build active-project native Python complexity metrics",
+    )
+    _add_window_with_snapshot_args(cmd_python_complexity)
+    cmd_python_complexity.add_argument("--out", default=None)
+
+    cmd_python_imports = subparsers.add_parser(
+        "active-python-import-graph",
+        help="Build active-project native Python import graphs",
+    )
+    cmd_python_imports.add_argument("--project", action="append", default=[])
+    cmd_python_imports.add_argument("--snapshot", default=None)
+    cmd_python_imports.add_argument("--out", default=None)
 
     cmd_active_git = subparsers.add_parser(
         "active-git-facts",
@@ -347,7 +363,7 @@ def run_analysis_command(args: argparse.Namespace) -> int | None:
         from . import metrics as project_metrics
 
         out = args.out or resolve_analysis_path('cross_project_metrics.json')
-        project_metrics.run_cross_project(args.base_dir, out)
+        project_metrics.run_cross_project(args.base_dir, out)  # type: ignore[no-untyped-call]
         return 0
 
     if args.command == "active-project-snapshot":
@@ -357,6 +373,26 @@ def run_analysis_command(args: argparse.Namespace) -> int | None:
             start=args.start,
             end=args.end,
             projects=args.project,
+        )
+        return 0
+
+    if args.command == "active-python-complexity":
+        out = args.out or resolve_analysis_path("active_python_complexity.json")
+        run_active_python_complexity(
+            out,
+            start=args.start,
+            end=args.end,
+            projects=args.project,
+            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+        return 0
+
+    if args.command == "active-python-import-graph":
+        out = args.out or resolve_analysis_path("active_python_import_graph.json")
+        run_active_python_import_graph(
+            out,
+            projects=args.project,
+            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
         )
         return 0
 

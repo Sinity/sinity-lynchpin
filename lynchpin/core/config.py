@@ -116,7 +116,7 @@ class LynchpinConfig:
         exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
-        local_root = Path(os.environ.get("LYNCHPIN_LOCAL_ROOT", repo_root / ".lynchpin"))
+        local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
         generated_root = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_GENERATED_ROOT"), local_root / "generated"
         )
@@ -303,6 +303,15 @@ def get_config() -> LynchpinConfig:
 
 
 # ── Path resolution helpers ───────────────────────────────────────────────────
+
+
+def _default_local_root(repo_root: Path, env_value: str | None) -> Path:
+    if env_value:
+        return Path(env_value)
+    checkout_root = Path("/realm/project/sinity-lynchpin")
+    if "nix" in repo_root.parts and "store" in repo_root.parts and checkout_root.exists():
+        return checkout_root / ".lynchpin"
+    return repo_root / ".lynchpin"
 
 
 def _non_legacy_generated_path(env_value: str | None, default: Path) -> Path:

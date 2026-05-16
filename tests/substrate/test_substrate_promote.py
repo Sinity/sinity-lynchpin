@@ -59,6 +59,22 @@ def _dt(y: int, m: int, d: int, h: int = 12) -> datetime:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+def _json_sources() -> set[str]:
+    from lynchpin.analysis.active.substrate_promote import (
+        SOURCE_COMMITS,
+        SOURCE_FILE_CHANGES,
+        SOURCE_SYMBOLS,
+    )
+
+    return {SOURCE_COMMITS, SOURCE_FILE_CHANGES, SOURCE_SYMBOLS}
+
+
+def _json_pr_sources() -> set[str]:
+    from lynchpin.analysis.active.substrate_promote import SOURCE_PR_REVIEW
+
+    return _json_sources() | {SOURCE_PR_REVIEW}
+
+
 def _make_commit_facts_payload(commits: list[dict]) -> dict:
     return {
         "generated_at_utc": "2026-05-08T00:00:00+00:00",
@@ -165,9 +181,8 @@ def test_substrate_promote_handles_missing_files(
 ) -> None:
     """Run with non-existent JSON paths — must NOT raise; returns dict.
 
-    The AI-work-events source pulls from the real polylogue archive so it
-    may return real data; that's fine — the test asserts that missing
-    JSON files don't crash the promote, not that every source yields 0.
+    The test isolates the JSON-backed source family so it does not spend time
+    probing live archive/readiness sources unrelated to the assertion.
     """
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     _reload_config(monkeypatch)
@@ -181,6 +196,7 @@ def test_substrate_promote_handles_missing_files(
         commit_facts_file=str(tmp_path / "nonexistent_commits.json"),
         file_changes_file=str(tmp_path / "nonexistent_fc.json"),
         symbol_changes_file=str(tmp_path / "nonexistent_sym.json"),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
     # Must return dict and not raise.
@@ -207,6 +223,7 @@ def test_substrate_promote_swallows_errors(
         commit_facts_file=str(tmp_path / "nope.json"),
         file_changes_file=str(tmp_path / "nope.json"),
         symbol_changes_file=str(tmp_path / "nope.json"),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
     assert counts == {}  # swallowed — returns empty on error
@@ -240,6 +257,7 @@ def test_substrate_promote_loads_commit_facts(
         commit_facts_file=str(cf_file),
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -250,6 +268,73 @@ def test_substrate_promote_loads_commit_facts(
         apply_schema(conn)
         total = conn.execute("SELECT COUNT(*) FROM commit_fact").fetchone()[0]
     assert total == 3
+
+
+def test_substrate_promote_merges_active_ai_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """High/medium active_ai_attribution rows land in commit_fact.ai_attribution."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    sha_medium = "abc" + "0" * 37
+    sha_none = "def" + "0" * 37
+    cf_file = tmp_path / "commit_facts.json"
+    cf_file.write_text(json.dumps(_make_commit_facts_payload([
+        _make_commit_entry(sha_medium),
+        _make_commit_entry(sha_none),
+    ])))
+    ai_file = tmp_path / "ai.json"
+    ai_file.write_text(json.dumps({
+        "commits": [
+            {
+                "sha": sha_medium,
+                "ai_attribution": "medium",
+                "supporting_session_ids": ["s1"],
+                "supporting_providers": ["claude-code"],
+                "supporting_session_count": 1,
+            },
+            {
+                "sha": sha_none,
+                "ai_attribution": "none",
+                "supporting_session_ids": [],
+                "supporting_providers": [],
+                "supporting_session_count": 0,
+            },
+        ]
+    }))
+    fc_file = tmp_path / "fc.json"
+    fc_file.write_text(json.dumps(_make_file_change_payload([])))
+    sym_file = tmp_path / "sym.json"
+    sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
+
+    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+
+    run_substrate_promote(
+        commit_facts_file=str(cf_file),
+        file_changes_file=str(fc_file),
+        symbol_changes_file=str(sym_file),
+        ai_attribution_file=str(ai_file),
+        refresh_id="r-ai",
+        sources=_json_sources(),
+        write_evidence_graph=False,
+    )
+
+    with connect(substrate_path()) as conn:
+        apply_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT sha, CAST(ai_attribution AS VARCHAR)
+            FROM commit_fact
+            WHERE refresh_id = 'r-ai'
+            ORDER BY sha
+            """
+        ).fetchall()
+
+    by_sha = {sha: value for sha, value in rows}
+    assert '"classification": "medium"' in by_sha[sha_medium]
+    assert by_sha[sha_none] is None
 
 
 def test_substrate_promote_loads_file_change_facts(
@@ -277,6 +362,7 @@ def test_substrate_promote_loads_file_change_facts(
         commit_facts_file=str(cf_file),
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -312,6 +398,7 @@ def test_substrate_promote_loads_symbol_changes(
         commit_facts_file=str(cf_file),
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -353,6 +440,7 @@ def test_substrate_promote_idempotent_same_refresh_id(
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
         refresh_id=rid,
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
     run_substrate_promote(
@@ -360,6 +448,7 @@ def test_substrate_promote_idempotent_same_refresh_id(
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
         refresh_id=rid,
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -400,6 +489,7 @@ def test_substrate_promote_isolated_per_refresh_id(
         file_changes_file=fc_a,
         symbol_changes_file=sym_a,
         refresh_id="dag:run-1",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
     run_substrate_promote(
@@ -407,6 +497,7 @@ def test_substrate_promote_isolated_per_refresh_id(
         file_changes_file=fc_b,
         symbol_changes_file=sym_b,
         refresh_id="dag:run-2",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -455,6 +546,7 @@ def test_commit_facts_timestamp_field(
         commit_facts_file=str(cf_file),
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -509,6 +601,7 @@ def test_same_sha_across_refresh_ids_does_not_collide(
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
         refresh_id="dag:snapshot-A",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -518,6 +611,7 @@ def test_same_sha_across_refresh_ids_does_not_collide(
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
         refresh_id="dag:snapshot-B",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -564,6 +658,7 @@ def test_source_status_recorded_on_missing_files(
         file_changes_file=str(tmp_path / "missing_fc.json"),
         symbol_changes_file=str(tmp_path / "missing_sym.json"),
         refresh_id="dag:test-status-missing",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -609,6 +704,7 @@ def test_source_status_recorded_on_successful_promote(
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
         refresh_id="dag:test-status-ok",
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 
@@ -657,6 +753,7 @@ def test_source_status_idempotent_on_re_run(
             file_changes_file=str(fc_file),
             symbol_changes_file=str(sym_file),
             refresh_id=rid,
+            sources=_json_sources(),
             write_evidence_graph=False,
         )
 
@@ -670,6 +767,76 @@ def test_source_status_idempotent_on_re_run(
         ).fetchone()[0]
 
     assert commits_count == 1
+
+
+def test_substrate_promote_selected_sources_do_not_probe_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selective promote only touches the named source family."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    cf_file = tmp_path / "commit_facts.json"
+    cf_file.write_text(json.dumps(_make_commit_facts_payload([
+        _make_commit_entry("sel" + "0" * 37),
+    ])))
+    missing = tmp_path / "missing.json"
+
+    def fail_unselected(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("unselected source was probed")
+
+    monkeypatch.setattr("lynchpin.sources.polylogue.work_events", fail_unselected)
+    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", fail_unselected)
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", fail_unselected)
+    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", fail_unselected)
+
+    from lynchpin.analysis.active.substrate_promote import (
+        SOURCE_COMMITS,
+        run_substrate_promote,
+    )
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+
+    counts = run_substrate_promote(
+        commit_facts_file=str(cf_file),
+        file_changes_file=str(missing),
+        symbol_changes_file=str(missing),
+        refresh_id="dag:test-selected-source",
+        sources={SOURCE_COMMITS},
+    )
+
+    assert counts.get("commits") == 1
+    assert "file_changes" not in counts
+    assert "spotify_daily" not in counts
+
+    with connect(substrate_path()) as conn:
+        apply_schema(conn)
+        rows = conn.execute(
+            "SELECT source FROM substrate_source_status WHERE refresh_id = ? ORDER BY source",
+            ["dag:test-selected-source"],
+        ).fetchall()
+
+    assert rows == [("commits",)]
+
+
+def test_substrate_promote_rejects_unknown_source_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
+
+    try:
+        run_substrate_promote(
+            commit_facts_file=str(tmp_path / "commits.json"),
+            file_changes_file=str(tmp_path / "files.json"),
+            symbol_changes_file=str(tmp_path / "symbols.json"),
+            sources={"machine_gpu"},
+        )
+    except ValueError as exc:
+        assert "unknown substrate promote source(s): machine_gpu" in str(exc)
+    else:
+        raise AssertionError("expected unknown source selection to fail")
 
 
 def test_pr_review_promotion_when_payload_present(
@@ -716,6 +883,7 @@ def test_pr_review_promotion_when_payload_present(
         symbol_changes_file=str(sym_file),
         pr_review_file=str(pr_file),
         refresh_id="dag:test-pr-review",
+        sources=_json_pr_sources(),
         write_evidence_graph=False,
     )
 
@@ -763,6 +931,7 @@ def test_pr_review_marked_unavailable_when_file_missing(
         symbol_changes_file=str(sym_file),
         pr_review_file=str(tmp_path / "missing_pr.json"),
         refresh_id="dag:test-pr-missing",
+        sources=_json_pr_sources(),
         write_evidence_graph=False,
     )
 
@@ -801,6 +970,7 @@ def test_path_roots_dict_keys_extracted(
         commit_facts_file=str(cf_file),
         file_changes_file=str(fc_file),
         symbol_changes_file=str(sym_file),
+        sources=_json_sources(),
         write_evidence_graph=False,
     )
 

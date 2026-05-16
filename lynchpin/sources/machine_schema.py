@@ -1,0 +1,148 @@
+"""SQLite schema contract for Sinnix machine telemetry."""
+
+from __future__ import annotations
+
+import sqlite3
+
+from .machine_models import MachineTelemetrySchemaError
+
+BASE_METRIC_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "schema_version",
+    "cpu_package_w",
+    "cpu_core_w",
+    "cpu_pkg_c",
+    "cpu_max_core_c",
+    "gpu_power_w",
+    "gpu_fan_pct",
+    "gpu_temp_c",
+    "gpu_util_pct",
+    "gpu_pstate",
+    "gpu_pcie_gen",
+    "gpu_pcie_width",
+    "load_1m",
+    "mem_avail_mb",
+    "swap_used_mb",
+    "io_psi_some_avg10",
+    "io_psi_full_avg10",
+    "latency_oversleep_ms",
+    "dstate_task_count",
+    "gap_codes_json",
+)
+
+OPTIONAL_METRIC_COLUMNS = (
+    "cpu_psi_some_avg60",
+    "cpu_psi_some_avg300",
+    "cpu_psi_some_total_us",
+    "io_psi_some_avg60",
+    "io_psi_some_avg300",
+    "io_psi_some_total_us",
+    "io_psi_full_avg60",
+    "io_psi_full_avg300",
+    "io_psi_full_total_us",
+    "memory_psi_some_avg60",
+    "memory_psi_some_avg300",
+    "memory_psi_some_total_us",
+    "memory_psi_full_avg60",
+    "memory_psi_full_avg300",
+    "memory_psi_full_total_us",
+)
+
+EXPECTED_SERVICE_STATE_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "unit",
+    "scope",
+    "active_state",
+    "sub_state",
+    "main_pid",
+    "control_group",
+    "memory_current_bytes",
+    "cpu_usage_nsec",
+    "io_read_bytes",
+    "io_write_bytes",
+)
+
+EXPECTED_NETWORK_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "schema_version",
+    "interface",
+    "gateway_ip",
+    "ping_json",
+    "bloat_json",
+    "iface_json",
+    "nic_json",
+    "tcp_json",
+    "dns_ms",
+    "pmtu_1492",
+    "conntrack_json",
+    "gap_codes_json",
+)
+
+EXPECTED_GPU_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "gpu_power_w",
+    "gpu_power_limit_w",
+    "gpu_temp_c",
+    "gpu_fan_pct",
+    "gpu_util_pct",
+    "gpu_mem_util_pct",
+    "gpu_clock_mhz",
+    "gpu_mem_clock_mhz",
+    "gpu_pstate",
+    "gpu_pcie_gen",
+    "gpu_pcie_width",
+)
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+    ).fetchone() is not None
+
+
+def validate_metric_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(conn, "metric_sample", BASE_METRIC_COLUMNS)
+
+
+def metric_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    columns = _table_columns(conn, "metric_sample")
+    return BASE_METRIC_COLUMNS + tuple(
+        column for column in OPTIONAL_METRIC_COLUMNS if column in columns
+    )
+
+
+def validate_service_state_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(conn, "service_state", EXPECTED_SERVICE_STATE_COLUMNS)
+
+
+def validate_network_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(conn, "network_sample", EXPECTED_NETWORK_COLUMNS)
+
+
+def validate_gpu_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(conn, "gpu_sample", EXPECTED_GPU_COLUMNS)
+
+
+def _validate_columns(conn: sqlite3.Connection, table: str, expected: tuple[str, ...]) -> None:
+    columns = _table_columns(conn, table)
+    missing = tuple(column for column in expected if column not in columns)
+    if missing:
+        raise MachineTelemetrySchemaError(
+            f"{table} is missing expected columns: " + ", ".join(missing)
+        )
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }

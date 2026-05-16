@@ -23,9 +23,8 @@ Processed file format (one JSON object per line):
       "updated_at": "2026-05-07T20:00:00+02:00"
     }
 
-Path resolved from ``LynchpinConfig.calendar_jsonl`` when the file exists.
-When absent, all readers return an empty iterator (degraded mode); the
-context-pack readiness layer surfaces this via ``source_readiness``.
+Path resolves from ``LynchpinConfig.calendar_jsonl``. Availability is reported
+by readiness/promote layers; this source does not search legacy locations.
 
 Composite consumers can use this source for capacity-vs-commitments
 reconciliation: which days had heavy meeting load? did focus blocks
@@ -107,16 +106,8 @@ def _calendar_jsonl_path() -> Path | None:
 
 
 def _calendar_path_or_default() -> Path | None:
-    """Resolve the processed JSONL path; fall back to the conventional
-    ``/realm/data/exports/google/processed/calendar.jsonl`` location
-    so a manual ingestion pass writes there without code changes."""
-    explicit = _calendar_jsonl_path()
-    if explicit is not None and explicit.exists():
-        return explicit
-    fallback = Path("/realm/data/exports/google/processed/calendar.jsonl")
-    if fallback.exists():
-        return fallback
-    return explicit if explicit is not None else fallback
+    """Resolve the configured processed JSONL path."""
+    return _calendar_jsonl_path()
 
 
 def iter_events(

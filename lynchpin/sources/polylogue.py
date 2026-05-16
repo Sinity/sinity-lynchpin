@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -21,12 +19,19 @@ from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.projects import canonical_project_name
-
-warnings.filterwarnings(
-    "ignore",
-    message=r'Field "model_name" in .* has conflict with protected namespace "model_"',
-    category=UserWarning,
-    module=r"pydantic\._internal\._fields",
+from .polylogue_client import _default_polylogue_db_path, _polylogue_client
+from .polylogue_models import (
+    ChatDayActivity,
+    ConversationLineage,
+    ConversationTranscript,
+    CostSummary,
+    DaySessionSummary,
+    MessageRecord,
+    PolylogueReadiness,
+    SessionProfile,
+    WorkEvent,
+    WorkPattern,
+    _WorkPatternBucket,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,126 +59,6 @@ __all__ = [
     "work_pattern",
     "archive_stats",
 ]
-
-
-@dataclass(frozen=True)
-class WorkEvent:
-    """A temporal work segment within a polylogue session."""
-    event_id: str
-    conversation_id: str
-    provider: str
-    kind: str
-    confidence: float
-    start: Optional[datetime]
-    end: Optional[datetime]
-    duration_ms: int
-    file_paths: tuple[str, ...]
-    tools_used: tuple[str, ...]
-    summary: str
-
-
-@dataclass(frozen=True)
-class DaySessionSummary:
-    """Polylogue's pre-computed daily aggregation."""
-    date: date
-    session_count: int
-    total_cost_usd: float
-    total_messages: int
-    total_words: int
-    work_event_breakdown: dict[str, int]  # kind → count
-    repos_active: tuple[str, ...]
-    providers: dict[str, int]  # provider → session count
-
-
-@dataclass
-class _DaySummaryBucket:
-    session_count: int = 0
-    total_cost_usd: float = 0.0
-    total_messages: int = 0
-    total_words: int = 0
-    work_event_breakdown: Counter[str] = field(default_factory=Counter)
-    repos_active: set[str] = field(default_factory=set)
-    providers: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass
-class _ProfileDayBucket:
-    session_count: int = 0
-    total_messages: int = 0
-    total_words: int = 0
-    repos_active: set[str] = field(default_factory=set)
-
-
-@dataclass(frozen=True)
-class MessageRecord:
-    conversation_id: str
-    provider: str
-    role: str
-    kind: str
-    ordinal: int
-    text: str
-    word_count: int
-    has_tool_use: bool
-    has_thinking: bool
-    approx_tokens: int
-
-
-@dataclass(frozen=True)
-class ConversationTranscript:
-    conversation_id: str
-    provider: str
-    title: str
-    canonical_session_date: Optional[date]
-    first_message_at: Optional[datetime]
-    last_message_at: Optional[datetime]
-    messages: tuple[MessageRecord, ...]
-    user_prompt_count: int
-    user_prompt_tokens: int
-    dialogue_tokens: int
-    all_message_tokens: int
-
-
-@dataclass(frozen=True)
-class PolylogueReadiness:
-    db_path: Path
-    status: str
-    reason: str
-    conversation_count: int
-    message_count: int | None
-    conversation_stats_count: int
-    session_profile_count: int
-    day_summary_count: int
-    work_event_count: int
-    provider_event_count: int | None
-    derives_profiles_from_base_tables: bool
-    derives_day_summaries_from_profiles: bool
-
-
-def _default_polylogue_db_path() -> Path:
-    from ..core.config import get_config
-
-    return get_config().polylogue_db
-
-
-@lru_cache(maxsize=1)
-def _polylogue_client() -> Any:
-    """Return process-singleton SyncPolylogue facade.
-
-    Lynchpin consumes Polylogue's typed Python facade rather than its archive
-    database schema.
-    """
-    from polylogue.api.sync import SyncPolylogue
-
-    return SyncPolylogue(db_path=_default_polylogue_db_path())
-
-
-def _reset_polylogue_client_for_tests() -> None:
-    """Invalidate the process-singleton SyncPolylogue client.
-
-    Tests that point at a fixture database must call this before and after
-    swapping ``get_config().polylogue_db``.
-    """
-    _polylogue_client.cache_clear()
 
 
 def _project_names_from_provider_meta(value: object) -> tuple[str, ...]:
@@ -240,7 +125,11 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
 
         report = _polylogue_client().insight_readiness_report(
             InsightReadinessQuery(
-                insights=("session_profiles", "day_session_summaries", "session_work_events")
+                insights=(
+                    "session_profiles",
+                    "day_session_summaries",
+                    "session_work_events",
+                )
             )
         )
     except Exception as exc:
@@ -272,10 +161,22 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         if entry is not None and entry.verdict not in {"ready", "empty"}
     )
 
-    if profile_count > 0 and day_count > 0 and work_event_count > 0 and not degraded_entries:
+    if (
+        profile_count > 0
+        and day_count > 0
+        and work_event_count > 0
+        and not degraded_entries
+    ):
         status = "ready"
-        reason = "materialized profile, day-summary, and work-event products are populated"
-    elif report.total_conversations > 0 or profile_count > 0 or day_count > 0 or work_event_count > 0:
+        reason = (
+            "materialized profile, day-summary, and work-event products are populated"
+        )
+    elif (
+        report.total_conversations > 0
+        or profile_count > 0
+        or day_count > 0
+        or work_event_count > 0
+    ):
         status = "degraded"
         reason = _readiness_reason(entries)
     else:
@@ -288,7 +189,9 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         reason=reason,
         conversation_count=report.total_conversations,
         message_count=None,
-        conversation_stats_count=profile.expected_row_count if profile is not None and profile.expected_row_count is not None else 0,
+        conversation_stats_count=profile.expected_row_count
+        if profile is not None and profile.expected_row_count is not None
+        else 0,
         session_profile_count=profile_count,
         day_summary_count=day_count,
         work_event_count=work_event_count,
@@ -322,44 +225,6 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # Data types
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class SessionProfile:
-    conversation_id: str
-    provider: str
-    title: str
-    message_count: int
-    word_count: int
-    first_message_at: Optional[datetime]
-    last_message_at: Optional[datetime]
-    engaged_duration_ms: int
-    wall_duration_ms: int
-    work_event_kind: Optional[str]
-    work_event_projects: tuple[str, ...]
-    total_cost_usd: float
-    canonical_session_date: Optional[date]
-    tool_use_count: int
-    thinking_count: int
-    auto_tags: tuple[str, ...]
-    substantive_count: int = 0
-    attachment_count: int = 0
-    work_event_count: int = 0
-    phase_count: int = 0
-    cost_is_estimated: bool = False
-
-
-@dataclass(frozen=True)
-class ChatDayActivity:
-    date: date
-    provider: str
-    session_count: int
-    total_messages: int
-    total_words: int
-    engaged_minutes: float
-    total_wall_minutes: float
-    dominant_work_kind: str | None
-    projects: tuple[str, ...]
 
 
 _cached_profiles: list[SessionProfile] | None = None
@@ -403,7 +268,9 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
         last_message_at = _parse_dt(evidence.last_message_at)
         if evidence.canonical_session_date:
             try:
-                canonical_session_date = date.fromisoformat(evidence.canonical_session_date)
+                canonical_session_date = date.fromisoformat(
+                    evidence.canonical_session_date
+                )
             except ValueError:
                 canonical_session_date = None
 
@@ -512,7 +379,9 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
     return result
 
 
-def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProfile] | None:
+def _session_profiles_from_facade(
+    *, start: date, end: date
+) -> list[SessionProfile] | None:
     """Read date-bounded session profiles through Polylogue's public facade."""
     try:
         from polylogue.insights.archive import SessionProfileInsightQuery
@@ -535,6 +404,7 @@ def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProf
 def _token_encoder() -> Any | None:
     try:
         import tiktoken
+
         return tiktoken.get_encoding("cl100k_base")
     except Exception:
         return None
@@ -561,9 +431,11 @@ def _approx_tokens_batch(texts: list[str]) -> list[int]:
     if hasattr(encoder, "encode_ordinary_batch"):
         counts: list[int] = []
         for idx in range(0, len(texts), 256):
-            chunk = texts[idx:idx + 256]
+            chunk = texts[idx : idx + 256]
             try:
-                counts.extend(len(tokens) for tokens in encoder.encode_ordinary_batch(chunk))
+                counts.extend(
+                    len(tokens) for tokens in encoder.encode_ordinary_batch(chunk)
+                )
                 continue
             except Exception:
                 pass
@@ -619,19 +491,21 @@ def conversation_transcripts(*, start: date, end: date) -> list[ConversationTran
         raw_messages = messages_by_id.get(conversation_id)
         if raw_messages is None:
             # Profile exists but bulk fetch returned no entry — emit empty transcript.
-            transcripts.append(ConversationTranscript(
-                conversation_id=conversation_id,
-                provider=profile.provider,
-                title=profile.title,
-                canonical_session_date=profile.canonical_session_date,
-                first_message_at=profile.first_message_at,
-                last_message_at=profile.last_message_at,
-                messages=(),
-                user_prompt_count=0,
-                user_prompt_tokens=0,
-                dialogue_tokens=0,
-                all_message_tokens=0,
-            ))
+            transcripts.append(
+                ConversationTranscript(
+                    conversation_id=conversation_id,
+                    provider=profile.provider,
+                    title=profile.title,
+                    canonical_session_date=profile.canonical_session_date,
+                    first_message_at=profile.first_message_at,
+                    last_message_at=profile.last_message_at,
+                    messages=(),
+                    user_prompt_count=0,
+                    user_prompt_tokens=0,
+                    dialogue_tokens=0,
+                    all_message_tokens=0,
+                )
+            )
             continue
 
         texts = [str(msg.text or "") for msg in raw_messages]
@@ -655,63 +529,55 @@ def conversation_transcripts(*, start: date, end: date) -> list[ConversationTran
                 if isinstance(b, dict)
             )
             word_count = len(text.split()) if text else 0
-            message_records.append(MessageRecord(
-                conversation_id=conversation_id,
-                provider=profile.provider,
-                role=role_str,
-                kind=kind,
-                ordinal=ordinal,
-                text=text,
-                word_count=word_count,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                approx_tokens=approx_tokens,
-            ))
+            message_records.append(
+                MessageRecord(
+                    conversation_id=conversation_id,
+                    provider=profile.provider,
+                    role=role_str,
+                    kind=kind,
+                    ordinal=ordinal,
+                    text=text,
+                    word_count=word_count,
+                    has_tool_use=has_tool_use,
+                    has_thinking=has_thinking,
+                    approx_tokens=approx_tokens,
+                )
+            )
 
         messages = tuple(message_records)
         user_prompt_count = sum(1 for m in messages if m.kind == "prompt")
-        user_prompt_tokens = sum(m.approx_tokens for m in messages if m.kind == "prompt")
+        user_prompt_tokens = sum(
+            m.approx_tokens for m in messages if m.kind == "prompt"
+        )
         dialogue_tokens = sum(
             m.approx_tokens for m in messages if m.kind in {"prompt", "assistant"}
         )
         all_tokens = sum(m.approx_tokens for m in messages)
-        transcripts.append(ConversationTranscript(
-            conversation_id=conversation_id,
-            provider=profile.provider,
-            title=profile.title,
-            canonical_session_date=profile.canonical_session_date,
-            first_message_at=profile.first_message_at,
-            last_message_at=profile.last_message_at,
-            messages=messages,
-            user_prompt_count=user_prompt_count,
-            user_prompt_tokens=user_prompt_tokens,
-            dialogue_tokens=dialogue_tokens,
-            all_message_tokens=all_tokens,
-        ))
+        transcripts.append(
+            ConversationTranscript(
+                conversation_id=conversation_id,
+                provider=profile.provider,
+                title=profile.title,
+                canonical_session_date=profile.canonical_session_date,
+                first_message_at=profile.first_message_at,
+                last_message_at=profile.last_message_at,
+                messages=messages,
+                user_prompt_count=user_prompt_count,
+                user_prompt_tokens=user_prompt_tokens,
+                dialogue_tokens=dialogue_tokens,
+                all_message_tokens=all_tokens,
+            )
+        )
 
     transcripts.sort(
-        key=lambda item: item.first_message_at.timestamp() if item.first_message_at else float("-inf")
+        key=lambda item: item.first_message_at.timestamp()
+        if item.first_message_at
+        else float("-inf")
     )
     return transcripts
 
 
 # ── M.15: conversation fork / branch lineage ─────────────────────────────────
-
-
-@dataclass(frozen=True)
-class ConversationLineage:
-    """One conversation's parent/branch attribution from Polylogue.
-
-    Polylogue's ``conversations`` table tracks branching natively via
-    ``parent_id`` and ``branch_type`` (continuation / sidechain / fork /
-    subagent). This shape exposes those columns to graph consumers.
-    """
-    conversation_id: str
-    parent_conversation_id: Optional[str]
-    branch_type: Optional[str]
-    provider: str
-    title: str
-    created_at: Optional[datetime]
 
 
 def conversation_lineages(
@@ -745,21 +611,29 @@ def conversation_lineages(
     for summary in summaries:
         # Apply branch_types filter Python-side.
         if branch_types is not None:
-            branch_val = str(summary.branch_type) if summary.branch_type is not None else None
+            branch_val = (
+                str(summary.branch_type) if summary.branch_type is not None else None
+            )
             if branch_val not in branch_types:
                 continue
-        result.append(ConversationLineage(
-            conversation_id=str(summary.id),
-            parent_conversation_id=(
-                str(summary.parent_id) if summary.parent_id is not None else None
-            ),
-            branch_type=str(summary.branch_type) if summary.branch_type is not None else None,
-            provider=str(summary.provider),
-            title=str(summary.title or ""),
-            created_at=summary.created_at,
-        ))
+        result.append(
+            ConversationLineage(
+                conversation_id=str(summary.id),
+                parent_conversation_id=(
+                    str(summary.parent_id) if summary.parent_id is not None else None
+                ),
+                branch_type=str(summary.branch_type)
+                if summary.branch_type is not None
+                else None,
+                provider=str(summary.provider),
+                title=str(summary.title or ""),
+                created_at=summary.created_at,
+            )
+        )
 
-    result.sort(key=lambda item: (item.created_at or datetime.min, item.conversation_id))
+    result.sort(
+        key=lambda item: (item.created_at or datetime.min, item.conversation_id)
+    )
     return result
 
 
@@ -815,23 +689,27 @@ def _work_events_from_facade(
         inf = insight.inference
         start = _parse_dt(ev.start_time) if ev.start_time else None
         end = _parse_dt(ev.end_time) if ev.end_time else None
-        events.append(WorkEvent(
-            event_id=insight.event_id,
-            conversation_id=insight.conversation_id,
-            provider=insight.provider_name,
-            kind=str(inf.kind or "unknown"),
-            confidence=float(inf.confidence),
-            start=start,
-            end=end,
-            duration_ms=int(ev.duration_ms),
-            file_paths=tuple(ev.file_paths),
-            tools_used=tuple(ev.tools_used),
-            summary=str(inf.summary or ""),
-        ))
+        events.append(
+            WorkEvent(
+                event_id=insight.event_id,
+                conversation_id=insight.conversation_id,
+                provider=insight.provider_name,
+                kind=str(inf.kind or "unknown"),
+                confidence=float(inf.confidence),
+                start=start,
+                end=end,
+                duration_ms=int(ev.duration_ms),
+                file_paths=tuple(ev.file_paths),
+                tools_used=tuple(ev.tools_used),
+                summary=str(inf.summary or ""),
+            )
+        )
     return events
 
 
-def work_events(*, start: Optional[date] = None, end: Optional[date] = None) -> list[WorkEvent]:
+def work_events(
+    *, start: Optional[date] = None, end: Optional[date] = None
+) -> list[WorkEvent]:
     """Load work events from the Polylogue facade."""
     if start is not None or end is not None:
         bounded = _work_events_from_facade(start=start, end=end)
@@ -890,20 +768,24 @@ def _day_summaries_from_facade() -> list[DaySessionSummary] | None:
         except (ValueError, TypeError):
             logger.debug("skipping day summary with unparseable date: %r", payload.date)
             continue
-        summaries.append(DaySessionSummary(
-            date=day,
-            session_count=payload.session_count,
-            total_cost_usd=payload.total_cost_usd,
-            total_messages=payload.total_messages,
-            total_words=payload.total_words,
-            work_event_breakdown=dict(payload.work_event_breakdown),
-            repos_active=tuple(payload.repos_active),
-            providers=dict(payload.providers),
-        ))
+        summaries.append(
+            DaySessionSummary(
+                date=day,
+                session_count=payload.session_count,
+                total_cost_usd=payload.total_cost_usd,
+                total_messages=payload.total_messages,
+                total_words=payload.total_words,
+                work_event_breakdown=dict(payload.work_event_breakdown),
+                repos_active=tuple(payload.repos_active),
+                providers=dict(payload.providers),
+            )
+        )
     return summaries
 
 
-def day_session_summaries(*, start: Optional[date] = None, end: Optional[date] = None) -> list[DaySessionSummary]:
+def day_session_summaries(
+    *, start: Optional[date] = None, end: Optional[date] = None
+) -> list[DaySessionSummary]:
     """Daily session aggregation from Polylogue's durable product tables."""
     global _cached_day_summaries
     if _cached_day_summaries is None:
@@ -911,7 +793,11 @@ def day_session_summaries(*, start: Optional[date] = None, end: Optional[date] =
 
     summaries = _cached_day_summaries
     if start or end:
-        return [s for s in summaries if (not start or s.date >= start) and (not end or s.date <= end)]
+        return [
+            s
+            for s in summaries
+            if (not start or s.date >= start) and (not end or s.date <= end)
+        ]
     return list(summaries)
 
 
@@ -953,18 +839,27 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
             if p.work_event_kind:
                 work_kinds[p.work_event_kind] += 1
             projects.update(p.work_event_projects)
-        result.append(ChatDayActivity(
-            date=day, provider=provider, session_count=len(profiles),
-            total_messages=total_messages, total_words=total_words,
-            engaged_minutes=round(engaged_ms / 60_000, 1),
-            total_wall_minutes=round(wall_ms / 60_000, 1),
-            dominant_work_kind=work_kinds.most_common(1)[0][0] if work_kinds else None,
-            projects=tuple(sorted(projects)),
-        ))
+        result.append(
+            ChatDayActivity(
+                date=day,
+                provider=provider,
+                session_count=len(profiles),
+                total_messages=total_messages,
+                total_words=total_words,
+                engaged_minutes=round(engaged_ms / 60_000, 1),
+                total_wall_minutes=round(wall_ms / 60_000, 1),
+                dominant_work_kind=work_kinds.most_common(1)[0][0]
+                if work_kinds
+                else None,
+                projects=tuple(sorted(projects)),
+            )
+        )
     return result
 
 
-def _daily_activity_from_day_summaries(*, start: date, end: date) -> list[ChatDayActivity]:
+def _daily_activity_from_day_summaries(
+    *, start: date, end: date
+) -> list[ChatDayActivity]:
     """Fallback daily activity from durable day summaries when profiles are unavailable."""
     result: list[ChatDayActivity] = []
     for summary in day_session_summaries(start=start, end=end):
@@ -974,37 +869,32 @@ def _daily_activity_from_day_summaries(*, start: date, end: date) -> list[ChatDa
             providers = summary.providers
         dominant = None
         if summary.work_event_breakdown:
-            dominant = max(summary.work_event_breakdown, key=lambda kind: summary.work_event_breakdown[kind])
+            dominant = max(
+                summary.work_event_breakdown,
+                key=lambda kind: summary.work_event_breakdown[kind],
+            )
         total_sessions = max(summary.session_count, 1)
         for provider, count in sorted(providers.items()):
             share = count / total_sessions
-            result.append(ChatDayActivity(
-                date=summary.date,
-                provider=provider,
-                session_count=count,
-                total_messages=round(summary.total_messages * share),
-                total_words=round(summary.total_words * share),
-                engaged_minutes=0.0,
-                total_wall_minutes=0.0,
-                dominant_work_kind=dominant,
-                projects=summary.repos_active,
-            ))
+            result.append(
+                ChatDayActivity(
+                    date=summary.date,
+                    provider=provider,
+                    session_count=count,
+                    total_messages=round(summary.total_messages * share),
+                    total_words=round(summary.total_words * share),
+                    engaged_minutes=0.0,
+                    total_wall_minutes=0.0,
+                    dominant_work_kind=dominant,
+                    projects=summary.repos_active,
+                )
+            )
     return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Cost and work pattern analytics
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class CostSummary:
-    date: date
-    provider: str
-    session_count: int
-    total_cost_usd: float
-    total_messages: int
-    cost_per_message: float
 
 
 def cost_summary(*, start: date, end: date) -> list[CostSummary]:
@@ -1023,18 +913,22 @@ def cost_summary(*, start: date, end: date) -> list[CostSummary]:
         if day.total_cost_usd <= 0:
             continue
         total_sessions = max(day.session_count, 1)
-        for provider, count in sorted((day.providers or {"unknown": day.session_count}).items()):
+        for provider, count in sorted(
+            (day.providers or {"unknown": day.session_count}).items()
+        ):
             share = count / total_sessions
             messages = round(day.total_messages * share)
             cost = day.total_cost_usd * share
-            summary_result.append(CostSummary(
-                date=day.date,
-                provider=provider,
-                session_count=count,
-                total_cost_usd=round(cost, 4),
-                total_messages=messages,
-                cost_per_message=round(cost / max(messages, 1), 4),
-            ))
+            summary_result.append(
+                CostSummary(
+                    date=day.date,
+                    provider=provider,
+                    session_count=count,
+                    total_cost_usd=round(cost, 4),
+                    total_messages=messages,
+                    cost_per_message=round(cost / max(messages, 1), 4),
+                )
+            )
     if summary_result:
         return summary_result
 
@@ -1053,29 +947,17 @@ def cost_summary(*, start: date, end: date) -> list[CostSummary]:
     for (d, provider), profiles in sorted(by_key.items()):
         total_cost = sum(p.total_cost_usd for p in profiles)
         total_msgs = sum(p.message_count for p in profiles)
-        result.append(CostSummary(
-            date=d, provider=provider, session_count=len(profiles),
-            total_cost_usd=round(total_cost, 4), total_messages=total_msgs,
-            cost_per_message=round(total_cost / max(total_msgs, 1), 4),
-        ))
+        result.append(
+            CostSummary(
+                date=d,
+                provider=provider,
+                session_count=len(profiles),
+                total_cost_usd=round(total_cost, 4),
+                total_messages=total_msgs,
+                cost_per_message=round(total_cost / max(total_msgs, 1), 4),
+            )
+        )
     return result
-
-
-@dataclass(frozen=True)
-class WorkPattern:
-    work_kind: str
-    session_count: int
-    total_hours: float
-    total_cost_usd: float
-    top_projects: tuple[str, ...]
-
-
-@dataclass
-class _WorkPatternBucket:
-    sessions: int = 0
-    ms: int = 0
-    cost: float = 0.0
-    projects: Counter[str] = field(default_factory=Counter)
 
 
 def work_pattern(*, start: date, end: date) -> list[WorkPattern]:
@@ -1115,10 +997,13 @@ def work_pattern(*, start: date, end: date) -> list[WorkPattern]:
 
     result: list[WorkPattern] = []
     for kind, b in sorted(by_kind.items(), key=lambda x: -x[1].ms):
-        result.append(WorkPattern(
-            work_kind=kind, session_count=b.sessions,
-            total_hours=round(b.ms / 3_600_000, 2),
-            total_cost_usd=round(b.cost, 4),
-            top_projects=tuple(p for p, _ in b.projects.most_common(5)),
-        ))
+        result.append(
+            WorkPattern(
+                work_kind=kind,
+                session_count=b.sessions,
+                total_hours=round(b.ms / 3_600_000, 2),
+                total_cost_usd=round(b.cost, 4),
+                top_projects=tuple(p for p, _ in b.projects.most_common(5)),
+            )
+        )
     return result

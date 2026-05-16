@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
@@ -15,6 +16,14 @@ from ..core.io import resolve_analysis_path, save_json, save_text
 
 
 def _run_cargo_metadata(repo_dir: str) -> JsonObject:
+    if shutil.which("cargo") is None:
+        return {
+            "workspace_members": [],
+            "packages": [],
+            "resolve": {"nodes": []},
+            "_lynchpin_status": "unavailable",
+            "_lynchpin_reason": "cargo not found on PATH",
+        }
     cmd = ['cargo', 'metadata', '--format-version', '1', '--locked']
     out = subprocess.check_output(cmd, cwd=repo_dir, text=True, stderr=subprocess.DEVNULL)
     data = json.loads(out)
@@ -230,6 +239,8 @@ def run_dependency_map(spec: JsonObject, out_file: str, markdown_out: str) -> Js
         'source': {
             'repo': repo_dir,
             'command': source_command,
+            'status': metadata.get('_lynchpin_status', 'ok'),
+            'reason': metadata.get('_lynchpin_reason'),
         },
         'graph': {
             'node_count': len(nodes),

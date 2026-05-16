@@ -120,6 +120,17 @@ def test_missing_file_returns_empty_iterator(tmp_path, monkeypatch):
     assert events == []
 
 
+def test_calendar_path_uses_config_only(monkeypatch, tmp_path):
+    configured = tmp_path / "configured-calendar.jsonl"
+
+    class Config:
+        calendar_jsonl = configured
+
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: Config())
+
+    assert cal._calendar_path_or_default() == configured
+
+
 def test_malformed_lines_are_skipped(tmp_path, monkeypatch):
     path = tmp_path / "calendar.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)

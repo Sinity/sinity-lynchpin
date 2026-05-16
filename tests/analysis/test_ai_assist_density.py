@@ -103,7 +103,7 @@ def test_medium_density_one_overlapping_event(tmp_path):
     assert payload["commits"][0]["supporting_event_count"] == 1
 
 
-def test_low_density_same_day_session_no_file_overlap(tmp_path):
+def test_same_day_session_without_file_overlap_is_none(tmp_path):
     base = datetime(2026, 5, 7, 12, tzinfo=UTC)
     commit_ts = base + timedelta(hours=8)
     commit = _commit_payload(
@@ -121,9 +121,9 @@ def test_low_density_same_day_session_no_file_overlap(tmp_path):
         commit_payload=commit,
         work_events_iter=events,
     )
-    assert payload["commits"][0]["ai_assist_density"] == "low"
+    assert payload["commits"][0]["ai_assist_density"] == "none"
     assert payload["commits"][0]["supporting_event_count"] == 0
-    assert any("file-path overlap" in c for c in payload["commits"][0]["caveats"])
+    assert payload["commits"][0]["caveats"] == []
 
 
 def test_none_density_no_ai_signal(tmp_path):

@@ -16,11 +16,11 @@ def test_machine_telemetry_analysis_keeps_general_signals(tmp_path):
                 INSERT INTO machine_metric_sample (
                     observed_at, host, boot_id, source, source_schema_version,
                     gpu_power_w, gpu_temp_c, gpu_util_pct, gpu_pcie_gen,
-                    gpu_pcie_width, load_1m, mem_avail_mb,
+                    gpu_pcie_width, load_1m, mem_avail_mb, swap_used_mb,
                     io_psi_some_avg10, io_psi_full_avg10,
                     gap_codes, refresh_id
                 ) VALUES (?, 'host', 'boot', 'machine.telemetry', 2,
-                    ?, 40, 5, ?, 16, ?, ?, ?, ?, [], 'r1')
+                    ?, 40, 5, ?, 16, ?, ?, ?, ?, ?, [], 'r1')
                 """,
                 [
                     datetime(2026, 5, day, 12, tzinfo=timezone.utc),
@@ -28,6 +28,7 @@ def test_machine_telemetry_analysis_keeps_general_signals(tmp_path):
                     4 if day >= 5 else 2,
                     float(idx),
                     32000 - (idx * 100),
+                    idx * 256,
                     0.1 * idx,
                     0.05 * idx,
                 ],
@@ -37,8 +38,14 @@ def test_machine_telemetry_analysis_keeps_general_signals(tmp_path):
 
     assert analysis.coverage.sample_count == 8
     assert len(analysis.daily) == 8
-    assert {signal.metric for signal in analysis.signals} >= {"p95_load_1m", "min_mem_avail_mb"}
+    assert {signal.metric for signal in analysis.signals} >= {
+        "p95_load_1m",
+        "min_mem_avail_mb",
+        "max_swap_used_mb",
+    }
+    assert analysis.daily[-1].max_swap_used_mb == 2048
     assert analysis.hardware_regimes[0].sample_count == 4
+    assert max(regime.max_swap_used_mb or 0 for regime in analysis.hardware_regimes) == 2048
     assert any(regime.gpu_pcie_gen == 4 for regime in analysis.hardware_regimes)
     assert analysis.correlations
 
@@ -62,3 +69,52 @@ def test_machine_telemetry_analysis_respects_window(tmp_path):
 
     assert analysis.coverage.sample_count == 1
     assert analysis.daily[0].day == date(2026, 5, 2)
+
+
+def test_machine_telemetry_dedupes_refresh_partitions(tmp_path):
+    db = tmp_path / "sub.duckdb"
+    observed = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    with connect(db) as conn:
+        apply_schema(conn)
+        for refresh in ("old", "new"):
+            conn.execute(
+                """
+                INSERT INTO machine_metric_sample (
+                    observed_at, host, source, source_schema_version,
+                    load_1m, mem_avail_mb, gap_codes, refresh_id
+                ) VALUES (?, 'host', 'machine.telemetry', 2, ?, 1000, [], ?)
+                """,
+                [observed, 1.0 if refresh == "old" else 3.0, refresh],
+            )
+
+    analysis = analyze_machine_telemetry(path=db)
+
+    assert analysis.coverage.sample_count == 1
+    assert analysis.daily[0].avg_load_1m == 3.0
+
+
+def test_machine_telemetry_excludes_null_pcie_from_hardware_regimes(tmp_path):
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO machine_metric_sample (
+                observed_at, host, source, source_schema_version,
+                load_1m, gpu_pcie_gen, gpu_pcie_width, gap_codes, refresh_id
+            ) VALUES
+                (?, 'host', 'machine.telemetry', 2, 1, NULL, NULL, [], 'r1'),
+                (?, 'host', 'machine.telemetry', 2, 1, 4, 16, [], 'r1')
+            """,
+            [
+                datetime(2026, 5, 1, tzinfo=timezone.utc),
+                datetime(2026, 5, 2, tzinfo=timezone.utc),
+            ],
+        )
+
+    analysis = analyze_machine_telemetry(path=db)
+
+    assert analysis.coverage.sample_count == 2
+    assert analysis.coverage.pcie_state_sample_count == 1
+    assert [(row.gpu_pcie_gen, row.gpu_pcie_width) for row in analysis.hardware_regimes] == [(4, 16)]
+    assert "rows without PCIe state are excluded from hardware-regime comparisons" in analysis.caveats

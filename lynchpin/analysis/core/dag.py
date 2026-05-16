@@ -82,6 +82,31 @@ class DAG:
             raise ValueError(f"Cycle detected in DAG {self.name!r}")
         return order
 
+    def _dependency_closure(self, target: str) -> set[str]:
+        if target not in self._steps:
+            raise ValueError(f"Unknown DAG step: {target}")
+        selected: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in selected:
+                return
+            step = self._steps[name]
+            for dep in step.depends_on:
+                if dep not in self._steps:
+                    raise ValueError(f"Step {name!r} depends on unknown step {dep!r}")
+                visit(dep)
+            selected.add(name)
+
+        visit(target)
+        return selected
+
+    def _selected_order(self, up_to: str | None) -> list[str]:
+        order = self._topo_order()
+        if up_to is None:
+            return order
+        selected = self._dependency_closure(up_to)
+        return [name for name in order if name in selected]
+
     def run(
         self,
         *,
@@ -89,9 +114,7 @@ class DAG:
         up_to: str | None = None,
         on_step: Optional[Callable[[StepResult], None]] = None,
     ) -> list[StepResult]:
-        if up_to is not None and up_to not in self._steps:
-            raise ValueError(f"Unknown DAG step: {up_to}")
-        order = self._topo_order()
+        order = self._selected_order(up_to)
         results: list[StepResult] = []
         failed: set[str] = set()
 
@@ -115,8 +138,6 @@ class DAG:
                 results.append(result)
                 if on_step:
                     on_step(result)
-                if name == up_to:
-                    break
                 continue
 
             t0 = time.monotonic()
@@ -142,8 +163,6 @@ class DAG:
             results.append(result)
             if on_step:
                 on_step(result)
-            if name == up_to:
-                break
 
         return results
 

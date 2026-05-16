@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 def test_promote_machine_metric_samples_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineMetricSample
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.promote import promote_machine_metric_samples
-    from lynchpin.substrate.reader import load_machine_metric_samples
+    from lynchpin.substrate.machine import promote_machine_metric_samples
+    from lynchpin.substrate.machine import load_machine_metric_samples
 
     db = tmp_path / "sub.duckdb"
     sample = MachineMetricSample(
@@ -16,6 +16,8 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         source_schema_version=1,
         cpu_package_w=16.5,
         gpu_power_w=28.0,
+        mem_avail_mb=2048,
+        swap_used_mb=1536,
         gpu_pcie_gen=1,
         gpu_pcie_width=16,
         io_psi_some_avg60=0.3,
@@ -31,6 +33,7 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         row = conn.execute(
             """
             SELECT host, cpu_package_w, gpu_power_w, gpu_pcie_gen,
+                   mem_avail_mb, swap_used_mb,
                    io_psi_some_avg60, cpu_psi_some_avg60,
                    memory_psi_full_total_us, gap_codes
             FROM machine_metric_sample
@@ -43,12 +46,15 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     assert row[1] == 16.5
     assert row[2] == 28.0
     assert row[3] == 1
-    assert row[4] == 0.3
-    assert row[5] == 0.1
-    assert row[6] == 67890.0
-    assert row[7] == ["fan.hwmon_unavailable"]
+    assert row[4] == 2048
+    assert row[5] == 1536
+    assert row[6] == 0.3
+    assert row[7] == 0.1
+    assert row[8] == 67890.0
+    assert row[9] == ["fan.hwmon_unavailable"]
     assert len(loaded) == 1
     assert loaded[0].host == "sinnix-prime"
+    assert loaded[0].swap_used_mb == 1536
     assert loaded[0].io_psi_some_total_us == 12345.0
     assert loaded[0].gap_codes == ("fan.hwmon_unavailable",)
 
@@ -56,8 +62,8 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
 def test_promote_machine_experiment_runs_round_trip(tmp_path):
     from lynchpin.sources.machine_experiments import MachineExperimentRun
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.promote import promote_machine_experiment_runs
-    from lynchpin.substrate.reader import load_machine_experiment_runs
+    from lynchpin.substrate.machine import promote_machine_experiment_runs
+    from lynchpin.substrate.machine import load_machine_experiment_runs
 
     db = tmp_path / "sub.duckdb"
     run = MachineExperimentRun(
@@ -95,8 +101,8 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
 def test_promote_machine_gpu_samples_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineGpuSample
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.promote import promote_machine_gpu_samples
-    from lynchpin.substrate.reader import load_machine_gpu_samples
+    from lynchpin.substrate.machine import promote_machine_gpu_samples
+    from lynchpin.substrate.machine import load_machine_gpu_samples
 
     db = tmp_path / "sub.duckdb"
     sample = MachineGpuSample(
@@ -130,8 +136,8 @@ def test_promote_machine_gpu_samples_round_trip(tmp_path):
 def test_promote_machine_service_states_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineServiceState
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.promote import promote_machine_service_states
-    from lynchpin.substrate.reader import load_machine_service_states
+    from lynchpin.substrate.machine import promote_machine_service_states
+    from lynchpin.substrate.machine import load_machine_service_states
 
     db = tmp_path / "sub.duckdb"
     state = MachineServiceState(
@@ -163,8 +169,8 @@ def test_promote_machine_service_states_round_trip(tmp_path):
 def test_promote_machine_network_samples_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineNetworkSample
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.promote import promote_machine_network_samples
-    from lynchpin.substrate.reader import load_machine_network_samples
+    from lynchpin.substrate.machine import promote_machine_network_samples
+    from lynchpin.substrate.machine import load_machine_network_samples
 
     db = tmp_path / "sub.duckdb"
     sample = MachineNetworkSample(

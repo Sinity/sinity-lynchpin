@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import Literal, Sequence, cast
+from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
 from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
-from .evidence_graph import build_evidence_graph, render_evidence_relations, render_evidence_timeline
+from .evidence_graph import build_evidence_graph
+from .evidence_views import render_evidence_relations, render_evidence_timeline
 from .semantic_enrichment import SemanticEnrichment, build_semantic_enrichment, render_semantic_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
@@ -95,7 +96,7 @@ def _load_substrate_graph(
     """Load a previously materialized graph from DuckDB when available."""
     try:
         from lynchpin.substrate import connect
-        from lynchpin.substrate.reader import load_evidence_graph
+        from lynchpin.substrate.graph import load_evidence_graph
     except ImportError as exc:
         return None, EvidenceCaveat("substrate", "missing", f"DuckDB substrate import failed: {exc}")
     try:
@@ -254,6 +255,13 @@ def render_context_pack(pack: ContextPack) -> str:
     relationships_section = _render_project_relationships(pack.graph)
     if relationships_section:
         lines.extend(["## Cross-Project Relationships", "", relationships_section, ""])
+    machine_section = _render_machine_analysis_artifacts(
+        start=pack.start.date(),
+        end=pack.end.date(),
+        projects=tuple(project.project for project in pack.projects),
+    )
+    if machine_section:
+        lines.extend(["## Machine Analysis", "", machine_section, ""])
     lines.extend(["## Project Slices", ""])
     if not pack.projects:
         lines.append("_No project-specific correlated rows matched the selection._")
@@ -452,6 +460,193 @@ def _render_project_relationships(graph: EvidenceGraph, *, limit: int = 12) -> s
     if not rel_graph.relationships:
         return ""
     return render_project_relationships(rel_graph, limit=limit)
+
+
+def _render_machine_analysis_artifacts(
+    *,
+    start: date,
+    end: date,
+    projects: Sequence[str],
+) -> str:
+    """Render compact machine-analysis summaries from materialized artifacts."""
+    from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
+
+    lines: list[str] = []
+    episodes = _artifact_rows(load_json_if_exists(resolve_analysis_path("machine_episode_analysis.json")), "episodes")
+    matching_episodes = [
+        row for row in episodes
+        if _row_overlaps(row, start=start, end=end, start_key="started_at", end_key="ended_at")
+    ]
+    if matching_episodes:
+        lines.append(f"- Episodes in window: {len(matching_episodes)} ({_top_counts(row.get('kind') for row in matching_episodes)})")
+
+    context = _artifact_rows(load_json_if_exists(resolve_analysis_path("machine_context_windows.json")), "windows")
+    selected_projects = set(projects)
+    matching_context = [
+        row for row in context
+        if _row_overlaps(row, start=start, end=end, start_key="started_at", end_key="ended_at")
+        and (not selected_projects or selected_projects.intersection(_row_projects(row)))
+    ]
+    if matching_context:
+        overlapped = sum(1 for row in matching_context if _row_int(row, "episode_count") > 0)
+        lines.append(f"- Work windows with machine episodes: {overlapped}/{len(matching_context)}")
+
+    states = load_json_if_exists(resolve_analysis_path("machine_work_state_windows.json"))
+    if isinstance(states, dict):
+        pressure_states = states.get("pressure_state_counts")
+        work_states = states.get("work_state_counts")
+        if isinstance(pressure_states, dict) and isinstance(work_states, dict):
+            lines.append(
+                "- Work-state segmentation: "
+                f"{states.get('window_count', 0)} windows; "
+                f"pressure={_format_mapping_counts(pressure_states)}; "
+                f"work={_format_mapping_counts(work_states)}"
+            )
+
+    commands = load_json_if_exists(resolve_analysis_path("command_performance_windows.json"))
+    if isinstance(commands, dict):
+        tools = _artifact_rows(commands, "tools")
+        if tools:
+            tool_counts = {str(row.get("tool")): row.get("command_count") for row in tools if row.get("tool")}
+            pressure_counts = {
+                str(row.get("tool")): row.get("pressure_overlap_count")
+                for row in tools
+                if row.get("tool") and _row_int(row, "pressure_overlap_count") > 0
+            }
+            lines.append(
+                "- Command performance: "
+                f"{commands.get('command_count', 0)} commands; "
+                f"tools={_format_mapping_counts(tool_counts)}; "
+                f"pressure-overlap={_format_mapping_counts(pressure_counts)}"
+            )
+
+    deltas = load_json_if_exists(resolve_analysis_path("machine_observational_deltas.json"))
+    if isinstance(deltas, dict):
+        delta_rows = _artifact_rows(deltas, "deltas")
+        if delta_rows:
+            top = sorted(
+                delta_rows,
+                key=lambda row: _row_float(row, "median_delta_seconds"),
+                reverse=True,
+            )[:3]
+            rendered = ", ".join(
+                f"{row.get('tool')}/{row.get('work_state')}/{row.get('pressure_state')} "
+                f"medianΔ={row.get('median_delta_seconds')}s"
+                for row in top
+            )
+            lines.append(f"- Observational command deltas: {len(delta_rows)} matched cohorts; {rendered}")
+
+    devshell = load_json_if_exists(resolve_analysis_path("devshell_performance.json"))
+    if isinstance(devshell, dict):
+        summaries = _artifact_rows(devshell, "summaries")
+        if summaries:
+            class_counts = {str(row.get("command_class")): row.get("command_count") for row in summaries if row.get("command_class")}
+            lines.append(
+                "- Devshell/Nix performance: "
+                f"{devshell.get('command_count', 0)} commands; "
+                f"classes={_format_mapping_counts(class_counts)}"
+            )
+
+    attribution = load_json_if_exists(resolve_analysis_path("machine_below_attribution.json"))
+    if isinstance(attribution, dict):
+        unattributed = attribution.get("unattributed_pressure_episode_count")
+        pressure = attribution.get("pressure_episode_count")
+        if pressure is not None:
+            lines.append(f"- Below attribution: {unattributed}/{pressure} pressure episodes lack bounded below overlap")
+
+    baselines = load_json_if_exists(resolve_analysis_path("machine_observational_baselines.json"))
+    if isinstance(baselines, dict):
+        caveats = _row_list(baselines, "caveats")
+        hardware = _row_list(baselines, "by_hardware_regime")
+        lines.append(f"- Observational baselines: {len(hardware)} hardware regimes; caveats: {len(caveats)}")
+
+    claims = load_json_if_exists(resolve_analysis_path("machine_experiment_claims.json"))
+    if isinstance(claims, dict):
+        lines.append(
+            "- Experiment claim packs: "
+            f"{claims.get('controlled_claim_count', 0)} controlled / "
+            f"{claims.get('observational_claim_count', 0)} observational"
+        )
+
+    readiness = load_json_if_exists(resolve_analysis_path("machine_analysis_readiness.json"))
+    if isinstance(readiness, dict):
+        dimensions = _artifact_rows(readiness, "dimensions")
+        if dimensions:
+            statuses = _top_counts(row.get("status") for row in dimensions)
+            lines.append(f"- Machine analysis readiness: {statuses}")
+
+    if not lines:
+        return ""
+    lines.append("")
+    lines.append("_Machine analysis is observational unless a manifest-backed controlled claim pack says otherwise._")
+    return "\n".join(lines)
+
+
+def _artifact_rows(payload: object, key: str) -> list[dict[str, object]]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _row_projects(row: dict[str, object]) -> set[str]:
+    projects = row.get("projects")
+    if not isinstance(projects, list):
+        return set()
+    return {str(project) for project in projects if project}
+
+
+def _row_int(row: dict[str, object], key: str) -> int:
+    value = row.get(key)
+    return int(value) if isinstance(value, (int, float, str)) and str(value).strip() else 0
+
+
+def _row_float(row: dict[str, object], key: str) -> float:
+    value = row.get(key)
+    try:
+        return float(str(value or 0.0))
+    except ValueError:
+        return 0.0
+
+
+def _row_list(row: dict[str, object], key: str) -> list[object]:
+    value = row.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _row_overlaps(row: dict[str, object], *, start: date, end: date, start_key: str, end_key: str) -> bool:
+    row_start = str(row.get(start_key) or "")[:10]
+    row_end = str(row.get(end_key) or "")[:10] or row_start
+    if not row_start:
+        return False
+    return row_end >= start.isoformat() and row_start <= end.isoformat()
+
+
+def _top_counts(values: Iterable[object], *, limit: int = 4) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        if value:
+            key = str(value)
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}×{count}" for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit])
+
+
+def _format_mapping_counts(mapping: Mapping[str, object], *, limit: int = 4) -> str:
+    counts: dict[str, int] = {}
+    for key, value in mapping.items():
+        try:
+            count = int(str(value))
+        except ValueError:
+            continue
+        if count:
+            counts[str(key)] = count
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}×{count}" for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit])
 
 
 def _pack_caveats(*, evidence_pack: CurrentStateEvidencePack, graph: EvidenceGraph) -> tuple[EvidenceCaveat, ...]:

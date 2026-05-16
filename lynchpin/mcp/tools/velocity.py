@@ -3,7 +3,11 @@
 from typing import Any
 
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import (
+    best_refresh_id as _best_refresh_id,
+    json_safe as _json_safe,
+    latest_refresh_id as _latest_refresh_id,
+)
 
 
 
@@ -36,7 +40,7 @@ def velocity_series(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_refresh_id(conn, "project_day_correlation")
             if refresh_id is None:
                 return []
 
@@ -107,9 +111,10 @@ def velocity_narrative(
     """
     from lynchpin.substrate.connection import connect, substrate_path
 
-    with connect(substrate_path(), read_only=True) as conn:
+    path = substrate_path()
+    with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_refresh_id(conn, "project_day_correlation")
             if refresh_id is None:
                 return {"error": "no promote runs"}
 

@@ -72,7 +72,7 @@ def _promote_current_state_graph(
     refresh_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
     try:
         from lynchpin.substrate import apply_schema, connect
-        from lynchpin.substrate.promote import promote_evidence_graph
+        from lynchpin.substrate.graph import promote_evidence_graph
     except ImportError as exc:
         return {"status": "unavailable", "refresh_id": refresh_id, "reason": f"substrate import failed: {exc}"}
     try:

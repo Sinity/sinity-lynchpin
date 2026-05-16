@@ -20,7 +20,8 @@ from ..core.projects import ALL_PROJECTS
 from ..core.projects import canonical_project_name
 from ..core.projects import project_path
 from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, fetch_issues, fetch_prs, repo_slug
-from .evidence_graph import build_evidence_graph, render_evidence_graph_summary
+from .evidence_graph import build_evidence_graph
+from .evidence_views import render_evidence_graph_summary
 from .movement import MovementSummary, movement_summary, render_movement_summary
 from .source_readiness import render_source_readiness, source_readiness
 from .work_correlation import (

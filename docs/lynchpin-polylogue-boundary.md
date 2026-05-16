@@ -63,8 +63,8 @@
 | Event | Lynchpin action |
 |---|---|
 | Polylogue schema version bump | Bump `inputs.polylogue` in sinnix flake; no lynchpin code change needed (facade absorbs). |
-| New polylogue inference product (e.g., embeddings) | Add promoter in `lynchpin/substrate/promote.py`; add substrate table; wire into MCP. |
-| Polylogue retires a product | Deprecate corresponding lynchpin promoter + remove substrate table (next `SUBSTRATE_VERSION` bump). |
+| New polylogue inference product (e.g., embeddings) | Add the table-family promoter in the owning `lynchpin/substrate/*.py` module; add substrate table; wire into MCP. |
+| Polylogue retires a product | Remove the corresponding lynchpin promoter and substrate table in the same `SUBSTRATE_VERSION` bump. |
 | Lynchpin adds a new re-classifier feature | Add extractor to `work_event_kind.py`; column already exists in `ai_work_event` schema. |
 
 ## Verification

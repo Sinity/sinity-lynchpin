@@ -20,7 +20,8 @@ STALE_REFERENCES = (
     "lynchpin/composite",
     "from lynchpin.graph.evidence import",
     "lynchpin/graph/evidence.py",
-    "compatibility re-export",
+    "compatibility facade",
+    "compatibility shim",
     "retrospective/scaffold",
     "generate_scaffold",
 )

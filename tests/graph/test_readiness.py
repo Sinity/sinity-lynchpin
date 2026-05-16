@@ -175,8 +175,9 @@ def test_payload_renders_both_states() -> None:
 
 
 def test_evidence_graph_emits_readiness_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Smoke: _add_readiness fires and produces a typed node."""
+    """Smoke: add_readiness fires and produces a typed node."""
     from lynchpin.graph import evidence_graph as eg
+    from lynchpin.graph import evidence_system_signals
 
     end = date(2026, 5, 6)
     target = end + timedelta(days=1)
@@ -195,7 +196,7 @@ def test_evidence_graph_emits_readiness_node(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(readiness, "build_readiness_forecast", lambda **kwargs: fake)
 
     nodes: list[eg.EvidenceNode] = []
-    eg._add_readiness(nodes, end=end)
+    evidence_system_signals.add_readiness(nodes, end=end)
     assert nodes
     node = nodes[0]
     assert node.kind == "readiness_forecast"

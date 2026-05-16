@@ -15,14 +15,14 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
               cpu_package_w REAL, cpu_core_w REAL, cpu_pkg_c REAL, cpu_max_core_c REAL,
               gpu_power_w REAL, gpu_fan_pct REAL, gpu_temp_c REAL, gpu_util_pct REAL,
               gpu_pstate TEXT, gpu_pcie_gen INTEGER, gpu_pcie_width INTEGER,
-              load_1m REAL, mem_avail_mb INTEGER, io_psi_some_avg10 REAL,
+              load_1m REAL, mem_avail_mb INTEGER, swap_used_mb INTEGER, io_psi_some_avg10 REAL,
               io_psi_full_avg10 REAL, latency_oversleep_ms REAL,
               dstate_task_count INTEGER, gap_codes_json TEXT
             );
             INSERT INTO metric_sample VALUES (
               '2026-05-12T12:00:00+00:00', 'sinnix-prime', 'boot-a', 1,
               16.5, 15.2, 36.0, 45.0, 28.0, 0.0, 40.0, 3.0,
-              'P8', 1, 16, 0.8, 48000, 0.2, 0.0, 3.5, 0,
+              'P8', 1, 16, 0.8, 48000, 512, 0.2, 0.0, 3.5, 0,
               '["fan.hwmon_unavailable"]'
             );
             CREATE TABLE service_state (
@@ -68,7 +68,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
         "get_config",
         lambda: SimpleNamespace(machine_telemetry_db=db),
     )
-    monkeypatch.setattr(machine, "_default_route_interface", lambda: "enp6s0")
+    monkeypatch.setattr(machine, "default_route_interface", lambda: "enp6s0")
 
     ready = machine.readiness()
     assert ready.status == "ready"
@@ -76,6 +76,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
     assert len(rows) == 1
     assert rows[0].cpu_package_w == 16.5
     assert rows[0].gpu_pcie_gen == 1
+    assert rows[0].swap_used_mb == 512
     assert rows[0].gap_codes == ("fan.hwmon_unavailable",)
     states = list(machine.service_states(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(states) == 1
@@ -123,7 +124,7 @@ def test_network_samples_filter_stale_interfaces(monkeypatch, tmp_path):
         "get_config",
         lambda: SimpleNamespace(machine_telemetry_db=db),
     )
-    monkeypatch.setattr(machine, "_default_route_interface", lambda: "enp4s0")
+    monkeypatch.setattr(machine, "default_route_interface", lambda: "enp4s0")
 
     network = list(machine.network_samples(start=date(2026, 5, 15), end=date(2026, 5, 15)))
     assert [sample.interface for sample in network] == ["enp4s0"]

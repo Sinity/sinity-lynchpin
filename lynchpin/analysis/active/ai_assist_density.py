@@ -11,8 +11,8 @@ Density buckets (per the maximally-ambitious plan, Arc L.2):
 
 - ``high``    — ≥3 file-overlapping events with ≥2 hours total event time
 - ``medium``  — 1–2 file-overlapping events, OR cumulative duration 30min–2h
-- ``low``     — no file-overlapping events, but at least one same-day AI
-                session for the project (signal exists; just not file-tight)
+- ``low``     — reserved for future explicit low-confidence file-overlap
+                signals; same-day-only evidence is not assistance density
 - ``none``    — no AI sessions for this project on the commit's logical day
 
 Output ``active_ai_assist_density.json`` is a sibling of
@@ -31,7 +31,7 @@ from typing import Any, Iterable, Sequence
 from ...core.primitives import logical_date
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import WorkEvent, work_events
-from ...substrate.reader import read_commit_facts
+from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
 from ..core.io import resolve_analysis_path, save_json
 
@@ -63,10 +63,12 @@ def build_active_ai_assist_density(
             )
     selected = {canonical_project_name(p) or p for p in (projects or ())}
 
-    events = tuple(work_events_iter) if work_events_iter is not None else tuple(
-        work_events(start=start, end=end + timedelta(days=1))
+    events = (
+        tuple(work_events_iter)
+        if work_events_iter is not None
+        else tuple(work_events(start=start, end=end + timedelta(days=1)))
     )
-    by_project_day, by_event_project = _index_events(events, selected=selected)
+    _by_project_day, by_event_project = _index_events(events, selected=selected)
 
     rows: list[dict[str, Any]] = []
     project_buckets: dict[str, Counter[str]] = defaultdict(Counter)
@@ -88,25 +90,26 @@ def build_active_ai_assist_density(
             commit_day=commit_day,
             commit_paths=commit_paths,
             project_events=by_event_project.get(project, ()),
-            project_day_index=by_project_day,
         )
         project_buckets[project][density] += 1
         overall[density] += 1
 
-        rows.append({
-            "project": project,
-            "sha": commit.get("sha"),
-            "subject": commit.get("subject"),
-            "timestamp": commit.get("timestamp"),
-            "date": commit.get("date"),
-            "ai_assist_density": density,
-            "supporting_event_count": len(supporting),
-            "supporting_total_duration_s": total_duration_s,
-            "supporting_event_ids": [event_id for event_id, _, _ in supporting],
-            "supporting_kinds": _kind_summary(supporting),
-            "low_tier_event_count": low_tier_count,
-            "caveats": _row_caveats(density, supporting, low_tier_count),
-        })
+        rows.append(
+            {
+                "project": project,
+                "sha": commit.get("sha"),
+                "subject": commit.get("subject"),
+                "timestamp": commit.get("timestamp"),
+                "date": commit.get("date"),
+                "ai_assist_density": density,
+                "supporting_event_count": len(supporting),
+                "supporting_total_duration_s": total_duration_s,
+                "supporting_event_ids": [event_id for event_id, _, _ in supporting],
+                "supporting_kinds": _kind_summary(supporting),
+                "low_tier_event_count": low_tier_count,
+                "caveats": _row_caveats(density, supporting, low_tier_count),
+            }
+        )
 
     project_summary = [
         {
@@ -159,7 +162,6 @@ def _classify(
     commit_day: date | None,
     commit_paths: set[str],
     project_events: Sequence[WorkEvent],
-    project_day_index: dict[tuple[str, date], list[WorkEvent]],
 ) -> tuple[str, list[tuple[str, str, str]], int, int]:
     """Return (density, supporting_events, total_duration_s, low_tier_count)."""
     supporting: list[tuple[str, str, str]] = []  # (event_id, kind, provider)
@@ -187,7 +189,10 @@ def _classify(
             low_tier_count += 1
 
     if supporting:
-        if len(supporting) >= _HIGH_EVENT_THRESHOLD and total_duration_s >= _HIGH_DURATION_S:
+        if (
+            len(supporting) >= _HIGH_EVENT_THRESHOLD
+            and total_duration_s >= _HIGH_DURATION_S
+        ):
             return "high", supporting, total_duration_s, low_tier_count
         if (
             1 <= len(supporting) <= 2
@@ -197,10 +202,6 @@ def _classify(
         # ≥3 events but under duration threshold → still substantive: medium.
         return "medium", supporting, total_duration_s, low_tier_count
 
-    # No file-overlapping events; same-day AI session existence → low.
-    same_day = project_day_index.get((project, commit_day), [])
-    if same_day:
-        return "low", supporting, total_duration_s, low_tier_count
     return "none", supporting, total_duration_s, low_tier_count
 
 
@@ -212,9 +213,7 @@ def _index_events(
     dict[tuple[str, date], list[WorkEvent]],
     dict[str, list[WorkEvent]],
 ]:
-    """Bucket events by (project, day) and by project. Project comes from
-    file_paths first, then a degraded fallback of "unattributed" — the
-    same-day-AI-session signal still benefits from this."""
+    """Bucket events by (project, day) and by project from file paths only."""
     by_project_day: dict[tuple[str, date], list[WorkEvent]] = defaultdict(list)
     by_project: dict[str, list[WorkEvent]] = defaultdict(list)
     for event in events:
@@ -256,10 +255,6 @@ def _row_caveats(
             caveats.append(
                 f"{low_tier_count}/{len(supporting)} supporting events have low Polylogue kind confidence — see Arc K"
             )
-    if density == "low":
-        caveats.append(
-            "no file-path overlap with commit; same-day AI session is weak corroboration"
-        )
     return caveats
 
 

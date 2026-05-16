@@ -10,9 +10,19 @@ import statistics
 from typing import Any, Literal
 
 from lynchpin.analysis.core.io import save_json
+from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 
 Direction = Literal["high", "low", "state"]
+
+
+@dataclass(frozen=True)
+class MachineEpisodeKindDefinition:
+    kind: str
+    label: str
+    definition: str
+    trigger_contract: str
+    interpretation_boundary: str
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,8 @@ class MachineEpisodeCoverage:
 @dataclass(frozen=True)
 class MachineEpisodeAnalysis:
     coverage: MachineEpisodeCoverage
+    kind_definitions: tuple[MachineEpisodeKindDefinition, ...]
+    episode_count: int
     episodes: list[MachineEpisode]
     caveats: list[str]
 
@@ -87,15 +99,16 @@ class _Point:
 
 
 _METRIC_RULES: tuple[_Rule, ...] = (
-    _Rule("cpu_saturation", "load_1m", "high", 20.0),
+    _Rule("load_pressure", "load_1m", "high", 20.0),
     _Rule("cpu_saturation", "cpu_psi_some", "high", 10.0),
     _Rule("memory_pressure", "mem_avail_mb", "low", 4096.0),
+    _Rule("memory_pressure", "swap_used_mb", "high", 1024.0),
     _Rule("memory_pressure", "memory_psi_some", "high", 10.0),
     _Rule("memory_pressure", "memory_psi_full", "high", 1.0),
     _Rule("io_pressure", "io_psi_some", "high", 10.0),
     _Rule("io_pressure", "io_psi_full", "high", 1.0),
     _Rule("scheduler_latency", "latency_oversleep_ms", "high", 50.0),
-    _Rule("scheduler_latency", "dstate_task_count", "high", 1.0),
+    _Rule("blocked_task_pressure", "dstate_task_count", "high", 1.0),
     _Rule("gpu_power_or_thermal", "gpu_temp_c", "high", 83.0),
 )
 
@@ -103,6 +116,79 @@ _NETWORK_RULES: tuple[_Rule, ...] = (
     _Rule("network_degraded", "dns_ms", "high", 200.0),
     _Rule("network_degraded", "ping_loss_pct", "high", 1.0),
     _Rule("network_degraded", "ping_rtt_ms", "high", 100.0),
+)
+
+EPISODE_KIND_DEFINITIONS: tuple[MachineEpisodeKindDefinition, ...] = (
+    MachineEpisodeKindDefinition(
+        kind="load_pressure",
+        label="Load Pressure",
+        definition="The host load average is high enough to indicate a backlog of runnable or uninterruptible tasks.",
+        trigger_contract="Emitted from load_1m when it crosses the configured absolute or robust high threshold.",
+        interpretation_boundary="This is not CPU saturation by itself: Linux load includes D-state and other uninterruptible waits.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="cpu_saturation",
+        label="CPU Saturation",
+        definition="CPU pressure stall information indicates runnable work is waiting for CPU time.",
+        trigger_contract="Emitted from CPU PSI some-average fields when they cross the configured high threshold.",
+        interpretation_boundary="Do not infer CPU saturation from load_1m alone; use load_pressure unless CPU PSI is present.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="memory_pressure",
+        label="Memory Pressure",
+        definition="Available memory or memory PSI indicates reclaim/availability pressure.",
+        trigger_contract="Emitted from low mem_avail_mb, material swap use, or high memory PSI some/full averages.",
+        interpretation_boundary="This does not identify the responsible process without a joined below/process window.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="io_pressure",
+        label="I/O Pressure",
+        definition="I/O PSI indicates tasks are stalled on storage or filesystem I/O.",
+        trigger_contract="Emitted from I/O PSI some/full averages when they cross configured high thresholds.",
+        interpretation_boundary="This does not identify the device, file path, or process without joined below or workload evidence.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="scheduler_latency",
+        label="Scheduler Latency",
+        definition="The host reports timer or scheduling oversleep beyond the expected sampling cadence.",
+        trigger_contract="Emitted from latency_oversleep_ms when it crosses the configured high threshold.",
+        interpretation_boundary="This is a host latency symptom, not a root cause; join load, PSI, and process evidence before attributing it.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="blocked_task_pressure",
+        label="Blocked Task Pressure",
+        definition="The host reports tasks in uninterruptible sleep/D-state.",
+        trigger_contract="Emitted from dstate_task_count when it crosses the configured high threshold.",
+        interpretation_boundary="This is not scheduler latency by itself; it usually requires I/O, device, or process attribution.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="gpu_power_or_thermal",
+        label="GPU Thermal Pressure",
+        definition="GPU temperature crosses the thermal threshold used as a risk signal.",
+        trigger_contract="Emitted from gpu_temp_c when it crosses the configured high threshold.",
+        interpretation_boundary="High GPU utilization alone is workload context, not a power/thermal problem.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="gpu_link_regime",
+        label="GPU PCIe Link Regime",
+        definition="The observed GPU PCIe generation/width is below the best valid link state seen in the analysis window.",
+        trigger_contract="Emitted from positive gpu_pcie_gen/gpu_pcie_width states below the best observed positive gen/width.",
+        interpretation_boundary="This is a hardware-state regime, not proof that a workload was bottlenecked by PCIe bandwidth.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="network_degraded",
+        label="Network Degraded",
+        definition="Network probe latency, DNS latency, or packet loss crosses configured thresholds.",
+        trigger_contract="Emitted from dns_ms or parsed ping latency/loss fields.",
+        interpretation_boundary="This covers probe health only; it does not prove an application-level network failure.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="service_instability",
+        label="Service Instability",
+        definition="A sampled systemd/user unit is in a failed state.",
+        trigger_contract="Emitted only when active_state or sub_state is failed.",
+        interpretation_boundary="Inactive/dead one-shot or timer units are not instability.",
+    ),
 )
 
 
@@ -136,7 +222,13 @@ def analyze_machine_episodes(
 
     episodes = _merge_points(points, max_gap=max_gap)
     caveats = _analysis_caveats(coverage, episodes)
-    return MachineEpisodeAnalysis(coverage=coverage, episodes=episodes, caveats=caveats)
+    return MachineEpisodeAnalysis(
+        coverage=coverage,
+        kind_definitions=EPISODE_KIND_DEFINITIONS,
+        episode_count=len(episodes),
+        episodes=episodes,
+        caveats=caveats,
+    )
 
 
 def write_machine_episode_analysis(
@@ -172,8 +264,9 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineEpis
     hosts: set[str] = set()
     for table in ("machine_metric_sample", "machine_gpu_sample", "machine_network_sample", "machine_service_state"):
         where, params = _window_clause(start, end)
+        rows_sql = latest_machine_rows(table)
         row = conn.execute(
-            f"SELECT count(*), min(observed_at), max(observed_at) FROM {table} {where}",
+            f"SELECT count(*), min(observed_at), max(observed_at) FROM ({rows_sql}) {where}",
             params,
         ).fetchone()
         counts[table] = int(row[0])
@@ -181,7 +274,7 @@ def _coverage(conn: Any, *, start: date | None, end: date | None) -> MachineEpis
             firsts.append(row[1])
         if row[2] is not None:
             lasts.append(row[2])
-        host_rows = conn.execute(f"SELECT DISTINCT host FROM {table} {where}", params).fetchall()
+        host_rows = conn.execute(f"SELECT DISTINCT host FROM ({rows_sql}) {where}", params).fetchall()
         hosts.update(str(host) for (host,) in host_rows)
     return MachineEpisodeCoverage(
         metric_samples=counts["machine_metric_sample"],
@@ -204,11 +297,12 @@ def _metric_thresholds(conn: Any, *, start: date | None, end: date | None) -> di
 def _sql_threshold(conn: Any, rule: _Rule, *, start: date | None, end: date | None) -> float | None:
     where, params = _window_clause(start, end)
     expr = _metric_expr(rule.metric)
+    metric_rows = latest_machine_rows("machine_metric_sample")
     row = conn.execute(
         f"""
         WITH vals AS (
             SELECT {expr}::DOUBLE AS value
-            FROM machine_metric_sample
+            FROM ({metric_rows})
             {where}
         ),
         clean AS (
@@ -243,6 +337,7 @@ def _metric_expr(metric: str) -> str:
         "load_1m": "load_1m",
         "cpu_psi_some": "coalesce(cpu_psi_some_avg60, cpu_psi_some_avg300)",
         "mem_avail_mb": "mem_avail_mb",
+        "swap_used_mb": "swap_used_mb",
         "memory_psi_some": "coalesce(memory_psi_some_avg60, memory_psi_some_avg300)",
         "memory_psi_full": "coalesce(memory_psi_full_avg60, memory_psi_full_avg300)",
         "io_psi_some": "coalesce(io_psi_some_avg10, io_psi_some_avg60, io_psi_some_avg300)",
@@ -263,6 +358,7 @@ def _metric_candidate_rows(
     thresholds: dict[str, float | None],
 ) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    metric_rows = latest_machine_rows("machine_metric_sample")
     filters: list[str] = []
     filter_params: list[Any] = []
     for rule in _METRIC_RULES:
@@ -287,6 +383,7 @@ def _metric_candidate_rows(
             coalesce(load_1m, 0.0) AS load_1m,
             coalesce(cpu_psi_some_avg60, cpu_psi_some_avg300, 0.0) AS cpu_psi_some,
             mem_avail_mb,
+            swap_used_mb,
             coalesce(memory_psi_some_avg60, memory_psi_some_avg300, 0.0) AS memory_psi_some,
             coalesce(memory_psi_full_avg60, memory_psi_full_avg300, 0.0) AS memory_psi_full,
             coalesce(io_psi_some_avg10, io_psi_some_avg60, io_psi_some_avg300, 0.0) AS io_psi_some,
@@ -299,14 +396,14 @@ def _metric_candidate_rows(
             gpu_pcie_gen,
             gpu_pcie_width,
             gap_codes
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         ORDER BY observed_at, host
         """,
         params,
     ).fetchall()
     columns = [
-        "observed_at", "host", "load_1m", "cpu_psi_some", "mem_avail_mb",
+        "observed_at", "host", "load_1m", "cpu_psi_some", "mem_avail_mb", "swap_used_mb",
         "memory_psi_some", "memory_psi_full", "io_psi_some", "io_psi_full",
         "latency_oversleep_ms", "dstate_task_count", "gpu_temp_c", "gpu_util_pct",
         "gpu_power_w", "gpu_pcie_gen", "gpu_pcie_width", "gap_codes",
@@ -316,10 +413,11 @@ def _metric_candidate_rows(
 
 def _metric_gpu_link_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    metric_rows = latest_machine_rows("machine_metric_sample")
     best = conn.execute(
         f"""
         SELECT max(gpu_pcie_gen), max(gpu_pcie_width)
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         """,
         params,
@@ -341,7 +439,7 @@ def _metric_gpu_link_rows(conn: Any, *, start: date | None, end: date | None) ->
     rows = conn.execute(
         f"""
         SELECT observed_at, host, gpu_pcie_gen, gpu_pcie_width, gpu_util_pct, gpu_power_w
-        FROM machine_metric_sample
+        FROM ({metric_rows})
         {where}
         ORDER BY observed_at, host
         """,
@@ -357,11 +455,12 @@ def _metric_gpu_link_rows(conn: Any, *, start: date | None, end: date | None) ->
 
 def _gpu_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    gpu_rows = latest_machine_rows("machine_gpu_sample")
     rows = conn.execute(
         f"""
         SELECT observed_at, host, gpu_pcie_gen, gpu_pcie_width, gpu_util_pct, gpu_power_w,
                gpu_temp_c, gpu_power_limit_w
-        FROM machine_gpu_sample
+        FROM ({gpu_rows})
         {where}
         ORDER BY observed_at, host
         """,
@@ -376,10 +475,11 @@ def _gpu_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[s
 
 def _network_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    network_rows = latest_machine_rows("machine_network_sample")
     rows = conn.execute(
         f"""
         SELECT observed_at, host, interface, dns_ms, ping, gap_codes
-        FROM machine_network_sample
+        FROM ({network_rows})
         {where}
         ORDER BY observed_at, host, interface
         """,
@@ -391,10 +491,11 @@ def _network_rows(conn: Any, *, start: date | None, end: date | None) -> list[di
 
 def _service_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    service_rows = latest_machine_rows("machine_service_state")
     rows = conn.execute(
         f"""
         SELECT observed_at, host, unit, scope, active_state, sub_state, memory_current_bytes
-        FROM machine_service_state
+        FROM ({service_rows})
         {where}
         ORDER BY observed_at, host, scope, unit
         """,
@@ -412,7 +513,7 @@ def _metric_points(rows: list[dict[str, Any]], *, thresholds: dict[str, float | 
             threshold = thresholds[rule.metric]
             if value is None or threshold is None or not _trips(value, threshold, rule.direction):
                 continue
-            severity = _severity(value, threshold, rule.direction)
+            severity = _metric_severity(rule.metric, value, threshold, rule.direction)
             confidence = _confidence(row_count=len(rows), has_absolute=rule.absolute_threshold is not None)
             reason = f"{rule.metric} {rule.direction} threshold crossed"
             points.append(_Point(
@@ -506,7 +607,7 @@ def _network_points(rows: list[dict[str, Any]]) -> list[_Point]:
                 kind=rule.kind,
                 host=str(row["host"]),
                 observed_at=row["observed_at"],
-                severity=_severity(value, threshold, rule.direction),
+                severity=_metric_severity(rule.metric, value, threshold, rule.direction),
                 confidence=_confidence(row_count=len(rows), has_absolute=True),
                 evidence=MachineEpisodeEvidence(
                     source_table="machine_network_sample",
@@ -542,8 +643,8 @@ def _service_points(rows: list[dict[str, Any]]) -> list[_Point]:
                 metric="active_state",
                 direction="state",
                 value=str(active),
-                threshold="active|activating",
-                reason="sampled service state is not active",
+                threshold="not failed",
+                reason="sampled service state is failed",
             ),
             source="machine_service_state",
             subject=f"{row.get('scope')}:{row.get('unit')}",
@@ -586,7 +687,7 @@ def _episode_from_points(host: str, kind: str, subject: str | None, points: list
     sources = tuple(sorted({point.source for point in points}))
     caveats = tuple(sorted({caveat for point in points for caveat in point.caveats}))
     severity = round(max(point.severity for point in points), 4)
-    confidence = round(min(0.99, statistics.mean(point.confidence for point in points)), 4)
+    confidence = _episode_confidence(kind, points)
     payload: dict[str, Any] = {}
     for point in points:
         if point.payload:
@@ -605,6 +706,20 @@ def _episode_from_points(host: str, kind: str, subject: str | None, points: list
         subject=subject,
         payload=payload or None,
     )
+
+
+def _episode_confidence(kind: str, points: list[_Point]) -> float:
+    confidence = min(0.99, statistics.mean(point.confidence for point in points))
+    if kind in {"service_instability", "gpu_link_regime"}:
+        return round(confidence, 4)
+    sample_count = len(points)
+    if sample_count == 1:
+        confidence = min(confidence, 0.65)
+    elif sample_count < 3:
+        confidence = min(confidence, 0.75)
+    elif sample_count < 5:
+        confidence = min(confidence, 0.85)
+    return round(confidence, 4)
 
 
 def _dedupe_evidence(items: Any) -> list[MachineEpisodeEvidence]:
@@ -662,6 +777,24 @@ def _severity(value: float, threshold: float, direction: Direction) -> float:
     if direction == "low":
         return _clamp((threshold - value) / abs(threshold))
     return _clamp((value - threshold) / abs(threshold))
+
+
+def _metric_severity(metric: str, value: float, threshold: float, direction: Direction) -> float:
+    if direction == "low":
+        return _severity(value, threshold, direction)
+    if metric in {"io_psi_some", "io_psi_full", "cpu_psi_some", "memory_psi_some", "memory_psi_full", "gpu_temp_c"}:
+        return _clamp((value - threshold) / max(100.0 - threshold, 1.0))
+    if metric == "latency_oversleep_ms":
+        return _clamp((value - threshold) / 450.0)
+    if metric == "dstate_task_count":
+        return _clamp((value - threshold) / 31.0)
+    if metric == "load_1m":
+        return _clamp((value - threshold) / 44.0)
+    if metric in {"dns_ms", "ping_rtt_ms"}:
+        return _clamp((value - threshold) / max(threshold * 4.0, 1.0))
+    if metric == "ping_loss_pct":
+        return _clamp((value - threshold) / max(100.0 - threshold, 1.0))
+    return _severity(value, threshold, direction)
 
 
 def _confidence(*, row_count: int, has_absolute: bool) -> float:
@@ -737,6 +870,8 @@ __all__ = [
     "MachineEpisodeAnalysis",
     "MachineEpisodeCoverage",
     "MachineEpisodeEvidence",
+    "MachineEpisodeKindDefinition",
+    "EPISODE_KIND_DEFINITIONS",
     "analyze_machine_episodes",
     "write_machine_episode_analysis",
 ]

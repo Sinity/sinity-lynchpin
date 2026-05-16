@@ -394,7 +394,11 @@ def run_sinex_analysis(sinex_dir, out_file):
         'timeline': timeline,
         'categories': categories,
         'dependency_graph': dependency_graph,
-        'dependency_graph_source': dependency_source,
+        'dependency_graph_source': {
+            'command': dependency_source,
+            'status': metadata.get('_lynchpin_status', 'ok'),
+            'reason': metadata.get('_lynchpin_reason'),
+        },
         'subsystem_distribution': distribution_stats({
             info['name']: info['app_code_lines']
             for info in crate_data.values()

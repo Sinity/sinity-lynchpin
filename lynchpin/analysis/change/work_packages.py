@@ -11,7 +11,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ...substrate.reader import read_commit_facts
+from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
 from ..core.io import resolve_analysis_path, save_json
 
@@ -94,30 +94,36 @@ def build_active_work_packages(
     packages: list[dict[str, Any]] = []
     for project, commits in sorted(grouped.items()):
         meta = project_meta.get(project, {})
-        project_packages = _packages_for_project(project, commits, project_path=Path(str(meta.get("path") or "")))
+        project_packages = _packages_for_project(
+            project, commits, project_path=Path(str(meta.get("path") or ""))
+        )
         packages.extend(project_packages)
-        project_rows.append({
-            "project": project,
-            "path": meta.get("path"),
-            "default_branch": meta.get("default_branch"),
-            "status": "available",
-            "commit_count": len(commits),
-            "package_count": len(project_packages),
-            "packages": project_packages,
-        })
+        project_rows.append(
+            {
+                "project": project,
+                "path": meta.get("path"),
+                "default_branch": meta.get("default_branch"),
+                "status": "available",
+                "commit_count": len(commits),
+                "package_count": len(project_packages),
+                "packages": project_packages,
+            }
+        )
 
     for project, meta in sorted(project_meta.items()):
         if grouped.get(project) or (projects and project not in set(projects)):
             continue
-        project_rows.append({
-            "project": project,
-            "path": meta.get("path"),
-            "default_branch": meta.get("default_branch"),
-            "status": meta.get("status", "missing"),
-            "commit_count": 0,
-            "package_count": 0,
-            "packages": [],
-        })
+        project_rows.append(
+            {
+                "project": project,
+                "path": meta.get("path"),
+                "default_branch": meta.get("default_branch"),
+                "status": meta.get("status", "missing"),
+                "commit_count": 0,
+                "package_count": 0,
+                "packages": [],
+            }
+        )
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -177,7 +183,11 @@ def _commit_rows(payload: Mapping[str, Any]) -> tuple[_CommitRow, ...]:
         project = row.get("project")
         sha = row.get("sha")
         timestamp = row.get("timestamp")
-        if not isinstance(project, str) or not isinstance(sha, str) or not isinstance(timestamp, str):
+        if (
+            not isinstance(project, str)
+            or not isinstance(sha, str)
+            or not isinstance(timestamp, str)
+        ):
             continue
         rows.append(
             _CommitRow(
@@ -189,25 +199,39 @@ def _commit_rows(payload: Mapping[str, Any]) -> tuple[_CommitRow, ...]:
                 author=str(row.get("author") or ""),
                 conventional_kind=str(row.get("conventional_kind") or "other"),
                 conventional_scope=_optional_str(row.get("conventional_scope")),
-                conventional_signature=str(row.get("conventional_signature") or "other"),
+                conventional_signature=str(
+                    row.get("conventional_signature") or "other"
+                ),
                 paths=_string_tuple(row.get("paths")),
                 categories=_counter(row.get("categories")),
                 path_roots=_counter(row.get("path_roots")),
                 refs=_refs(row.get("github_refs")),
             )
         )
-    return tuple(sorted(rows, key=lambda item: (item.project, item.timestamp, item.sha)))
+    return tuple(
+        sorted(rows, key=lambda item: (item.project, item.timestamp, item.sha))
+    )
 
 
 # ── clustering logic (unchanged) ──────────────────────────────────────
 
 
-def _packages_for_project(project: str, commits: Sequence[_CommitRow], *, project_path: Path) -> list[dict[str, Any]]:
+def _packages_for_project(
+    project: str, commits: Sequence[_CommitRow], *, project_path: Path
+) -> list[dict[str, Any]]:
     remaining = {commit.sha: commit for commit in commits}
     packages: list[dict[str, Any]] = []
 
     for (kind, number), group in _github_groups(remaining.values()).items():
-        packages.append(_package(project, "github_thread", f"{kind}#{number}", group, project_path=project_path))
+        packages.append(
+            _package(
+                project,
+                "github_thread",
+                f"{kind}#{number}",
+                group,
+                project_path=project_path,
+            )
+        )
         for commit in group:
             remaining.pop(commit.sha, None)
 
@@ -216,7 +240,15 @@ def _packages_for_project(project: str, commits: Sequence[_CommitRow], *, projec
         for index, group in enumerate(clusters, start=1):
             if len(group) < 2:
                 continue
-            packages.append(_package(project, "conventional_scope_burst", f"{signature}:{index}", group, project_path=project_path))
+            packages.append(
+                _package(
+                    project,
+                    "conventional_scope_burst",
+                    f"{signature}:{index}",
+                    group,
+                    project_path=project_path,
+                )
+            )
             for commit in group:
                 remaining.pop(commit.sha, None)
 
@@ -228,15 +260,37 @@ def _packages_for_project(project: str, commits: Sequence[_CommitRow], *, projec
             singles.extend(group)
             continue
         dominant = _dominant_surface(group)
-        packages.append(_package(project, "surface_temporal_cluster", f"{dominant}:{index}", group, project_path=project_path))
+        packages.append(
+            _package(
+                project,
+                "surface_temporal_cluster",
+                f"{dominant}:{index}",
+                group,
+                project_path=project_path,
+            )
+        )
 
-    for commit in sorted((*singles, *remaining.values()), key=lambda item: (item.timestamp, item.sha)):
-        packages.append(_package(project, "single_commit", commit.short_sha, [commit], project_path=project_path))
+    for commit in sorted(
+        (*singles, *remaining.values()), key=lambda item: (item.timestamp, item.sha)
+    ):
+        packages.append(
+            _package(
+                project,
+                "single_commit",
+                commit.short_sha,
+                [commit],
+                project_path=project_path,
+            )
+        )
 
-    return sorted(packages, key=lambda row: (row["first_at"] or "", row["work_package_id"]))
+    return sorted(
+        packages, key=lambda row: (row["first_at"] or "", row["work_package_id"])
+    )
 
 
-def _github_groups(commits: Iterable[_CommitRow]) -> dict[tuple[str, int], list[_CommitRow]]:
+def _github_groups(
+    commits: Iterable[_CommitRow],
+) -> dict[tuple[str, int], list[_CommitRow]]:
     groups: dict[tuple[str, int], list[_CommitRow]] = defaultdict(list)
     for commit in commits:
         if commit.refs["prs"]:
@@ -246,7 +300,9 @@ def _github_groups(commits: Iterable[_CommitRow]) -> dict[tuple[str, int], list[
     return dict(groups)
 
 
-def _conventional_groups(commits: Iterable[_CommitRow]) -> dict[str, list[list[_CommitRow]]]:
+def _conventional_groups(
+    commits: Iterable[_CommitRow],
+) -> dict[str, list[list[_CommitRow]]]:
     by_signature: dict[str, list[_CommitRow]] = defaultdict(list)
     for commit in commits:
         if commit.conventional_scope and commit.conventional_signature != "other":
@@ -269,7 +325,10 @@ def _surface_clusters(commits: Iterable[_CommitRow]) -> list[list[_CommitRow]]:
             continue
         previous = current[-1]
         gap_ok = _gap_days(previous, commit) <= _DEFAULT_GAP_DAYS
-        surface_ok = bool(current_surfaces & set(commit.surfaces)) or _dominant_surface(current) == commit.dominant_surface
+        surface_ok = (
+            bool(current_surfaces & set(commit.surfaces))
+            or _dominant_surface(current) == commit.dominant_surface
+        )
         if gap_ok and surface_ok:
             current.append(commit)
             current_surfaces.update(commit.surfaces)
@@ -282,7 +341,9 @@ def _surface_clusters(commits: Iterable[_CommitRow]) -> list[list[_CommitRow]]:
     return clusters
 
 
-def _split_by_gap(commits: Sequence[_CommitRow], *, gap_days: int) -> list[list[_CommitRow]]:
+def _split_by_gap(
+    commits: Sequence[_CommitRow], *, gap_days: int
+) -> list[list[_CommitRow]]:
     ordered = sorted(commits, key=lambda item: (item.timestamp, item.sha))
     clusters: list[list[_CommitRow]] = []
     current: list[_CommitRow] = []
@@ -306,8 +367,12 @@ def _package(
 ) -> dict[str, Any]:
     ordered = sorted(commits, key=lambda item: (item.timestamp, item.sha))
     path_set = {path for commit in ordered for path in commit.paths}
-    surface_counter = Counter(surface for commit in ordered for surface in commit.surfaces)
-    path_root_counter = Counter(root for commit in ordered for root in commit.path_roots)
+    surface_counter = Counter(
+        surface for commit in ordered for surface in commit.surfaces
+    )
+    path_root_counter = Counter(
+        root for commit in ordered for root in commit.path_roots
+    )
     authors = Counter(commit.author for commit in ordered if commit.author)
     kinds = Counter(commit.conventional_kind for commit in ordered)
     refs = _merge_refs(ordered)
@@ -334,7 +399,9 @@ def _package(
         "commit_count": len(ordered),
         "commit_shas": [commit.sha for commit in ordered],
         "authors": [author for author, _ in authors.most_common(5)],
-        "dominant_surface": surface_counter.most_common(1)[0][0] if surface_counter else "unknown",
+        "dominant_surface": surface_counter.most_common(1)[0][0]
+        if surface_counter
+        else "unknown",
         "top_surfaces": [surface for surface, _ in surface_counter.most_common(8)],
         "path_roots": [root for root, _ in path_root_counter.most_common(12)],
         "artifact_paths": len(path_set),
@@ -342,7 +409,9 @@ def _package(
         "breadth": len(surface_counter),
         "scope_geom": scope_geom,
         "survival_surface_share": survival_share,
-        "durability_adjusted_scope": _durability_adjusted_scope(scope_geom, survival_share),
+        "durability_adjusted_scope": _durability_adjusted_scope(
+            scope_geom, survival_share
+        ),
         "direction_mix": _direction_mix(kinds),
         "refs": refs,
         "links": {
@@ -357,7 +426,12 @@ def _package(
 
 
 def _scope_geom(commit_count: int, artifact_paths: int, breadth: int) -> float:
-    return round(float(((1 + commit_count) * (1 + artifact_paths) * (1 + breadth)) ** (1 / 3) - 1), 6)
+    return round(
+        float(
+            ((1 + commit_count) * (1 + artifact_paths) * (1 + breadth)) ** (1 / 3) - 1
+        ),
+        6,
+    )
 
 
 def _durability_adjusted_scope(scope_geom: float, survival_share: float) -> float:
@@ -398,7 +472,9 @@ def _dominant_surface(commits: Sequence[_CommitRow]) -> str:
 def _best_subject(commits: Sequence[_CommitRow]) -> str:
     for commit in commits:
         tail = _subject_tail(commit.subject)
-        if len(tail) >= 12 and not re.match(r"^(merge|wip|update|test|commit)$", tail, re.IGNORECASE):
+        if len(tail) >= 12 and not re.match(
+            r"^(merge|wip|update|test|commit)$", tail, re.IGNORECASE
+        ):
             return commit.subject
     return commits[0].subject if commits else ""
 
@@ -430,17 +506,21 @@ def _caveats(unit_type: str, survival_share: float) -> list[dict[str, str]]:
         }
     ]
     if unit_type != "github_thread":
-        caveats.append({
-            "source": "git",
-            "severity": "partial",
-            "message": "Package grouping is heuristic because commits lacked explicit GitHub thread refs.",
-        })
+        caveats.append(
+            {
+                "source": "git",
+                "severity": "partial",
+                "message": "Package grouping is heuristic because commits lacked explicit GitHub thread refs.",
+            }
+        )
     if survival_share < 0.5:
-        caveats.append({
-            "source": "filesystem",
-            "severity": "partial",
-            "message": "Less than half of touched paths survive in the current checkout.",
-        })
+        caveats.append(
+            {
+                "source": "filesystem",
+                "severity": "partial",
+                "message": "Less than half of touched paths survive in the current checkout.",
+            }
+        )
     return caveats
 
 
@@ -453,7 +533,9 @@ def _confidence(unit_type: str) -> float:
     }[unit_type]
 
 
-def _package_id(project: str, unit_type: str, unit_key: str, first: _CommitRow | None) -> str:
+def _package_id(
+    project: str, unit_type: str, unit_key: str, first: _CommitRow | None
+) -> str:
     if unit_type == "single_commit" and first is not None:
         return f"wp:{project}:commit:{first.short_sha}"
     return f"wp:{project}:{_slug(unit_type)}:{_slug(unit_key)}"
@@ -463,11 +545,21 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", value.lower()).strip("-") or "unknown"
 
 
-def _summary(packages: Sequence[dict[str, Any]], projects: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    ordered = sorted(packages, key=lambda row: (-float(row.get("durability_adjusted_scope") or 0), str(row.get("work_package_id"))))
+def _summary(
+    packages: Sequence[dict[str, Any]], projects: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
+    ordered = sorted(
+        packages,
+        key=lambda row: (
+            -float(row.get("durability_adjusted_scope") or 0),
+            str(row.get("work_package_id")),
+        ),
+    )
     return {
         "project_count": len(projects),
-        "available_project_count": sum(1 for project in projects if project.get("status") == "available"),
+        "available_project_count": sum(
+            1 for project in projects if project.get("status") == "available"
+        ),
         "package_count": len(packages),
         "top_work_packages": [
             {
@@ -496,7 +588,9 @@ def _refs(value: object) -> dict[str, tuple[int, ...]]:
 def _counter(value: object) -> Counter[str]:
     if not isinstance(value, dict):
         return Counter()
-    return Counter({str(key): int(count) for key, count in value.items() if _is_int_like(count)})
+    return Counter(
+        {str(key): int(count) for key, count in value.items() if _is_int_like(count)}
+    )
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:

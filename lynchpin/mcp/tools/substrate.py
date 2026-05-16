@@ -366,7 +366,7 @@ def list_evidence_graph_builds(
 ) -> list[dict[str, Any]]:
     """List evidence-graph builds stored in the substrate.
 
-    Wraps ``lynchpin.substrate.reader.list_evidence_graph_builds``.
+    Wraps ``lynchpin.substrate.graph.list_evidence_graph_builds``.
 
     Parameters:
         start: ISO date string (YYYY-MM-DD) — filter by exact start_date.
@@ -391,7 +391,7 @@ def list_evidence_graph_builds(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.reader import list_evidence_graph_builds as _list_builds
+    from lynchpin.substrate.graph import list_evidence_graph_builds as _list_builds
 
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
@@ -434,7 +434,7 @@ def load_evidence_graph_summary(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.reader import load_evidence_graph as _load_graph
+    from lynchpin.substrate.graph import load_evidence_graph as _load_graph
 
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
@@ -551,24 +551,47 @@ def ai_attribution_backfill(
             [refresh_id],
         ).fetchone()[0]
 
-        # Match commits to AI work events by path intersection + time window.
-        # ai_work_event.project is often NULL (promoted without resolver), so
-        # we match on file_path intersection alone — paths contain project
-        # directories so cross-project false positives are rare.
+        # Match commits to AI work events by project + suffix-normalized path
+        # overlap + time window. Commit paths are repo-relative while
+        # Polylogue paths are often absolute or temporary-worktree paths, so
+        # exact list intersection misses legitimate matches.
         matches = conn.execute("""
-            SELECT c.sha, c.repo, c.subject,
-                   COUNT(we.event_id) AS matched_events,
-                   ARRAY_AGG(DISTINCT we.kind) AS kinds,
-                   ARRAY_AGG(DISTINCT we.event_id) AS event_ids
-            FROM commit_fact c
-            JOIN ai_work_event we
-              ON list_has_any(c.paths, we.file_paths)
-             AND ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) < ?
-            WHERE we.start_ts IS NOT NULL
-              AND len(c.paths) > 0
-              AND len(we.file_paths) > 0
-              AND c.refresh_id = ?
-            GROUP BY c.sha, c.repo, c.subject
+            WITH candidate_paths AS (
+                SELECT
+                    c.sha,
+                    c.repo,
+                    c.subject,
+                    we.event_id,
+                    we.kind,
+                    cp.commit_path,
+                    ep.event_path
+                FROM commit_fact c
+                JOIN ai_work_event we
+                  ON c.refresh_id = we.refresh_id
+                 AND c.project = we.project
+                 AND ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) < ?
+                , UNNEST(c.paths) AS cp(commit_path)
+                , UNNEST(we.file_paths) AS ep(event_path)
+                WHERE we.start_ts IS NOT NULL
+                  AND c.project IS NOT NULL
+                  AND we.project IS NOT NULL
+                  AND len(c.paths) > 0
+                  AND len(we.file_paths) > 0
+                  AND c.refresh_id = ?
+            ),
+            path_matches AS (
+                SELECT DISTINCT sha, repo, subject, event_id, kind
+                FROM candidate_paths
+                WHERE
+                    ends_with(ltrim(event_path, '/'), ltrim(commit_path, '/'))
+                    OR ends_with(ltrim(commit_path, '/'), ltrim(event_path, '/'))
+            )
+            SELECT sha, repo, subject,
+                   COUNT(event_id) AS matched_events,
+                   ARRAY_AGG(DISTINCT kind) AS kinds,
+                   ARRAY_AGG(DISTINCT event_id) AS event_ids
+            FROM path_matches
+            GROUP BY sha, repo, subject
             ORDER BY matched_events DESC
         """, [time_window_hours * 3600, refresh_id]).fetchall()
 
@@ -584,13 +607,13 @@ def ai_attribution_backfill(
                 attribution = _json.dumps({
                     "matched_events": cnt,
                     "top_kinds": list(kinds[:5]) if kinds else [],
-                    "matched_via": "file_path_overlap",
+                    "matched_via": "project_suffix_path_overlap",
                     "backfilled_at": now_iso,
                 })
                 conn.execute(
                     "UPDATE commit_fact SET ai_attribution = ? "
-                    "WHERE sha = ? AND repo = ?",
-                    [attribution, sha, repo],
+                    "WHERE refresh_id = ? AND sha = ? AND repo = ?",
+                    [attribution, refresh_id, sha, repo],
                 )
 
     return {

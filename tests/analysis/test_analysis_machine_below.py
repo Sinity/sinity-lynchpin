@@ -39,10 +39,15 @@ def test_below_analysis_summarizes_bounded_exports(tmp_path):
 
     analysis = analyze_below_exports(root=tmp_path, top_n=5)
 
+    assert analysis.window_count == 1
     assert len(analysis.system) == 1
+    assert analysis.top_process_count == 1
+    assert analysis.top_cgroup_count == 1
     assert analysis.system[0].avg_cpu_pct == 3.0
     assert analysis.system[0].oom_kills == 1
     assert analysis.top_processes[0].key == "pytest -q"
+    assert analysis.top_processes[0].first_observed_at is not None
+    assert analysis.top_processes[0].last_observed_at is not None
     assert analysis.top_processes[0].max_rss_mb == 120.0
     assert analysis.top_cgroups[0].key == "/user.slice"
     assert analysis.top_cgroups[0].max_mem_total_mb == 1536.0

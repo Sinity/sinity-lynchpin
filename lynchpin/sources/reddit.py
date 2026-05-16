@@ -178,7 +178,7 @@ def _load_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditComment
 
 
 def iter_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditComment]:
-    yield from _load_comments(paths)
+    yield from _load_comments(paths=paths)
 
 
 def _posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
@@ -210,7 +210,7 @@ def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
 
 
 def iter_posts(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditPost]:
-    yield from _load_posts(paths)
+    yield from _load_posts(paths=paths)
 
 
 def _saved_posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
@@ -238,11 +238,11 @@ def _load_saved_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditS
 
 
 def iter_saved_posts(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditSavedItem]:
-    yield from _load_saved_posts(paths)
+    yield from _load_saved_posts(paths=paths)
 
 
 def iter_saved_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditSavedItem]:
-    yield from _load_saved_comments(paths)
+    yield from _load_saved_comments(paths=paths)
 
 
 def _comment_votes_sig(paths: Optional[Sequence[Path]] = None) -> object:
@@ -270,11 +270,11 @@ def _load_post_votes(paths: Optional[Sequence[Path]] = None) -> list[RedditVote]
 
 
 def iter_comment_votes(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditVote]:
-    yield from _load_comment_votes(paths)
+    yield from _load_comment_votes(paths=paths)
 
 
 def iter_post_votes(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditVote]:
-    yield from _load_post_votes(paths)
+    yield from _load_post_votes(paths=paths)
 
 
 def _message_paths(paths: Optional[Sequence[Path]] = None) -> list[Path]:
@@ -306,7 +306,7 @@ def _load_message_headers(paths: Optional[Sequence[Path]] = None) -> list[Reddit
 
 
 def iter_message_headers(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditMessageHeader]:
-    yield from _load_message_headers(paths)
+    yield from _load_message_headers(paths=paths)
 
 
 def _read_comment_csv(path: Path) -> Iterator[RedditComment]:

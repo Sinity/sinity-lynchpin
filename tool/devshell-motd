@@ -46,17 +46,87 @@ size_mb() {
   fi
 }
 
+age() {
+  local path="$1"
+  if [[ ! -e "$path" ]]; then
+    printf 'missing'
+    return
+  fi
+  local now mtime delta
+  now="$(date +%s)"
+  mtime="$(stat -c '%Y' "$path" 2>/dev/null || printf '0')"
+  delta=$((now - mtime))
+  if (( delta < 120 )); then
+    printf '%ss' "$delta"
+  elif (( delta < 7200 )); then
+    printf '%sm' "$((delta / 60))"
+  elif (( delta < 172800 )); then
+    printf '%sh' "$((delta / 3600))"
+  else
+    printf '%sd' "$((delta / 86400))"
+  fi
+}
+
+readiness_statuses() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    printf 'missing'
+    return
+  fi
+  awk -F'"' '
+    /"status":/ { counts[$4]++ }
+    END {
+      if (!length(counts)) {
+        printf "empty"
+        exit
+      }
+      order[1] = "stable"
+      order[2] = "limited"
+      order[3] = "missing"
+      order[4] = "degraded"
+      order[5] = "empty"
+      sep = ""
+      for (idx = 1; idx <= 5; idx++) {
+        status = order[idx]
+        if (counts[status]) {
+          printf "%s%s×%d", sep, status, counts[status]
+          sep = ", "
+          delete counts[status]
+        }
+      }
+      for (status in counts) {
+        if (counts[status]) {
+          printf "%s%s×%d", sep, status, counts[status]
+          sep = ", "
+        }
+      }
+    }
+  ' "$path"
+}
+
 local_root="${LYNCHPIN_LOCAL_ROOT:-$repo_root/.lynchpin}"
 substrate="${local_root}/duck/substrate.duckdb"
+analysis_root="${LYNCHPIN_ANALYSIS_OUTPUT_DIR:-${local_root}/generated/analysis}"
+status_json="${analysis_root}/analysis_status.json"
+readiness_json="${analysis_root}/machine_analysis_readiness.json"
+context_md="${analysis_root}/current_state_context_pack.md"
 aw_db="${LYNCHPIN_ACTIVITYWATCH_DB:-$HOME/.local/share/activitywatch/aw-server-rust/sqlite.db}"
 atuin_db="${LYNCHPIN_ATUIN_DB:-$HOME/.local/share/atuin/history.db}"
 polylogue_db="${POLYLOGUE_DB_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue/polylogue.db}"
 
 printf 'lynchpin dev | branch %s | py %s\n' "$branch" "${LYNCHPIN_DEV_PYTHON:-3.12}"
 printf 'worktree    | staged %d | unstaged %d | untracked %d\n' "$staged" "$unstaged" "$untracked"
+printf 'nix         | profile:%s | max-jobs:%s | cores:%s | heavy → nix develop .#heavy\n' \
+  "${LYNCHPIN_DEV_PROFILE:-default}" \
+  "${LYNCHPIN_NIX_MAX_JOBS:-2}" \
+  "${LYNCHPIN_NIX_CORES:-4}"
 printf 'substrate   | %s | %s\n' "$substrate" "$(size_mb "$substrate")"
 printf 'sources     | %s | %s | %s\n' \
   "$(mark_path aw "$aw_db")" \
   "$(mark_path atuin "$atuin_db")" \
   "$(mark_path polylogue "$polylogue_db")"
-printf 'commands    | just check | tool/current-state --start YYYY-MM-DD --end YYYY-MM-DD | just tool-inventory\n'
+printf 'analysis    | status:%s | machine:%s | context:%s\n' \
+  "$(age "$status_json")" \
+  "$(readiness_statuses "$readiness_json")" \
+  "$(age "$context_md")"
+printf 'commands    | just check | just analysis-dry-run | tool/current-state --start YYYY-MM-DD --end YYYY-MM-DD\n'

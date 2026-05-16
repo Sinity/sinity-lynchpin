@@ -31,6 +31,21 @@ from ..core.config import get_config
 from ..core.parse import parse_date_from_any
 from ..core.projects import ALL_PROJECTS
 from .github import GitHubItem, extract_commit_refs, fetch_issue, fetch_pr, repo_slug
+from .git_models import (
+    CommitSession,
+    GitCommit,
+    GitCommitActivity,
+    GitCommitFact,
+    GitDayActivity,
+    GitFileChangeFact,
+    GitPatchExcerpt,
+    RepoCommitSummary,
+    RepoFile,
+    RepoInfo,
+    TokeiLanguageStat,
+    TokeiReport,
+    _RepoCommitRecord,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +62,7 @@ class _MutableRepoCommit(TypedDict):
 class _ProjectSpec:
     path: Path
     classify: Callable[[str], str | None]
+
 
 __all__ = [
     "GitCommit",
@@ -80,7 +96,9 @@ __all__ = [
 ]
 
 _PROJECT_ROOT = Path("/realm/project")
-_KNOWN_PREFIXES = frozenset({"feat", "fix", "refactor", "test", "docs", "chore", "perf", "ci", "build", "style"})
+_KNOWN_PREFIXES = frozenset(
+    {"feat", "fix", "refactor", "test", "docs", "chore", "perf", "ci", "build", "style"}
+)
 _GIT_SHORTSTAT_RE = re.compile(r"(\d+)\s+files?\s+changed")
 _GIT_INSERT_RE = re.compile(r"(\d+)\s+insertions?\(\+\)")
 _GIT_DELETE_RE = re.compile(r"(\d+)\s+deletions?\(-\)")
@@ -92,151 +110,28 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@dataclass
-class GitCommit:
-    date: date
-    repo: str
-    commit: str
-    lines_added: int
-    lines_deleted: int
-    subject: str
-
-
-@dataclass
-class GitCommitActivity:
-    repo: str
-    timestamp: datetime
-
-
-@dataclass(frozen=True)
-class GitCommitFact:
-    repo: str
-    commit: str
-    authored_at: datetime
-    author: str
-    subject: str
-    lines_added: int
-    lines_deleted: int
-    lines_changed: int
-    files_changed: int
-    paths: tuple[str, ...]
-    path_roots: tuple[str, ...]
-
-    @property
-    def date(self) -> date:
-        return self.authored_at.date()
-
-
-@dataclass(frozen=True)
-class GitFileChangeFact:
-    repo: str
-    commit: str
-    authored_at: datetime
-    path: str
-    path_root: str
-    lines_added: int
-    lines_deleted: int
-    lines_changed: int
-
-    @property
-    def date(self) -> date:
-        return self.authored_at.date()
-
-
-@dataclass(frozen=True)
-class GitPatchExcerpt:
-    line_count: int
-    truncated: bool
-    patch_excerpt: str
-
-
-@dataclass(frozen=True)
-class GitDayActivity:
-    date: date
-    repo: str
-    commit_count: int
-    lines_added: int
-    lines_deleted: int
-    churn: int
-    net_loc: int
-    ai_coauthored: int
-    ai_ratio: float
-    human_only: int
-    dominant_prefix: str
-    commit_burst_count: int
-    authors: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class CommitSession:
-    repo: str
-    start: datetime
-    end: datetime
-    commit_count: int
-    duration_min: float
-    is_burst: bool
-    ai_fraction: float
-    lines_changed: int
-
-
-@dataclass
-class RepoInfo:
-    name: str
-    path: Path
-    exists: bool
-    branch: Optional[str]
-    head: Optional[str]
-    last_commit_at: Optional[datetime]
-
-
-@dataclass
-class RepoFile:
-    repo: str
-    relative: str
-    absolute: Path
-    category: Optional[str]
-
-
-@dataclass
-class RepoCommitSummary:
-    repo: str
-    sha: str
-    author: str
-    authored_at: Optional[datetime]
-    subject: str
-
-
-@dataclass
-class TokeiLanguageStat:
-    language: str
-    code: int
-    comments: int
-    blanks: int
-
-
-@dataclass
-class TokeiReport:
-    repo: str
-    total_code: int
-    total_lines: int
-    languages: List[TokeiLanguageStat]
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Raw access: commits from baseline JSONL
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@persistent_cache("git_commits", depends_on=lambda: file_signature(get_config().baseline_dir / "git_numstat.jsonl"))
+@persistent_cache(
+    "git_commits",
+    depends_on=lambda: file_signature(get_config().baseline_dir / "git_numstat.jsonl"),
+)
 def commits() -> Iterator[GitCommit]:
     cfg = get_config()
     path = cfg.baseline_dir / "git_numstat.jsonl"
     if not path.exists():
         return iter(())
     import time as _time
+
     age_days = (_time.time() - path.stat().st_mtime) / 86400
     if age_days > 7:
-        log.warning("git_numstat.jsonl is %d days stale — run baseline to refresh", int(age_days))
+        log.warning(
+            "git_numstat.jsonl is %d days stale — run baseline to refresh",
+            int(age_days),
+        )
 
     def _gen() -> Iterator[GitCommit]:
         with path.open("r", encoding="utf-8") as fh:
@@ -251,11 +146,14 @@ def commits() -> Iterator[GitCommit]:
                 if dt is None:
                     continue
                 yield GitCommit(
-                    date=dt, repo=rec.get("repo", ""), commit=rec.get("commit", ""),
+                    date=dt,
+                    repo=rec.get("repo", ""),
+                    commit=rec.get("commit", ""),
                     lines_added=int(rec.get("lines_added", 0)),
                     lines_deleted=int(rec.get("lines_deleted", 0)),
                     subject=rec.get("subject", ""),
                 )
+
     return _gen()
 
 
@@ -273,7 +171,9 @@ def commits_in_range(start: date, end: date) -> Iterator[GitCommit]:
                 continue
             seen.add(rec.commit)
             yield GitCommit(
-                date=rec.authored_at.date(), repo=rec.repo, commit=rec.commit,
+                date=rec.authored_at.date(),
+                repo=rec.repo,
+                commit=rec.commit,
                 lines_added=sum(a for _, a, _ in rec.path_changes),
                 lines_deleted=sum(d for _, _, d in rec.path_changes),
                 subject=rec.subject,
@@ -286,7 +186,9 @@ def commits_in_range(start: date, end: date) -> Iterator[GitCommit]:
 
 
 def active_repo_paths(names: Optional[Sequence[str]] = None) -> List[Path]:
-    return [r.path for r in repos(names=names) if r.exists and (r.path / ".git").is_dir()]
+    return [
+        r.path for r in repos(names=names) if r.exists and (r.path / ".git").is_dir()
+    ]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -323,17 +225,35 @@ def file_change_facts(
 ) -> Iterator[GitFileChangeFact]:
     paths = list(repo_paths) if repo_paths else active_repo_paths()
     for repo_path in sorted(paths, key=lambda p: p.name):
-        for record in _iter_repo_commit_records(repo_path, start=start, end=end, all_refs=all_refs):
+        for record in _iter_repo_commit_records(
+            repo_path, start=start, end=end, all_refs=all_refs
+        ):
             for path, added, deleted in record.path_changes:
                 yield GitFileChangeFact(
-                    repo=record.repo, commit=record.commit, authored_at=record.authored_at,
-                    path=path, path_root=_path_root(path),
-                    lines_added=added, lines_deleted=deleted, lines_changed=added + deleted,
+                    repo=record.repo,
+                    commit=record.commit,
+                    authored_at=record.authored_at,
+                    path=path,
+                    path_root=_path_root(path),
+                    lines_added=added,
+                    lines_deleted=deleted,
+                    lines_changed=added + deleted,
                 )
 
 
-def patch_excerpt(*, repo_path: Path, commit: str, max_lines: int = 120) -> GitPatchExcerpt:
-    cmd = ["git", "-C", str(repo_path), "show", "--no-color", "--format=", "--unified=3", commit]
+def patch_excerpt(
+    *, repo_path: Path, commit: str, max_lines: int = 120
+) -> GitPatchExcerpt:
+    cmd = [
+        "git",
+        "-C",
+        str(repo_path),
+        "show",
+        "--no-color",
+        "--format=",
+        "--unified=3",
+        commit,
+    ]
     try:
         raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
     except Exception:
@@ -342,7 +262,8 @@ def patch_excerpt(*, repo_path: Path, commit: str, max_lines: int = 120) -> GitP
     lines = output.splitlines()
     truncated = len(lines) > max_lines
     return GitPatchExcerpt(
-        line_count=len(lines), truncated=truncated,
+        line_count=len(lines),
+        truncated=truncated,
         patch_excerpt="\n".join(lines[:max_lines]),
     )
 
@@ -360,7 +281,9 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
 
     # Co-author detection from commit message trailers
     repos_set = {f.repo for f in facts}
-    coauthor_cache = {repo: _fetch_coauthor_info(repo, start, end) for repo in repos_set}
+    coauthor_cache = {
+        repo: _fetch_coauthor_info(repo, start, end) for repo in repos_set
+    }
 
     grouped: dict[tuple[date, str], list[GitCommitFact]] = defaultdict(list)
     for f in facts:
@@ -383,15 +306,25 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
             timestamps.append(f.authored_at)
         prefix_counts = Counter(prefixes)
         total = len(day_facts)
-        result.append(GitDayActivity(
-            date=d, repo=repo, commit_count=total,
-            lines_added=added, lines_deleted=deleted, churn=added + deleted, net_loc=added - deleted,
-            ai_coauthored=ai_count, ai_ratio=ai_count / total if total else 0,
-            human_only=total - ai_count,
-            dominant_prefix=prefix_counts.most_common(1)[0][0] if prefix_counts else "other",
-            commit_burst_count=_count_bursts(timestamps),
-            authors=tuple(sorted(all_authors)),
-        ))
+        result.append(
+            GitDayActivity(
+                date=d,
+                repo=repo,
+                commit_count=total,
+                lines_added=added,
+                lines_deleted=deleted,
+                churn=added + deleted,
+                net_loc=added - deleted,
+                ai_coauthored=ai_count,
+                ai_ratio=ai_count / total if total else 0,
+                human_only=total - ai_count,
+                dominant_prefix=prefix_counts.most_common(1)[0][0]
+                if prefix_counts
+                else "other",
+                commit_burst_count=_count_bursts(timestamps),
+                authors=tuple(sorted(all_authors)),
+            )
+        )
     return result
 
 
@@ -400,14 +333,18 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def commit_sessions(*, start: date, end: date, gap_minutes: float = 30) -> list[CommitSession]:
+def commit_sessions(
+    *, start: date, end: date, gap_minutes: float = 30
+) -> list[CommitSession]:
     """Group commits into temporal sessions with max gap. Uses live git log."""
     facts = list(commit_facts(start=start, end=end))
     if not facts:
         return []
 
     repos_set = {f.repo for f in facts}
-    coauthor_cache = {repo: _fetch_coauthor_info(repo, start, end) for repo in repos_set}
+    coauthor_cache = {
+        repo: _fetch_coauthor_info(repo, start, end) for repo in repos_set
+    }
 
     # Sort by authored_at
     timed = sorted(facts, key=lambda f: f.authored_at)
@@ -425,7 +362,9 @@ def commit_sessions(*, start: date, end: date, gap_minutes: float = 30) -> list[
     return sessions
 
 
-def _build_commit_session(facts: list[GitCommitFact], coauthor_cache: dict[str, dict[str, list[str]]]) -> CommitSession:
+def _build_commit_session(
+    facts: list[GitCommitFact], coauthor_cache: dict[str, dict[str, list[str]]]
+) -> CommitSession:
     total = len(facts)
     ai_count = sum(1 for f in facts if f.commit in coauthor_cache.get(f.repo, {}))
     lines = sum(f.lines_changed for f in facts)
@@ -433,10 +372,13 @@ def _build_commit_session(facts: list[GitCommitFact], coauthor_cache: dict[str, 
     duration = facts[-1].authored_at - facts[0].authored_at
     return CommitSession(
         repo=repo_counts.most_common(1)[0][0],
-        start=facts[0].authored_at, end=facts[-1].authored_at,
-        commit_count=total, duration_min=round(duration.total_seconds() / 60, 1),
+        start=facts[0].authored_at,
+        end=facts[-1].authored_at,
+        commit_count=total,
+        duration_min=round(duration.total_seconds() / 60, 1),
         is_burst=total >= 3 and duration < timedelta(minutes=5),
-        ai_fraction=ai_count / total if total else 0, lines_changed=lines,
+        ai_fraction=ai_count / total if total else 0,
+        lines_changed=lines,
     )
 
 
@@ -446,7 +388,8 @@ def _build_commit_session(facts: list[GitCommitFact], coauthor_cache: dict[str, 
 
 PROJECT_SPECS: Dict[str, _ProjectSpec] = {
     name: _ProjectSpec(path=Path(p.path).expanduser(), classify=p.classify)
-    for name, p in ALL_PROJECTS.items() if p.active and p.classify
+    for name, p in ALL_PROJECTS.items()
+    if p.active and p.classify
 }
 
 
@@ -470,7 +413,16 @@ def repos(names: Optional[Sequence[str]] = None) -> list[RepoInfo]:
                     last_commit_at = datetime.fromisoformat(iso.replace("Z", "+00:00"))
                 except ValueError:
                     pass
-        result.append(RepoInfo(name=name, path=path, exists=exists, branch=branch, head=head, last_commit_at=last_commit_at))
+        result.append(
+            RepoInfo(
+                name=name,
+                path=path,
+                exists=exists,
+                branch=branch,
+                head=head,
+                last_commit_at=last_commit_at,
+            )
+        )
     return result
 
 
@@ -485,7 +437,9 @@ def repo_files(repo_name: str, tracked_only: bool = True) -> Iterator[RepoFile]:
     else:
         files = [str(p.relative_to(path)) for p in path.rglob("*") if p.is_file()]
     for rel in files:
-        yield RepoFile(repo=repo_name, relative=rel, absolute=path / rel, category=classifier(rel))
+        yield RepoFile(
+            repo=repo_name, relative=rel, absolute=path / rel, category=classifier(rel)
+        )
 
 
 def recent_commits(repo_name: str, limit: int = 20) -> list[RepoCommitSummary]:
@@ -493,7 +447,9 @@ def recent_commits(repo_name: str, limit: int = 20) -> list[RepoCommitSummary]:
     if not spec or not spec.path.exists():
         return []
     path = spec.path
-    output = _git_output(path, ["--no-pager", "log", f"-n{limit}", "--pretty=%H%x1f%an%x1f%aI%x1f%s"])
+    output = _git_output(
+        path, ["--no-pager", "log", f"-n{limit}", "--pretty=%H%x1f%an%x1f%aI%x1f%s"]
+    )
     if not output:
         return []
     result: list[RepoCommitSummary] = []
@@ -504,11 +460,21 @@ def recent_commits(repo_name: str, limit: int = 20) -> list[RepoCommitSummary]:
             dt = datetime.fromisoformat(parts[2])
         except ValueError:
             pass
-        result.append(RepoCommitSummary(repo=repo_name, sha=parts[0], author=parts[1], authored_at=dt, subject=parts[3]))
+        result.append(
+            RepoCommitSummary(
+                repo=repo_name,
+                sha=parts[0],
+                author=parts[1],
+                authored_at=dt,
+                subject=parts[3],
+            )
+        )
     return result
 
 
-def github_context_for_commits(facts: Sequence[GitCommitFact], *, max_refs: int = 24) -> dict[str, object]:
+def github_context_for_commits(
+    facts: Sequence[GitCommitFact], *, max_refs: int = 24
+) -> dict[str, object]:
     """Fetch GitHub PR/issue context referenced by commit subjects when available.
 
     This is intentionally best-effort: local git remains the primary source and
@@ -519,7 +485,9 @@ def github_context_for_commits(facts: Sequence[GitCommitFact], *, max_refs: int 
     if shutil.which("gh") is None:
         return {"status": "unavailable", "reason": "gh_not_found", "items": []}
 
-    refs_by_repo: dict[str, dict[str, set[int]]] = defaultdict(lambda: {"prs": set(), "issues": set()})
+    refs_by_repo: dict[str, dict[str, set[int]]] = defaultdict(
+        lambda: {"prs": set(), "issues": set()}
+    )
     for fact in facts:
         refs = extract_commit_refs(fact.subject)
         refs_by_repo[fact.repo]["prs"].update(refs["prs"])
@@ -556,7 +524,13 @@ def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
     if not spec or not spec.path.exists() or shutil.which("tokei") is None:
         return None
     try:
-        result = subprocess.run(["tokei", "-o", "json"], cwd=spec.path, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["tokei", "-o", "json"],
+            cwd=spec.path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
     try:
@@ -564,11 +538,22 @@ def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
     except json.JSONDecodeError:
         return None
     languages = [
-        TokeiLanguageStat(language=k, code=int(v.get("code", 0)), comments=int(v.get("comments", 0)), blanks=int(v.get("blanks", 0)))
-        for k, v in payload.items() if k != "Totals" and isinstance(v, dict)
+        TokeiLanguageStat(
+            language=k,
+            code=int(v.get("code", 0)),
+            comments=int(v.get("comments", 0)),
+            blanks=int(v.get("blanks", 0)),
+        )
+        for k, v in payload.items()
+        if k != "Totals" and isinstance(v, dict)
     ]
     totals = payload.get("Totals", {})
-    return TokeiReport(repo=repo_name, total_code=int(totals.get("code", 0)), total_lines=int(totals.get("lines", 0)), languages=languages)
+    return TokeiReport(
+        repo=repo_name,
+        total_code=int(totals.get("code", 0)),
+        total_lines=int(totals.get("lines", 0)),
+        languages=languages,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -576,7 +561,12 @@ def repo_tokei(repo_name: str) -> Optional[TokeiReport]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def iter_numstat(repos_seq: Sequence[Path], *, since: Optional[datetime] = None, until: Optional[datetime] = None) -> Iterator[Dict[str, object]]:
+def iter_numstat(
+    repos_seq: Sequence[Path],
+    *,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+) -> Iterator[Dict[str, object]]:
     valid = [p.expanduser() for p in repos_seq if (p.expanduser() / ".git").exists()]
     if not valid:
         return
@@ -586,7 +576,12 @@ def iter_numstat(repos_seq: Sequence[Path], *, since: Optional[datetime] = None,
             yield from fut.result()
 
 
-def iter_commit_activity(repos_seq: Sequence[Path], *, start_month: Optional[str] = None, end_month: Optional[str] = None) -> Iterator[GitCommitActivity]:
+def iter_commit_activity(
+    repos_seq: Sequence[Path],
+    *,
+    start_month: Optional[str] = None,
+    end_month: Optional[str] = None,
+) -> Iterator[GitCommitActivity]:
     since = f"{start_month}-01" if start_month else None
     until_str = f"{_month_after(end_month)}-01" if end_month else None
     for repo in repos_seq:
@@ -598,7 +593,9 @@ def iter_commit_activity(repos_seq: Sequence[Path], *, start_month: Optional[str
             cmd.append(f"--since={since}")
         if until_str:
             cmd.append(f"--until={until_str}")
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         assert proc.stdout is not None
         for raw in proc.stdout:
             stamp = raw.strip()
@@ -614,11 +611,15 @@ def iter_commit_activity(repos_seq: Sequence[Path], *, start_month: Optional[str
         proc.communicate()
 
 
-def summarize_commit_activity(*, start_month: str, end_month: str, repos_seq: Optional[Sequence[Path]] = None) -> tuple[Dict[str, int], Dict[str, Counter[str]]]:
+def summarize_commit_activity(
+    *, start_month: str, end_month: str, repos_seq: Optional[Sequence[Path]] = None
+) -> tuple[Dict[str, int], Dict[str, Counter[str]]]:
     counts: Dict[str, int] = defaultdict(int)
     per_month_repos: Dict[str, Counter[str]] = defaultdict(Counter)
     paths = list(repos_seq) if repos_seq else [r.path for r in repos() if r.exists]
-    for event in iter_commit_activity(paths, start_month=start_month, end_month=end_month):
+    for event in iter_commit_activity(
+        paths, start_month=start_month, end_month=end_month
+    ):
         m = f"{event.timestamp.year:04d}-{event.timestamp.month:02d}"
         if start_month <= m <= end_month:
             counts[m] += 1
@@ -629,16 +630,6 @@ def summarize_commit_activity(*, start_month: str, end_month: str, repos_seq: Op
 # ══════════════════════════════════════════════════════════════════════════════
 # Internal helpers
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class _RepoCommitRecord:
-    repo: str
-    commit: str
-    authored_at: datetime
-    author: str
-    subject: str
-    path_changes: tuple[tuple[str, int, int], ...]
 
 
 def _iter_repo_commit_records(
@@ -652,7 +643,11 @@ def _iter_repo_commit_records(
     if not (repo_path / ".git").is_dir():
         return
     cmd = [
-        "git", "-C", str(repo_path), "log", "--date=iso-strict",
+        "git",
+        "-C",
+        str(repo_path),
+        "log",
+        "--date=iso-strict",
         "--pretty=format:COMMIT|%H|%aI|%aN|%s",
         f"--after={(start - timedelta(days=1)).isoformat()}",
         f"--before={(end + timedelta(days=1)).isoformat()}",
@@ -666,7 +661,9 @@ def _iter_repo_commit_records(
         if ref is None:
             return
         cmd.append(ref)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+    )
     assert proc.stdout is not None
     current: _MutableRepoCommit | None = None
     for raw in proc.stdout:
@@ -692,7 +689,13 @@ def _iter_repo_commit_records(
         cols = (line.split("\t", 2) + ["", "", ""])[:3]
         path = cols[2].strip()
         if path:
-            current["path_changes"].append((path, int(cols[0]) if cols[0].isdigit() else 0, int(cols[1]) if cols[1].isdigit() else 0))
+            current["path_changes"].append(
+                (
+                    path,
+                    int(cols[0]) if cols[0].isdigit() else 0,
+                    int(cols[1]) if cols[1].isdigit() else 0,
+                )
+            )
     if current:
         rec = _finalize_record(repo_path.name, current)
         if rec and start <= rec.authored_at.date() <= end:
@@ -701,7 +704,9 @@ def _iter_repo_commit_records(
 
 
 def _default_history_ref(repo_path: Path) -> str | None:
-    remote_head = _git_output(repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    remote_head = _git_output(
+        repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+    )
     if remote_head:
         return remote_head
     for candidate in ("master", "main"):
@@ -710,14 +715,21 @@ def _default_history_ref(repo_path: Path) -> str | None:
     return _git_output(repo_path, ["branch", "--show-current"]) or "HEAD"
 
 
-def _finalize_record(repo: str, current: _MutableRepoCommit) -> _RepoCommitRecord | None:
+def _finalize_record(
+    repo: str, current: _MutableRepoCommit
+) -> _RepoCommitRecord | None:
     try:
-        authored_at = datetime.fromisoformat(str(current["authored_at"]).replace("Z", "+00:00"))
+        authored_at = datetime.fromisoformat(
+            str(current["authored_at"]).replace("Z", "+00:00")
+        )
     except ValueError:
         return None
     return _RepoCommitRecord(
-        repo=repo, commit=str(current["commit"]), authored_at=authored_at,
-        author=str(current.get("author", "")), subject=str(current.get("subject", "")),
+        repo=repo,
+        commit=str(current["commit"]),
+        authored_at=authored_at,
+        author=str(current.get("author", "")),
+        subject=str(current.get("subject", "")),
         path_changes=tuple(sorted(current.get("path_changes", ()), key=lambda x: x[0])),
     )
 
@@ -728,20 +740,39 @@ def _commit_fact_from_record(record: _RepoCommitRecord) -> GitCommitFact:
     added = sum(a for _, a, _ in record.path_changes)
     deleted = sum(d for _, _, d in record.path_changes)
     return GitCommitFact(
-        repo=record.repo, commit=record.commit, authored_at=record.authored_at,
-        author=record.author, subject=record.subject,
-        lines_added=added, lines_deleted=deleted, lines_changed=added + deleted,
-        files_changed=len(paths), paths=paths, path_roots=path_roots,
+        repo=record.repo,
+        commit=record.commit,
+        authored_at=record.authored_at,
+        author=record.author,
+        subject=record.subject,
+        lines_added=added,
+        lines_deleted=deleted,
+        lines_changed=added + deleted,
+        files_changed=len(paths),
+        paths=paths,
+        path_roots=path_roots,
     )
 
 
-def _numstat_one_repo(repo_path: Path, since: Optional[datetime], until: Optional[datetime]) -> List[Dict[str, object]]:
-    cmd = ["git", "-C", str(repo_path), "log", "--date=iso-strict", "--pretty=format:%H%x09%ad%x09%an%x09%s", "--shortstat"]
+def _numstat_one_repo(
+    repo_path: Path, since: Optional[datetime], until: Optional[datetime]
+) -> List[Dict[str, object]]:
+    cmd = [
+        "git",
+        "-C",
+        str(repo_path),
+        "log",
+        "--date=iso-strict",
+        "--pretty=format:%H%x09%ad%x09%an%x09%s",
+        "--shortstat",
+    ]
     if until:
         cmd.append(f"--until={until.isoformat()}")
     if since:
         cmd.append(f"--since={since.isoformat()}")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     assert proc.stdout is not None
     records: List[Dict[str, object]] = []
     current: Optional[Dict[str, object]] = None
@@ -753,9 +784,16 @@ def _numstat_one_repo(repo_path: Path, since: Optional[datetime], until: Optiona
         if len(parts) >= 4 and _GIT_SHA_RE.match(parts[0]):
             if current:
                 records.append(current)
-            current = {"repo": str(repo_path), "commit": parts[0], "date": parts[1],
-                        "author": parts[2], "subject": "\t".join(parts[3:]),
-                        "files_changed": 0, "lines_added": 0, "lines_deleted": 0}
+            current = {
+                "repo": str(repo_path),
+                "commit": parts[0],
+                "date": parts[1],
+                "author": parts[2],
+                "subject": "\t".join(parts[3:]),
+                "files_changed": 0,
+                "lines_added": 0,
+                "lines_deleted": 0,
+            }
         elif current and ("file changed" in line or "files changed" in line):
             current.update(_parse_git_shortstat(line))
     if current:
@@ -775,8 +813,15 @@ def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list
     repo_path = _repo_path(repo)
     if not (repo_path / ".git").is_dir():
         return {}
-    cmd = ["git", "-C", str(repo_path), "log", "--format=%H%n%b%n---END---",
-           f"--after={after.isoformat()}", f"--before={(before + timedelta(days=1)).isoformat()}"]
+    cmd = [
+        "git",
+        "-C",
+        str(repo_path),
+        "log",
+        "--format=%H%n%b%n---END---",
+        f"--after={after.isoformat()}",
+        f"--before={(before + timedelta(days=1)).isoformat()}",
+    ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
@@ -789,7 +834,15 @@ def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list
     for line in result.stdout.splitlines():
         if line == "---END---":
             if current_sha:
-                names = [name for name in (_extract_coauthor(body_line) for body_line in body if "co-authored-by" in body_line.lower()) if name]
+                names = [
+                    name
+                    for name in (
+                        _extract_coauthor(body_line)
+                        for body_line in body
+                        if "co-authored-by" in body_line.lower()
+                    )
+                    if name
+                ]
                 if names:
                     coauthors[current_sha] = names
             current_sha = None
@@ -821,7 +874,9 @@ def _fetch_commit_timestamps(repo: str, hashes: set[str]) -> dict[str, datetime]
         parts = line.strip().split(" ", 1)
         if len(parts) == 2 and parts[0] in hashes:
             try:
-                timestamps[parts[0]] = datetime.fromisoformat(parts[1].replace("Z", "+00:00"))
+                timestamps[parts[0]] = datetime.fromisoformat(
+                    parts[1].replace("Z", "+00:00")
+                )
             except ValueError:
                 pass
     return timestamps
@@ -847,9 +902,17 @@ def _parse_prefix(subject: str) -> str:
     return "other"
 
 
-def _github_item(repo: str, kind: str, number: int, slug: str, item: GitHubItem | None) -> dict[str, object]:
+def _github_item(
+    repo: str, kind: str, number: int, slug: str, item: GitHubItem | None
+) -> dict[str, object]:
     if item is None:
-        return {"repo": repo, "slug": slug, "kind": kind, "number": number, "status": "unavailable"}
+        return {
+            "repo": repo,
+            "slug": slug,
+            "kind": kind,
+            "number": number,
+            "status": "unavailable",
+        }
     return {
         "repo": repo,
         "slug": slug,
@@ -870,7 +933,9 @@ def _github_item(repo: str, kind: str, number: int, slug: str, item: GitHubItem 
             {
                 "author": {"login": comment.author.login},
                 "body": comment.body,
-                "createdAt": comment.created_at.isoformat() if comment.created_at else None,
+                "createdAt": comment.created_at.isoformat()
+                if comment.created_at
+                else None,
                 "url": comment.url,
             }
             for comment in item.comments
@@ -886,7 +951,9 @@ def _count_bursts(timestamps: list[datetime]) -> int:
     bursts = i = 0
     while i < len(timestamps):
         j = i + 1
-        while j < len(timestamps) and (timestamps[j] - timestamps[i]) <= timedelta(minutes=5):
+        while j < len(timestamps) and (timestamps[j] - timestamps[i]) <= timedelta(
+            minutes=5
+        ):
             j += 1
         if j - i >= 3:
             bursts += 1
@@ -923,7 +990,9 @@ def _month_after(month: str) -> str:
 
 def _git_output(path: Path, args: List[str]) -> Optional[str]:
     try:
-        result = subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", *args], cwd=path, check=True, capture_output=True, text=True
+        )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
     return result.stdout.strip() or None

@@ -29,5 +29,10 @@ from lynchpin.mcp.tools import substrate as _substrate  # noqa: E402, F401
 from lynchpin.mcp.tools import views as _views          # noqa: E402, F401
 from lynchpin.mcp.tools import velocity as _velocity    # noqa: E402, F401
 from lynchpin.mcp.tools import health as _health        # noqa: E402, F401
+from lynchpin.mcp.tools import machine as _machine      # noqa: E402, F401
+from lynchpin.mcp.tools import signals as _signals      # noqa: E402, F401
+from lynchpin.mcp.tools import change as _change        # noqa: E402, F401
+from lynchpin.mcp.tools import review as _review        # noqa: E402, F401
+from lynchpin.mcp.tools import personal as _personal    # noqa: E402, F401
 
 __all__ = ["app"]
