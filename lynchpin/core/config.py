@@ -76,6 +76,8 @@ class LynchpinConfig:
     machine_capture_root: Path
     machine_host_root: Path
     machine_telemetry_db: Path
+    sinnix_generations_jsonl: Path
+    borg_drill_jsonl: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -250,6 +252,14 @@ class LynchpinConfig:
         )
         machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", default_machine_host_root))
         machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
+        sinnix_generations_jsonl = Path(os.environ.get(
+            "LYNCHPIN_SINNIX_GENERATIONS_JSONL",
+            machine_capture_root / "generations.jsonl",
+        ))
+        borg_drill_jsonl = Path(os.environ.get(
+            "LYNCHPIN_BORG_DRILL_JSONL",
+            machine_capture_root / "borg_drill.jsonl",
+        ))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,6 +299,8 @@ class LynchpinConfig:
             machine_capture_root=machine_capture_root,
             machine_host_root=machine_host_root,
             machine_telemetry_db=machine_telemetry_db,
+            sinnix_generations_jsonl=sinnix_generations_jsonl,
+            borg_drill_jsonl=borg_drill_jsonl,
         )
 
 

@@ -330,3 +330,250 @@ def machine_service_state_summary(
         }
         for row in rows
     ]
+
+
+@app.tool()
+def borg_drill_history(
+    limit: int = 50,
+    status: str | None = None,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Return random-archive deep-verify drill history written by
+    sinnix-borg-drill (weekly oneshot, one row per repo per invocation).
+
+    The drill complements borg's repository-only check by sampling
+    chunk-content integrity via `borg check --verify-data`. Use this
+    tool to confirm the integrity story for each repo: every row is
+    one archive whose chunks were re-read and verified end-to-end.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    where_clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    if repo:
+        where_clauses.append("repo = ?")
+        params.append(repo)
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sql = f"""
+        SELECT repo, archive, started_at, ended_at, duration_s, exit_code,
+               status, within_days
+        FROM borg_drill_run
+        {where_sql}
+        ORDER BY started_at DESC
+        LIMIT ?
+    """
+    params.append(max(int(limit), 0))
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute(sql, params).fetchall()
+        summary_row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status = 'ok') AS ok_count,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+                MAX(started_at) AS last_started_at
+            FROM borg_drill_run
+            """
+        ).fetchone()
+
+    return {
+        "summary": {
+            "total": int(summary_row[0]) if summary_row else 0,
+            "ok": int(summary_row[1]) if summary_row else 0,
+            "failed": int(summary_row[2]) if summary_row else 0,
+            "last_started_at": _json_safe(summary_row[3]) if summary_row else None,
+            "filters": {"status": status, "repo": repo},
+        },
+        "rows": [
+            {
+                "repo": row[0],
+                "archive": row[1],
+                "started_at": _json_safe(row[2]),
+                "ended_at": _json_safe(row[3]),
+                "duration_s": int(row[4]),
+                "exit_code": int(row[5]),
+                "status": row[6],
+                "within_days": int(row[7]),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.tool()
+def sinnix_generation_history(
+    limit: int = 50,
+    host: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the NixOS-generation activation history captured by the
+    sinnix `lynchpinGenerationLog` activation script.
+
+    Each row corresponds to one `nixos-rebuild switch` activation and
+    carries {host, generation, activated_at, store_path, sinnix_revision,
+    nixos_label}. Use the activated_at column to join against
+    machine_metric_sample.observed_at — the latest activated_at <= a
+    sample's observed_at is the generation that produced the sample.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    where = ""
+    params: list[Any] = []
+    if host:
+        where = "WHERE host = ?"
+        params.append(host)
+    sql = f"""
+        SELECT host, generation, activated_at, store_path, sinnix_revision, nixos_label
+        FROM sinnix_generation
+        {where}
+        ORDER BY activated_at DESC
+        LIMIT ?
+    """
+    params.append(max(int(limit), 0))
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "host": row[0],
+            "generation": row[1],
+            "activated_at": _json_safe(row[2]),
+            "store_path": row[3],
+            "sinnix_revision": row[4],
+            "nixos_label": row[5],
+        }
+        for row in rows
+    ]
+
+
+@app.tool()
+def machine_bufferbloat_summary(
+    start: str | None = None,
+    end: str | None = None,
+    interface: str | None = None,
+) -> dict[str, Any]:
+    """Return per-day bufferbloat measurements from `machine_network_sample`.
+
+    The bufferbloat probe (`bufferbloatIntervalSec=1800` on
+    machine-telemetry) samples the ICMP RTT distribution to 8.8.8.8 by
+    default; the result lands in the `bloat` JSON column. Most rows
+    carry no `bloat` (the cadence is much slower than the per-sample
+    network probe); rows that do carry it expose `avg_ms`, `min_ms`,
+    `max_ms`, `loss`, `status`, `ip`.
+
+    This tool aggregates those rows by day per interface and returns
+    {sample_count, avg_ms_{p50,p95,max}, loss_{p50,p95,max}} so callers
+    can spot regression windows without re-implementing the JSON
+    extraction. With limited data the percentile estimates are weak —
+    use `sample_count` to weight conclusions.
+    """
+    from datetime import date as _date
+
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    where_clauses: list[str] = [
+        "bloat IS NOT NULL",
+        "json_extract_string(bloat, '$.avg_ms') IS NOT NULL",
+    ]
+    params: list[Any] = []
+    if start:
+        where_clauses.append("CAST(observed_at AS DATE) >= ?")
+        params.append(_date.fromisoformat(start))
+    if end:
+        where_clauses.append("CAST(observed_at AS DATE) <= ?")
+        params.append(_date.fromisoformat(end))
+    if interface:
+        where_clauses.append("interface = ?")
+        params.append(interface)
+    where_sql = " AND ".join(where_clauses)
+
+    sql = f"""
+        WITH parsed AS (
+            SELECT
+                CAST(observed_at AS DATE) AS day,
+                interface,
+                CAST(json_extract_string(bloat, '$.avg_ms') AS DOUBLE) AS avg_ms,
+                CAST(json_extract_string(bloat, '$.min_ms') AS DOUBLE) AS min_ms,
+                CAST(json_extract_string(bloat, '$.max_ms') AS DOUBLE) AS max_ms,
+                CAST(json_extract_string(bloat, '$.loss')   AS DOUBLE) AS loss
+            FROM machine_network_sample
+            WHERE {where_sql}
+        )
+        SELECT
+            day,
+            interface,
+            COUNT(*)                                         AS sample_count,
+            quantile_cont(avg_ms, 0.50)                      AS avg_ms_p50,
+            quantile_cont(avg_ms, 0.95)                      AS avg_ms_p95,
+            MAX(avg_ms)                                      AS avg_ms_max,
+            quantile_cont(loss,   0.50)                      AS loss_p50,
+            quantile_cont(loss,   0.95)                      AS loss_p95,
+            MAX(loss)                                        AS loss_max
+        FROM parsed
+        GROUP BY day, interface
+        ORDER BY day, interface
+    """
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    return {
+        "summary": {
+            "row_count": len(rows),
+            "filters": {"start": start, "end": end, "interface": interface},
+        },
+        "rows": [
+            {
+                "day": _json_safe(row[0]),
+                "interface": row[1],
+                "sample_count": int(row[2]),
+                "avg_ms_p50": _round(row[3]),
+                "avg_ms_p95": _round(row[4]),
+                "avg_ms_max": _round(row[5]),
+                "loss_p50": _round(row[6]),
+                "loss_p95": _round(row[7]),
+                "loss_max": _round(row[8]),
+            }
+            for row in rows
+        ],
+    }
+
+
+def _round(value: Any, digits: int = 3) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+@app.tool()
+def machine_gap_summary(
+    threshold_pct: float | None = None,
+) -> dict[str, Any]:
+    """Return per-(table, gap_code) share of recent telemetry rows that
+    recorded each code, plus any code exceeding the regression threshold.
+
+    Reads the materialized ``machine_gap_summary.json`` artifact produced
+    by the daily refresh DAG; use ``threshold_pct`` to re-filter the
+    ``regressions`` list to a stricter share than what the artifact was
+    computed at.
+    """
+    payload = _analysis_artifact("machine_gap_summary.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "counts": [], "regressions": []}
+
+    counts = [row for row in payload.get("counts", []) if isinstance(row, dict)]
+    regressions = [row for row in payload.get("regressions", []) if isinstance(row, dict)]
+    if threshold_pct is not None:
+        regressions = [r for r in regressions if float(r.get("share_pct") or 0) >= threshold_pct]
+
+    summary = {
+        "generated_for": payload.get("generated_for", {}),
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "count_total": len(counts),
+        "regression_count": len(regressions),
+        "effective_threshold_pct": threshold_pct
+        if threshold_pct is not None
+        else payload.get("generated_for", {}).get("regression_pct"),
+    }
+    return {"summary": summary, "counts": counts, "regressions": regressions}

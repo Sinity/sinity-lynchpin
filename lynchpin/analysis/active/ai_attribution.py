@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Iterable, Sequence
 
+from ...core.parse import parse_datetime as _parse_dt
 from ...core.projects import canonical_project_name
 from ...sources.polylogue import SessionProfile, iter_session_profiles
 from ...substrate.work_commits import read_commit_facts
@@ -226,13 +227,6 @@ def _index_sessions(
     return same_day, windows
 
 
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _parse_date(value: object) -> date | None:

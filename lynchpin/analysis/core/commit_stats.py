@@ -6,12 +6,14 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ...core.parse import parse_datetime as _parse_dt
+
 
 def parse_iso_datetime(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    """Kept as a thin wrapper for the existing call sites in
+    ``lynchpin.analysis.ecosystem.{work_package_scope,aw_git_join}``;
+    delegates to the canonical ``core.parse.parse_datetime``."""
+    return _parse_dt(value)
 
 
 def _path_component(path: str | None) -> str:
