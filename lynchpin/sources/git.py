@@ -24,11 +24,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, TypedDict
+from typing import Any, Dict, Iterator, List, Optional, Sequence, TypedDict
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
 from ..core.parse import parse_date_from_any
+from ..core.source import read_jsonl_with
 from ..core.projects import ALL_PROJECTS
 from .github import GitHubItem, extract_commit_refs, fetch_issue, fetch_pr, repo_slug
 from .git_models import (
@@ -133,28 +134,20 @@ def commits() -> Iterator[GitCommit]:
             int(age_days),
         )
 
-    def _gen() -> Iterator[GitCommit]:
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                dt = _parse_date(rec.get("date"))
-                if dt is None:
-                    continue
-                yield GitCommit(
-                    date=dt,
-                    repo=rec.get("repo", ""),
-                    commit=rec.get("commit", ""),
-                    lines_added=int(rec.get("lines_added", 0)),
-                    lines_deleted=int(rec.get("lines_deleted", 0)),
-                    subject=rec.get("subject", ""),
-                )
+    def _hydrate(rec: dict[str, Any]) -> GitCommit | None:
+        dt = _parse_date(rec.get("date"))
+        if dt is None:
+            return None
+        return GitCommit(
+            date=dt,
+            repo=rec.get("repo", ""),
+            commit=rec.get("commit", ""),
+            lines_added=int(rec.get("lines_added", 0)),
+            lines_deleted=int(rec.get("lines_deleted", 0)),
+            subject=rec.get("subject", ""),
+        )
 
-    return _gen()
+    return read_jsonl_with(path, _hydrate, source_name="git_numstat")
 
 
 def commits_in_range(start: date, end: date) -> Iterator[GitCommit]:

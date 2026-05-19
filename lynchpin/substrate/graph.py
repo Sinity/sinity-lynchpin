@@ -9,6 +9,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, cast
 
 from lynchpin.substrate._filters import build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -409,6 +410,51 @@ def load_evidence_graph(
 # ── evidence_graph ────────────────────────────────────────────────────────────
 
 
+_EVIDENCE_NODE_COLUMNS = (
+    "id", "kind", "source", "date", "project", "summary",
+    "start_ts", "end_ts", "url", "payload", "provenance", "caveats",
+)
+
+_EVIDENCE_EDGE_COLUMNS = (
+    "source_id", "target_id", "relation", "evidence", "weight",
+)
+
+
+def _extract_node(node: Any) -> tuple[Any, ...]:
+    payload_json = json.dumps(node.payload) if node.payload is not None else None
+    node_caveats_json = json.dumps(
+        [
+            {"source": c.source, "status": c.status, "message": c.message}
+            for c in node.caveats
+        ]
+    )
+    # DuckDB accepts a plain Python dict for STRUCT columns — field names
+    # must match the STRUCT definition exactly. Pass None if no provenance.
+    if node.provenance is not None:
+        p = node.provenance
+        provenance_struct: dict[str, Any] | None = {
+            "source": p.source,
+            "cost": p.cost if isinstance(p.cost, str) else str(p.cost),
+            "path": p.path,
+            "generated_at": p.generated_at,
+            "note": p.note,
+        }
+    else:
+        provenance_struct = None
+    kind_str = node.kind if isinstance(node.kind, str) else str(node.kind)
+    return (
+        node.id, kind_str, node.source, node.date, node.project, node.summary,
+        node.start, node.end, node.url, payload_json, provenance_struct, node_caveats_json,
+    )
+
+
+def _extract_edge(edge: Any) -> tuple[Any, ...]:
+    relation_str = edge.relation if isinstance(edge.relation, str) else str(edge.relation)
+    return (
+        edge.source_id, edge.target_id, relation_str, edge.evidence, float(edge.weight),
+    )
+
+
 def promote_evidence_graph(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -424,12 +470,11 @@ def promote_evidence_graph(
 
     Returns: {"build": 1, "nodes": N, "edges": M}.
     """
-    # ── idempotent delete (children first) ────────────────────────────────
-    conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
-    conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [refresh_id])
+    # ── parent table: child DELETEs happen inside promote_rows; here we only
+    # need to clear the parent build row and INSERT the new one. The two
+    # child promote_rows() calls below handle their own DELETE/INSERT.
     conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
 
-    # ── evidence_graph_build row ──────────────────────────────────────────
     caveats_json = json.dumps(
         [
             {"source": c.source, "status": c.status, "message": c.message}
@@ -445,109 +490,35 @@ def promote_evidence_graph(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            refresh_id,
-            graph.start,
-            graph.end,
-            mode_str,
-            list(projects),
-            len(graph.nodes),
-            len(graph.edges),
-            caveats_json,
-            graph.generated_at,
+            refresh_id, graph.start, graph.end, mode_str, list(projects),
+            len(graph.nodes), len(graph.edges), caveats_json, graph.generated_at,
         ],
     )
 
-    # ── evidence_node rows ────────────────────────────────────────────────
-    node_rows: list[tuple[Any, ...]] = []
-    for node in graph.nodes:
-        payload_json = json.dumps(node.payload) if node.payload is not None else None
-
-        node_caveats_json = json.dumps(
-            [
-                {"source": c.source, "status": c.status, "message": c.message}
-                for c in node.caveats
-            ]
-        )
-
-        # DuckDB accepts a plain Python dict for STRUCT columns — field names
-        # must match the STRUCT definition exactly.  Pass None if no provenance.
-        if node.provenance is not None:
-            p = node.provenance
-            provenance_struct: dict[str, Any] | None = {
-                "source": p.source,
-                "cost": p.cost if isinstance(p.cost, str) else str(p.cost),
-                "path": p.path,
-                "generated_at": p.generated_at,
-                "note": p.note,
-            }
-        else:
-            provenance_struct = None
-
-        kind_str = node.kind if isinstance(node.kind, str) else str(node.kind)
-
-        node_rows.append(
-            (
-                refresh_id,  # refresh_id
-                node.id,  # id
-                kind_str,  # kind
-                node.source,  # source
-                node.date,  # date  DATE
-                node.project,  # project  VARCHAR nullable
-                node.summary,  # summary
-                node.start,  # start_ts  TIMESTAMPTZ nullable
-                node.end,  # end_ts    TIMESTAMPTZ nullable
-                node.url,  # url  VARCHAR nullable
-                payload_json,  # payload  JSON nullable
-                provenance_struct,  # provenance  STRUCT nullable
-                node_caveats_json,  # caveats  JSON
-            )
-        )
-
-    if node_rows:
-        conn.executemany(
-            """
-            INSERT INTO evidence_node (
-                refresh_id, id, kind, source, date, project, summary,
-                start_ts, end_ts, url, payload, provenance, caveats
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            node_rows,
-        )
-
-    # ── evidence_edge rows ────────────────────────────────────────────────
-    edge_rows: list[tuple[Any, ...]] = []
-    for edge in graph.edges:
-        relation_str = (
-            edge.relation if isinstance(edge.relation, str) else str(edge.relation)
-        )
-        edge_rows.append(
-            (
-                refresh_id,  # refresh_id
-                edge.source_id,  # source_id
-                edge.target_id,  # target_id
-                relation_str,  # relation
-                edge.evidence,  # evidence
-                float(edge.weight),  # weight  DOUBLE
-            )
-        )
-
-    if edge_rows:
-        conn.executemany(
-            """
-            INSERT INTO evidence_edge (
-                refresh_id, source_id, target_id, relation, evidence, weight
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            edge_rows,
-        )
+    node_count = promote_rows(
+        conn,
+        table="evidence_node",
+        columns=_EVIDENCE_NODE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=graph.nodes,
+        extractor=_extract_node,
+        refresh_id_position="first",
+    )
+    edge_count = promote_rows(
+        conn,
+        table="evidence_edge",
+        columns=_EVIDENCE_EDGE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=graph.edges,
+        extractor=_extract_edge,
+        refresh_id_position="first",
+    )
 
     log.debug(
         "promote_evidence_graph: refresh_id=%s nodes=%d edges=%d",
-        refresh_id,
-        len(node_rows),
-        len(edge_rows),
+        refresh_id, node_count, edge_count,
     )
-    return {"build": 1, "nodes": len(node_rows), "edges": len(edge_rows)}
+    return {"build": 1, "nodes": node_count, "edges": edge_count}
 
 
 __all__ = [

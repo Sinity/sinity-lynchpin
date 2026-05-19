@@ -22,6 +22,7 @@ from typing import Any
 
 import yaml
 
+from ...core.parse import parse_datetime
 from ...sources.github import repo_slug
 from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
 
@@ -255,12 +256,7 @@ def _run_duration_seconds(run: dict[str, Any]) -> float:
 
 
 def _parse_iso(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_datetime(value) if isinstance(value, str) and value else None
 
 
 def _percentile(sorted_values: Sequence[float], q: float) -> float:

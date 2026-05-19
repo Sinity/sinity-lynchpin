@@ -6,9 +6,9 @@ outputs stay under the configured knowledgebase artefact root.
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import Sequence
+
+import typer
 
 from ...core.config import get_config
 from .ledgers import (
@@ -19,136 +19,81 @@ from .ledgers import (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
+app = typer.Typer(
+    help="Knowledge-oriented materializers for ledgers.",
+    no_args_is_help=True,
+)
+
+
+@app.command("session-index", help="Export the session ledger CSV from the curated knowledgebase registry.")
+def _session_index(
+    sessions_dir: Path = typer.Option(None, "--sessions-dir"),
+    output: Path = typer.Option(None, "--output"),
+) -> None:
     cfg = get_config()
-    parser = argparse.ArgumentParser(
-        description="Knowledge-oriented materializers for ledgers.",
+    result = write_session_ledger(
+        sessions_dir=sessions_dir or cfg.session_registry_dir,
+        output=output or cfg.session_ledger_output,
     )
-    subparsers = parser.add_subparsers(dest="command")
-
-    session_index = subparsers.add_parser(
-        "session-index",
-        help="Export the session ledger CSV from the curated knowledgebase registry.",
-    )
-    session_index.add_argument(
-        "--sessions-dir",
-        type=Path,
-        default=cfg.session_registry_dir,
-    )
-    session_index.add_argument(
-        "--output",
-        type=Path,
-        default=cfg.session_ledger_output,
-    )
-
-    artefact_index = subparsers.add_parser(
-        "artefact-index",
-        help="Export the artefact ledger CSV from the artefact catalog.",
-    )
-    artefact_index.add_argument(
-        "--catalog",
-        type=Path,
-        default=cfg.artefact_catalog,
-    )
-    artefact_index.add_argument(
-        "--output",
-        type=Path,
-        default=cfg.artefact_ledger_output,
-    )
-    artefact_index.add_argument(
-        "--base-dir",
-        type=Path,
-        default=Path(".").resolve(),
-    )
-
-    return parser
+    _print_session_status(result)
 
 
-def add_analysis_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+@app.command("artefact-index", help="Export the artefact ledger CSV from the artefact catalog.")
+def _artefact_index(
+    catalog: Path = typer.Option(None, "--catalog"),
+    output: Path = typer.Option(None, "--output"),
+    base_dir: Path = typer.Option(None, "--base-dir"),
+) -> None:
     cfg = get_config()
-    session_index = subparsers.add_parser(
+    artefact_result = write_artefact_ledger(
+        catalog=catalog or cfg.artefact_catalog,
+        output=output or cfg.artefact_ledger_output,
+        base_dir=base_dir or Path(".").resolve(),
+    )
+    _print_artefact_status(artefact_result)
+
+
+def register_commands(parent: typer.Typer) -> None:
+    cfg = get_config()
+
+    @parent.command(
         "knowledge-session-index",
         help="Export the session ledger CSV from the curated knowledgebase registry.",
     )
-    session_index.add_argument(
-        "--sessions-dir",
-        type=Path,
-        default=cfg.session_registry_dir,
-    )
-    session_index.add_argument(
-        "--output",
-        type=Path,
-        default=cfg.session_ledger_output,
-    )
+    def _knowledge_session_index(
+        sessions_dir: Path = typer.Option(cfg.session_registry_dir, "--sessions-dir"),
+        output: Path = typer.Option(cfg.session_ledger_output, "--output"),
+    ) -> None:
+        result = write_session_ledger(
+            sessions_dir=sessions_dir,
+            output=output,
+        )
+        _print_session_status(result)
 
-    artefact_index = subparsers.add_parser(
+    @parent.command(
         "knowledge-artefact-index",
         help="Export the artefact ledger CSV from the artefact catalog.",
     )
-    artefact_index.add_argument(
-        "--catalog",
-        type=Path,
-        default=cfg.artefact_catalog,
-    )
-    artefact_index.add_argument(
-        "--output",
-        type=Path,
-        default=cfg.artefact_ledger_output,
-    )
-    artefact_index.add_argument(
-        "--base-dir",
-        type=Path,
-        default=Path(".").resolve(),
-    )
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
-    if not args.command:
-        parser.print_help()
-        return 0
-
-    if args.command == "session-index":
-        result = write_session_ledger(
-            sessions_dir=args.sessions_dir,
-            output=args.output,
-        )
-        _print_session_status(result)
-        return 0
-
-    if args.command == "artefact-index":
+    def _knowledge_artefact_index(
+        catalog: Path = typer.Option(cfg.artefact_catalog, "--catalog"),
+        output: Path = typer.Option(cfg.artefact_ledger_output, "--output"),
+        base_dir: Path = typer.Option(Path(".").resolve(), "--base-dir"),
+    ) -> None:
         artefact_result = write_artefact_ledger(
-            catalog=args.catalog,
-            output=args.output,
-            base_dir=args.base_dir,
+            catalog=catalog,
+            output=output,
+            base_dir=base_dir,
         )
         _print_artefact_status(artefact_result)
-        return 0
-
-    parser.error(f"unknown command: {args.command}")
-    return 2
 
 
-def run_analysis_command(args: argparse.Namespace) -> int | None:
-    if args.command == "knowledge-session-index":
-        result = write_session_ledger(
-            sessions_dir=args.sessions_dir,
-            output=args.output,
-        )
-        _print_session_status(result)
-        return 0
-
-    if args.command == "knowledge-artefact-index":
-        artefact_result = write_artefact_ledger(
-            catalog=args.catalog,
-            output=args.output,
-            base_dir=args.base_dir,
-        )
-        _print_artefact_status(artefact_result)
-        return 0
-
-    return None
+def main(argv: list[str] | None = None) -> int:
+    try:
+        app(args=argv, standalone_mode=False)
+    except (typer.Exit, SystemExit) as exc:
+        code = exc.exit_code if isinstance(exc, typer.Exit) else (exc.code or 0)
+        return int(code or 0)
+    return 0
 
 
 def _print_session_status(result: SessionLedgerResult) -> None:

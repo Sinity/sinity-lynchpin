@@ -8,6 +8,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, Literal
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -172,6 +173,17 @@ def load_ai_work_event_labels(
 # ---------------------------------------------------------------------------
 
 
+_AI_WORK_EVENT_COLUMNS = (
+    "event_id", "conversation_id", "provider", "project",
+    "kind", "kind_confidence", "kind_tier", "kind_source",
+    "polylogue_kind", "polylogue_confidence",
+    "overlay_kind", "overlay_confidence",
+    "file_paths", "tools_used",
+    "start_ts", "end_ts", "duration_ms",
+    "summary",
+)
+
+
 def promote_ai_work_events(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -187,10 +199,8 @@ def promote_ai_work_events(
     When provided, all kind/tier/source/confidence columns are derived from
     the returned ``WorkEventKindLabel``.
     """
-    conn.execute("DELETE FROM ai_work_event WHERE refresh_id = ?", [refresh_id])
 
-    rows: list[tuple[Any, ...]] = []
-    for ev in events:
+    def extract(ev: Any) -> tuple[Any, ...]:
         proj = project_resolver(ev) if project_resolver else None
 
         if classifier is not None:
@@ -215,49 +225,24 @@ def promote_ai_work_events(
             overlay_kind = None
             overlay_confidence = None
 
-        rows.append(
-            (
-                ev.event_id,  # event_id
-                ev.conversation_id,  # conversation_id
-                ev.provider,  # provider
-                proj,  # project
-                kind,  # kind
-                kind_confidence,  # kind_confidence
-                kind_tier,  # kind_tier
-                kind_source,  # kind_source
-                polylogue_kind,  # polylogue_kind
-                polylogue_confidence,  # polylogue_confidence
-                overlay_kind,  # overlay_kind
-                overlay_confidence,  # overlay_confidence
-                list(ev.file_paths),  # file_paths  VARCHAR[]
-                list(ev.tools_used),  # tools_used  VARCHAR[]
-                ev.start,  # start_ts  TIMESTAMPTZ (nullable)
-                ev.end,  # end_ts  TIMESTAMPTZ (nullable)
-                int(ev.duration_ms),  # duration_ms
-                ev.summary or None,  # summary
-                refresh_id,  # refresh_id
-            )
+        return (
+            ev.event_id, ev.conversation_id, ev.provider, proj,
+            kind, kind_confidence, kind_tier, kind_source,
+            polylogue_kind, polylogue_confidence,
+            overlay_kind, overlay_confidence,
+            list(ev.file_paths), list(ev.tools_used),
+            ev.start, ev.end, int(ev.duration_ms),
+            ev.summary or None,
         )
 
-    if rows:
-        conn.executemany(
-            """
-            INSERT INTO ai_work_event (
-                event_id, conversation_id, provider, project,
-                kind, kind_confidence, kind_tier, kind_source,
-                polylogue_kind, polylogue_confidence,
-                overlay_kind, overlay_confidence,
-                file_paths, tools_used,
-                start_ts, end_ts, duration_ms,
-                summary, refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-    log.debug(
-        "promote_ai_work_events: %d rows for refresh_id=%s", len(rows), refresh_id
+    return promote_rows(
+        conn,
+        table="ai_work_event",
+        columns=_AI_WORK_EVENT_COLUMNS,
+        refresh_id=refresh_id,
+        rows=events,
+        extractor=extract,
     )
-    return len(rows)
 
 
 # ── symbol_change ─────────────────────────────────────────────────────────────

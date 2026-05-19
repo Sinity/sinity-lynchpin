@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from lynchpin.analysis.core.git import run_git
+
 from ...core.config import get_config
 from ..core.textshape import compute_repetition_metrics
 from ..core.io import save_json
@@ -49,11 +51,7 @@ class FileScan:
 
 
 def _run_git(repo: Path, *args: str) -> str | None:
-    try:
-        out = subprocess.check_output(["git", *args], cwd=repo, text=True, stderr=subprocess.DEVNULL)
-    except Exception:
-        return None
-    return out.strip()
+    return run_git(repo, *args)
 
 
 def _iter_python_files(root: Path) -> list[Path]:

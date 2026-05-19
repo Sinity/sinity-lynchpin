@@ -11,6 +11,7 @@ import statistics
 from typing import Any
 
 from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.core.parse import parse_datetime
 
 
 @dataclass(frozen=True)
@@ -180,12 +181,7 @@ def _summaries(windows: list[DevshellCommandWindow]) -> list[DevshellCommandSumm
 
 
 def _dt(value: object) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_datetime(value)
 
 
 def _float(value: object) -> float:

@@ -5,14 +5,12 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path
+from ..core.io import load_analysis_artifact
 
 
 def current_state_payload() -> dict[str, Any]:
-    context_pack = load_json_if_exists(resolve_analysis_path("current_state_context_pack.json"))
-    narrative = load_json_if_exists(resolve_analysis_path("current_state_narrative.json"))
-    cp_dict: dict[str, Any] = context_pack if isinstance(context_pack, dict) else {}
-    n_dict: dict[str, Any] = narrative if isinstance(narrative, dict) else {}
+    cp_dict: dict[str, Any] = load_analysis_artifact("current_state_context_pack.json") or {}
+    n_dict: dict[str, Any] = load_analysis_artifact("current_state_narrative.json") or {}
     available = bool(cp_dict)
     projects = cp_dict.get("projects", [])
     claims = cp_dict.get("claims", [])

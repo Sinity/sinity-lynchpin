@@ -8,15 +8,15 @@ captured content.
 
 from __future__ import annotations
 
-import json
 from functools import lru_cache
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import as_local, iter_dates, parse_datetime
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "KeylogEvent",
@@ -101,33 +101,27 @@ def events(
 ) -> Iterator[KeylogEvent]:
     start_local = as_local(start)
     end_local = as_local(end)
+    def _hydrate(rec: dict[str, Any]) -> KeylogEvent | None:
+        kind = str(rec.get("event") or "")
+        if kinds is not None and kind not in kinds:
+            return None
+        ts = parse_datetime(rec.get("ts"))
+        if ts is None:
+            return None
+        ts_local = as_local(ts)
+        if ts_local < start_local or ts_local > end_local:
+            return None
+        return KeylogEvent(
+            ts=ts_local,
+            event=kind,
+            session=rec.get("session"),
+            window=rec.get("window"),
+            keycode=rec.get("keycode"),
+            changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
+        )
+
     for path in _candidate_files(start_local, end_local):
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                kind = str(rec.get("event") or "")
-                if kinds is not None and kind not in kinds:
-                    continue
-                ts = parse_datetime(rec.get("ts"))
-                if ts is None:
-                    continue
-                ts_local = as_local(ts)
-                if ts_local < start_local or ts_local > end_local:
-                    continue
-                yield KeylogEvent(
-                    ts=ts_local,
-                    event=kind,
-                    session=rec.get("session"),
-                    window=rec.get("window"),
-                    keycode=rec.get("keycode"),
-                    changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
-                )
+        yield from read_jsonl_with(path, _hydrate, source_name="keylog")
 
 
 def keypresses(*, start: datetime, end: datetime) -> list[KeylogEvent]:
@@ -152,22 +146,14 @@ def keypress_count(*, start: datetime, end: datetime) -> int:
 @lru_cache(maxsize=512)
 def _press_timestamps(path: str, mtime_ns: int, size: int) -> tuple[datetime, ...]:
     _ = (mtime_ns, size)
-    result = []
-    with Path(path).open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("event") != "press":
-                continue
-            ts = parse_datetime(rec.get("ts"))
-            if ts is not None:
-                result.append(as_local(ts))
-    return tuple(result)
+
+    def _press_ts(rec: dict[str, Any]) -> datetime | None:
+        if rec.get("event") != "press":
+            return None
+        ts = parse_datetime(rec.get("ts"))
+        return as_local(ts) if ts is not None else None
+
+    return tuple(read_jsonl_with(Path(path), _press_ts, source_name="keylog"))
 
 
 def has_coverage(*, start: datetime, end: datetime) -> bool:

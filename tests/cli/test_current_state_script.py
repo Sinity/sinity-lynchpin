@@ -85,7 +85,7 @@ def test_current_state_tool_targets_cli_module():
     )
 
     assert result.returncode == 0
-    assert "current-state" in result.stdout
+    assert "lynchpin.cli.current_state" in result.stdout
     assert "lynchpin.scripts" not in result.stderr
 
 

@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from ..core.parse import parse_datetime
+
 GitHubItemKind = Literal["issue", "pr"]
 GitHubItemState = Literal["open", "closed", "merged", "unknown"]
 GitHubLifecycle = Literal[
@@ -473,12 +475,7 @@ def _evidence_text(item: GitHubItem) -> str:
 
 
 def _dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_datetime(value) if isinstance(value, str) and value else None
 
 
 def _int(value: object) -> int:

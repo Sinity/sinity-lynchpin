@@ -469,10 +469,10 @@ def _render_machine_analysis_artifacts(
     projects: Sequence[str],
 ) -> str:
     """Render compact machine-analysis summaries from materialized artifacts."""
-    from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
+    from ..analysis.core.io import load_analysis_artifact
 
     lines: list[str] = []
-    episodes = _artifact_rows(load_json_if_exists(resolve_analysis_path("machine_episode_analysis.json")), "episodes")
+    episodes = _artifact_rows(load_analysis_artifact("machine_episode_analysis.json"), "episodes")
     matching_episodes = [
         row for row in episodes
         if _row_overlaps(row, start=start, end=end, start_key="started_at", end_key="ended_at")
@@ -480,7 +480,7 @@ def _render_machine_analysis_artifacts(
     if matching_episodes:
         lines.append(f"- Episodes in window: {len(matching_episodes)} ({_top_counts(row.get('kind') for row in matching_episodes)})")
 
-    context = _artifact_rows(load_json_if_exists(resolve_analysis_path("machine_context_windows.json")), "windows")
+    context = _artifact_rows(load_analysis_artifact("machine_context_windows.json"), "windows")
     selected_projects = set(projects)
     matching_context = [
         row for row in context
@@ -491,8 +491,8 @@ def _render_machine_analysis_artifacts(
         overlapped = sum(1 for row in matching_context if _row_int(row, "episode_count") > 0)
         lines.append(f"- Work windows with machine episodes: {overlapped}/{len(matching_context)}")
 
-    states = load_json_if_exists(resolve_analysis_path("machine_work_state_windows.json"))
-    if isinstance(states, dict):
+    states = load_analysis_artifact("machine_work_state_windows.json")
+    if states is not None:
         pressure_states = states.get("pressure_state_counts")
         work_states = states.get("work_state_counts")
         if isinstance(pressure_states, dict) and isinstance(work_states, dict):
@@ -503,8 +503,8 @@ def _render_machine_analysis_artifacts(
                 f"work={_format_mapping_counts(work_states)}"
             )
 
-    commands = load_json_if_exists(resolve_analysis_path("command_performance_windows.json"))
-    if isinstance(commands, dict):
+    commands = load_analysis_artifact("command_performance_windows.json")
+    if commands is not None:
         tools = _artifact_rows(commands, "tools")
         if tools:
             tool_counts = {str(row.get("tool")): row.get("command_count") for row in tools if row.get("tool")}
@@ -520,8 +520,8 @@ def _render_machine_analysis_artifacts(
                 f"pressure-overlap={_format_mapping_counts(pressure_counts)}"
             )
 
-    deltas = load_json_if_exists(resolve_analysis_path("machine_observational_deltas.json"))
-    if isinstance(deltas, dict):
+    deltas = load_analysis_artifact("machine_observational_deltas.json")
+    if deltas is not None:
         delta_rows = _artifact_rows(deltas, "deltas")
         if delta_rows:
             top = sorted(
@@ -536,8 +536,8 @@ def _render_machine_analysis_artifacts(
             )
             lines.append(f"- Observational command deltas: {len(delta_rows)} matched cohorts; {rendered}")
 
-    devshell = load_json_if_exists(resolve_analysis_path("devshell_performance.json"))
-    if isinstance(devshell, dict):
+    devshell = load_analysis_artifact("devshell_performance.json")
+    if devshell is not None:
         summaries = _artifact_rows(devshell, "summaries")
         if summaries:
             class_counts = {str(row.get("command_class")): row.get("command_count") for row in summaries if row.get("command_class")}
@@ -547,29 +547,29 @@ def _render_machine_analysis_artifacts(
                 f"classes={_format_mapping_counts(class_counts)}"
             )
 
-    attribution = load_json_if_exists(resolve_analysis_path("machine_below_attribution.json"))
-    if isinstance(attribution, dict):
+    attribution = load_analysis_artifact("machine_below_attribution.json")
+    if attribution is not None:
         unattributed = attribution.get("unattributed_pressure_episode_count")
         pressure = attribution.get("pressure_episode_count")
         if pressure is not None:
             lines.append(f"- Below attribution: {unattributed}/{pressure} pressure episodes lack bounded below overlap")
 
-    baselines = load_json_if_exists(resolve_analysis_path("machine_observational_baselines.json"))
-    if isinstance(baselines, dict):
+    baselines = load_analysis_artifact("machine_observational_baselines.json")
+    if baselines is not None:
         caveats = _row_list(baselines, "caveats")
         hardware = _row_list(baselines, "by_hardware_regime")
         lines.append(f"- Observational baselines: {len(hardware)} hardware regimes; caveats: {len(caveats)}")
 
-    claims = load_json_if_exists(resolve_analysis_path("machine_experiment_claims.json"))
-    if isinstance(claims, dict):
+    claims = load_analysis_artifact("machine_experiment_claims.json")
+    if claims is not None:
         lines.append(
             "- Experiment claim packs: "
             f"{claims.get('controlled_claim_count', 0)} controlled / "
             f"{claims.get('observational_claim_count', 0)} observational"
         )
 
-    readiness = load_json_if_exists(resolve_analysis_path("machine_analysis_readiness.json"))
-    if isinstance(readiness, dict):
+    readiness = load_analysis_artifact("machine_analysis_readiness.json")
+    if readiness is not None:
         dimensions = _artifact_rows(readiness, "dimensions")
         if dimensions:
             statuses = _top_counts(row.get("status") for row in dimensions)

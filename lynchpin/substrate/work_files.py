@@ -8,6 +8,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -77,6 +78,13 @@ def load_file_change_facts(
 # ---------------------------------------------------------------------------
 
 
+_FILE_CHANGE_COLUMNS = (
+    "sha", "repo", "project", "authored_at", "path", "path_root",
+    "lines_added", "lines_deleted", "lines_changed",
+    "change_type", "previous_path",
+)
+
+
 def promote_file_changes(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -90,45 +98,26 @@ def promote_file_changes(
     ``annotations`` is a mapping of (sha, path) → dict with keys
     change_type, status_code, previous_path from the JSON source.
     """
-    conn.execute("DELETE FROM file_change_fact WHERE refresh_id = ?", [refresh_id])
-
-    rows: list[tuple[Any, ...]] = []
     ann = annotations or {}
-    for f in facts:
+
+    def extract(f: Any) -> tuple[Any, ...]:
         proj = project_lookup(f.repo) if project_lookup else f.repo
         a = ann.get((f.commit, f.path), {})
-        change_type = a.get("change_type") or a.get("status_code")
-        previous_path = a.get("previous_path")
-        rows.append(
-            (
-                f.commit,  # sha
-                f.repo,  # repo
-                proj,  # project
-                f.authored_at,  # authored_at
-                f.path,  # path
-                f.path_root,  # path_root
-                f.lines_added,  # lines_added
-                f.lines_deleted,  # lines_deleted
-                f.lines_changed,  # lines_changed
-                change_type,  # change_type (from JSON annotations)
-                previous_path,  # previous_path (non-NULL for renames)
-                refresh_id,  # refresh_id
-            )
+        return (
+            f.commit, f.repo, proj, f.authored_at, f.path, f.path_root,
+            f.lines_added, f.lines_deleted, f.lines_changed,
+            a.get("change_type") or a.get("status_code"),
+            a.get("previous_path"),
         )
 
-    if rows:
-        conn.executemany(
-            """
-            INSERT INTO file_change_fact (
-                sha, repo, project, authored_at, path, path_root,
-                lines_added, lines_deleted, lines_changed,
-                change_type, previous_path, refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-    log.debug("promote_file_changes: %d rows for refresh_id=%s", len(rows), refresh_id)
-    return len(rows)
+    return promote_rows(
+        conn,
+        table="file_change_fact",
+        columns=_FILE_CHANGE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=facts,
+        extractor=extract,
+    )
 
 
 # ── ai_work_event ─────────────────────────────────────────────────────────────

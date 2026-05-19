@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Literal
+
+import typer
 
 from ..core.parse import as_local
 from ..core.serialization import jsonable
@@ -39,48 +40,11 @@ def render_current_state_timeline(*args: Any, **kwargs: Any) -> str:
     return impl(*args, **kwargs)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Render a current-state context pack")
-    parser.add_argument("--start", type=_parse_date, required=True, help="Start logical date (YYYY-MM-DD)")
-    parser.add_argument("--end", type=_parse_date, required=True, help="End logical date (YYYY-MM-DD)")
-    parser.add_argument(
-        "--github-frontier",
-        action="store_true",
-        help="Fetch open/recent GitHub issue and PR frontier through gh",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=("local-fast", "local-heavy", "network"),
-        default="local-fast",
-        help="Context-pack cost mode; network implies GitHub frontier evidence",
-    )
-    parser.add_argument(
-        "--project",
-        action="append",
-        default=[],
-        help="Restrict context-pack project slices to a canonical project; repeatable",
-    )
-    parser.add_argument(
-        "--semantic",
-        action="store_true",
-        help="Include deterministic semantic annotations, clusters, and narrative moments in the context pack",
-    )
-    parser.add_argument(
-        "--persist-semantic",
-        action="store_true",
-        help="Persist deterministic semantic products to the local Lynchpin cache",
-    )
-    parser.add_argument("--json", action="store_true", help="Render structured JSON instead of Markdown")
-    parser.add_argument("--output", "-o", type=Path, help="Write Markdown to this path instead of stdout")
-    parser.add_argument(
-        "--timeline-output",
-        type=Path,
-        help=(
-            "Also write a chronological day-by-day timeline (M.10) to this path."
-            " Sibling artifact of the context pack, citation-rich."
-        ),
-    )
-    return parser
+def _parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"invalid date: {value!r}") from exc
 
 
 def render_current_state(
@@ -117,36 +81,89 @@ def render_current_state(
     return render_context_pack(pack)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.end < args.start:
-        parser.error("--end must be on or after --start")
+def _current_state_command(
+    start: str = typer.Option(..., "--start", help="Start logical date (YYYY-MM-DD)"),
+    end: str = typer.Option(..., "--end", help="End logical date (YYYY-MM-DD)"),
+    github_frontier: bool = typer.Option(
+        False, "--github-frontier/",
+        help="Fetch open/recent GitHub issue and PR frontier through gh",
+    ),
+    mode: str = typer.Option(
+        "local-fast", "--mode",
+        help="Context-pack cost mode; network implies GitHub frontier evidence",
+    ),
+    project: list[str] = typer.Option(
+        None, "--project",
+        help="Restrict context-pack project slices to a canonical project; repeatable",
+    ),
+    semantic: bool = typer.Option(
+        False, "--semantic/",
+        help="Include deterministic semantic annotations, clusters, and narrative moments in the context pack",
+    ),
+    persist_semantic: bool = typer.Option(
+        False, "--persist-semantic/",
+        help="Persist deterministic semantic products to the local Lynchpin cache",
+    ),
+    json_output: bool = typer.Option(False, "--json/", help="Render structured JSON instead of Markdown"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write Markdown to this path instead of stdout"),
+    timeline_output: Path | None = typer.Option(
+        None, "--timeline-output",
+        help=(
+            "Also write a chronological day-by-day timeline (M.10) to this path."
+            " Sibling artifact of the context pack, citation-rich."
+        ),
+    ),
+) -> None:
+    if mode not in {"local-fast", "local-heavy", "network"}:
+        raise typer.BadParameter(
+            f"argument --mode: invalid choice: {mode!r} (choose from 'local-fast', 'local-heavy', 'network')"
+        )
+    start_d = _parse_date(start)
+    end_d = _parse_date(end)
+    if end_d < start_d:
+        raise typer.BadParameter("--end must be on or after --start")
 
     rendered = render_current_state(
-        start=args.start,
-        end=args.end,
-        include_github_frontier=args.github_frontier,
-        mode=args.mode,
-        projects=args.project,
-        semantic=args.semantic,
-        persist_semantic=args.persist_semantic,
-        json_output=args.json,
-        timeline_output=args.timeline_output,
+        start=start_d,
+        end=end_d,
+        include_github_frontier=github_frontier,
+        mode=mode,  # type: ignore[arg-type]
+        projects=list(project or []),
+        semantic=semantic,
+        persist_semantic=persist_semantic,
+        json_output=json_output,
+        timeline_output=timeline_output,
     )
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n", encoding="utf-8")
     else:
         sys.stdout.write(rendered + "\n")
-    return 0
 
 
-def _parse_date(value: str) -> date:
+_app = typer.Typer(
+    help="Render a current-state context pack",
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+_app.command()(_current_state_command)
+_command = typer.main.get_command(_app)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import click
+
     try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"invalid date: {value!r}") from exc
+        _command.main(args=list(argv) if argv is not None else None, standalone_mode=False)
+    except click.UsageError as exc:
+        sys.stderr.write(f"Error: {exc.format_message()}\n")
+        return 2
+    except (typer.Exit, SystemExit) as exc:
+        code = getattr(exc, "exit_code", None)
+        if code is None:
+            code = getattr(exc, "code", 0)
+        return int(code or 0)
+    return 0
 
 
 if __name__ == "__main__":

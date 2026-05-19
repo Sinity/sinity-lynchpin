@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_analysis_artifact, save_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 
@@ -222,8 +222,7 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
     )
     result = []
     for artifact, count_path in artifacts:
-        payload = load_json_if_exists(resolve_analysis_path(artifact))
-        payload_dict = payload if isinstance(payload, dict) else None
+        payload_dict = load_analysis_artifact(artifact)
         result.append(
             MachineArtifactCoverage(
                 artifact=artifact,
@@ -338,8 +337,8 @@ def _dimension(
 
 
 def _controlled_claim_count(artifact: MachineArtifactCoverage) -> int:
-    payload = load_json_if_exists(resolve_analysis_path(artifact.artifact))
-    if not isinstance(payload, dict):
+    payload = load_analysis_artifact(artifact.artifact)
+    if payload is None:
         return 0
     value = payload.get("controlled_claim_count")
     return int(value) if isinstance(value, int) else 0
@@ -362,8 +361,7 @@ def _network_caveats(row_count: int) -> tuple[str, ...]:
 
 
 def _below_attribution_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
-    payload = load_json_if_exists(resolve_analysis_path(artifact.artifact))
-    payload_dict = payload if isinstance(payload, dict) else {}
+    payload_dict = load_analysis_artifact(artifact.artifact) or {}
     attributed = _int_value(payload_dict.get("attributed_episode_count"))
     pressure = _int_value(payload_dict.get("pressure_episode_count"))
     if pressure == 0:

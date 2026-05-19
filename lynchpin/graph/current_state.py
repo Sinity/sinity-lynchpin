@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
+from ..analysis.core.git import run_git
 from ..core.evidence import CostClass, SourceReadinessReport
 from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import ALL_PROJECTS
@@ -545,13 +546,7 @@ def _ahead_behind(item: ProjectInventoryItem) -> str:
 
 
 def _git(path: Path, args: Sequence[str]) -> str:
-    try:
-        result = subprocess.run(["git", *args], cwd=path, capture_output=True, text=True, timeout=15)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+    return run_git(path, *args, timeout=15) or ""
 
 
 __all__ = [

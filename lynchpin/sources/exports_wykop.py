@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +11,7 @@ from typing import Callable, Iterable, Iterator, Optional, TypeVar
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
 from ..core.parse import in_month_range, month_key, parse_datetime, safe_int
+from ..core.source import read_jsonl_with
 
 TextTokenizer = Callable[[str], Iterable[str]]
 T = TypeVar("T")
@@ -192,24 +192,7 @@ def _load_entry_comments(path: Path) -> list[WykopEntryComment]:
 
 
 def _read_jsonl(path: Path, mapper: Callable[[dict[str, object]], T | None]) -> list[T]:
-    if not path.exists():
-        return []
-    rows: list[T] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            mapped = mapper(payload)
-            if mapped is not None:
-                rows.append(mapped)
-    return rows
+    return list(read_jsonl_with(path, mapper, source_name=path.name))
 
 
 def _parse_link_comment(payload: dict[str, object]) -> Optional[WykopLinkComment]:

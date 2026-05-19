@@ -172,8 +172,10 @@
             duckdb
             cachew
             tiktoken
+            typer
             claude-agent-sdk
             mcp
+            polars
             polylogue
             tree-sitter
             tree-sitter-python
@@ -249,11 +251,13 @@
             hmmlearn
             mcp
             numpy
+            polars
             polylogue
             pyyaml
             rich
             scipy
             tiktoken
+            typer
             tree-sitter
             tree-sitter-python
             tree-sitter-rust

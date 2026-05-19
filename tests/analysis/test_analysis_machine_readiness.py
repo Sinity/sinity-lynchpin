@@ -55,7 +55,7 @@ def test_machine_readiness_reports_source_and_claim_coverage(monkeypatch, tmp_pa
         "machine_experiment_claims.json": {"run_count": 1, "controlled_claim_count": 1},
     }.items():
         (artifact_root / name).write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(readiness_module, "resolve_analysis_path", lambda name: artifact_root / name)
+    monkeypatch.setattr("lynchpin.analysis.core.io.resolve_analysis_path", lambda name: artifact_root / name)
 
     analysis = analyze_machine_analysis_readiness(path=db)
 
@@ -82,7 +82,7 @@ def test_machine_readiness_limits_sparse_below_attribution(monkeypatch, tmp_path
         json.dumps({"attributed_episode_count": 1, "pressure_episode_count": 10}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(readiness_module, "resolve_analysis_path", lambda name: artifact_root / name)
+    monkeypatch.setattr("lynchpin.analysis.core.io.resolve_analysis_path", lambda name: artifact_root / name)
 
     analysis = analyze_machine_analysis_readiness(path=db)
 
@@ -98,7 +98,7 @@ def test_machine_readiness_marks_missing_controlled_claims(monkeypatch, tmp_path
     with connect(db) as conn:
         apply_schema(conn)
 
-    monkeypatch.setattr(readiness_module, "resolve_analysis_path", lambda name: tmp_path / name)
+    monkeypatch.setattr("lynchpin.analysis.core.io.resolve_analysis_path", lambda name: tmp_path / name)
 
     analysis = analyze_machine_analysis_readiness(path=db)
 

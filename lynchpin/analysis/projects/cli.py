@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import argparse
 from datetime import date
 from pathlib import Path
-from typing import Sequence
+
+import typer
 
 from ..active.ai_attribution import run_active_ai_attribution
 from ..active.git_facts import run_active_git_facts
@@ -39,556 +39,516 @@ def _parse_bool(value: str) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise argparse.ArgumentTypeError(f"invalid boolean value: {value!r}")
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Project analysis materializers for velocity and chisel snapshots.",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    velocity = subparsers.add_parser(
-        "velocity",
-        help="Build the cross-project git velocity dashboard.",
-    )
-    velocity.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    velocity.add_argument(
-        "--projects",
-        default="",
-        help="Whitespace-separated project names to include.",
-    )
-    velocity.add_argument(
-        "--exclude",
-        default="",
-        help="Whitespace-separated project names to exclude.",
-    )
-    velocity.add_argument(
-        "--aggregate",
-        type=_parse_bool,
-        default=True,
-        help="Whether to include the all-projects aggregate view.",
-    )
-
-    chisel = subparsers.add_parser(
-        "chisel",
-        help="Build XML repomix snapshots with semantic splitting and GitHub issue commentary.",
-    )
-    chisel.add_argument(
-        "--projects",
-        default="",
-        help="Whitespace-separated project names (default: all registered).",
-    )
-    chisel.add_argument(
-        "--output-root",
-        type=lambda s: Path(s) if s.strip() else None,
-        default=None,
-        help="Output directory (default: /realm/inbox/store/next/<timestamp>).",
-    )
-    chisel.add_argument(
-        "--max-workers", type=int, default=4,
-        help="Max parallel repos (default: 4).",
-    )
-    chisel.add_argument(
-        "--list", action="store_true",
-        help="List available project plans and exit.",
-    )
-
-    active_git = subparsers.add_parser(
-        "active-git-facts",
-        help="Build active-project default-branch commit and file-change facts.",
-    )
-    _add_active_git_facts_args(active_git)
-    active_work = subparsers.add_parser(
-        "active-work-packages",
-        help="Build active-project commit-rooted work packages.",
-    )
-    _add_active_work_packages_args(active_work)
-    velocity_windows = subparsers.add_parser(
-        "project-velocity-windows",
-        help="Build project velocity windows over active facts and correlations.",
-    )
-    _add_project_velocity_windows_args(velocity_windows)
-
-    return parser
-
-
-def add_analysis_commands(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    cmd_cross = subparsers.add_parser('cross', help='Cross-project metric analysis')
-    cmd_cross.add_argument('--base_dir', default='/realm/project')
-    cmd_cross.add_argument('--out', default=None)
-
-    cmd_active_snapshot = subparsers.add_parser(
-        "active-project-snapshot",
-        help="Build active-project tracked-file and default-branch git facts",
-    )
-    cmd_active_snapshot.add_argument("--start", type=_parse_date, default=None)
-    cmd_active_snapshot.add_argument("--end", type=_parse_date, default=None)
-    cmd_active_snapshot.add_argument("--project", action="append", default=[])
-    cmd_active_snapshot.add_argument("--out", default=None)
-
-    cmd_python_complexity = subparsers.add_parser(
-        "active-python-complexity",
-        help="Build active-project native Python complexity metrics",
-    )
-    _add_window_with_snapshot_args(cmd_python_complexity)
-    cmd_python_complexity.add_argument("--out", default=None)
-
-    cmd_python_imports = subparsers.add_parser(
-        "active-python-import-graph",
-        help="Build active-project native Python import graphs",
-    )
-    cmd_python_imports.add_argument("--project", action="append", default=[])
-    cmd_python_imports.add_argument("--snapshot", default=None)
-    cmd_python_imports.add_argument("--out", default=None)
-
-    cmd_active_git = subparsers.add_parser(
-        "active-git-facts",
-        help="Build active-project default-branch commit and file-change facts",
-    )
-    _add_active_git_facts_args(cmd_active_git)
-
-    cmd_active_work = subparsers.add_parser(
-        "active-work-packages",
-        help="Build active-project commit-rooted work packages",
-    )
-    _add_active_work_packages_args(cmd_active_work)
-
-    cmd_velocity_windows = subparsers.add_parser(
-        "project-velocity-windows",
-        help="Build project velocity windows over active facts and correlations",
-    )
-    _add_project_velocity_windows_args(cmd_velocity_windows)
-
-    cmd_hotspots = subparsers.add_parser(
-        "active-code-hotspots",
-        help="Build active-project code hotspot ranking from file-change facts",
-    )
-    _add_window_with_snapshot_args(cmd_hotspots)
-    cmd_hotspots.add_argument("--file-changes", default=None)
-    cmd_hotspots.add_argument("--out", default=None)
-
-    cmd_guardrails = subparsers.add_parser(
-        "active-quality-guardrails",
-        help="Build active-project quality guardrail movement from file-change facts",
-    )
-    _add_window_with_snapshot_args(cmd_guardrails)
-    cmd_guardrails.add_argument("--file-changes", default=None)
-    cmd_guardrails.add_argument("--out", default=None)
-
-    cmd_structural = subparsers.add_parser(
-        "active-structural-findings",
-        help="Run ast-grep structural findings filtered by recent file changes",
-    )
-    _add_window_with_snapshot_args(cmd_structural)
-    cmd_structural.add_argument("--file-changes", default=None)
-    cmd_structural.add_argument("--out", default=None)
-
-    cmd_semantic_static = subparsers.add_parser(
-        "active-semantic-static-findings",
-        help="Run curated semgrep privacy rules over the lynchpin repo",
-    )
-    _add_window_with_snapshot_args(cmd_semantic_static)
-    cmd_semantic_static.add_argument("--file-changes", default=None)
-    cmd_semantic_static.add_argument("--out", default=None)
-
-    cmd_rust_hygiene = subparsers.add_parser(
-        "active-rust-dependency-hygiene",
-        help="Run cargo-machete (and optionally cargo-geiger) over Rust workspaces",
-    )
-    _add_window_with_snapshot_args(cmd_rust_hygiene)
-    cmd_rust_hygiene.add_argument("--include-geiger", action="store_true")
-    cmd_rust_hygiene.add_argument("--out", default=None)
-
-    cmd_py_hygiene = subparsers.add_parser(
-        "active-python-dependency-hygiene",
-        help="Run pip-audit against active Python projects, marking advisories direct/transitive",
-    )
-    _add_window_with_snapshot_args(cmd_py_hygiene)
-    cmd_py_hygiene.add_argument("--import-graph", default=None)
-    cmd_py_hygiene.add_argument("--out", default=None)
-
-    cmd_symbol_index = subparsers.add_parser(
-        "active-symbol-index",
-        help="Build tree-sitter symbol index across active project checkouts",
-    )
-    cmd_symbol_index.add_argument("--project", action="append", default=[])
-    cmd_symbol_index.add_argument("--out", default=None)
-
-    cmd_symbol_changes = subparsers.add_parser(
-        "active-symbol-changes",
-        help="Correlate symbol index with file-change facts (path-level)",
-    )
-    cmd_symbol_changes.add_argument("--start", type=_parse_date, default=None)
-    cmd_symbol_changes.add_argument("--end", type=_parse_date, default=None)
-    cmd_symbol_changes.add_argument("--project", action="append", default=[])
-    cmd_symbol_changes.add_argument("--symbol-index", default=None)
-    cmd_symbol_changes.add_argument("--file-changes", default=None)
-    cmd_symbol_changes.add_argument("--out", default=None)
-
-    cmd_symbol_diffs = subparsers.add_parser(
-        "active-symbol-diffs",
-        help="Line-range symbol diff intersection (runs git show per commit)",
-    )
-    cmd_symbol_diffs.add_argument("--start", type=_parse_date, default=None)
-    cmd_symbol_diffs.add_argument("--end", type=_parse_date, default=None)
-    cmd_symbol_diffs.add_argument("--project", action="append", default=[])
-    cmd_symbol_diffs.add_argument("--commit-facts", default=None)
-    cmd_symbol_diffs.add_argument("--symbol-index", default=None)
-    cmd_symbol_diffs.add_argument("--snapshot", default=None)
-    cmd_symbol_diffs.add_argument("--out", default=None)
-
-    cmd_commit_semantics = subparsers.add_parser(
-        "active-commit-semantics",
-        help="Build commit-rooted semantic capsules from active commit facts",
-    )
-    cmd_commit_semantics.add_argument("--start", type=_parse_date, default=None)
-    cmd_commit_semantics.add_argument("--end", type=_parse_date, default=None)
-    cmd_commit_semantics.add_argument("--project", action="append", default=[])
-    cmd_commit_semantics.add_argument("--commit-facts", default=None)
-    cmd_commit_semantics.add_argument("--out", default=None)
-
-    cmd_ai_attribution = subparsers.add_parser(
-        "active-ai-attribution",
-        help="Backfill AI co-authorship attribution by joining commits with polylogue sessions",
-    )
-    cmd_ai_attribution.add_argument("--start", type=_parse_date, default=None)
-    cmd_ai_attribution.add_argument("--end", type=_parse_date, default=None)
-    cmd_ai_attribution.add_argument("--project", action="append", default=[])
-    cmd_ai_attribution.add_argument("--commit-facts", default=None)
-    cmd_ai_attribution.add_argument("--out", default=None)
-
-    cmd_github_frontier = subparsers.add_parser(
-        "active-github-frontier",
-        help="Build active-project GitHub frontier (issues/PRs) — requires gh on PATH",
-    )
-    _add_window_with_snapshot_args(cmd_github_frontier)
-    cmd_github_frontier.add_argument("--work-packages", default=None)
-    cmd_github_frontier.add_argument("--out", default=None)
-
-    cmd_ci_health = subparsers.add_parser(
-        "active-ci-health",
-        help="Static .github/workflows parsing; optional gh api run telemetry",
-    )
-    _add_window_with_snapshot_args(cmd_ci_health)
-    cmd_ci_health.add_argument("--include-runs", action="store_true",
-                                help="Network: query gh api for last 30d of run history")
-    cmd_ci_health.add_argument("--out", default=None)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
-    if not args.command:
-        parser.print_help()
-        return 0
-
-    if args.command == "velocity":
-        wrote = build_velocity_dashboard(
-            output=args.output,
-            project_names=_split_names(args.projects),
-            exclude_names=_split_names(args.exclude),
-            aggregate=args.aggregate,
-            log=print,
-        )
-        if wrote:
-            print(f"Velocity dashboard written to {args.output}")
-        else:
-            print("Velocity dashboard unchanged or no repositories produced history.")
-        return 0
-
-    if args.command == "chisel":
-        from .chisel import build_chisel_bundles
-        if args.list:
-            from .chisel import REPO_PLANS
-            print("Available chisel projects:\n")
-            for name, plan in sorted(REPO_PLANS.items()):
-                slices_str = ", ".join(s.name for s in plan.slices)
-                print(f"  {name}")
-                print(f"    path:   {plan.path}")
-                print(f"    github: {plan.github_slug or '—'}")
-                print(f"    slices: {slices_str}")
-                if plan.extra_copy:
-                    copies = ", ".join(f"{s}→{d}" for s, d in plan.extra_copy)
-                    print(f"    copies: {copies}")
-                print()
-            return 0
-        build_chisel_bundles(
-            project_names=_split_names(args.projects),
-            output_root=args.output_root,
-            max_workers=args.max_workers,
-        )
-        return 0
-
-    if args.command == "active-git-facts":
-        commit_out = args.commit_out or resolve_analysis_path("active_commit_facts.json")
-        file_out = args.file_out or resolve_analysis_path("active_file_change_facts.json")
-        run_active_git_facts(
-            commit_out,
-            file_out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-        )
-        return 0
-
-    if args.command == "active-work-packages":
-        out = args.out or resolve_analysis_path("active_work_packages.json")
-        run_active_work_packages(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-        )
-        return 0
-
-    if args.command == "project-velocity-windows":
-        out = args.out or resolve_analysis_path("project_velocity_windows.json")
-        run_project_velocity_windows(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-            commit_facts_file=args.commit_facts or resolve_analysis_path("active_commit_facts.json"),
-            work_packages_file=args.work_packages or resolve_analysis_path("active_work_packages.json"),
-        )
-        return 0
-
-    parser.error(f"unknown command: {args.command}")
-    return 2
-
-
-def run_analysis_command(args: argparse.Namespace) -> int | None:
-    if args.command == 'cross':
-        from . import metrics as project_metrics
-
-        out = args.out or resolve_analysis_path('cross_project_metrics.json')
-        project_metrics.run_cross_project(args.base_dir, out)  # type: ignore[no-untyped-call]
-        return 0
-
-    if args.command == "active-project-snapshot":
-        out = args.out or resolve_analysis_path("active_project_snapshot.json")
-        run_active_project_snapshot(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-        )
-        return 0
-
-    if args.command == "active-python-complexity":
-        out = args.out or resolve_analysis_path("active_python_complexity.json")
-        run_active_python_complexity(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-python-import-graph":
-        out = args.out or resolve_analysis_path("active_python_import_graph.json")
-        run_active_python_import_graph(
-            out,
-            projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-git-facts":
-        commit_out = args.commit_out or resolve_analysis_path("active_commit_facts.json")
-        file_out = args.file_out or resolve_analysis_path("active_file_change_facts.json")
-        run_active_git_facts(
-            commit_out,
-            file_out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-        )
-        return 0
-
-    if args.command == "active-work-packages":
-        out = args.out or resolve_analysis_path("active_work_packages.json")
-        run_active_work_packages(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-        )
-        return 0
-
-    if args.command == "project-velocity-windows":
-        out = args.out or resolve_analysis_path("project_velocity_windows.json")
-        run_project_velocity_windows(
-            out,
-            start=args.start,
-            end=args.end,
-            projects=args.project,
-            commit_facts_file=args.commit_facts or resolve_analysis_path("active_commit_facts.json"),
-            work_packages_file=args.work_packages or resolve_analysis_path("active_work_packages.json"),
-        )
-        return 0
-
-    if args.command == "active-code-hotspots":
-        out = args.out or resolve_analysis_path("active_code_hotspots.json")
-        run_active_hotspots(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            file_changes_file=args.file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-quality-guardrails":
-        out = args.out or resolve_analysis_path("active_quality_guardrails.json")
-        run_active_guardrails(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            file_changes_file=args.file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-structural-findings":
-        out = args.out or resolve_analysis_path("active_structural_findings.json")
-        run_active_structural_findings(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            file_changes_file=args.file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-semantic-static-findings":
-        out = args.out or resolve_analysis_path("active_semantic_static_findings.json")
-        run_active_semantic_static_findings(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            file_changes_file=args.file_changes or resolve_analysis_path("active_file_change_facts.json"),
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-rust-dependency-hygiene":
-        out = args.out or resolve_analysis_path("active_rust_dependency_hygiene.json")
-        run_active_rust_dependency_hygiene(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            include_geiger=args.include_geiger,
-        )
-        return 0
-
-    if args.command == "active-python-dependency-hygiene":
-        out = args.out or resolve_analysis_path("active_python_dependency_hygiene.json")
-        run_active_python_dependency_hygiene(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            import_graph_file=args.import_graph or resolve_analysis_path("active_python_import_graph.json"),
-        )
-        return 0
-
-    if args.command == "active-symbol-index":
-        out = args.out or resolve_analysis_path("active_symbol_index.json")
-        run_active_symbol_index(out, projects=args.project)
-        return 0
-
-    if args.command == "active-symbol-changes":
-        out = args.out or resolve_analysis_path("active_symbol_changes.json")
-        run_active_symbol_changes(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            symbol_index_file=args.symbol_index or resolve_analysis_path("active_symbol_index.json"),
-            file_changes_file=args.file_changes or resolve_analysis_path("active_file_change_facts.json"),
-        )
-        return 0
-
-    if args.command == "active-symbol-diffs":
-        out = args.out or resolve_analysis_path("active_symbol_diffs.json")
-        run_active_symbol_diffs(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            commit_facts_file=args.commit_facts or resolve_analysis_path("active_commit_facts.json"),
-            symbol_index_file=args.symbol_index or resolve_analysis_path("active_symbol_index.json"),
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-        )
-        return 0
-
-    if args.command == "active-commit-semantics":
-        out = args.out or resolve_analysis_path("active_commit_semantics.json")
-        run_active_commit_semantics(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-        )
-        return 0
-
-    if args.command == "active-ai-attribution":
-        out = args.out or resolve_analysis_path("active_ai_attribution.json")
-        run_active_ai_attribution(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-        )
-        return 0
-
-    if args.command == "active-github-frontier":
-        out = args.out or resolve_analysis_path("active_github_frontier.json")
-        run_active_github_frontier(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            work_packages_file=args.work_packages or resolve_analysis_path("active_work_packages.json"),
-        )
-        return 0
-
-    if args.command == "active-ci-health":
-        out = args.out or resolve_analysis_path("active_ci_health.json")
-        run_active_ci_health(
-            out,
-            start=args.start, end=args.end, projects=args.project,
-            snapshot_file=args.snapshot or resolve_analysis_path("active_project_snapshot.json"),
-            include_runs=args.include_runs,
-        )
-        return 0
-
-    return None
+    raise typer.BadParameter(f"invalid boolean value: {value!r}")
 
 
 def _parse_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"invalid date: {value!r}") from exc
+        raise typer.BadParameter(f"invalid date: {value!r}") from exc
 
 
-def _add_active_git_facts_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--start", type=_parse_date, default=None)
-    parser.add_argument("--end", type=_parse_date, default=None)
-    parser.add_argument("--project", action="append", default=[])
-    parser.add_argument("--commit-out", default=None)
-    parser.add_argument("--file-out", default=None)
+def _opt_date(value: str | None) -> date | None:
+    return _parse_date(value) if value else None
 
 
-def _add_active_work_packages_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--start", type=_parse_date, default=None)
-    parser.add_argument("--end", type=_parse_date, default=None)
-    parser.add_argument("--project", action="append", default=[])
-    parser.add_argument("--commit-facts", default=None)
-    parser.add_argument("--out", default=None)
+app = typer.Typer(
+    help="Project analysis materializers for velocity and chisel snapshots.",
+    no_args_is_help=True,
+)
 
 
-def _add_project_velocity_windows_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--start", type=_parse_date, default=None)
-    parser.add_argument("--end", type=_parse_date, default=None)
-    parser.add_argument("--project", action="append", default=[])
-    parser.add_argument("--commit-facts", default=None)
-    parser.add_argument("--work-packages", default=None)
-    parser.add_argument("--out", default=None)
+@app.command("velocity", help="Build the cross-project git velocity dashboard.")
+def _velocity(
+    output: Path = typer.Option(DEFAULT_OUTPUT, "--output"),
+    projects: str = typer.Option("", "--projects", help="Whitespace-separated project names to include."),
+    exclude: str = typer.Option("", "--exclude", help="Whitespace-separated project names to exclude."),
+    aggregate: str = typer.Option("True", "--aggregate", help="Whether to include the all-projects aggregate view."),
+) -> None:
+    agg = _parse_bool(aggregate)
+    wrote = build_velocity_dashboard(
+        output=output,
+        project_names=_split_names(projects),
+        exclude_names=_split_names(exclude),
+        aggregate=agg,
+        log=print,
+    )
+    if wrote:
+        print(f"Velocity dashboard written to {output}")
+    else:
+        print("Velocity dashboard unchanged or no repositories produced history.")
 
 
-def _add_window_with_snapshot_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--start", type=_parse_date, default=None)
-    parser.add_argument("--end", type=_parse_date, default=None)
-    parser.add_argument("--project", action="append", default=[])
-    parser.add_argument("--snapshot", default=None)
+@app.command(
+    "chisel",
+    help="Build XML repomix snapshots with semantic splitting and GitHub issue commentary.",
+)
+def _chisel(
+    projects: str = typer.Option("", "--projects", help="Whitespace-separated project names (default: all registered)."),
+    output_root: str = typer.Option("", "--output-root", help="Output directory (default: /realm/inbox/store/next/<timestamp>)."),
+    max_workers: int = typer.Option(4, "--max-workers", help="Max parallel repos (default: 4)."),
+    list_only: bool = typer.Option(False, "--list/", help="List available project plans and exit."),
+) -> None:
+    from .chisel import build_chisel_bundles
+
+    if list_only:
+        from .chisel import REPO_PLANS
+        print("Available chisel projects:\n")
+        for name, plan in sorted(REPO_PLANS.items()):
+            slices_str = ", ".join(s.name for s in plan.slices)
+            print(f"  {name}")
+            print(f"    path:   {plan.path}")
+            print(f"    github: {plan.github_slug or '—'}")
+            print(f"    slices: {slices_str}")
+            if plan.extra_copy:
+                copies = ", ".join(f"{s}→{d}" for s, d in plan.extra_copy)
+                print(f"    copies: {copies}")
+            print()
+        return
+    output_root_path = Path(output_root) if output_root.strip() else None
+    build_chisel_bundles(
+        project_names=_split_names(projects),
+        output_root=output_root_path,
+        max_workers=max_workers,
+    )
+
+
+@app.command("active-git-facts", help="Build active-project default-branch commit and file-change facts.")
+def _active_git_facts(
+    start: str = typer.Option(None, "--start"),
+    end: str = typer.Option(None, "--end"),
+    project: list[str] = typer.Option(None, "--project"),
+    commit_out: str | None = typer.Option(None, "--commit-out"),
+    file_out: str | None = typer.Option(None, "--file-out"),
+) -> None:
+    commit_target = commit_out or resolve_analysis_path("active_commit_facts.json")
+    file_target = file_out or resolve_analysis_path("active_file_change_facts.json")
+    run_active_git_facts(
+        commit_target,
+        file_target,
+        start=_opt_date(start),
+        end=_opt_date(end),
+        projects=list(project or []),
+    )
+
+
+@app.command("active-work-packages", help="Build active-project commit-rooted work packages.")
+def _active_work_packages(
+    start: str = typer.Option(None, "--start"),
+    end: str = typer.Option(None, "--end"),
+    project: list[str] = typer.Option(None, "--project"),
+    commit_facts: str | None = typer.Option(None, "--commit-facts"),
+    out: str | None = typer.Option(None, "--out"),
+) -> None:
+    target = out or resolve_analysis_path("active_work_packages.json")
+    run_active_work_packages(
+        target,
+        start=_opt_date(start),
+        end=_opt_date(end),
+        projects=list(project or []),
+    )
+
+
+@app.command("project-velocity-windows", help="Build project velocity windows over active facts and correlations.")
+def _project_velocity_windows(
+    start: str = typer.Option(None, "--start"),
+    end: str = typer.Option(None, "--end"),
+    project: list[str] = typer.Option(None, "--project"),
+    commit_facts: str | None = typer.Option(None, "--commit-facts"),
+    work_packages: str | None = typer.Option(None, "--work-packages"),
+    out: str | None = typer.Option(None, "--out"),
+) -> None:
+    target = out or resolve_analysis_path("project_velocity_windows.json")
+    run_project_velocity_windows(
+        target,
+        start=_opt_date(start),
+        end=_opt_date(end),
+        projects=list(project or []),
+        commit_facts_file=commit_facts or resolve_analysis_path("active_commit_facts.json"),
+        work_packages_file=work_packages or resolve_analysis_path("active_work_packages.json"),
+    )
+
+
+def register_commands(parent: typer.Typer) -> None:
+    @parent.command("cross", help="Cross-project metric analysis")
+    def _cross(
+        base_dir: str = typer.Option("/realm/project", "--base_dir"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        from . import metrics as project_metrics
+
+        target = out or resolve_analysis_path("cross_project_metrics.json")
+        project_metrics.run_cross_project(base_dir, target)  # type: ignore[no-untyped-call]
+
+    @parent.command(
+        "active-project-snapshot",
+        help="Build active-project tracked-file and default-branch git facts",
+    )
+    def _active_project_snapshot(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_project_snapshot.json")
+        run_active_project_snapshot(
+            target,
+            start=_opt_date(start),
+            end=_opt_date(end),
+            projects=list(project or []),
+        )
+
+    @parent.command(
+        "active-python-complexity",
+        help="Build active-project native Python complexity metrics",
+    )
+    def _active_python_complexity(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_python_complexity.json")
+        run_active_python_complexity(
+            target,
+            start=_opt_date(start),
+            end=_opt_date(end),
+            projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-python-import-graph",
+        help="Build active-project native Python import graphs",
+    )
+    def _active_python_import_graph(
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_python_import_graph.json")
+        run_active_python_import_graph(
+            target,
+            projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-git-facts",
+        help="Build active-project default-branch commit and file-change facts",
+    )
+    def _active_git_facts_analysis(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_out: str | None = typer.Option(None, "--commit-out"),
+        file_out: str | None = typer.Option(None, "--file-out"),
+    ) -> None:
+        commit_target = commit_out or resolve_analysis_path("active_commit_facts.json")
+        file_target = file_out or resolve_analysis_path("active_file_change_facts.json")
+        run_active_git_facts(
+            commit_target,
+            file_target,
+            start=_opt_date(start),
+            end=_opt_date(end),
+            projects=list(project or []),
+        )
+
+    @parent.command(
+        "active-work-packages",
+        help="Build active-project commit-rooted work packages",
+    )
+    def _active_work_packages_analysis(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_facts: str | None = typer.Option(None, "--commit-facts"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_work_packages.json")
+        run_active_work_packages(
+            target,
+            start=_opt_date(start),
+            end=_opt_date(end),
+            projects=list(project or []),
+        )
+
+    @parent.command(
+        "project-velocity-windows",
+        help="Build project velocity windows over active facts and correlations",
+    )
+    def _project_velocity_windows_analysis(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_facts: str | None = typer.Option(None, "--commit-facts"),
+        work_packages: str | None = typer.Option(None, "--work-packages"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("project_velocity_windows.json")
+        run_project_velocity_windows(
+            target,
+            start=_opt_date(start),
+            end=_opt_date(end),
+            projects=list(project or []),
+            commit_facts_file=commit_facts or resolve_analysis_path("active_commit_facts.json"),
+            work_packages_file=work_packages or resolve_analysis_path("active_work_packages.json"),
+        )
+
+    @parent.command(
+        "active-code-hotspots",
+        help="Build active-project code hotspot ranking from file-change facts",
+    )
+    def _active_code_hotspots(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        file_changes: str | None = typer.Option(None, "--file-changes"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_code_hotspots.json")
+        run_active_hotspots(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-quality-guardrails",
+        help="Build active-project quality guardrail movement from file-change facts",
+    )
+    def _active_quality_guardrails(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        file_changes: str | None = typer.Option(None, "--file-changes"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_quality_guardrails.json")
+        run_active_guardrails(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-structural-findings",
+        help="Run ast-grep structural findings filtered by recent file changes",
+    )
+    def _active_structural_findings(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        file_changes: str | None = typer.Option(None, "--file-changes"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_structural_findings.json")
+        run_active_structural_findings(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-semantic-static-findings",
+        help="Run curated semgrep privacy rules over the lynchpin repo",
+    )
+    def _active_semantic_static_findings(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        file_changes: str | None = typer.Option(None, "--file-changes"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_semantic_static_findings.json")
+        run_active_semantic_static_findings(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-rust-dependency-hygiene",
+        help="Run cargo-machete (and optionally cargo-geiger) over Rust workspaces",
+    )
+    def _active_rust_dependency_hygiene(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        include_geiger: bool = typer.Option(False, "--include-geiger/"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_rust_dependency_hygiene.json")
+        run_active_rust_dependency_hygiene(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+            include_geiger=include_geiger,
+        )
+
+    @parent.command(
+        "active-python-dependency-hygiene",
+        help="Run pip-audit against active Python projects, marking advisories direct/transitive",
+    )
+    def _active_python_dependency_hygiene(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        import_graph: str | None = typer.Option(None, "--import-graph"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_python_dependency_hygiene.json")
+        run_active_python_dependency_hygiene(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+            import_graph_file=import_graph or resolve_analysis_path("active_python_import_graph.json"),
+        )
+
+    @parent.command(
+        "active-symbol-index",
+        help="Build tree-sitter symbol index across active project checkouts",
+    )
+    def _active_symbol_index(
+        project: list[str] = typer.Option(None, "--project"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_symbol_index.json")
+        run_active_symbol_index(target, projects=list(project or []))
+
+    @parent.command(
+        "active-symbol-changes",
+        help="Correlate symbol index with file-change facts (path-level)",
+    )
+    def _active_symbol_changes(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        symbol_index: str | None = typer.Option(None, "--symbol-index"),
+        file_changes: str | None = typer.Option(None, "--file-changes"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_symbol_changes.json")
+        run_active_symbol_changes(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            symbol_index_file=symbol_index or resolve_analysis_path("active_symbol_index.json"),
+            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
+        )
+
+    @parent.command(
+        "active-symbol-diffs",
+        help="Line-range symbol diff intersection (runs git show per commit)",
+    )
+    def _active_symbol_diffs(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_facts: str | None = typer.Option(None, "--commit-facts"),
+        symbol_index: str | None = typer.Option(None, "--symbol-index"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_symbol_diffs.json")
+        run_active_symbol_diffs(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            commit_facts_file=commit_facts or resolve_analysis_path("active_commit_facts.json"),
+            symbol_index_file=symbol_index or resolve_analysis_path("active_symbol_index.json"),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+        )
+
+    @parent.command(
+        "active-commit-semantics",
+        help="Build commit-rooted semantic capsules from active commit facts",
+    )
+    def _active_commit_semantics(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_facts: str | None = typer.Option(None, "--commit-facts"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_commit_semantics.json")
+        run_active_commit_semantics(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+        )
+
+    @parent.command(
+        "active-ai-attribution",
+        help="Backfill AI co-authorship attribution by joining commits with polylogue sessions",
+    )
+    def _active_ai_attribution(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        commit_facts: str | None = typer.Option(None, "--commit-facts"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_ai_attribution.json")
+        run_active_ai_attribution(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+        )
+
+    @parent.command(
+        "active-github-frontier",
+        help="Build active-project GitHub frontier (issues/PRs) — requires gh on PATH",
+    )
+    def _active_github_frontier(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        work_packages: str | None = typer.Option(None, "--work-packages"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_github_frontier.json")
+        run_active_github_frontier(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+            work_packages_file=work_packages or resolve_analysis_path("active_work_packages.json"),
+        )
+
+    @parent.command(
+        "active-ci-health",
+        help="Static .github/workflows parsing; optional gh api run telemetry",
+    )
+    def _active_ci_health(
+        start: str = typer.Option(None, "--start"),
+        end: str = typer.Option(None, "--end"),
+        project: list[str] = typer.Option(None, "--project"),
+        snapshot: str | None = typer.Option(None, "--snapshot"),
+        include_runs: bool = typer.Option(False, "--include-runs/", help="Network: query gh api for last 30d of run history"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
+        target = out or resolve_analysis_path("active_ci_health.json")
+        run_active_ci_health(
+            target,
+            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
+            snapshot_file=snapshot or resolve_analysis_path("active_project_snapshot.json"),
+            include_runs=include_runs,
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        app(args=argv, standalone_mode=False)
+    except (typer.Exit, SystemExit) as exc:
+        code = exc.exit_code if isinstance(exc, typer.Exit) else (exc.code or 0)
+        return int(code or 0)
+    return 0

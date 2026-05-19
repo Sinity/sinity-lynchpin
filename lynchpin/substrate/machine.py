@@ -9,6 +9,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -313,6 +314,22 @@ def load_machine_service_states(
     ]
 
 
+_METRIC_SAMPLE_COLUMNS = (
+    "observed_at", "host", "boot_id", "source", "source_schema_version",
+    "cpu_package_w", "cpu_core_w", "cpu_pkg_c", "cpu_max_core_c",
+    "gpu_power_w", "gpu_fan_pct", "gpu_temp_c", "gpu_util_pct",
+    "gpu_pstate", "gpu_pcie_gen", "gpu_pcie_width",
+    "load_1m", "mem_avail_mb", "swap_used_mb",
+    "io_psi_some_avg10", "io_psi_full_avg10",
+    "io_psi_some_avg60", "io_psi_some_avg300", "io_psi_some_total_us",
+    "io_psi_full_avg60", "io_psi_full_avg300", "io_psi_full_total_us",
+    "cpu_psi_some_avg60", "cpu_psi_some_avg300", "cpu_psi_some_total_us",
+    "memory_psi_some_avg60", "memory_psi_some_avg300", "memory_psi_some_total_us",
+    "memory_psi_full_avg60", "memory_psi_full_avg300", "memory_psi_full_total_us",
+    "latency_oversleep_ms", "dstate_task_count", "gap_codes",
+)
+
+
 def promote_machine_metric_samples(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -320,97 +337,35 @@ def promote_machine_metric_samples(
     samples: Iterable[Any],
 ) -> int:
     """INSERT machine_metric_sample rows, idempotent on refresh_id."""
-    conn.execute("DELETE FROM machine_metric_sample WHERE refresh_id = ?", [refresh_id])
+    return promote_rows(
+        conn,
+        table="machine_metric_sample",
+        columns=_METRIC_SAMPLE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, s.source, int(s.source_schema_version),
+            s.cpu_package_w, s.cpu_core_w, s.cpu_pkg_c, s.cpu_max_core_c,
+            s.gpu_power_w, s.gpu_fan_pct, s.gpu_temp_c, s.gpu_util_pct,
+            s.gpu_pstate, s.gpu_pcie_gen, s.gpu_pcie_width,
+            s.load_1m, s.mem_avail_mb, s.swap_used_mb,
+            s.io_psi_some_avg10, s.io_psi_full_avg10,
+            s.io_psi_some_avg60, s.io_psi_some_avg300, s.io_psi_some_total_us,
+            s.io_psi_full_avg60, s.io_psi_full_avg300, s.io_psi_full_total_us,
+            s.cpu_psi_some_avg60, s.cpu_psi_some_avg300, s.cpu_psi_some_total_us,
+            s.memory_psi_some_avg60, s.memory_psi_some_avg300, s.memory_psi_some_total_us,
+            s.memory_psi_full_avg60, s.memory_psi_full_avg300, s.memory_psi_full_total_us,
+            s.latency_oversleep_ms, s.dstate_task_count, list(s.gap_codes),
+        ),
+        batch_size=50_000,
+    )
 
-    total = 0
-    rows: list[tuple[Any, ...]] = []
 
-    def flush() -> None:
-        nonlocal total
-        if not rows:
-            return
-        conn.executemany(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, boot_id, source, source_schema_version,
-                cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,
-                gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,
-                gpu_pstate, gpu_pcie_gen, gpu_pcie_width,
-                load_1m, mem_avail_mb, swap_used_mb, io_psi_some_avg10, io_psi_full_avg10,
-                io_psi_some_avg60, io_psi_some_avg300, io_psi_some_total_us,
-                io_psi_full_avg60, io_psi_full_avg300, io_psi_full_total_us,
-                cpu_psi_some_avg60, cpu_psi_some_avg300, cpu_psi_some_total_us,
-                memory_psi_some_avg60, memory_psi_some_avg300, memory_psi_some_total_us,
-                memory_psi_full_avg60, memory_psi_full_avg300, memory_psi_full_total_us,
-                latency_oversleep_ms, dstate_task_count, gap_codes, refresh_id
-            ) VALUES (
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?
-            )
-            """,
-            rows,
-        )
-        total += len(rows)
-        rows.clear()
-
-    for sample in samples:
-        rows.append((
-            sample.observed_at,
-            sample.host,
-            sample.boot_id,
-            sample.source,
-            int(sample.source_schema_version),
-            sample.cpu_package_w,
-            sample.cpu_core_w,
-            sample.cpu_pkg_c,
-            sample.cpu_max_core_c,
-            sample.gpu_power_w,
-            sample.gpu_fan_pct,
-            sample.gpu_temp_c,
-            sample.gpu_util_pct,
-            sample.gpu_pstate,
-            sample.gpu_pcie_gen,
-            sample.gpu_pcie_width,
-            sample.load_1m,
-            sample.mem_avail_mb,
-            sample.swap_used_mb,
-            sample.io_psi_some_avg10,
-            sample.io_psi_full_avg10,
-            sample.io_psi_some_avg60,
-            sample.io_psi_some_avg300,
-            sample.io_psi_some_total_us,
-            sample.io_psi_full_avg60,
-            sample.io_psi_full_avg300,
-            sample.io_psi_full_total_us,
-            sample.cpu_psi_some_avg60,
-            sample.cpu_psi_some_avg300,
-            sample.cpu_psi_some_total_us,
-            sample.memory_psi_some_avg60,
-            sample.memory_psi_some_avg300,
-            sample.memory_psi_some_total_us,
-            sample.memory_psi_full_avg60,
-            sample.memory_psi_full_avg300,
-            sample.memory_psi_full_total_us,
-            sample.latency_oversleep_ms,
-            sample.dstate_task_count,
-            list(sample.gap_codes),
-            refresh_id,
-        ))
-        if len(rows) >= 50_000:
-            flush()
-
-    flush()
-    log.debug("promote_machine_metric_samples: %d rows for refresh_id=%s", total, refresh_id)
-    return total
+_SERVICE_STATE_COLUMNS = (
+    "observed_at", "host", "boot_id", "unit", "scope",
+    "active_state", "sub_state", "main_pid", "control_group",
+    "memory_current_bytes", "cpu_usage_nsec", "io_read_bytes", "io_write_bytes",
+)
 
 
 def promote_machine_service_states(
@@ -420,52 +375,27 @@ def promote_machine_service_states(
     states: Iterable[Any],
 ) -> int:
     """INSERT machine_service_state rows, idempotent on refresh_id."""
-    conn.execute("DELETE FROM machine_service_state WHERE refresh_id = ?", [refresh_id])
+    return promote_rows(
+        conn,
+        table="machine_service_state",
+        columns=_SERVICE_STATE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=states,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, s.unit, s.scope,
+            s.active_state, s.sub_state, s.main_pid, s.control_group,
+            s.memory_current_bytes, s.cpu_usage_nsec, s.io_read_bytes, s.io_write_bytes,
+        ),
+        batch_size=50_000,
+    )
 
-    total = 0
-    rows: list[tuple[Any, ...]] = []
 
-    def flush() -> None:
-        nonlocal total
-        if not rows:
-            return
-        conn.executemany(
-            """
-            INSERT INTO machine_service_state (
-                observed_at, host, boot_id, unit, scope,
-                active_state, sub_state, main_pid, control_group,
-                memory_current_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes,
-                refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        total += len(rows)
-        rows.clear()
-
-    for state in states:
-        rows.append((
-            state.observed_at,
-            state.host,
-            state.boot_id,
-            state.unit,
-            state.scope,
-            state.active_state,
-            state.sub_state,
-            state.main_pid,
-            state.control_group,
-            state.memory_current_bytes,
-            state.cpu_usage_nsec,
-            state.io_read_bytes,
-            state.io_write_bytes,
-            refresh_id,
-        ))
-        if len(rows) >= 50_000:
-            flush()
-
-    flush()
-    log.debug("promote_machine_service_states: %d rows for refresh_id=%s", total, refresh_id)
-    return total
+_GPU_SAMPLE_COLUMNS = (
+    "observed_at", "host", "boot_id", "source",
+    "gpu_power_w", "gpu_power_limit_w", "gpu_temp_c", "gpu_fan_pct",
+    "gpu_util_pct", "gpu_mem_util_pct", "gpu_clock_mhz", "gpu_mem_clock_mhz",
+    "gpu_pstate", "gpu_pcie_gen", "gpu_pcie_width",
+)
 
 
 def promote_machine_gpu_samples(
@@ -475,54 +405,27 @@ def promote_machine_gpu_samples(
     samples: Iterable[Any],
 ) -> int:
     """INSERT machine_gpu_sample rows, idempotent on refresh_id."""
-    conn.execute("DELETE FROM machine_gpu_sample WHERE refresh_id = ?", [refresh_id])
+    return promote_rows(
+        conn,
+        table="machine_gpu_sample",
+        columns=_GPU_SAMPLE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, s.source,
+            s.gpu_power_w, s.gpu_power_limit_w, s.gpu_temp_c, s.gpu_fan_pct,
+            s.gpu_util_pct, s.gpu_mem_util_pct, s.gpu_clock_mhz, s.gpu_mem_clock_mhz,
+            s.gpu_pstate, s.gpu_pcie_gen, s.gpu_pcie_width,
+        ),
+        batch_size=50_000,
+    )
 
-    total = 0
-    rows: list[tuple[Any, ...]] = []
 
-    def flush() -> None:
-        nonlocal total
-        if not rows:
-            return
-        conn.executemany(
-            """
-            INSERT INTO machine_gpu_sample (
-                observed_at, host, boot_id, source,
-                gpu_power_w, gpu_power_limit_w, gpu_temp_c, gpu_fan_pct,
-                gpu_util_pct, gpu_mem_util_pct, gpu_clock_mhz, gpu_mem_clock_mhz,
-                gpu_pstate, gpu_pcie_gen, gpu_pcie_width, refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        total += len(rows)
-        rows.clear()
-
-    for sample in samples:
-        rows.append((
-            sample.observed_at,
-            sample.host,
-            sample.boot_id,
-            sample.source,
-            sample.gpu_power_w,
-            sample.gpu_power_limit_w,
-            sample.gpu_temp_c,
-            sample.gpu_fan_pct,
-            sample.gpu_util_pct,
-            sample.gpu_mem_util_pct,
-            sample.gpu_clock_mhz,
-            sample.gpu_mem_clock_mhz,
-            sample.gpu_pstate,
-            sample.gpu_pcie_gen,
-            sample.gpu_pcie_width,
-            refresh_id,
-        ))
-        if len(rows) >= 50_000:
-            flush()
-
-    flush()
-    log.debug("promote_machine_gpu_samples: %d rows for refresh_id=%s", total, refresh_id)
-    return total
+_NETWORK_SAMPLE_COLUMNS = (
+    "observed_at", "host", "boot_id", "source_schema_version",
+    "interface", "gateway_ip", "ping", "bloat", "iface", "nic", "tcp",
+    "dns_ms", "pmtu_1492", "conntrack", "gap_codes",
+)
 
 
 def promote_machine_network_samples(
@@ -532,42 +435,31 @@ def promote_machine_network_samples(
     samples: Iterable[Any],
 ) -> int:
     """INSERT machine_network_sample rows, idempotent on refresh_id."""
-    conn.execute("DELETE FROM machine_network_sample WHERE refresh_id = ?", [refresh_id])
+    return promote_rows(
+        conn,
+        table="machine_network_sample",
+        columns=_NETWORK_SAMPLE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
+            s.interface, s.gateway_ip,
+            json.dumps(s.ping),
+            json.dumps(s.bloat) if s.bloat is not None else None,
+            json.dumps(s.iface), json.dumps(s.nic), json.dumps(s.tcp),
+            s.dns_ms, s.pmtu_1492,
+            json.dumps(s.conntrack), list(s.gap_codes),
+        ),
+    )
 
-    rows: list[tuple[Any, ...]] = []
-    for sample in samples:
-        rows.append((
-            sample.observed_at,
-            sample.host,
-            sample.boot_id,
-            int(sample.source_schema_version),
-            sample.interface,
-            sample.gateway_ip,
-            json.dumps(sample.ping),
-            json.dumps(sample.bloat) if sample.bloat is not None else None,
-            json.dumps(sample.iface),
-            json.dumps(sample.nic),
-            json.dumps(sample.tcp),
-            sample.dns_ms,
-            sample.pmtu_1492,
-            json.dumps(sample.conntrack),
-            list(sample.gap_codes),
-            refresh_id,
-        ))
 
-    if rows:
-        conn.executemany(
-            """
-            INSERT INTO machine_network_sample (
-                observed_at, host, boot_id, source_schema_version,
-                interface, gateway_ip, ping, bloat, iface, nic, tcp,
-                dns_ms, pmtu_1492, conntrack, gap_codes, refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-    log.debug("promote_machine_network_samples: %d rows for refresh_id=%s", len(rows), refresh_id)
-    return len(rows)
+_EXPERIMENT_RUN_COLUMNS = (
+    "run_id", "host", "workload", "command", "cwd",
+    "started_at", "ended_at", "exit_status",
+    "service_profile", "cache_profile", "planned_treatment",
+    "git_root", "git_head", "git_branch", "git_dirty",
+    "pre_state", "post_state", "notes", "manifest_path",
+)
 
 
 def promote_machine_experiment_runs(
@@ -577,54 +469,21 @@ def promote_machine_experiment_runs(
     runs: Iterable[Any],
 ) -> int:
     """INSERT machine_experiment_run rows, idempotent on refresh_id."""
-    conn.execute("DELETE FROM machine_experiment_run WHERE refresh_id = ?", [refresh_id])
-
-    rows: list[tuple[Any, ...]] = []
-    for run in runs:
-        rows.append((
-            run.run_id,
-            run.host,
-            run.workload,
-            list(run.command),
-            run.cwd,
-            run.started_at,
-            run.ended_at,
-            run.exit_status,
-            run.service_profile,
-            run.cache_profile,
-            json.dumps(run.planned_treatment),
-            run.git_root,
-            run.git_head,
-            run.git_branch,
-            run.git_dirty,
-            json.dumps(run.pre_state),
-            json.dumps(run.post_state),
-            list(run.notes),
-            str(run.manifest_path),
-            refresh_id,
-        ))
-
-    if rows:
-        conn.executemany(
-            """
-            INSERT INTO machine_experiment_run (
-                run_id, host, workload, command, cwd,
-                started_at, ended_at, exit_status,
-                service_profile, cache_profile, planned_treatment,
-                git_root, git_head, git_branch, git_dirty,
-                pre_state, post_state, notes, manifest_path, refresh_id
-            ) VALUES (
-                ?, ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?, ?
-            )
-            """,
-            rows,
-        )
-    log.debug("promote_machine_experiment_runs: %d rows for refresh_id=%s", len(rows), refresh_id)
-    return len(rows)
+    return promote_rows(
+        conn,
+        table="machine_experiment_run",
+        columns=_EXPERIMENT_RUN_COLUMNS,
+        refresh_id=refresh_id,
+        rows=runs,
+        extractor=lambda r: (
+            r.run_id, r.host, r.workload, list(r.command), r.cwd,
+            r.started_at, r.ended_at, r.exit_status,
+            r.service_profile, r.cache_profile, json.dumps(r.planned_treatment),
+            r.git_root, r.git_head, r.git_branch, r.git_dirty,
+            json.dumps(r.pre_state), json.dumps(r.post_state),
+            list(r.notes), str(r.manifest_path),
+        ),
+    )
 
 
 __all__ = [

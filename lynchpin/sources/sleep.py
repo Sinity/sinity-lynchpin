@@ -5,16 +5,16 @@ Absorbs: exports/health, exports/sleep, processed/sleep_correlation, metrics/hea
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import parse_datetime as _parse_dt, safe_float as _safe_float
 from ..core.primitives import logical_date
+from ..core.source import read_jsonl_with
 
 __all__ = [
     "SleepSegment",
@@ -116,16 +116,7 @@ _PROCESSED = Path("/realm/data/exports/health/processed")
 
 
 def _load_jsonl(filename: str) -> Iterator[dict[str, object]]:
-    path = _PROCESSED / filename
-    if not path.exists():
-        return
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                payload = json.loads(line)
-                if isinstance(payload, dict):
-                    yield payload
+    yield from read_jsonl_with(_PROCESSED / filename, lambda p: p, source_name=filename)
 
 
 def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
@@ -141,86 +132,76 @@ def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _hydrate_entry(rec: dict[str, Any]) -> SleepEntry | None:
+    metrics = rec.get("sleep_metrics")
+    if not isinstance(metrics, dict):
+        return None
+
+    start_dt = _parse_dt(rec.get("start_local"))
+    end_dt = _parse_dt(rec.get("end_local"))
+
+    total_min = float(metrics.get("sleep_duration") or 0)
+    if total_min == 0 and start_dt and end_dt:
+        total_min = max((end_dt - start_dt).total_seconds() / 60, 0)
+
+    score = _safe_float(metrics.get("sleep_score"))
+
+    if start_dt is None:
+        return None
+    d = start_dt.date()
+
+    # Build segments (Samsung format has one implicit segment per record)
+    segments: list[SleepSegment] = []
+    raw_segments = rec.get("segments") or []
+    if raw_segments:
+        for seg in raw_segments:
+            segments.append(SleepSegment(
+                start=_parse_dt(seg.get("start")) or datetime.min,
+                end=_parse_dt(seg.get("end")) or datetime.min,
+                duration_minutes=float(seg.get("duration_minutes") or 0),
+                score=_safe_float(seg.get("score")),
+                device=seg.get("device") or rec.get("device_name"),
+                comment=seg.get("comment"),
+            ))
+    else:
+        segments.append(SleepSegment(
+            start=start_dt or datetime.min,
+            end=end_dt or datetime.min,
+            duration_minutes=total_min,
+            score=score,
+            device=rec.get("device_name"),
+            comment=None,
+        ))
+
+    if not segments:
+        return None
+    scores = [s.score for s in segments if s.score is not None]
+    avg = sum(scores) / len(scores) if scores else score
+    sleep_metrics = SleepMetrics(
+        sleep_score=score,
+        sleep_duration=_safe_float(metrics.get("sleep_duration")),
+        sleep_efficiency=_safe_float(metrics.get("sleep_efficiency")),
+        sleep_cycle=_safe_float(metrics.get("sleep_cycle")),
+        physical_recovery=_safe_float(metrics.get("physical_recovery")),
+        mental_recovery=_safe_float(metrics.get("mental_recovery")),
+        movement_awakening=_safe_float(metrics.get("movement_awakening")),
+        total_awake_duration=_safe_float(metrics.get("total_awake_duration")),
+        total_light_duration=_safe_float(metrics.get("total_light_duration")),
+        total_deep_duration=_safe_float(metrics.get("total_deep_duration")),
+        total_rem_duration=_safe_float(metrics.get("total_rem_duration")),
+        awake_pct=_safe_float(metrics.get("awake_pct")),
+        light_pct=_safe_float(metrics.get("light_pct")),
+        deep_pct=_safe_float(metrics.get("deep_pct")),
+        rem_pct=_safe_float(metrics.get("rem_pct")),
+        stage_count=rec.get("stage_count"),
+    )
+    return SleepEntry(date=d, total_minutes=total_min, segments=tuple(segments), avg_score=avg, metrics=sleep_metrics)
+
+
 def entries() -> Iterator[SleepEntry]:
     """Yield sleep entries from canonical sleep_merged.jsonl records."""
     cfg = get_config()
-    path = cfg.sleep_jsonl
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            metrics = rec.get("sleep_metrics")
-            if not isinstance(metrics, dict):
-                continue
-
-            start_dt = _parse_dt(rec.get("start_local"))
-            end_dt = _parse_dt(rec.get("end_local"))
-
-            total_min = float(metrics.get("sleep_duration") or 0)
-            if total_min == 0 and start_dt and end_dt:
-                total_min = max((end_dt - start_dt).total_seconds() / 60, 0)
-
-            score = _safe_float(metrics.get("sleep_score"))
-
-            if start_dt is None:
-                continue
-            d = start_dt.date()
-
-            # Build segments (Samsung format has one implicit segment per record)
-            segments: list[SleepSegment] = []
-            raw_segments = rec.get("segments") or []
-            if raw_segments:
-                for seg in raw_segments:
-                    segments.append(SleepSegment(
-                        start=_parse_dt(seg.get("start")) or datetime.min,
-                        end=_parse_dt(seg.get("end")) or datetime.min,
-                        duration_minutes=float(seg.get("duration_minutes") or 0),
-                        score=_safe_float(seg.get("score")),
-                        device=seg.get("device") or rec.get("device_name"),
-                        comment=seg.get("comment"),
-                    ))
-            else:
-                segments.append(SleepSegment(
-                    start=start_dt or datetime.min,
-                    end=end_dt or datetime.min,
-                    duration_minutes=total_min,
-                    score=score,
-                    device=rec.get("device_name"),
-                    comment=None,
-                ))
-
-            if not segments:
-                continue
-            scores = [s.score for s in segments if s.score is not None]
-            avg = sum(scores) / len(scores) if scores else score
-            sleep_metrics = SleepMetrics(
-                sleep_score=score,
-                sleep_duration=_safe_float(metrics.get("sleep_duration")),
-                sleep_efficiency=_safe_float(metrics.get("sleep_efficiency")),
-                sleep_cycle=_safe_float(metrics.get("sleep_cycle")),
-                physical_recovery=_safe_float(metrics.get("physical_recovery")),
-                mental_recovery=_safe_float(metrics.get("mental_recovery")),
-                movement_awakening=_safe_float(metrics.get("movement_awakening")),
-                total_awake_duration=_safe_float(metrics.get("total_awake_duration")),
-                total_light_duration=_safe_float(metrics.get("total_light_duration")),
-                total_deep_duration=_safe_float(metrics.get("total_deep_duration")),
-                total_rem_duration=_safe_float(metrics.get("total_rem_duration")),
-                awake_pct=_safe_float(metrics.get("awake_pct")),
-                light_pct=_safe_float(metrics.get("light_pct")),
-                deep_pct=_safe_float(metrics.get("deep_pct")),
-                rem_pct=_safe_float(metrics.get("rem_pct")),
-                stage_count=rec.get("stage_count"),
-            )
-            yield SleepEntry(date=d, total_minutes=total_min, segments=tuple(segments), avg_score=avg, metrics=sleep_metrics)
+    yield from read_jsonl_with(cfg.sleep_jsonl, _hydrate_entry, source_name="sleep_merged")
 
 
 def sleep_for_date(target: date) -> Optional[SleepEntry]:

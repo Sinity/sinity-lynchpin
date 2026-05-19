@@ -2,41 +2,35 @@
 
 from __future__ import annotations
 
-import argparse
+import typer
 
 from ..core.io import resolve_analysis_path, save_json
 
 
-def add_commands(subparsers: argparse._SubParsersAction) -> None:
-    cmd_sinex = subparsers.add_parser('sinex', help='Sinex per-crate structural analysis')
-    cmd_sinex.add_argument('--repo', default='/realm/project/sinex')
-    cmd_sinex.add_argument('--out', default=None)
-
-    cmd_sinex_t = subparsers.add_parser('sinex-temporal', help='Sinex monthly velocity & crate growth')
-    cmd_sinex_t.add_argument('--repo', default='/realm/project/sinex')
-    cmd_sinex_t.add_argument('--out', default=None)
-
-
-def run_command(args: argparse.Namespace) -> int | None:
-    if args.command == 'sinex':
+def register_commands(app: typer.Typer) -> None:
+    @app.command("sinex", help="Sinex per-crate structural analysis")
+    def _sinex(
+        repo: str = typer.Option("/realm/project/sinex", "--repo"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
         from .structure import run_sinex_analysis
 
-        out = args.out or resolve_analysis_path('sinex_structure_metrics.json')
-        run_sinex_analysis(args.repo, out)
-        return 0
+        target = out or resolve_analysis_path("sinex_structure_metrics.json")
+        run_sinex_analysis(repo, target)
 
-    if args.command == 'sinex-temporal':
+    @app.command("sinex-temporal", help="Sinex monthly velocity & crate growth")
+    def _sinex_temporal(
+        repo: str = typer.Option("/realm/project/sinex", "--repo"),
+        out: str | None = typer.Option(None, "--out"),
+    ) -> None:
         from . import temporal as sinex_temporal
 
-        out = args.out or resolve_analysis_path('sinex_temporal_metrics.json')
-        monthly = sinex_temporal.compute_monthly_velocity(args.repo)
-        crate_growth = sinex_temporal.compute_crate_growth(args.repo)
-        stats = sinex_temporal.compute_sinex_stats(args.repo)
-        save_json(out, {
-            'monthly_velocity': monthly,
-            'crate_growth': crate_growth,
-            'stats': stats,
+        target = out or resolve_analysis_path("sinex_temporal_metrics.json")
+        monthly = sinex_temporal.compute_monthly_velocity(repo)
+        crate_growth = sinex_temporal.compute_crate_growth(repo)
+        stats = sinex_temporal.compute_sinex_stats(repo)
+        save_json(target, {
+            "monthly_velocity": monthly,
+            "crate_growth": crate_growth,
+            "stats": stats,
         })
-        return 0
-
-    return None

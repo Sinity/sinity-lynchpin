@@ -10,6 +10,7 @@ from typing import cast
 
 from ..core.canonical import JsonObject
 from ..core import git
+from ..core.git import run_git
 
 
 _COMMIT_TYPE_RE = re.compile(
@@ -37,11 +38,8 @@ def _top_area(path: str) -> str:
 
 def _resolve_default_branch(repo_dir: str) -> str:
     for candidate in ('master', 'main'):
-        try:
-            subprocess.check_output(['git', 'rev-parse', '--verify', candidate], cwd=repo_dir, stderr=subprocess.DEVNULL)
+        if run_git(repo_dir, 'rev-parse', '--verify', candidate) is not None:
             return candidate
-        except (OSError, subprocess.CalledProcessError):
-            continue
     return 'HEAD'
 
 

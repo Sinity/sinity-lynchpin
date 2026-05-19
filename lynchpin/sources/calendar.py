@@ -33,8 +33,6 @@ overlap calendar holds?
 
 from __future__ import annotations
 
-import json
-import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -43,8 +41,7 @@ from typing import Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.primitives import logical_date
-
-logger = logging.getLogger(__name__)
+from ..core.source import read_jsonl_with
 
 
 @dataclass(frozen=True)
@@ -121,31 +118,17 @@ def iter_events(
     supplied. Empty iterator when the processed file is absent.
     """
     path = _calendar_path_or_default()
-    if path is None or not path.exists():
+    if path is None:
         return
-    try:
-        with path.open() as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    raw = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event = _coerce(raw)
-                if event is None:
-                    continue
-                event_day = event.date
-                if event_day is None:
-                    continue
-                if start is not None and event_day < start:
-                    continue
-                if end is not None and event_day > end:
-                    continue
-                yield event
-    except OSError as exc:
-        logger.warning("calendar source read failed: %s", exc)
+    for event in read_jsonl_with(path, _coerce, source_name="calendar"):
+        event_day = event.date
+        if event_day is None:
+            continue
+        if start is not None and event_day < start:
+            continue
+        if end is not None and event_day > end:
+            continue
+        yield event
 
 
 def daily_load(*, start: date, end: date) -> list[DailyCalendarLoad]:

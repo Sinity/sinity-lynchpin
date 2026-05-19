@@ -1,0 +1,889 @@
+{
+  "claims": [
+    {
+      "date": "2026-05-05",
+      "project": "polylogue",
+      "relation_count": 2,
+      "score": 6.313,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ],
+      "strongest_relations": [
+        "references:git+polylogue: commit-ai overlap 4",
+        "temporal_overlap:activitywatch+terminal: focus-term 4"
+      ],
+      "summary": "1 commits; 1.67h focus; 9 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions",
+      "support_level": "strong"
+    },
+    {
+      "date": "2026-05-04",
+      "project": "sinity-lynchpin",
+      "relation_count": 2,
+      "score": 6.26,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ],
+      "strongest_relations": [
+        "references:git+polylogue: commit-ai overlap 3",
+        "temporal_overlap:activitywatch+terminal: focus-term 3"
+      ],
+      "summary": "1 commits; 1.50h focus; 8 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions",
+      "support_level": "strong"
+    },
+    {
+      "date": "2026-05-03",
+      "project": "sinex",
+      "relation_count": 2,
+      "score": 6.207,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ],
+      "strongest_relations": [
+        "references:git+polylogue: commit-ai overlap 2",
+        "temporal_overlap:activitywatch+terminal: focus-term 2"
+      ],
+      "summary": "1 commits; 1.33h focus; 7 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions",
+      "support_level": "strong"
+    },
+    {
+      "date": "2026-05-02",
+      "project": "polylogue",
+      "relation_count": 2,
+      "score": 6.153,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ],
+      "strongest_relations": [
+        "references:git+polylogue: commit-ai overlap 1",
+        "temporal_overlap:activitywatch+terminal: focus-term 1"
+      ],
+      "summary": "1 commits; 1.17h focus; 6 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions",
+      "support_level": "strong"
+    },
+    {
+      "date": "2026-05-01",
+      "project": "sinity-lynchpin",
+      "relation_count": 2,
+      "score": 6.1,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ],
+      "strongest_relations": [
+        "references:git+polylogue: commit-ai overlap 0",
+        "temporal_overlap:activitywatch+terminal: focus-term 0"
+      ],
+      "summary": "1 commits; 1.00h focus; 5 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions",
+      "support_level": "strong"
+    }
+  ],
+  "correlate_rows": [
+    {
+      "ai_conversation_ids": [
+        "conv-5"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 0,
+      "commit_shas": [],
+      "commit_subjects": [],
+      "date": "2026-05-01",
+      "focus_minutes": 80.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinex",
+      "raw_log_count": 0,
+      "raw_log_refs": [],
+      "shell_command_count": 8,
+      "shell_minutes": 10.0,
+      "sources": [
+        "activitywatch",
+        "polylogue",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-0"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 2,
+      "commit_shas": [
+        "a1",
+        "a2"
+      ],
+      "commit_subjects": [
+        "feat: correlation closes #17",
+        "fix: subjects (#18)"
+      ],
+      "date": "2026-05-01",
+      "focus_minutes": 30.0,
+      "github_lifecycles": {
+        "open_frontier": 1,
+        "unclear": 1
+      },
+      "github_refs": [
+        "issue#17",
+        "pr#18"
+      ],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log0.md:1"
+      ],
+      "shell_command_count": 3,
+      "shell_minutes": 5.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-1"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 1,
+      "commit_shas": [
+        "c1"
+      ],
+      "commit_subjects": [
+        "feat: archive scan"
+      ],
+      "date": "2026-05-02",
+      "focus_minutes": 40.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log1.md:2"
+      ],
+      "shell_command_count": 4,
+      "shell_minutes": 6.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "b1"
+      ],
+      "commit_subjects": [
+        "chore: cleanup"
+      ],
+      "date": "2026-05-02",
+      "focus_minutes": 90.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 0,
+      "raw_log_refs": [],
+      "shell_command_count": 0,
+      "shell_minutes": 0.0,
+      "sources": [
+        "activitywatch",
+        "git"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "c2"
+      ],
+      "commit_subjects": [
+        "fix: retry"
+      ],
+      "date": "2026-05-03",
+      "focus_minutes": 0.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "polylogue",
+      "raw_log_count": 0,
+      "raw_log_refs": [],
+      "shell_command_count": 0,
+      "shell_minutes": 0.0,
+      "sources": [
+        "git"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-2"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 1,
+      "commit_shas": [
+        "d1"
+      ],
+      "commit_subjects": [
+        "feat: ingest"
+      ],
+      "date": "2026-05-03",
+      "focus_minutes": 50.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinex",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log2.md:3"
+      ],
+      "shell_command_count": 5,
+      "shell_minutes": 7.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "d2"
+      ],
+      "commit_subjects": [
+        "perf: lock contention"
+      ],
+      "date": "2026-05-04",
+      "focus_minutes": 0.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinex",
+      "raw_log_count": 0,
+      "raw_log_refs": [],
+      "shell_command_count": 0,
+      "shell_minutes": 0.0,
+      "sources": [
+        "git"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-3"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 0,
+      "commit_shas": [],
+      "commit_subjects": [],
+      "date": "2026-05-04",
+      "focus_minutes": 60.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log3.md:4"
+      ],
+      "shell_command_count": 6,
+      "shell_minutes": 8.0,
+      "sources": [
+        "activitywatch",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-4"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 0,
+      "commit_shas": [],
+      "commit_subjects": [],
+      "date": "2026-05-05",
+      "focus_minutes": 70.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log4.md:5"
+      ],
+      "shell_command_count": 7,
+      "shell_minutes": 9.0,
+      "sources": [
+        "activitywatch",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "e1"
+      ],
+      "commit_subjects": [
+        "fix: regression"
+      ],
+      "date": "2026-05-05",
+      "focus_minutes": 0.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 0,
+      "raw_log_refs": [],
+      "shell_command_count": 0,
+      "shell_minutes": 0.0,
+      "sources": [
+        "git"
+      ]
+    }
+  ],
+  "dataset_correlations": [
+    {
+      "dates": [
+        "2026-05-05",
+        "2026-05-04",
+        "2026-05-03",
+        "2026-05-02",
+        "2026-05-01"
+      ],
+      "examples": [
+        "2026-05-05 polylogue: references - commit-ai overlap 4 (commit 4 \u2194 ai event)",
+        "2026-05-04 sinity-lynchpin: references - commit-ai overlap 3 (commit 3 \u2194 ai event)",
+        "2026-05-03 sinex: references - commit-ai overlap 2 (commit 2 \u2194 ai event)",
+        "2026-05-02 polylogue: references - commit-ai overlap 1 (commit 1 \u2194 ai event)"
+      ],
+      "projects": [
+        "polylogue",
+        "sinex",
+        "sinity-lynchpin"
+      ],
+      "relation_counts": {
+        "references": 5
+      },
+      "score": 9.45,
+      "sources": [
+        "git",
+        "polylogue"
+      ]
+    },
+    {
+      "dates": [
+        "2026-05-05",
+        "2026-05-04",
+        "2026-05-03",
+        "2026-05-02",
+        "2026-05-01"
+      ],
+      "examples": [
+        "2026-05-05 polylogue: temporal_overlap - focus-term 4 (focus \u2194 term)",
+        "2026-05-04 sinity-lynchpin: temporal_overlap - focus-term 3 (focus \u2194 term)",
+        "2026-05-03 sinex: temporal_overlap - focus-term 2 (focus \u2194 term)",
+        "2026-05-02 polylogue: temporal_overlap - focus-term 1 (focus \u2194 term)"
+      ],
+      "projects": [
+        "polylogue",
+        "sinex",
+        "sinity-lynchpin"
+      ],
+      "relation_counts": {
+        "temporal_overlap": 5
+      },
+      "score": 5.95,
+      "sources": [
+        "activitywatch",
+        "terminal"
+      ]
+    }
+  ],
+  "graph_rows": [
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [
+        [
+          "implementation",
+          1
+        ]
+      ],
+      "ai_kind_weighted": [
+        [
+          "implementation",
+          1.0
+        ]
+      ],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "sha0"
+      ],
+      "commit_subjects": [
+        "commit 0"
+      ],
+      "date": "2026-05-01",
+      "focus_minutes": 60.0,
+      "github_lifecycles": {
+        "executed": 1
+      },
+      "github_refs": [
+        "pr#100",
+        "pr#200"
+      ],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/log/0.md:0"
+      ],
+      "shell_command_count": 5,
+      "shell_minutes": 10.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [
+        [
+          "discussion",
+          1
+        ]
+      ],
+      "ai_kind_weighted": [
+        [
+          "discussion",
+          0.6
+        ]
+      ],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "sha1"
+      ],
+      "commit_subjects": [
+        "commit 1"
+      ],
+      "date": "2026-05-02",
+      "focus_minutes": 70.0,
+      "github_lifecycles": {
+        "executed": 1
+      },
+      "github_refs": [
+        "pr#101",
+        "pr#201"
+      ],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/log/1.md:1"
+      ],
+      "shell_command_count": 6,
+      "shell_minutes": 11.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [
+        [
+          "implementation",
+          1
+        ]
+      ],
+      "ai_kind_weighted": [
+        [
+          "implementation",
+          1.0
+        ]
+      ],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "sha2"
+      ],
+      "commit_subjects": [
+        "commit 2"
+      ],
+      "date": "2026-05-03",
+      "focus_minutes": 80.0,
+      "github_lifecycles": {
+        "executed": 1
+      },
+      "github_refs": [
+        "pr#102",
+        "pr#202"
+      ],
+      "project": "sinex",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/log/2.md:2"
+      ],
+      "shell_command_count": 7,
+      "shell_minutes": 12.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [
+        [
+          "discussion",
+          1
+        ]
+      ],
+      "ai_kind_weighted": [
+        [
+          "discussion",
+          0.6
+        ]
+      ],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "sha3"
+      ],
+      "commit_subjects": [
+        "commit 3"
+      ],
+      "date": "2026-05-04",
+      "focus_minutes": 90.0,
+      "github_lifecycles": {
+        "executed": 1
+      },
+      "github_refs": [
+        "pr#103",
+        "pr#203"
+      ],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/log/3.md:3"
+      ],
+      "shell_command_count": 8,
+      "shell_minutes": 13.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [],
+      "ai_kind_breakdown": [
+        [
+          "implementation",
+          1
+        ]
+      ],
+      "ai_kind_weighted": [
+        [
+          "implementation",
+          1.0
+        ]
+      ],
+      "ai_session_count": 0,
+      "commit_count": 1,
+      "commit_shas": [
+        "sha4"
+      ],
+      "commit_subjects": [
+        "commit 4"
+      ],
+      "date": "2026-05-05",
+      "focus_minutes": 100.0,
+      "github_lifecycles": {
+        "executed": 1
+      },
+      "github_refs": [
+        "pr#104",
+        "pr#204"
+      ],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/log/4.md:4"
+      ],
+      "shell_command_count": 9,
+      "shell_minutes": 14.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "raw_log",
+        "terminal"
+      ]
+    }
+  ],
+  "render_claims": "| Date | Project | Support | Score | Sources | Relations | Claim |\n|---|---:|---:|---:|---|---|---|\n| 2026-05-05 | polylogue | strong | 6.31 | activitywatch, git, github, raw_log, terminal | references:git+polylogue: commit-ai overlap 4<br>temporal_overlap:activitywatch+terminal: focus-term 4 | 1 commits; 1.67h focus; 9 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions |\n| 2026-05-04 | sinity-lynchpin | strong | 6.26 | activitywatch, git, github, raw_log, terminal | references:git+polylogue: commit-ai overlap 3<br>temporal_overlap:activitywatch+terminal: focus-term 3 | 1 commits; 1.50h focus; 8 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions |\n| 2026-05-03 | sinex | strong | 6.21 | activitywatch, git, github, raw_log, terminal | references:git+polylogue: commit-ai overlap 2<br>temporal_overlap:activitywatch+terminal: focus-term 2 | 1 commits; 1.33h focus; 7 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions |\n| 2026-05-02 | polylogue | strong | 6.15 | activitywatch, git, github, raw_log, terminal | references:git+polylogue: commit-ai overlap 1<br>temporal_overlap:activitywatch+terminal: focus-term 1 | 1 commits; 1.17h focus; 6 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions |\n| 2026-05-01 | sinity-lynchpin | strong | 6.10 | activitywatch, git, github, raw_log, terminal | references:git+polylogue: commit-ai overlap 0<br>temporal_overlap:activitywatch+terminal: focus-term 0 | 1 commits; 1.00h focus; 5 shell commands; 1 raw-log entries; 2 GitHub refs; 2 relation dimensions |",
+  "render_dataset_correlations": "| Sources | Score | Relations | Projects | Dates | Examples |\n|---|---:|---|---|---|---|\n| git + polylogue | 9.45 | references=5 | polylogue, sinex, sinity-lynchpin | 2026-05-05, 2026-05-04, 2026-05-03, 2026-05-02, 2026-05-01 | 2026-05-05 polylogue: references - commit-ai overlap 4 (commit 4 \u2194 ai event)<br>2026-05-04 sinity-lynchpin: references - commit-ai overlap 3 (commit 3 \u2194 ai event)<br>2026-05-03 sinex: references - commit-ai overlap 2 (commit 2 \u2194 ai event)<br>2026-05-02 polylogue: references - commit-ai overlap 1 (commit 1 \u2194 ai event) |\n| activitywatch + terminal | 5.95 | temporal_overlap=5 | polylogue, sinex, sinity-lynchpin | 2026-05-05, 2026-05-04, 2026-05-03, 2026-05-02, 2026-05-01 | 2026-05-05 polylogue: temporal_overlap - focus-term 4 (focus \u2194 term)<br>2026-05-04 sinity-lynchpin: temporal_overlap - focus-term 3 (focus \u2194 term)<br>2026-05-03 sinex: temporal_overlap - focus-term 2 (focus \u2194 term)<br>2026-05-02 polylogue: temporal_overlap - focus-term 1 (focus \u2194 term) |",
+  "render_summary": "- Project/day rows: 10\n- Cross-source rows: 7\n- Projects: polylogue, sinex, sinity-lynchpin\n- Source counts: activitywatch=7, git=7, github=1, polylogue=6, raw_log=5, terminal=6\n- Source pair counts: activitywatch+git=4, activitywatch+github=1, activitywatch+polylogue=6, activitywatch+raw_log=5, activitywatch+terminal=6, git+github=1, git+polylogue=3, git+raw_log=3, git+terminal=3, github+polylogue=1, github+raw_log=1, github+terminal=1, polylogue+raw_log=5, polylogue+terminal=6, raw_log+terminal=5\n- Git without AI or focus: 3\n- AI without git: 3\n- Focus without git: 3\n- Terminal without git: 3",
+  "render_work_day": "| Date | Project | Sources | Commits | GitHub | AI Sessions | Raw Log | Focus h | Shell cmds |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n| 2026-05-01 | sinex | activitywatch, polylogue, terminal | 0 |  | 1 | 0 | 1.33 | 8 |\n| 2026-05-01 | sinity-lynchpin | activitywatch, git, github, polylogue, raw_log, terminal | 2 | issue#17, pr#18 | 1 | 1 | 0.50 | 3 |\n| 2026-05-02 | polylogue | activitywatch, git, polylogue, raw_log, terminal | 1 |  | 1 | 1 | 0.67 | 4 |\n| 2026-05-02 | sinity-lynchpin | activitywatch, git | 1 |  | 0 | 0 | 1.50 | 0 |\n| 2026-05-03 | polylogue | git | 1 |  | 0 | 0 | 0.00 | 0 |\n| 2026-05-03 | sinex | activitywatch, git, polylogue, raw_log, terminal | 1 |  | 1 | 1 | 0.83 | 5 |\n| 2026-05-04 | sinex | git | 1 |  | 0 | 0 | 0.00 | 0 |\n| 2026-05-04 | sinity-lynchpin | activitywatch, polylogue, raw_log, terminal | 0 |  | 1 | 1 | 1.00 | 6 |\n| 2026-05-05 | polylogue | activitywatch, polylogue, raw_log, terminal | 0 |  | 1 | 1 | 1.17 | 7 |\n| 2026-05-05 | sinity-lynchpin | git | 1 |  | 0 | 0 | 0.00 | 0 |",
+  "strongest": [
+    {
+      "ai_conversation_ids": [
+        "conv-0"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 2,
+      "commit_shas": [
+        "a1",
+        "a2"
+      ],
+      "commit_subjects": [
+        "feat: correlation closes #17",
+        "fix: subjects (#18)"
+      ],
+      "date": "2026-05-01",
+      "focus_minutes": 30.0,
+      "github_lifecycles": {
+        "open_frontier": 1,
+        "unclear": 1
+      },
+      "github_refs": [
+        "issue#17",
+        "pr#18"
+      ],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log0.md:1"
+      ],
+      "shell_command_count": 3,
+      "shell_minutes": 5.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "github",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-2"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 1,
+      "commit_shas": [
+        "d1"
+      ],
+      "commit_subjects": [
+        "feat: ingest"
+      ],
+      "date": "2026-05-03",
+      "focus_minutes": 50.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinex",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log2.md:3"
+      ],
+      "shell_command_count": 5,
+      "shell_minutes": 7.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-1"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 1,
+      "commit_shas": [
+        "c1"
+      ],
+      "commit_subjects": [
+        "feat: archive scan"
+      ],
+      "date": "2026-05-02",
+      "focus_minutes": 40.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log1.md:2"
+      ],
+      "shell_command_count": 4,
+      "shell_minutes": 6.0,
+      "sources": [
+        "activitywatch",
+        "git",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-4"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 0,
+      "commit_shas": [],
+      "commit_subjects": [],
+      "date": "2026-05-05",
+      "focus_minutes": 70.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "polylogue",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log4.md:5"
+      ],
+      "shell_command_count": 7,
+      "shell_minutes": 9.0,
+      "sources": [
+        "activitywatch",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    },
+    {
+      "ai_conversation_ids": [
+        "conv-3"
+      ],
+      "ai_kind_breakdown": [],
+      "ai_kind_weighted": [],
+      "ai_session_count": 1,
+      "commit_count": 0,
+      "commit_shas": [],
+      "commit_subjects": [],
+      "date": "2026-05-04",
+      "focus_minutes": 60.0,
+      "github_lifecycles": {},
+      "github_refs": [],
+      "project": "sinity-lynchpin",
+      "raw_log_count": 1,
+      "raw_log_refs": [
+        "/realm/data/knowledgebase/log3.md:4"
+      ],
+      "shell_command_count": 6,
+      "shell_minutes": 8.0,
+      "sources": [
+        "activitywatch",
+        "polylogue",
+        "raw_log",
+        "terminal"
+      ]
+    }
+  ],
+  "summary": {
+    "ai_without_git": 3,
+    "cross_source_row_count": 7,
+    "focus_without_git": 3,
+    "git_without_ai_or_focus": 3,
+    "projects": [
+      "polylogue",
+      "sinex",
+      "sinity-lynchpin"
+    ],
+    "row_count": 10,
+    "source_counts": {
+      "activitywatch": 7,
+      "git": 7,
+      "github": 1,
+      "polylogue": 6,
+      "raw_log": 5,
+      "terminal": 6
+    },
+    "source_pair_counts": {
+      "activitywatch+git": 4,
+      "activitywatch+github": 1,
+      "activitywatch+polylogue": 6,
+      "activitywatch+raw_log": 5,
+      "activitywatch+terminal": 6,
+      "git+github": 1,
+      "git+polylogue": 3,
+      "git+raw_log": 3,
+      "git+terminal": 3,
+      "github+polylogue": 1,
+      "github+raw_log": 1,
+      "github+terminal": 1,
+      "polylogue+raw_log": 5,
+      "polylogue+terminal": 6,
+      "raw_log+terminal": 5
+    },
+    "terminal_without_git": 3
+  }
+}

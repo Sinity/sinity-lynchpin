@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -219,6 +220,17 @@ def read_commit_facts(
 # ---------------------------------------------------------------------------
 
 
+_COMMIT_COLUMNS = (
+    "sha", "repo", "project", "authored_at", "author", "subject",
+    "lines_added", "lines_deleted", "lines_changed", "files_changed",
+    "paths", "path_roots",
+    "conventional_kind", "conventional_scope", "conventional_signature",
+    "breaking_change", "github_refs", "ai_attribution",
+    "categories", "change_types", "classified_files_changed",
+    "parent_count", "default_branch", "head",
+)
+
+
 def promote_commits(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -236,92 +248,53 @@ def promote_commits(
     categories, change_types, classified_files_changed, parent_count,
     default_branch, head).
     """
-    conn.execute("DELETE FROM commit_fact WHERE refresh_id = ?", [refresh_id])
-
-    rows: list[tuple[Any, ...]] = []
     ann = annotations or {}
-    for f in facts:
+
+    def extract(f: Any) -> tuple[Any, ...]:
         proj = project_lookup(f.repo) if project_lookup else f.repo
         a = ann.get(f.commit, {})
+
         github_refs_raw = a.get("github_refs")
-        # DuckDB accepts a Python dict for STRUCT columns.
-        if isinstance(github_refs_raw, dict):
-            github_refs = github_refs_raw
-        elif github_refs_raw is not None:
-            # Defensive: if a string was passed, ignore it.
-            github_refs = None
-        else:
-            github_refs = None
+        # DuckDB accepts a Python dict for STRUCT columns; ignore non-dicts.
+        github_refs = github_refs_raw if isinstance(github_refs_raw, dict) else None
 
         ai_attribution = a.get("ai_attribution")
-        ai_attribution_json = (
-            json.dumps(ai_attribution) if ai_attribution is not None else None
-        )
+        ai_attribution_json = json.dumps(ai_attribution) if ai_attribution is not None else None
 
-        # Arc 3 enrichment: categories, change_types, etc. from JSON annotations
         categories_raw = a.get("categories")
-        categories_json = (
-            json.dumps(categories_raw) if isinstance(categories_raw, dict) else "{}"
-        )
+        categories_json = json.dumps(categories_raw) if isinstance(categories_raw, dict) else "{}"
         change_types_raw = a.get("change_types")
-        change_types_json = (
-            json.dumps(change_types_raw) if isinstance(change_types_raw, dict) else "{}"
-        )
+        change_types_json = json.dumps(change_types_raw) if isinstance(change_types_raw, dict) else "{}"
+
         classified_files = a.get("classified_files_changed")
         parent_count_val = a.get("parent_count")
 
-        rows.append(
-            (
-                f.commit,  # sha
-                f.repo,  # repo
-                proj,  # project
-                f.authored_at,  # authored_at
-                f.author,  # author
-                f.subject,  # subject
-                f.lines_added,  # lines_added
-                f.lines_deleted,  # lines_deleted
-                f.lines_changed,  # lines_changed
-                f.files_changed,  # files_changed
-                list(f.paths),  # paths
-                list(f.path_roots),  # path_roots
-                a.get("conventional_kind"),  # conventional_kind
-                a.get("conventional_scope"),  # conventional_scope
-                a.get("conventional_signature"),  # conventional_signature
-                bool(a.get("breaking_change", False)),  # breaking_change
-                github_refs,  # github_refs STRUCT
-                ai_attribution_json,  # ai_attribution JSON
-                categories_json,  # categories JSON
-                change_types_json,  # change_types JSON
-                int(classified_files)
-                if classified_files is not None
-                else 0,  # classified_files_changed
-                int(parent_count_val)
-                if parent_count_val is not None
-                else 1,  # parent_count
-                a.get("default_branch"),  # default_branch
-                a.get("head"),  # head
-                refresh_id,  # refresh_id
-            )
+        return (
+            f.commit, f.repo, proj, f.authored_at, f.author, f.subject,
+            f.lines_added, f.lines_deleted, f.lines_changed, f.files_changed,
+            list(f.paths), list(f.path_roots),
+            a.get("conventional_kind"),
+            a.get("conventional_scope"),
+            a.get("conventional_signature"),
+            bool(a.get("breaking_change", False)),
+            github_refs,
+            ai_attribution_json,
+            categories_json,
+            change_types_json,
+            int(classified_files) if classified_files is not None else 0,
+            int(parent_count_val) if parent_count_val is not None else 1,
+            a.get("default_branch"),
+            a.get("head"),
         )
 
-    if rows:
-        conn.executemany(
-            """
-            INSERT INTO commit_fact (
-                sha, repo, project, authored_at, author, subject,
-                lines_added, lines_deleted, lines_changed, files_changed,
-                paths, path_roots,
-                conventional_kind, conventional_scope, conventional_signature,
-                breaking_change, github_refs, ai_attribution,
-                categories, change_types, classified_files_changed,
-                parent_count, default_branch, head,
-                refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-    log.debug("promote_commits: %d rows for refresh_id=%s", len(rows), refresh_id)
-    return len(rows)
+    return promote_rows(
+        conn,
+        table="commit_fact",
+        columns=_COMMIT_COLUMNS,
+        refresh_id=refresh_id,
+        rows=facts,
+        extractor=extract,
+    )
 
 
 # ── file_change_fact ──────────────────────────────────────────────────────────

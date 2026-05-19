@@ -11,6 +11,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
+from ...core.parse import parse_datetime
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
 from ..core.io import resolve_analysis_path, save_json
@@ -36,10 +37,7 @@ class _CommitRow:
 
     @property
     def dt(self) -> datetime | None:
-        try:
-            return datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_datetime(self.timestamp)
 
     @property
     def day(self) -> str:

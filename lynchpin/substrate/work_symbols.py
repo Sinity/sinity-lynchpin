@@ -8,6 +8,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -101,6 +102,48 @@ def load_symbol_changes(
 # ── commit_fact ───────────────────────────────────────────────────────────────
 
 
+_SYMBOL_CHANGE_COLUMNS = (
+    "sha", "project", "date", "path", "change_type",
+    "qualified_name", "symbol_kind", "exported", "breaking_candidate",
+)
+
+
+def _iter_unique_symbol_rows(
+    rows: Iterable[Mapping[str, Any]],
+) -> Iterable[tuple[tuple[Any, ...], None]]:
+    """Yield (tuple, None) pairs after deduping by (sha, path, qualified_name)
+    and dropping rows without a parseable date."""
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        raw_date = r.get("date")
+        if isinstance(raw_date, str):
+            try:
+                row_date = date.fromisoformat(raw_date)
+            except ValueError:
+                continue
+        elif isinstance(raw_date, date):
+            row_date = raw_date
+        else:
+            continue
+
+        sha = r.get("sha") or ""
+        key = (sha, r.get("path") or "", r.get("qualified_name") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        yield (
+            sha,
+            r.get("project") or "",
+            row_date,
+            r.get("path") or "",
+            (r.get("change_type") or "").upper() or "M",
+            r.get("qualified_name") or "",
+            r.get("symbol_kind") or "unknown",
+            bool(r.get("exported", False)),
+            bool(r.get("breaking_candidate", False)),
+        )
+
+
 def promote_symbol_changes(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -113,62 +156,17 @@ def promote_symbol_changes(
     qualified_name, symbol_kind, exported, breaking_candidate.
 
     Missing keys default gracefully so callers can pass the raw dicts from
-    the JSON payload without pre-processing.
+    the JSON payload without pre-processing. Duplicates by
+    (sha, path, qualified_name) and rows without a parseable date are dropped.
     """
-    conn.execute("DELETE FROM symbol_change WHERE refresh_id = ?", [refresh_id])
-
-    tuples: list[tuple[Any, ...]] = []
-    seen: set[tuple[str, str, str]] = set()  # dedupe (sha, path, qualified_name)
-    for r in rows:
-        sha = r.get("sha") or ""
-        project = r.get("project") or ""
-        raw_date = r.get("date")
-        if isinstance(raw_date, str):
-            try:
-                row_date = date.fromisoformat(raw_date)
-            except ValueError:
-                row_date = None
-        elif isinstance(raw_date, date):
-            row_date = raw_date
-        else:
-            row_date = None
-        if row_date is None:
-            continue  # Skip rows without a parseable date.
-
-        key = (sha, r.get("path") or "", r.get("qualified_name") or "")
-        if key in seen:
-            continue
-        seen.add(key)
-        tuples.append(
-            (
-                sha,
-                project,
-                row_date,
-                r.get("path") or "",
-                (r.get("change_type") or "").upper() or "M",
-                r.get("qualified_name") or "",
-                r.get("symbol_kind") or "unknown",
-                bool(r.get("exported", False)),
-                bool(r.get("breaking_candidate", False)),
-                refresh_id,
-            )
-        )
-
-    if tuples:
-        conn.executemany(
-            """
-            INSERT INTO symbol_change (
-                sha, project, date, path, change_type,
-                qualified_name, symbol_kind, exported, breaking_candidate,
-                refresh_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuples,
-        )
-    log.debug(
-        "promote_symbol_changes: %d rows for refresh_id=%s", len(tuples), refresh_id
+    return promote_rows(
+        conn,
+        table="symbol_change",
+        columns=_SYMBOL_CHANGE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=_iter_unique_symbol_rows(rows),
+        extractor=lambda t: t,
     )
-    return len(tuples)
 
 
 __all__ = ["load_symbol_changes", "promote_symbol_changes"]

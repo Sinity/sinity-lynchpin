@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_in_filter, build_where
+from lynchpin.substrate._helpers import promote_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -122,6 +123,47 @@ def load_pr_review_rows(
     return results
 
 
+_PR_REVIEW_COLUMNS = (
+    "project", "number", "title", "state", "url", "author",
+    "created_at", "closed_at", "merged_at",
+    "review_count", "review_decisions",
+    "review_round_count", "reviewer_count", "reviewers",
+    "review_comment_count", "top_level_comment_count",
+    "changes_requested_count", "approval_count", "dismissed_count",
+    "time_to_first_review_minutes", "time_to_close_minutes",
+    "time_to_merge_minutes", "final_decision", "friction_signals",
+)
+
+
+def _pr_review_extract(r: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        r.get("project") or "",
+        int(r.get("number") or 0),
+        r.get("title"),
+        r.get("state"),
+        r.get("url"),
+        r.get("author"),
+        _parse_iso(r.get("created_at")),
+        _parse_iso(r.get("closed_at")),
+        _parse_iso(r.get("merged_at")),
+        int(r.get("review_count") or 0),
+        list(r.get("review_decisions") or []),
+        int(r.get("review_round_count") or 0),
+        int(r.get("reviewer_count") or 0),
+        list(r.get("reviewers") or []),
+        int(r.get("review_comment_count") or 0),
+        int(r.get("top_level_comment_count") or 0),
+        int(r.get("changes_requested_count") or 0),
+        int(r.get("approval_count") or 0),
+        int(r.get("dismissed_count") or 0),
+        r.get("time_to_first_review_minutes"),
+        r.get("time_to_close_minutes"),
+        r.get("time_to_merge_minutes"),
+        r.get("final_decision"),
+        list(r.get("friction_signals") or []),
+    )
+
+
 def promote_pr_review_rows(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -133,67 +175,14 @@ def promote_pr_review_rows(
     ISO-8601 timestamp strings are parsed to timezone-aware datetimes.
     Missing keys default gracefully.
     """
-    conn.execute("DELETE FROM pr_review_row WHERE refresh_id = ?", [refresh_id])
-
-    tuples: list[tuple[Any, ...]] = []
-    for r in rows:
-        tuples.append((
-            r.get("project") or "",
-            int(r.get("number") or 0),
-            r.get("title"),
-            r.get("state"),
-            r.get("url"),
-            r.get("author"),
-            _parse_iso(r.get("created_at")),
-            _parse_iso(r.get("closed_at")),
-            _parse_iso(r.get("merged_at")),
-            int(r.get("review_count") or 0),
-            list(r.get("review_decisions") or []),
-            int(r.get("review_round_count") or 0),
-            int(r.get("reviewer_count") or 0),
-            list(r.get("reviewers") or []),
-            int(r.get("review_comment_count") or 0),
-            int(r.get("top_level_comment_count") or 0),
-            int(r.get("changes_requested_count") or 0),
-            int(r.get("approval_count") or 0),
-            int(r.get("dismissed_count") or 0),
-            r.get("time_to_first_review_minutes"),
-            r.get("time_to_close_minutes"),
-            r.get("time_to_merge_minutes"),
-            r.get("final_decision"),
-            list(r.get("friction_signals") or []),
-            refresh_id,
-        ))
-
-    if tuples:
-        conn.executemany(
-            """
-            INSERT INTO pr_review_row (
-                project, number, title, state, url, author,
-                created_at, closed_at, merged_at,
-                review_count, review_decisions,
-                review_round_count, reviewer_count, reviewers,
-                review_comment_count, top_level_comment_count,
-                changes_requested_count, approval_count, dismissed_count,
-                time_to_first_review_minutes, time_to_close_minutes,
-                time_to_merge_minutes, final_decision, friction_signals,
-                refresh_id
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?,
-                ?, ?, ?,
-                ?, ?,
-                ?, ?, ?,
-                ?, ?,
-                ?, ?, ?,
-                ?
-            )
-            """,
-            tuples,
-        )
-    log.debug("promote_pr_review_rows: %d rows for refresh_id=%s", len(tuples), refresh_id)
-    return len(tuples)
+    return promote_rows(
+        conn,
+        table="pr_review_row",
+        columns=_PR_REVIEW_COLUMNS,
+        refresh_id=refresh_id,
+        rows=rows,
+        extractor=_pr_review_extract,
+    )
 
 
 __all__ = ["load_pr_review_rows", "promote_pr_review_rows"]
