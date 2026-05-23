@@ -40,6 +40,8 @@ def iter_takeout_chrome_visits(
 
     if "Session" in data:
         yield from _parse_new_format(data["Session"], label)
+    if "Browser History" in data:
+        yield from _parse_legacy_browser_history(data["Browser History"], label)
 
 
 def _parse_new_format(
@@ -68,3 +70,25 @@ def _parse_new_format(
                 title=str(nav.get("title") or ""),
                 source=label,
             )
+
+
+def _parse_legacy_browser_history(
+    rows: list[dict[str, object]], label: str
+) -> Iterator[WebHistoryVisit]:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url") or "").strip()
+        if not url or url.startswith("chrome://") or url.startswith("about:"):
+            continue
+        raw_time = row.get("time_usec")
+        try:
+            dt = _unix_to_datetime(int(str(raw_time)), divisor=1_000_000.0)
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+        yield WebHistoryVisit(
+            timestamp=dt,
+            url=url,
+            title=str(row.get("title") or ""),
+            source=label,
+        )

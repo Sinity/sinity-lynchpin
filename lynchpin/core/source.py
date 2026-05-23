@@ -50,9 +50,9 @@ class SourceReadiness:
 def file_readiness(path: Path) -> SourceReadiness:
     """Compute readiness by counting non-blank lines in a JSONL file.
 
-    Common shape for append-only JSONL sources (calendar, sinnix
-    generations, borg drill). Counts non-blank lines as a proxy for
-    row count; the caller can refine if hydration filters further.
+    Common shape for append-only JSONL sources such as sinnix generations
+    and borg drill runs. Counts non-blank lines as a proxy for row count;
+    the caller can refine if hydration filters further.
     """
     if not path.exists():
         return SourceReadiness(

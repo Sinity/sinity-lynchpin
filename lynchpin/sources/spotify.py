@@ -43,7 +43,15 @@ class SpotifyStreamingSummary:
 
 def _stream_files(root: Optional[Path] = None) -> list[Path]:
     cfg = get_config()
-    resolved = root or cfg.spotify_root
+    if root is None:
+        canonical = cfg.exports_root / "spotify/processed/streaming_history.ndjson"
+        if canonical.exists():
+            return [canonical]
+        raise FileNotFoundError(
+            f"canonical Spotify stream materialization is missing: {canonical}. "
+            "Run python -m lynchpin.ingest.exports_materialize spotify."
+        )
+    resolved = root
     if not resolved.exists():
         return []
     files: list[Path] = []
@@ -53,6 +61,7 @@ def _stream_files(root: Optional[Path] = None) -> list[Path]:
     extended_dir = resolved / "Spotify Extended Streaming History"
     if extended_dir.exists():
         files.extend(sorted(extended_dir.glob("Streaming_History*.json")))
+    files.extend(sorted(resolved.glob("StreamingHistory*.json")))
     return files
 
 
@@ -74,6 +83,9 @@ def _stream_files_signature(*args: object, **kwargs: object) -> object:
 def _load_streams(root: Optional[Path] = None) -> list[SpotifyStream]:
     rows: list[SpotifyStream] = []
     for path in _stream_files(root):
+        if path.suffix == ".ndjson":
+            rows.extend(_read_canonical_streams(path))
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
@@ -92,6 +104,29 @@ def _load_streams(root: Optional[Path] = None) -> list[SpotifyStream]:
                     platform=_optional_str(entry.get("platform")),
                     context=_optional_str(entry.get("reason_start") or entry.get("reason_end") or entry.get("offline")),
                     source_file=str(path),
+                )
+            )
+    return rows
+
+
+def _read_canonical_streams(path: Path) -> list[SpotifyStream]:
+    rows: list[SpotifyStream] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                continue
+            rows.append(
+                SpotifyStream(
+                    end_time=_parse_time(payload),
+                    artist=str(payload.get("artist") or ""),
+                    track=str(payload.get("track") or ""),
+                    ms_played=int(payload.get("ms_played") or 0),
+                    platform=_optional_str(payload.get("platform")),
+                    context=_optional_str(payload.get("context")),
+                    source_file=str(payload.get("source_file") or path),
                 )
             )
     return rows
@@ -135,11 +170,17 @@ def top_names(per_month_counts: dict[str, Counter[str]], month: str, *, limit: i
 
 
 def _parse_time(entry: dict[object, object]) -> Optional[datetime]:
+    if "end_time" in entry and isinstance(entry["end_time"], str):
+        raw = str(entry["end_time"]).replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
     if "endTime" in entry:
-        raw = entry["endTime"]
-        if isinstance(raw, str):
+        raw_obj = entry["endTime"]
+        if isinstance(raw_obj, str):
             try:
-                return datetime.strptime(raw, "%Y-%m-%d %H:%M")
+                return datetime.strptime(raw_obj, "%Y-%m-%d %H:%M")
             except ValueError:
                 pass
     if "ts" in entry and isinstance(entry["ts"], str):

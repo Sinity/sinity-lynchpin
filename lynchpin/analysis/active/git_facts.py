@@ -51,6 +51,8 @@ class ActivePathChange:
     previous_path: str | None
     category: str | None
     path_root: str
+    lines_added: int = 0
+    lines_deleted: int = 0
 
     @property
     def is_classified(self) -> bool:
@@ -65,6 +67,9 @@ class ActivePathChange:
             "category": self.category,
             "path_root": self.path_root,
             "classified": self.is_classified,
+            "lines_added": self.lines_added,
+            "lines_deleted": self.lines_deleted,
+            "lines_changed": self.lines_added + self.lines_deleted,
         }
 
 
@@ -111,6 +116,18 @@ class ActiveCommitRecord:
         return Counter(change.change_type for change in self.file_changes)
 
     @property
+    def lines_added(self) -> int:
+        return sum(change.lines_added for change in self.file_changes)
+
+    @property
+    def lines_deleted(self) -> int:
+        return sum(change.lines_deleted for change in self.file_changes)
+
+    @property
+    def lines_changed(self) -> int:
+        return self.lines_added + self.lines_deleted
+
+    @property
     def github_refs(self) -> dict[str, list[int]]:
         refs = extract_commit_refs(self.subject)
         return {"prs": sorted(refs["prs"]), "issues": sorted(refs["issues"])}
@@ -125,6 +142,9 @@ class ActiveCommitRecord:
             "subject": self.subject,
             "parent_count": self.parent_count,
             "files_changed": len(self.paths),
+            "lines_added": self.lines_added,
+            "lines_deleted": self.lines_deleted,
+            "lines_changed": self.lines_changed,
             "classified_files_changed": len(self.classified_paths),
             "top_paths": sorted(self.classified_paths or self.paths)[:12],
             "categories": dict(sorted(self.categories.items())),
@@ -155,6 +175,9 @@ class ActiveCommitRecord:
             "breaking_change": conventional.breaking,
             "github_refs": self.github_refs,
             "files_changed": len(self.paths),
+            "lines_added": self.lines_added,
+            "lines_deleted": self.lines_deleted,
+            "lines_changed": self.lines_changed,
             "classified_files_changed": len(self.classified_paths),
             "categories": dict(categories.most_common()),
             "path_roots": dict(path_roots.most_common()),
@@ -356,6 +379,7 @@ def recent_active_commits(
     head: str | None = None,
 ) -> tuple[ActiveCommitRecord, ...]:
     before = end + timedelta(days=1)
+    numstat = _numstat_by_commit_path(path=path, ref=ref, start=start, before=before)
     cmd = [
         "git",
         "log",
@@ -407,7 +431,8 @@ def recent_active_commits(
             continue
         change = _parse_name_status(line, profile)
         if change is not None:
-            current.file_changes.append(change)
+            added, deleted = numstat.get((current.sha, change.path), (0, 0))
+            current.file_changes.append(_with_churn(change, lines_added=added, lines_deleted=deleted))
     flush()
     return tuple(records)
 
@@ -510,6 +535,84 @@ def _parse_name_status(line: str, profile: ProjectProfile) -> ActivePathChange |
     )
 
 
+def _with_churn(change: ActivePathChange, *, lines_added: int, lines_deleted: int) -> ActivePathChange:
+    return ActivePathChange(
+        status_code=change.status_code,
+        change_type=change.change_type,
+        path=change.path,
+        previous_path=change.previous_path,
+        category=change.category,
+        path_root=change.path_root,
+        lines_added=lines_added,
+        lines_deleted=lines_deleted,
+    )
+
+
+def _numstat_by_commit_path(
+    *,
+    path: Path,
+    ref: str,
+    start: date,
+    before: date,
+) -> dict[tuple[str, str], tuple[int, int]]:
+    cmd = [
+        "git",
+        "log",
+        ref,
+        "--first-parent",
+        "--reverse",
+        "--date=iso-strict",
+        f"--after={start.isoformat()}",
+        f"--before={before.isoformat()}",
+        f"--pretty=format:{_COMMIT_PREFIX}%H",
+        "--numstat",
+    ]
+    proc = subprocess.run(cmd, cwd=path, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return {}
+    out: dict[tuple[str, str], tuple[int, int]] = {}
+    sha: str | None = None
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        if line.startswith(_COMMIT_PREFIX):
+            sha = line.removeprefix(_COMMIT_PREFIX).strip()
+            continue
+        if sha is None:
+            continue
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        added = _parse_numstat_count(parts[0])
+        deleted = _parse_numstat_count(parts[1])
+        rel = _normalize_numstat_path(parts[2])
+        if rel:
+            out[(sha, rel)] = (added, deleted)
+    return out
+
+
+def _parse_numstat_count(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _normalize_numstat_path(value: str) -> str:
+    value = value.strip()
+    if " => " not in value:
+        return value
+    # Git uses forms such as ``src/{old.py => new.py}`` or
+    # ``{old/path.py => new/path.py}``; keep the post-rename path so it
+    # matches ``git log --name-status``.
+    prefix, _, suffix = value.partition(" => ")
+    if "{" in prefix:
+        prefix = prefix.rsplit("{", 1)[0]
+    if "}" in suffix:
+        suffix = suffix.split("}", 1)[0] + suffix.split("}", 1)[1]
+    return f"{prefix}{suffix}".strip()
+
+
 def _change_type(status_code: str) -> str:
     code = status_code[:1].upper()
     return {
@@ -541,6 +644,9 @@ def _file_change_fact_json(commit: ActiveCommitRecord, change: ActivePathChange)
         "classified": change.is_classified,
         "status_code": change.status_code,
         "change_type": change.change_type,
+        "lines_added": change.lines_added,
+        "lines_deleted": change.lines_deleted,
+        "lines_changed": change.lines_added + change.lines_deleted,
         "conventional_kind": commit.conventional.kind,
         "conventional_scope": commit.conventional.scope,
         "conventional_signature": commit.conventional.signature,
@@ -553,8 +659,8 @@ def _window(start: date, end: date) -> dict[str, Any]:
         "start": start.isoformat(),
         "end": end.isoformat(),
         "git_history": "default-branch first-parent commits",
-        "file_detail": "git name-status path facts",
-        "line_churn": "not materialized in active facts; use heavier numstat surfaces when needed",
+        "file_detail": "git name-status path facts joined with git numstat churn",
+        "line_churn": "materialized from git log --numstat; binary file churn is recorded as 0",
     }
 
 

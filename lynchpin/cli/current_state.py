@@ -12,6 +12,7 @@ import typer
 
 from ..core.parse import as_local
 from ..core.serialization import jsonable
+from ..graph.context_pack import ContextPackSubstrateRequiredError
 
 ContextPackMode = Literal["local-fast", "local-heavy", "network"]
 
@@ -58,6 +59,7 @@ def render_current_state(
     persist_semantic: bool = False,
     json_output: bool = False,
     timeline_output: Path | None = None,
+    refresh_substrate: bool = False,
 ) -> str:
     start_dt = as_local(datetime.combine(start, time.min))
     end_dt = as_local(datetime.combine(end, time.max))
@@ -70,6 +72,7 @@ def render_current_state(
         semantic=semantic,
         persist_semantic=persist_semantic,
         prefer_substrate=True,
+        refresh_substrate=refresh_substrate,
     )
     if timeline_output is not None:
         timeline = build_current_state_timeline(pack.graph, start=start, end=end)
@@ -113,6 +116,11 @@ def _current_state_command(
             " Sibling artifact of the context pack, citation-rich."
         ),
     ),
+    refresh_substrate: bool = typer.Option(
+        False,
+        "--refresh-substrate/",
+        help="Rebuild live and replace the deterministic DuckDB graph for this range.",
+    ),
 ) -> None:
     if mode not in {"local-fast", "local-heavy", "network"}:
         raise typer.BadParameter(
@@ -133,6 +141,7 @@ def _current_state_command(
         persist_semantic=persist_semantic,
         json_output=json_output,
         timeline_output=timeline_output,
+        refresh_substrate=refresh_substrate,
     )
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     except click.UsageError as exc:
         sys.stderr.write(f"Error: {exc.format_message()}\n")
         return 2
+    except ContextPackSubstrateRequiredError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        return 1
     except (typer.Exit, SystemExit) as exc:
         code = getattr(exc, "exit_code", None)
         if code is None:

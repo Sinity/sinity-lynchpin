@@ -142,3 +142,25 @@ def test_archive_readiness_reports_populated_products(monkeypatch, tmp_path):
     assert readiness.work_event_count == 7
     assert readiness.message_count is None
     assert readiness.provider_event_count is None
+
+
+def test_archive_readiness_treats_complete_stale_counts_as_ready(monkeypatch, tmp_path):
+    db = tmp_path / "polylogue.db"
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(
+        polylogue,
+        "_polylogue_client",
+        lambda: SimpleNamespace(
+            insight_readiness_report=lambda query: _readiness_report(
+                _readiness_entry("session_profiles", 3, "stale", 3),
+                _readiness_entry("day_session_summaries", 2, "ready", 2),
+                _readiness_entry("session_work_events", 7, "stale", 7),
+                total_conversations=3,
+            )
+        ),
+    )
+
+    readiness = polylogue.archive_readiness()
+
+    assert readiness.status == "ready"
+    assert readiness.reason == "materialized profile, day-summary, and work-event products are populated"

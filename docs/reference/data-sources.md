@@ -30,6 +30,7 @@ products are derived read models.
 | `lynchpin.sources.substance` | processed substance CSV | dose entries and daily/monthly summaries |
 | `lynchpin.sources.web` | browser history captures/exports | visits, daily browsing, domain breakdowns |
 | `lynchpin.sources.takeout_chrome` | Google Takeout Chrome JSON | normalized web history visits |
+| `lynchpin.sources.google_takeout_products` | canonical Google Takeout product NDJSON | contacts, Keep notes, My Activity, purchases, Play Store, tasks, YouTube rows, asset inventory |
 | `lynchpin.sources.spotify` | Spotify processed exports | streams, listening sessions, daily listening |
 | `lynchpin.sources.reddit` | Reddit processed export | posts, comments, votes, daily activity |
 | `lynchpin.sources.exports` | Goodreads, Raindrop, Messenger, Wykop, notes exports | per-export iterators and daily summaries |

@@ -119,9 +119,16 @@ def test_active_git_facts_emit_commit_and_file_rows_without_side_branches(tmp_pa
     assert commits[0]["conventional_scope"] == "core"
     assert commits[0]["github_refs"] == {"prs": [5], "issues": []}
     assert commits[0]["categories"] == {"config": 1, "src": 1}
+    assert commits[0]["lines_added"] == 2
+    assert commits[0]["lines_deleted"] == 0
+    assert commits[0]["lines_changed"] == 2
     assert commit_payload["summary"]["commit_count"] == 2
 
     rows = file_payload["file_changes"]
     assert {row["path"] for row in rows} == {"pyproject.toml", "demo.py"}
     assert {row["change_type"] for row in rows if row["path"] == "demo.py"} == {"added", "modified"}
+    modified_demo = [row for row in rows if row["path"] == "demo.py" and row["change_type"] == "modified"][0]
+    assert modified_demo["lines_added"] == 1
+    assert modified_demo["lines_deleted"] == 1
+    assert modified_demo["lines_changed"] == 2
     assert all(row["project"] == "demo" for row in rows)

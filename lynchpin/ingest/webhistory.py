@@ -11,19 +11,24 @@ data from the canonical paths.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
 from ..sources.browser_db import iter_browser_db_visits
-from ..sources.takeout_chrome import iter_takeout_chrome_visits
+from ..sources.google_takeout import (
+    discover_takeout_archives,
+    iter_chrome_history_batches,
+)
 from ..sources.web import (
     WebHistoryVisit,
     iter_gestalt_events,
-    iter_ndjson_events,
+    iter_file_visits,
     normalize_url,
 )
 
@@ -33,17 +38,12 @@ logger = logging.getLogger(__name__)
 # page view multiple times (initial typed URL + redirect chain entries).
 DEFAULT_DEDUP_TOLERANCE_S = 30
 
-# Hard-coded paths for machine_imgs browser data — these are snapshot paths,
-# not configurable live directories.
-_MACHINE_IMG_BROWSER_DB_ROOTS: tuple[Path, ...] = (
-    Path("/realm/data/exports/machine_imgs/windows_install_ezode/browsers"),
-    Path("/realm/data/exports/machine_imgs/jbr_vhdx_michab/browsers"),
+# Canonical historical browser snapshots. Disk-image recovery directories are
+# provenance only; ingestion reads from the webhistory ontology.
+_HISTORICAL_BROWSER_DB_ROOTS: tuple[Path, ...] = (
+    Path("/realm/data/captures/webhistory/browser-dbs/historical/windows_install_ezode"),
+    Path("/realm/data/captures/webhistory/browser-dbs/historical/jbr_vhdx_michab"),
 )
-
-_MACHINE_IMG_TAKEOUT_CHROME_ROOTS: tuple[Path, ...] = (
-    Path("/realm/data/exports/machine_imgs/google_takeout_extracted"),
-)
-
 
 # ── extraction ────────────────────────────────────────────────────────
 
@@ -54,7 +54,7 @@ def _discover_browser_dbs() -> list[tuple[Path, str, str]]:
     _NON_HISTORY = {"chrome_webdata.db", "vivaldi_webdata.db", "vivaldi_logindata.db",
                     "vivaldi_topsites.db", "vivaldi_favicons.db", "edge_webdata.db"}
     dbs: list[tuple[Path, str, str]] = []
-    for root in _MACHINE_IMG_BROWSER_DB_ROOTS:
+    for root in _HISTORICAL_BROWSER_DB_ROOTS:
         if not root.is_dir():
             continue
         for p in root.iterdir():
@@ -70,20 +70,8 @@ def _discover_browser_dbs() -> list[tuple[Path, str, str]]:
     return dbs
 
 
-def _discover_takeout_chrome_jsons() -> list[tuple[Path, str]]:
-    """Return [(path, label), ...] for all known Takeout Chrome History JSONs."""
-    files: list[tuple[Path, str]] = []
-    for root in _MACHINE_IMG_TAKEOUT_CHROME_ROOTS:
-        if not root.is_dir():
-            continue
-        for takeout_dir in root.iterdir():
-            if not takeout_dir.is_dir():
-                continue
-            for name in ("BrowserHistory.json", "History.json"):
-                candidate = takeout_dir / "Takeout" / "Chrome" / name
-                if candidate.is_file() and candidate.stat().st_size > 100:
-                    files.append((candidate, f"takeout_chrome:{candidate.parent.parent.parent.name}"))
-    return files
+def _discover_takeout_chrome_archives() -> list[Path]:
+    return list(discover_takeout_archives())
 
 
 def extract_browser_data(
@@ -108,11 +96,16 @@ def extract_browser_data(
         report["kind"] = kind
         reports.append(report)
 
-    # Takeout Chrome History JSONs
-    for path, label in _discover_takeout_chrome_jsons():
-        visits = list(iter_takeout_chrome_visits(path, source_label=label))
-        report = _write_raw_batch(raw_dir, path.name, visits, dry_run=dry_run)
-        report["kind"] = "takeout_chrome"
+    for batch in iter_chrome_history_batches():
+        report = _write_raw_batch(
+            raw_dir,
+            f"{batch.archive.stem}_{Path(batch.member).name}",
+            list(batch.visits),
+            dry_run=dry_run,
+        )
+        report["kind"] = "takeout_chrome_archive"
+        report["archive"] = str(batch.archive)
+        report["member"] = batch.member
         reports.append(report)
 
     return reports
@@ -206,7 +199,7 @@ def dedup_raw_files(
             continue
 
         logger.debug("dedup: %s", raw_path.name)
-        visits = list(iter_ndjson_events(raw_path))
+        visits = list(iter_file_visits(raw_path))
 
         if not visits:
             continue
@@ -288,7 +281,7 @@ def build_full_history(
     """
     cfg = get_config()
     data_dir = data_dir or cfg.webhistory_dir
-    output = output or Path(str(cfg.webhistory_raw_dir).replace("/raw", "/derived")) / "full_history.ndjson"
+    output = output or cfg.webhistory_ndjson or Path(str(cfg.webhistory_raw_dir).replace("/raw", "/derived")) / "full_history.ndjson"
 
     if not data_dir.is_dir():
         return {"output": str(output), "row_count": 0, "duplicate_count": 0, "skipped": True}
@@ -300,20 +293,15 @@ def build_full_history(
 
     visits.sort(key=lambda item: item[0])
 
-    if dry_run:
-        return {
-            "output": str(output),
-            "input_visits": len(visits),
-            "dry_run": True,
-        }
-
-    output.parent.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        output.parent.mkdir(parents=True, exist_ok=True)
 
     seen: dict[tuple[str, datetime], bool] = {}
     row_count = 0
     duplicate_count = 0
 
-    with output.open("w", encoding="utf-8") as fh:
+    handle = None if dry_run else output.open("w", encoding="utf-8")
+    try:
         for timestamp, url, title, source in visits:
             norm = normalize_url(url)
             base = timestamp.replace(microsecond=0)
@@ -327,26 +315,74 @@ def build_full_history(
             if is_dup:
                 continue
             seen[(norm, base)] = True
-            fh.write(
-                json.dumps(
-                    {
-                        "url": url,
-                        "title": title,
-                        "norm": norm,
-                        "source": source,
-                        "iso_time": timestamp.isoformat(),
-                    },
-                    ensure_ascii=False,
+            if handle is not None:
+                handle.write(
+                    json.dumps(
+                        {
+                            "url": url,
+                            "title": title,
+                            "norm": norm,
+                            "source": source,
+                            "iso_time": timestamp.isoformat(),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
             row_count += 1
+    finally:
+        if handle is not None:
+            handle.close()
 
-    return {
+    report = {
         "output": str(output),
+        "input_visits": len(visits),
         "row_count": row_count,
         "duplicate_count": duplicate_count,
+        "dry_run": dry_run,
     }
+    if visits:
+        report["first_visit_at"] = visits[0][0].isoformat()
+        report["last_visit_at"] = visits[-1][0].isoformat()
+    report["segment_count"] = len(_canonical_segment_files(data_dir))
+
+    if not dry_run:
+        _write_full_history_manifest(output, report)
+
+    return report
+
+
+def _canonical_segment_files(data_dir: Path) -> list[Path]:
+    if not data_dir.is_dir():
+        return []
+    return [
+        *sorted(data_dir.glob("*.jsonl")),
+        *sorted(data_dir.glob("*.ndjson")),
+        *sorted(data_dir.glob("*.json")),
+        *sorted(data_dir.glob("*.csv")),
+    ]
+
+
+def full_history_manifest_path(output: Path | None = None) -> Path:
+    if output is not None:
+        target = output
+    else:
+        cfg = get_config()
+        target = cfg.webhistory_ndjson or Path(str(cfg.webhistory_raw_dir).replace("/raw", "/derived")) / "full_history.ndjson"
+    return target.with_name(f"{target.stem}.manifest.json")
+
+
+def _write_full_history_manifest(output: Path, report: dict[str, Any]) -> None:
+    manifest = {
+        "dataset": "webhistory.full_history",
+        "materialized_path": str(output),
+        "materialized_at": datetime.now().astimezone().isoformat(),
+        **report,
+    }
+    full_history_manifest_path(output).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 # ── orchestration ─────────────────────────────────────────────────────
@@ -395,3 +431,26 @@ def run(
         "merge": merge_report,
         "dry_run": dry_run,
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Materialize canonical webhistory products")
+    parser.add_argument("--dry-run", action="store_true", help="report work without writing outputs")
+    parser.add_argument("--raw-dir", type=Path, default=None)
+    parser.add_argument("--data-dir", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--tolerance-seconds", type=int, default=DEFAULT_DEDUP_TOLERANCE_S)
+    args = parser.parse_args(argv)
+    report = run(
+        raw_dir=args.raw_dir,
+        data_dir=args.data_dir,
+        output=args.output,
+        tolerance_seconds=args.tolerance_seconds,
+        dry_run=args.dry_run,
+    )
+    sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

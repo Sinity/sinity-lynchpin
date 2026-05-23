@@ -153,11 +153,13 @@ def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> list[Path]
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
     cfg = get_config()
-    export_dir = cfg.reddit_export_dir
-    if not export_dir:
-        return []
-    target = export_dir / filename
-    return [target] if target.exists() else []
+    canonical = cfg.exports_root / "reddit/processed/canonical" / filename
+    if canonical.exists():
+        return [canonical]
+    raise FileNotFoundError(
+        f"canonical Reddit materialization is missing: {canonical}. "
+        "Run python -m lynchpin.ingest.exports_materialize reddit."
+    )
 
 
 def _path_sig(paths: Optional[Sequence[Path]], filename: str) -> object:
@@ -281,15 +283,18 @@ def _message_paths(paths: Optional[Sequence[Path]] = None) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
     cfg = get_config()
-    export_dir = cfg.reddit_export_dir
-    if not export_dir:
-        return []
-    candidates: list[Path] = []
-    for filename in ("messages_archive_headers.csv", "message_headers.csv"):
-        path = export_dir / filename
-        if path.exists():
-            candidates.append(path)
-    return candidates
+    canonical = cfg.exports_root / "reddit/processed/canonical"
+    candidates = [
+        canonical / "messages_archive_headers.csv",
+        canonical / "message_headers.csv",
+    ]
+    existing = [path for path in candidates if path.exists()]
+    if existing:
+        return existing
+    raise FileNotFoundError(
+        f"canonical Reddit message materialization is missing: {canonical}. "
+        "Run python -m lynchpin.ingest.exports_materialize reddit."
+    )
 
 
 def _message_headers_sig(paths: Optional[Sequence[Path]] = None) -> object:

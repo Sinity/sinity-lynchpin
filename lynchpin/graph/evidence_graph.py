@@ -65,6 +65,8 @@ def build_base_evidence_graph(
     projects: Sequence[str] | None = None,
     mode: CostClass = "local-fast",
     promote: bool = False,
+    promote_refresh_id: str | None = None,
+    promote_projects: Sequence[str] = (),
 ) -> EvidenceGraph:
     """Build the base evidence graph: every source except generated analysis
     artifacts and claims.
@@ -95,6 +97,8 @@ def build_base_evidence_graph(
         mode=mode,
         generated_at=now,
         promote=promote,
+        promote_refresh_id=promote_refresh_id,
+        promote_projects=promote_projects,
     )
 
 
@@ -107,6 +111,8 @@ def build_evidence_graph(
     exclude_analysis_artifacts: Sequence[str] = (),
     refresh_context: RefreshContext | None = None,
     promote: bool = False,
+    promote_refresh_id: str | None = None,
+    promote_projects: Sequence[str] = (),
 ) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
 
@@ -166,6 +172,8 @@ def build_evidence_graph(
         mode=mode,
         generated_at=now,
         promote=promote,
+        promote_refresh_id=promote_refresh_id,
+        promote_projects=promote_projects,
     )
 
 
@@ -178,6 +186,8 @@ def _finalize_graph(
     mode: CostClass,
     generated_at: datetime,
     promote: bool = False,
+    promote_refresh_id: str | None = None,
+    promote_projects: Sequence[str] = (),
 ) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     edges.extend(
@@ -257,12 +267,26 @@ def _finalize_graph(
     )
 
     if promote:
-        _promote_to_substrate(graph)
+        refresh_id = promote_refresh_id or _default_graph_refresh_id(graph)
+        promote_graph_to_substrate(
+            graph,
+            refresh_id=refresh_id,
+            projects=promote_projects,
+        )
 
     return graph
 
 
-def _promote_to_substrate(graph: "EvidenceGraph") -> None:
+def _default_graph_refresh_id(graph: "EvidenceGraph") -> str:
+    return f"graph:{graph.start.isoformat()}:{graph.end.isoformat()}:{graph.mode}:all"
+
+
+def promote_graph_to_substrate(
+    graph: "EvidenceGraph",
+    *,
+    refresh_id: str,
+    projects: Sequence[str] = (),
+) -> None:
     """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
     try:
         from lynchpin.substrate import connect, apply_schema
@@ -270,14 +294,15 @@ def _promote_to_substrate(graph: "EvidenceGraph") -> None:
     except ImportError as exc:
         log.warning("DuckDB substrate unavailable: %s", exc)
         return
-    refresh_id = (
-        f"graph:{graph.start.isoformat()}:{graph.end.isoformat()}"
-        f":{graph.mode}:{graph.generated_at.isoformat()}"
-    )
     try:
         with connect() as conn:
             apply_schema(conn)
-            counts = promote_evidence_graph(conn, refresh_id=refresh_id, graph=graph)
+            counts = promote_evidence_graph(
+                conn,
+                refresh_id=refresh_id,
+                graph=graph,
+                projects=projects,
+            )
             log.info(
                 "Promoted evidence graph to substrate: %s (refresh_id=%s)",
                 counts,
@@ -304,4 +329,5 @@ def _dedupe_edges(edges: Sequence[EvidenceEdge]) -> tuple[EvidenceEdge, ...]:
 
 __all__ = [
     "build_evidence_graph",
+    "promote_graph_to_substrate",
 ]

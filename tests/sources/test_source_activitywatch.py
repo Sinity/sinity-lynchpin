@@ -3,10 +3,15 @@
 These are unit tests using synthetic data, not live DB queries.
 """
 
+import json
+import sqlite3
 from datetime import datetime, date, timezone
+from pathlib import Path
+
 from lynchpin.sources.activitywatch import (
     FocusSpan, AppSession, _merge_adjacent, _focus_stretches, _session_ctx, _deep_compatible,
 )
+from lynchpin.sources.activitywatch_raw import event_bounds, events_from_activitywatch_dbs
 
 UTC = timezone.utc
 def dt(h, m=0, s=0): return datetime(2026, 3, 15, h, m, s, tzinfo=UTC)
@@ -90,3 +95,43 @@ class TestFocusStretches:
         ]
         stretches = _focus_stretches(sessions)
         assert len(stretches) == 2  # first two merge (same ctx, <5min gap), third is separate
+
+
+def _aw_db(path: Path, rows: list[tuple[str, datetime, datetime, dict]]) -> None:
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.execute("CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT)")
+        buckets: dict[str, int] = {}
+        for bucket, start, end, payload in rows:
+            bucket_id = buckets.setdefault(bucket, len(buckets) + 1)
+            conn.execute("INSERT OR IGNORE INTO buckets (id, name) VALUES (?, ?)", (bucket_id, bucket))
+            conn.execute(
+                "INSERT INTO events (bucketrow, starttime, endtime, data) VALUES (?, ?, ?, ?)",
+                (
+                    bucket_id,
+                    int(start.timestamp() * 1_000_000_000),
+                    int(end.timestamp() * 1_000_000_000),
+                    json.dumps(payload),
+                ),
+            )
+
+
+def test_activitywatch_raw_merges_archive_dbs_and_filters_bad_rows(monkeypatch, tmp_path: Path) -> None:
+    live = tmp_path / "live.db"
+    archive_dir = tmp_path / "archive-dbs"
+    archive_dir.mkdir()
+    archive = archive_dir / "reset.db"
+    row = ("aw-watcher-window_host", dt(10), dt(10, 5), {"app": "kitty"})
+    _aw_db(live, [row, ("aw-watcher-window_host", dt(12), dt(12), {"app": "zero"})])
+    _aw_db(archive, [row, ("aw-watcher-window_host", dt(9), dt(9, 5), {"app": "old"})])
+
+    class Config:
+        activitywatch_db = live
+        activitywatch_archive_db_dir = archive_dir
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+
+    events = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(8), end=dt(11)))
+    assert [event.data["app"] for event in events] == ["old", "kitty"]
+    assert event_bounds("aw-watcher-window_") == (date(2026, 3, 15), date(2026, 3, 15), 2)

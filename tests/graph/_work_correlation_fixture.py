@@ -12,7 +12,6 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from lynchpin.core.evidence import EvidenceProvenance
 from lynchpin.core.evidence_graph import (
     EvidenceEdge,
     EvidenceGraph,

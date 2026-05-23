@@ -1,4 +1,4 @@
-"""Calendar and Spotify promotion for the refresh DAG substrate step."""
+"""Personal-source promotion for the refresh DAG substrate step."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from typing import Any
 
 from .substrate_promote_status import (
     SOURCE_BORG_DRILL,
-    SOURCE_CALENDAR,
     SOURCE_SINNIX_GENERATION,
     SOURCE_SPOTIFY_DAILY,
     SourceSelection,
@@ -29,65 +28,9 @@ def promote_personal_sources(
 ) -> None:
     from lynchpin.substrate.personal import (
         promote_borg_drill_runs,
-        promote_calendar_events,
         promote_sinnix_generations,
         promote_spotify_daily,
     )
-
-    # ── calendar_events: best-effort promotion from JSONL source ──────────
-    if selection.includes(SOURCE_CALENDAR):
-        try:
-            from lynchpin.core.config import get_config
-            from lynchpin.sources.calendar import iter_events
-
-            cal_path = get_config().calendar_jsonl
-            calendar_events = list(iter_events(start=window_start, end=window_end))
-            if calendar_events:
-                counts["calendar_events"] = promote_calendar_events(
-                    conn,
-                    refresh_id=refresh_id,
-                    events=calendar_events,
-                )
-                record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_CALENDAR,
-                    status="ok",
-                    reason=None,
-                    row_count=counts["calendar_events"],
-                    window_start=window_start,
-                    window_end=window_end,
-                )
-            else:
-                cal_exists = cal_path.exists()
-                status = "unavailable" if not cal_exists else "empty"
-                reason = (
-                    f"calendar JSONL not found at {cal_path}"
-                    if not cal_exists
-                    else "no calendar events in window"
-                )
-                record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_CALENDAR,
-                    status=status,
-                    reason=reason,
-                    row_count=0,
-                    window_start=window_start,
-                    window_end=window_end,
-                )
-        except Exception as exc:
-            log.warning("substrate_promote: calendar promotion skipped: %s", exc)
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source=SOURCE_CALENDAR,
-                status="error",
-                reason=str(exc),
-                row_count=0,
-                window_start=window_start,
-                window_end=window_end,
-            )
 
     # ── sinnix_generation: best-effort promotion from activation JSONL ───
     if selection.includes(SOURCE_SINNIX_GENERATION):

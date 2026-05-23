@@ -49,11 +49,11 @@ def test_source_freshness_accepts_substrate_dates_without_importing_substrate(mo
 
 
 def test_source_freshness_does_not_invent_unavailable_dates(monkeypatch) -> None:
-    path = Path("/missing/calendar.jsonl")
+    path = Path("/missing/spotify")
     monkeypatch.setattr(
         freshness,
         "get_config",
-        lambda: SimpleNamespace(available_sources=lambda: {"calendar": False}),
+        lambda: SimpleNamespace(available_sources=lambda: {"spotify": False}),
     )
     monkeypatch.setattr(
         freshness,
@@ -67,7 +67,7 @@ def test_source_freshness_does_not_invent_unavailable_dates(monkeypatch) -> None
     assert rows[0].last_observed is None
     assert rows[0].basis is None
     assert rows[0].stale is False
-    assert rows[0].recommendation == "Produce /realm/data/exports/google/processed/calendar.jsonl"
+    assert rows[0].recommendation == "Request new Spotify GDPR export"
     assert rows[0].path == str(path)
 
 

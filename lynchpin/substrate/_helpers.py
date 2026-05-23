@@ -64,10 +64,14 @@ def promote_rows(
 
     if refresh_id_position == "first":
         column_list = ", ".join(("refresh_id", *columns))
-        build_tuple = lambda extracted: (refresh_id, *extracted)
+
+        def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
+            return (refresh_id, *extracted)
     else:
         column_list = ", ".join((*columns, "refresh_id"))
-        build_tuple = lambda extracted: (*extracted, refresh_id)
+
+        def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
+            return (*extracted, refresh_id)
 
     placeholders = ", ".join(["?"] * (len(columns) + 1))
     insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"

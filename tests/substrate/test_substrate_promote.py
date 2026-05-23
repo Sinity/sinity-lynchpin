@@ -25,7 +25,6 @@ UTC = timezone.utc
 def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
     """Substrate-promotion unit tests must not ingest live personal archives."""
     monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
@@ -786,7 +785,6 @@ def test_substrate_promote_selected_sources_do_not_probe_others(
         raise AssertionError("unselected source was probed")
 
     monkeypatch.setattr("lynchpin.sources.polylogue.work_events", fail_unselected)
-    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", fail_unselected)
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", fail_unselected)
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", fail_unselected)
 

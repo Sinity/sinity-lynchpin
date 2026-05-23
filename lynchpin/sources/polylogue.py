@@ -36,6 +36,11 @@ from .polylogue_models import (
 
 logger = logging.getLogger(__name__)
 
+
+class PolylogueMaterializationError(RuntimeError):
+    """Raised when required Polylogue insight products are unavailable."""
+
+
 __all__ = [
     "SessionProfile",
     "ChatDayActivity",
@@ -47,6 +52,7 @@ __all__ = [
     "ConversationTranscript",
     "ConversationLineage",
     "PolylogueReadiness",
+    "PolylogueMaterializationError",
     "iter_session_profiles",
     "session_profiles_for_date",
     "conversation_transcripts",
@@ -155,17 +161,17 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
     profile_count = _readiness_row_count(profile)
     day_count = _readiness_row_count(day)
     work_event_count = _readiness_row_count(work_event)
-    degraded_entries = tuple(
+    incomplete_entries = tuple(
         entry
         for entry in (profile, day, work_event)
-        if entry is not None and entry.verdict not in {"ready", "empty"}
+        if entry is None or not _readiness_entry_complete(entry)
     )
 
     if (
         profile_count > 0
         and day_count > 0
         and work_event_count > 0
-        and not degraded_entries
+        and not incomplete_entries
     ):
         status = "ready"
         reason = (
@@ -205,6 +211,14 @@ def _readiness_row_count(entry: Any | None) -> int:
     return int(entry.row_count) if entry is not None else 0
 
 
+def _readiness_entry_complete(entry: Any) -> bool:
+    row_count = _readiness_row_count(entry)
+    expected = entry.expected_row_count
+    if expected is None:
+        return entry.verdict in {"ready", "empty"} and row_count > 0
+    return row_count >= int(expected) and row_count > 0
+
+
 def _readiness_reason(entries: dict[str, Any]) -> str:
     missing = []
     degraded = []
@@ -212,7 +226,7 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
         entry = entries.get(name)
         if entry is None or entry.row_count == 0:
             missing.append(name)
-        elif entry.verdict not in {"ready", "empty"}:
+        elif not _readiness_entry_complete(entry):
             degraded.append(f"{name}={entry.verdict}")
     parts = []
     if missing:
@@ -220,6 +234,15 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
     if degraded:
         parts.append("degraded products: " + ", ".join(degraded))
     return "; ".join(parts) if parts else "polylogue insight readiness is degraded"
+
+
+def _require_materialized_products() -> None:
+    readiness = archive_readiness()
+    if readiness.status != "ready":
+        raise PolylogueMaterializationError(
+            f"Polylogue insight products are not materialized: {readiness.reason}. "
+            "Run `polylogue doctor --repair --target session_insights`."
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +253,7 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
 _cached_profiles: list[SessionProfile] | None = None
 
 
-def _profiles_from_facade() -> list[SessionProfile] | None:
+def _profiles_from_facade() -> list[SessionProfile]:
     """Load session profiles via the SyncPolylogue facade.
 
     Maps SessionProfileInsight (evidence + inference payloads) → SessionProfile.
@@ -243,6 +266,7 @@ def _profiles_from_facade() -> list[SessionProfile] | None:
     names); fall back to evidence.repo_paths / cwd_paths via
     _canonical_projects().
     """
+    _require_materialized_products()
     try:
         from polylogue.insights.archive import SessionProfileInsightQuery
 
@@ -250,8 +274,9 @@ def _profiles_from_facade() -> list[SessionProfile] | None:
             SessionProfileInsightQuery(limit=None)
         )
     except Exception as exc:
-        logger.warning("polylogue list_session_profile_insights failed: %s", exc)
-        return None
+        raise PolylogueMaterializationError(
+            f"Polylogue session profile product read failed: {exc}"
+        ) from exc
 
     return [_session_profile_from_insight(insight) for insight in insights]
 
@@ -352,7 +377,7 @@ def _load_profiles() -> list[SessionProfile]:
     global _cached_profiles
     if _cached_profiles is not None:
         return _cached_profiles
-    _cached_profiles = _profiles_from_facade() or []
+    _cached_profiles = _profiles_from_facade()
     return _cached_profiles
 
 
@@ -362,27 +387,14 @@ def iter_session_profiles() -> Iterator[SessionProfile]:
 
 
 def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]:
-    bounded = _session_profiles_from_facade(start=start, end=end)
-    if bounded is not None:
-        return bounded
-
-    result: list[SessionProfile] = []
-    for profile in iter_session_profiles():
-        session_date = profile.canonical_session_date
-        if session_date is None:
-            stamp = profile.last_message_at or profile.first_message_at
-            if stamp is None:
-                continue
-            session_date = stamp.date()
-        if start <= session_date <= end:
-            result.append(profile)
-    return result
+    return _session_profiles_from_facade(start=start, end=end)
 
 
 def _session_profiles_from_facade(
     *, start: date, end: date
-) -> list[SessionProfile] | None:
+) -> list[SessionProfile]:
     """Read date-bounded session profiles through Polylogue's public facade."""
+    _require_materialized_products()
     try:
         from polylogue.insights.archive import SessionProfileInsightQuery
 
@@ -394,8 +406,9 @@ def _session_profiles_from_facade(
             )
         )
     except Exception as exc:
-        logger.warning("polylogue bounded session profile facade read failed: %s", exc)
-        return None
+        raise PolylogueMaterializationError(
+            f"Polylogue bounded session profile product read failed: {exc}"
+        ) from exc
 
     return [_session_profile_from_insight(insight) for insight in insights]
 
@@ -483,8 +496,9 @@ def conversation_transcripts(*, start: date, end: date) -> list[ConversationTran
             until=end_iso,
         )
     except Exception as exc:
-        logger.warning("polylogue bulk_get_messages failed: %s", exc)
-        return []
+        raise PolylogueMaterializationError(
+            f"Polylogue message product read failed: {exc}"
+        ) from exc
 
     transcripts: list[ConversationTranscript] = []
     for conversation_id, profile in by_conversation.items():
@@ -667,8 +681,9 @@ def _work_events_from_facade(
     *,
     start: Optional[date] = None,
     end: Optional[date] = None,
-) -> list[WorkEvent] | None:
+) -> list[WorkEvent]:
     """Load Polylogue's durable work-event insights via the typed facade."""
+    _require_materialized_products()
     from polylogue.insights.archive import SessionWorkEventInsightQuery
 
     query_model: Any = SessionWorkEventInsightQuery
@@ -680,8 +695,9 @@ def _work_events_from_facade(
     try:
         insights = _polylogue_client().list_session_work_event_insights(query)
     except Exception as exc:
-        logger.warning("polylogue list_session_work_event_insights failed: %s", exc)
-        return None
+        raise PolylogueMaterializationError(
+            f"Polylogue session work-event product read failed: {exc}"
+        ) from exc
 
     events: list[WorkEvent] = []
     for insight in insights:
@@ -712,13 +728,11 @@ def work_events(
 ) -> list[WorkEvent]:
     """Load work events from the Polylogue facade."""
     if start is not None or end is not None:
-        bounded = _work_events_from_facade(start=start, end=end)
-        if bounded is not None:
-            return bounded
+        return _work_events_from_facade(start=start, end=end)
 
     global _cached_work_events
     if _cached_work_events is None:
-        _cached_work_events = _work_events_from_facade() or []
+        _cached_work_events = _work_events_from_facade()
 
     events = _cached_work_events
     if start or end:
@@ -743,13 +757,14 @@ def work_events(
 _cached_day_summaries: list[DaySessionSummary] | None = None
 
 
-def _day_summaries_from_facade() -> list[DaySessionSummary] | None:
+def _day_summaries_from_facade() -> list[DaySessionSummary]:
     """Read Polylogue's day summary insights via the typed facade.
 
     DaySessionSummaryPayload is 1:1 with lynchpin's DaySessionSummary.
-    The facade handles the base-tables fallback internally when the product
-    table is unmaterialised.
+    This is a required materialized product; unavailable products raise instead
+    of being interpreted as zero AI activity.
     """
+    _require_materialized_products()
     try:
         from polylogue.insights.archive import DaySessionSummaryInsightQuery
 
@@ -757,8 +772,9 @@ def _day_summaries_from_facade() -> list[DaySessionSummary] | None:
             DaySessionSummaryInsightQuery(limit=None)
         )
     except Exception as exc:
-        logger.warning("polylogue list_day_session_summary_insights failed: %s", exc)
-        return None
+        raise PolylogueMaterializationError(
+            f"Polylogue day session summary product read failed: {exc}"
+        ) from exc
 
     summaries: list[DaySessionSummary] = []
     for insight in insights:
@@ -789,7 +805,7 @@ def day_session_summaries(
     """Daily session aggregation from Polylogue's durable product tables."""
     global _cached_day_summaries
     if _cached_day_summaries is None:
-        _cached_day_summaries = _day_summaries_from_facade() or []
+        _cached_day_summaries = _day_summaries_from_facade()
 
     summaries = _cached_day_summaries
     if start or end:

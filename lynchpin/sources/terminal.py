@@ -12,9 +12,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, Optional
 
 from ..core.config import get_config
+from ..core.parse import as_local
 from ..core.projects import canonical_project_name
 from ..core.primitives import TopN, group_by_gap, date_to_dt_range
 
@@ -71,27 +72,54 @@ class TerminalRecording:
 
 
 def commands(*, start: Optional[datetime] = None, end: Optional[datetime] = None) -> Iterator[AtuinCommand]:
-    """Yield shell commands from Atuin history DB."""
+    """Yield shell commands from the canonical Atuin materialization."""
+    path = canonical_atuin_history_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"canonical Atuin materialization is missing: {path}. "
+            "Run python -m lynchpin.ingest.terminal_materialize."
+        )
+    start_cmp = as_local(start) if start else None
+    end_cmp = as_local(end) if end else None
+    for command in _commands_from_ndjson(path):
+        timestamp = as_local(command.timestamp)
+        if start_cmp and timestamp < start_cmp:
+            continue
+        if end_cmp and timestamp >= end_cmp:
+            continue
+        yield command
+
+
+def canonical_atuin_history_path() -> Path:
     cfg = get_config()
-    db = cfg.atuin_db
+    return cfg.captures_root / "shell/atuin/history.ndjson"
+
+
+def commands_from_atuin_db(db: Path) -> Iterator[AtuinCommand]:
+    """Yield shell commands directly from an Atuin SQLite DB for materializers."""
     with sqlite3.connect(str(db)) as conn:
         unit = _detect_unit(conn)
         query = "SELECT timestamp, duration, exit, cwd, command FROM history"
-        clauses: List[str] = []
-        params: List[object] = []
-        if start:
-            clauses.append("timestamp >= ?")
-            params.append(_to_unit(start, unit))
-        if end:
-            clauses.append("timestamp < ?")
-            params.append(_to_unit(end, unit))
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY timestamp"
-        for row in conn.execute(query, params):
+        for row in conn.execute(query):
             yield AtuinCommand(
                 timestamp=_from_unit(row[0], unit),
                 duration_ns=row[1], exit_code=row[2], cwd=row[3], command=row[4],
+            )
+
+
+def _commands_from_ndjson(path: Path) -> Iterator[AtuinCommand]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            yield AtuinCommand(
+                timestamp=datetime.fromisoformat(str(payload["timestamp"]).replace("Z", "+00:00")),
+                duration_ns=payload.get("duration_ns"),
+                exit_code=payload.get("exit_code"),
+                cwd=payload.get("cwd"),
+                command=str(payload.get("command") or ""),
             )
 
 

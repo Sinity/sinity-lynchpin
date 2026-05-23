@@ -1,6 +1,15 @@
 from datetime import datetime, timezone
 
-from lynchpin.graph.context_pack import context_pack, graph_context_pack, render_context_pack
+import pytest
+
+from lynchpin.graph.context_pack import (
+    ContextPackSubstrateRequiredError,
+    ContextPackSubstrateState,
+    _render_machine_analysis_artifacts,
+    context_pack,
+    graph_context_pack,
+    render_context_pack,
+)
 from lynchpin.graph.current_state import CurrentStateEvidencePack
 from lynchpin.core.evidence import EvidenceCaveat, SourceReadiness, SourceReadinessReport
 from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
@@ -239,6 +248,22 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Machine analysis readiness: missing×1, stable×1" in rendered
 
 
+def test_context_pack_surfaces_missing_machine_analysis_artifacts(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "lynchpin.analysis.core.io.get_config",
+        lambda: type("Cfg", (), {"analysis_output_dir": tmp_path / "analysis"})(),
+    )
+
+    rendered = _render_machine_analysis_artifacts(
+        start=datetime(2026, 5, 1, tzinfo=UTC).date(),
+        end=datetime(2026, 5, 2, tzinfo=UTC).date(),
+        projects=("sinity-lynchpin",),
+    )
+
+    assert "Missing machine analysis artifacts:" in rendered
+    assert "machine_episode_analysis.json" in rendered
+
+
 def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
     start = datetime(2026, 5, 1, tzinfo=UTC)
     end = datetime(2026, 5, 6, tzinfo=UTC)
@@ -365,3 +390,94 @@ def test_context_pack_can_include_semantic_enrichment(monkeypatch, tmp_path):
 
     assert "## Semantic Enrichment" in rendered
     assert "Narrative moments" in rendered
+
+
+def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    end = datetime(2026, 5, 2, tzinfo=UTC)
+    graph = EvidenceGraph(
+        start=start.date(),
+        end=end.date(),
+        generated_at=start,
+        mode="local-heavy",
+        nodes=(),
+        edges=(),
+        caveats=(),
+    )
+    state = ContextPackSubstrateState(
+        status="exact_hit",
+        refresh_id="current-state:2026-05-01:2026-05-02:local-heavy:all",
+        message="Loaded exact materialized DuckDB graph.",
+    )
+    readiness = PolylogueReadiness(
+        db_path=tmp_path / "polylogue.db",
+        status="ready",
+        reason="ready",
+        conversation_count=1,
+        message_count=None,
+        conversation_stats_count=1,
+        session_profile_count=1,
+        day_summary_count=1,
+        work_event_count=1,
+        provider_event_count=None,
+        derives_profiles_from_base_tables=False,
+        derives_day_summaries_from_profiles=False,
+    )
+    pack = CurrentStateEvidencePack(
+        start=start,
+        end=end,
+        generated_at=start,
+        inventory=(),
+        polylogue_readiness=readiness,
+        evidence_graph=graph,
+        source_readiness=SourceReadinessReport(start=start.date(), end=end.date(), generated_at=start, sources=()),
+        work_correlations=(),
+        correlation_summary=WorkCorrelationSummary(
+            row_count=0,
+            cross_source_row_count=0,
+            projects=(),
+            source_counts={},
+            source_pair_counts={},
+            git_without_ai_or_focus=0,
+            ai_without_git=0,
+            focus_without_git=0,
+            terminal_without_git=0,
+        ),
+        movement=movement_summary(start=start.date(), end=end.date(), rows=()),
+        github_frontiers=(),
+    )
+
+    monkeypatch.setattr("lynchpin.graph.context_pack._load_substrate_graph", lambda **kwargs: (graph, None, state))
+    monkeypatch.setattr("lynchpin.graph.context_pack.current_state_evidence_pack", lambda **kwargs: pack)
+    monkeypatch.setattr(
+        "lynchpin.graph.context_pack.build_evidence_graph",
+        lambda **kwargs: pytest.fail("exact substrate hit should not rebuild live graph"),
+    )
+
+    context = context_pack(start=start, end=end, mode="local-heavy", prefer_substrate=True)
+
+    assert context.substrate_state.status == "exact_hit"
+    assert "Substrate graph: `exact_hit`" in render_context_pack(context)
+
+
+def test_context_pack_requires_materialized_substrate_by_default(monkeypatch):
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    end = datetime(2026, 5, 2, tzinfo=UTC)
+    state = ContextPackSubstrateState(
+        status="missing",
+        refresh_id="current-state:2026-05-01:2026-05-02:local-heavy:all",
+        message="No materialized DuckDB graph matched.",
+    )
+
+    monkeypatch.setattr(
+        "lynchpin.graph.context_pack._load_substrate_graph",
+        lambda **kwargs: (None, EvidenceCaveat("substrate", "partial", state.message), state),
+    )
+
+    with pytest.raises(ContextPackSubstrateRequiredError):
+        context_pack(
+            start=start,
+            end=end,
+            mode="local-heavy",
+            prefer_substrate=True,
+        )

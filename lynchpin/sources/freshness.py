@@ -26,7 +26,6 @@ class SourceFreshness:
 
 
 _REPAIR_HINTS = {
-    "calendar": "Produce /realm/data/exports/google/processed/calendar.jsonl",
     "fbmessenger": "Request new Facebook GDPR export",
     "raindrop": "Request new Raindrop export",
     "reddit": "Request new Reddit GDPR export",
@@ -58,13 +57,13 @@ def source_freshness(
 @lru_cache(maxsize=8)
 def _cached_source_freshness(
     reference: date,
-    cache_key: tuple[tuple[str, bool], str, str, str],
+    cache_key: tuple[tuple[tuple[str, bool], ...], str, str, str],
 ) -> tuple[SourceFreshness, ...]:
     _ = cache_key
     return _compute_source_freshness(reference, {})
 
 
-def _cache_key() -> tuple[tuple[str, bool], str, str, str]:
+def _cache_key() -> tuple[tuple[tuple[str, bool], ...], str, str, str]:
     cfg = get_config()
     return (
         tuple(sorted((source, bool(available)) for source, available in cfg.available_sources().items())),
@@ -138,7 +137,17 @@ def _source_observed_date(
             if message.timestamp is not None
         ), "source", cfg.fbmessenger_gdpr_root
     if source == "webhistory":
-        return _mtime_date(cfg.webhistory_ndjson or cfg.webhistory_dir), "filesystem", cfg.webhistory_ndjson or cfg.webhistory_dir
+        from .web import _iter_all_visits
+
+        return _max_date((visit.timestamp.date() for visit in _iter_all_visits())), "canonical-ndjson", cfg.webhistory_ndjson
+    if source == "spotify":
+        from .spotify import iter_streams
+
+        return _max_date(
+            stream.end_time.date()
+            for stream in iter_streams()
+            if stream.end_time is not None
+        ), "source", cfg.spotify_root
     source_path = _configured_path(source)
     return _mtime_date(source_path), "filesystem" if source_path else None, source_path
 
@@ -148,7 +157,6 @@ def _configured_path(source: str) -> Path | None:
     mapping: dict[str, Path | None] = {
         "activitywatch": cfg.activitywatch_db,
         "atuin": cfg.atuin_db,
-        "calendar": cfg.calendar_jsonl,
         "git_baseline": cfg.baseline_dir / "git_numstat.jsonl",
         "goodreads": cfg.goodreads_library,
         "machine": cfg.machine_telemetry_db,

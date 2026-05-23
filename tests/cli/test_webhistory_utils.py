@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
+import pytest
 
 from lynchpin.sources.web import (
+    _history_files,
+    _history_files_signature,
     _normalize_domain,
     _parse_csv_dt,
     _tokenize_topic,
@@ -17,6 +21,7 @@ from lynchpin.sources.web import (
 from lynchpin.sources.web_timestamps import (
     _parse_webhistory_slash_timestamp,
 )
+from lynchpin.sources.takeout_chrome import iter_takeout_chrome_visits
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +84,55 @@ class TestParseCsvDt:
     def test_fallback_to_timestamp_fields(self) -> None:
         result = _parse_csv_dt({"iso_time": "2026-03-17T10:00:00+00:00"})
         assert result is not None
+
+
+def test_history_files_signature_accepts_positional_cache_args(tmp_path: Path) -> None:
+    ndjson = tmp_path / "full_history.ndjson"
+    ndjson.write_text('{"iso_time":"2026-05-01T00:00:00+00:00","url":"https://example.com"}\n', encoding="utf-8")
+
+    assert _history_files_signature(None, ndjson)
+
+
+def test_default_history_files_requires_canonical_ndjson(monkeypatch, tmp_path: Path) -> None:
+    class Config:
+        webhistory_ndjson = tmp_path / "missing_full_history.ndjson"
+        webhistory_dir = tmp_path / "data"
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "segment.ndjson").write_text(
+        '{"iso_time":"2026-05-01T00:00:00+00:00","url":"https://segment.example"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: Config())
+
+    with pytest.raises(FileNotFoundError, match="canonical webhistory NDJSON is missing"):
+        _history_files()
+
+    assert _history_files(root=tmp_path / "data") == [tmp_path / "data" / "segment.ndjson"]
+
+
+def test_takeout_chrome_reads_legacy_browser_history(tmp_path: Path) -> None:
+    path = tmp_path / "BrowserHistory.json"
+    path.write_text(
+        json.dumps(
+            {
+                "Browser History": [
+                    {
+                        "title": "Example",
+                        "url": "https://example.com",
+                        "time_usec": 1_700_000_000_000_000,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    visits = list(iter_takeout_chrome_visits(path))
+
+    assert len(visits) == 1
+    assert visits[0].url == "https://example.com"
+    assert visits[0].timestamp.year == 2023
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +321,24 @@ class TestIterGestaltEvents:
         visits = list(iter_gestalt_events(tmp_path))
         assert len(visits) == 1
         assert visits[0].timestamp == datetime(2026, 3, 17, 10, 0, tzinfo=timezone.utc)
+
+    def test_jsonl_ts_file_supported(self, tmp_path) -> None:
+        path = tmp_path / "webcache.jsonl"
+        path.write_text(
+            json.dumps(
+                {
+                    "url": "Visited: user@https://example.com/",
+                    "ts": "2022-09-06T00:22:32.314865+00:00",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        visits = list(iter_gestalt_events(tmp_path))
+        assert len(visits) == 1
+        assert visits[0].timestamp == datetime(
+            2022, 9, 6, 0, 22, 32, 314865, tzinfo=timezone.utc
+        )
 
     def test_ndjson_json_file_supported(self, tmp_path) -> None:
         path = tmp_path / "history.json"

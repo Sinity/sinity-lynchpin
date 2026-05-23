@@ -15,6 +15,7 @@ WEBHISTORY_TIMESTAMP_FIELDS = (
     "visitTime",
     "lastVisitTime",
     "timestamp",
+    "ts",
     "DateTime",
     "date",
 )

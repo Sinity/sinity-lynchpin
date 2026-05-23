@@ -10,6 +10,7 @@ from . import evidence_activitywatch
 from . import evidence_web_media
 from . import evidence_terminal
 from . import evidence_raw_log
+from . import evidence_historical_datasets
 
 def add_base_source_nodes(nodes: list[EvidenceNode], edges: list[EvidenceEdge], *, start: date, end: date, selected: set[str], mode: CostClass, include_spotify: bool) -> None:
     evidence_git.add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode)
@@ -23,6 +24,7 @@ def add_base_source_nodes(nodes: list[EvidenceNode], edges: list[EvidenceEdge], 
     if include_spotify and mode != 'local-fast':
         evidence_web_media.add_spotify(nodes, start=start, end=end, selected=selected)
     evidence_system_signals.add_health(nodes, start=start, end=end)
+    evidence_historical_datasets.add_historical_datasets(nodes, start=start, end=end)
     if mode != 'local-fast':
         evidence_system_signals.add_temporal_signals(nodes, start=start, end=end)
         evidence_system_signals.add_readiness(nodes, end=end)

@@ -42,6 +42,7 @@ class LynchpinConfig:
     webhistory_report_dir: Path
     # Source paths
     activitywatch_db: Path
+    activitywatch_archive_db_dir: Path
     atuin_db: Path
     baseline_dir: Path
     webhistory_raw_dir: Path
@@ -72,12 +73,19 @@ class LynchpinConfig:
     clipboard_export_files: tuple[Path, ...]
     irc_root: Path
     raw_log_file: Path
-    calendar_jsonl: Path
     machine_capture_root: Path
     machine_host_root: Path
     machine_telemetry_db: Path
     sinnix_generations_jsonl: Path
     borg_drill_jsonl: Path
+    browser_bookmarks_root: Path
+    arbtt_root: Path
+    teams_root: Path
+    tortoisesvn_root: Path
+    software_inventory_root: Path
+    calibre_root: Path
+    onedrive_inventory_root: Path
+    singlefile_root: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -85,7 +93,7 @@ class LynchpinConfig:
             "activitywatch": self.activitywatch_db.exists(),
             "atuin": self.atuin_db.exists(),
             "git_baseline": (self.baseline_dir / "git_numstat.jsonl").exists() if self.baseline_dir.exists() else False,
-            "webhistory": self.webhistory_dir.exists() or (self.webhistory_ndjson is not None),
+            "webhistory": self.webhistory_ndjson is not None and self.webhistory_ndjson.exists(),
             "sleep": self.sleep_jsonl.exists(),
             "codex": self.codex_sessions_root.exists(),
             "reddit": self.reddit_export_dir is not None and self.reddit_export_dir.exists(),
@@ -106,8 +114,15 @@ class LynchpinConfig:
             "clipboard": self.clipboard_live_file.exists() or any(path.exists() for path in self.clipboard_export_files),
             "irc": self.irc_root.exists(),
             "raw_log": self.raw_log_file.exists(),
-            "calendar": self.calendar_jsonl.exists(),
             "machine": self.machine_telemetry_db.exists(),
+            "browser_bookmarks": self.browser_bookmarks_root.exists(),
+            "arbtt": self.arbtt_root.exists(),
+            "teams_logs": self.teams_root.exists(),
+            "tortoisesvn_logs": self.tortoisesvn_root.exists(),
+            "software_inventory": self.software_inventory_root.exists(),
+            "calibre": self.calibre_root.exists(),
+            "onedrive_inventory": self.onedrive_inventory_root.exists(),
+            "singlefile": self.singlefile_root.exists(),
         }
 
     @classmethod
@@ -161,6 +176,10 @@ class LynchpinConfig:
         aw_db = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_DB", "~/.local/share/activitywatch/aw-server-rust/sqlite.db"
         )).expanduser()
+        aw_archive_db_dir = Path(os.environ.get(
+            "LYNCHPIN_ACTIVITYWATCH_ARCHIVE_DB_DIR",
+            exports_root / "activitywatch/processed/archive-dbs",
+        ))
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
         baseline_dir = _non_legacy_generated_path(
             os.environ.get("LYNCHPIN_BASELINE_DIR"), repo_artefacts_root / "baseline/latest"
@@ -171,14 +190,9 @@ class LynchpinConfig:
         webhistory_ndjson_path = Path(os.environ.get(
             "LYNCHPIN_WEBHISTORY_NDJSON", captures_root / "webhistory/gestalt/derived/full_history.ndjson"
         ))
-        webhistory_ndjson = webhistory_ndjson_path if webhistory_ndjson_path.exists() else None
+        webhistory_ndjson = webhistory_ndjson_path
 
         sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", exports_root / "health/processed/sleep_merged.jsonl"))
-        # M.12: processed calendar JSONL produced by an upstream ingestion
-        # pass over Google Takeout / iCal / future sinex calendar capture.
-        calendar_jsonl = Path(os.environ.get(
-            "LYNCHPIN_CALENDAR_JSONL", exports_root / "google/processed/calendar.jsonl"
-        ))
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
@@ -260,6 +274,38 @@ class LynchpinConfig:
             "LYNCHPIN_BORG_DRILL_JSONL",
             machine_capture_root / "borg_drill.jsonl",
         ))
+        browser_bookmarks_root = Path(os.environ.get(
+            "LYNCHPIN_BROWSER_BOOKMARKS_ROOT",
+            captures_root / "webhistory/bookmarks",
+        ))
+        arbtt_root = Path(os.environ.get(
+            "LYNCHPIN_ARBTT_ROOT",
+            captures_root / "focus/arbtt",
+        ))
+        teams_root = Path(os.environ.get(
+            "LYNCHPIN_TEAMS_ROOT",
+            captures_root / "comms/teams",
+        ))
+        tortoisesvn_root = Path(os.environ.get(
+            "LYNCHPIN_TORTOISESVN_ROOT",
+            captures_root / "dev/tortoisesvn",
+        ))
+        software_inventory_root = Path(os.environ.get(
+            "LYNCHPIN_SOFTWARE_INVENTORY_ROOT",
+            captures_root / "machine/software",
+        ))
+        calibre_root = Path(os.environ.get(
+            "LYNCHPIN_CALIBRE_ROOT",
+            libraries_root / "books/calibre",
+        ))
+        onedrive_inventory_root = Path(os.environ.get(
+            "LYNCHPIN_ONEDRIVE_INVENTORY_ROOT",
+            libraries_root / "cloud-inventory/onedrive",
+        ))
+        singlefile_root = Path(os.environ.get(
+            "LYNCHPIN_SINGLEFILE_ROOT",
+            libraries_root / "web-content/singlefile",
+        ))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -276,7 +322,8 @@ class LynchpinConfig:
             artefact_ledger_output=artefact_ledger_output,
             velocity_output=velocity_output,
             webhistory_report_dir=webhistory_report_dir,
-            activitywatch_db=aw_db, atuin_db=atuin_db, baseline_dir=baseline_dir,
+            activitywatch_db=aw_db, activitywatch_archive_db_dir=aw_archive_db_dir,
+            atuin_db=atuin_db, baseline_dir=baseline_dir,
             webhistory_raw_dir=webhistory_raw_dir, webhistory_dir=webhistory_dir,
             webhistory_ndjson=webhistory_ndjson, sleep_jsonl=sleep_jsonl,
             codex_sessions_root=codex_sessions_root, reddit_export_dir=reddit_export_dir,
@@ -295,12 +342,19 @@ class LynchpinConfig:
             clipboard_export_files=clipboard_export_files,
             irc_root=irc_root,
             raw_log_file=raw_log_file,
-            calendar_jsonl=calendar_jsonl,
             machine_capture_root=machine_capture_root,
             machine_host_root=machine_host_root,
             machine_telemetry_db=machine_telemetry_db,
             sinnix_generations_jsonl=sinnix_generations_jsonl,
             borg_drill_jsonl=borg_drill_jsonl,
+            browser_bookmarks_root=browser_bookmarks_root,
+            arbtt_root=arbtt_root,
+            teams_root=teams_root,
+            tortoisesvn_root=tortoisesvn_root,
+            software_inventory_root=software_inventory_root,
+            calibre_root=calibre_root,
+            onedrive_inventory_root=onedrive_inventory_root,
+            singlefile_root=singlefile_root,
         )
 
 

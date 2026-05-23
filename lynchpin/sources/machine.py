@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from .machine_models import (
@@ -48,7 +49,12 @@ __all__ = [
     "metric_samples",
     "network_samples",
     "service_states",
+    "canonical_machine_table_path",
 ]
+
+
+def canonical_machine_table_path(table: str) -> Path:
+    return get_config().captures_root / f"machine/processed/{table}.ndjson"
 
 def readiness() -> MachineSourceReadiness:
     cfg = get_config()
@@ -69,7 +75,10 @@ def readiness() -> MachineSourceReadiness:
 
 
 def metric_samples(*, start: date | None = None, end: date | None = None, path: Path | None = None) -> Iterator[MachineMetricSample]:
-    db = path or get_config().machine_telemetry_db
+    if path is None:
+        yield from _metric_samples_from_ndjson(canonical_machine_table_path("metric_sample"), start=start, end=end)
+        return
+    db = path
     if not db.exists():
         return
     where: list[str] = []
@@ -158,7 +167,10 @@ def metric_samples(*, start: date | None = None, end: date | None = None, path: 
 
 
 def service_states(*, start: date | None = None, end: date | None = None, path: Path | None = None) -> Iterator[MachineServiceState]:
-    db = path or get_config().machine_telemetry_db
+    if path is None:
+        yield from _service_states_from_ndjson(canonical_machine_table_path("service_state"), start=start, end=end)
+        return
+    db = path
     if not db.exists():
         return
     where: list[str] = []
@@ -203,7 +215,10 @@ def gpu_samples(
     end: date | None = None,
     path: Path | None = None,
 ) -> Iterator[MachineGpuSample]:
-    db = path or get_config().machine_telemetry_db
+    if path is None:
+        yield from _gpu_samples_from_ndjson(canonical_machine_table_path("gpu_sample"), start=start, end=end)
+        return
+    db = path
     if not db.exists():
         return
     where: list[str] = []
@@ -252,7 +267,10 @@ def network_samples(
     end: date | None = None,
     path: Path | None = None,
 ) -> Iterator[MachineNetworkSample]:
-    db = path or get_config().machine_telemetry_db
+    if path is None:
+        yield from _network_samples_from_ndjson(canonical_machine_table_path("network_sample"), start=start, end=end)
+        return
+    db = path
     if not db.exists():
         return
     where: list[str] = []
@@ -299,3 +317,57 @@ def network_samples(
                 conntrack=json_obj(row["conntrack_json"]),
                 gap_codes=gaps,
             )
+
+
+def sample_to_json(sample: Any) -> dict[str, Any]:
+    payload = asdict(sample)
+    observed_at = payload.get("observed_at")
+    if observed_at is not None and hasattr(observed_at, "isoformat"):
+        payload["observed_at"] = observed_at.isoformat()
+    return payload
+
+
+def _load_machine_rows(path: Path, *, start: date | None, end: date | None) -> Iterator[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"canonical machine telemetry materialization is missing: {path}. "
+            "Run python -m lynchpin.ingest.machine_materialize."
+        )
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            observed_at = as_utc(row.get("observed_at"))
+            if observed_at is None:
+                continue
+            day = observed_at.date()
+            if start is not None and day < start:
+                continue
+            if end is not None and day > end:
+                continue
+            row["observed_at"] = observed_at
+            yield row
+
+
+def _metric_samples_from_ndjson(path: Path, *, start: date | None, end: date | None) -> Iterator[MachineMetricSample]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineMetricSample(**row)
+
+
+def _service_states_from_ndjson(path: Path, *, start: date | None, end: date | None) -> Iterator[MachineServiceState]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineServiceState(**row)
+
+
+def _gpu_samples_from_ndjson(path: Path, *, start: date | None, end: date | None) -> Iterator[MachineGpuSample]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineGpuSample(**row)
+
+
+def _network_samples_from_ndjson(path: Path, *, start: date | None, end: date | None) -> Iterator[MachineNetworkSample]:
+    default_interface = default_route_interface()
+    for row in _load_machine_rows(path, start=start, end=end):
+        if default_interface is not None and row.get("interface") != default_interface:
+            continue
+        yield MachineNetworkSample(**row)

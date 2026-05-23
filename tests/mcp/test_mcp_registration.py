@@ -26,7 +26,7 @@ def test_mcp_tools_registered() -> None:
         machine_observational_baselines,
         machine_service_state_summary,
     )
-    from lynchpin.mcp.tools.personal import calendar_events, spotify_daily
+    from lynchpin.mcp.tools.personal import spotify_daily
     from lynchpin.mcp.tools.review import pr_review_rows, review_bottlenecks
     from lynchpin.mcp.tools.substrate import (
         list_evidence_graph_builds,
@@ -56,7 +56,6 @@ def test_mcp_tools_registered() -> None:
         symbol_overlap_edges,
         pr_review_rows,
         review_bottlenecks,
-        calendar_events,
         spotify_daily,
         refactor_candidates,
         file_hotspots,

@@ -36,7 +36,7 @@ def test_iter_takeout_chrome_visits_reads_current_session_format(tmp_path) -> No
     assert visits[0].source == "takeout"
 
 
-def test_iter_takeout_chrome_visits_ignores_legacy_browser_history_shape(tmp_path) -> None:
+def test_iter_takeout_chrome_visits_reads_legacy_browser_history_shape(tmp_path) -> None:
     path = tmp_path / "BrowserHistory.json"
     path.write_text(json.dumps({
         "Browser History": [
@@ -48,4 +48,9 @@ def test_iter_takeout_chrome_visits_ignores_legacy_browser_history_shape(tmp_pat
         ]
     }))
 
-    assert list(iter_takeout_chrome_visits(path)) == []
+    visits = list(iter_takeout_chrome_visits(path))
+
+    assert len(visits) == 1
+    assert visits[0].url == "https://legacy.example/"
+    assert visits[0].title == "Legacy"
+    assert visits[0].timestamp.year == 2026

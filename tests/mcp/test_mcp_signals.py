@@ -85,7 +85,7 @@ def test_daily_rhythm_defaults_to_commit_fact_refresh(
             """,
             [
                 "newer-status-only",
-                "calendar",
+                "spotify_daily",
                 "empty",
                 "status row without commit rows",
                 0,

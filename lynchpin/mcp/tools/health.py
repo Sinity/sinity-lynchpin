@@ -170,7 +170,7 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
 @app.tool()
 def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
     from lynchpin.substrate.connection import connect, substrate_path
-    RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low', 'calendar': 'medium'}
+    RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low'}
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_id(conn, 'evidence_node')

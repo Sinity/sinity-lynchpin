@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 
 from lynchpin.cli import current_state
+from lynchpin.graph.context_pack import ContextPackSubstrateRequiredError
 
 
 def test_render_current_state_delegates_to_context_pack(monkeypatch):
@@ -128,3 +129,38 @@ def test_render_current_state_can_render_json(monkeypatch):
     )
 
     assert json.loads(rendered) == {"date": "2026-05-01"}
+
+
+def test_render_current_state_can_refresh_substrate(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(current_state, "context_pack", lambda **kwargs: calls.update(kwargs) or object())
+    monkeypatch.setattr(current_state, "render_context_pack", lambda pack: "context")
+
+    rendered = current_state.render_current_state(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 5),
+        refresh_substrate=True,
+    )
+
+    assert rendered == "context"
+    assert calls["refresh_substrate"] is True
+
+
+def test_current_state_script_reports_required_substrate_miss(monkeypatch, capsys):
+    def fail_render(**kwargs):
+        raise ContextPackSubstrateRequiredError("No materialized DuckDB graph matched.")
+
+    monkeypatch.setattr(current_state, "render_current_state", fail_render)
+
+    code = current_state.main(
+        [
+            "--start",
+            "2026-05-01",
+            "--end",
+            "2026-05-05",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "No materialized DuckDB graph matched" in captured.err

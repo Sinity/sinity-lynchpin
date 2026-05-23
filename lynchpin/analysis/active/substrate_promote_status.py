@@ -15,7 +15,6 @@ SOURCE_SYMBOLS = "symbols"
 SOURCE_AI_WORK_EVENTS = "ai_work_events"
 SOURCE_EVIDENCE_GRAPH = "evidence_graph"
 SOURCE_PR_REVIEW = "pr_review"
-SOURCE_CALENDAR = "calendar"
 SOURCE_SPOTIFY_DAILY = "spotify_daily"
 SOURCE_MACHINE = "machine"
 SOURCE_MACHINE_GPU = "machine_gpu_sample"
@@ -33,7 +32,6 @@ ALL_SOURCE_IDS = frozenset(
         SOURCE_AI_WORK_EVENTS,
         SOURCE_EVIDENCE_GRAPH,
         SOURCE_PR_REVIEW,
-        SOURCE_CALENDAR,
         SOURCE_SPOTIFY_DAILY,
         SOURCE_MACHINE,
         SOURCE_MACHINE_GPU,

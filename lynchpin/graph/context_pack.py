@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
@@ -18,6 +19,26 @@ from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenc
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
 
 ContextPackMode = Literal["local-fast", "local-heavy", "network"]
+SubstrateGraphStatus = Literal[
+    "disabled",
+    "exact_hit",
+    "compatible_hit",
+    "refresh_rebuild",
+    "missing",
+    "read_error",
+    "required_miss",
+]
+
+
+class ContextPackSubstrateRequiredError(RuntimeError):
+    """Raised when a caller requires a materialized substrate graph."""
+
+
+@dataclass(frozen=True)
+class ContextPackSubstrateState:
+    status: SubstrateGraphStatus
+    refresh_id: str | None
+    message: str
 
 
 @dataclass(frozen=True)
@@ -34,6 +55,7 @@ class ContextPack:
     generated_at: datetime
     mode: ContextPackMode
     graph: EvidenceGraph
+    substrate_state: ContextPackSubstrateState
     semantic_enrichment: SemanticEnrichment | None
     evidence_pack: CurrentStateEvidencePack
     dataset_correlations: tuple[DatasetCorrelation, ...]
@@ -55,18 +77,49 @@ def context_pack(
     persist_semantic: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
     prefer_substrate: bool = False,
+    refresh_substrate: bool = False,
 ) -> ContextPack:
     """Build an LLM-facing context pack with explicit mode/caveats."""
     graph = None
     substrate_caveat = None
-    if prefer_substrate:
-        graph, substrate_caveat = _load_substrate_graph(
+    refresh_id = _current_state_refresh_id(
+        start=start.date(),
+        end=end.date(),
+        mode=mode,
+        projects=projects,
+    )
+    substrate_state = ContextPackSubstrateState(
+        status="disabled",
+        refresh_id=None,
+        message="Substrate graph lookup disabled.",
+    )
+    if prefer_substrate and refresh_substrate:
+        substrate_caveat = EvidenceCaveat(
+            "substrate",
+            "partial",
+            "Substrate refresh requested; rebuilt and materialized live graph.",
+        )
+        substrate_state = ContextPackSubstrateState(
+            status="refresh_rebuild",
+            refresh_id=refresh_id,
+            message="Substrate refresh requested; rebuilt and materialized live graph.",
+        )
+    elif prefer_substrate:
+        graph, substrate_caveat, substrate_state = _load_substrate_graph(
             start=start.date(),
             end=end.date(),
             projects=projects,
             mode=mode,
+            refresh_id=refresh_id,
         )
     if graph is None:
+        if prefer_substrate and not refresh_substrate:
+            required_state = ContextPackSubstrateState(
+                status="required_miss",
+                refresh_id=refresh_id,
+                message=substrate_state.message,
+            )
+            raise ContextPackSubstrateRequiredError(required_state.message)
         graph = build_evidence_graph(
             start=start.date(),
             end=end.date(),
@@ -76,6 +129,12 @@ def context_pack(
         )
         if substrate_caveat is not None:
             graph = replace(graph, caveats=dedupe_caveats(graph.caveats + (substrate_caveat,)))
+        if refresh_substrate:
+            _materialize_context_graph(
+                graph,
+                refresh_id=refresh_id,
+                projects=projects,
+            )
     return graph_context_pack(
         graph,
         start=start,
@@ -83,6 +142,7 @@ def context_pack(
         projects=projects,
         semantic=semantic,
         persist_semantic=persist_semantic,
+        substrate_state=substrate_state,
     )
 
 
@@ -92,26 +152,31 @@ def _load_substrate_graph(
     end: date,
     projects: Sequence[str] | None,
     mode: ContextPackMode,
-) -> tuple[EvidenceGraph | None, EvidenceCaveat | None]:
+    refresh_id: str,
+) -> tuple[EvidenceGraph | None, EvidenceCaveat | None, ContextPackSubstrateState]:
     """Load a previously materialized graph from DuckDB when available."""
     try:
         from lynchpin.substrate import connect
         from lynchpin.substrate.graph import load_evidence_graph
     except ImportError as exc:
-        return None, EvidenceCaveat("substrate", "missing", f"DuckDB substrate import failed: {exc}")
+        message = f"DuckDB substrate import failed: {exc}"
+        return (
+            None,
+            EvidenceCaveat("substrate", "missing", message),
+            ContextPackSubstrateState("read_error", refresh_id, message),
+        )
     try:
         with connect(read_only=True) as conn:
             graph = load_evidence_graph(
                 conn,
-                refresh_id=_current_state_refresh_id(
-                    start=start,
-                    end=end,
-                    mode=mode,
-                    projects=projects,
-                ),
+                refresh_id=refresh_id,
             )
             if graph is not None:
-                return cast(EvidenceGraph, graph), None
+                return (
+                    cast(EvidenceGraph, graph),
+                    None,
+                    ContextPackSubstrateState("exact_hit", refresh_id, "Loaded exact materialized DuckDB graph."),
+                )
             graph = load_evidence_graph(
                 conn,
                 start=start,
@@ -120,10 +185,24 @@ def _load_substrate_graph(
                 projects=tuple(projects) if projects else None,
             )
     except Exception as exc:
-        return None, EvidenceCaveat("substrate", "partial", f"DuckDB substrate read failed; rebuilt live graph: {exc}")
+        message = f"DuckDB substrate read failed: {exc}"
+        return (
+            None,
+            EvidenceCaveat("substrate", "partial", message),
+            ContextPackSubstrateState("read_error", refresh_id, message),
+        )
     if graph is None:
-        return None, EvidenceCaveat("substrate", "partial", "No materialized DuckDB graph matched; rebuilt live graph.")
-    return cast(EvidenceGraph, graph), None
+        message = "No materialized DuckDB graph matched."
+        return (
+            None,
+            EvidenceCaveat("substrate", "partial", message),
+            ContextPackSubstrateState("missing", refresh_id, message),
+        )
+    return (
+        cast(EvidenceGraph, graph),
+        None,
+        ContextPackSubstrateState("compatible_hit", refresh_id, "Loaded compatible materialized DuckDB graph."),
+    )
 
 
 def _current_state_refresh_id(
@@ -137,6 +216,21 @@ def _current_state_refresh_id(
     return f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
 
 
+def _materialize_context_graph(
+    graph: EvidenceGraph,
+    *,
+    refresh_id: str,
+    projects: Sequence[str] | None,
+) -> None:
+    from .evidence_graph import promote_graph_to_substrate
+
+    promote_graph_to_substrate(
+        graph,
+        refresh_id=refresh_id,
+        projects=tuple(projects or ()),
+    )
+
+
 def graph_context_pack(
     graph: EvidenceGraph,
     *,
@@ -145,6 +239,7 @@ def graph_context_pack(
     projects: Sequence[str] | None = None,
     semantic: bool = False,
     persist_semantic: bool = False,
+    substrate_state: ContextPackSubstrateState | None = None,
 ) -> ContextPack:
     """Build a context pack from a prebuilt evidence graph."""
     evidence_pack = current_state_evidence_pack(
@@ -167,6 +262,11 @@ def graph_context_pack(
         generated_at=datetime.now(timezone.utc),
         mode=graph.mode,
         graph=graph,
+        substrate_state=substrate_state or ContextPackSubstrateState(
+            status="disabled",
+            refresh_id=None,
+            message="Context pack was built from a provided graph.",
+        ),
         semantic_enrichment=build_semantic_enrichment(graph, persist=persist_semantic) if semantic else None,
         evidence_pack=evidence_pack,
         dataset_correlations=dataset_rows,
@@ -196,6 +296,7 @@ def render_context_pack(pack: ContextPack) -> str:
         "",
         f"- Mode: `{pack.mode}`",
         f"- Generated: {pack.generated_at.isoformat(timespec='seconds')}",
+        f"- Substrate graph: `{pack.substrate_state.status}` — {pack.substrate_state.message}",
         "",
         "## Substrate Confidence",
         "",
@@ -469,10 +570,14 @@ def _render_machine_analysis_artifacts(
     projects: Sequence[str],
 ) -> str:
     """Render compact machine-analysis summaries from materialized artifacts."""
-    from ..analysis.core.io import load_analysis_artifact
-
     lines: list[str] = []
-    episodes = _artifact_rows(load_analysis_artifact("machine_episode_analysis.json"), "episodes")
+    artifacts = _load_machine_analysis_artifacts()
+    if artifacts.missing:
+        lines.append("- Missing machine analysis artifacts: " + ", ".join(artifacts.missing))
+    if artifacts.malformed:
+        lines.append("- Malformed machine analysis artifacts: " + ", ".join(artifacts.malformed))
+
+    episodes = _artifact_rows(artifacts.payloads.get("machine_episode_analysis.json"), "episodes")
     matching_episodes = [
         row for row in episodes
         if _row_overlaps(row, start=start, end=end, start_key="started_at", end_key="ended_at")
@@ -480,7 +585,7 @@ def _render_machine_analysis_artifacts(
     if matching_episodes:
         lines.append(f"- Episodes in window: {len(matching_episodes)} ({_top_counts(row.get('kind') for row in matching_episodes)})")
 
-    context = _artifact_rows(load_analysis_artifact("machine_context_windows.json"), "windows")
+    context = _artifact_rows(artifacts.payloads.get("machine_context_windows.json"), "windows")
     selected_projects = set(projects)
     matching_context = [
         row for row in context
@@ -491,7 +596,7 @@ def _render_machine_analysis_artifacts(
         overlapped = sum(1 for row in matching_context if _row_int(row, "episode_count") > 0)
         lines.append(f"- Work windows with machine episodes: {overlapped}/{len(matching_context)}")
 
-    states = load_analysis_artifact("machine_work_state_windows.json")
+    states = artifacts.payloads.get("machine_work_state_windows.json")
     if states is not None:
         pressure_states = states.get("pressure_state_counts")
         work_states = states.get("work_state_counts")
@@ -503,7 +608,7 @@ def _render_machine_analysis_artifacts(
                 f"work={_format_mapping_counts(work_states)}"
             )
 
-    commands = load_analysis_artifact("command_performance_windows.json")
+    commands = artifacts.payloads.get("command_performance_windows.json")
     if commands is not None:
         tools = _artifact_rows(commands, "tools")
         if tools:
@@ -520,7 +625,7 @@ def _render_machine_analysis_artifacts(
                 f"pressure-overlap={_format_mapping_counts(pressure_counts)}"
             )
 
-    deltas = load_analysis_artifact("machine_observational_deltas.json")
+    deltas = artifacts.payloads.get("machine_observational_deltas.json")
     if deltas is not None:
         delta_rows = _artifact_rows(deltas, "deltas")
         if delta_rows:
@@ -536,7 +641,7 @@ def _render_machine_analysis_artifacts(
             )
             lines.append(f"- Observational command deltas: {len(delta_rows)} matched cohorts; {rendered}")
 
-    devshell = load_analysis_artifact("devshell_performance.json")
+    devshell = artifacts.payloads.get("devshell_performance.json")
     if devshell is not None:
         summaries = _artifact_rows(devshell, "summaries")
         if summaries:
@@ -547,20 +652,20 @@ def _render_machine_analysis_artifacts(
                 f"classes={_format_mapping_counts(class_counts)}"
             )
 
-    attribution = load_analysis_artifact("machine_below_attribution.json")
+    attribution = artifacts.payloads.get("machine_below_attribution.json")
     if attribution is not None:
         unattributed = attribution.get("unattributed_pressure_episode_count")
         pressure = attribution.get("pressure_episode_count")
         if pressure is not None:
             lines.append(f"- Below attribution: {unattributed}/{pressure} pressure episodes lack bounded below overlap")
 
-    baselines = load_analysis_artifact("machine_observational_baselines.json")
+    baselines = artifacts.payloads.get("machine_observational_baselines.json")
     if baselines is not None:
         caveats = _row_list(baselines, "caveats")
         hardware = _row_list(baselines, "by_hardware_regime")
         lines.append(f"- Observational baselines: {len(hardware)} hardware regimes; caveats: {len(caveats)}")
 
-    claims = load_analysis_artifact("machine_experiment_claims.json")
+    claims = artifacts.payloads.get("machine_experiment_claims.json")
     if claims is not None:
         lines.append(
             "- Experiment claim packs: "
@@ -568,7 +673,7 @@ def _render_machine_analysis_artifacts(
             f"{claims.get('observational_claim_count', 0)} observational"
         )
 
-    readiness = load_analysis_artifact("machine_analysis_readiness.json")
+    readiness = artifacts.payloads.get("machine_analysis_readiness.json")
     if readiness is not None:
         dimensions = _artifact_rows(readiness, "dimensions")
         if dimensions:
@@ -580,6 +685,61 @@ def _render_machine_analysis_artifacts(
     lines.append("")
     lines.append("_Machine analysis is observational unless a manifest-backed controlled claim pack says otherwise._")
     return "\n".join(lines)
+
+
+_MACHINE_ANALYSIS_ARTIFACTS = (
+    "machine_episode_analysis.json",
+    "machine_context_windows.json",
+    "machine_work_state_windows.json",
+    "command_performance_windows.json",
+    "machine_observational_deltas.json",
+    "devshell_performance.json",
+    "machine_below_attribution.json",
+    "machine_observational_baselines.json",
+    "machine_experiment_claims.json",
+    "machine_analysis_readiness.json",
+)
+
+
+@dataclass(frozen=True)
+class _MachineAnalysisArtifacts:
+    payloads: Mapping[str, dict[str, object]]
+    missing: tuple[str, ...]
+    malformed: tuple[str, ...]
+
+
+def _load_machine_analysis_artifacts() -> _MachineAnalysisArtifacts:
+    from json import JSONDecodeError, loads
+
+    from ..analysis.core.io import resolve_analysis_path
+
+    payloads: dict[str, dict[str, object]] = {}
+    missing: list[str] = []
+    malformed: list[str] = []
+    for name in _MACHINE_ANALYSIS_ARTIFACTS:
+        path = Path(resolve_analysis_path(name))
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            missing.append(name)
+            continue
+        except OSError:
+            malformed.append(name)
+            continue
+        try:
+            payload = loads(raw)
+        except JSONDecodeError:
+            malformed.append(name)
+            continue
+        if not isinstance(payload, dict):
+            malformed.append(name)
+            continue
+        payloads[name] = payload
+    return _MachineAnalysisArtifacts(
+        payloads=payloads,
+        missing=tuple(missing),
+        malformed=tuple(malformed),
+    )
 
 
 def _artifact_rows(payload: object, key: str) -> list[dict[str, object]]:

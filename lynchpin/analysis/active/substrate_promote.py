@@ -28,7 +28,6 @@ from .substrate_promote_review import promote_review_source
 from .substrate_promote_status import (
     MACHINE_SOURCE_IDS,
     SOURCE_AI_WORK_EVENTS,
-    SOURCE_CALENDAR,
     SOURCE_COMMITS,
     SOURCE_EVIDENCE_GRAPH,
     SOURCE_FILE_CHANGES,
@@ -185,7 +184,6 @@ __all__ = [
     "SOURCE_AI_WORK_EVENTS",
     "SOURCE_EVIDENCE_GRAPH",
     "SOURCE_PR_REVIEW",
-    "SOURCE_CALENDAR",
     "SOURCE_SPOTIFY_DAILY",
     "SOURCE_MACHINE",
     "SOURCE_MACHINE_GPU",

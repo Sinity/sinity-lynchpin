@@ -9,7 +9,6 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Iterator
 
-from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
 from ..core.parse import parse_date_from_any, safe_float
 
@@ -57,11 +56,6 @@ def _substance_csv() -> Path:
     return get_config().exports_root / "health/processed/substance_log_unified.csv"
 
 
-def _signature() -> object:
-    return file_signature(_substance_csv())
-
-
-@persistent_cache("substance_entries", depends_on=_signature)
 def _load_entries() -> list[SubstanceEntry]:
     path = _substance_csv()
     if not path.exists():

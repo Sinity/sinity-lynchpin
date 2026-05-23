@@ -77,9 +77,13 @@ def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
 
 def iter_raindrop_bookmarks(csv_path: Optional[Path] = None) -> Iterator[RaindropBookmark]:
     cfg = get_config()
-    target = Path(csv_path) if csv_path else cfg.raindrop_csv
+    canonical = cfg.exports_root / "raindrop/processed/bookmarks.csv"
+    target = Path(csv_path) if csv_path else canonical
     if not target or not target.exists():
-        return iter(())
+        raise FileNotFoundError(
+            f"canonical Raindrop materialization is missing: {target}. "
+            "Run python -m lynchpin.ingest.exports_materialize raindrop."
+        )
 
     def generator() -> Iterator[RaindropBookmark]:
         with target.open("r", encoding="utf-8", newline="") as handle:
@@ -143,7 +147,7 @@ def summarize_raindrop_bookmarks(
 def daily_raindrop_activity(*, start: date, end: date) -> list[RaindropDayActivity]:
     """Daily bookmark additions."""
     by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
-    for _export, bookmark in iter_raindrop_bookmarks_all():
+    for bookmark in iter_raindrop_bookmarks():
         if bookmark.created is None:
             continue
         d = bookmark.created.date()

@@ -7,7 +7,6 @@ later cross-source correlation.
 
 from __future__ import annotations
 
-import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone

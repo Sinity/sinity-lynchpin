@@ -17,7 +17,7 @@ def _load_commit_facts(path: str) -> tuple[list[Any], dict[str, dict[str, Any]]]
     github_refs, categories, change_types, classified_files_changed,
     parent_count, default_branch, head).
 
-    Line counts are zero (churn_caveat: not present in active facts).
+    Line counts come from active_commit_facts.json when present.
     """
     from lynchpin.sources.git import GitCommitFact
 
@@ -48,9 +48,9 @@ def _load_commit_facts(path: str) -> tuple[list[Any], dict[str, dict[str, Any]]]
                 authored_at=authored_at,
                 author=entry.get("author") or "",
                 subject=entry.get("subject") or "",
-                lines_added=0,
-                lines_deleted=0,
-                lines_changed=0,
+                lines_added=int(entry.get("lines_added") or 0),
+                lines_deleted=int(entry.get("lines_deleted") or 0),
+                lines_changed=int(entry.get("lines_changed") or 0),
                 files_changed=int(entry.get("files_changed") or 0),
                 paths=tuple(entry.get("paths") or ()),
                 path_roots=path_roots_tuple,
@@ -132,9 +132,9 @@ def _load_file_change_facts(
                 authored_at=authored_at,
                 path=fpath,
                 path_root=entry.get("path_root") or "",
-                lines_added=0,
-                lines_deleted=0,
-                lines_changed=0,
+                lines_added=int(entry.get("lines_added") or 0),
+                lines_deleted=int(entry.get("lines_deleted") or 0),
+                lines_changed=int(entry.get("lines_changed") or 0),
             )
         )
         annotations[(sha, fpath)] = {

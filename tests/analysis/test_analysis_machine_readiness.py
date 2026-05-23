@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from lynchpin.analysis.machine import readiness as readiness_module
 from lynchpin.analysis.machine.readiness import analyze_machine_analysis_readiness
 from lynchpin.substrate.connection import apply_schema, connect
 

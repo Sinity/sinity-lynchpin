@@ -18,7 +18,6 @@ def reload_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def stub_live_promote_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.calendar.iter_events", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.service_states", lambda *args, **kwargs: iter(()))

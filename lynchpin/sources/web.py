@@ -54,6 +54,7 @@ __all__ = [
     "iter_raw_file_entries",
     "load_raw_file",
     "iter_gestalt_events",
+    "iter_file_visits",
     "iter_ndjson_events",
     "summarize_gestalt_dir",
     "summarize_ndjson",
@@ -91,9 +92,19 @@ def _history_files(
     root: Optional[Path] = None, ndjson: Optional[Path] = None
 ) -> list[Path]:
     cfg = get_config()
-    fallback = ndjson or cfg.webhistory_ndjson
-    if root is None and fallback and Path(fallback).exists():
-        return [Path(fallback)]
+    canonical = ndjson or cfg.webhistory_ndjson
+    if root is None:
+        if canonical is None:
+            raise FileNotFoundError(
+                "canonical webhistory NDJSON is not configured; run python -m lynchpin.ingest.webhistory"
+            )
+        canonical_path = Path(canonical)
+        if not canonical_path.exists():
+            raise FileNotFoundError(
+                f"canonical webhistory NDJSON is missing: {canonical_path}. "
+                "Run python -m lynchpin.ingest.webhistory to materialize it."
+            )
+        return [canonical_path]
     path = root or cfg.webhistory_dir
     if path.exists():
         candidates = [
@@ -104,15 +115,13 @@ def _history_files(
         ]
         if candidates:
             return candidates
-    if fallback and Path(fallback).exists():
-        return [Path(fallback)]
     return []
 
 
 def _history_files_signature(
     root: Optional[Path] = None, ndjson: Optional[Path] = None
 ) -> object:
-    return files_digest(_history_files(root, ndjson))
+    return files_digest(_history_files(root=root, ndjson=ndjson))
 
 
 @persistent_cache("webhistory_entries", depends_on=_history_files_signature)
@@ -396,6 +405,12 @@ def iter_ndjson_events(path: Path) -> Iterator[WebHistoryVisit]:
     if not path.exists():
         return
     yield from _iter_jsonl_visits(path, str(path))
+
+
+def iter_file_visits(path: Path) -> Iterator[WebHistoryVisit]:
+    if not path.exists():
+        return
+    yield from _iter_file_visits(path)
 
 
 def _iter_file_visits(path: Path) -> Iterator[WebHistoryVisit]:
@@ -689,15 +704,18 @@ def _iter_all_visits(
     start: Optional[_date_type] = None,
     end: Optional[_date_type] = None,
 ) -> Iterator[WebHistoryVisit]:
-    """Yield WebHistoryVisit from gestalt dir or NDJSON, filtered by date range."""
+    """Yield WebHistoryVisit from canonical NDJSON, filtered by date range."""
     cfg = get_config()
-    source: Iterator[WebHistoryVisit]
-    if cfg.webhistory_ndjson and cfg.webhistory_ndjson.exists():
-        source = iter_ndjson_events(cfg.webhistory_ndjson)
-    elif cfg.webhistory_dir.exists():
-        source = iter_gestalt_events(cfg.webhistory_dir)
-    else:
-        return
+    if cfg.webhistory_ndjson is None:
+        raise FileNotFoundError(
+            "canonical webhistory NDJSON is not configured; run python -m lynchpin.ingest.webhistory"
+        )
+    if not cfg.webhistory_ndjson.exists():
+        raise FileNotFoundError(
+            f"canonical webhistory NDJSON is missing: {cfg.webhistory_ndjson}. "
+            "Run python -m lynchpin.ingest.webhistory to materialize it."
+        )
+    source = iter_ndjson_events(cfg.webhistory_ndjson)
     for v in source:
         if v.timestamp is None:
             continue

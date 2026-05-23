@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 from lynchpin.graph.source_readiness import render_source_readiness, source_readiness
+from lynchpin.graph.coverage import CoverageReport, SourceCoverage
 from lynchpin.sources.freshness import SourceFreshness
 from lynchpin.sources.polylogue import PolylogueReadiness
 
@@ -10,6 +11,10 @@ from lynchpin.sources.polylogue import PolylogueReadiness
 @pytest.fixture(autouse=True)
 def _empty_freshness_contract(monkeypatch):
     monkeypatch.setattr("lynchpin.graph.source_readiness.source_freshness", lambda: ())
+    monkeypatch.setattr(
+        "lynchpin.graph.source_readiness.coverage_report",
+        lambda *, start, end: CoverageReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
+    )
 
 
 def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
@@ -323,10 +328,30 @@ def test_source_readiness_uses_observed_freshness_not_directory_mtime(
             ),
         ),
     )
+    monkeypatch.setattr(
+        "lynchpin.graph.source_readiness.coverage_report",
+        lambda *, start, end: CoverageReport(
+            start=start,
+            end=end,
+            generated_at=datetime(2026, 5, 6),
+            sources=(
+                SourceCoverage(
+                    source="spotify",
+                    status="blocked",
+                    reason="parsed rows do not intersect the requested window",
+                    requested_start=start,
+                    requested_end=end,
+                    first_date=date(2013, 2, 12),
+                    last_date=date(2025, 12, 18),
+                    row_count=10,
+                ),
+            ),
+        ),
+    )
 
     report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
     spotify = report.by_source()["spotify"]
 
-    assert spotify.status == "stale"
+    assert spotify.status == "blocked"
     assert spotify.last_date == date(2025, 12, 18)
-    assert spotify.caveats == ("latest observed data is 149 days old (substrate)",)
+    assert spotify.caveats[0] == "parsed rows do not intersect the requested window"
