@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-CostClass = Literal["local-fast", "local-heavy", "network"]
+CostClass = Literal["materialized", "network"]
 ReadinessStatus = Literal["available", "partial", "stale", "missing", "blocked"]
 
 

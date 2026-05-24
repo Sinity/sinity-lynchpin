@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Sequence
 
-from ..core.evidence import CostClass, EvidenceCaveat
+from ..core.evidence import CostClass
 from ..core.evidence_graph import (
     EvidenceEdge,
     EvidenceGraph,
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 class RefreshContext:
     """Per-refresh memoization for graph construction.
 
-    Holds a cache of base evidence graphs keyed by ``(start, end, mode,
+    Holds a cache of base evidence graphs keyed by ``(start, end,
     projects)`` so that ``project_velocity_windows`` and
     ``current_state_context`` can share work without going through a
     global cache. Opt-in: callers must thread the same ``RefreshContext``
@@ -33,7 +33,7 @@ class RefreshContext:
     pre-7E path.
     """
 
-    _cache: dict[tuple[date, date, str, tuple[str, ...]], "EvidenceGraph"] = None  # type: ignore[assignment]
+    _cache: dict[tuple[date, date, bool, tuple[str, ...]], "EvidenceGraph"] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self._cache is None:
@@ -45,14 +45,17 @@ class RefreshContext:
         start: date,
         end: date,
         projects: Sequence[str] | None = None,
-        mode: CostClass = "local-fast",
+        include_github_frontier: bool = False,
     ) -> "EvidenceGraph":
-        key = (start, end, mode, tuple(sorted(projects)) if projects else ())
+        key = (start, end, include_github_frontier, tuple(sorted(projects)) if projects else ())
         cached = self._cache.get(key)
         if cached is not None:
             return cached
         graph = build_base_evidence_graph(
-            start=start, end=end, projects=projects, mode=mode
+            start=start,
+            end=end,
+            projects=projects,
+            include_github_frontier=include_github_frontier,
         )
         self._cache[key] = graph
         return graph
@@ -63,7 +66,7 @@ def build_base_evidence_graph(
     start: date,
     end: date,
     projects: Sequence[str] | None = None,
-    mode: CostClass = "local-fast",
+    include_github_frontier: bool = False,
     promote: bool = False,
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
@@ -79,6 +82,8 @@ def build_base_evidence_graph(
     edges: list[EvidenceEdge] = []
     now = datetime.now().astimezone()
 
+    mode: CostClass = "network" if include_github_frontier else "materialized"
+    log.info("evidence_graph: loading base sources start=%s end=%s github_frontier=%s", start, end, include_github_frontier)
     evidence_sources.add_base_source_nodes(
         nodes,
         edges,
@@ -88,6 +93,7 @@ def build_base_evidence_graph(
         mode=mode,
         include_spotify=True,
     )
+    log.info("evidence_graph: loaded base sources nodes=%d edges=%d", len(nodes), len(edges))
 
     return _finalize_graph(
         nodes=nodes,
@@ -107,7 +113,7 @@ def build_evidence_graph(
     start: date,
     end: date,
     projects: Sequence[str] | None = None,
-    mode: CostClass = "local-fast",
+    include_github_frontier: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
     refresh_context: RefreshContext | None = None,
     promote: bool = False,
@@ -120,15 +126,23 @@ def build_evidence_graph(
     context's cache; otherwise the base is built fresh.
     """
     selected = selected_projects(projects)
+    mode: CostClass
     if refresh_context is not None:
+        log.info("evidence_graph: loading base graph from refresh context start=%s end=%s github_frontier=%s", start, end, include_github_frontier)
         base = refresh_context.base_graph(
-            start=start, end=end, projects=projects, mode=mode
+            start=start,
+            end=end,
+            projects=projects,
+            include_github_frontier=include_github_frontier,
         )
         nodes = list(base.nodes)
         edges = list(base.edges)
+        mode = base.mode
     else:
         nodes = []
         edges = []
+        mode = "network" if include_github_frontier else "materialized"
+        log.info("evidence_graph: loading base sources start=%s end=%s github_frontier=%s", start, end, include_github_frontier)
         evidence_sources.add_base_source_nodes(
             nodes,
             edges,
@@ -138,7 +152,9 @@ def build_evidence_graph(
             mode=mode,
             include_spotify=False,
         )
+    log.info("evidence_graph: base graph nodes=%d edges=%d", len(nodes), len(edges))
 
+    log.info("evidence_graph: adding machine analysis nodes")
     add_machine_analysis_nodes(
         nodes,
         edges,
@@ -147,22 +163,24 @@ def build_evidence_graph(
         selected=selected,
         exclude_names=frozenset(exclude_analysis_artifacts),
     )
+    log.info("evidence_graph: after machine analysis nodes=%d edges=%d", len(nodes), len(edges))
     now = datetime.now().astimezone()
-    if mode != "local-fast":
-        evidence_analysis.add_analysis_artifacts(
-            nodes,
-            edges,
-            end=end,
-            selected=selected,
-            exclude_names=frozenset(exclude_analysis_artifacts),
-        )
-        evidence_analysis.add_analysis_claims(
-            nodes,
-            edges,
-            end=end,
-            selected=selected,
-            exclude_names=frozenset(exclude_analysis_artifacts),
-        )
+    log.info("evidence_graph: adding analysis artifacts")
+    evidence_analysis.add_analysis_artifacts(
+        nodes,
+        edges,
+        end=end,
+        selected=selected,
+        exclude_names=frozenset(exclude_analysis_artifacts),
+    )
+    log.info("evidence_graph: adding analysis claims")
+    evidence_analysis.add_analysis_claims(
+        nodes,
+        edges,
+        end=end,
+        selected=selected,
+        exclude_names=frozenset(exclude_analysis_artifacts),
+    )
 
     return _finalize_graph(
         nodes=nodes,
@@ -190,60 +208,57 @@ def _finalize_graph(
     promote_projects: Sequence[str] = (),
 ) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
-    edges.extend(
+    log.info("evidence_graph: deriving same-project/day edges for %d nodes", len(nodes))
+    same_project_edges = tuple(
         edge
         for edge in evidence_edges.same_project_day_edges(nodes)
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
-    edges.extend(
+    edges.extend(same_project_edges)
+    log.info("evidence_graph: added %d same-project/day edges", len(same_project_edges))
+    log.info("evidence_graph: deriving temporal-overlap edges")
+    overlap_edges = tuple(
         edge
         for edge in evidence_edges.temporal_overlap_edges(nodes)
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
-    edges.extend(
+    edges.extend(overlap_edges)
+    log.info("evidence_graph: added %d temporal-overlap edges", len(overlap_edges))
+    log.info("evidence_graph: deriving temporal-proximity edges")
+    proximity_edges = tuple(
         edge
         for edge in evidence_edges.temporal_proximity_edges(nodes)
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
-    if mode != "local-fast":
-        overlap_refresh_id = f"overlap:{generated_at.isoformat()}"
-        sql_edges = evidence_edges.overlap_edges_via_substrate(
-            nodes, refresh_id=overlap_refresh_id
-        )
-        edges.extend(
-            edge
-            for edge in sql_edges
-            if edge.source_id in node_ids and edge.target_id in node_ids
-        )
-        edges.extend(
-            edge
-            for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
-            if edge.source_id in node_ids and edge.target_id in node_ids
-        )
+    edges.extend(proximity_edges)
+    log.info("evidence_graph: added %d temporal-proximity edges", len(proximity_edges))
+    log.info("evidence_graph: deriving file/symbol overlap edges through substrate")
+    overlap_refresh_id = f"overlap:{generated_at.isoformat()}"
+    sql_edges = evidence_edges.overlap_edges_via_substrate(
+        nodes, refresh_id=overlap_refresh_id
+    )
+    edges.extend(
+        edge
+        for edge in sql_edges
+        if edge.source_id in node_ids and edge.target_id in node_ids
+    )
+    log.info("evidence_graph: added %d file/symbol overlap edges", len(sql_edges))
+    log.info("evidence_graph: deriving tool-overlap edges")
+    edges.extend(
+        edge
+        for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
+        if edge.source_id in node_ids and edge.target_id in node_ids
+    )
 
+    log.info("evidence_graph: checking source readiness")
     readiness = source_readiness(
         start=start,
         end=end,
-        include_heavy_counts=mode != "local-fast",
+        include_polylogue_product_counts=True,
         include_github_frontier=mode == "network",
-        include_analysis_inventory=mode != "local-fast",
+        include_analysis_inventory=True,
     )
     caveats = tuple(readiness.caveats)
-    if mode == "local-fast":
-        caveats += (
-            EvidenceCaveat(
-                "evidence_graph",
-                "partial",
-                "local-fast graph uses daily focus aggregates and commit-referenced GitHub refs only.",
-            ),
-        )
-        caveats += (
-            EvidenceCaveat(
-                "evidence_graph",
-                "partial",
-                "local-fast omits heavyweight analysis overlays, temporal-signal detection, readiness forecasting, Spotify scans, and Polylogue work-event detail unless a materialized substrate graph is loaded.",
-            ),
-        )
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple(
@@ -251,6 +266,7 @@ def _finalize_graph(
         for edge in _dedupe_edges(edges)
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
+    log.info("evidence_graph: finalized nodes=%d edges=%d", len(deduped_nodes), len(deduped_edges))
     graph = EvidenceGraph(
         start=start,
         end=end,
@@ -278,7 +294,7 @@ def _finalize_graph(
 
 
 def _default_graph_refresh_id(graph: "EvidenceGraph") -> str:
-    return f"graph:{graph.start.isoformat()}:{graph.end.isoformat()}:{graph.mode}:all"
+    return f"graph:{graph.start.isoformat()}:{graph.end.isoformat()}:all"
 
 
 def promote_graph_to_substrate(
@@ -290,7 +306,9 @@ def promote_graph_to_substrate(
     """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
     try:
         from lynchpin.substrate import connect, apply_schema
+        from lynchpin.substrate.claims import promote_analysis_claims
         from lynchpin.substrate.graph import promote_evidence_graph
+        from lynchpin.analysis.active.substrate_promote_graph import _analysis_claim_rows
     except ImportError as exc:
         log.warning("DuckDB substrate unavailable: %s", exc)
         return
@@ -302,6 +320,11 @@ def promote_graph_to_substrate(
                 refresh_id=refresh_id,
                 graph=graph,
                 projects=projects,
+            )
+            counts["analysis_claims"] = promote_analysis_claims(
+                conn,
+                refresh_id=refresh_id,
+                claims=_analysis_claim_rows(graph),
             )
             log.info(
                 "Promoted evidence graph to substrate: %s (refresh_id=%s)",

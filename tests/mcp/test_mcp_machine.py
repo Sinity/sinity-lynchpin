@@ -60,3 +60,17 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     claims = machine_experiment_claims(claim_mode="manifest_observational")
     assert claims["summary"]["observational_claim_count"] == 1
     assert claims["claim_packs"][0]["run_id"] == "run1"
+
+
+def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    analysis_root = tmp_path / "analysis"
+    analysis_root.mkdir()
+    config = type("Config", (), {"analysis_output_dir": analysis_root})()
+    monkeypatch.setattr("lynchpin.analysis.core.io.get_config", lambda: config)
+
+    from lynchpin.mcp.tools.machine import machine_context_windows, machine_episodes
+
+    with pytest.raises(FileNotFoundError, match="machine_episode_analysis.json"):
+        machine_episodes()
+    with pytest.raises(FileNotFoundError, match="machine_context_windows.json"):
+        machine_context_windows()

@@ -23,6 +23,18 @@ def _analysis_artifact(name: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _required_analysis_artifact(name: str) -> dict[str, Any]:
+    from lynchpin.analysis.core.io import resolve_analysis_path
+
+    path = Path(resolve_analysis_path(name))
+    payload = _analysis_artifact(name)
+    if payload is None:
+        raise FileNotFoundError(
+            f"required machine analysis artifact is missing or malformed: {path}"
+        )
+    return payload
+
+
 def _timestamp_filter(
     row: dict[str, Any],
     *,
@@ -121,9 +133,7 @@ def machine_episodes(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Read typed machine episodes from the materialized analysis artifact."""
-    payload = _analysis_artifact("machine_episode_analysis.json")
-    if payload is None:
-        return []
+    payload = _required_analysis_artifact("machine_episode_analysis.json")
     episodes = [row for row in payload.get("episodes", []) if isinstance(row, dict)]
     rows = [
         row
@@ -146,9 +156,7 @@ def machine_context_windows(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Read machine/work context windows from the materialized artifact."""
-    payload = _analysis_artifact("machine_context_windows.json")
-    if payload is None:
-        return []
+    payload = _required_analysis_artifact("machine_context_windows.json")
     windows = [row for row in payload.get("windows", []) if isinstance(row, dict)]
     rows = []
     for row in windows:

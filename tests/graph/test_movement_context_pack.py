@@ -65,7 +65,7 @@ def test_context_pack_filters_projects_and_renders_caveats(monkeypatch, tmp_path
     readiness = PolylogueReadiness(
         db_path=tmp_path / "polylogue.db",
         status="degraded",
-        reason="base archive usable",
+        reason="session-profile products are stale",
         conversation_count=1,
         message_count=None,
         conversation_stats_count=1,
@@ -87,7 +87,7 @@ def test_context_pack_filters_projects_and_renders_caveats(monkeypatch, tmp_path
             start=start.date(),
             end=end.date(),
             generated_at=start,
-            mode="local-fast",
+            mode="materialized",
             nodes=(
                 EvidenceNode(
                     id="git:sinity-lynchpin:a",
@@ -126,7 +126,7 @@ def test_context_pack_filters_projects_and_renders_caveats(monkeypatch, tmp_path
         lambda **kwargs: pack.evidence_graph,
     )
 
-    context = context_pack(start=start, end=end, projects=("lynchpin",), mode="local-fast")
+    context = context_pack(start=start, end=end, projects=("lynchpin",))
     rendered = render_context_pack(context)
 
     assert [project.project for project in context.projects] == ["sinity-lynchpin"]
@@ -165,7 +165,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
             start=start.date(),
             end=end.date(),
             generated_at=start,
-            mode="local-fast",
+            mode="materialized",
             nodes=(),
             edges=(),
             caveats=(),
@@ -235,7 +235,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         lambda: type("Cfg", (), {"analysis_output_dir": analysis_root})(),
     )
 
-    rendered = render_context_pack(context_pack(start=start, end=end, projects=("sinity-lynchpin",), mode="local-fast"))
+    rendered = render_context_pack(context_pack(start=start, end=end, projects=("sinity-lynchpin",)))
 
     assert "## Machine Analysis" in rendered
     assert "Episodes in window: 1" in rendered
@@ -272,7 +272,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
         start=start.date(),
         end=end.date(),
         generated_at=start,
-        mode="local-fast",
+        mode="materialized",
         nodes=(),
         edges=(),
         caveats=(repeated,),
@@ -285,7 +285,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
         polylogue_readiness=PolylogueReadiness(
             db_path=tmp_path / "polylogue.db",
             status="degraded",
-            reason="base archive usable",
+            reason="session-profile products are stale",
             conversation_count=1,
             message_count=None,
             conversation_stats_count=1,
@@ -306,7 +306,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
                     source="polylogue",
                     status="partial",
                     reason="degraded",
-                    cost="local-fast",
+                    cost="materialized",
                     caveats=(repeated.message,),
                 ),
             ),
@@ -333,7 +333,7 @@ def test_graph_context_pack_dedupes_overlapping_caveats(monkeypatch, tmp_path):
     assert context.caveats.count(repeated) == 1
 
 
-def test_context_pack_can_include_semantic_enrichment(monkeypatch, tmp_path):
+def test_context_pack_can_include_weak_tags(monkeypatch, tmp_path):
     start = datetime(2026, 5, 1, tzinfo=UTC)
     end = datetime(2026, 5, 6, tzinfo=UTC)
     readiness = PolylogueReadiness(
@@ -354,7 +354,7 @@ def test_context_pack_can_include_semantic_enrichment(monkeypatch, tmp_path):
         start=start.date(),
         end=end.date(),
         generated_at=start,
-        mode="local-fast",
+        mode="materialized",
         nodes=(),
         edges=(),
         caveats=(),
@@ -386,9 +386,9 @@ def test_context_pack_can_include_semantic_enrichment(monkeypatch, tmp_path):
     monkeypatch.setattr("lynchpin.graph.context_pack.current_state_evidence_pack", lambda **kwargs: pack)
     monkeypatch.setattr("lynchpin.graph.context_pack.build_evidence_graph", lambda **kwargs: graph)
 
-    rendered = render_context_pack(context_pack(start=start, end=end, semantic=True))
+    rendered = render_context_pack(context_pack(start=start, end=end, weak_tags=True))
 
-    assert "## Semantic Enrichment" in rendered
+    assert "## Weak Evidence Tags" in rendered
     assert "Narrative moments" in rendered
 
 
@@ -399,14 +399,14 @@ def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
         start=start.date(),
         end=end.date(),
         generated_at=start,
-        mode="local-heavy",
+        mode="materialized",
         nodes=(),
         edges=(),
         caveats=(),
     )
     state = ContextPackSubstrateState(
         status="exact_hit",
-        refresh_id="current-state:2026-05-01:2026-05-02:local-heavy:all",
+        refresh_id="current-state:2026-05-01:2026-05-02:materialized:all",
         message="Loaded exact materialized DuckDB graph.",
     )
     readiness = PolylogueReadiness(
@@ -454,7 +454,7 @@ def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
         lambda **kwargs: pytest.fail("exact substrate hit should not rebuild live graph"),
     )
 
-    context = context_pack(start=start, end=end, mode="local-heavy", prefer_substrate=True)
+    context = context_pack(start=start, end=end, prefer_substrate=True)
 
     assert context.substrate_state.status == "exact_hit"
     assert "Substrate graph: `exact_hit`" in render_context_pack(context)
@@ -465,7 +465,7 @@ def test_context_pack_requires_materialized_substrate_by_default(monkeypatch):
     end = datetime(2026, 5, 2, tzinfo=UTC)
     state = ContextPackSubstrateState(
         status="missing",
-        refresh_id="current-state:2026-05-01:2026-05-02:local-heavy:all",
+        refresh_id="current-state:2026-05-01:2026-05-02:all",
         message="No materialized DuckDB graph matched.",
     )
 
@@ -478,6 +478,5 @@ def test_context_pack_requires_materialized_substrate_by_default(monkeypatch):
         context_pack(
             start=start,
             end=end,
-            mode="local-heavy",
             prefer_substrate=True,
         )

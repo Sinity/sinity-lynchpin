@@ -4,6 +4,7 @@ import pytest
 
 from lynchpin.graph.source_readiness import render_source_readiness, source_readiness
 from lynchpin.graph.coverage import CoverageReport, SourceCoverage
+from lynchpin.materialization import MaterializedDataset
 from lynchpin.sources.freshness import SourceFreshness
 from lynchpin.sources.polylogue import PolylogueReadiness
 
@@ -67,7 +68,7 @@ def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
     readiness = PolylogueReadiness(
         db_path=tmp_path / "polylogue.db",
         status="degraded",
-        reason="base archive usable",
+        reason="session-profile products are stale",
         conversation_count=10,
         message_count=None,
         conversation_stats_count=10,
@@ -80,12 +81,44 @@ def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
-    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_heavy_counts=False: readiness)
+    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_polylogue_product_counts=False: readiness)
+    monkeypatch.setattr(
+        "lynchpin.materialization.audit_materialization",
+        lambda: [
+            MaterializedDataset(
+                name="title_metadata",
+                status="missing",
+                authority="fixture",
+                query_surface="fixture",
+                materialized_paths=(),
+                raw_roots=(),
+                row_count=0,
+                first_date=None,
+                last_date=None,
+                refresh_command="refresh",
+                reason="missing",
+            ),
+            MaterializedDataset(
+                name="activity_content",
+                status="missing",
+                authority="fixture",
+                query_surface="fixture",
+                materialized_paths=(),
+                raw_roots=(),
+                row_count=0,
+                first_date=None,
+                last_date=None,
+                refresh_command="refresh",
+                reason="missing",
+            ),
+        ],
+    )
 
     report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
     by_source = report.by_source()
 
     assert by_source["polylogue"].status == "partial"
+    assert any("session-profile products" in caveat for caveat in by_source["polylogue"].caveats)
     assert any("work-event products are unavailable" in caveat for caveat in by_source["polylogue"].caveats)
     assert by_source["raw_log"].count == 1
     assert by_source["github"].cost == "network"
@@ -153,8 +186,8 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
         derives_day_summaries_from_profiles=False,
     )
 
-    def fake_archive_readiness(*, include_heavy_counts=False):
-        calls["include_heavy_counts"] = include_heavy_counts
+    def fake_archive_readiness(*, include_polylogue_product_counts=False):
+        calls["include_polylogue_product_counts"] = include_polylogue_product_counts
         return readiness
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
@@ -163,12 +196,12 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
     report = source_readiness(
         start=date(2026, 5, 1),
         end=date(2026, 5, 6),
-        include_heavy_counts=True,
+        include_polylogue_product_counts=True,
         include_github_frontier=True,
     )
 
-    assert calls["include_heavy_counts"] is True
-    assert report.by_source()["polylogue"].cost == "local-heavy"
+    assert calls["include_polylogue_product_counts"] is True
+    assert report.by_source()["polylogue"].cost == "materialized"
     assert report.by_source()["github"].status == "available"
     assert report.by_source()["github"].caveats == ()
 
@@ -239,7 +272,7 @@ def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
-    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_heavy_counts=False: readiness)
+    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_polylogue_product_counts=False: readiness)
 
     report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
     analysis = report.by_source()["analysis"]
@@ -313,7 +346,7 @@ def test_source_readiness_uses_observed_freshness_not_directory_mtime(
     )
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
-    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_heavy_counts=False: readiness)
+    monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_polylogue_product_counts=False: readiness)
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.source_freshness",
         lambda: (

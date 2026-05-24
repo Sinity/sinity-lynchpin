@@ -42,7 +42,6 @@ def _empty_graph(start: date, end: date, nodes: list[EvidenceNode]) -> EvidenceG
         start=start,
         end=end,
         generated_at=datetime(2026, 5, 7, 12),
-        mode="local-fast",
         nodes=tuple(nodes),
         edges=(),
         caveats=(),

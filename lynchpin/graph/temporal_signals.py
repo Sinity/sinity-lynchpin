@@ -208,6 +208,12 @@ def default_signal_specs() -> tuple[SignalSpec, ...]:
         SignalSpec("terminal_command_count", "Shell command volume per day", _load_command_count),
         SignalSpec("ai_session_count", "Polylogue AI sessions per day", _load_ai_sessions),
         SignalSpec("ai_engaged_minutes", "Polylogue engaged minutes per day", _load_ai_engaged),
+        SignalSpec("web_visit_count", "Canonical browser history visits per day", _load_web_visits),
+        SignalSpec("bookmark_added_count", "Browser bookmarks added per day", _load_bookmarks),
+        SignalSpec("communication_event_count", "Communication events per day", _load_communications),
+        SignalSpec("arbtt_active_minutes", "ARBTT active minutes per day", _load_arbtt_minutes),
+        SignalSpec("google_activity_count", "Timestamped Google Takeout activity rows per day", _load_google_activity),
+        SignalSpec("youtube_activity_count", "Google Takeout My Activity rows from YouTube services per day", _load_youtube_activity),
         SignalSpec("sleep_hours", "Wearable sleep duration per day", _load_sleep_hours),
         SignalSpec("sleep_score", "Wearable sleep score per day", _load_sleep_score),
         SignalSpec("hrv_rmssd", "HRV RMSSD per day", _load_hrv),
@@ -275,6 +281,57 @@ def _load_ai_engaged(start: date, end: date) -> dict[date, float]:
     by_day: dict[date, float] = defaultdict(float)
     for row in daily_activity(start=start, end=end):
         by_day[row.date] += row.engaged_minutes
+    return dict(by_day)
+
+
+def _load_web_visits(start: date, end: date) -> dict[date, float]:
+    from ..sources.web import daily_browsing
+
+    return {row.date: float(row.visit_count) for row in daily_browsing(start=start, end=end)}
+
+
+def _load_bookmarks(start: date, end: date) -> dict[date, float]:
+    from ..sources.bookmarks import daily_bookmark_activity
+
+    return {row.date: float(row.bookmark_count) for row in daily_bookmark_activity(start=start, end=end)}
+
+
+def _load_communications(start: date, end: date) -> dict[date, float]:
+    from ..sources.communications import daily_communication_activity
+
+    return {row.date: float(row.event_count) for row in daily_communication_activity(start=start, end=end)}
+
+
+def _load_arbtt_minutes(start: date, end: date) -> dict[date, float]:
+    from ..sources.arbtt import daily_arbtt_activity
+
+    return {row.date: row.active_minutes for row in daily_arbtt_activity(start=start, end=end)}
+
+
+def _load_google_activity(start: date, end: date) -> dict[date, float]:
+    from collections import defaultdict
+
+    from ..sources.google_takeout_products import iter_daily_activity
+
+    by_day: dict[date, float] = defaultdict(float)
+    for row in iter_daily_activity(start=start, end=end):
+        by_day[row.date] += row.event_count
+    return dict(by_day)
+
+
+def _load_youtube_activity(start: date, end: date) -> dict[date, float]:
+    from collections import defaultdict
+
+    from ..sources.google_takeout_products import iter_events
+
+    by_day: dict[date, float] = defaultdict(float)
+    for row in iter_events(product="my_activity"):
+        service = (row.service or "").lower()
+        if "youtube" not in service:
+            continue
+        day = row.timestamp.date()
+        if start <= day < end:
+            by_day[day] += 1
     return dict(by_day)
 
 

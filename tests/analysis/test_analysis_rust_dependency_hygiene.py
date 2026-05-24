@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -75,17 +76,20 @@ def test_summarize_geiger_picks_per_package_unsafe_counts() -> None:
     assert summary["packages"][0]["unsafe_function_count"] == 2
 
 
-def test_build_emits_caveat_when_machete_missing(monkeypatch) -> None:
+def test_build_emits_caveat_when_machete_missing(monkeypatch, tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
     monkeypatch.setattr(
         "lynchpin.analysis.interpretation.rust_dependency_hygiene.shutil.which",
         lambda _binary: None,
     )
-    monkeypatch.setattr(
-        "lynchpin.analysis.interpretation.rust_dependency_hygiene.load_json_if_exists",
-        lambda _path: None,
-    )
-    payload = build_active_rust_dependency_hygiene()
+    payload = build_active_rust_dependency_hygiene(snapshot_file=snapshot)
     assert any("cargo-machete" in c for c in payload["caveats"])
+
+
+def test_build_requires_project_snapshot(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
+        build_active_rust_dependency_hygiene(snapshot_file=tmp_path / "missing.json")
 
 
 def test_build_skips_non_rust_workspaces(monkeypatch, tmp_path: Path) -> None:
@@ -95,16 +99,14 @@ def test_build_skips_non_rust_workspaces(monkeypatch, tmp_path: Path) -> None:
     rust.mkdir()
     (rust / "Cargo.toml").write_text("[package]\nname='x'\nversion='0.1.0'\n")
 
-    snapshot = {
+    snapshot_payload = {
         "projects": [
             {"project": "py-only", "path": str(not_rust)},
             {"project": "real-rust", "path": str(rust)},
         ]
     }
-    monkeypatch.setattr(
-        "lynchpin.analysis.interpretation.rust_dependency_hygiene.load_json_if_exists",
-        lambda _path: snapshot,
-    )
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps(snapshot_payload), encoding="utf-8")
 
     # Stub out actual tool execution
     monkeypatch.setattr(
@@ -120,7 +122,7 @@ def test_build_skips_non_rust_workspaces(monkeypatch, tmp_path: Path) -> None:
         fake_run,
     )
 
-    payload = build_active_rust_dependency_hygiene()
+    payload = build_active_rust_dependency_hygiene(snapshot_file=snapshot)
     project_names = {row["project"] for row in payload["workspaces"]}
     assert project_names == {"real-rust"}
 
@@ -140,21 +142,18 @@ def test_machete_runs_against_synthetic_workspace(tmp_path: Path) -> None:
         '[dependencies]\nserde = "1"\n'
     )
 
-    snapshot = {"projects": [{"project": "demo", "path": str(workspace)}]}
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps({"projects": [{"project": "demo", "path": str(workspace)}]}),
+        encoding="utf-8",
+    )
 
-    import lynchpin.analysis.interpretation.rust_dependency_hygiene as mod
-
-    orig = mod.load_json_if_exists
-    mod.load_json_if_exists = lambda _path: snapshot
+    # cargo-machete may need `cargo` on PATH for metadata; if cargo is missing,
+    # the live tool cannot produce candidates.
     try:
-        # cargo-machete may need `cargo` on PATH for metadata; fall back to no
-        # candidates if cargo is missing.
-        try:
-            payload = build_active_rust_dependency_hygiene()
-        except subprocess.CalledProcessError:
-            pytest.skip("cargo not on PATH")
-    finally:
-        mod.load_json_if_exists = orig
+        payload = build_active_rust_dependency_hygiene(snapshot_file=snapshot)
+    except subprocess.CalledProcessError:
+        pytest.skip("cargo not on PATH")
 
     rows = payload["workspaces"]
     assert rows and rows[0]["project"] == "demo"

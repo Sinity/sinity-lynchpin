@@ -73,8 +73,8 @@ def test_build_emits_caveat_when_semgrep_missing(monkeypatch, tmp_path: Path) ->
         lambda: None,
     )
     monkeypatch.setattr(
-        "lynchpin.analysis.interpretation.semantic_static_findings.load_json_if_exists",
-        lambda _path: None,
+        "lynchpin.analysis.interpretation.semantic_static_findings.load_json_object",
+        lambda _path, **_kwargs: {},
     )
     payload = build_active_semantic_static_findings(
         repo_root=tmp_path,
@@ -113,8 +113,8 @@ def test_payload_carries_methodology_and_inputs(monkeypatch, tmp_path: Path) -> 
         lambda: None,
     )
     monkeypatch.setattr(
-        "lynchpin.analysis.interpretation.semantic_static_findings.load_json_if_exists",
-        lambda _path: None,
+        "lynchpin.analysis.interpretation.semantic_static_findings.load_json_object",
+        lambda _path, **_kwargs: {},
     )
     payload = build_active_semantic_static_findings(repo_root=tmp_path)
     assert "methodology" in payload

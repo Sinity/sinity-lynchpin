@@ -14,11 +14,10 @@ from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
 from .evidence_graph import build_evidence_graph
 from .evidence_views import render_evidence_relations, render_evidence_timeline
-from .semantic_enrichment import SemanticEnrichment, build_semantic_enrichment, render_semantic_summary
+from .weak_tags import WeakTagEnrichment, build_weak_tags, render_weak_tag_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
 
-ContextPackMode = Literal["local-fast", "local-heavy", "network"]
 SubstrateGraphStatus = Literal[
     "disabled",
     "exact_hit",
@@ -53,10 +52,10 @@ class ContextPack:
     start: datetime
     end: datetime
     generated_at: datetime
-    mode: ContextPackMode
+    mode: str
     graph: EvidenceGraph
     substrate_state: ContextPackSubstrateState
-    semantic_enrichment: SemanticEnrichment | None
+    weak_tags: WeakTagEnrichment | None
     evidence_pack: CurrentStateEvidencePack
     dataset_correlations: tuple[DatasetCorrelation, ...]
     claims: tuple[WorkEvidenceClaim, ...]
@@ -72,20 +71,19 @@ def context_pack(
     start: datetime,
     end: datetime,
     projects: Sequence[str] | None = None,
-    mode: ContextPackMode = "local-fast",
-    semantic: bool = False,
-    persist_semantic: bool = False,
+    include_github_frontier: bool = False,
+    weak_tags: bool = False,
+    persist_weak_tags: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
     prefer_substrate: bool = False,
     refresh_substrate: bool = False,
 ) -> ContextPack:
-    """Build an LLM-facing context pack with explicit mode/caveats."""
+    """Build an LLM-facing context pack with explicit substrate state."""
     graph = None
     substrate_caveat = None
     refresh_id = _current_state_refresh_id(
         start=start.date(),
         end=end.date(),
-        mode=mode,
         projects=projects,
     )
     substrate_state = ContextPackSubstrateState(
@@ -109,7 +107,6 @@ def context_pack(
             start=start.date(),
             end=end.date(),
             projects=projects,
-            mode=mode,
             refresh_id=refresh_id,
         )
     if graph is None:
@@ -124,7 +121,7 @@ def context_pack(
             start=start.date(),
             end=end.date(),
             projects=projects,
-            mode=mode,
+            include_github_frontier=include_github_frontier,
             exclude_analysis_artifacts=exclude_analysis_artifacts,
         )
         if substrate_caveat is not None:
@@ -140,8 +137,8 @@ def context_pack(
         start=start,
         end=end,
         projects=projects,
-        semantic=semantic,
-        persist_semantic=persist_semantic,
+        weak_tags=weak_tags,
+        persist_weak_tags=persist_weak_tags,
         substrate_state=substrate_state,
     )
 
@@ -151,7 +148,6 @@ def _load_substrate_graph(
     start: date,
     end: date,
     projects: Sequence[str] | None,
-    mode: ContextPackMode,
     refresh_id: str,
 ) -> tuple[EvidenceGraph | None, EvidenceCaveat | None, ContextPackSubstrateState]:
     """Load a previously materialized graph from DuckDB when available."""
@@ -181,7 +177,6 @@ def _load_substrate_graph(
                 conn,
                 start=start,
                 end=end,
-                mode=mode,
                 projects=tuple(projects) if projects else None,
             )
     except Exception as exc:
@@ -209,11 +204,10 @@ def _current_state_refresh_id(
     *,
     start: date,
     end: date,
-    mode: ContextPackMode,
     projects: Sequence[str] | None,
 ) -> str:
     project_key = ",".join(sorted(projects or ())) if projects else "all"
-    return f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
+    return f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
 
 
 def _materialize_context_graph(
@@ -237,8 +231,8 @@ def graph_context_pack(
     start: datetime,
     end: datetime,
     projects: Sequence[str] | None = None,
-    semantic: bool = False,
-    persist_semantic: bool = False,
+    weak_tags: bool = False,
+    persist_weak_tags: bool = False,
     substrate_state: ContextPackSubstrateState | None = None,
 ) -> ContextPack:
     """Build a context pack from a prebuilt evidence graph."""
@@ -248,7 +242,6 @@ def graph_context_pack(
         projects=projects,
         include_github_frontier=graph.mode == "network",
         graph=graph,
-        mode=graph.mode,
     )
     slices = _project_slices(evidence_pack.work_correlations, projects=projects)
     dataset_rows = dataset_correlations(graph, limit=16)
@@ -267,7 +260,7 @@ def graph_context_pack(
             refresh_id=None,
             message="Context pack was built from a provided graph.",
         ),
-        semantic_enrichment=build_semantic_enrichment(graph, persist=persist_semantic) if semantic else None,
+        weak_tags=build_weak_tags(graph, persist=persist_weak_tags) if weak_tags else None,
         evidence_pack=evidence_pack,
         dataset_correlations=dataset_rows,
         claims=claims,
@@ -294,7 +287,7 @@ def render_context_pack(pack: ContextPack) -> str:
     lines = [
         f"# Context Pack ({pack.start.date().isoformat()} → {pack.end.date().isoformat()})",
         "",
-        f"- Mode: `{pack.mode}`",
+        f"- Evidence profile: `{pack.mode}`",
         f"- Generated: {pack.generated_at.isoformat(timespec='seconds')}",
         f"- Substrate graph: `{pack.substrate_state.status}` — {pack.substrate_state.message}",
         "",
@@ -334,22 +327,25 @@ def render_context_pack(pack: ContextPack) -> str:
                 lines.append(f"- {n.date.isoformat()} — {n.summary}")
             lines.append("")
         if pack.salient_chains:
-            lines.append("**Causal chains:**")
+            lines.append("**Temporal evidence chains:**")
             for c in pack.salient_chains:
                 lines.append(f"- {c.date.isoformat()} — {c.summary} (confidence {c.confidence:.0%})")
             lines.append("")
-    if pack.semantic_enrichment is not None:
+    if pack.weak_tags is not None:
         lines.extend(
             [
-                "## Semantic Enrichment",
+                "## Weak Evidence Tags",
                 "",
-                render_semantic_summary(pack.semantic_enrichment),
+                render_weak_tag_summary(pack.weak_tags),
                 "",
             ]
         )
     work_event_section = _render_work_event_coverage(pack.graph)
     if work_event_section:
         lines.extend(["## AI Work-Event Coverage", "", work_event_section, ""])
+    content_section = _render_content_metadata_coverage(start=pack.start.date(), end=pack.end.date())
+    if content_section:
+        lines.extend(["## Content Metadata Coverage", "", content_section, ""])
     closure_section = _render_issue_closure_chains(pack.graph)
     if closure_section:
         lines.extend(["## Issue Closure Chains", "", closure_section, ""])
@@ -464,18 +460,18 @@ def _render_work_event_coverage(graph: EvidenceGraph, *, max_chains: int = 6) ->
         payload = node.payload or {}
         kind = payload.get("kind") or "unknown"
         # Arc K.3 tier maps directly to render decoration:
-        #   low    → "?kind"  (heuristic, single-feature, or sub-0.5 confidence)
-        #   medium → "kind"
-        #   high   → "kind"   (agreement or strong overlay features)
-        # If tier is missing (older payloads), fall back to confidence threshold.
+        #   low    -> "?kind"  (heuristic, single-feature, or sub-0.5 confidence)
+        #   medium -> "kind"
+        #   high   -> "kind"   (agreement or strong overlay features)
+        # Missing tiers are rendered as uncertain rather than inferred from an
+        # older confidence-only payload.
         tier = payload.get("kind_tier")
         if tier == "low":
             rendered_kind = f"?{kind}"
         elif tier in ("medium", "high"):
             rendered_kind = kind
         else:
-            confidence = float(payload.get("kind_confidence") or 0.0)
-            rendered_kind = kind if confidence >= 0.5 else f"?{kind}"
+            rendered_kind = f"?{kind}"
         key = (node.project, node.date.isoformat(), rendered_kind)
         by_project_day_kind[key] = by_project_day_kind.get(key, 0) + 1
 
@@ -561,6 +557,65 @@ def _render_project_relationships(graph: EvidenceGraph, *, limit: int = 12) -> s
     if not rel_graph.relationships:
         return ""
     return render_project_relationships(rel_graph, limit=limit)
+
+
+def _render_content_metadata_coverage(*, start: date, end: date) -> str:
+    from ..materialization import materialized_window_overlaps
+    from ..sources.activity_content import iter_activity_content_days, iter_activity_title_usage
+
+    if not materialized_window_overlaps("activity_content", start=start, end=end):
+        return ""
+    days = [row for row in iter_activity_content_days() if start <= row.date < end]
+    if not days:
+        return ""
+    focused = sum(row.focused_seconds for row in days)
+    matched = sum(row.matched_seconds for row in days)
+    gpt = sum(row.gpt_matched_seconds for row in days)
+    activity = _sum_seconds_buckets(row.activity_seconds for row in days)
+    topics = _sum_seconds_buckets(row.topic_seconds for row in days)
+    content = _sum_seconds_buckets(row.content_type_seconds for row in days)
+    unmatched = [
+        row
+        for row in iter_activity_title_usage()
+        if not row.matched
+        and row.first_date is not None
+        and row.last_date is not None
+        and row.first_date < end
+        and row.last_date >= start
+    ]
+    unmatched.sort(key=lambda row: row.focused_seconds, reverse=True)
+    lines = [
+        f"- Days covered: {len(days)}",
+        f"- Focused hours: {focused / 3600:.1f}",
+        f"- Title metadata coverage: {(matched / focused):.1%}" if focused else "- Title metadata coverage: 0.0%",
+        f"- GPT-classified coverage: {(gpt / focused):.1%}" if focused else "- GPT-classified coverage: 0.0%",
+        f"- Top activities: {_format_seconds_buckets(activity)}",
+        f"- Top topics: {_format_seconds_buckets(topics)}",
+        f"- Top content types: {_format_seconds_buckets(content)}",
+    ]
+    if unmatched:
+        lines.append("- Top unmatched titles:")
+        for row in unmatched[:5]:
+            title = row.normalized_title.replace("\n", " ")[:96]
+            lines.append(f"  - {row.focused_seconds / 3600:.1f}h {row.app}: {title}")
+    return "\n".join(lines)
+
+
+def _sum_seconds_buckets(rows: Iterable[dict[str, float]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for row in rows:
+        for key, value in row.items():
+            totals[key] = totals.get(key, 0.0) + float(value)
+    return totals
+
+
+def _format_seconds_buckets(values: Mapping[str, float], *, limit: int = 5) -> str:
+    if not values:
+        return "-"
+    return ", ".join(
+        f"{label} {seconds / 3600:.1f}h"
+        for label, seconds in sorted(values.items(), key=lambda item: item[1], reverse=True)[:limit]
+    )
 
 
 def _render_machine_analysis_artifacts(
@@ -816,7 +871,6 @@ def _pack_caveats(*, evidence_pack: CurrentStateEvidencePack, graph: EvidenceGra
 
 __all__ = [
     "ContextPack",
-    "ContextPackMode",
     "ProjectContextSlice",
     "context_pack",
     "graph_context_pack",

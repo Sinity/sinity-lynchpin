@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ..analysis.core.git import run_git
-from ..core.evidence import CostClass, SourceReadinessReport
+from ..core.evidence import SourceReadinessReport
 from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import ALL_PROJECTS
 from ..core.projects import canonical_project_name
@@ -189,13 +189,11 @@ def current_state_evidence_pack(
     projects: Sequence[str] | None = None,
     include_github_frontier: bool = False,
     graph: EvidenceGraph | None = None,
-    mode: CostClass | None = None,
 ) -> CurrentStateEvidencePack:
     """Build a compact evidence pack for current-state analysis."""
     start_date = start.date()
     end_date = end.date()
-    effective_mode: CostClass = mode or (graph.mode if graph is not None else "network" if include_github_frontier else "local-fast")
-    include_github = include_github_frontier or effective_mode == "network"
+    include_github = include_github_frontier or (graph is not None and graph.mode == "network")
     selected = _selected_projects(projects)
     inventory_source = _selected_project_inventory(selected) if selected else active_project_inventory()
     inventory = _filter_inventory(inventory_source, selected=selected)
@@ -203,7 +201,7 @@ def current_state_evidence_pack(
         start=start_date,
         end=end_date,
         projects=projects,
-        mode=effective_mode,
+        include_github_frontier=include_github_frontier,
     )
     correlations = work_day_correlations(
         start=start_date,
@@ -214,9 +212,9 @@ def current_state_evidence_pack(
     readiness = source_readiness(
         start=start_date,
         end=end_date,
-        include_heavy_counts=effective_mode != "local-fast",
+        include_polylogue_product_counts=True,
         include_github_frontier=include_github,
-        include_analysis_inventory=effective_mode != "local-fast",
+        include_analysis_inventory=True,
     )
     return CurrentStateEvidencePack(
         start=start,

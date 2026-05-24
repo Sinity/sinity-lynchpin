@@ -41,7 +41,7 @@ def add_raw_log(
                         "text": entry.text,
                     },
                     provenance=EvidenceProvenance(
-                        "raw_log", "local-fast", path=entry.source_path
+                        "raw_log", "materialized", path=entry.source_path
                     ),
                 )
             )

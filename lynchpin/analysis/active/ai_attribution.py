@@ -120,7 +120,7 @@ def build_active_ai_attribution(
     caveats: list[str] = []
     if not session_windows:
         caveats.append(
-            "no polylogue session profiles in window; attribution will fall back to 'none' for all commits"
+            "no polylogue session profiles in window; commits are marked 'none' only for this join surface"
         )
     if not commit_payload.get("commits"):
         caveats.append("commit_fact substrate table is empty for the selected window")

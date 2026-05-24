@@ -5,12 +5,8 @@ from __future__ import annotations
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
 import typer
-
-ContextPackMode = Literal["local-fast", "local-heavy", "network"]
-
 
 def narrate(*args: object, **kwargs: object) -> object:
     from ..graph.narrative import narrate as impl
@@ -28,17 +24,12 @@ def _parse_date(value: str) -> date:
 def _narrative_command(
     start: str = typer.Option(..., "--start", help="Start logical date (YYYY-MM-DD)"),
     end: str = typer.Option(..., "--end", help="End logical date (YYYY-MM-DD)"),
-    mode: str = typer.Option("local-fast", "--mode", help="Context-pack cost mode"),
     project: list[str] = typer.Option(None, "--project", help="Restrict narrative to project; repeatable"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write Markdown to this path"),
     json_output: Path | None = typer.Option(None, "--json-output", help="Write structured JSON to this path"),
     moment_limit: int = typer.Option(24, "--moment-limit", min=1),
     min_score: float = typer.Option(1.5, "--min-score"),
 ) -> None:
-    if mode not in {"local-fast", "local-heavy", "network"}:
-        raise typer.BadParameter(
-            f"argument --mode: invalid choice: {mode!r} (choose from 'local-fast', 'local-heavy', 'network')"
-        )
     start_d = _parse_date(start)
     end_d = _parse_date(end)
     if end_d < start_d:
@@ -47,7 +38,6 @@ def _narrative_command(
         start=start_d,
         end=end_d,
         projects=list(project or []),
-        mode=mode,  # type: ignore[arg-type]
         moment_limit=moment_limit,
         min_score=min_score,
         out=str(output) if output else None,

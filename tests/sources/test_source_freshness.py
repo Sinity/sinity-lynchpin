@@ -156,3 +156,41 @@ def test_source_freshness_cache_key_tracks_config_roots(monkeypatch) -> None:
     assert second[0].basis == "/tmp/lynchpin-local-b"
     assert calls == 2
     freshness._cached_source_freshness.cache_clear()
+
+
+def test_source_freshness_prefers_materialized_dates(monkeypatch, tmp_path) -> None:
+    from lynchpin.materialization import MaterializedDataset
+
+    source_path = tmp_path / "spotify.ndjson"
+    rows = [
+        MaterializedDataset(
+            name="spotify",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(source_path,),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2020, 1, 1),
+            last_date=date(2025, 12, 18),
+            refresh_command="refresh",
+            reason="ready",
+        )
+    ]
+    monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: rows)
+    monkeypatch.setattr(
+        freshness,
+        "get_config",
+        lambda: SimpleNamespace(available_sources=lambda: {"spotify": True}),
+    )
+
+    observed, basis, path = freshness._source_observed_date(
+        "spotify",
+        {},
+        freshness._materialized_last_dates(),
+        available=True,
+    )
+
+    assert observed == date(2025, 12, 18)
+    assert basis == "materialized"
+    assert path == source_path

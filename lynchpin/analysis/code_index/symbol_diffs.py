@@ -10,8 +10,8 @@ Emits per (commit, path, symbol): ``lines_added``, ``lines_removed``,
 plus the breaking-candidate flag for exported symbols whose containing
 file was deleted or renamed.
 
-Falls back to empty results with a caveat when the symbol index is
-empty (tree-sitter grammars missing). Skips the commit if it has no
+Returns empty results with a caveat when the symbol index product is
+valid but empty (tree-sitter grammars missing). Skips the commit if it has no
 indexed symbols in any of its changed paths.
 """
 
@@ -26,7 +26,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _HUNK_RE = re.compile(
@@ -49,12 +49,18 @@ def build_active_symbol_diffs(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    commit_payload = _dict(load_json_if_exists(
-        commit_facts_file or resolve_analysis_path("active_commit_facts.json")))
-    index_payload = _dict(load_json_if_exists(
-        symbol_index_file or resolve_analysis_path("active_symbol_index.json")))
-    snapshot_payload = _dict(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
+    commit_payload = load_json_object(
+        commit_facts_file or resolve_analysis_path("active_commit_facts.json"),
+        label="active commit facts",
+    )
+    index_payload = load_json_object(
+        symbol_index_file or resolve_analysis_path("active_symbol_index.json"),
+        label="active symbol index",
+    )
+    snapshot_payload = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
 
     selected = set(projects or ())
     project_paths = _project_paths(snapshot_payload, selected)
@@ -64,7 +70,7 @@ def build_active_symbol_diffs(
     if not symbols_by_path:
         caveats.append(
             "active_symbol_index has no usable symbols (likely tree-sitter grammars missing); "
-            "no diff intersection possible — falling back to empty result"
+            "no diff intersection possible"
         )
         return {
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -356,10 +362,6 @@ def _methodology() -> dict[str, Any]:
         "breaking_candidate": "exported symbol whose change_type begins with D (delete) or R (rename)",
         "limits": f"capped at {_MAX_COMMITS_PER_PROJECT} most-recent commits per project",
     }
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = ["build_active_symbol_diffs", "run_active_symbol_diffs"]

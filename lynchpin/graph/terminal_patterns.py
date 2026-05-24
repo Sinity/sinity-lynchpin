@@ -241,8 +241,8 @@ def _exit_code(cmd) -> int | None:
 
 
 def _command_prefix(cmd) -> str:
-    full = str(getattr(cmd, "command", ""))
-    return full.split()[0] if full else "?"
+    parts = str(getattr(cmd, "command", "")).split()
+    return parts[0] if parts else "?"
 
 
 def _cmd_duration(cmd) -> float | None:

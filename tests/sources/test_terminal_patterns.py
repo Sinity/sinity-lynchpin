@@ -77,6 +77,28 @@ def test_detect_retry_spiral(monkeypatch):
     assert "cargo" in rs[0].summary
 
 
+def test_detect_retry_spiral_tolerates_blank_commands(monkeypatch):
+    base = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
+    cmds = [
+        _cmd(base, "   ", exit_code=1),
+        _cmd(base + timedelta(seconds=5), "\t", exit_code=1),
+        _cmd(base + timedelta(seconds=10), "", exit_code=1),
+    ]
+    monkeypatch.setattr(
+        "lynchpin.sources.terminal.shell_sessions",
+        lambda **k: [_session(base, base + timedelta(seconds=10), count=3, errors=3)],
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.terminal.commands",
+        lambda **k: iter(cmds),
+    )
+
+    patterns = detect_patterns(start=date(2026, 5, 7), end=date(2026, 5, 7))
+    rs = [p for p in patterns if p.kind == "retry_spiral"]
+    assert len(rs) == 1
+    assert rs[0].top_commands == ("?",)
+
+
 def test_detect_long_running(monkeypatch):
     base = datetime(2026, 5, 7, 12, 0, tzinfo=UTC)
     # 90s in nanoseconds

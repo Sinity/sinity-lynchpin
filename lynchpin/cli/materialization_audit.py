@@ -24,7 +24,8 @@ def main(
     ),
     require_ready: bool = typer.Option(
         False,
-        "--require-ready/",
+        "--require-ready",
+        "--strict",
         help="Exit non-zero if any known dataset is not fully materialized.",
     ),
 ) -> None:

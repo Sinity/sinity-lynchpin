@@ -173,6 +173,84 @@ def test_readiness_report_empty_substrate(tmp_path: Path, monkeypatch: pytest.Mo
     assert result["summary"]["trustworthy"] is False
 
 
+def test_personal_signal_tool_fails_when_backing_stage_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.personal import personal_daily_signals
+
+    with pytest.raises(RuntimeError, match="personal_daily_signals requires substrate table"):
+        personal_daily_signals()
+
+
+def test_promotion_runs_and_analysis_claim_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (
+                'rid-claims', 'ok', NULL, DATE '2026-05-01', DATE '2026-05-02',
+                'materialized', '{"analysis_claims":1}', TIMESTAMPTZ '2026-05-02 00:00:00+00',
+                TIMESTAMPTZ '2026-05-02 00:01:00+00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_run_step
+            (refresh_id, step, status, message, row_count, recorded_at)
+            VALUES (
+                'rid-claims', 'analysis_claims', 'ok', 'promoted claims', 1,
+                TIMESTAMPTZ '2026-05-02 00:01:00+00'
+            )
+            """
+        )
+        promote_analysis_claims(
+            conn,
+            refresh_id="rid-claims",
+            claims=[
+                AnalysisClaimRow(
+                    claim_id="claim:fixture",
+                    claim_type="supported_work",
+                    project="lynchpin",
+                    date=date(2026, 5, 1),
+                    support_level="strong",
+                    confidence=0.85,
+                    score=4.2,
+                    summary="fixture claim",
+                    source_ids=(),
+                    relation_ids=(),
+                    caveats=("fixture caveat",),
+                    payload={"source_count": 3},
+                )
+            ],
+        )
+
+    from lynchpin.mcp.tools.substrate import analysis_claims, claim_evidence, promotion_runs, substrate_run_steps
+
+    runs = promotion_runs(refresh_id="rid-claims")
+    steps = substrate_run_steps(refresh_id="rid-claims")
+    claims = analysis_claims(refresh_id="rid-claims")
+    evidence = claim_evidence("claim:fixture", refresh_id="rid-claims")
+
+    assert runs[0]["status"] == "ok"
+    assert steps[0]["step"] == "analysis_claims"
+    assert claims[0]["summary"] == "fixture claim"
+    assert claims[0]["caveats"] == ["fixture caveat"]
+    assert evidence["claim_id"] == "claim:fixture"
+
+
 def test_readiness_report_after_successful_promote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     from tests.mcp.conftest import reload_config
@@ -203,6 +281,7 @@ def test_readiness_report_after_successful_promote(tmp_path: Path, monkeypatch: 
     assert result["substrate_version"] is not None
 
     by_source = {s["source"]: s for s in result["sources"]}
+    assert by_source["commits"]["kind"] == "stage"
     assert by_source["commits"]["status"] == "ok"
     assert by_source["commits"]["row_count"] == 1
     assert by_source["file_changes"]["status"] == "empty"

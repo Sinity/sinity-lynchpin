@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from lynchpin.analysis.frontier.pr_review_topology import (
     build_active_pr_review_topology,
 )
@@ -265,3 +267,12 @@ def test_empty_items_yields_zero_summary():
     assert payload["summary"]["pr_count"] == 0
     assert payload["prs"] == []
     assert payload["projects"] == []
+
+
+def test_missing_project_snapshot_is_not_treated_as_empty(tmp_path):
+    with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
+        build_active_pr_review_topology(
+            snapshot_file=tmp_path / "missing.json",
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 7),
+        )

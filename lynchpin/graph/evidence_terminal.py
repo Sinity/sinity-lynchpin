@@ -45,7 +45,7 @@ def add_terminal(
                     "category": session.category,
                     "commands_summary": list(session.commands_summary),
                 },
-                provenance=EvidenceProvenance("terminal", "local-fast"),
+                provenance=EvidenceProvenance("terminal", "materialized"),
             )
         )
 
@@ -71,6 +71,6 @@ def add_terminal(
                     "top_commands": pattern.top_commands,
                     "confidence": pattern.confidence,
                 },
-                provenance=EvidenceProvenance("terminal", "local-fast"),
+                provenance=EvidenceProvenance("terminal", "materialized"),
             )
         )

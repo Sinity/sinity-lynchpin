@@ -18,7 +18,8 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
 
     def fake_context_pack(**kwargs):
         calls.update(kwargs)
-        return _FakePack(start=kwargs["start"], mode=kwargs["mode"], projects=tuple(kwargs["projects"] or ()))
+        mode = "network" if kwargs.get("include_github_frontier") else "materialized"
+        return _FakePack(start=kwargs["start"], mode=mode, projects=tuple(kwargs["projects"] or ()))
 
     monkeypatch.setattr(current_state, "context_pack", fake_context_pack)
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: f"# pack {pack.mode}")
@@ -37,23 +38,20 @@ def test_run_current_state_analysis_materializes_json_and_markdown(monkeypatch, 
         out_file=out,
         markdown_out=markdown_out,
         projects=("lynchpin",),
-        mode="local-heavy",
-        semantic=True,
-        persist_semantic=True,
+        weak_tags=True,
+        persist_weak_tags=True,
     )
 
     assert calls["start"].date() == date(2026, 5, 1)
     assert calls["end"].date() == date(2026, 5, 5)
-    assert calls["mode"] == "local-heavy"
     assert calls["projects"] == ("lynchpin",)
-    assert calls["semantic"] is True
-    assert calls["persist_semantic"] is True
+    assert calls["weak_tags"] is True
+    assert calls["persist_weak_tags"] is True
     assert calls["exclude_analysis_artifacts"] == current_state.CURRENT_STATE_ARTIFACT_NAMES
     assert payload["projects"] == ["lynchpin"]
     assert json.loads(out.read_text(encoding="utf-8"))["projects"] == ["lynchpin"]
-    assert markdown_out.read_text(encoding="utf-8") == "# pack local-heavy\n"
+    assert markdown_out.read_text(encoding="utf-8") == "# pack materialized\n"
     assert promoted["graph"] == "graph"
-    assert promoted["mode"] == "local-heavy"
     assert promoted["projects"] == ("lynchpin",)
 
 
@@ -62,7 +60,7 @@ def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch,
     monkeypatch.setattr(
         current_state,
         "context_pack",
-        lambda **kwargs: calls.update(kwargs) or _FakePack(start=kwargs["start"], mode=kwargs["mode"], projects=()),
+        lambda **kwargs: calls.update(kwargs) or _FakePack(start=kwargs["start"], mode="network", projects=()),
     )
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: "# pack")
     monkeypatch.setattr(current_state, "_promote_current_state_graph", lambda *args, **kwargs: None)
@@ -74,4 +72,4 @@ def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch,
         include_github_frontier=True,
     )
 
-    assert calls["mode"] == "network"
+    assert calls["include_github_frontier"] is True

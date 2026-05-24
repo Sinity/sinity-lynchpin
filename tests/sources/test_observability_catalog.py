@@ -32,7 +32,18 @@ def test_observability_catalog_keeps_operational_views_out_of_canonical_data():
     assert below.substrate_table is None
     assert "bounded windows" in below.next_action
     assert observe.layer == "operational_view"
+    assert observe.path is not None
+    assert observe.path.name == "sinnix-observe"
     assert observe.retention == "not a canonical dataset"
+
+
+def test_observability_catalog_tracks_sinnix_inventory_as_reference_only():
+    contract = observability_input_by_id("machine.sinnix_runtime_inventory")
+
+    assert contract.integration_state == "reference_only"
+    assert contract.substrate_table is None
+    assert contract.path is not None
+    assert contract.path.name == "runtime-inventory.json"
 
 
 def test_observability_catalog_tracks_pending_promotions():

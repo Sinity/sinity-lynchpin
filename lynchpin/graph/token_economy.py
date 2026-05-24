@@ -12,8 +12,8 @@ Design notes:
 - Reads ``conversation_transcripts(start, end)`` for token counts and
   ``session_profiles_for_date`` for project/kind attribution. Both flow
   from the durable Polylogue product tables (Arc 0 ready).
-- Project attribution uses the same fallback chain as the evidence graph:
-  session profile's ``work_event_projects`` first, then any project hint
+- Project attribution follows the evidence graph's typed projection order:
+  session profile ``work_event_projects`` first, then explicit project hints
   derived from the title.
 - Kind attribution uses the session-level ``work_event_kind`` only — Arc K
   tier weighting belongs to per-event consumers, not to bulk token counts.

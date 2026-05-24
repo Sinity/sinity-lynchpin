@@ -235,12 +235,13 @@ def promote_ai_work_events(
             ev.summary or None,
         )
 
+    events_by_id = {ev.event_id: ev for ev in events}
     return promote_rows(
         conn,
         table="ai_work_event",
         columns=_AI_WORK_EVENT_COLUMNS,
         refresh_id=refresh_id,
-        rows=events,
+        rows=events_by_id.values(),
         extractor=extract,
     )
 

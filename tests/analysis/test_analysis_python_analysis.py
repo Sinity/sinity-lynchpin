@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from lynchpin.analysis.code_index.python_analysis import (
     build_active_python_complexity,
     build_active_python_import_graph,
@@ -120,3 +122,8 @@ def branchy(value):
     functions = project["files"][0]["functions"]
     assert [row["name"] for row in functions] == ["simple", "branchy"]
     assert functions[1]["complexity"] > functions[0]["complexity"]
+
+
+def test_python_import_graph_requires_project_snapshot(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
+        build_active_python_import_graph(snapshot_file=tmp_path / "missing.json")

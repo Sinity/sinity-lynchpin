@@ -74,6 +74,24 @@ def _discover_takeout_chrome_archives() -> list[Path]:
     return list(discover_takeout_archives())
 
 
+def _discover_manual_history_exports() -> list[Path]:
+    """Return ad hoc browser history exports staged in the user's download dirs."""
+    candidates: list[Path] = []
+    for root in (
+        Path.home() / "Downloads",
+        Path.home() / "downloads",
+        Path.home() / "Download",
+        Path.home() / "download",
+    ):
+        if not root.is_dir():
+            continue
+        for name in ("history.json", "history.csv"):
+            path = root / name
+            if path.is_file():
+                candidates.append(path)
+    return candidates
+
+
 def extract_browser_data(
     *,
     raw_dir: Path | None = None,
@@ -106,6 +124,13 @@ def extract_browser_data(
         report["kind"] = "takeout_chrome_archive"
         report["archive"] = str(batch.archive)
         report["member"] = batch.member
+        reports.append(report)
+
+    for path in _discover_manual_history_exports():
+        visits = list(iter_file_visits(path))
+        report = _write_raw_batch(raw_dir, f"manual_{path.name}", visits, dry_run=dry_run)
+        report["kind"] = "manual_history_export"
+        report["source_path"] = str(path)
         reports.append(report)
 
     return reports
@@ -299,6 +324,7 @@ def build_full_history(
     seen: dict[tuple[str, datetime], bool] = {}
     row_count = 0
     duplicate_count = 0
+    output_source_counts: dict[str, int] = {}
 
     handle = None if dry_run else output.open("w", encoding="utf-8")
     try:
@@ -330,6 +356,7 @@ def build_full_history(
                     + "\n"
                 )
             row_count += 1
+            output_source_counts[source] = output_source_counts.get(source, 0) + 1
     finally:
         if handle is not None:
             handle.close()
@@ -340,16 +367,53 @@ def build_full_history(
         "row_count": row_count,
         "duplicate_count": duplicate_count,
         "dry_run": dry_run,
+        "dedup_tolerance_seconds": tolerance_seconds,
+        "segments": _segment_inventory_from_visits(visits),
+        "source_counts": dict(sorted(output_source_counts.items())),
+    }
+    input_source_counts = {
+        row["path"]: int(row["input_visit_count"])
+        for row in report["segments"]
+        if isinstance(row.get("path"), str)
+    }
+    report["input_source_counts"] = dict(sorted(input_source_counts.items()))
+    report["source_duplicate_counts"] = {
+        source: max(count - output_source_counts.get(source, 0), 0)
+        for source, count in sorted(input_source_counts.items())
     }
     if visits:
         report["first_visit_at"] = visits[0][0].isoformat()
         report["last_visit_at"] = visits[-1][0].isoformat()
+        report["first_date"] = visits[0][0].date().isoformat()
+        report["last_date"] = visits[-1][0].date().isoformat()
     report["segment_count"] = len(_canonical_segment_files(data_dir))
 
     if not dry_run:
         _write_full_history_manifest(output, report)
 
     return report
+
+
+def _segment_inventory_from_visits(
+    visits: list[tuple[datetime, str, str, str]],
+) -> list[dict[str, Any]]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for timestamp, _url, _title, source in visits:
+        row = by_source.setdefault(
+            source,
+            {
+                "path": source,
+                "input_visit_count": 0,
+                "first_visit_at": timestamp.isoformat(),
+                "last_visit_at": timestamp.isoformat(),
+            },
+        )
+        row["input_visit_count"] += 1
+        if timestamp.isoformat() < row["first_visit_at"]:
+            row["first_visit_at"] = timestamp.isoformat()
+        if timestamp.isoformat() > row["last_visit_at"]:
+            row["last_visit_at"] = timestamp.isoformat()
+    return [by_source[source] for source in sorted(by_source)]
 
 
 def _canonical_segment_files(data_dir: Path) -> list[Path]:

@@ -211,10 +211,10 @@ def promote_artifact_sources(
                     row_count=0,
                 )
         else:
-            log.debug(
-                "substrate_promote: active_symbol_changes.json missing or empty — skipping"
-            )
             if not Path(symbol_changes_file).exists():
+                log.debug(
+                    "substrate_promote: active_symbol_changes.json unavailable"
+                )
                 record_source_status(
                     conn,
                     refresh_id=refresh_id,
@@ -224,6 +224,9 @@ def promote_artifact_sources(
                     row_count=0,
                 )
             else:
+                log.debug(
+                    "substrate_promote: active_symbol_changes.json has no symbol events"
+                )
                 record_source_status(
                     conn,
                     refresh_id=refresh_id,

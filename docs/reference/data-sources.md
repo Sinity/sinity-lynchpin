@@ -12,6 +12,7 @@ products are derived read models.
 | Raw capture/export | External service, Sinnix, or provider export | ActivityWatch DB, Atuin DB, Samsung exports, machine telemetry SQLite | Read in place; do not rewrite as part of analysis. |
 | Source API | `lynchpin.sources.*` | `activitywatch`, `terminal`, `polylogue`, `machine`, `health` | Typed Python access with provenance, caveats, and lazy parsing. |
 | Substrate table | `lynchpin.substrate.*` | `commit_fact`, `ai_work_event`, `machine_metric_sample` | Derived, rebuildable DuckDB read model with `refresh_id`. |
+| Derived product | `/realm/data/derived/lynchpin` | `personal/daily_signals.ndjson`, `spotify/daily.ndjson` | Cross-source canonical products materialized once, then copied into substrate/query surfaces. |
 | Analysis artifact | `lynchpin.analysis.*` | `project_velocity_windows.json`, `machine_telemetry_analysis.json` | Generated summaries under `.lynchpin/generated/analysis/`. |
 | Context pack | `lynchpin.graph.context_pack` | current-state packs and narratives | LLM-facing synthesis over graph/source evidence, not raw truth. |
 
@@ -30,7 +31,8 @@ products are derived read models.
 | `lynchpin.sources.substance` | processed substance CSV | dose entries and daily/monthly summaries |
 | `lynchpin.sources.web` | browser history captures/exports | visits, daily browsing, domain breakdowns |
 | `lynchpin.sources.takeout_chrome` | Google Takeout Chrome JSON | normalized web history visits |
-| `lynchpin.sources.google_takeout_products` | canonical Google Takeout product NDJSON | contacts, Keep notes, My Activity, purchases, Play Store, tasks, YouTube rows, asset inventory |
+| `lynchpin.sources.google_takeout_products` | canonical Google Takeout product NDJSON | typed contacts, Keep notes, My Activity, purchases, Play Store, tasks, YouTube rows, asset inventory, and timestamped daily activity events |
+| `lynchpin.sources.personal_signals` | `/realm/data/derived/lynchpin` | derived daily personal and Spotify signal products |
 | `lynchpin.sources.spotify` | Spotify processed exports | streams, listening sessions, daily listening |
 | `lynchpin.sources.reddit` | Reddit processed export | posts, comments, votes, daily activity |
 | `lynchpin.sources.exports` | Goodreads, Raindrop, Messenger, Wykop, notes exports | per-export iterators and daily summaries |
@@ -43,6 +45,9 @@ products are derived read models.
   second warehouse.
 - Substrate tables are rebuildable indexes. Schema changes may reset DuckDB;
   raw captures and source modules remain authoritative.
+- Cross-source daily products are materialized under `/realm/data/derived/lynchpin`
+  and consumed directly by snapshot/substrate promotion. Query-time promotion
+  should not re-scan all raw personal exports.
 - Generated analysis artifacts are evidence products. They are inventoried by
   `lynchpin.sources.analysis_artifacts` and can become graph nodes, but they do
   not override source-level facts.

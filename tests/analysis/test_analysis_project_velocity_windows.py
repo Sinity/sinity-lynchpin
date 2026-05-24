@@ -1,10 +1,42 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from lynchpin.analysis.interpretation.velocity_windows import build_project_velocity_windows
 from lynchpin.graph.work_correlation import CorrelatedWorkDay
+
+
+def test_project_velocity_windows_require_commit_facts(tmp_path: Path) -> None:
+    work_packages = tmp_path / "work_packages.json"
+    work_packages.write_text(json.dumps({"projects": []}), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="active commit facts is missing"):
+        build_project_velocity_windows(
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 2),
+            commit_facts_file=tmp_path / "missing.json",
+            work_packages_file=work_packages,
+            correlation_rows=(),
+        )
+
+
+def test_project_velocity_windows_require_work_packages(tmp_path: Path) -> None:
+    commit_facts = tmp_path / "commit_facts.json"
+    commit_facts.write_text(json.dumps({"projects": [], "commits": []}), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="active work packages is missing"):
+        build_project_velocity_windows(
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 2),
+            commit_facts_file=commit_facts,
+            work_packages_file=tmp_path / "missing.json",
+            correlation_rows=(),
+        )
 
 
 def test_project_velocity_windows_keep_dimensions_separate() -> None:
@@ -92,7 +124,7 @@ def test_project_velocity_windows_keep_dimensions_separate() -> None:
 
 def test_project_velocity_windows_builds_correlation_graph_without_analysis_artifacts(monkeypatch) -> None:
     calls = []
-    graph = SimpleNamespace(mode="local-fast")
+    graph = SimpleNamespace(mode="materialized")
 
     def fake_build_evidence_graph(**kwargs):
         calls.append(kwargs)
@@ -121,7 +153,7 @@ def test_project_velocity_windows_builds_correlation_graph_without_analysis_arti
     # The base graph builder doesn't accept (or need) an exclusion list —
     # it never adds analysis nodes by construction.
     assert "exclude_analysis_artifacts" not in calls[0]
-    assert calls[0]["mode"] == "local-fast"
+    assert "mode" not in calls[0]
 
 
 # ── package-level cross-source support tests ──

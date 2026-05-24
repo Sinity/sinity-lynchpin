@@ -332,7 +332,6 @@ def test_work_day_correlations_distinguish_local_refs_from_fetched_github_items(
         start=when.date(),
         end=when.date(),
         generated_at=when,
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="github:sinity-lynchpin:pr:3",
@@ -362,7 +361,6 @@ def test_work_day_correlations_do_not_infer_kind_from_ai_session() -> None:
         start=when.date(),
         end=when.date(),
         generated_at=when,
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="ai-session:1",
@@ -397,7 +395,6 @@ def test_work_day_correlations_use_event_level_ai_kind() -> None:
         start=when.date(),
         end=when.date(),
         generated_at=when,
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="ai-event:1",

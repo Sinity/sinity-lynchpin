@@ -79,3 +79,15 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
         f"GROUP BY refresh_id ORDER BY {order_expr} DESC LIMIT 1"
     ).fetchone()
     return row[0] if row else None
+
+
+def require_best_refresh_id(conn: Any, table: str, *, tool: str) -> str:
+    """Return a refresh id or raise instead of pretending missing data is empty."""
+    refresh_id = best_refresh_id(conn, table)
+    if refresh_id is None:
+        raise RuntimeError(
+            f"{tool} requires substrate table {table!r}, but no promoted rows exist. "
+            "Run `python -m lynchpin.cli.materialize --all --promote --start YYYY-MM-DD --end YYYY-MM-DD` "
+            "and inspect `contract_status` / `substrate_readiness_report`."
+        )
+    return refresh_id

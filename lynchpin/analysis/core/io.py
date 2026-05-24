@@ -12,6 +12,14 @@ from ...core.config import get_config
 T = TypeVar("T")
 
 
+class MissingAnalysisArtifact(FileNotFoundError):
+    """Required generated analysis artifact is absent."""
+
+
+class MalformedAnalysisArtifact(ValueError):
+    """Required generated analysis artifact is not a JSON object."""
+
+
 def repo_root() -> str:
     return str(get_config().repo_root)
 
@@ -48,6 +56,17 @@ def load_json_if_exists(path: str | PathLike[str]) -> Any | None:
     if not Path(path).exists():
         return None
     return load_json(path)
+
+
+def load_json_object(path: str | PathLike[str], *, label: str | None = None) -> dict[str, Any]:
+    target = Path(path)
+    name = label or str(target)
+    if not target.exists():
+        raise MissingAnalysisArtifact(f"{name} is missing: {target}")
+    payload = load_json(target)
+    if not isinstance(payload, dict):
+        raise MalformedAnalysisArtifact(f"{name} is not a JSON object: {target}")
+    return payload
 
 
 def save_json(path: str | PathLike[str], payload: Any, sort_keys: bool = False) -> None:
@@ -87,3 +106,8 @@ def load_analysis_artifact(
     if parser is None:
         return payload
     return parser(payload)
+
+
+def require_analysis_artifact(name: str) -> dict[str, Any]:
+    """Load a required analysis artifact as a JSON object or raise typed errors."""
+    return load_json_object(resolve_analysis_path(name), label=name)

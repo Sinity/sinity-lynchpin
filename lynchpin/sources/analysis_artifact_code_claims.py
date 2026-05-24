@@ -489,7 +489,7 @@ def _active_commit_semantics_claims(
         project = canonical_project_name(row.get("project"))
         if project is None or (selected and project not in selected):
             continue
-        ops = dict_or_empty(row.get("semantic_operations"))
+        ops = dict_or_empty(row.get("heuristic_operations") or row.get("semantic_operations"))
         impact = dict_or_empty(row.get("impact"))
         risk = list_or_empty(row.get("risk_flags"))
         top_ops = sorted(ops.items(), key=lambda x: -x[1])[:4]
@@ -510,7 +510,7 @@ def _active_commit_semantics_claims(
                     "short_sha": row.get("short_sha"),
                     "subject": row.get("subject"),
                     "conventional_kind": row.get("conventional_kind"),
-                    "semantic_operations": ops,
+                    "heuristic_operations": ops,
                     "impact": impact,
                     "risk_flags": risk,
                     "symbol_count": row.get("symbol_count"),

@@ -47,7 +47,7 @@ from ...sources.github import (
     fetch_pr,
     fetch_prs,
 )
-from ..core.io import resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)
@@ -332,8 +332,6 @@ def _resolve_repo_iter(
     start: date,
 ) -> Iterable[tuple[str, Iterable[GitHubItem]]]:
     """Resolve project → PR-iterable from active project snapshot or paths."""
-    from ..core.io import load_json_if_exists
-
     if repo_paths is not None:
         for path in repo_paths:
             project = path.name
@@ -342,7 +340,7 @@ def _resolve_repo_iter(
             yield project, _fetch_pr_items(path, start=start)
         return
 
-    payload = load_json_if_exists(snapshot_file) or {}
+    payload = load_json_object(snapshot_file, label="active project snapshot")
     projects = payload.get("projects") if isinstance(payload, dict) else []
     for row in projects or ():
         if not isinstance(row, dict):

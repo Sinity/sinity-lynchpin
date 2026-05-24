@@ -34,7 +34,7 @@ def _hydrate_provenance(prov: Any) -> "Any | None":
         return None
     return EvidenceProvenance(
         source=prov.get("source") or "",
-        cost=prov.get("cost") or "local-fast",
+        cost=prov.get("cost") or "materialized",
         path=prov.get("path"),
         generated_at=prov.get("generated_at"),
         note=prov.get("note"),
@@ -84,7 +84,6 @@ def list_evidence_graph_builds(
     *,
     start: date | None = None,
     end: date | None = None,
-    mode: str | None = None,
 ) -> list[dict[str, Any]]:
     """List metadata about stored builds without hydrating nodes/edges."""
     clauses: list[str] = []
@@ -96,10 +95,6 @@ def list_evidence_graph_builds(
     if end is not None:
         clauses.append("end_date = ?")
         params.append(end)
-    if mode is not None:
-        clauses.append("mode = ?")
-        params.append(mode)
-
     where = build_where(clauses, params)
     sql = f"""
         SELECT refresh_id, start_date, end_date, mode, projects,
@@ -263,14 +258,13 @@ def load_evidence_graph(
     refresh_id: str | None = None,
     start: date | None = None,
     end: date | None = None,
-    mode: str | None = None,
     projects: tuple[str, ...] | None = None,
 ) -> "Any | None":  # EvidenceGraph | None
     """Hydrate a previously-promoted EvidenceGraph from the substrate.
 
     Selection rules:
     - If refresh_id is given, return that exact build (or None if absent).
-    - Otherwise pick the most recent build matching (start, end, mode);
+    - Otherwise pick the most recent build covering (start, end);
       projects filter requires the stored projects array to contain ALL
       requested projects, or empty stored projects (= all).
     - Returns None when no matching build exists.
@@ -300,14 +294,11 @@ def load_evidence_graph(
         b_clauses: list[str] = []
         b_params: list[Any] = []
         if start is not None:
-            b_clauses.append("start_date = ?")
+            b_clauses.append("start_date <= ?")
             b_params.append(start)
         if end is not None:
-            b_clauses.append("end_date = ?")
+            b_clauses.append("end_date >= ?")
             b_params.append(end)
-        if mode is not None:
-            b_clauses.append("mode = ?")
-            b_params.append(mode)
         if projects:
             # Stored projects must contain ALL requested projects, or be empty (= all).
             b_clauses.append("(len(projects) = 0 OR list_has_all(projects, ?))")
@@ -470,51 +461,68 @@ def promote_evidence_graph(
 
     Returns: {"build": 1, "nodes": N, "edges": M}.
     """
-    # ── parent table: child DELETEs happen inside promote_rows; here we only
-    # need to clear the parent build row and INSERT the new one. The two
-    # child promote_rows() calls below handle their own DELETE/INSERT.
+    log.info(
+        "promote_evidence_graph: writing refresh_id=%s nodes=%d edges=%d",
+        refresh_id,
+        len(graph.nodes),
+        len(graph.edges),
+    )
+    # DuckDB 1.1 has primary-index limitations around delete-then-insert and
+    # cannot INSERT OR REPLACE rows containing LIST columns. Clear the small
+    # parent row before the bulk child-row transaction.
+    conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
+    conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [refresh_id])
     conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        caveats_json = json.dumps(
+            [
+                {"source": c.source, "status": c.status, "message": c.message}
+                for c in graph.caveats
+            ]
+        )
+        mode_str = graph.mode if isinstance(graph.mode, str) else str(graph.mode)
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build (
+                refresh_id, start_date, end_date, mode, projects,
+                node_count, edge_count, caveats, generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                refresh_id, graph.start, graph.end, mode_str, list(projects),
+                len(graph.nodes), len(graph.edges), caveats_json, graph.generated_at,
+            ],
+        )
 
-    caveats_json = json.dumps(
-        [
-            {"source": c.source, "status": c.status, "message": c.message}
-            for c in graph.caveats
-        ]
-    )
-    mode_str = graph.mode if isinstance(graph.mode, str) else str(graph.mode)
-    conn.execute(
-        """
-        INSERT INTO evidence_graph_build (
-            refresh_id, start_date, end_date, mode, projects,
-            node_count, edge_count, caveats, generated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            refresh_id, graph.start, graph.end, mode_str, list(projects),
-            len(graph.nodes), len(graph.edges), caveats_json, graph.generated_at,
-        ],
-    )
+        log.info("promote_evidence_graph: writing evidence_node rows")
+        node_count = promote_rows(
+            conn,
+            table="evidence_node",
+            columns=_EVIDENCE_NODE_COLUMNS,
+            refresh_id=refresh_id,
+            rows=graph.nodes,
+            extractor=_extract_node,
+            refresh_id_position="first",
+            delete_existing=False,
+        )
+        log.info("promote_evidence_graph: writing evidence_edge rows")
+        edge_count = promote_rows(
+            conn,
+            table="evidence_edge",
+            columns=_EVIDENCE_EDGE_COLUMNS,
+            refresh_id=refresh_id,
+            rows=graph.edges,
+            extractor=_extract_edge,
+            refresh_id_position="first",
+            delete_existing=False,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
-    node_count = promote_rows(
-        conn,
-        table="evidence_node",
-        columns=_EVIDENCE_NODE_COLUMNS,
-        refresh_id=refresh_id,
-        rows=graph.nodes,
-        extractor=_extract_node,
-        refresh_id_position="first",
-    )
-    edge_count = promote_rows(
-        conn,
-        table="evidence_edge",
-        columns=_EVIDENCE_EDGE_COLUMNS,
-        refresh_id=refresh_id,
-        rows=graph.edges,
-        extractor=_extract_edge,
-        refresh_id_position="first",
-    )
-
-    log.debug(
+    log.info(
         "promote_evidence_graph: refresh_id=%s nodes=%d edges=%d",
         refresh_id, node_count, edge_count,
     )

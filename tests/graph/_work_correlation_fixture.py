@@ -235,7 +235,7 @@ def _make_graph():
         start=date(2026, 5, 1),
         end=date(2026, 5, 5),
         generated_at=datetime(2026, 5, 6, tzinfo=UTC),
-        mode="local-fast",
+        mode="materialized",
         nodes=tuple(nodes),
         edges=tuple(edges),
         caveats=(),

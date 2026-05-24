@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections import Counter, defaultdict
 from datetime import date
 from typing import Any
@@ -11,9 +10,6 @@ from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
 from ..core.primitives import logical_date
 from .evidence_projects import include_project
-
-log = logging.getLogger(__name__)
-
 
 def iter_streams(*args: Any, **kwargs: Any) -> Any:
     from ..sources.spotify import iter_streams as impl
@@ -30,14 +26,11 @@ def daily_browsing(*args: Any, **kwargs: Any) -> Any:
 def add_web(
     nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]
 ) -> None:
-    try:
-        days = daily_browsing(start=start, end=end)
-    except FileNotFoundError:
-        log.warning("webhistory NDJSON not found - skipping web evidence nodes")
+    from ..materialization import materialized_window_overlaps
+
+    if not materialized_window_overlaps("webhistory", start=start, end=end):
         return
-    except Exception:
-        log.exception("daily_browsing failed - skipping web evidence nodes")
-        return
+    days = daily_browsing(start=start, end=end)
     for day in days:
         if day.visit_count == 0:
             continue
@@ -60,7 +53,7 @@ def add_web(
                     "top_domains": top_domains,
                     "top_titles": list(day.top_titles[:3]),
                 },
-                provenance=EvidenceProvenance("web", "local-fast"),
+                provenance=EvidenceProvenance("web", "materialized"),
                 caveats=(
                     EvidenceCaveat(
                         "web",
@@ -80,6 +73,10 @@ def add_spotify(
     selected: set[str],
 ) -> None:
     """Add listening-session evidence nodes from Spotify streaming history."""
+    from ..materialization import materialized_window_overlaps
+
+    if not materialized_window_overlaps("spotify", start=start, end=end):
+        return
     streams = list(iter_streams())
     if not streams:
         return
@@ -89,7 +86,7 @@ def add_spotify(
         if end_time is None:
             continue
         d = logical_date(end_time)
-        if start <= d <= end:
+        if start <= d < end:
             by_day[d].append(s)
 
     for d, day_streams in by_day.items():
@@ -117,7 +114,7 @@ def add_spotify(
                     "top_artists": [(a, c) for a, c in top_artists],
                     "top_tracks": [(t, c) for t, c in top_tracks],
                 },
-                provenance=EvidenceProvenance("spotify", "local-fast"),
+                provenance=EvidenceProvenance("spotify", "materialized"),
             )
         )
 

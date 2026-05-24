@@ -29,6 +29,7 @@ class LynchpinConfig:
     data_root: Path
     captures_root: Path
     exports_root: Path
+    derived_root: Path
     libraries_root: Path
     knowledgebase_root: Path
     knowledge_archive_root: Path
@@ -78,14 +79,10 @@ class LynchpinConfig:
     machine_telemetry_db: Path
     sinnix_generations_jsonl: Path
     borg_drill_jsonl: Path
+    sinnix_runtime_inventory_json: Path
     browser_bookmarks_root: Path
     arbtt_root: Path
     teams_root: Path
-    tortoisesvn_root: Path
-    software_inventory_root: Path
-    calibre_root: Path
-    onedrive_inventory_root: Path
-    singlefile_root: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -115,14 +112,9 @@ class LynchpinConfig:
             "irc": self.irc_root.exists(),
             "raw_log": self.raw_log_file.exists(),
             "machine": self.machine_telemetry_db.exists(),
+            "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "teams_logs": self.teams_root.exists(),
-            "tortoisesvn_logs": self.tortoisesvn_root.exists(),
-            "software_inventory": self.software_inventory_root.exists(),
-            "calibre": self.calibre_root.exists(),
-            "onedrive_inventory": self.onedrive_inventory_root.exists(),
-            "singlefile": self.singlefile_root.exists(),
         }
 
     @classmethod
@@ -131,6 +123,7 @@ class LynchpinConfig:
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm/data"))
         captures_root = Path(os.environ.get("LYNCHPIN_CAPTURES_ROOT", data_root / "captures"))
         exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
+        derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "derived/lynchpin"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
@@ -274,6 +267,10 @@ class LynchpinConfig:
             "LYNCHPIN_BORG_DRILL_JSONL",
             machine_capture_root / "borg_drill.jsonl",
         ))
+        sinnix_runtime_inventory_json = Path(os.environ.get(
+            "LYNCHPIN_SINNIX_RUNTIME_INVENTORY_JSON",
+            "/etc/sinnix/runtime-inventory.json",
+        ))
         browser_bookmarks_root = Path(os.environ.get(
             "LYNCHPIN_BROWSER_BOOKMARKS_ROOT",
             captures_root / "webhistory/bookmarks",
@@ -286,32 +283,11 @@ class LynchpinConfig:
             "LYNCHPIN_TEAMS_ROOT",
             captures_root / "comms/teams",
         ))
-        tortoisesvn_root = Path(os.environ.get(
-            "LYNCHPIN_TORTOISESVN_ROOT",
-            captures_root / "dev/tortoisesvn",
-        ))
-        software_inventory_root = Path(os.environ.get(
-            "LYNCHPIN_SOFTWARE_INVENTORY_ROOT",
-            captures_root / "machine/software",
-        ))
-        calibre_root = Path(os.environ.get(
-            "LYNCHPIN_CALIBRE_ROOT",
-            libraries_root / "books/calibre",
-        ))
-        onedrive_inventory_root = Path(os.environ.get(
-            "LYNCHPIN_ONEDRIVE_INVENTORY_ROOT",
-            libraries_root / "cloud-inventory/onedrive",
-        ))
-        singlefile_root = Path(os.environ.get(
-            "LYNCHPIN_SINGLEFILE_ROOT",
-            libraries_root / "web-content/singlefile",
-        ))
-
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
-            captures_root=captures_root, exports_root=exports_root, libraries_root=libraries_root,
+            captures_root=captures_root, exports_root=exports_root, derived_root=derived_root, libraries_root=libraries_root,
             knowledgebase_root=knowledgebase_root,
             knowledge_archive_root=knowledge_archive_root,
             repo_artefacts_root=repo_artefacts_root,
@@ -347,14 +323,10 @@ class LynchpinConfig:
             machine_telemetry_db=machine_telemetry_db,
             sinnix_generations_jsonl=sinnix_generations_jsonl,
             borg_drill_jsonl=borg_drill_jsonl,
+            sinnix_runtime_inventory_json=sinnix_runtime_inventory_json,
             browser_bookmarks_root=browser_bookmarks_root,
             arbtt_root=arbtt_root,
             teams_root=teams_root,
-            tortoisesvn_root=tortoisesvn_root,
-            software_inventory_root=software_inventory_root,
-            calibre_root=calibre_root,
-            onedrive_inventory_root=onedrive_inventory_root,
-            singlefile_root=singlefile_root,
         )
 
 
@@ -398,17 +370,15 @@ def resolve_latest_dated_dir(root: Path, ignore: Optional[set[str]] = None) -> O
     if not subdirs:
         return None
     dated: list[tuple[datetime, Path]] = []
-    fallback: list[Path] = []
     for path in subdirs:
         try:
             dated.append((datetime.strptime(path.name, "%Y-%m-%d"), path))
         except ValueError:
-            fallback.append(path)
+            continue
     if dated:
         dated.sort(key=lambda x: x[0], reverse=True)
         return dated[0][1]
-    fallback.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return fallback[0]
+    return None
 
 
 def _resolve_reddit_export(env_value: Optional[str], default_root: Path) -> Optional[Path]:

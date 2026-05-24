@@ -1,7 +1,7 @@
-"""Cross-source causal chain detection over evidence graph nodes.
+"""Cross-source temporal evidence chain detection over evidence graph nodes.
 
-Scans the evidence timeline for temporal sequences — not full causal
-inference, but temporal proximity chains with type filtering.
+Scans the evidence timeline for temporal sequences. These are temporal
+proximity chains with type filtering, not causal inference.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def detect_chains(
     *,
     max_gap_minutes: int = 60,
 ) -> tuple[CausalChain, ...]:
-    """Detect causal chains from evidence graph nodes."""
+    """Detect temporal evidence chains from evidence graph nodes."""
     timed_nodes = sorted(
         (n for n in nodes if _node_time(n) is not None),
         key=lambda n: _node_time(n),

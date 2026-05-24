@@ -36,6 +36,7 @@ def promote_rows(
     extractor: Callable[[T], tuple[Any, ...]],
     batch_size: int | None = None,
     refresh_id_position: RefreshIdPosition = "last",
+    delete_existing: bool = True,
 ) -> int:
     """INSERT rows into ``table``, idempotent on refresh_id.
 
@@ -60,7 +61,8 @@ def promote_rows(
 
     Returns the number of rows inserted (zero if ``rows`` was empty).
     """
-    conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
+    if delete_existing:
+        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
 
     if refresh_id_position == "first":
         column_list = ", ".join(("refresh_id", *columns))

@@ -24,7 +24,7 @@ import yaml
 
 from ...core.parse import parse_datetime
 from ...sources.github import repo_slug
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _WORKFLOW_GLOB = ".github/workflows"
@@ -44,8 +44,10 @@ def build_active_ci_health(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
     selected = set(projects or ())
     snapshot_projects = _project_paths(snapshot, selected)
 
@@ -342,10 +344,6 @@ def _project_paths(snapshot: dict[str, Any], selected: set[str]) -> dict[str, st
         if path:
             out[project] = path
     return out
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = ["build_active_ci_health", "run_active_ci_health"]

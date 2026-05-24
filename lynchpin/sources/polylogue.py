@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from functools import lru_cache
@@ -173,10 +174,15 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         and work_event_count > 0
         and not incomplete_entries
     ):
-        status = "ready"
-        reason = (
-            "materialized profile, day-summary, and work-event products are populated"
-        )
+        probe_error = _probe_required_insight_reads()
+        if probe_error is None:
+            status = "ready"
+            reason = (
+                "materialized profile, day-summary, and work-event products are populated"
+            )
+        else:
+            status = "degraded"
+            reason = f"required Polylogue insight read failed: {probe_error}"
     elif (
         report.total_conversations > 0
         or profile_count > 0
@@ -236,6 +242,29 @@ def _readiness_reason(entries: dict[str, Any]) -> str:
     return "; ".join(parts) if parts else "polylogue insight readiness is degraded"
 
 
+def _probe_required_insight_reads() -> str | None:
+    """Verify the same insight readers used by analysis can open their products."""
+    error: str | None = None
+    for attempt in range(3):
+        try:
+            from polylogue.insights.archive import (
+                DaySessionSummaryInsightQuery,
+                SessionProfileInsightQuery,
+                SessionWorkEventInsightQuery,
+            )
+
+            client = _polylogue_client()
+            client.list_session_profile_insights(SessionProfileInsightQuery(limit=1))
+            client.list_day_session_summary_insights(DaySessionSummaryInsightQuery(limit=1))
+            client.list_session_work_event_insights(SessionWorkEventInsightQuery(limit=1))
+            return None
+        except Exception as exc:
+            error = str(exc)
+            if attempt < 2:
+                time.sleep(0.5)
+    return error
+
+
 def _require_materialized_products() -> None:
     readiness = archive_readiness()
     if readiness.status != "ready":
@@ -262,9 +291,9 @@ def _profiles_from_facade() -> list[SessionProfile]:
     falls back to inference.support_level-aware heuristics are not used —
     the work_events list is the typed surface.
 
-    work_event_projects: prefer inference.repo_names (inferred canonical
-    names); fall back to evidence.repo_paths / cwd_paths via
-    _canonical_projects().
+    work_event_projects: use inference.repo_names when the product carries
+    canonical names, otherwise derive canonical names from the product's
+    evidence.repo_paths / cwd_paths via _canonical_projects().
     """
     _require_materialized_products()
     try:

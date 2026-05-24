@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _GUARDRAIL_CATEGORIES = {"test", "ci", "lint", "type", "benchmark", "config", "nix", "guardrail"}
@@ -48,8 +48,14 @@ def build_active_hotspots(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    changes_payload = _load_payload(file_changes_file or resolve_analysis_path("active_file_change_facts.json"))
-    snapshot_payload = _load_payload(snapshot_file or resolve_analysis_path("active_project_snapshot.json"))
+    changes_payload = _load_payload(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
+    snapshot_payload = _load_payload(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
 
     file_changes = _list(changes_payload, "file_changes")
     selected = set(projects or ())
@@ -156,8 +162,14 @@ def build_active_guardrails(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    changes_payload = _load_payload(file_changes_file or resolve_analysis_path("active_file_change_facts.json"))
-    snapshot_payload = _load_payload(snapshot_file or resolve_analysis_path("active_project_snapshot.json"))
+    changes_payload = _load_payload(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
+    snapshot_payload = _load_payload(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
 
     file_changes = _list(changes_payload, "file_changes")
     selected = set(projects or ())
@@ -283,9 +295,8 @@ def run_active_guardrails(
     return payload
 
 
-def _load_payload(path: str | PathLike[str]) -> dict[str, Any] | None:
-    payload = load_json_if_exists(path)
-    return payload if isinstance(payload, dict) else None
+def _load_payload(path: str | PathLike[str], *, label: str) -> dict[str, Any]:
+    return load_json_object(path, label=label)
 
 
 def _list(payload: dict[str, Any] | None, key: str) -> list[Any]:

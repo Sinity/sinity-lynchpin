@@ -28,7 +28,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _TIMEOUT_S = 300
 _PYPROJECT = "pyproject.toml"
@@ -61,10 +61,14 @@ def build_active_python_dependency_hygiene(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
-    import_graph = _dict(load_json_if_exists(
-        import_graph_file or resolve_analysis_path("active_python_import_graph.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
+    import_graph = load_json_object(
+        import_graph_file or resolve_analysis_path("active_python_import_graph.json"),
+        label="active Python import graph",
+    )
 
     selected = set(projects or ())
     snapshot_projects = _project_paths(snapshot, selected)
@@ -348,10 +352,6 @@ def _project_paths(snapshot: dict[str, Any], selected: set[str]) -> dict[str, st
         if path:
             out[project] = path
     return out
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = [

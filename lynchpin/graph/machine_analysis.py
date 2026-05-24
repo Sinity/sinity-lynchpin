@@ -76,7 +76,7 @@ def add_machine_analysis_nodes(
                     "evidence": row.get("evidence") or (),
                     "payload": row.get("payload") or {},
                 },
-                provenance=EvidenceProvenance("machine", "local-fast", path=artifacts["episodes"]),
+                provenance=EvidenceProvenance("machine", "materialized", path=artifacts["episodes"]),
                 caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
             )
         )
@@ -115,7 +115,7 @@ def add_machine_analysis_nodes(
                     "overlap_seconds": row.get("overlap_seconds"),
                     "interpretation": row.get("interpretation"),
                 },
-                provenance=EvidenceProvenance("machine", "local-fast", path=artifacts["context"]),
+                provenance=EvidenceProvenance("machine", "materialized", path=artifacts["context"]),
                 caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
             )
         )
@@ -148,7 +148,7 @@ def add_machine_analysis_nodes(
                 end=ended_at,
                 summary=f"below attribution for {row.get('episode_kind')} in {row.get('capture_id')}",
                 payload=row,
-                provenance=EvidenceProvenance("below", "local-fast", path=artifacts["below"]),
+                provenance=EvidenceProvenance("below", "materialized", path=artifacts["below"]),
                 caveats=tuple(EvidenceCaveat("below", "partial", str(c)) for c in row.get("caveats", ()) if c),
             )
         )
@@ -202,7 +202,7 @@ def _add_machine_baseline_nodes(
                     end=last,
                     summary=f"{section} baseline: {key}",
                     payload={"section": section, **row},
-                    provenance=EvidenceProvenance("machine", "local-fast", path=artifact_name),
+                    provenance=EvidenceProvenance("machine", "materialized", path=artifact_name),
                     caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
                 )
             )
@@ -239,7 +239,7 @@ def _add_machine_claim_nodes(
                 end=ended_at,
                 summary=f"{row.get('claim_mode')}: {row.get('workload')}",
                 payload=row,
-                provenance=EvidenceProvenance("machine", "local-fast", path=str(row.get("manifest_path") or artifact_name)),
+                provenance=EvidenceProvenance("machine", "materialized", path=str(row.get("manifest_path") or artifact_name)),
                 caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
             )
         )

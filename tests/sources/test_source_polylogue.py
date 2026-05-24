@@ -20,6 +20,18 @@ def _readiness_report(*entries: SimpleNamespace, total_conversations: int = 0) -
     return SimpleNamespace(insights=entries, total_conversations=total_conversations)
 
 
+def _ready_client(*entries: SimpleNamespace, total_conversations: int = 0) -> SimpleNamespace:
+    return SimpleNamespace(
+        insight_readiness_report=lambda query: _readiness_report(
+            *entries,
+            total_conversations=total_conversations,
+        ),
+        list_session_profile_insights=lambda query: [object()],
+        list_day_session_summary_insights=lambda query: [object()],
+        list_session_work_event_insights=lambda query: [object()],
+    )
+
+
 def test_daily_activity_uses_day_summaries_without_profile_query(monkeypatch):
     def fake_summaries(*, start=None, end=None):
         return [
@@ -123,13 +135,11 @@ def test_archive_readiness_reports_populated_products(monkeypatch, tmp_path):
     monkeypatch.setattr(
         polylogue,
         "_polylogue_client",
-        lambda: SimpleNamespace(
-            insight_readiness_report=lambda query: _readiness_report(
-                _readiness_entry("session_profiles", 3, "ready", 3),
-                _readiness_entry("day_session_summaries", 2, "ready", 2),
-                _readiness_entry("session_work_events", 7, "ready", 7),
-                total_conversations=3,
-            )
+        lambda: _ready_client(
+            _readiness_entry("session_profiles", 3, "ready", 3),
+            _readiness_entry("day_session_summaries", 2, "ready", 2),
+            _readiness_entry("session_work_events", 7, "ready", 7),
+            total_conversations=3,
         ),
     )
 
@@ -150,13 +160,11 @@ def test_archive_readiness_treats_complete_stale_counts_as_ready(monkeypatch, tm
     monkeypatch.setattr(
         polylogue,
         "_polylogue_client",
-        lambda: SimpleNamespace(
-            insight_readiness_report=lambda query: _readiness_report(
-                _readiness_entry("session_profiles", 3, "stale", 3),
-                _readiness_entry("day_session_summaries", 2, "ready", 2),
-                _readiness_entry("session_work_events", 7, "stale", 7),
-                total_conversations=3,
-            )
+        lambda: _ready_client(
+            _readiness_entry("session_profiles", 3, "stale", 3),
+            _readiness_entry("day_session_summaries", 2, "ready", 2),
+            _readiness_entry("session_work_events", 7, "stale", 7),
+            total_conversations=3,
         ),
     )
 
@@ -164,3 +172,68 @@ def test_archive_readiness_treats_complete_stale_counts_as_ready(monkeypatch, tm
 
     assert readiness.status == "ready"
     assert readiness.reason == "materialized profile, day-summary, and work-event products are populated"
+
+
+def test_archive_readiness_degrades_when_required_read_fails(monkeypatch, tmp_path):
+    db = tmp_path / "polylogue.db"
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(polylogue.time, "sleep", lambda seconds: None)
+
+    def fail_profile(query):
+        raise RuntimeError("profile_rows_ready is false")
+
+    monkeypatch.setattr(
+        polylogue,
+        "_polylogue_client",
+        lambda: SimpleNamespace(
+            insight_readiness_report=lambda query: _readiness_report(
+                _readiness_entry("session_profiles", 3, "ready", 3),
+                _readiness_entry("day_session_summaries", 2, "ready", 2),
+                _readiness_entry("session_work_events", 7, "ready", 7),
+                total_conversations=3,
+            ),
+            list_session_profile_insights=fail_profile,
+            list_day_session_summary_insights=lambda query: [object()],
+            list_session_work_event_insights=lambda query: [object()],
+        ),
+    )
+
+    readiness = polylogue.archive_readiness()
+
+    assert readiness.status == "degraded"
+    assert "profile_rows_ready is false" in readiness.reason
+
+
+def test_archive_readiness_retries_transient_required_read_failure(monkeypatch, tmp_path):
+    db = tmp_path / "polylogue.db"
+    calls = 0
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(polylogue.time, "sleep", lambda seconds: None)
+
+    def flaky_profile(query):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary live convergence window")
+        return [object()]
+
+    monkeypatch.setattr(
+        polylogue,
+        "_polylogue_client",
+        lambda: SimpleNamespace(
+            insight_readiness_report=lambda query: _readiness_report(
+                _readiness_entry("session_profiles", 3, "ready", 3),
+                _readiness_entry("day_session_summaries", 2, "ready", 2),
+                _readiness_entry("session_work_events", 7, "ready", 7),
+                total_conversations=3,
+            ),
+            list_session_profile_insights=flaky_profile,
+            list_day_session_summary_insights=lambda query: [object()],
+            list_session_work_event_insights=lambda query: [object()],
+        ),
+    )
+
+    readiness = polylogue.archive_readiness()
+
+    assert readiness.status == "ready"
+    assert calls == 2

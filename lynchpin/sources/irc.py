@@ -78,8 +78,8 @@ def conversation_files(*, root: Optional[Path] = None) -> list[Path]:
     processed = base / "_processed" / "sinity"
     if processed.exists():
         return sorted(processed.glob("*.log"))
-    fallback = base / "sinity_conversations.log"
-    return [fallback] if fallback.exists() else []
+    single_file_export = base / "sinity_conversations.log"
+    return [single_file_export] if single_file_export.exists() else []
 
 
 def conversations(*, root: Optional[Path] = None) -> Iterator[IRCConversation]:

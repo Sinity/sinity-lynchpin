@@ -134,7 +134,7 @@ def current_state_html(current_state: dict[str, Any]) -> str:
             parts.append("</ul>")
         chains = temporal.get("chains") or []
         if chains:
-            parts.append("<h3>Causal chains</h3><ul>")
+            parts.append("<h3>Temporal evidence chains</h3><ul>")
             for chain in chains:
                 conf = chain.get("confidence", 0)
                 conf_text = f" ({conf * 100:.0f}%)" if isinstance(conf, (int, float)) else ""

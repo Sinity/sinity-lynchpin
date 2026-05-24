@@ -39,50 +39,61 @@ def same_project_day_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge,
 
 
 def temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge, ...]:
-    timed = [
-        node
-        for node in nodes
-        if node.project
-        and node.start is not None
-        and node.end is not None
-        and node.end > node.start
-    ]
+    grouped: dict[str, list[EvidenceNode]] = defaultdict(list)
+    for node in nodes:
+        if (
+            node.project
+            and node.start is not None
+            and node.end is not None
+            and node.end > node.start
+        ):
+            grouped[node.project].append(node)
     edges: list[EvidenceEdge] = []
-    for idx, left in enumerate(timed):
-        for right in timed[idx + 1 :]:
-            if left.project != right.project or left.source == right.source:
+    for group in grouped.values():
+        timed = sorted(group, key=node_time_sort_key)
+        for idx, left in enumerate(timed):
+            if left.start is None or left.end is None:
                 continue
-            if (
-                left.start is None
-                or left.end is None
-                or right.start is None
-                or right.end is None
-            ):
-                continue
-            if left.end > right.start and right.end > left.start:
-                edges.append(
-                    EvidenceEdge(
-                        left.id,
-                        right.id,
-                        "temporal_overlap",
-                        f"{left.source} overlaps {right.source}",
-                        0.7,
+            left_end = as_local(left.end)
+            for right in timed[idx + 1 :]:
+                if right.start is None or right.end is None:
+                    continue
+                right_start = as_local(right.start)
+                if right_start >= left_end:
+                    break
+                if left.source == right.source:
+                    continue
+                if as_local(right.end) > as_local(left.start):
+                    edges.append(
+                        EvidenceEdge(
+                            left.id,
+                            right.id,
+                            "temporal_overlap",
+                            f"{left.source} overlaps {right.source}",
+                            0.7,
+                        )
                     )
-                )
     return tuple(edges)
 
 
 def load_symbol_changes_index() -> dict[str, list[dict[str, Any]]]:
-    from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
+    import json
 
-    payload = (
-        load_json_if_exists(resolve_analysis_path("active_symbol_changes.json")) or {}
-    )
+    from ..analysis.core.io import resolve_analysis_path
+
+    path = resolve_analysis_path("active_symbol_changes.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"active symbol-change product is missing: {path}"
+        ) from exc
     if not isinstance(payload, dict):
-        return {}
+        raise ValueError(f"active symbol-change product is not a JSON object: {path}")
     events = payload.get("events") or []
     if not isinstance(events, list):
-        return {}
+        raise ValueError(f"active symbol-change product has non-list events: {path}")
     by_sha: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for entry in events:
         if not isinstance(entry, dict):

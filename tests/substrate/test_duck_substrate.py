@@ -305,6 +305,28 @@ def test_promote_ai_work_events_round_trip_no_classifier(tmp_path: Path) -> None
     assert ev2.end is None
 
 
+def test_promote_ai_work_events_deduplicates_source_event_ids(tmp_path: Path) -> None:
+    work_mod = _try_import_work()
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    first = _make_work_event("ev_duplicate", kind="research")
+    second = _make_work_event("ev_duplicate", kind="implementation")
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        written = work_mod.promote_ai_work_events(
+            conn,
+            events=[first, second],
+            refresh_id="r1",
+        )
+        loaded = work_mod.load_ai_work_events(conn, refresh_id="r1")
+
+    assert written == 1
+    assert len(loaded) == 1
+    assert loaded[0].kind == "implementation"
+
+
 def test_promote_ai_work_events_resolves_project_from_paths(tmp_path: Path) -> None:
     """Project resolver output is persisted for SQL joins and project-day analysis."""
     work_mod = _try_import_work()

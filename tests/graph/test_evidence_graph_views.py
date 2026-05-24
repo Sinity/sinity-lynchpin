@@ -17,7 +17,6 @@ def test_evidence_timeline_orders_timed_rows_before_date_only_and_skips_artifact
         start=day,
         end=day,
         generated_at=datetime(2026, 5, 5, tzinfo=UTC),
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="git:sinity-lynchpin:abc",
@@ -75,7 +74,6 @@ def test_render_evidence_timeline_is_compact_markdown_with_escaped_cells():
         start=day,
         end=day,
         generated_at=datetime(2026, 5, 5, tzinfo=UTC),
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="raw-log:1",
@@ -105,7 +103,6 @@ def test_evidence_relations_project_edges_without_same_day_noise():
         start=day,
         end=day,
         generated_at=datetime(2026, 5, 5, tzinfo=UTC),
-        mode="local-fast",
         nodes=(
             EvidenceNode(
                 id="git:sinity-lynchpin:abc",

@@ -41,7 +41,6 @@ _ASSET_PRODUCTS = {
 }
 _STRUCTURED_ASSET_PRODUCTS = {"Drive", "Google Pay", "Google Photos", "Location History", "Maps"}
 _SKIPPED_PRODUCTS = {
-    "Calendar": "calendar export is intentionally unsupported; no canonical dataset is maintained",
     "Google Chat": "exports only contain user_info/unsentmessages in current raw archives",
     "Gemini": "current exports are empty scheduling/gems stubs",
 }
@@ -243,6 +242,7 @@ def _parse_my_activity(member: TakeoutMember, raw: bytes) -> Iterator[dict[str, 
             "source_archive": str(member.archive),
             "source_member": member.path,
             "service": service,
+            "timestamp": _activity_timestamp_iso(timestamp),
             "timestamp_text": timestamp,
             "title": title,
             "text": rendered[:500],
@@ -501,6 +501,18 @@ def _activity_timestamp(texts: list[str]) -> str | None:
     for text in texts:
         if re.search(r"\b\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+[AP]M\s+UTC\b", text):
             return text
+    return None
+
+
+def _activity_timestamp_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+    for fmt in ("%b %d, %Y, %I:%M:%S %p UTC", "%B %d, %Y, %I:%M:%S %p UTC"):
+        try:
+            return datetime.strptime(normalized, fmt).replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            continue
     return None
 
 

@@ -1,6 +1,13 @@
 from datetime import date
 
+import pytest
+
 from lynchpin.analysis.machine.states import analyze_machine_work_states
+
+
+def test_machine_work_states_require_context_windows(tmp_path):
+    with pytest.raises(FileNotFoundError, match="machine context windows is missing"):
+        analyze_machine_work_states(context_path=tmp_path / "missing.json")
 
 
 def test_machine_work_states_define_pressure_and_work_states(tmp_path):

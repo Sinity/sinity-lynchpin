@@ -171,6 +171,7 @@
             tqdm
             duckdb
             cachew
+            lz4
             tiktoken
             typer
             claude-agent-sdk
@@ -198,6 +199,7 @@
             just
             ruff
             tokei
+            haskellPackages.arbtt
           ])
           ++ (with pkgs; [
             gnumake
@@ -218,7 +220,11 @@
           export PYTHONBREAKPOINT=ipdb.set_trace
           export PYTHONUSERBASE=$PWD/.pyuser
           export MY_CONFIG=$PWD/config
-          export PYTHONPATH=$PWD''${PYTHONPATH:+:$PYTHONPATH}
+          if [ -d /realm/project/polylogue/polylogue ]; then
+            export PYTHONPATH=/realm/project/polylogue:$PWD''${PYTHONPATH:+:$PYTHONPATH}
+          else
+            export PYTHONPATH=$PWD''${PYTHONPATH:+:$PYTHONPATH}
+          fi
         '';
         mkLynchpinShell =
           profileName: packages:
@@ -258,6 +264,7 @@
             scipy
             tiktoken
             typer
+            lz4
             tree-sitter
             tree-sitter-python
             tree-sitter-rust

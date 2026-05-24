@@ -9,7 +9,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..core.io import load_analysis_artifact, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 def _tokei_version() -> str | None:
@@ -74,7 +74,7 @@ def build_active_code_inventory(
     snapshot_file: str | PathLike[str],
 ) -> dict[str, Any]:
     """Produce per-project tokei language breakdown from active_project_snapshot."""
-    snapshot = load_analysis_artifact(str(snapshot_file)) or {}
+    snapshot = load_json_object(snapshot_file, label="active project snapshot")
     snapshot_projects = snapshot.get("projects") or []
 
     version = _tokei_version()

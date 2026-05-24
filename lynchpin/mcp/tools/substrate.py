@@ -241,22 +241,23 @@ def substrate_readiness_report() -> dict[str, Any]:
 
         # ── per-source status for that refresh ─────────────────────────────
         rows = conn.execute(
-            "SELECT source, status, reason, row_count, window_start, "
+            "SELECT source, kind, status, reason, row_count, window_start, "
             "window_end, recorded_at "
             "FROM substrate_source_status WHERE refresh_id = ? "
-            "ORDER BY source",
+            "ORDER BY kind, source",
             [latest_refresh_id],
         ).fetchall()
 
         sources = [
             {
                 "source": row[0],
-                "status": row[1],
-                "reason": row[2],
-                "row_count": row[3],
-                "window_start": _json_safe(row[4]),
-                "window_end": _json_safe(row[5]),
-                "recorded_at": _json_safe(row[6]),
+                "kind": row[1],
+                "status": row[2],
+                "reason": row[3],
+                "row_count": row[4],
+                "window_start": _json_safe(row[5]),
+                "window_end": _json_safe(row[6]),
+                "recorded_at": _json_safe(row[7]),
             }
             for row in rows
         ]
@@ -283,11 +284,24 @@ def substrate_readiness_report() -> dict[str, Any]:
         else:
             evidence_graph = None
 
-    summary = {"ok": 0, "empty": 0, "unavailable": 0, "error": 0}
+    summary = {
+        "ok": 0,
+        "empty": 0,
+        "unavailable": 0,
+        "error": 0,
+        "by_kind": {},
+    }
     for source in sources:
         s = source["status"]
         if s in summary:
             summary[s] += 1
+        kind = source.get("kind") or "stage"
+        by_kind = summary["by_kind"].setdefault(
+            kind,
+            {"ok": 0, "empty": 0, "unavailable": 0, "error": 0},
+        )
+        if s in by_kind:
+            by_kind[s] += 1
     summary["trustworthy"] = (
         summary["unavailable"] == 0 and summary["error"] == 0 and len(sources) > 0
     )
@@ -306,6 +320,7 @@ def substrate_readiness_report() -> dict[str, Any]:
 def substrate_source_status(
     refresh_id: str | None = None,
     status: str | None = None,
+    kind: str | None = None,
 ) -> list[dict[str, Any]]:
     """Per-source readiness rows from the most recent (or specific) promote run.
 
@@ -336,7 +351,7 @@ def substrate_source_status(
                 return []
 
         sql = (
-            "SELECT refresh_id, source, status, reason, row_count, "
+            "SELECT refresh_id, source, kind, status, reason, row_count, "
             "window_start, window_end, recorded_at "
             "FROM substrate_source_status WHERE refresh_id = ?"
         )
@@ -344,12 +359,15 @@ def substrate_source_status(
         if status is not None:
             sql += " AND status = ?"
             params.append(status)
-        sql += " ORDER BY source"
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY kind, source"
 
         rows = conn.execute(sql, params).fetchall()
 
     cols = [
-        "refresh_id", "source", "status", "reason", "row_count",
+        "refresh_id", "source", "kind", "status", "reason", "row_count",
         "window_start", "window_end", "recorded_at",
     ]
     return [
@@ -359,10 +377,259 @@ def substrate_source_status(
 
 
 @app.tool()
+def contract_coverage(
+    source: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[dict[str, Any]]:
+    """Canonical dataset coverage and gaps for an optional date window."""
+    from datetime import date as _date
+
+    from lynchpin.materialization import audit_materialization, materialized_dataset_overlaps
+
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    rows = []
+    for row in audit_materialization():
+        if source and row.name != source:
+            continue
+        overlaps = None
+        if start_d is not None and end_d is not None:
+            overlaps = materialized_dataset_overlaps(row, start=start_d, end=end_d)
+        rows.append(
+            {
+                "source": row.name,
+                "status": row.status,
+                "substrate_status": row.to_json()["substrate_status"],
+                "row_count": row.row_count,
+                "first_date": _json_safe(row.first_date),
+                "last_date": _json_safe(row.last_date),
+                "overlaps_requested_window": overlaps,
+                "reason": row.reason,
+                "refresh_command": row.refresh_command,
+            }
+        )
+    return rows
+
+
+@app.tool()
+def analysis_readiness(
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    """One-stop readiness for dataset contracts plus latest substrate statuses."""
+    dataset_rows = contract_coverage(start=start, end=end)
+    substrate = substrate_readiness_report()
+    blocking_datasets = [
+        row for row in dataset_rows
+        if row["substrate_status"] in {"unavailable", "error"}
+    ]
+    blocking_stages = [
+        row for row in substrate["sources"]
+        if row.get("kind") == "stage" and row["status"] in {"unavailable", "error"}
+    ]
+    return {
+        "requested_window": {"start": start, "end": end},
+        "datasets": dataset_rows,
+        "substrate": substrate,
+        "summary": {
+            "dataset_count": len(dataset_rows),
+            "blocking_dataset_count": len(blocking_datasets),
+            "blocking_stage_count": len(blocking_stages),
+            "trustworthy": not blocking_datasets and not blocking_stages and substrate["summary"]["trustworthy"],
+        },
+        "blocking": {
+            "datasets": blocking_datasets,
+            "stages": blocking_stages,
+        },
+    }
+
+
+@app.tool()
+def mcp_capability_map() -> list[dict[str, Any]]:
+    """Analytic MCP tools with their backing contract or substrate stage."""
+    capabilities = [
+        ("contract_status", "dataset", "source_contracts", "dict/status"),
+        ("contract_coverage", "dataset", "source_contracts", "dict/status"),
+        ("analysis_readiness", "dataset+stage", "source_contracts/substrate_source_status", "dict/status"),
+        ("promotion_runs", "stage", "substrate_promotion_run", "dict/status"),
+        ("substrate_run_steps", "stage", "substrate_run_step", "dict/status"),
+        ("analysis_claims", "stage", "analysis_claim", "raises when unpromoted"),
+        ("claim_evidence", "stage", "analysis_claim/evidence_node/evidence_edge", "dict/status"),
+        ("spotify_daily", "stage", "spotify_daily", "raises when unpromoted"),
+        ("personal_daily_signals", "stage", "personal_daily_signal", "raises when unpromoted"),
+        ("activity_content_daily", "stage", "activity_content_day", "raises when unpromoted"),
+        ("activity_title_usage", "stage", "activity_title_usage", "raises when unpromoted"),
+        ("activity_unmatched_titles", "stage", "activity_title_usage", "raises when unpromoted"),
+        ("source_correlation", "stage", "evidence_graph", "raises when unpromoted"),
+        ("project_day_correlations", "stage", "evidence_graph", "raises when unpromoted"),
+        ("closure_chain_walks", "stage", "evidence_graph", "raises when unpromoted"),
+        ("file_overlap_edges", "stage", "ai_work_events", "raises when unpromoted"),
+        ("symbol_overlap_edges", "stage", "ai_work_events", "raises when unpromoted"),
+        ("pr_review_rows", "stage", "pr_review", "raises when unpromoted"),
+        ("query_substrate", "raw", "DuckDB", "SELECT-only escape hatch"),
+    ]
+    return [
+        {
+            "tool": tool,
+            "backing_kind": backing_kind,
+            "backing": backing,
+            "failure_semantics": failure_semantics,
+        }
+        for tool, backing_kind, backing, failure_semantics in capabilities
+    ]
+
+
+@app.tool()
+def promotion_runs(
+    refresh_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Promotion run audit rows."""
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    clauses = []
+    params: list[Any] = []
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(min(max(limit, 1), 1000))
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT refresh_id, status, reason, window_start, window_end, mode,
+                   counts, started_at, finished_at
+            FROM substrate_promotion_run
+            {where}
+            ORDER BY finished_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "refresh_id": row[0],
+            "status": row[1],
+            "reason": row[2],
+            "window_start": _json_safe(row[3]),
+            "window_end": _json_safe(row[4]),
+            "mode": row[5],
+            "counts": row[6],
+            "started_at": _json_safe(row[7]),
+            "finished_at": _json_safe(row[8]),
+        }
+        for row in rows
+    ]
+
+
+@app.tool()
+def substrate_run_steps(
+    refresh_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Durable progress rows for materialization and substrate promotion stages."""
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    clauses = []
+    params: list[Any] = []
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(min(max(limit, 1), 1000))
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT refresh_id, step, status, message, row_count,
+                   started_at, finished_at, recorded_at
+            FROM substrate_run_step
+            {where}
+            ORDER BY recorded_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "refresh_id": row[0],
+            "step": row[1],
+            "status": row[2],
+            "message": row[3],
+            "row_count": row[4],
+            "started_at": _json_safe(row[5]),
+            "finished_at": _json_safe(row[6]),
+            "recorded_at": _json_safe(row[7]),
+        }
+        for row in rows
+    ]
+
+
+@app.tool()
+def analysis_claims(
+    refresh_id: str | None = None,
+    project: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    claim_type: str | None = None,
+    min_confidence: float | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Persisted analysis claims with confidence, caveats, and evidence IDs."""
+    from datetime import date as _date
+
+    from lynchpin.mcp.tools._utils import require_best_refresh_id
+    from lynchpin.substrate.claims import load_analysis_claims
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = require_best_refresh_id(conn, "analysis_claim", tool="analysis_claims")
+        return [
+            _json_safe(row)
+            for row in load_analysis_claims(
+                conn,
+                refresh_id=refresh_id,
+                project=project,
+                start=start_d,
+                end=end_d,
+                claim_type=claim_type,
+                min_confidence=min_confidence,
+                limit=limit,
+            )
+        ]
+
+
+@app.tool()
+def claim_evidence(
+    claim_id: str,
+    refresh_id: str | None = None,
+) -> dict[str, Any]:
+    """Return one claim plus any persisted backing evidence rows."""
+    from lynchpin.substrate.claims import load_claim_evidence
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path(), read_only=True) as conn:
+        row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
+    if row is None:
+        return {"summary": {"status": "missing"}, "claim_id": claim_id}
+    return _json_safe(row)
+
+
+@app.tool()
 def list_evidence_graph_builds(
     start: str | None = None,
     end: str | None = None,
-    mode: str | None = None,
 ) -> list[dict[str, Any]]:
     """List evidence-graph builds stored in the substrate.
 
@@ -371,7 +638,6 @@ def list_evidence_graph_builds(
     Parameters:
         start: ISO date string (YYYY-MM-DD) — filter by exact start_date.
         end:   ISO date string (YYYY-MM-DD) — filter by exact end_date.
-        mode:  build mode string (e.g. "full").
 
     Returns:
         [
@@ -398,7 +664,7 @@ def list_evidence_graph_builds(
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
-        rows = _list_builds(conn, start=start_d, end=end_d, mode=mode)
+        rows = _list_builds(conn, start=start_d, end=end_d)
 
     return [_json_safe(row) for row in rows]
 
@@ -495,7 +761,6 @@ def load_evidence_graph_summary(
 # ── M.13 AI-Attribution Backfill ─────────────────────────────────────────────
 
 
-@app.tool()
 def ai_attribution_backfill(
     refresh_id: str | None = None,
     time_window_hours: int = 24,
@@ -631,7 +896,6 @@ def ai_attribution_backfill(
 # ── Substrate Prune ──────────────────────────────────────────────────────────
 
 
-@app.tool()
 def substrate_prune(
     keep_builds: int = 3,
     dry_run: bool = True,

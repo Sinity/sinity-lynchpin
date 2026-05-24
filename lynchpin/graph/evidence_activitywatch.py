@@ -62,68 +62,67 @@ def add_focus(
     mode: CostClass,
 ) -> None:
     start_dt, end_dt = date_to_dt_range(start, end)
-    if mode != "local-fast":
-        for idx, span in enumerate(
-            focus_timeline(start=start_dt, end=end_dt, min_duration_s=60.0)
-        ):
-            project = normalize_project(span.project)
-            if span.kind != "focused" or not include_project(project, selected):
-                continue
-            title = str(span.title or "").strip()
-            app = str(span.app or "").strip()
-            summary_bits = [f"{span.duration_s / 60:.0f}m focus"]
-            if app:
-                summary_bits.append(app)
-            if title:
-                summary_bits.append(title[:120])
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-focus-span:{span.start.isoformat()}:{idx}:{project}",
-                    kind="focus_span",
-                    source="activitywatch",
-                    date=logical_date(span.start),
-                    project=project,
-                    start=span.start,
-                    end=span.end,
-                    summary=" - ".join(summary_bits),
-                    payload={
-                        "duration_s": span.duration_s,
-                        "app": span.app,
-                        "title": span.title,
-                        "mode": span.mode,
-                        "span_source": span.source,
-                        "keypress_count": span.keypress_count,
-                        "keylog_state": span.keylog_state,
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
-                )
+    for idx, span in enumerate(
+        focus_timeline(start=start_dt, end=end_dt, min_duration_s=60.0)
+    ):
+        project = normalize_project(span.project)
+        if span.kind != "focused" or not include_project(project, selected):
+            continue
+        title = str(span.title or "").strip()
+        app = str(span.app or "").strip()
+        summary_bits = [f"{span.duration_s / 60:.0f}m focus"]
+        if app:
+            summary_bits.append(app)
+        if title:
+            summary_bits.append(title[:120])
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-focus-span:{span.start.isoformat()}:{idx}:{project}",
+                kind="focus_span",
+                source="activitywatch",
+                date=logical_date(span.start),
+                project=project,
+                start=span.start,
+                end=span.end,
+                summary=" - ".join(summary_bits),
+                payload={
+                    "duration_s": span.duration_s,
+                    "app": span.app,
+                    "title": span.title,
+                    "mode": span.mode,
+                    "span_source": span.source,
+                    "keypress_count": span.keypress_count,
+                    "keylog_state": span.keylog_state,
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
 
-        for idx, block in enumerate(deep_work(start=start_dt, end=end_dt)):
-            project = normalize_project(block.project)
-            if block.focus_ratio < 0.5 or not include_project(project, selected):
-                continue
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-deep-work:{block.start.isoformat()}:{idx}",
-                    kind="deep_work_block",
-                    source="activitywatch",
-                    date=logical_date(block.start),
-                    project=project,
-                    start=block.start,
-                    end=block.end,
-                    summary=f"deep work {block.duration_min:.0f}m ({block.mode}, ratio={block.focus_ratio:.2f})",
-                    payload={
-                        "duration_min": round(block.duration_min, 1),
-                        "focus_ratio": round(block.focus_ratio, 2),
-                        "mode": block.mode,
-                        "app_switches": block.app_switches,
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
-                )
+    for idx, block in enumerate(deep_work(start=start_dt, end=end_dt)):
+        project = normalize_project(block.project)
+        if block.focus_ratio < 0.5 or not include_project(project, selected):
+            continue
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-deep-work:{block.start.isoformat()}:{idx}",
+                kind="deep_work_block",
+                source="activitywatch",
+                date=logical_date(block.start),
+                project=project,
+                start=block.start,
+                end=block.end,
+                summary=f"deep work {block.duration_min:.0f}m ({block.mode}, ratio={block.focus_ratio:.2f})",
+                payload={
+                    "duration_min": round(block.duration_min, 1),
+                    "focus_ratio": round(block.focus_ratio, 2),
+                    "mode": block.mode,
+                    "app_switches": block.app_switches,
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
 
-        for profile in circadian(start=start, end=end):
+    for profile in circadian(start=start, end=end):
             project = normalize_project(profile.dominant_project)
             if not include_project(project, selected):
                 continue
@@ -140,11 +139,11 @@ def add_focus(
                         "active_min": profile.active_min,
                         "dominant_mode": profile.dominant_mode,
                     },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
+                    provenance=EvidenceProvenance("activitywatch", "materialized"),
                 )
             )
 
-        for idx, loop in enumerate(loops(start=start_dt, end=end_dt)):
+    for idx, loop in enumerate(loops(start=start_dt, end=end_dt)):
             project = normalize_project(loop.dominant_project)
             if loop.span_count < 2 or not include_project(project, selected):
                 continue
@@ -163,11 +162,11 @@ def add_focus(
                         "context_b": loop.context_b,
                         "duration_min": round(loop.duration_min, 1),
                     },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
+                    provenance=EvidenceProvenance("activitywatch", "materialized"),
                 )
             )
 
-        for frag in fragmentation(start=start, end=end):
+    for frag in fragmentation(start=start, end=end):
             nodes.append(
                 EvidenceNode(
                     id=f"aw-frag:{frag.date.isoformat()}",
@@ -182,11 +181,11 @@ def add_focus(
                         "longest_focus_min": round(frag.longest_focus_min, 1),
                         "fragmentation_index": round(frag.fragmentation, 2),
                     },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
+                    provenance=EvidenceProvenance("activitywatch", "materialized"),
                 )
             )
 
-        for attn in attention(start=start, end=end):
+    for attn in attention(start=start, end=end):
             project = normalize_project(attn.top_project)
             if not include_project(project, selected):
                 continue
@@ -204,11 +203,9 @@ def add_focus(
                         "top_project": attn.top_project,
                         "project_count": attn.project_count,
                     },
-                    provenance=EvidenceProvenance("activitywatch", "local-heavy"),
+                    provenance=EvidenceProvenance("activitywatch", "materialized"),
                 )
             )
-        return
-
     for focus in project_focus_days(start=start_dt, end=end_dt):
         project = normalize_project(focus.project)
         if not include_project(project, selected):
@@ -222,6 +219,6 @@ def add_focus(
                 project=project,
                 summary=f"{project} focus {focus.duration_s / 3600:.2f}h",
                 payload={"duration_s": focus.duration_s},
-                provenance=EvidenceProvenance("activitywatch", "local-fast"),
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
         )

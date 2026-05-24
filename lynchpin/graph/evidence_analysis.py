@@ -55,7 +55,7 @@ def add_analysis_artifacts(
                         "references": artifact.references,
                     },
                     provenance=EvidenceProvenance(
-                        "analysis", "local-fast", path=str(artifact.path)
+                        "analysis", "materialized", path=str(artifact.path)
                     ),
                 )
             )
@@ -114,7 +114,7 @@ def add_analysis_claims(
                     **claim.payload,
                 },
                 provenance=EvidenceProvenance(
-                    "analysis", "local-fast", path=claim.artifact_name
+                    "analysis", "materialized", path=claim.artifact_name
                 ),
             )
         )

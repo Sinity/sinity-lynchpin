@@ -93,6 +93,7 @@ class WorkEvidenceClaim:
     relation_count: int
     strongest_relations: tuple[str, ...]
     summary: str
+    caveats: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class DatasetCorrelation:
@@ -235,7 +236,7 @@ def work_day_correlations(*, start: date, end: date, include_github_context: boo
     from .evidence_graph import build_evidence_graph
     evidence_graph = graph
     if evidence_graph is None:
-        evidence_graph = build_evidence_graph(start=start, end=end, mode='network' if include_github_context else 'local-fast')
+        evidence_graph = build_evidence_graph(start=start, end=end, include_github_frontier=include_github_context)
     if not isinstance(evidence_graph, EvidenceGraph):
         raise TypeError('graph must be an EvidenceGraph')
     return _correlations_from_graph(evidence_graph, start=start, end=end)
@@ -288,11 +289,11 @@ def supported_work_claims(rows: Sequence[CorrelatedWorkDay], *, graph: object | 
     return tuple(sorted(claims, key=lambda item: (item.score, item.date, item.project), reverse=True)[:limit])
 
 def render_supported_work_claims(claims: Sequence[WorkEvidenceClaim]) -> str:
-    lines = ['| Date | Project | Support | Score | Sources | Relations | Claim |', '|---|---:|---:|---:|---|---|---|']
+    lines = ['| Date | Project | Support | Score | Sources | Relations | Claim | Caveats |', '|---|---:|---:|---:|---|---|---|---|']
     for claim in claims:
-        lines.append('| {date} | {project} | {support} | {score:.2f} | {sources} | {relations} | {summary} |'.format(date=claim.date.isoformat(), project=claim.project, support=claim.support_level, score=claim.score, sources=', '.join(claim.sources), relations='<br>'.join((_markdown_cell(value) for value in claim.strongest_relations)), summary=_markdown_cell(claim.summary)))
+        lines.append('| {date} | {project} | {support} | {score:.2f} | {sources} | {relations} | {summary} | {caveats} |'.format(date=claim.date.isoformat(), project=claim.project, support=claim.support_level, score=claim.score, sources=', '.join(claim.sources), relations='<br>'.join((_markdown_cell(value) for value in claim.strongest_relations)), summary=_markdown_cell(claim.summary), caveats='<br>'.join((_markdown_cell(value) for value in claim.caveats))))
     if not claims:
-        lines.append('|  |  | weak | 0.00 |  |  | no supported work claims |')
+        lines.append('|  |  | weak | 0.00 |  |  | no supported work claims |  |')
     return '\n'.join(lines)
 
 def dataset_correlations(graph: object | None, *, limit: int=12, include_analysis: bool=False) -> tuple[DatasetCorrelation, ...]:
@@ -373,7 +374,7 @@ def _relations_by_project_day(graph: object | None) -> dict[tuple[date, str], tu
 
 def _work_claim(row: CorrelatedWorkDay, relations: Sequence[_RelationSupport]) -> WorkEvidenceClaim:
     relation_count = len(relations)
-    return WorkEvidenceClaim(date=row.date, project=row.project, support_level=_support_level(row, relation_count), score=_claim_score(row, relation_count), sources=row.sources, relation_count=relation_count, strongest_relations=tuple((f'{relation.dimension}: {relation.evidence}' for relation in relations[:3])), summary=_claim_summary(row, relation_count))
+    return WorkEvidenceClaim(date=row.date, project=row.project, support_level=_support_level(row, relation_count), score=_claim_score(row, relation_count), sources=row.sources, relation_count=relation_count, strongest_relations=tuple((f'{relation.dimension}: {relation.evidence}' for relation in relations[:3])), summary=_claim_summary(row, relation_count), caveats=_claim_caveats(row, relation_count))
 
 def _relation_dimension(relation: str, source: str, target: str) -> str:
     left, right = sorted((source, target))
@@ -409,6 +410,20 @@ def _claim_summary(row: CorrelatedWorkDay, relation_count: int) -> str:
         noun = 'dimension' if relation_count == 1 else 'dimensions'
         parts.append(f'{relation_count} relation {noun}')
     return '; '.join(parts) if parts else 'source evidence present'
+
+def _claim_caveats(row: CorrelatedWorkDay, relation_count: int) -> tuple[str, ...]:
+    caveats: list[str] = []
+    if row.source_count < 2:
+        caveats.append('single-source support; do not treat as corroborated work')
+    if row.ai_session_count:
+        caveats.append('AI sessions indicate assistance intensity, not independent work units')
+    if row.github_refs:
+        caveats.append('GitHub refs may be commit-message references unless network frontier evidence is enabled')
+    if row.focus_minutes and row.commit_count == 0:
+        caveats.append('focus attribution without git support can be title/project inference')
+    if relation_count == 0 and row.source_count >= 2:
+        caveats.append('cross-source co-presence lacks direct graph relation support')
+    return tuple(caveats)
 
 def _markdown_cell(value: object) -> str:
     return str(value).replace('\n', ' ').replace('|', '\\|')

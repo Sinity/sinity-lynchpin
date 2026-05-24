@@ -9,7 +9,7 @@ from pathlib import Path
 import statistics
 from typing import Any, Iterable
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.analysis.machine.telemetry import analyze_machine_telemetry
 from lynchpin.core.analytics import ChangePoint, detect_changepoints
@@ -310,9 +310,10 @@ def _era_metric(metric: str, before: list[Any], after: list[Any]) -> dict[str, A
 
 
 def _work_context_baselines(*, context_path: Path | None) -> tuple[list[WorkContextBaseline], list[str]]:
-    payload = load_json_if_exists(context_path or resolve_analysis_path("machine_context_windows.json"))
-    if not isinstance(payload, dict):
-        return [], ["machine_context_windows.json absent; work-context baselines skipped"]
+    payload = load_json_object(
+        context_path or resolve_analysis_path("machine_context_windows.json"),
+        label="machine context windows",
+    )
     windows = [row for row in payload.get("windows", []) if isinstance(row, dict)]
     rows = []
     for dimension, groups in (

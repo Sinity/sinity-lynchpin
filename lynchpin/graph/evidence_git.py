@@ -43,11 +43,7 @@ def add_git(
     selected: set[str],
     mode: CostClass,
 ) -> None:
-    facts = tuple(
-        commit_facts(
-            start=start, end=end + timedelta(days=1), include_paths=mode != "local-fast"
-        )
-    )
+    facts = tuple(commit_facts(start=start, end=end + timedelta(days=1), include_paths=True))
     selected_facts = []
     for fact in facts:
         project = normalize_project(fact.repo)
@@ -123,7 +119,7 @@ def _github_ref_node(
         project=project,
         summary=f"{kind} #{number}",
         payload={"kind": kind, "number": number, "lifecycle": "referenced"},
-        provenance=EvidenceProvenance("github_ref", "local-fast"),
+        provenance=EvidenceProvenance("github_ref", "materialized"),
         caveats=(
             EvidenceCaveat(
                 "github",

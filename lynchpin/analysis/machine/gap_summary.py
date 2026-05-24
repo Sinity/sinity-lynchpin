@@ -11,9 +11,7 @@ because nothing was checking aggregate gap-code share.
 
 The analyzer is a pure read over substrate. It runs in the daily DAG,
 writes ``machine_gap_summary.json``, and exposes an MCP tool that
-reads the same artifact (or recomputes on demand). A separate sentinel
-handle (not in this module) can poll the artifact and notify when any
-code crosses a configurable share threshold.
+reads the same artifact or recomputes on demand.
 """
 
 from __future__ import annotations

@@ -150,7 +150,7 @@ def build_active_commit_hunks(
         "methodology": {
             "source": "git diff --unified=0 --find-renames for first-parent commits",
             "scope": f"up to {max_commits} commits in the window",
-            "caveat": "hunk-level data is structural, not semantic — use commit_semantics for operation classification",
+            "caveat": "hunk-level data is structural; operation classification is heuristic",
         },
         "commit_count": commit_count,
         "hunk_count": len(hunk_rows),
@@ -165,7 +165,7 @@ def build_active_commit_semantics(
     projects: Sequence[str] | None = None,
     max_commits: int = 40,
 ) -> dict[str, Any]:
-    """Classify semantic operations for top commits in the window."""
+    """Classify heuristic operations for top commits in the window."""
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
@@ -179,7 +179,7 @@ def build_active_commit_semantics(
     commits = _list(commit_payload, "commits")
     selected = set(projects or ())
 
-    semantic_rows: list[dict[str, Any]] = []
+    operation_rows: list[dict[str, Any]] = []
     commit_count = 0
 
     for row in commits:
@@ -203,7 +203,7 @@ def build_active_commit_semantics(
         operations = _classify_operations(files, symbols)
         impact = _impact_assessment(files, symbols, operations)
 
-        semantic_rows.append(
+        operation_rows.append(
             {
                 "project": project,
                 "sha": sha,
@@ -216,7 +216,7 @@ def build_active_commit_semantics(
                 "file_count": len(files),
                 "symbol_count": len(symbols),
                 "symbols": symbols[:30],
-                "semantic_operations": operations,
+                "heuristic_operations": operations,
                 "impact": impact,
                 "risk_flags": _risk_flags(files, symbols, row),
                 "caveats": _semantic_caveats(files, symbols),
@@ -224,8 +224,8 @@ def build_active_commit_semantics(
         )
 
     operation_totals: Counter[str] = Counter()
-    for row in semantic_rows:
-        for op, weight in row["semantic_operations"].items():
+    for row in operation_rows:
+        for op, weight in row["heuristic_operations"].items():
             operation_totals[op] += weight
 
     return {
@@ -233,11 +233,11 @@ def build_active_commit_semantics(
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "methodology": {
             "source": "deterministic heuristics over git diff hunks, Python AST symbols, and file categories",
-            "semantic_operation_labels": list(_OPERATION_LABELS),
+            "operation_labels": list(_OPERATION_LABELS),
             "caveat": "operation labels are deterministic heuristics, not proof of user value or correctness",
         },
         "commit_count": commit_count,
-        "commits": semantic_rows,
+        "commits": operation_rows,
         "summary": {
             "operation_distribution": dict(operation_totals.most_common()),
             "top_commits_by_symbol_count": sorted(
@@ -247,7 +247,7 @@ def build_active_commit_semantics(
                         "subject": r["subject"],
                         "symbol_count": r["symbol_count"],
                     }
-                    for r in semantic_rows
+                for r in operation_rows
                 ),
                 key=lambda x: -x["symbol_count"],
             )[:10],

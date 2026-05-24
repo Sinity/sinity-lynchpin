@@ -37,7 +37,7 @@ def _dt(y: int, m: int, d: int, h: int = 12) -> datetime:
 def _make_evidence_graph(
     start: date = date(2026, 5, 1),
     end: date = date(2026, 5, 7),
-    mode: str = "local-fast",
+    mode: str = "materialized",
     node_suffix: str = "",
 ) -> "Any":  # EvidenceGraph
     from lynchpin.core.evidence import EvidenceCaveat, EvidenceProvenance
@@ -69,7 +69,7 @@ def _make_evidence_graph(
             summary="implementation session — evidence graph bridge",
             provenance=EvidenceProvenance(
                 source="polylogue",
-                cost="local-fast",
+                cost="materialized",
                 path=None,
                 generated_at=generated_at,
                 note="test provenance",
@@ -222,20 +222,20 @@ def test_promote_evidence_graph_partition_isolation(tmp_path: Path) -> None:
 
 
 def test_load_evidence_graph_by_window(tmp_path: Path) -> None:
-    """load_evidence_graph with start/end/mode (no refresh_id) finds the graph."""
+    """load_evidence_graph with start/end (no refresh_id) finds the graph."""
     from lynchpin.substrate import graph as graph_mod
     from lynchpin.substrate.connection import apply_schema, connect
 
     start = date(2026, 5, 1)
     end = date(2026, 5, 7)
-    mode = "local-fast"
+    mode = "materialized"
     graph = _make_evidence_graph(start=start, end=end, mode=mode)
 
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
         graph_mod.promote_evidence_graph(conn, refresh_id="r1", graph=graph)
-        loaded = graph_mod.load_evidence_graph(conn, start=start, end=end, mode=mode)
+        loaded = graph_mod.load_evidence_graph(conn, start=start, end=end)
 
     assert loaded is not None
     assert loaded.start == start
@@ -289,7 +289,7 @@ def test_finalize_graph_writes_to_substrate(
         edges=edges,
         start=date(2026, 5, 1),
         end=date(2026, 5, 1),
-        mode="local-fast",  # type: ignore[arg-type]
+        mode="materialized",
         generated_at=_dt(2026, 5, 1, 12),
         promote=True,
     )
@@ -309,7 +309,6 @@ def test_finalize_graph_writes_to_substrate(
             conn,
             start=date(2026, 5, 1),
             end=date(2026, 5, 1),
-            mode="local-fast",
         )
 
     assert loaded is not None
@@ -347,7 +346,7 @@ def test_finalize_graph_substrate_write_fails_silently(
         edges=[],
         start=date(2026, 5, 1),
         end=date(2026, 5, 1),
-        mode="local-fast",  # type: ignore[arg-type]
+        mode="materialized",  # type: ignore[arg-type]
         generated_at=_dt(2026, 5, 1, 12),
         promote=True,
     )

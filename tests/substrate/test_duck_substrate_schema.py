@@ -31,6 +31,7 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "evidence_edge",
         "substrate_source_status",
         "spotify_daily",
+        "personal_daily_signal",
         "machine_metric_sample",
         "machine_gpu_sample",
         "machine_network_sample",
@@ -61,6 +62,89 @@ def test_apply_schema_is_idempotent(tmp_path: Path) -> None:
 
     assert row is not None
     assert row[0] == "alive"
+
+
+def test_promote_personal_daily_signal_round_trip(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_personal_daily_signals
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        count = promote_personal_daily_signals(
+            conn,
+            refresh_id="r1",
+            rows=[("webhistory", date(2026, 5, 23), "visit_count", 42.0, {"domain_count": 7})],
+        )
+        row = conn.execute(
+            "SELECT source, date, metric, value, CAST(dimensions AS VARCHAR) "
+            "FROM personal_daily_signal WHERE refresh_id = 'r1'"
+        ).fetchone()
+
+    assert count == 1
+    assert row is not None
+    assert row[0] == "webhistory"
+    assert row[2] == "visit_count"
+    assert row[3] == 42.0
+    assert '"domain_count": 7' in row[4]
+
+
+def test_promote_personal_daily_signal_keeps_dimension_variants(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_personal_daily_signals
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        count = promote_personal_daily_signals(
+            conn,
+            refresh_id="r1",
+            rows=[
+                ("sleep", date(2017, 1, 29), "sleep_minutes", 120.0, {"quality": "short"}),
+                ("sleep", date(2017, 1, 29), "sleep_minutes", 360.0, {"quality": "long"}),
+            ],
+        )
+        rows = conn.execute(
+            "SELECT metric, value, CAST(dimensions AS VARCHAR) "
+            "FROM personal_daily_signal WHERE refresh_id = 'r1' ORDER BY value"
+        ).fetchall()
+
+    assert count == 2
+    assert [row[1] for row in rows] == [120.0, 360.0]
+    assert '"quality": "short"' in rows[0][2]
+    assert '"quality": "long"' in rows[1][2]
+
+
+def test_promote_personal_daily_signal_coalesces_exact_duplicate_dimensions(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_personal_daily_signals
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        count = promote_personal_daily_signals(
+            conn,
+            refresh_id="r1",
+            rows=[
+                ("sleep", date(2017, 1, 29), "sleep_minutes", 120.0, {"quality": "unknown"}),
+                ("sleep", date(2017, 1, 29), "sleep_minutes", 360.0, {"quality": "unknown"}),
+                ("sleep", date(2017, 1, 29), "sleep_score", 40.0, {"quality": "unknown"}),
+                ("sleep", date(2017, 1, 29), "sleep_score", 80.0, {"quality": "unknown"}),
+            ],
+        )
+        rows = conn.execute(
+            "SELECT metric, value FROM personal_daily_signal "
+            "WHERE refresh_id = 'r1' ORDER BY metric"
+        ).fetchall()
+
+    assert count == 2
+    assert rows == [("sleep_minutes", 480.0), ("sleep_score", 60.0)]
 
 
 def test_apply_schema_recreates_on_version_bump(tmp_path: Path) -> None:

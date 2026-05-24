@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -178,7 +178,7 @@ def _make_symbol_entry(sha: str, qualified_name: str) -> dict:
 def test_substrate_promote_handles_missing_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Run with non-existent JSON paths — must NOT raise; returns dict.
+    """Run with non-existent JSON paths — must NOT raise; returns result object.
 
     The test isolates the JSON-backed source family so it does not spend time
     probing live archive/readiness sources unrelated to the assertion.
@@ -198,8 +198,8 @@ def test_substrate_promote_handles_missing_files(
         sources=_json_sources(),
         write_evidence_graph=False,
     )
-    # Must return dict and not raise.
-    assert isinstance(counts, dict)
+    # Must return structured status and not raise.
+    assert counts.status == "degraded"
     # JSON-based sources all missing → counts should all be 0 (or absent)
     assert counts.get("commits", 0) == 0
     assert counts.get("file_changes", 0) == 0
@@ -225,7 +225,58 @@ def test_substrate_promote_swallows_errors(
         sources=_json_sources(),
         write_evidence_graph=False,
     )
-    assert counts == {}  # swallowed — returns empty on error
+    assert counts.status == "error"
+    assert counts.counts == {}
+    assert counts.reason
+
+
+def test_substrate_promote_uses_derived_personal_products(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path / "local"))
+    monkeypatch.setenv("LYNCHPIN_DERIVED_ROOT", str(tmp_path / "derived"))
+    _reload_config(monkeypatch)
+    personal = tmp_path / "derived" / "personal"
+    spotify = tmp_path / "derived" / "spotify"
+    personal.mkdir(parents=True)
+    spotify.mkdir(parents=True)
+    (personal / "daily_signals.ndjson").write_text(
+        '{"source":"webhistory","date":"2026-05-01","metric":"visit_count","value":3,"dimensions":{"top_domain":"example.com"}}\n',
+        encoding="utf-8",
+    )
+    (spotify / "daily.ndjson").write_text(
+        '{"date":"2026-05-01","track_count":2,"minutes_played":5.5,"unique_artists":1,"unique_tracks":2,"top_artists":["A"],"top_tracks":["T"]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.spotify.iter_streams",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("raw streams must not be read")),
+    )
+
+    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_PERSONAL_DAILY_SIGNAL,
+        SOURCE_SPOTIFY_DAILY,
+    )
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    result = run_substrate_promote(
+        commit_facts_file=str(tmp_path / "missing.json"),
+        file_changes_file=str(tmp_path / "missing.json"),
+        symbol_changes_file=str(tmp_path / "missing.json"),
+        sources={SOURCE_PERSONAL_DAILY_SIGNAL, SOURCE_SPOTIFY_DAILY},
+        refresh_id="fixture",
+        write_evidence_graph=False,
+        window_start=date(2026, 5, 1),
+        window_end=date(2026, 5, 2),
+    )
+
+    assert result.status == "ok"
+    assert result.counts["personal_daily_signal"] == 1
+    assert result.counts["spotify_daily"] == 1
+    with connect(substrate_path(), read_only=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM personal_daily_signal").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM spotify_daily").fetchone()[0] == 1
 
 
 # ── commit facts hydration + promotion ───────────────────────────────────────

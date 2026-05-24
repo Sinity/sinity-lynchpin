@@ -1,7 +1,7 @@
 # Data Materialization Audit
 
 This note records the current audit of Lynchpin source paths where raw data,
-processed materializations, cachew caches, and query-time fallbacks can become
+processed materializations and cachew caches can become
 confused.
 
 ## Invariants
@@ -26,9 +26,21 @@ materialized product exists for the query surface. Live source DB scans,
 single-export selection, and incomplete ontology migrations are reported as
 `partial` instead of being treated as normal readiness.
 
+The stable dataset vocabulary now lives in
+`lynchpin.core.source_contracts`. Materialization audit, readiness, substrate
+status, and MCP surfaces should use those source names rather than maintaining
+parallel ad hoc lists.
+
 `--ensure-supported` rebuilds the products Lynchpin can safely refresh locally
-without extra credentials. Today that includes canonical webhistory plus
-Spotify, Reddit, Raindrop, and Facebook Messenger export products.
+without extra credentials. Today that includes canonical webhistory, Google
+Takeout inventory/products, ActivityWatch, Atuin, machine telemetry, Spotify,
+Reddit, Raindrop, Facebook Messenger, unified communications, browser
+bookmarks, ARBTT, and derived personal daily products.
+
+`python -m lynchpin.cli.materialize --all --promote --start YYYY-MM-DD --end
+YYYY-MM-DD` materializes local products and then builds a coherent substrate
+snapshot. `python -m lynchpin.cli.substrate_snapshot` is the direct snapshot
+entrypoint.
 
 ### Webhistory
 
@@ -44,6 +56,10 @@ canonical segments:
 - coverage: 2013-03-27 through 2026-05-23
 - manifest:
   `/realm/data/captures/webhistory/gestalt/derived/full_history.manifest.json`
+
+The full-history manifest records per-input source counts, final retained
+source counts, and per-source duplicate diagnostics. MCP exposes this through
+`webhistory_provenance`.
 
 Raw Takeout archives are authoritative for Takeout Chrome history. The retired
 `takeout-extracted` cache tree was removed after raw archive presence was
@@ -105,6 +121,12 @@ reads use that canonical product; direct DB reads are reserved for the
 materializer. Current materialization contains `980,808` events across window,
 AFK, and browser buckets, covering `2024-10-14` through `2026-05-23`.
 
+Historical archive processing now treats file names as candidates and accepts
+databases by SQLite schema (`events`/`buckets` tables with ActivityWatch event
+columns). `python -m lynchpin.cli.process_activitywatch_archives --audit-only`
+reports accepted and rejected processed archive DBs, which is the guardrail for
+older aw-server-rust dump layouts.
+
 ### Machine Telemetry
 
 Machine telemetry is materialized from the live SQLite database into canonical
@@ -127,6 +149,53 @@ Google Pay. Calendar is intentionally not a supported dataset; current Chat/
 Gemini exports are empty stubs and are recorded as skipped products in the
 manifest rather than reified as first-class empty sources.
 
+### Browser Bookmarks, Communications, And ARBTT
+
+Historical browser bookmark exports and Firefox/Vivaldi profile data are
+materialized to
+`/realm/data/captures/webhistory/bookmarks/processed/bookmarks.ndjson`
+(`2,485` rows, `2019-04-09` through `2024-03-28`).
+
+Messenger plus parseable Outlook CSV exports are materialized to
+`/realm/data/exports/comms/processed/communication_events.ndjson` (`5,566`
+rows, `2021-06-24` through `2026-01-03`). Teams historical raws remain
+desktop telemetry logs, not message/call transcript evidence.
+
+ARBTT capture logs are materialized through `arbtt-dump` to
+`/realm/data/captures/focus/arbtt/processed/events.ndjson` (`66,794` rows,
+`2022-07-12` through `2022-09-26`).
+
+### Substrate Snapshot Contract
+
+Current schema versions include `personal_daily_signal`, a normalized daily metric
+table for canonical personal products. The table keys by source, date, metric,
+and dimension payload, so multiple same-day metric variants such as separate
+sleep records remain distinct instead of colliding. Snapshot builds record
+every source contract into `substrate_source_status` under the same refresh ID
+as the materialized evidence graph.
+
+Derived products now live under `/realm/data/derived/lynchpin/`:
+
+- `/realm/data/derived/lynchpin/spotify/daily.ndjson`
+- `/realm/data/derived/lynchpin/personal/daily_signals.ndjson`
+
+Substrate promotion copies those products into DuckDB instead of rebuilding
+daily personal metrics at snapshot time. Missing derived products are repair
+signals; direct `substrate_snapshot` requires them to exist. MCP exposes
+`derived_product_status`, `materialization_status`, and `substrate_run_steps`
+for observability.
+
+The former `/realm/data/libraries/machine-recovery` staging tree has been
+dismantled. Semantically useful VCS/provenance rows were moved into canonical
+capture/provenance homes, and ambiguous old disk-image residue was moved to
+`/realm/inbox/quarantine/20260524-machine-recovery-unclassified/` with an audit
+manifest at
+`/realm/data/libraries/provenance/machine-recovery-dismantle/20260524/manifest.json`.
+Those residues are not Lynchpin sources merely because they exist: old software
+inventories, app leftovers, cloud sync databases, calibre libraries, and similar
+filesystem artifacts should be filed or quarantined unless they carry current,
+typed analytic value.
+
 ## High-Risk Remaining Findings
 
 ### Context-Pack Substrate Refresh Semantics
@@ -144,6 +213,13 @@ surfaces it should be surfaced as missing readiness rather than collapsed to
 zero evidence. Machine-analysis context-pack rendering now surfaces missing or
 malformed required artifacts directly in the rendered Machine Analysis section.
 
+### Snapshot Runtime
+
+Coverage and freshness reports now read materialization manifests instead of
+hydrating full source iterators for large historical exports. Daily-signal and
+Spotify daily promotion read canonical derived NDJSON products; they no longer
+scan raw or source-level historical exports during snapshot promotion.
+
 ## Lower-Risk Or Legitimate Patterns
 
 - `cachew` and `lru_cache` uses in source readers are runtime accelerators when
@@ -151,5 +227,6 @@ malformed required artifacts directly in the rendered Machine Analysis section.
 - Parser alternate-shape handling inside `web.py`, `takeout_chrome.py`, and
   source-specific CSV/JSON loaders is not a materialization fallback.
 - ActivityWatch raw access already scans live SQLite plus processed archive DBs
-  and dedups rows. Archive processing still deserves a separate audit against
-  old aw-server-rust dump formats before declaring complete historical support.
+  and dedups rows. Archive processing now has a schema audit surface; declaring
+  complete historical support still depends on running that audit over the
+  full archive collection.

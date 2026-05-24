@@ -34,5 +34,7 @@ from lynchpin.mcp.tools import signals as _signals      # noqa: E402, F401
 from lynchpin.mcp.tools import change as _change        # noqa: E402, F401
 from lynchpin.mcp.tools import review as _review        # noqa: E402, F401
 from lynchpin.mcp.tools import personal as _personal    # noqa: E402, F401
+from lynchpin.mcp.tools import capability as _capability  # noqa: E402, F401
+from lynchpin.mcp.tools import runtime as _runtime      # noqa: E402, F401
 
 __all__ = ["app"]

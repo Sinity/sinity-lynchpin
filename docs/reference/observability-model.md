@@ -36,9 +36,10 @@ The machine-readable version lives in
 | --- | --- | --- | --- |
 | `machine.telemetry` | Sinnix | Canonical raw capture | Promote live SQLite samples into `machine_metric_sample` and `machine_service_state`. |
 | `machine.power_watchdog_legacy` | Sinnix | Legacy backfill | Backfilled into `machine_metric_sample`; migrated parquet/manifests moved out of active captures into `/realm/inbox/quarantine/20260515/machine-legacy-power-watchdog-unified/`. |
-| `machine.below` | Sinnix | Operational view | Keep short-retention time-travel history; export bounded incident/experiment windows only. |
+| `machine.below` | Sinnix | Operational view | Keep time-travel history; export bounded experiment windows only. |
 | `machine.network` | Sinnix | Canonical raw capture | Integrated into `captures/machine/telemetry.sqlite` as `network_sample`, promoted into `machine_network_sample`. |
 | `machine.sinnix_observe` | Sinnix | Derived/operator report | Keep as a report, not a canonical dataset. Shrink as sources get first-class tables. |
+| `machine.sinnix_runtime_inventory` | Sinnix | Generated inventory | Read `/etc/sinnix/runtime-inventory.json` as reference context, not as a fact table. |
 | `sinex.self_observation` | Sinex | Project-native ledger | Read Sinex rollups from Lynchpin; do not copy Sinex internals into Sinnix. |
 | `polylogue.run_ledger` | Polylogue | Project-native ledger | Join to machine/service windows for agent-load experiments. |
 | `machine.experiment_run` | Sinnix | Canonical raw capture | Promote immutable run manifests into `machine_experiment_run`. |

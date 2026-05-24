@@ -1,6 +1,13 @@
 from datetime import date
 
+import pytest
+
 from lynchpin.analysis.machine.devshell import analyze_devshell_performance
+
+
+def test_devshell_performance_requires_command_windows(tmp_path):
+    with pytest.raises(FileNotFoundError, match="command performance windows is missing"):
+        analyze_devshell_performance(command_path=tmp_path / "missing.json")
 
 
 def test_devshell_performance_filters_nix_and_direnv_commands(tmp_path):

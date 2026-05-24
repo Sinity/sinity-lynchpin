@@ -20,7 +20,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _RULES_DIR = Path(__file__).resolve().parent.parent / "tool_rules" / "semgrep" / "lynchpin-privacy"
 
@@ -34,13 +34,23 @@ def build_active_semantic_static_findings(
     file_changes_file: str | PathLike[str] | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
+    """Build curated static risk findings.
+
+    The historical function name is kept because the artifact name is already
+    consumed by the analysis pipeline. The payload is static risk data, not
+    semantic interpretation.
+    """
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict_payload(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
-    changes_payload = _dict_payload(load_json_if_exists(
-        file_changes_file or resolve_analysis_path("active_file_change_facts.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
+    changes_payload = load_json_object(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
 
     selected = set(projects or ())
     snapshot_projects = _project_map(snapshot, selected)
@@ -239,7 +249,3 @@ def _changed_paths(
             continue
         result.setdefault(name, set()).add(path)
     return result
-
-
-def _dict_payload(value: Any) -> dict[str, Any] | None:
-    return value if isinstance(value, dict) else None

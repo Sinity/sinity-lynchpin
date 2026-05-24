@@ -14,7 +14,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _RULES_DIR = Path(__file__).resolve().parent.parent / "tool_rules" / "ast-grep"
 
@@ -40,10 +40,14 @@ def build_active_structural_findings(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict_payload(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
-    changes_payload = _dict_payload(load_json_if_exists(
-        file_changes_file or resolve_analysis_path("active_file_change_facts.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
+    changes_payload = load_json_object(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
 
     selected = set(projects or ())
     snapshot_projects = _project_map(snapshot, selected)
@@ -213,10 +217,6 @@ def _primary_extension(snapshot: dict[str, Any] | None, project: str) -> str:
             if isinstance(exts, dict) and exts:
                 return sorted(exts, key=lambda e: -exts[e].get("files", 0))[0]
     return ""
-
-
-def _dict_payload(value: Any) -> dict[str, Any] | None:
-    return value if isinstance(value, dict) else None
 
 
 def _list(payload: dict[str, Any] | None, key: str) -> list[Any]:

@@ -65,14 +65,8 @@ def add_polylogue(
                         "tool_use_count": session.tool_use_count,
                         "work_event_kind": session.work_event_kind,
                     },
-                    provenance=EvidenceProvenance("polylogue", "local-fast"),
-                    caveats=(
-                        EvidenceCaveat(
-                            "polylogue",
-                            "partial",
-                            "Session node may be derived from base archive tables when product rows are empty.",
-                        ),
-                    ),
+                    provenance=EvidenceProvenance("polylogue", "materialized"),
+                    caveats=(),
                 )
             )
 
@@ -89,8 +83,6 @@ def add_polylogue_work_events(
     from ..core.classify import resolve_project
     from .work_event_kind import overlay_label
 
-    confidence_floor = 0.6 if mode == "local-fast" else 0.0
-
     session_projects: dict[str, tuple[str, ...]] = {}
     for session in session_profiles_for_date(start=start, end=end + timedelta(days=1)):
         projects = tuple(
@@ -104,8 +96,6 @@ def add_polylogue_work_events(
 
     for event in work_events(start=start, end=end + timedelta(days=1)):
         if event.start is None:
-            continue
-        if event.confidence < confidence_floor:
             continue
         event_projects: list[str] = []
         for path in event.file_paths:

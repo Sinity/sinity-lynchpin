@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from ..core.config import get_config
 
@@ -42,9 +41,8 @@ def source_freshness(
 ) -> tuple[SourceFreshness, ...]:
     """Return one freshness contract per configured source.
 
-    Prefer promoted substrate dates when a source has a promoted table. Fall
-    back to source-owned parsers for export formats where that is cheap enough,
-    then to filesystem mtime as a last observable signal. No freshness date is
+    Prefer promoted substrate dates, then materialized product bounds, then
+    filesystem mtime as the last observable signal. No freshness date is
     invented when the source cannot provide one.
     """
     if substrate_dates is not None:
@@ -79,9 +77,15 @@ def _compute_source_freshness(
 ) -> tuple[SourceFreshness, ...]:
     cfg = get_config()
     available = cfg.available_sources()
+    materialized_dates = _materialized_last_dates()
     rows: list[SourceFreshness] = []
     for source, is_available in sorted(available.items()):
-        observed, basis, path = _source_observed_date(source, substrate_dates, available=is_available)
+        observed, basis, path = _source_observed_date(
+            source,
+            substrate_dates,
+            materialized_dates,
+            available=is_available,
+        )
         stale = bool(observed and (reference - observed).days > STALE_AFTER_DAYS)
         hint = _REPAIR_HINTS.get(source) if stale or not is_available else None
         rows.append(SourceFreshness(
@@ -99,57 +103,43 @@ def _compute_source_freshness(
 def _source_observed_date(
     source: str,
     substrate_dates: Mapping[str, date],
+    materialized_dates: Mapping[str, tuple[date | None, Path | None]],
     *,
     available: bool,
 ) -> tuple[date | None, str | None, Path | None]:
-    cfg = get_config()
     if source in substrate_dates:
         return substrate_dates[source], "substrate", None
     if not available:
         return None, None, _configured_path(source)
-    if source == "sleep":
-        from .sleep import entries
-
-        return _max_date((entry.date for entry in entries())), "source", cfg.sleep_jsonl
-    if source == "reddit":
-        from .reddit import iter_comments, iter_posts
-
-        return _max_date(
-            item.created.date()
-            for iterator in (iter_comments(), iter_posts())
-            for item in iterator
-            if item.created is not None
-        ), "source", cfg.reddit_export_dir
-    if source == "raindrop":
-        from .exports import iter_raindrop_bookmarks
-
-        return _max_date(
-            bookmark.created.date()
-            for bookmark in iter_raindrop_bookmarks()
-            if bookmark.created is not None
-        ), "source", cfg.raindrop_csv
-    if source == "fbmessenger":
-        from .exports import iter_fbmessenger_messages
-
-        return _max_date(
-            message.timestamp.date()
-            for message in iter_fbmessenger_messages()
-            if message.timestamp is not None
-        ), "source", cfg.fbmessenger_gdpr_root
-    if source == "webhistory":
-        from .web import _iter_all_visits
-
-        return _max_date((visit.timestamp.date() for visit in _iter_all_visits())), "canonical-ndjson", cfg.webhistory_ndjson
-    if source == "spotify":
-        from .spotify import iter_streams
-
-        return _max_date(
-            stream.end_time.date()
-            for stream in iter_streams()
-            if stream.end_time is not None
-        ), "source", cfg.spotify_root
+    materialized = materialized_dates.get(source)
+    if materialized is not None:
+        observed, path = materialized
+        return observed, "materialized", path
     source_path = _configured_path(source)
     return _mtime_date(source_path), "filesystem" if source_path else None, source_path
+
+
+def _materialized_last_dates() -> dict[str, tuple[date | None, Path | None]]:
+    from lynchpin.materialization import audit_materialization
+
+    mapping = {
+        "atuin": "atuin",
+        "fbmessenger": "facebook_messenger",
+        "reddit": "reddit",
+        "sleep": "sleep",
+        "spotify": "spotify",
+        "webhistory": "webhistory",
+        "raindrop": "raindrop",
+    }
+    rows = {row.name: row for row in audit_materialization()}
+    out: dict[str, tuple[date | None, Path | None]] = {}
+    for source, contract in mapping.items():
+        row = rows.get(contract)
+        if row is None:
+            continue
+        path = row.materialized_paths[0] if row.materialized_paths else None
+        out[source] = (row.last_date, path)
+    return out
 
 
 def _configured_path(source: str) -> Path | None:
@@ -165,14 +155,6 @@ def _configured_path(source: str) -> Path | None:
         "spotify": cfg.spotify_root,
     }
     return mapping.get(source)
-
-
-def _max_date(values: Any) -> date | None:
-    latest: date | None = None
-    for value in values:
-        if isinstance(value, date) and (latest is None or value > latest):
-            latest = value
-    return latest
 
 
 def _mtime_date(path: Path | None) -> date | None:

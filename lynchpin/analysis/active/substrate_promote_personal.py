@@ -8,8 +8,11 @@ from typing import Any
 
 from .substrate_promote_status import (
     SOURCE_BORG_DRILL,
+    SOURCE_ACTIVITY_CONTENT,
+    SOURCE_PERSONAL_DAILY_SIGNAL,
     SOURCE_SINNIX_GENERATION,
     SOURCE_SPOTIFY_DAILY,
+    SOURCE_TITLE_CLASSIFICATION,
     SourceSelection,
     record_source_status,
 )
@@ -28,8 +31,13 @@ def promote_personal_sources(
 ) -> None:
     from lynchpin.substrate.personal import (
         promote_borg_drill_runs,
+        promote_activity_content_buckets,
+        promote_activity_content_days,
+        promote_activity_title_usage,
+        promote_personal_daily_signals,
         promote_sinnix_generations,
-        promote_spotify_daily,
+        promote_spotify_daily_rows,
+        promote_title_classifications_from_path,
     )
 
     # ── sinnix_generation: best-effort promotion from activation JSONL ───
@@ -145,14 +153,18 @@ def promote_personal_sources(
     # ── spotify_daily: best-effort promotion from streaming history ──────
     if selection.includes(SOURCE_SPOTIFY_DAILY):
         try:
-            from lynchpin.sources.spotify import iter_streams
+            from lynchpin.sources.personal_signals import iter_spotify_daily_signals
 
-            streams = list(iter_streams())
-            if streams:
-                counts["spotify_daily"] = promote_spotify_daily(
+            spotify_rows = [
+                row
+                for row in iter_spotify_daily_signals()
+                if window_start <= row.date < window_end
+            ]
+            if spotify_rows:
+                counts["spotify_daily"] = promote_spotify_daily_rows(
                     conn,
                     refresh_id=refresh_id,
-                    streams=streams,
+                    rows=spotify_rows,
                 )
                 record_source_status(
                     conn,
@@ -183,6 +195,136 @@ def promote_personal_sources(
                 conn,
                 refresh_id=refresh_id,
                 source=SOURCE_SPOTIFY_DAILY,
+                status="error",
+                reason=str(exc),
+                row_count=0,
+                window_start=window_start,
+                window_end=window_end,
+            )
+
+    # ── personal_daily_signal: normalized daily metrics for canonical products
+    if selection.includes(SOURCE_TITLE_CLASSIFICATION):
+        try:
+            from lynchpin.sources.title_metadata import title_metadata_path
+
+            counts["title_classification"] = promote_title_classifications_from_path(
+                conn,
+                refresh_id=refresh_id,
+                path=str(title_metadata_path()),
+            )
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_TITLE_CLASSIFICATION,
+                status="ok" if counts["title_classification"] else "empty",
+                reason=None if counts["title_classification"] else "no title classifications available",
+                row_count=counts["title_classification"],
+                window_start=window_start,
+                window_end=window_end,
+            )
+        except Exception as exc:
+            log.warning("substrate_promote: title_classification promotion skipped: %s", exc)
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_TITLE_CLASSIFICATION,
+                status="error",
+                reason=str(exc),
+                row_count=0,
+                window_start=window_start,
+                window_end=window_end,
+            )
+
+    if selection.includes(SOURCE_ACTIVITY_CONTENT):
+        try:
+            from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
+
+            content_rows = [
+                row
+                for row in iter_activity_content_days()
+                if window_start <= row.date < window_end
+            ]
+            usage_rows = [
+                row
+                for row in iter_activity_title_usage()
+                if row.last_date is not None
+                and row.first_date is not None
+                and row.first_date < window_end
+                and row.last_date >= window_start
+            ]
+            counts["activity_content_day"] = promote_activity_content_days(
+                conn,
+                refresh_id=refresh_id,
+                rows=content_rows,
+            )
+            counts["activity_content_bucket"] = promote_activity_content_buckets(
+                conn,
+                refresh_id=refresh_id,
+                rows=content_rows,
+            )
+            counts["activity_title_usage"] = promote_activity_title_usage(
+                conn,
+                refresh_id=refresh_id,
+                rows=usage_rows,
+            )
+            row_count = counts["activity_content_day"] + counts["activity_content_bucket"] + counts["activity_title_usage"]
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_ACTIVITY_CONTENT,
+                status="ok" if row_count else "empty",
+                reason=None if row_count else "no activity-content rows in window",
+                row_count=row_count,
+                window_start=window_start,
+                window_end=window_end,
+            )
+        except Exception as exc:
+            log.warning("substrate_promote: activity_content promotion skipped: %s", exc)
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_ACTIVITY_CONTENT,
+                status="error",
+                reason=str(exc),
+                row_count=0,
+                window_start=window_start,
+                window_end=window_end,
+            )
+
+    # ── personal_daily_signal: normalized daily metrics for canonical products
+    if selection.includes(SOURCE_PERSONAL_DAILY_SIGNAL):
+        try:
+            from lynchpin.sources.personal_signals import iter_personal_daily_signals
+
+            signal_rows = [
+                (row.source, row.date, row.metric, row.value, row.dimensions)
+                for row in iter_personal_daily_signals()
+                if window_start <= row.date < window_end
+            ]
+            counts["personal_daily_signal"] = promote_personal_daily_signals(
+                conn,
+                refresh_id=refresh_id,
+                rows=signal_rows,
+            )
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_PERSONAL_DAILY_SIGNAL,
+                status="ok" if signal_rows else "empty",
+                reason=None if signal_rows else "no daily personal-source signals in window",
+                row_count=counts["personal_daily_signal"],
+                window_start=window_start,
+                window_end=window_end,
+            )
+        except Exception as exc:
+            log.warning(
+                "substrate_promote: personal_daily_signal promotion skipped: %s",
+                exc,
+            )
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_PERSONAL_DAILY_SIGNAL,
                 status="error",
                 reason=str(exc),
                 row_count=0,

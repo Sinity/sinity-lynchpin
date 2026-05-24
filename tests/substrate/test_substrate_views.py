@@ -85,7 +85,7 @@ def _insert_build(conn, *, refresh_id: str) -> None:
             refresh_id,
             date(2026, 5, 1),
             date(2026, 5, 7),
-            "local-fast",
+            "materialized",
             [],
             0,
             0,

@@ -12,7 +12,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _IGNORED_PATH_PARTS = {
     ".agent",
@@ -42,7 +42,7 @@ def _python_project_paths(
     snapshot_path: str, selected: set[str] | None,
 ) -> tuple[dict[str, str], set[str]]:
     """Return {project_name: abs_path} for Python projects from snapshot."""
-    snapshot = load_json_if_exists(snapshot_path) or {}
+    snapshot = load_json_object(snapshot_path, label="active project snapshot")
     result: dict[str, str] = {}
     top_exts: dict[str, set[str]] = {}
     for proj in snapshot.get("projects") or []:

@@ -26,8 +26,24 @@ def test_mcp_tools_registered() -> None:
         machine_observational_baselines,
         machine_service_state_summary,
     )
-    from lynchpin.mcp.tools.personal import spotify_daily
+    from lynchpin.mcp.tools.personal import (
+        bookmark_daily,
+        bookmarks_search,
+        communication_daily,
+        communication_events,
+        focus_daily,
+        google_takeout_daily,
+        google_takeout_events,
+        contract_status,
+        materialization_status,
+        personal_daily_signals,
+        spotify_daily,
+        web_daily,
+    )
+    from lynchpin.mcp.tools.capability import mcp_capability_matrix
     from lynchpin.mcp.tools.review import pr_review_rows, review_bottlenecks
+    from lynchpin.mcp.tools.runtime import mcp_runtime_status
+    from lynchpin.mcp.tools.signals import verify_vs_edit_ratio
     from lynchpin.mcp.tools.substrate import (
         list_evidence_graph_builds,
         list_substrate_tables,
@@ -35,6 +51,13 @@ def test_mcp_tools_registered() -> None:
         query_substrate,
         substrate_readiness_report,
         substrate_source_status,
+        analysis_readiness,
+        analysis_claims,
+        claim_evidence,
+        contract_coverage,
+        mcp_capability_map,
+        promotion_runs,
+        substrate_run_steps,
     )
     from lynchpin.mcp.tools.views import (
         closure_chain_walks,
@@ -57,6 +80,25 @@ def test_mcp_tools_registered() -> None:
         pr_review_rows,
         review_bottlenecks,
         spotify_daily,
+        web_daily,
+        bookmarks_search,
+        bookmark_daily,
+        communication_events,
+        communication_daily,
+        focus_daily,
+        google_takeout_daily,
+        google_takeout_events,
+        personal_daily_signals,
+        contract_status,
+        materialization_status,
+        analysis_readiness,
+        analysis_claims,
+        claim_evidence,
+        contract_coverage,
+        mcp_capability_map,
+        mcp_capability_matrix,
+        promotion_runs,
+        substrate_run_steps,
         refactor_candidates,
         file_hotspots,
         conventional_commits,
@@ -71,5 +113,19 @@ def test_mcp_tools_registered() -> None:
         machine_experiment_claims,
         machine_metrics_daily,
         machine_service_state_summary,
+        mcp_runtime_status,
+        verify_vs_edit_ratio,
     ]:
         assert callable(fn)
+
+
+def test_default_mcp_does_not_export_mutating_maintenance_tools() -> None:
+    from lynchpin.mcp.tools import substrate
+    from lynchpin.mcp.tools import health
+
+    assert callable(substrate.ai_attribution_backfill)
+    assert callable(substrate.substrate_prune)
+    assert callable(health.promote_analysis_product)
+    assert not hasattr(substrate.ai_attribution_backfill, "name")
+    assert not hasattr(substrate.substrate_prune, "name")
+    assert not hasattr(health.promote_analysis_product, "name")

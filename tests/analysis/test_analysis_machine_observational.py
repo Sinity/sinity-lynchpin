@@ -1,6 +1,13 @@
 from datetime import date
 
+import pytest
+
 from lynchpin.analysis.machine.observational import analyze_observational_command_deltas
+
+
+def test_observational_command_deltas_require_command_windows(tmp_path):
+    with pytest.raises(FileNotFoundError, match="command performance windows is missing"):
+        analyze_observational_command_deltas(command_path=tmp_path / "missing.json")
 
 
 def test_observational_command_deltas_match_by_tool_and_work_state(tmp_path):

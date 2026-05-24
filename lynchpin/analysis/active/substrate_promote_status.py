@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
+from lynchpin.core.source_contracts import PROMOTION_STAGE_NAMES
+
 # Source identifiers used in substrate_source_status.source. Keep these as a
 # stable vocabulary for MCP/readiness consumers.
 SOURCE_COMMITS = "commits"
@@ -16,6 +18,9 @@ SOURCE_AI_WORK_EVENTS = "ai_work_events"
 SOURCE_EVIDENCE_GRAPH = "evidence_graph"
 SOURCE_PR_REVIEW = "pr_review"
 SOURCE_SPOTIFY_DAILY = "spotify_daily"
+SOURCE_PERSONAL_DAILY_SIGNAL = "personal_daily_signal"
+SOURCE_TITLE_CLASSIFICATION = "title_classification"
+SOURCE_ACTIVITY_CONTENT = "activity_content"
 SOURCE_MACHINE = "machine"
 SOURCE_MACHINE_GPU = "machine_gpu_sample"
 SOURCE_MACHINE_NETWORK = "machine_network_sample"
@@ -24,24 +29,7 @@ SOURCE_MACHINE_EXPERIMENTS = "machine_experiments"
 SOURCE_SINNIX_GENERATION = "sinnix_generation"
 SOURCE_BORG_DRILL = "borg_drill_run"
 
-ALL_SOURCE_IDS = frozenset(
-    {
-        SOURCE_COMMITS,
-        SOURCE_FILE_CHANGES,
-        SOURCE_SYMBOLS,
-        SOURCE_AI_WORK_EVENTS,
-        SOURCE_EVIDENCE_GRAPH,
-        SOURCE_PR_REVIEW,
-        SOURCE_SPOTIFY_DAILY,
-        SOURCE_MACHINE,
-        SOURCE_MACHINE_GPU,
-        SOURCE_MACHINE_NETWORK,
-        SOURCE_MACHINE_SERVICE_STATE,
-        SOURCE_MACHINE_EXPERIMENTS,
-        SOURCE_SINNIX_GENERATION,
-        SOURCE_BORG_DRILL,
-    }
-)
+ALL_SOURCE_IDS = frozenset(PROMOTION_STAGE_NAMES)
 
 MACHINE_SOURCE_IDS = frozenset(
     {
@@ -85,23 +73,25 @@ def record_source_status(
     status: str,
     reason: str | None,
     row_count: int,
+    kind: str = "stage",
     window_start: date | None = None,
     window_end: date | None = None,
 ) -> None:
     """Upsert a per-source status row into ``substrate_source_status``."""
     conn.execute(
-        "DELETE FROM substrate_source_status WHERE refresh_id = ? AND source = ?",
-        [refresh_id, source],
+        "DELETE FROM substrate_source_status WHERE refresh_id = ? AND source = ? AND kind = ?",
+        [refresh_id, source, kind],
     )
     conn.execute(
         """
         INSERT INTO substrate_source_status
-        (refresh_id, source, status, reason, row_count, window_start, window_end, recorded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             refresh_id,
             source,
+            kind,
             status,
             reason,
             int(row_count),

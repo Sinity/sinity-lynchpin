@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.core.parse import parse_datetime
 from lynchpin.core.projects import canonical_project_name
 from lynchpin.sources.terminal import AtuinCommand
@@ -69,7 +69,10 @@ def analyze_command_performance(
         from lynchpin.sources.terminal import commands
 
         commands_iterable = list(commands(start=start_dt, end=end_dt))
-    states_payload = load_json_if_exists(state_path or resolve_analysis_path("machine_work_state_windows.json"))
+    states_payload = load_json_object(
+        state_path or resolve_analysis_path("machine_work_state_windows.json"),
+        label="machine work-state windows",
+    )
     state_rows = _state_rows(states_payload)
     caveats: list[str] = []
     if not state_rows:

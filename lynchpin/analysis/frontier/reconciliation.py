@@ -29,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Sequence
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 def build_active_frontier_reconciliation(
@@ -43,12 +43,14 @@ def build_active_frontier_reconciliation(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    frontier_payload = _dict(load_json_if_exists(
-        frontier_file or resolve_analysis_path("active_github_frontier.json")
-    ))
-    work_payload = _dict(load_json_if_exists(
-        work_packages_file or resolve_analysis_path("active_work_packages.json")
-    ))
+    frontier_payload = load_json_object(
+        frontier_file or resolve_analysis_path("active_github_frontier.json"),
+        label="active GitHub frontier",
+    )
+    work_payload = load_json_object(
+        work_packages_file or resolve_analysis_path("active_work_packages.json"),
+        label="active work packages",
+    )
 
     selected = set(projects or ())
 
@@ -257,10 +259,6 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 __all__ = [

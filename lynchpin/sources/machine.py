@@ -56,6 +56,12 @@ __all__ = [
 def canonical_machine_table_path(table: str) -> Path:
     return get_config().captures_root / f"machine/processed/{table}.ndjson"
 
+
+def _default_machine_db() -> Path | None:
+    db = get_config().machine_telemetry_db
+    return db if db.exists() else None
+
+
 def readiness() -> MachineSourceReadiness:
     cfg = get_config()
     live_rows = count_sqlite_rows(cfg.machine_telemetry_db, "metric_sample")
@@ -76,6 +82,9 @@ def readiness() -> MachineSourceReadiness:
 
 def metric_samples(*, start: date | None = None, end: date | None = None, path: Path | None = None) -> Iterator[MachineMetricSample]:
     if path is None:
+        if db := _default_machine_db():
+            yield from metric_samples(start=start, end=end, path=db)
+            return
         yield from _metric_samples_from_ndjson(canonical_machine_table_path("metric_sample"), start=start, end=end)
         return
     db = path
@@ -168,6 +177,9 @@ def metric_samples(*, start: date | None = None, end: date | None = None, path: 
 
 def service_states(*, start: date | None = None, end: date | None = None, path: Path | None = None) -> Iterator[MachineServiceState]:
     if path is None:
+        if db := _default_machine_db():
+            yield from service_states(start=start, end=end, path=db)
+            return
         yield from _service_states_from_ndjson(canonical_machine_table_path("service_state"), start=start, end=end)
         return
     db = path
@@ -216,6 +228,9 @@ def gpu_samples(
     path: Path | None = None,
 ) -> Iterator[MachineGpuSample]:
     if path is None:
+        if db := _default_machine_db():
+            yield from gpu_samples(start=start, end=end, path=db)
+            return
         yield from _gpu_samples_from_ndjson(canonical_machine_table_path("gpu_sample"), start=start, end=end)
         return
     db = path
@@ -268,6 +283,9 @@ def network_samples(
     path: Path | None = None,
 ) -> Iterator[MachineNetworkSample]:
     if path is None:
+        if db := _default_machine_db():
+            yield from network_samples(start=start, end=end, path=db)
+            return
         yield from _network_samples_from_ndjson(canonical_machine_table_path("network_sample"), start=start, end=end)
         return
     db = path

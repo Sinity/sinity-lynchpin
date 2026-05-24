@@ -30,7 +30,7 @@ def _graph(nodes: list[EvidenceNode] = None) -> EvidenceGraph:
     return EvidenceGraph(
         start=date(2026, 5, 1), end=date(2026, 5, 7),
         generated_at=datetime(2026, 5, 7, tzinfo=UTC),
-        mode="local-heavy",
+        mode="materialized",
         nodes=tuple(nodes or []),
         edges=(),
         caveats=(),
@@ -72,7 +72,7 @@ def _correlated_day(*, project: str, day: date, sources: list[str]) -> Correlate
 def test_coverage_high_when_source_available():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     git_row = next(r for r in matrix.rows if r.layer == "git")
@@ -83,7 +83,7 @@ def test_coverage_high_when_source_available():
 def test_coverage_low_when_source_missing():
     readiness = _readiness(
         SourceReadiness(source="sleep", status="missing", reason="export not found",
-                        cost="local-fast"),
+                        cost="materialized"),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     sleep_row = next(r for r in matrix.rows if r.layer == "sleep")
@@ -93,7 +93,7 @@ def test_coverage_low_when_source_missing():
 def test_freshness_high_for_recent_data():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 5)),
+                        cost="materialized", last_date=date(2026, 5, 5)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     git_row = next(r for r in matrix.rows if r.layer == "git")
@@ -103,7 +103,7 @@ def test_freshness_high_for_recent_data():
 def test_freshness_low_for_stale_data():
     readiness = _readiness(
         SourceReadiness(source="spotify", status="stale", reason="last export 60d ago",
-                        cost="local-fast", last_date=date(2026, 3, 1)),
+                        cost="materialized", last_date=date(2026, 3, 1)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     spotify_row = next(r for r in matrix.rows if r.layer == "spotify")
@@ -115,7 +115,7 @@ def test_kind_quality_high_when_majority_high_tier():
     nodes += [_ai_work_event(kind_tier="medium") for _ in range(2)]
     readiness = _readiness(
         SourceReadiness(source="polylogue", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(nodes), correlation_rows=())
     poly_row = next(r for r in matrix.rows if r.layer == "polylogue")
@@ -128,7 +128,7 @@ def test_kind_quality_low_when_few_high_tier():
     nodes += [_ai_work_event(kind_tier="high") for _ in range(2)]
     readiness = _readiness(
         SourceReadiness(source="polylogue", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(nodes), correlation_rows=())
     poly_row = next(r for r in matrix.rows if r.layer == "polylogue")
@@ -138,7 +138,7 @@ def test_kind_quality_low_when_few_high_tier():
 def test_kind_quality_n_a_for_non_polylogue_layer():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     git_row = next(r for r in matrix.rows if r.layer == "git")
@@ -148,7 +148,7 @@ def test_kind_quality_n_a_for_non_polylogue_layer():
 def test_cross_source_high_when_layer_co_occurs_most_days():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     rows = [
         _correlated_day(project="demo", day=date(2026, 5, d), sources=["git", "polylogue"])
@@ -162,7 +162,7 @@ def test_cross_source_high_when_layer_co_occurs_most_days():
 def test_cross_source_low_when_layer_isolated():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     # All rows are git-only — no co-occurrence with other sources.
     rows = [
@@ -177,9 +177,9 @@ def test_cross_source_low_when_layer_isolated():
 def test_render_includes_overall_tier_and_layers():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
         SourceReadiness(source="polylogue", status="available", reason="ok",
-                        cost="local-fast", last_date=date(2026, 5, 7)),
+                        cost="materialized", last_date=date(2026, 5, 7)),
     )
     nodes = [_ai_work_event(kind_tier="high") for _ in range(10)]
     rows = [_correlated_day(project="demo", day=date(2026, 5, 1), sources=["git", "polylogue"])]

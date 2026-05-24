@@ -1,9 +1,9 @@
-"""Semantic enrichment over evidence graphs.
+"""Weak deterministic evidence tagging over evidence graphs.
 
-This module is the narrative-v2 bridge: it converts low-level graph nodes into
-rebuildable annotations, clusters, and narrative-worthy moments. This surface is
-deterministic-only: model-assisted enrichment is intentionally not exposed here
-until Lynchpin has a real provider policy and reviewable prompts for it.
+This module converts low-level graph nodes into rebuildable tags, clusters, and
+narrative-worthy moments. The tags are keyword/proximity evidence only; they are
+not a substitute for model-assisted semantic classification or grounded content
+analysis.
 """
 from __future__ import annotations
 import json
@@ -20,14 +20,14 @@ from ..core.projects import canonical_project_name
 from ..core.serialization import jsonable
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from .evidence_graph import build_evidence_graph
-SemanticMode = Literal['deterministic']
-SemanticCategory = Literal['activity', 'artifact', 'intent', 'decision', 'blocker', 'question', 'risk', 'energy', 'workload', 'source_quality']
+WeakTagMode = Literal['deterministic']
+WeakTagCategory = Literal['activity', 'artifact', 'intent', 'decision', 'blocker', 'question', 'risk', 'energy', 'workload', 'source_quality']
 
 @dataclass(frozen=True)
-class SemanticAnnotation:
+class WeakTagAnnotation:
     id: str
     node_id: str
-    category: SemanticCategory
+    category: WeakTagCategory
     label: str
     summary: str
     confidence: float
@@ -62,49 +62,49 @@ class NarrativeMoment:
     caveats: tuple[EvidenceCaveat, ...] = ()
 
 @dataclass(frozen=True)
-class SemanticEnrichment:
+class WeakTagEnrichment:
     start: date
     end: date
     generated_at: datetime
-    mode: SemanticMode
+    mode: WeakTagMode
     graph: EvidenceGraph
-    annotations: tuple[SemanticAnnotation, ...]
+    annotations: tuple[WeakTagAnnotation, ...]
     clusters: tuple[EvidenceCluster, ...]
     moments: tuple[NarrativeMoment, ...]
     caveats: tuple[EvidenceCaveat, ...] = ()
 
-def build_semantic_enrichment(graph: EvidenceGraph, *, mode: SemanticMode='deterministic', persist: bool=False) -> SemanticEnrichment:
-    """Build semantic annotations, clusters, and narrative moments from a graph."""
+def build_weak_tags(graph: EvidenceGraph, *, mode: WeakTagMode='deterministic', persist: bool=False) -> WeakTagEnrichment:
+    """Build weak evidence tags, clusters, and narrative moments from a graph."""
     annotations = _annotate_graph(graph)
     clusters = _cluster_graph(graph, annotations)
     moments = _rank_moments(graph, clusters)
     caveats = tuple(graph.caveats)
-    enrichment = SemanticEnrichment(start=graph.start, end=graph.end, generated_at=datetime.now(timezone.utc), mode=mode, graph=graph, annotations=annotations, clusters=clusters, moments=moments, caveats=caveats)
+    enrichment = WeakTagEnrichment(start=graph.start, end=graph.end, generated_at=datetime.now(timezone.utc), mode=mode, graph=graph, annotations=annotations, clusters=clusters, moments=moments, caveats=caveats)
     if persist:
-        save_semantic_enrichment(enrichment)
+        save_weak_tags(enrichment)
     return enrichment
 
-def current_semantic_enrichment(*, start: date, end: date, projects: Sequence[str] | None=None, mode: SemanticMode='deterministic', persist: bool=False) -> SemanticEnrichment:
-    """Build the current semantic product from primary sources.
+def current_weak_tags(*, start: date, end: date, projects: Sequence[str] | None=None, mode: WeakTagMode='deterministic', persist: bool=False) -> WeakTagEnrichment:
+    """Build the current weak-tag product from primary sources.
 
     Persisted rows are a durable product surface for inspection and downstream
-    tooling, not a domain-object cache yet: `SemanticEnrichment` deliberately
+    tooling, not a domain-object cache yet: `WeakTagEnrichment` deliberately
     contains the source graph, so this function rebuilds from primary evidence.
     """
     selected = tuple(sorted((project for project in (canonical_project_name(p) for p in projects or ()) if project)))
-    graph = build_evidence_graph(start=start, end=end, projects=selected, mode='local-fast')
-    return build_semantic_enrichment(graph, mode=mode, persist=persist)
+    graph = build_evidence_graph(start=start, end=end, projects=selected)
+    return build_weak_tags(graph, mode=mode, persist=persist)
 
-def narrative_moments(*, start: date, end: date, projects: Sequence[str] | None=None, limit: int=24, mode: SemanticMode='deterministic', persist: bool=False) -> tuple[NarrativeMoment, ...]:
-    enrichment = current_semantic_enrichment(start=start, end=end, projects=projects, mode=mode, persist=persist)
+def narrative_moments(*, start: date, end: date, projects: Sequence[str] | None=None, limit: int=24, mode: WeakTagMode='deterministic', persist: bool=False) -> tuple[NarrativeMoment, ...]:
+    enrichment = current_weak_tags(start=start, end=end, projects=projects, mode=mode, persist=persist)
     return tuple(sorted(enrichment.moments, key=lambda moment: moment.score, reverse=True)[:limit])
 
-def render_semantic_summary(enrichment: SemanticEnrichment, *, moment_limit: int=12) -> str:
-    """Render compact semantic enrichment coverage."""
+def render_weak_tag_summary(enrichment: WeakTagEnrichment, *, moment_limit: int=12) -> str:
+    """Render compact weak-tag coverage."""
     categories = Counter((annotation.category for annotation in enrichment.annotations))
     labels = Counter((label for cluster in enrichment.clusters for label in cluster.labels))
     category_counts: dict[object, int] = {key: value for key, value in categories.items()}
-    lines = [f'- Annotations: {len(enrichment.annotations)} ({_format_counts(category_counts)})', f'- Clusters: {len(enrichment.clusters)}', f'- Narrative moments: {len(enrichment.moments)}', f'- Top labels: {_format_counts(dict(labels.most_common(10)))}', '', '| Date | Project | Score | Labels | Moment |', '|---|---:|---:|---|---|']
+    lines = ['- Caveat: keyword/proximity tags only; not model-assisted content classification.', f'- Annotations: {len(enrichment.annotations)} ({_format_counts(category_counts)})', f'- Clusters: {len(enrichment.clusters)}', f'- Narrative moments: {len(enrichment.moments)}', f'- Top labels: {_format_counts(dict(labels.most_common(10)))}', '', '| Date | Project | Score | Labels | Moment |', '|---|---:|---:|---|---|']
     for moment in sorted(enrichment.moments, key=lambda item: item.score, reverse=True)[:moment_limit]:
         labels_s = ', '.join(moment.labels)
         summary = moment.summary.replace('|', '\\|')
@@ -113,33 +113,33 @@ def render_semantic_summary(enrichment: SemanticEnrichment, *, moment_limit: int
         lines.append('|  |  | 0.00 |  | no narrative moments |')
     return '\n'.join(lines)
 
-def save_semantic_enrichment(enrichment: SemanticEnrichment) -> None:
-    """Persist rebuildable semantic products to the local SQLite cache."""
-    db = _semantic_db_path()
+def save_weak_tags(enrichment: WeakTagEnrichment) -> None:
+    """Persist rebuildable weak-tag products to the local SQLite cache."""
+    db = _weak_tags_db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
     project_key = _project_key({node.project for node in enrichment.graph.nodes if node.project})
     with sqlite3.connect(db) as conn:
         _ensure_schema(conn)
         params = (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode)
-        conn.execute('DELETE FROM semantic_annotations WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
-        conn.execute('DELETE FROM semantic_clusters WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
-        conn.execute('DELETE FROM semantic_moments WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+        conn.execute('DELETE FROM weak_tags_annotations WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+        conn.execute('DELETE FROM weak_tags_clusters WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+        conn.execute('DELETE FROM weak_tags_moments WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
         for annotation in enrichment.annotations:
-            conn.execute('INSERT INTO semantic_annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, annotation.id, annotation.node_id, annotation.category, annotation.label, annotation.summary, annotation.confidence, _json(annotation.payload), _json(annotation.caveats)))
+            conn.execute('INSERT INTO weak_tags_annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, annotation.id, annotation.node_id, annotation.category, annotation.label, annotation.summary, annotation.confidence, _json(annotation.payload), _json(annotation.caveats)))
         for cluster in enrichment.clusters:
-            conn.execute('INSERT INTO semantic_clusters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, cluster.id, cluster.date.isoformat(), cluster.project, _json(cluster.node_ids), _json(cluster.annotation_ids), _json(cluster.labels), cluster.summary, _json(cluster.support_sources), cluster.score))
+            conn.execute('INSERT INTO weak_tags_clusters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, cluster.id, cluster.date.isoformat(), cluster.project, _json(cluster.node_ids), _json(cluster.annotation_ids), _json(cluster.labels), cluster.summary, _json(cluster.support_sources), cluster.score))
         for moment in enrichment.moments:
-            conn.execute('INSERT INTO semantic_moments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, moment.id, moment.date.isoformat(), moment.project, moment.cluster_id, moment.title, moment.summary, moment.score, _json({'source_node_ids': moment.source_node_ids, 'labels': moment.labels, 'caveats': moment.caveats})))
+            conn.execute('INSERT INTO weak_tags_moments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, moment.id, moment.date.isoformat(), moment.project, moment.cluster_id, moment.title, moment.summary, moment.score, _json({'source_node_ids': moment.source_node_ids, 'labels': moment.labels, 'caveats': moment.caveats})))
 
-def _annotate_graph(graph: EvidenceGraph) -> tuple[SemanticAnnotation, ...]:
-    annotations: list[SemanticAnnotation] = []
+def _annotate_graph(graph: EvidenceGraph) -> tuple[WeakTagAnnotation, ...]:
+    annotations: list[WeakTagAnnotation] = []
     for node in graph.nodes:
         annotations.extend(_annotations_for_node(node))
     return tuple(sorted(annotations, key=lambda item: item.id))
 
-def _annotations_for_node(node: EvidenceNode) -> tuple[SemanticAnnotation, ...]:
+def _annotations_for_node(node: EvidenceNode) -> tuple[WeakTagAnnotation, ...]:
     payload = node.payload or {}
-    result: list[SemanticAnnotation] = []
+    result: list[WeakTagAnnotation] = []
     add = result.append
     text = f"{node.summary}\n{payload.get('text', '')}\n{payload.get('excerpt', '')}"
     if node.kind == 'commit':
@@ -156,13 +156,13 @@ def _annotations_for_node(node: EvidenceNode) -> tuple[SemanticAnnotation, ...]:
     elif node.kind == 'ai_session':
         add(_annotation(node, 'activity', 'ai_assisted_work', f'AI session: {node.summary}', 0.65, {'message_count': payload.get('message_count'), 'tool_use_count': payload.get('tool_use_count'), 'work_event_kind': payload.get('work_event_kind')}, caveats=node.caveats))
     elif node.kind == 'raw_log':
-        for category, label, confidence in _text_semantics(text):
+        for category, label, confidence in _text_weak_tags(text):
             add(_annotation(node, category, label, node.summary, confidence, {'source': 'raw_log'}))
     if not result:
         result.append(_annotation(node, 'source_quality', 'unclassified_evidence', node.summary, 0.3, {}))
     return tuple(result)
 
-def _cluster_graph(graph: EvidenceGraph, annotations: Sequence[SemanticAnnotation]) -> tuple[EvidenceCluster, ...]:
+def _cluster_graph(graph: EvidenceGraph, annotations: Sequence[WeakTagAnnotation]) -> tuple[EvidenceCluster, ...]:
     node_map = graph.node_map()
     annotation_ids_by_node: dict[str, list[str]] = defaultdict(list)
     labels_by_node: dict[str, list[str]] = defaultdict(list)
@@ -203,13 +203,13 @@ def _rank_moments(graph: EvidenceGraph, clusters: Sequence[EvidenceCluster]) -> 
         moments.append(NarrativeMoment(id=f'moment:{cluster.id}', date=cluster.date, project=cluster.project, cluster_id=cluster.id, title=title, summary=cluster.summary, score=cluster.score, source_node_ids=cluster.node_ids, labels=cluster.labels, caveats=cluster.caveats + tuple(graph.caveats)))
     return tuple(sorted(moments, key=lambda item: item.score, reverse=True))
 
-def _annotation(node: EvidenceNode, category: SemanticCategory, label: str, summary: str, confidence: float, payload: dict[str, Any], *, caveats: tuple[EvidenceCaveat, ...]=()) -> SemanticAnnotation:
-    return SemanticAnnotation(id=f'ann:{node.id}:{category}:{label}', node_id=node.id, category=category, label=label, summary=summary, confidence=confidence, payload=payload, provenance=EvidenceProvenance('semantic_enrichment', 'local-fast', note='deterministic'), caveats=caveats)
+def _annotation(node: EvidenceNode, category: WeakTagCategory, label: str, summary: str, confidence: float, payload: dict[str, Any], *, caveats: tuple[EvidenceCaveat, ...]=()) -> WeakTagAnnotation:
+    return WeakTagAnnotation(id=f'ann:{node.id}:{category}:{label}', node_id=node.id, category=category, label=label, summary=summary, confidence=confidence, payload=payload, provenance=EvidenceProvenance('weak_tags', 'materialized', note='deterministic'), caveats=caveats)
 
-def _text_semantics(text: str) -> tuple[tuple[SemanticCategory, str, float], ...]:
+def _text_weak_tags(text: str) -> tuple[tuple[WeakTagCategory, str, float], ...]:
     lowered = text.lower()
-    result: list[tuple[SemanticCategory, str, float]] = []
-    patterns: tuple[tuple[SemanticCategory, str, tuple[str, ...], float], ...] = (('decision', 'decision_signal', ('decided', 'decision', 'will move', 'settled'), 0.72), ('blocker', 'blocker_signal', ('blocked', 'stuck', 'annoyance', 'broken', 'fails', 'failure'), 0.66), ('question', 'open_question', ('?', 'uncertain', 'not sure', 'whether', 'should i', 'idk'), 0.58), ('risk', 'risk_signal', ('risk', 'worry', 'concern', 'danger', 'misleading'), 0.6), ('intent', 'intent_signal', ('want', 'need', 'goal', 'should', 'priority', 'critical path'), 0.62), ('energy', 'energy_context', ('sleep', 'tired', 'energy', 'stress', 'substance', 'dose'), 0.55))
+    result: list[tuple[WeakTagCategory, str, float]] = []
+    patterns: tuple[tuple[WeakTagCategory, str, tuple[str, ...], float], ...] = (('decision', 'decision_signal', ('decided', 'decision', 'will move', 'settled'), 0.72), ('blocker', 'blocker_signal', ('blocked', 'stuck', 'annoyance', 'broken', 'fails', 'failure'), 0.66), ('question', 'open_question', ('?', 'uncertain', 'not sure', 'whether', 'should i', 'idk'), 0.58), ('risk', 'risk_signal', ('risk', 'worry', 'concern', 'danger', 'misleading'), 0.6), ('intent', 'intent_signal', ('want', 'need', 'goal', 'should', 'priority', 'critical path'), 0.62), ('energy', 'energy_context', ('sleep', 'tired', 'energy', 'stress', 'substance', 'dose'), 0.55))
     for category, label, needles, confidence in patterns:
         if any((needle in lowered for needle in needles)):
             result.append((category, label, confidence))
@@ -264,13 +264,13 @@ def _commit_prefix(summary: str) -> str | None:
     match = re.match('^([a-z]+)(?:\\([^)]+\\))?:', summary)
     return match.group(1) if match else None
 
-def _semantic_db_path() -> Path:
-    return get_config().cache_dir / 'semantic_enrichment.sqlite3'
+def _weak_tags_db_path() -> Path:
+    return get_config().cache_dir / 'weak_tags.sqlite3'
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute('\n        CREATE TABLE IF NOT EXISTS semantic_annotations (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            annotation_id TEXT, node_id TEXT, category TEXT, label TEXT,\n            summary TEXT, confidence REAL, payload_json TEXT, caveats_json TEXT\n        )\n        ')
-    conn.execute('\n        CREATE TABLE IF NOT EXISTS semantic_clusters (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            cluster_id TEXT, date TEXT, project TEXT, node_ids_json TEXT,\n            annotation_ids_json TEXT, labels_json TEXT, summary TEXT,\n            support_sources_json TEXT, score REAL\n        )\n        ')
-    conn.execute('\n        CREATE TABLE IF NOT EXISTS semantic_moments (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            moment_id TEXT, date TEXT, project TEXT, cluster_id TEXT,\n            title TEXT, summary TEXT, score REAL, payload_json TEXT\n        )\n        ')
+    conn.execute('\n        CREATE TABLE IF NOT EXISTS weak_tags_annotations (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            annotation_id TEXT, node_id TEXT, category TEXT, label TEXT,\n            summary TEXT, confidence REAL, payload_json TEXT, caveats_json TEXT\n        )\n        ')
+    conn.execute('\n        CREATE TABLE IF NOT EXISTS weak_tags_clusters (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            cluster_id TEXT, date TEXT, project TEXT, node_ids_json TEXT,\n            annotation_ids_json TEXT, labels_json TEXT, summary TEXT,\n            support_sources_json TEXT, score REAL\n        )\n        ')
+    conn.execute('\n        CREATE TABLE IF NOT EXISTS weak_tags_moments (\n            start_date TEXT, end_date TEXT, project_key TEXT, mode TEXT,\n            moment_id TEXT, date TEXT, project TEXT, cluster_id TEXT,\n            title TEXT, summary TEXT, score REAL, payload_json TEXT\n        )\n        ')
 
 def _json(value: object) -> str:
     return json.dumps(jsonable(value), sort_keys=True)
@@ -286,4 +286,4 @@ def _format_counts(counts: dict[object, int]) -> str:
     if not counts:
         return '(none)'
     return ', '.join((f'{key}={value}' for key, value in sorted(counts.items(), key=lambda item: str(item[0]))))
-__all__ = ['EvidenceCluster', 'NarrativeMoment', 'SemanticAnnotation', 'SemanticEnrichment', 'SemanticMode', 'build_semantic_enrichment', 'current_semantic_enrichment', 'narrative_moments', 'render_semantic_summary', 'save_semantic_enrichment']
+__all__ = ['EvidenceCluster', 'NarrativeMoment', 'WeakTagAnnotation', 'WeakTagEnrichment', 'WeakTagMode', 'build_weak_tags', 'current_weak_tags', 'narrative_moments', 'render_weak_tag_summary', 'save_weak_tags']

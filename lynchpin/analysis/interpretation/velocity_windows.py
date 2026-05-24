@@ -11,9 +11,7 @@ from typing import Any
 
 from ...graph.evidence_graph import build_base_evidence_graph
 from ...graph.work_correlation import CorrelatedWorkDay, work_day_correlations
-from ..active.git_facts import build_active_commit_facts
-from ..change.work_packages import build_active_work_packages
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 @dataclass
 class _Micro:
@@ -70,8 +68,14 @@ def build_project_velocity_windows(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
     selected = set(projects or ())
-    commit_data = dict(commit_payload or _load_commit_payload(start=start, end=end, projects=projects, path=commit_facts_file))
-    work_data = dict(work_payload or _load_work_payload(start=start, end=end, projects=projects, path=work_packages_file))
+    commit_data = dict(
+        commit_payload if commit_payload is not None
+        else _load_commit_payload(path=commit_facts_file)
+    )
+    work_data = dict(
+        work_payload if work_payload is not None
+        else _load_work_payload(path=work_packages_file)
+    )
     rows = tuple(correlation_rows) if correlation_rows is not None else _correlation_rows(
         start=start,
         end=end,
@@ -146,28 +150,22 @@ def run_project_velocity_windows(
 
 def _load_commit_payload(
     *,
-    start: date,
-    end: date,
-    projects: Sequence[str] | None,
     path: str | PathLike[str] | None,
 ) -> Mapping[str, Any]:
-    payload = load_json_if_exists(path or resolve_analysis_path("active_commit_facts.json"))
-    if isinstance(payload, dict):
-        return payload
-    return build_active_commit_facts(start=start, end=end, projects=projects)
+    return load_json_object(
+        path or resolve_analysis_path("active_commit_facts.json"),
+        label="active commit facts",
+    )
 
 
 def _load_work_payload(
     *,
-    start: date,
-    end: date,
-    projects: Sequence[str] | None,
     path: str | PathLike[str] | None,
 ) -> Mapping[str, Any]:
-    payload = load_json_if_exists(path or resolve_analysis_path("active_work_packages.json"))
-    if isinstance(payload, dict):
-        return payload
-    return build_active_work_packages(start=start, end=end, projects=projects)
+    return load_json_object(
+        path or resolve_analysis_path("active_work_packages.json"),
+        label="active work packages",
+    )
 
 
 def _correlation_rows(
@@ -182,7 +180,6 @@ def _correlation_rows(
         start=start,
         end=end,
         projects=projects,
-        mode="local-fast",
     )
     return work_day_correlations(start=start, end=end, graph=graph)
 

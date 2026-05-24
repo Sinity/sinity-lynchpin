@@ -72,22 +72,22 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
 
     ready = machine.readiness()
     assert ready.status == "ready"
-    rows = list(machine.metric_samples(start=date(2026, 5, 12), end=date(2026, 5, 12), path=db))
+    rows = list(machine.metric_samples(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(rows) == 1
     assert rows[0].cpu_package_w == 16.5
     assert rows[0].gpu_pcie_gen == 1
     assert rows[0].swap_used_mb == 512
     assert rows[0].gap_codes == ("fan.hwmon_unavailable",)
-    states = list(machine.service_states(start=date(2026, 5, 12), end=date(2026, 5, 12), path=db))
+    states = list(machine.service_states(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(states) == 1
     assert states[0].unit == "polylogued.service"
     assert states[0].scope == "user"
     assert states[0].memory_current_bytes == 1234
-    gpu = list(machine.gpu_samples(start=date(2026, 5, 12), end=date(2026, 5, 12), path=db))
+    gpu = list(machine.gpu_samples(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(gpu) == 1
     assert gpu[0].gpu_power_w == 30.0
     assert gpu[0].gpu_pcie_gen == 4
-    network = list(machine.network_samples(start=date(2026, 5, 12), end=date(2026, 5, 12), path=db))
+    network = list(machine.network_samples(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(network) == 1
     assert network[0].interface == "enp6s0"
     assert network[0].ping["gateway"]["avg_ms"] == 0.5

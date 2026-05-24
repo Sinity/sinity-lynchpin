@@ -50,7 +50,7 @@
 
 4. **Schema versioning is decoupled.** Polylogue's `SCHEMA_VERSION` and
    lynchpin's `SUBSTRATE_VERSION` evolve independently. When polylogue's
-   schema changes, the `SyncPolylogue` facade handles fallback internally;
+   schema changes, the `SyncPolylogue` facade is the schema-adaptation layer;
    lynchpin's promotion path uses the facade's contract, not raw sqlite.
 
 5. **Readiness flows upward.** Polylogue's `health_check` /

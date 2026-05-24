@@ -17,7 +17,6 @@ def _graph(nodes: list[EvidenceNode]) -> EvidenceGraph:
     return EvidenceGraph(
         start=date(2026, 5, 1), end=date(2026, 5, 7),
         generated_at=datetime(2026, 5, 7, tzinfo=UTC),
-        mode="local-heavy",
         nodes=tuple(nodes),
         edges=(),
         caveats=(),

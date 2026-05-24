@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.core.parse import parse_datetime
 
 
@@ -56,15 +56,10 @@ def analyze_devshell_performance(
     end: date | None = None,
     command_path: Path | None = None,
 ) -> DevshellPerformanceAnalysis:
-    payload = load_json_if_exists(command_path or resolve_analysis_path("command_performance_windows.json"))
-    if not isinstance(payload, dict):
-        return DevshellPerformanceAnalysis(
-            generated_for=_generated_for(start, end),
-            command_count=0,
-            summaries=[],
-            windows=[],
-            caveats=["command_performance_windows.json absent; devshell performance skipped"],
-        )
+    payload = load_json_object(
+        command_path or resolve_analysis_path("command_performance_windows.json"),
+        label="command performance windows",
+    )
     windows: list[DevshellCommandWindow] = []
     for row in payload.get("windows", []):
         if not isinstance(row, dict) or _command_class(str(row.get("command") or "")) is None:

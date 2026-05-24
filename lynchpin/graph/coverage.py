@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from ..core.config import get_config
@@ -28,11 +27,12 @@ class SourceCoverage:
 
     @property
     def covers_requested_window(self) -> bool:
+        requested_last = self.requested_end - timedelta(days=1)
         return bool(
             self.first_date is not None
             and self.last_date is not None
             and self.first_date <= self.requested_start
-            and self.last_date >= self.requested_end
+            and self.last_date >= requested_last
         )
 
     @property
@@ -40,7 +40,7 @@ class SourceCoverage:
         return bool(
             self.first_date is not None
             and self.last_date is not None
-            and self.first_date <= self.requested_end
+            and self.first_date < self.requested_end
             and self.last_date >= self.requested_start
         )
 
@@ -57,25 +57,102 @@ class CoverageReport:
 
 
 def coverage_report(*, start: date, end: date) -> CoverageReport:
-    probes = (
-        _activitywatch_coverage,
-        _terminal_coverage,
-        _webhistory_coverage,
-        _sleep_coverage,
-        _health_coverage,
-        _spotify_coverage,
-        _reddit_coverage,
-        _messenger_coverage,
-        _raindrop_coverage,
-        _substance_coverage,
-    )
-    rows: list[SourceCoverage] = []
-    for probe in probes:
-        try:
-            rows.append(probe(start, end))
-        except Exception as exc:
-            source = probe.__name__.removeprefix("_").removesuffix("_coverage")
-            rows.append(_row(source, start, end, status="blocked", reason=f"coverage probe failed: {exc}"))
+    cfg = get_config()
+    from ..materialization import audit_materialization
+
+    datasets = {row.name: row for row in audit_materialization(cfg=cfg)}
+    rows = [
+        _from_materialized_dataset(
+            "activitywatch",
+            datasets["activitywatch"],
+            start=start,
+            end=end,
+            path=cfg.activitywatch_db,
+            basis="canonical-ndjson",
+            repair_hint="Run python -m lynchpin.ingest.activitywatch_materialize",
+        ),
+        _from_materialized_dataset(
+            "terminal",
+            datasets["atuin"],
+            start=start,
+            end=end,
+            path=cfg.atuin_db,
+            basis="canonical-ndjson",
+            repair_hint="Run python -m lynchpin.ingest.terminal_materialize",
+        ),
+        _from_materialized_dataset(
+            "webhistory",
+            datasets["webhistory"],
+            start=start,
+            end=end,
+            path=cfg.webhistory_ndjson,
+            basis="canonical-ndjson",
+            repair_hint="Add a newer browser capture/Takeout archive, then run python -m lynchpin.ingest.webhistory",
+        ),
+        _from_materialized_dataset(
+            "sleep",
+            datasets["sleep"],
+            start=start,
+            end=end,
+            path=cfg.sleep_jsonl,
+            basis="processed-jsonl",
+            repair_hint="Refresh Samsung Health/Sleep-as-Android export",
+        ),
+        _from_materialized_dataset(
+            "health",
+            datasets["health"],
+            start=start,
+            end=end,
+            path=cfg.samsung_gdpr_cloud_dir,
+            basis="processed-jsonl",
+            repair_hint="Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export",
+        ),
+        _from_materialized_dataset(
+            "spotify",
+            datasets["spotify"],
+            start=start,
+            end=end,
+            path=cfg.spotify_root,
+            basis="canonical-ndjson",
+            repair_hint="Request a fresh Spotify GDPR export",
+        ),
+        _from_materialized_dataset(
+            "reddit",
+            datasets["reddit"],
+            start=start,
+            end=end,
+            path=cfg.reddit_export_dir,
+            basis="canonical-csv",
+            repair_hint="Request a fresh Reddit GDPR export",
+        ),
+        _from_materialized_dataset(
+            "messenger",
+            datasets["facebook_messenger"],
+            start=start,
+            end=end,
+            path=cfg.fbmessenger_gdpr_root,
+            basis="canonical-ndjson",
+            repair_hint="Request a fresh Facebook Messenger export",
+        ),
+        _from_materialized_dataset(
+            "raindrop",
+            datasets["raindrop"],
+            start=start,
+            end=end,
+            path=cfg.raindrop_csv,
+            basis="canonical-csv",
+            repair_hint="Request a fresh Raindrop export",
+        ),
+        _from_materialized_dataset(
+            "substance",
+            datasets["substance"],
+            start=start,
+            end=end,
+            path=cfg.exports_root / "health/processed/substance_log_unified.csv",
+            basis="processed-csv",
+            repair_hint="Extend /realm/data/exports/health/processed/substance_log_unified.csv with current rows",
+        ),
+    ]
     return CoverageReport(
         start=start,
         end=end,
@@ -134,125 +211,54 @@ def _row(
 def _coverage_status(first: date | None, last: date | None, start: date, end: date) -> tuple[CoverageStatus, str]:
     if first is None or last is None:
         return "missing", "no parsed rows"
-    if first <= start and last >= end:
+    requested_last = end - timedelta(days=1)
+    if first <= start and last >= requested_last:
         return "available", "parsed rows cover the requested window"
-    if first <= end and last >= start:
+    if first < end and last >= start:
         return "partial", "parsed rows only partially cover the requested window"
     return "blocked", "parsed rows do not intersect the requested window"
 
 
-def _from_dates(
+def _from_materialized_dataset(
     source: str,
+    dataset: object,
+    *,
     start: date,
     end: date,
-    dates: Iterable[date | None],
-    *,
     path: Path | str | None,
-    basis: str = "source",
+    basis: str,
     repair_hint: str | None = None,
 ) -> SourceCoverage:
-    first: date | None = None
-    last: date | None = None
-    count = 0
-    for day in dates:
-        if day is None:
-            continue
-        count += 1
-        first = day if first is None or day < first else first
-        last = day if last is None or day > last else last
+    status_value = getattr(dataset, "status", None)
+    if status_value != "ready":
+        status: CoverageStatus = "missing" if status_value == "missing" else "partial"
+        reason = f"materialized product is {status_value}: {getattr(dataset, 'reason', '')}"
+        return _row(
+            source,
+            start,
+            end,
+            status=status,
+            reason=reason,
+            count=getattr(dataset, "row_count", None),
+            path=path,
+            basis=basis,
+            repair_hint=repair_hint,
+        )
+    first = getattr(dataset, "first_date", None)
+    last = getattr(dataset, "last_date", None)
     status, reason = _coverage_status(first, last, start, end)
-    return _row(source, start, end, status=status, reason=reason, first=first, last=last, count=count, path=path, basis=basis, repair_hint=repair_hint)
-
-
-def _activitywatch_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.activitywatch_raw import event_bounds
-
-    cfg = get_config()
-    first, last, count = event_bounds("aw-watcher-window_")
-    status, reason = _coverage_status(first, last, start, end)
-    hint = None if status == "available" else "Run python -m lynchpin.cli.process_activitywatch_archives, then re-run coverage audit"
-    return _row("activitywatch", start, end, status=status, reason=reason, first=first, last=last, count=count, path=cfg.activitywatch_db, basis="sqlite", repair_hint=hint)
-
-
-def _terminal_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.terminal import commands
-
-    s_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
-    e_dt = datetime.combine(end, time.max, tzinfo=timezone.utc)
-    return _from_dates("terminal", start, end, (cmd.timestamp.date() for cmd in commands(start=s_dt, end=e_dt)), path=get_config().atuin_db, basis="source")
-
-
-def _webhistory_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.web import _iter_all_visits
-
-    cfg = get_config()
-    return _from_dates(
-        "webhistory",
+    return _row(
+        source,
         start,
         end,
-        (visit.timestamp.date() for visit in _iter_all_visits()),
-        path=cfg.webhistory_ndjson,
-        basis="canonical-ndjson",
-        repair_hint="Add a newer browser capture/Takeout archive, then run python -m lynchpin.ingest.webhistory",
-    )
-
-
-def _sleep_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.sleep import entries
-
-    return _from_dates("sleep", start, end, (entry.date for entry in entries()), path=get_config().sleep_jsonl, basis="processed-jsonl", repair_hint="Refresh Samsung Health/Sleep-as-Android export")
-
-
-def _health_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.health_daily import daily_health_summary
-
-    cfg = get_config()
-    return _from_dates("health", start, end, (row.date for row in daily_health_summary()), path=cfg.samsung_gdpr_cloud_dir, basis="source", repair_hint="Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export")
-
-
-def _spotify_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.spotify import iter_streams
-
-    return _from_dates("spotify", start, end, (stream.end_time.date() if stream.end_time else None for stream in iter_streams()), path=get_config().spotify_root, basis="source", repair_hint="Request a fresh Spotify GDPR export")
-
-
-def _reddit_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.reddit import iter_comments, iter_posts
-
-    dates = (
-        item.created.date()
-        for iterator in (iter_comments(), iter_posts())
-        for item in iterator
-        if item.created is not None
-    )
-    return _from_dates("reddit", start, end, dates, path=get_config().reddit_export_dir, basis="source", repair_hint="Request a fresh Reddit GDPR export")
-
-
-def _messenger_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.exports import iter_fbmessenger_messages
-
-    cfg = get_config()
-    return _from_dates("messenger", start, end, (msg.timestamp.date() for msg in iter_fbmessenger_messages() if msg.timestamp), path=cfg.fbmessenger_gdpr_root, basis="source", repair_hint="Request a fresh Facebook Messenger export")
-
-
-def _raindrop_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.exports import iter_raindrop_bookmarks
-
-    return _from_dates("raindrop", start, end, (bm.created.date() for bm in iter_raindrop_bookmarks() if bm.created), path=get_config().raindrop_csv, basis="source", repair_hint="Request a fresh Raindrop export")
-
-
-def _substance_coverage(start: date, end: date) -> SourceCoverage:
-    from ..sources.substance import entries
-
-    cfg = get_config()
-    return _from_dates(
-        "substance",
-        start,
-        end,
-        (entry.date for entry in entries()),
-        path=cfg.exports_root / "health/processed/substance_log_unified.csv",
-        basis="processed-csv",
-        repair_hint="Extend /realm/data/exports/health/processed/substance_log_unified.csv with current rows",
+        status=status,
+        reason=reason,
+        first=first,
+        last=last,
+        count=getattr(dataset, "row_count", None),
+        path=path,
+        basis=basis,
+        repair_hint=repair_hint,
     )
 
 

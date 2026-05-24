@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import typer
 
 from ..core.parse import as_local
 from ..core.serialization import jsonable
 from ..graph.context_pack import ContextPackSubstrateRequiredError
-
-ContextPackMode = Literal["local-fast", "local-heavy", "network"]
-
 
 def context_pack(*args: Any, **kwargs: Any) -> Any:
     from ..graph.context_pack import context_pack as impl
@@ -53,24 +51,23 @@ def render_current_state(
     start: date,
     end: date,
     include_github_frontier: bool = False,
-    mode: ContextPackMode = "local-fast",
     projects: list[str] | None = None,
-    semantic: bool = False,
-    persist_semantic: bool = False,
+    weak_tags: bool = False,
+    persist_weak_tags: bool = False,
     json_output: bool = False,
     timeline_output: Path | None = None,
     refresh_substrate: bool = False,
+    progress: str = "plain",
 ) -> str:
     start_dt = as_local(datetime.combine(start, time.min))
     end_dt = as_local(datetime.combine(end, time.max))
-    effective_mode: ContextPackMode = "network" if include_github_frontier else mode
     pack = context_pack(
         start=start_dt,
         end=end_dt,
         projects=projects,
-        mode=effective_mode,
-        semantic=semantic,
-        persist_semantic=persist_semantic,
+        include_github_frontier=include_github_frontier,
+        weak_tags=weak_tags,
+        persist_weak_tags=persist_weak_tags,
         prefer_substrate=True,
         refresh_substrate=refresh_substrate,
     )
@@ -91,21 +88,17 @@ def _current_state_command(
         False, "--github-frontier/",
         help="Fetch open/recent GitHub issue and PR frontier through gh",
     ),
-    mode: str = typer.Option(
-        "local-fast", "--mode",
-        help="Context-pack cost mode; network implies GitHub frontier evidence",
-    ),
     project: list[str] = typer.Option(
         None, "--project",
         help="Restrict context-pack project slices to a canonical project; repeatable",
     ),
-    semantic: bool = typer.Option(
-        False, "--semantic/",
-        help="Include deterministic semantic annotations, clusters, and narrative moments in the context pack",
+    weak_tags: bool = typer.Option(
+        False, "--weak-tags/",
+        help="Include weak keyword/proximity evidence tags, clusters, and narrative moments in the context pack",
     ),
-    persist_semantic: bool = typer.Option(
-        False, "--persist-semantic/",
-        help="Persist deterministic semantic products to the local Lynchpin cache",
+    persist_weak_tags: bool = typer.Option(
+        False, "--persist-weak-tags/",
+        help="Persist weak keyword/proximity evidence-tag products to the local Lynchpin cache",
     ),
     json_output: bool = typer.Option(False, "--json/", help="Render structured JSON instead of Markdown"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write Markdown to this path instead of stdout"),
@@ -121,11 +114,14 @@ def _current_state_command(
         "--refresh-substrate/",
         help="Rebuild live and replace the deterministic DuckDB graph for this range.",
     ),
+    progress: str = typer.Option(
+        "plain",
+        "--progress",
+        help="Progress output format: plain, json, or quiet.",
+    ),
 ) -> None:
-    if mode not in {"local-fast", "local-heavy", "network"}:
-        raise typer.BadParameter(
-            f"argument --mode: invalid choice: {mode!r} (choose from 'local-fast', 'local-heavy', 'network')"
-        )
+    if progress not in {"plain", "json", "quiet"}:
+        raise typer.BadParameter("--progress must be one of: plain, json, quiet")
     start_d = _parse_date(start)
     end_d = _parse_date(end)
     if end_d < start_d:
@@ -135,13 +131,13 @@ def _current_state_command(
         start=start_d,
         end=end_d,
         include_github_frontier=github_frontier,
-        mode=mode,  # type: ignore[arg-type]
         projects=list(project or []),
-        semantic=semantic,
-        persist_semantic=persist_semantic,
+        weak_tags=weak_tags,
+        persist_weak_tags=persist_weak_tags,
         json_output=json_output,
         timeline_output=timeline_output,
         refresh_substrate=refresh_substrate,
+        progress=progress,
     )
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +158,8 @@ _command = typer.main.get_command(_app)
 def main(argv: list[str] | None = None) -> int:
     import click
 
+    progress = _progress_arg(argv)
+    _configure_progress_logging(progress)
     try:
         _command.main(args=list(argv) if argv is not None else None, standalone_mode=False)
     except click.UsageError as exc:
@@ -176,6 +174,46 @@ def main(argv: list[str] | None = None) -> int:
             code = getattr(exc, "code", 0)
         return int(code or 0)
     return 0
+
+
+def _progress_arg(argv: list[str] | None) -> str:
+    values = list(argv) if argv is not None else sys.argv[1:]
+    if "--progress" not in values:
+        return "plain"
+    idx = values.index("--progress")
+    return values[idx + 1] if idx + 1 < len(values) else "plain"
+
+
+def _configure_progress_logging(progress: str) -> None:
+    if progress == "quiet":
+        logging.getLogger().setLevel(logging.WARNING)
+        return
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    if progress == "json":
+        class JsonFormatter(logging.Formatter):
+            def format(self, record: logging.LogRecord) -> str:
+                return json.dumps(
+                    {
+                        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "component": record.name,
+                        "message": record.getMessage(),
+                    },
+                    sort_keys=True,
+                )
+
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(JsonFormatter())
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

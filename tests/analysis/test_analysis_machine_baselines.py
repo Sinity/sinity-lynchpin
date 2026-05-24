@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from lynchpin.analysis.machine.baselines import analyze_machine_observational_baselines
 from lynchpin.substrate.connection import apply_schema, connect
 
@@ -76,14 +78,13 @@ def test_machine_baselines_build_robust_groups_and_context(tmp_path):
     assert "observational" in analysis.caveats[0]
 
 
-def test_machine_baselines_report_missing_context_artifact(tmp_path):
+def test_machine_baselines_require_context_artifact(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
 
-    analysis = analyze_machine_observational_baselines(path=db, context_path=tmp_path / "missing.json")
-
-    assert analysis.by_hour == []
-    assert analysis.work_context == []
-    assert "machine_metric_sample has no rows" in analysis.caveats
-    assert "machine_context_windows.json absent; work-context baselines skipped" in analysis.caveats
+    with pytest.raises(FileNotFoundError, match="machine context windows is missing"):
+        analyze_machine_observational_baselines(
+            path=db,
+            context_path=tmp_path / "missing.json",
+        )

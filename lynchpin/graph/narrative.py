@@ -16,11 +16,11 @@ from typing import Any, Literal
 
 from ..core.parse import as_local
 from ..core.serialization import jsonable
-from .context_pack import ContextPack, ContextPackMode, context_pack
-from .semantic_enrichment import NarrativeMoment
+from .context_pack import ContextPack, context_pack
+from .weak_tags import NarrativeMoment
 
 SectionType = Literal[
-    "causal_chain",
+    "temporal_evidence_chain",
     "daily_summary",
     "periodic_overview",
     "project_retrospective",
@@ -68,7 +68,7 @@ def build_narrative(
     no LLM calls — summaries are template-stitched from moment labels,
     source counts, and claim summaries.
     """
-    enrichment = pack.semantic_enrichment
+    enrichment = pack.weak_tags
     moments: tuple[NarrativeMoment, ...] = ()
     if enrichment is not None:
         moments = tuple(
@@ -161,19 +161,17 @@ def narrative_for_period(
     start: date,
     end: date,
     projects: Sequence[str] | None = None,
-    mode: ContextPackMode = "local-fast",
     moment_limit: int = 24,
     min_score: float = 1.5,
 ) -> NarrativeReport:
-    """Build context pack + semantic enrichment + narrative in one call."""
+    """Build context pack + weak evidence tags + narrative in one call."""
     start_dt = as_local(datetime.combine(start, time.min))
     end_dt = as_local(datetime.combine(end, time.max))
     pack = context_pack(
         start=start_dt,
         end=end_dt,
         projects=projects,
-        mode=mode,
-        semantic=True,
+        weak_tags=True,
         exclude_analysis_artifacts=(
             "current_state_context_pack.json",
             "current_state_context_pack.md",
@@ -239,7 +237,6 @@ def narrate(
     start: date,
     end: date,
     projects: Sequence[str] | None = None,
-    mode: ContextPackMode = "local-fast",
     moment_limit: int = 24,
     min_score: float = 1.5,
     out: str | None = None,
@@ -247,7 +244,7 @@ def narrate(
 ) -> NarrativeReport:
     """Build and optionally persist a narrative report."""
     report = narrative_for_period(
-        start=start, end=end, projects=projects, mode=mode,
+        start=start, end=end, projects=projects,
         moment_limit=moment_limit, min_score=min_score,
     )
     if out:
@@ -439,8 +436,8 @@ def _notable_section(
 def _chain_section(chain) -> NarrativeSection:
     gaps = ", ".join(f"{g:.0f}m" for g in chain.time_gaps_minutes)
     return NarrativeSection(
-        section_type="causal_chain",
-        title=f"Causal Chain: {chain.summary}",
+        section_type="temporal_evidence_chain",
+        title=f"Temporal Evidence Chain: {chain.summary}",
         date=chain.date,
         project=None,
         moments=(),
@@ -457,11 +454,10 @@ def _pack_caveats(pack: ContextPack) -> tuple[str, ...]:
     caveats: list[str] = []
     for c in pack.caveats:
         caveats.append(f"[{c.source}] {c.message}")
-    if pack.semantic_enrichment is None:
+    if pack.weak_tags is None:
         caveats.append(
-            "Semantic enrichment not available — narrative is built from "
-            "claims and evidence only, without scored narrative moments. "
-            "Run with semantic=True for richer output."
+            "Weak evidence tags not available — narrative is built from "
+            "claims and evidence only, without scored narrative moments."
         )
     return tuple(caveats)
 

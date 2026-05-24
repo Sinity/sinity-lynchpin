@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Sequence
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 
 def build_active_symbol_changes(
@@ -30,10 +30,14 @@ def build_active_symbol_changes(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    index_payload = _dict(load_json_if_exists(
-        symbol_index_file or resolve_analysis_path("active_symbol_index.json")))
-    changes_payload = _dict(load_json_if_exists(
-        file_changes_file or resolve_analysis_path("active_file_change_facts.json")))
+    index_payload = load_json_object(
+        symbol_index_file or resolve_analysis_path("active_symbol_index.json"),
+        label="active symbol index",
+    )
+    changes_payload = load_json_object(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
 
     selected = set(projects or ())
     symbols_by_path = _index_symbols_by_path(index_payload, selected)
@@ -94,9 +98,9 @@ def build_active_symbol_changes(
 
     caveats = ["intersection is path-level only; line-range diffing is not run per commit"]
     if not symbols_by_path:
-        caveats.append("active_symbol_index payload unavailable or empty (tree-sitter grammars missing?)")
+        caveats.append("active_symbol_index has no usable symbols (tree-sitter grammars missing?)")
     if not file_changes:
-        caveats.append("active_file_change_facts payload unavailable or empty for selected window")
+        caveats.append("active_file_change_facts has no file changes for selected window")
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -161,7 +165,3 @@ def _filter_changes(payload: dict[str, Any], selected: set[str]) -> list[dict[st
         row for row in rows
         if isinstance(row, dict) and (not selected or row.get("project") in selected)
     ]
-
-
-def _dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}

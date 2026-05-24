@@ -15,7 +15,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _CARGO_TOML = "Cargo.toml"
 
@@ -31,10 +31,14 @@ def build_active_rust_graph(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict_payload(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
-    changes_payload = _dict_payload(load_json_if_exists(
-        file_changes_file or resolve_analysis_path("active_file_change_facts.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
+    changes_payload = load_json_object(
+        file_changes_file or resolve_analysis_path("active_file_change_facts.json"),
+        label="active file-change facts",
+    )
 
     file_changes = _list(changes_payload, "file_changes")
     selected = set(projects or ())
@@ -147,15 +151,7 @@ def _cargo_metadata(project_root: Path) -> dict[str, Any] | None:
         cwd=str(project_root),
     )
     if result.returncode != 0:
-        stderr_sample = result.stderr.strip()[-500:] if result.stderr else "no stderr"
-        return _dict_payload({
-            "tool_run": {
-                "available": False,
-                "returncode": result.returncode,
-                "stderr_sample": stderr_sample,
-                "reason": f"cargo metadata exited {result.returncode}",
-            },
-        })
+        return None
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -287,10 +283,6 @@ def _relative_crate_path(manifest_path: str, workspace_root_slash: str) -> str:
 
 def _trailing_slash(s: str) -> str:
     return s if s.endswith("/") else s + "/"
-
-
-def _dict_payload(value: Any) -> dict[str, Any] | None:
-    return value if isinstance(value, dict) else None
 
 
 def _list(payload: dict[str, Any] | None, key: str) -> list[Any]:

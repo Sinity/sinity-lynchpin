@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)
@@ -59,16 +59,10 @@ def analyze_observational_command_deltas(
     command_path: Path | None = None,
     min_cohort_size: int = 2,
 ) -> MachineObservationalCommandAnalysis:
-    payload = load_json_if_exists(command_path or resolve_analysis_path("command_performance_windows.json"))
-    if not isinstance(payload, dict):
-        return MachineObservationalCommandAnalysis(
-            generated_for=_generated_for(start, end, min_cohort_size),
-            cohort_count=0,
-            delta_count=0,
-            cohorts=[],
-            deltas=[],
-            caveats=["command_performance_windows.json absent; observational command comparison skipped"],
-        )
+    payload = load_json_object(
+        command_path or resolve_analysis_path("command_performance_windows.json"),
+        label="command performance windows",
+    )
     windows = [row for row in payload.get("windows", []) if isinstance(row, dict)]
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in windows:

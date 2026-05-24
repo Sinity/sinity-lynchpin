@@ -1,7 +1,19 @@
 from datetime import date, datetime, timezone
 
+import pytest
+
 from lynchpin.analysis.machine.command_performance import analyze_command_performance
 from lynchpin.sources.terminal import AtuinCommand
+
+
+def test_command_performance_requires_machine_work_states(tmp_path):
+    with pytest.raises(FileNotFoundError, match="machine work-state windows is missing"):
+        analyze_command_performance(
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 1),
+            state_path=tmp_path / "missing.json",
+            commands_iterable=[],
+        )
 
 
 def test_command_performance_joins_commands_to_machine_states(tmp_path):

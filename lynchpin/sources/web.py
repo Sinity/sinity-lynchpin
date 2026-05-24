@@ -451,7 +451,7 @@ def _iter_json_visits(path: Path) -> Iterator[WebHistoryVisit]:
         yield from _iter_jsonl_visits(path, source)
         return
 
-    # .json: try array parse first, fall back to line-by-line
+    # .json: try array parse first, then parse as JSONL/NDJSON.
     with path.open("r", encoding="utf-8") as fh:
         fh.seek(0)
         try:
@@ -470,7 +470,7 @@ def _iter_json_visits(path: Path) -> Iterator[WebHistoryVisit]:
                     yield visit
             return
 
-    # Shouldn't reach here, but fall back to line-by-line
+    # Shouldn't reach here, but parse as JSONL/NDJSON as a final shape check.
     yield from _iter_jsonl_visits(path, source)
 
 

@@ -25,7 +25,7 @@ def add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
                 project=None,
                 summary=sq.summary,
                 payload=sq.payload,
-                provenance=EvidenceProvenance("sleep", "local-heavy"),
+                provenance=EvidenceProvenance("sleep", "materialized"),
             )
         )
 
@@ -39,7 +39,7 @@ def add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
                 project=None,
                 summary=hm.summary,
                 payload=hm.payload,
-                provenance=EvidenceProvenance("health", "local-heavy"),
+                provenance=EvidenceProvenance("health", "materialized"),
             )
         )
 
@@ -53,7 +53,7 @@ def add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
                 project=None,
                 summary=link.summary,
                 payload=link.payload,
-                provenance=EvidenceProvenance("sleep", "local-heavy"),
+                provenance=EvidenceProvenance("sleep", "materialized"),
             )
         )
 
@@ -80,7 +80,7 @@ def add_readiness(nodes: list[EvidenceNode], *, end: date) -> None:
                 project=None,
                 summary=f"readiness forecast unavailable ({type(exc).__name__})",
                 payload={"status": "error", "reason": str(exc)[:200]},
-                provenance=EvidenceProvenance("readiness", "local-fast"),
+                provenance=EvidenceProvenance("readiness", "materialized"),
             )
         )
         return
@@ -104,7 +104,7 @@ def add_readiness(nodes: list[EvidenceNode], *, end: date) -> None:
             project=None,
             summary=summary,
             payload=payload,
-            provenance=EvidenceProvenance("readiness", "local-fast"),
+            provenance=EvidenceProvenance("readiness", "materialized"),
         )
     )
 
@@ -131,6 +131,6 @@ def add_temporal_signals(nodes: list[EvidenceNode], *, start: date, end: date) -
                 project=None,
                 summary=event.summary,
                 payload=event.payload,
-                provenance=EvidenceProvenance("temporal", "local-fast"),
+                provenance=EvidenceProvenance("temporal", "materialized"),
             )
         )

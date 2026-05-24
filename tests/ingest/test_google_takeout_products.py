@@ -7,7 +7,7 @@ from lynchpin.ingest import google_takeout_products
 from lynchpin.sources import google_takeout_products as source
 
 
-def test_materialize_google_takeout_products_skips_empty_calendar(monkeypatch, tmp_path):
+def test_materialize_google_takeout_products_ignores_calendar_export(monkeypatch, tmp_path):
     raw = tmp_path / "raw"
     raw.mkdir()
     archive = raw / "takeout.zip"
@@ -56,7 +56,15 @@ def test_materialize_google_takeout_products_skips_empty_calendar(monkeypatch, t
     assert manifest["products"]["tasks"]["row_count"] == 1
     assert manifest["products"]["keep_notes"]["row_count"] == 1
     assert manifest["products"]["my_activity"]["row_count"] == 1
-    assert "Calendar" in manifest["skipped_products"]
+    assert "Calendar" not in manifest["supported_products"]
+    assert "Calendar" not in manifest["skipped_products"]
     assert list(source.iter_tasks())[0]["title"] == "pay invoice"
     assert list(source.iter_keep_notes())[0]["title"] == "note"
-    assert list(source.iter_my_activity())[0]["title"] == "Searched for lynchpin"
+    activity = list(source.iter_my_activity())[0]
+    assert activity["title"] == "Searched for lynchpin"
+    assert activity["timestamp"] == "2026-01-01T13:00:00+00:00"
+
+    events = list(source.iter_events())
+    assert {event.product for event in events} == {"keep_notes", "my_activity", "tasks"}
+    daily = list(source.iter_daily_activity())
+    assert any(row.product == "my_activity" and row.event_count == 1 for row in daily)

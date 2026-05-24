@@ -17,7 +17,7 @@ re-classifier overlay (Arc K) and compare. Surfaces:
   - per-week disagreement rate (M.19): rolling rate over the window so
     drift becomes visible
 
-This is descriptive, not prescriptive. Consumers (sentinel, sinex
+This is descriptive, not prescriptive. Consumers (Sinnix operator reports, sinex
 dashboards, future ts.tool) can decide whether a particular cell warrants
 filing a Polylogue ticket or just adopting Lynchpin's overlay.
 """

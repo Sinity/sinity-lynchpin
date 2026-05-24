@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
 from lynchpin.analysis.frontier.reconciliation import (
     build_active_frontier_reconciliation,
 )
@@ -167,13 +169,25 @@ def test_project_filter_isolates_selected_projects(tmp_path):
     assert payload["projects"][0]["project"] == "alpha"
 
 
-def test_empty_inputs_yield_empty_summary(tmp_path):
-    payload = build_active_frontier_reconciliation(
-        start=date(2026, 5, 1), end=date(2026, 5, 7),
-        frontier_file="/nonexistent/f.json",
-        work_packages_file="/nonexistent/w.json",
-    )
-    assert payload["summary"]["tracking_count"] == 0
-    assert payload["summary"]["executed_without_package_count"] == 0
-    assert payload["summary"]["orphan_ref_package_count"] == 0
-    assert payload["projects"] == []
+def test_requires_frontier_artifact(tmp_path):
+    work = tmp_path / "w.json"
+    work.write_text(json.dumps(_work_payload()))
+
+    with pytest.raises(FileNotFoundError, match="active GitHub frontier is missing"):
+        build_active_frontier_reconciliation(
+            start=date(2026, 5, 1), end=date(2026, 5, 7),
+            frontier_file=tmp_path / "missing.json",
+            work_packages_file=work,
+        )
+
+
+def test_requires_work_package_artifact(tmp_path):
+    frontier = tmp_path / "f.json"
+    frontier.write_text(json.dumps(_frontier_payload()))
+
+    with pytest.raises(FileNotFoundError, match="active work packages is missing"):
+        build_active_frontier_reconciliation(
+            start=date(2026, 5, 1), end=date(2026, 5, 7),
+            frontier_file=frontier,
+            work_packages_file=tmp_path / "missing.json",
+        )

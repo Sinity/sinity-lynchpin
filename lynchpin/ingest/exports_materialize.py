@@ -80,18 +80,16 @@ def materialize_reddit() -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     reports: dict[str, Any] = {}
+    input_roots = _export_roots(source_root)
     filenames = sorted(
-        {
-            path.name
-            for path in source_root.glob("*/**/*.csv")
-            if path.parent.name != "canonical"
-        }
+        {path.name for root in input_roots for path in root.rglob("*.csv")}
     )
     for filename in filenames:
         inputs = sorted(
             path
-            for path in source_root.glob(f"*/{filename}")
-            if path.parent.name != "canonical"
+            for root in input_roots
+            for path in root.rglob(filename)
+            if path.is_file()
         )
         rows = _coalesce_csv_rows(inputs)
         output = out_dir / filename
@@ -179,14 +177,28 @@ def materialize_messenger() -> dict[str, Any]:
 
 def _spotify_roots(root: Path) -> list[Path]:
     roots: list[Path] = []
-    for path in sorted(root.iterdir()) if root.exists() else []:
-        if not path.is_dir():
-            continue
+    for path in _export_roots(root):
         if (path / "Spotify Account Data").exists() or (path / "Spotify Extended Streaming History").exists():
             roots.append(path)
-        elif (path / "legacy").exists():
-            roots.append(path / "legacy")
     return roots
+
+
+def _export_roots(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return [
+        path
+        for path in sorted(root.iterdir())
+        if path.is_dir() and _is_dated_export_dir(path)
+    ]
+
+
+def _is_dated_export_dir(path: Path) -> bool:
+    try:
+        datetime.strptime(path.name, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
 
 
 def _messenger_thread_files(root: Path) -> list[Path]:

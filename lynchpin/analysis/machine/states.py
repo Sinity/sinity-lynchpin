@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.core.parse import parse_datetime
 
 
@@ -94,19 +94,10 @@ def analyze_machine_work_states(
     end: date | None = None,
     context_path: Path | None = None,
 ) -> MachineWorkStateAnalysis:
-    payload = load_json_if_exists(context_path or resolve_analysis_path("machine_context_windows.json"))
-    if not isinstance(payload, dict):
-        return MachineWorkStateAnalysis(
-            generated_for=_generated_for(start, end),
-            window_count=0,
-            pressure_state_counts={},
-            work_state_counts={},
-            repo_state_counts={},
-            hardware_regime_counts={},
-            state_definitions=_state_definitions([]),
-            windows=[],
-            caveats=["machine_context_windows.json absent; machine work-state segmentation skipped"],
-        )
+    payload = load_json_object(
+        context_path or resolve_analysis_path("machine_context_windows.json"),
+        label="machine context windows",
+    )
 
     rows = payload.get("windows")
     if not isinstance(rows, list):

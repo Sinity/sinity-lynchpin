@@ -35,8 +35,7 @@ def _print(*args, **kwargs):
 OUTPUT_ROOT_DEFAULT = Path('/realm/inbox/store/next')
 DEFAULT_MAX_WORKERS = 4
 DEFAULT_SLICE_WORKERS = 4
-DEFAULT_ISSUE_LIMIT = 500
-DEFAULT_CLOSED_ISSUE_LIMIT = 100
+DEFAULT_ISSUE_LIMIT = 10000
 LARGE_SLICE_BYTES = 5000000
 _CONTROL_CHARS = bytes((b for b in range(32) if b not in (9, 10, 13))) + b'\x7f'
 DEFAULT_IGNORE = ('.git/**', '.direnv/**', '.venv/**', 'venv/**', 'node_modules/**', 'target/**', '**/trybuild-target/**', '.sinex/**', 'dist/**', 'build/**', 'coverage/**', '.cache/**', '.lynchpin/**', '.mypy_cache/**', '__pycache__/**', '*.pyc', 'artefacts/**', 'result/**', 'out/**', '.agent/history-summaries/**', '.agent/scratch/**', '*.lock', '*.db', '*.db-journal', '*.db-wal', '*.db-shm')
@@ -208,7 +207,7 @@ def _generate_issues(plan: RepoPlan, out_dir: Path, generated_at: str) -> tuple[
         return (0, 0)
     open_issues = _fetch_issues(plan.github_slug, 'open', DEFAULT_ISSUE_LIMIT, plan.path)
     _normalize_comments(open_issues)
-    closed_issues = _fetch_issues(plan.github_slug, 'closed', DEFAULT_CLOSED_ISSUE_LIMIT, plan.path)
+    closed_issues = _fetch_issues(plan.github_slug, 'closed', DEFAULT_ISSUE_LIMIT, plan.path)
     _normalize_comments(closed_issues)
     count = 0
     for state, issues in [('open', open_issues), ('closed', closed_issues)]:

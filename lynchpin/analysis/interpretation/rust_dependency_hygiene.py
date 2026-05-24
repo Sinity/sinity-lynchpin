@@ -27,7 +27,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from ..core.io import load_json_object, resolve_analysis_path, save_json
 
 _CARGO_TOML = "Cargo.toml"
 _TIMEOUT_S = 300
@@ -44,8 +44,10 @@ def build_active_rust_dependency_hygiene(
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
 
-    snapshot = _dict_payload(load_json_if_exists(
-        snapshot_file or resolve_analysis_path("active_project_snapshot.json")))
+    snapshot = load_json_object(
+        snapshot_file or resolve_analysis_path("active_project_snapshot.json"),
+        label="active project snapshot",
+    )
 
     selected = set(projects or ())
     snapshot_projects = _project_map(snapshot, selected)
@@ -351,6 +353,3 @@ def _project_map(payload: dict[str, Any] | None, selected: set[str]) -> dict[str
         out[name] = path
     return out
 
-
-def _dict_payload(value: Any) -> dict[str, Any] | None:
-    return value if isinstance(value, dict) else None

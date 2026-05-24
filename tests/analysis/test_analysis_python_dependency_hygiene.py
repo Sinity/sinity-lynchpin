@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from lynchpin.analysis.interpretation.python_dependency_hygiene import (
     _annotate_advisories,
     _external_import_modules,
@@ -193,3 +195,25 @@ dependencies = ["requests>=2", "PyYAML"]
     assert advisories[1]["direct"] is False
     assert advisories[1]["transitive"] is True
     assert advisories[1]["observed_import"] is False
+
+
+def test_build_requires_project_snapshot(tmp_path: Path) -> None:
+    import_graph = tmp_path / "import_graph.json"
+    import_graph.write_text(json.dumps({"projects": []}), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
+        build_active_python_dependency_hygiene(
+            snapshot_file=tmp_path / "missing.json",
+            import_graph_file=import_graph,
+        )
+
+
+def test_build_requires_python_import_graph(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"projects": []}), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="active Python import graph is missing"):
+        build_active_python_dependency_hygiene(
+            snapshot_file=snapshot,
+            import_graph_file=tmp_path / "missing.json",
+        )

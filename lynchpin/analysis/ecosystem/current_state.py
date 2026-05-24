@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Sequence, cast
 
-from ...graph.context_pack import ContextPackMode, context_pack, render_context_pack
+from ...graph.context_pack import context_pack, render_context_pack
 from ...core.parse import as_local
 from ...core.serialization import jsonable
 from ..core.io import save_json, save_text
@@ -26,22 +26,20 @@ def run_current_state_analysis(
     out_file: str | Path,
     markdown_out: str | Path | None = None,
     projects: Sequence[str] | None = None,
-    mode: ContextPackMode = "local-fast",
     include_github_frontier: bool = False,
-    semantic: bool = False,
-    persist_semantic: bool = False,
+    weak_tags: bool = False,
+    persist_weak_tags: bool = False,
 ) -> dict[str, Any]:
     """Materialize the graph-backed current-state context pack as analysis evidence."""
-    effective_mode: ContextPackMode = "network" if include_github_frontier else mode
     start_dt = as_local(datetime.combine(start, time.min))
     end_dt = as_local(datetime.combine(end, time.max))
     pack = context_pack(
         start=start_dt,
         end=end_dt,
         projects=projects,
-        mode=effective_mode,
-        semantic=semantic,
-        persist_semantic=persist_semantic,
+        include_github_frontier=include_github_frontier,
+        weak_tags=weak_tags,
+        persist_weak_tags=persist_weak_tags,
         exclude_analysis_artifacts=CURRENT_STATE_ARTIFACT_NAMES,
         prefer_substrate=False,
     )
@@ -50,7 +48,6 @@ def run_current_state_analysis(
         pack.graph,
         start=start,
         end=end,
-        mode=effective_mode,
         projects=projects,
     )
     save_json(out_file, payload, sort_keys=True)
@@ -64,12 +61,11 @@ def _promote_current_state_graph(
     *,
     start: date,
     end: date,
-    mode: ContextPackMode,
     projects: Sequence[str] | None,
 ) -> dict[str, Any]:
     """Promote materialized current-state packs and return explicit status."""
     project_key = ",".join(sorted(projects or ())) if projects else "all"
-    refresh_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{mode}:{project_key}"
+    refresh_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
     try:
         from lynchpin.substrate import apply_schema, connect
         from lynchpin.substrate.graph import promote_evidence_graph

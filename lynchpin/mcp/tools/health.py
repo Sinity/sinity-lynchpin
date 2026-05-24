@@ -254,7 +254,6 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
     anomalies.sort(key=lambda a: (a['project'], a['date']))
     return anomalies
 
-@app.tool()
 def promote_analysis_product(title: str, path: str, refresh_id: str | None=None, dry_run: bool=False) -> dict[str, Any]:
     """Register an analysis product as an evidence node (Phase C.1).
 

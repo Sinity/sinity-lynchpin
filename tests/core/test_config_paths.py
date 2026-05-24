@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lynchpin.core.config import LynchpinConfig
+from lynchpin.core.config import LynchpinConfig, resolve_latest_dated_dir
 
 
 def test_generated_roots_default_to_repo_local_dotfolder(monkeypatch, tmp_path: Path) -> None:
@@ -75,3 +75,20 @@ def test_packaged_nix_store_repo_root_defaults_to_checkout_local_root(monkeypatc
 
     assert cfg.local_root == Path("/realm/project/sinity-lynchpin/.lynchpin")
     assert cfg.cache_dir == Path("/realm/project/sinity-lynchpin/.lynchpin/cache/lynchpin")
+
+
+def test_resolve_latest_dated_dir_ignores_non_dated_directories(tmp_path: Path) -> None:
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "not-an-export").mkdir()
+    older = tmp_path / "2026-01-01"
+    newer = tmp_path / "2026-05-01"
+    older.mkdir()
+    newer.mkdir()
+
+    assert resolve_latest_dated_dir(tmp_path, ignore={"raw"}) == newer
+
+
+def test_resolve_latest_dated_dir_does_not_pick_mtime_candidate(tmp_path: Path) -> None:
+    (tmp_path / "not-an-export").mkdir()
+
+    assert resolve_latest_dated_dir(tmp_path) is None

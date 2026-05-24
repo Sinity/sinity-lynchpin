@@ -17,7 +17,7 @@ def _load_commit_facts(path: str) -> tuple[list[Any], dict[str, dict[str, Any]]]
     github_refs, categories, change_types, classified_files_changed,
     parent_count, default_branch, head).
 
-    Line counts come from active_commit_facts.json when present.
+    Line counts come from the active_commit_facts.json product.
     """
     from lynchpin.sources.git import GitCommitFact
 

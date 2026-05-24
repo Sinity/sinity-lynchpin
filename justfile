@@ -53,7 +53,7 @@ tool-inventory:
     @echo "  velocity            python -m lynchpin.analysis.projects velocity"
     @echo "  chisel              python -m lynchpin.analysis.projects chisel"
     @echo ""
-    @echo "=== MCP Tools (20) ==="
+    @echo "=== MCP Tools ==="
     @echo "  python -m lynchpin.mcp  # Start MCP server"
     @echo ""
     @echo "  query_substrate | list_substrate_tables | substrate_readiness_report"
