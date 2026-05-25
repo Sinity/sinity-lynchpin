@@ -4,42 +4,41 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from lynchpin.sources import freshness
+from lynchpin.sources import source_observations
 
 
-def test_source_freshness_flags_stale_observed_source(monkeypatch) -> None:
+def test_source_observations_reports_observed_source_without_age_scoring(monkeypatch) -> None:
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "get_config",
         lambda: SimpleNamespace(available_sources=lambda: {"spotify": True}),
     )
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "_source_observed_date",
         lambda *_args, **_kwargs: (date(2025, 12, 18), "substrate", None),
     )
 
-    rows = freshness.source_freshness(today=date(2026, 5, 16))
+    rows = source_observations.source_observations(today=date(2026, 5, 16))
 
-    assert rows[0] == freshness.SourceFreshness(
+    assert rows[0] == source_observations.SourceObservation(
         source="spotify",
         available=True,
         last_observed=date(2025, 12, 18),
         basis="substrate",
-        stale=True,
-        recommendation="Request new Spotify GDPR export",
+        recommendation=None,
         path=None,
     )
 
 
-def test_source_freshness_accepts_substrate_dates_without_importing_substrate(monkeypatch) -> None:
+def test_source_observations_accepts_substrate_dates_without_importing_substrate(monkeypatch) -> None:
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "get_config",
         lambda: SimpleNamespace(available_sources=lambda: {"spotify": True}),
     )
 
-    rows = freshness.source_freshness(
+    rows = source_observations.source_observations(
         today=date(2026, 5, 16),
         substrate_dates={"spotify": date(2025, 12, 18)},
     )
@@ -48,43 +47,41 @@ def test_source_freshness_accepts_substrate_dates_without_importing_substrate(mo
     assert rows[0].basis == "substrate"
 
 
-def test_source_freshness_does_not_invent_unavailable_dates(monkeypatch) -> None:
+def test_source_observations_does_not_invent_unavailable_dates(monkeypatch) -> None:
     path = Path("/missing/spotify")
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "get_config",
         lambda: SimpleNamespace(available_sources=lambda: {"spotify": False}),
     )
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "_source_observed_date",
         lambda *_args, **_kwargs: (None, None, path),
     )
 
-    rows = freshness.source_freshness(today=date(2026, 5, 16))
+    rows = source_observations.source_observations(today=date(2026, 5, 16))
 
     assert rows[0].available is False
     assert rows[0].last_observed is None
     assert rows[0].basis is None
-    assert rows[0].stale is False
     assert rows[0].recommendation == "Request new Spotify GDPR export"
     assert rows[0].path == str(path)
 
 
-def test_source_freshness_caches_default_today_path(monkeypatch) -> None:
-    freshness._cached_source_freshness.cache_clear()
+def test_source_observations_caches_default_today_path(monkeypatch) -> None:
+    source_observations._cached_source_observations.cache_clear()
     calls = 0
 
     def compute(reference: date, _substrate_dates):
         nonlocal calls
         calls += 1
         return (
-            freshness.SourceFreshness(
+            source_observations.SourceObservation(
                 source="spotify",
                 available=True,
                 last_observed=reference,
                 basis="test",
-                stale=False,
                 recommendation=None,
             ),
         )
@@ -94,10 +91,10 @@ def test_source_freshness_caches_default_today_path(monkeypatch) -> None:
         def today(cls) -> date:
             return date(2026, 5, 16)
 
-    monkeypatch.setattr(freshness, "_compute_source_freshness", compute)
-    monkeypatch.setattr(freshness, "date", FixedDate)
+    monkeypatch.setattr(source_observations, "_compute_source_observations", compute)
+    monkeypatch.setattr(source_observations, "date", FixedDate)
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "get_config",
         lambda: SimpleNamespace(
             available_sources=lambda: {"spotify": True},
@@ -107,13 +104,13 @@ def test_source_freshness_caches_default_today_path(monkeypatch) -> None:
         ),
     )
 
-    assert freshness.source_freshness() == freshness.source_freshness()
+    assert source_observations.source_observations() == source_observations.source_observations()
     assert calls == 1
-    freshness._cached_source_freshness.cache_clear()
+    source_observations._cached_source_observations.cache_clear()
 
 
-def test_source_freshness_cache_key_tracks_config_roots(monkeypatch) -> None:
-    freshness._cached_source_freshness.cache_clear()
+def test_source_observations_cache_key_tracks_config_roots(monkeypatch) -> None:
+    source_observations._cached_source_observations.cache_clear()
     calls = 0
     local_root = Path("/tmp/lynchpin-local-a")
 
@@ -121,12 +118,11 @@ def test_source_freshness_cache_key_tracks_config_roots(monkeypatch) -> None:
         nonlocal calls
         calls += 1
         return (
-            freshness.SourceFreshness(
+            source_observations.SourceObservation(
                 source="spotify",
                 available=True,
                 last_observed=reference,
                 basis=str(local_root),
-                stale=False,
                 recommendation=None,
             ),
         )
@@ -144,21 +140,21 @@ def test_source_freshness_cache_key_tracks_config_roots(monkeypatch) -> None:
             exports_root=Path("/tmp/lynchpin-exports"),
         )
 
-    monkeypatch.setattr(freshness, "_compute_source_freshness", compute)
-    monkeypatch.setattr(freshness, "date", FixedDate)
-    monkeypatch.setattr(freshness, "get_config", config)
+    monkeypatch.setattr(source_observations, "_compute_source_observations", compute)
+    monkeypatch.setattr(source_observations, "date", FixedDate)
+    monkeypatch.setattr(source_observations, "get_config", config)
 
-    first = freshness.source_freshness()
+    first = source_observations.source_observations()
     local_root = Path("/tmp/lynchpin-local-b")
-    second = freshness.source_freshness()
+    second = source_observations.source_observations()
 
     assert first[0].basis == "/tmp/lynchpin-local-a"
     assert second[0].basis == "/tmp/lynchpin-local-b"
     assert calls == 2
-    freshness._cached_source_freshness.cache_clear()
+    source_observations._cached_source_observations.cache_clear()
 
 
-def test_source_freshness_prefers_materialized_dates(monkeypatch, tmp_path) -> None:
+def test_source_observations_prefers_materialized_dates(monkeypatch, tmp_path) -> None:
     from lynchpin.materialization import MaterializedDataset
 
     source_path = tmp_path / "spotify.ndjson"
@@ -179,18 +175,62 @@ def test_source_freshness_prefers_materialized_dates(monkeypatch, tmp_path) -> N
     ]
     monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: rows)
     monkeypatch.setattr(
-        freshness,
+        source_observations,
         "get_config",
         lambda: SimpleNamespace(available_sources=lambda: {"spotify": True}),
     )
 
-    observed, basis, path = freshness._source_observed_date(
+    observed, basis, path = source_observations._source_observed_date(
         "spotify",
         {},
-        freshness._materialized_last_dates(),
+        source_observations._materialized_last_dates(),
         available=True,
     )
 
     assert observed == date(2025, 12, 18)
     assert basis == "materialized"
     assert path == source_path
+
+
+def test_mtime_date_walks_directory_for_newest_entry(tmp_path) -> None:
+    """Directory roots (asciinema, keylog, dendron, …) need newest
+    contained file's mtime, not the directory's own — the directory mtime
+    only changes on entry add/delete, not on in-place file updates.
+    """
+    import os
+
+    directory = tmp_path / "captures"
+    directory.mkdir()
+    fresh_file = directory / "recent.jsonl"
+    fresh_file.write_text("{}\n")
+    # Set file mtime FIRST (newer), then directory mtime (older); create
+    # order matters because write_text bumps the directory's own mtime.
+    os.utime(fresh_file, (1748131200, 1748131200))  # 2025-05-25 UTC
+    os.utime(directory, (1577836800, 1577836800))   # 2020-01-01 UTC
+
+    observed = source_observations._mtime_date(directory)
+    assert observed == date(2025, 5, 25), (
+        "should pick the file's mtime, not the directory's older mtime"
+    )
+
+
+def test_every_available_source_resolves_to_at_least_one_observable() -> None:
+    """source_observation_bounds reported `available=true, basis=null,
+    path=null` for ~11 sources because `_configured_path` lacked entries
+    for them and they had no materialized contract either. Pin that every
+    available source resolves through substrate, materialization, or a
+    configured path — anything else leaves a vacuous `available=true`.
+    """
+    from lynchpin.core.config import get_config
+
+    cfg = get_config()
+    materialized = source_observations._materialized_last_dates()
+    unresolved = [
+        source
+        for source in cfg.available_sources()
+        if source not in materialized
+        and source_observations._configured_path(source) is None
+    ]
+    assert not unresolved, (
+        f"sources without substrate/materialized/configured_path resolution: {unresolved}"
+    )

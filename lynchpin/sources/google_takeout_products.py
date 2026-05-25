@@ -17,6 +17,7 @@ __all__ = [
     "GoogleTakeoutDay",
     "GoogleTakeoutEvent",
     "iter_assets",
+    "iter_calendar",
     "iter_contacts",
     "iter_daily_activity",
     "iter_events",
@@ -83,13 +84,40 @@ def iter_assets() -> Iterator[dict[str, Any]]:
     yield from _iter_rows("assets.ndjson")
 
 
+def iter_calendar() -> Iterator[dict[str, Any]]:
+    """Yield Google Calendar events from the processed extract.
+
+    Lives one directory up from the per-product NDJSONs (calendar.jsonl
+    at the processed root) because the takeout extractor emits it
+    separately. Tolerates absence — empty iterator when no calendar
+    archive has been ingested yet.
+    """
+    path = get_config().exports_root / "google/processed/calendar.jsonl"
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
 def iter_events(product: str | None = None) -> Iterator[GoogleTakeoutEvent]:
     """Yield timestamped event-like Google Takeout product rows.
 
     Asset inventories and contacts are intentionally excluded: they are useful
     as provenance/file records but not personal activity events.
     """
+    # NOTE: youtube.ndjson holds video metadata (title, id, category) without
+    # watch timestamps, so iter_youtube has no time signal. Subscribed-to
+    # videos and watch history would need a separate timed extractor that
+    # the takeout exporter doesn't produce. Excluded from iter_events.
     product_iterators = {
+        "calendar": iter_calendar,
         "keep_notes": iter_keep_notes,
         "my_activity": iter_my_activity,
         "play_store": iter_play_store,
@@ -154,6 +182,7 @@ def _iter_rows(name: str) -> Iterator[dict[str, Any]]:
 
 def _event_timestamp(product: str, payload: dict[str, Any]) -> datetime | None:
     keys_by_product = {
+        "calendar": ("start_at", "created_at"),
         "keep_notes": ("created_at", "edited_at"),
         "my_activity": ("timestamp", "timestamp_text"),
         "play_store": ("created_at",),
@@ -201,6 +230,10 @@ def _event_title(product: str, payload: dict[str, Any]) -> str:
     elif product == "purchases":
         names = payload.get("item_names")
         title = payload.get("merchant") or (", ".join(str(item) for item in names if item) if isinstance(names, list) else None)
+    elif product == "calendar":
+        title = payload.get("summary") or payload.get("description")
+    elif product == "youtube":
+        title = payload.get("title") or payload.get("video_title")
     else:
         title = payload.get("title") or payload.get("text")
     return str(title or "").strip()

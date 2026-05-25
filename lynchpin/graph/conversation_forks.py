@@ -67,7 +67,13 @@ def detect_fork_chains(
         lineages = conversation_lineages(start=start, end=end)
     lineages = tuple(lineages)
     if profiles is None:
-        profiles = tuple(iter_session_profiles())
+        # Graceful-degrade: missing/incomplete polylogue insights yield an
+        # empty profile set rather than crashing fork-chain detection.
+        from ..sources.polylogue import PolylogueMaterializationError
+        try:
+            profiles = tuple(iter_session_profiles())
+        except PolylogueMaterializationError:
+            profiles = ()
     else:
         profiles = tuple(profiles)
 

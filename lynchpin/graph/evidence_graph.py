@@ -208,6 +208,11 @@ def _finalize_graph(
     promote_projects: Sequence[str] = (),
 ) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
+    if len(nodes) > 100_000:
+        log.warning(
+            "evidence_graph: large graph build nodes=%d; relation builders run in bounded source groups",
+            len(nodes),
+        )
     log.info("evidence_graph: deriving same-project/day edges for %d nodes", len(nodes))
     same_project_edges = tuple(
         edge
@@ -249,6 +254,14 @@ def _finalize_graph(
         for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
+    log.info("evidence_graph: deriving mentions-project edges")
+    mentions_edges = tuple(
+        edge
+        for edge in evidence_edges.mentions_project_edges(nodes)
+        if edge.source_id in node_ids and edge.target_id in node_ids
+    )
+    edges.extend(mentions_edges)
+    log.info("evidence_graph: added %d mentions-project edges", len(mentions_edges))
 
     log.info("evidence_graph: checking source readiness")
     readiness = source_readiness(

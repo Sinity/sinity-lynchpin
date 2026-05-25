@@ -49,6 +49,42 @@ def test_query_substrate_rejects_create() -> None:
         query_substrate("CREATE TABLE x (id INTEGER)")
 
 
+def test_query_substrate_tolerates_leading_line_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Header comments are natural in analytical queries. Previously the
+    prefix check ran on raw stripped SQL, so any SELECT prefixed with
+    ``-- ...`` was rejected as 'disallowed keyword or non-SELECT'."""
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate(
+        "-- header comment describing the query\n"
+        "SELECT COUNT(*) AS cnt FROM commit_fact"
+    )
+    assert result["row_count"] == 1
+
+
+def test_query_substrate_tolerates_leading_block_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    result = query_substrate(
+        "/* header\nblock\ncomment */\nWITH cte AS (SELECT 1 AS x) SELECT * FROM cte"
+    )
+    assert result["row_count"] == 1
+
+
+def test_query_substrate_still_rejects_disallowed_after_comment() -> None:
+    """The comment-skip must not let disallowed statements sneak through."""
+    from lynchpin.mcp.tools.substrate import query_substrate
+
+    with pytest.raises(ValueError, match="disallowed"):
+        query_substrate("-- innocent\nDROP TABLE commit_fact")
+
+
 def test_query_substrate_truncates_at_max_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup_substrate(tmp_path, monkeypatch)
 

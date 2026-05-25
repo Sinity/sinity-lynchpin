@@ -215,7 +215,7 @@ malformed required artifacts directly in the rendered Machine Analysis section.
 
 ### Snapshot Runtime
 
-Coverage and freshness reports now read materialization manifests instead of
+Coverage and source-observation reports now read materialization manifests instead of
 hydrating full source iterators for large historical exports. Daily-signal and
 Spotify daily promotion read canonical derived NDJSON products; they no longer
 scan raw or source-level historical exports during snapshot promotion.

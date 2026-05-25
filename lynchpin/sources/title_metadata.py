@@ -37,6 +37,16 @@ _SPINNER_CHARS = frozenset(
 )
 _GMAIL_COUNT_RE = re.compile(r"^\((\d+)\)\s+")
 _BROWSER_COUNT_RE = re.compile(r"^\((\d+)\)\s+")
+# Progress counters embedded in titles: "(3/5)", "[60%]", "60% Loading",
+# "3/10 done", "[3/12]". These churn from frame to frame and explode the
+# unique-title cardinality without changing the underlying activity.
+# Patterns leave a single space when matched mid-string so neighbouring
+# words don't get glued together ("Building 12/87 done" → "Building done").
+_PROGRESS_FRAC_RE = re.compile(r"[\[\(]?\d+/\d+[\]\)]?")
+_PROGRESS_PCT_RE = re.compile(r"[\[\(]?\d{1,3}%[\]\)]?")
+# Claude Code generates titles that include time-elapsed counters like
+# "(esc to interrupt · ctrl+t to ...)" — strip the parenthetical fluff.
+_INTERRUPT_HINT_RE = re.compile(r"\s*\((?:esc|ctrl)[^)]*\)\s*$")
 _NUM_TOKEN_RE = re.compile(r"\b\d{4,}\b")
 _DATE_RE = re.compile(r"\b\d{2,4}[-/]\d{2}[-/]\d{2,4}\b")
 _TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(:\d{2})?\b")
@@ -106,10 +116,18 @@ def normalize_title(app: str, title: str) -> str:
     canonical = _CANONICAL_FORMS.get(t)
     if canonical:
         return canonical
-    if t and t[0] in _SPINNER_CHARS:
-        t = t[1:].strip()
-        if not t:
-            return "claude-code:idle"
+    # Strip ALL leading spinner chars (was: only one). Each frame of the
+    # spinner is a distinct character in _SPINNER_CHARS; iterate until no
+    # leading spinner remains.
+    while t and t[0] in _SPINNER_CHARS:
+        t = t[1:].lstrip()
+    if not t:
+        return "claude-code:idle"
+    # Strip progress counters and interrupt-hint suffixes BEFORE other
+    # normalization so they don't survive as residual tokens.
+    t = _INTERRUPT_HINT_RE.sub("", t)
+    t = _PROGRESS_FRAC_RE.sub("", t)
+    t = _PROGRESS_PCT_RE.sub("", t)
     t = _GMAIL_COUNT_RE.sub("", t)
     t = _BROWSER_COUNT_RE.sub("", t)
     t = _YT_NOISE_PARAMS_RE.sub("", t)

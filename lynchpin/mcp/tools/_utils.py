@@ -53,14 +53,36 @@ def latest_refresh_id(conn: Any) -> str | None:
 
 
 def best_refresh_id(conn: Any, table: str) -> str | None:
-    """Return the most recent refresh_id that has rows in `table`.
+    """Return the refresh_id that best covers `table`.
 
-    Unlike latest_refresh_id (which reads substrate_source_status), this
-    queries the target table directly. Fixes the refresh_id mismatch where
-    domain tables and evidence nodes use different promote runs.
+    Multiple refresh kinds populate the same fact tables (e.g.
+    ``dag:<ts>`` runs full-history; ``current-state:start:end:scope`` runs
+    a rolling window with narrower project scope). Picking the most recent
+    by ``recorded_at`` silently selects the narrower one and makes
+    engineering_throughput / file_hotspots / symbol_velocity look
+    "degraded" or empty.
+
+    Ranking among ok-status candidates: row_count in target table DESC,
+    then recorded_at DESC as tiebreaker. This prefers comprehensive
+    snapshots over recent partial ones.
+
+    Falls back to latest materialized_at with a warning when no
+    ``substrate_source_status`` row exists for the table's source.
     """
+    import logging
+
     if not _IDENTIFIER_RE.fullmatch(table):
         raise ValueError(f"invalid substrate table identifier: {table!r}")
+
+    table_to_source = {
+        "commit_fact": "commits",
+        "file_change_fact": "file_changes",
+        "symbol_change": "symbols",
+        "evidence_node": "evidence_graph",
+        "evidence_edge": "evidence_graph",
+        "ai_work_event": "ai_attribution",
+    }
+    source_name = table_to_source.get(table, table)
 
     columns = {
         str(row[0])
@@ -74,10 +96,49 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
         order_expr = "MAX(date), COUNT(*)"
     else:
         order_expr = "refresh_id"
+
+    # Rank ok-status candidates by table row count, then by recorded_at.
+    # A current-state refresh with narrow project scope (e.g. 5649 file_change
+    # rows) loses to a dag refresh with full coverage (65919 rows).
+    try:
+        candidates = conn.execute(
+            "SELECT refresh_id, recorded_at FROM substrate_source_status "
+            "WHERE source = ? AND status = 'ok' "
+            "ORDER BY recorded_at DESC",
+            [source_name],
+        ).fetchall()
+        if candidates:
+            ids = [row[0] for row in candidates]
+            recorded_at_by_id = {row[0]: row[1] for row in candidates}
+            placeholders = ",".join("?" * len(ids))
+            ranked = conn.execute(
+                f"SELECT refresh_id, COUNT(*) AS rc FROM {table} "
+                f"WHERE refresh_id IN ({placeholders}) "
+                f"GROUP BY refresh_id",
+                ids,
+            ).fetchall()
+            if ranked:
+                # Sort by row_count DESC, then by recorded_at DESC.
+                ranked.sort(
+                    key=lambda r: (r[1], recorded_at_by_id.get(r[0])),
+                    reverse=True,
+                )
+                return ranked[0][0]
+    except Exception:
+        pass
+
+    # Fall back to latest materialized_at with warning
     row = conn.execute(
         f"SELECT refresh_id FROM {table} "
         f"GROUP BY refresh_id ORDER BY {order_expr} DESC LIMIT 1"
     ).fetchone()
+
+    if row:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"best_refresh_id({table!r}): no refresh_id with source_status "
+            f"'{source_name}:ok' found; using latest materialized_at {row[0]!r}"
+        )
     return row[0] if row else None
 
 
@@ -91,3 +152,13 @@ def require_best_refresh_id(conn: Any, table: str, *, tool: str) -> str:
             "and inspect `contract_status` / `substrate_readiness_report`."
         )
     return refresh_id
+
+
+def registered_tool_names() -> tuple[str, ...]:
+    """Return names currently registered on the in-process FastMCP app."""
+    from lynchpin.mcp.server import app
+
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", {})
+    if not isinstance(tools, dict):
+        return ()
+    return tuple(sorted(str(name) for name in tools))

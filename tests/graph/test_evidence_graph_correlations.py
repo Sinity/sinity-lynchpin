@@ -22,6 +22,7 @@ def test_work_day_correlations_projects_from_evidence_graph():
     assert claims[0].support_level == 'strong'
     assert claims[0].relation_count == 1
     assert 'git within 0m of polylogue' in rendered_claims
+    assert claims[0].strongest_edge_ids == ('git:lynchpin:abc->polylogue:conv:sinity-lynchpin:temporal_proximity',)
 
 def test_dataset_correlations_summarize_cross_source_relation_support():
     when = datetime(2026, 5, 5, 12, tzinfo=UTC)

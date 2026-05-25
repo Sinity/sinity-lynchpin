@@ -83,15 +83,18 @@ def test_shared_ai_work_event_creates_higher_weight_edge():
     assert rg.relationships[0].weight >= 1.5
 
 
-def test_shared_commits_via_pr_reference():
+def test_bare_pr_number_collision_is_not_a_coordination_signal():
+    """Two projects that happen to have the same PR number are NOT
+    coordinating — they're independently numbered. Verified false-positive:
+    polylogue#542 (flake deps) and sinex#542 (architecture docs) are
+    unrelated. Until the extractor preserves owner/repo#N form, bare ``#N``
+    cross-project collisions must not emit a shared_commits signal."""
     nodes = [
         _commit(sha="abc", project="alpha", prs=[5]),
-        _commit(sha="def", project="beta", prs=[5]),  # same PR ref
+        _commit(sha="def", project="beta", prs=[5]),
     ]
     rg = build_project_relationships(_graph(nodes))
-    assert len(rg.relationships) == 1
-    rel = rg.relationships[0]
-    assert rel.signal_counts.get("shared_commits") == 1
+    assert rg.relationships == ()
 
 
 def test_no_edge_when_projects_dont_share_signals():
@@ -109,14 +112,34 @@ def test_multiple_signals_compound_weight():
         _ai_session(conv_id="c1", project="beta"),
         _ai_work_event(event_id="e1", project="alpha"),
         _ai_work_event(event_id="e1", project="beta"),
-        _commit(sha="abc", project="alpha", prs=[5]),
-        _commit(sha="def", project="beta", prs=[5]),
     ]
     rg = build_project_relationships(_graph(nodes))
     rel = rg.relationships[0]
-    # 1.0 (session) + 1.5 (work_event) + 0.7 (commit) = 3.2
-    assert rel.weight >= 3.0
-    assert set(rel.signal_counts.keys()) == {"shared_ai_sessions", "shared_ai_work_events", "shared_commits"}
+    # 1.0 (session) + 1.5 (work_event) = 2.5
+    assert rel.weight >= 2.0
+    assert set(rel.signal_counts.keys()) == {"shared_ai_sessions", "shared_ai_work_events"}
+
+
+def test_sample_evidence_node_ids_stay_within_the_pair():
+    """Sessions touching N>2 projects must not leak off-pair node ids into
+    every pair's sample list. Previously a session touching {alpha, beta,
+    gamma, delta} dumped all 4 node ids into the alpha-beta sample even
+    though gamma/delta belong to other pairs."""
+    nodes = [
+        _ai_session(conv_id="c1", project="alpha"),
+        _ai_session(conv_id="c1", project="beta"),
+        _ai_session(conv_id="c1", project="gamma"),
+        _ai_session(conv_id="c1", project="delta"),
+    ]
+    rg = build_project_relationships(_graph(nodes))
+    for rel in rg.relationships:
+        pair = {rel.project_a, rel.project_b}
+        for sample in rel.sample_evidence_node_ids:
+            suffix_project = sample.rsplit(":", 1)[-1]
+            assert suffix_project in pair, (
+                f"pair {pair} got off-pair sample {sample!r} "
+                f"(project {suffix_project})"
+            )
 
 
 def test_render_includes_top_pairs_and_summary():

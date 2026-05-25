@@ -90,24 +90,25 @@ def test_coverage_low_when_source_missing():
     assert sleep_row.coverage.tier == "low"
 
 
-def test_freshness_high_for_recent_data():
+def test_date_coverage_high_when_bounds_cover_window():
     readiness = _readiness(
         SourceReadiness(source="git", status="available", reason="ok",
-                        cost="materialized", last_date=date(2026, 5, 5)),
+                        cost="materialized", first_date=date(2026, 5, 1),
+                        last_date=date(2026, 5, 7)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     git_row = next(r for r in matrix.rows if r.layer == "git")
-    assert git_row.freshness.tier == "high"
+    assert git_row.date_coverage.tier == "high"
 
 
-def test_freshness_low_for_stale_data():
+def test_date_coverage_low_when_bounds_miss_window():
     readiness = _readiness(
-        SourceReadiness(source="spotify", status="stale", reason="last export 60d ago",
+        SourceReadiness(source="spotify", status="available", reason="ok",
                         cost="materialized", last_date=date(2026, 3, 1)),
     )
     matrix = build_substrate_confidence_matrix(readiness=readiness, graph=_graph(), correlation_rows=())
     spotify_row = next(r for r in matrix.rows if r.layer == "spotify")
-    assert spotify_row.freshness.tier == "low"
+    assert spotify_row.date_coverage.tier == "low"
 
 
 def test_kind_quality_high_when_majority_high_tier():

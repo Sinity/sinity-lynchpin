@@ -209,3 +209,71 @@ def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -
         total_prs = sum((r[1] for r in per_project))
         total_merged = sum((r[2] for r in per_project))
     return {'refresh_id': refresh_id, 'total_prs': total_prs, 'merged': total_merged, 'per_project': [{'project': r[0], 'prs': r[1], 'merged': r[2], 'p50_merge_m': r[3], 'p75_merge_m': r[4], 'avg_rounds': r[5], 'friction_pct': r[6]} for r in per_project], 'overall': {'p50_merge_m': overall[0] if overall else None, 'p75_merge_m': overall[1] if overall else None, 'p95_merge_m': overall[2] if overall else None, 'avg_rounds': overall[3] if overall else None}, 'friction_breakdown': [{'project': r[0], 'signal': r[1], 'count': r[2]} for r in friction]}
+
+@app.tool()
+def project_pair_signals(project_a: str | None=None, project_b: str | None=None, refresh_id: str | None=None, limit: int=50) -> list[dict[str, Any]]:
+    from lynchpin.graph.project_relationships import build_project_relationships
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.graph import load_evidence_graph
+    path = substrate_path()
+    with connect(path, read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'evidence_node')
+            if refresh_id is None:
+                return []
+        graph = load_evidence_graph(conn, refresh_id=refresh_id)
+    if graph is None:
+        return []
+    rel_graph = build_project_relationships(graph)
+    relationships = list(rel_graph.relationships)
+    if project_a is not None and project_b is not None:
+        pair = tuple(sorted((project_a, project_b)))
+        relationships = [rel for rel in relationships if (rel.project_a, rel.project_b) == pair]
+    elif project_a is not None or project_b is not None:
+        target = project_a or project_b
+        relationships = [rel for rel in relationships if target in (rel.project_a, rel.project_b)]
+    out: list[dict[str, Any]] = []
+    for rel in relationships[:max(1, int(limit))]:
+        out.append({'project_a': rel.project_a, 'project_b': rel.project_b, 'total_weight': rel.weight, 'edge_count': sum(rel.signal_counts.values()), 'signals': dict(rel.signal_counts), 'sample_evidence_node_ids': list(rel.sample_evidence_node_ids)})
+    return out
+
+@app.tool()
+def walk_evidence(start_id: str, edge_kinds: list[str] | None=None, max_depth: int=3, max_nodes: int=200, direction: str='out', refresh_id: str | None=None) -> dict[str, Any]:
+    """Generic BFS walk over the evidence graph from a starting node.
+
+    Cycle-safe, bidirectional, hard-capped (depth ≤ 5, nodes ≤ 1000).
+    Replaces the need for raw SQL exploration of evidence_edge for
+    "what's connected to X?" questions.
+
+    Parameters:
+        start_id:    evidence_node.id to start from.
+        edge_kinds:  filter edges by relation. None = all.
+        max_depth:   BFS depth limit (clamped to 5).
+        max_nodes:   total node visit cap (clamped to 1000).
+        direction:   "out", "in", or "both".
+        refresh_id:  substrate snapshot. Defaults to latest evidence_graph build.
+
+    Returns:
+        {
+            "start_id", "direction", "edge_kinds", "max_depth", "max_nodes",
+            "truncated": bool, "reason": str | None,
+            "nodes": [{"id", "kind", "source", "date", "project", "summary",
+                       "depth", "parent_edge_source", "parent_edge_target",
+                       "parent_edge_relation", "direction_followed"}, ...],
+            "edges": [{"source_id", "target_id", "relation", "evidence", "weight"}, ...],
+        }
+    """
+    from lynchpin.graph.walk import walk_evidence as _walk
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.graph import load_evidence_graph
+    path = substrate_path()
+    with connect(path, read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'evidence_node')
+            if refresh_id is None:
+                return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'reason': 'no evidence_graph build available', 'nodes': [], 'edges': []}
+        graph = load_evidence_graph(conn, refresh_id=refresh_id)
+    if graph is None:
+        return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'reason': f'evidence_graph build {refresh_id!r} not found', 'nodes': [], 'edges': []}
+    result = _walk(graph, start_id, edge_kinds=edge_kinds, max_depth=int(max_depth), max_nodes=int(max_nodes), direction=direction)
+    return {'start_id': result.start_id, 'direction': result.direction, 'edge_kinds': list(result.edge_kinds) if result.edge_kinds else None, 'max_depth': result.max_depth, 'max_nodes': result.max_nodes, 'truncated': result.truncated, 'reason': result.reason, 'nodes': [{'id': step.node.id, 'kind': step.node.kind, 'source': step.node.source, 'date': _json_safe(step.node.date), 'project': step.node.project, 'summary': step.node.summary, 'depth': step.depth, 'parent_edge_source': step.parent_edge.source_id if step.parent_edge else None, 'parent_edge_target': step.parent_edge.target_id if step.parent_edge else None, 'parent_edge_relation': step.parent_edge.relation if step.parent_edge else None, 'direction_followed': step.direction_followed} for step in result.steps], 'edges': [{'source_id': edge.source_id, 'target_id': edge.target_id, 'relation': edge.relation, 'evidence': edge.evidence, 'weight': edge.weight} for edge in result.edges]}

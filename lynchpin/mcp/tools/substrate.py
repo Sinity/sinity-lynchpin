@@ -46,7 +46,17 @@ def _is_select_only(sql: str) -> bool:
     """
     import re
 
+    # Strip leading SQL comments (line `-- ...` and block `/* ... */`) so the
+    # prefix check survives header comments that humans/agents naturally put
+    # at the top of analytical queries.
     stripped = sql.strip()
+    while stripped.startswith("--") or stripped.startswith("/*"):
+        if stripped.startswith("--"):
+            newline = stripped.find("\n")
+            stripped = stripped[newline + 1 :].lstrip() if newline != -1 else ""
+        else:
+            end = stripped.find("*/")
+            stripped = stripped[end + 2 :].lstrip() if end != -1 else ""
     upper = stripped.upper()
 
     # Must start with SELECT or a CTE
@@ -385,7 +395,7 @@ def contract_coverage(
     """Canonical dataset coverage and gaps for an optional date window."""
     from datetime import date as _date
 
-    from lynchpin.materialization import audit_materialization, materialized_dataset_overlaps
+    from lynchpin.materialization import audit_materialization, materialized_dataset_coverage
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -393,18 +403,18 @@ def contract_coverage(
     for row in audit_materialization():
         if source and row.name != source:
             continue
-        overlaps = None
-        if start_d is not None and end_d is not None:
-            overlaps = materialized_dataset_overlaps(row, start=start_d, end=end_d)
+        coverage = materialized_dataset_coverage(row, start=start_d, end=end_d)
         rows.append(
             {
                 "source": row.name,
                 "status": row.status,
                 "substrate_status": row.to_json()["substrate_status"],
+                "collection_model": row.to_json()["collection_model"],
                 "row_count": row.row_count,
                 "first_date": _json_safe(row.first_date),
                 "last_date": _json_safe(row.last_date),
-                "overlaps_requested_window": overlaps,
+                "coverage": coverage,
+                "overlaps_requested_window": coverage["overlaps_requested_window"],
                 "reason": row.reason,
                 "refresh_command": row.refresh_command,
             }
@@ -424,6 +434,12 @@ def analysis_readiness(
         row for row in dataset_rows
         if row["substrate_status"] in {"unavailable", "error"}
     ]
+    continuous_coverage_gaps = [
+        row for row in dataset_rows
+        if row.get("collection_model") == "continuous"
+        and isinstance(row.get("coverage"), dict)
+        and row["coverage"].get("relation") in {"no_overlap", "partial_overlap"}
+    ]
     blocking_stages = [
         row for row in substrate["sources"]
         if row.get("kind") == "stage" and row["status"] in {"unavailable", "error"}
@@ -435,11 +451,18 @@ def analysis_readiness(
         "summary": {
             "dataset_count": len(dataset_rows),
             "blocking_dataset_count": len(blocking_datasets),
+            "continuous_coverage_gap_count": len(continuous_coverage_gaps),
             "blocking_stage_count": len(blocking_stages),
-            "trustworthy": not blocking_datasets and not blocking_stages and substrate["summary"]["trustworthy"],
+            "trustworthy": (
+                not blocking_datasets
+                and not continuous_coverage_gaps
+                and not blocking_stages
+                and substrate["summary"]["trustworthy"]
+            ),
         },
         "blocking": {
             "datasets": blocking_datasets,
+            "continuous_coverage_gaps": continuous_coverage_gaps,
             "stages": blocking_stages,
         },
     }
@@ -461,6 +484,14 @@ def mcp_capability_map() -> list[dict[str, Any]]:
         ("activity_content_daily", "stage", "activity_content_day", "raises when unpromoted"),
         ("activity_title_usage", "stage", "activity_title_usage", "raises when unpromoted"),
         ("activity_unmatched_titles", "stage", "activity_title_usage", "raises when unpromoted"),
+        ("title_metadata_status", "dataset", "title_metadata", "dict/status"),
+        ("title_metadata_audit", "dataset", "title_metadata", "dict/status"),
+        ("google_takeout_daily", "dataset", "google_takeout", "returns empty list for covered zero-activity windows"),
+        ("google_takeout_events", "dataset", "google_takeout", "returns empty list for covered zero-activity windows"),
+        ("terminal_daily", "dataset", "atuin", "returns empty list for covered zero-activity windows"),
+        ("terminal_sessions", "dataset", "atuin", "returns empty list for covered zero-activity windows"),
+        ("source_observation_bounds", "dataset", "source observation bounds", "no age-based stale scoring"),
+        ("mcp_surface_self_check", "runtime", "source_contracts/FastMCP registry", "dict/status"),
         ("source_correlation", "stage", "evidence_graph", "raises when unpromoted"),
         ("project_day_correlations", "stage", "evidence_graph", "raises when unpromoted"),
         ("closure_chain_walks", "stage", "evidence_graph", "raises when unpromoted"),

@@ -97,18 +97,27 @@ _ACTIVE_STATUSES = {"not-afk", "active", "present"}
 _AFK_STATUSES = {"afk", "away"}
 
 
-def active_intervals(start: datetime, end: datetime) -> list[Interval]:
+def active_intervals(start: datetime | date, end: datetime | date) -> list[Interval]:
+    """AFK-active intervals over [start, end). If ``end`` is a date, the
+    upper bound expands to midnight of the following day so passing
+    ``date(d), date(d)`` gives the natural one-day window instead of a
+    zero-width range that silently returns empty.
+    """
+    from ..core.parse import end_of_day_local
     return merge_intervals(
         (as_local(e.start), as_local(e.end))
-        for e in afk_events(start=as_local(start), end=as_local(end))
+        for e in afk_events(start=as_local(start), end=end_of_day_local(end))
         if str((e.data or {}).get("status") or "").strip().lower() in _ACTIVE_STATUSES
     )
 
 
-def afk_intervals(start: datetime, end: datetime) -> list[Interval]:
+def afk_intervals(start: datetime | date, end: datetime | date) -> list[Interval]:
+    """AFK-inactive intervals over [start, end). See ``active_intervals``
+    for the end-bound semantics."""
+    from ..core.parse import end_of_day_local
     return merge_intervals(
         (as_local(e.start), as_local(e.end))
-        for e in afk_events(start=as_local(start), end=as_local(end))
+        for e in afk_events(start=as_local(start), end=end_of_day_local(end))
         if str((e.data or {}).get("status") or "").strip().lower() in _AFK_STATUSES
     )
 
@@ -132,10 +141,17 @@ _FocusCountSpan = TypeVar("_FocusCountSpan", FocusSpan, FocusTimelineSpan)
 
 
 def focus_spans(
-    *, start: datetime, end: datetime, min_duration_s: float = 0.0
+    *, start: datetime | date, end: datetime | date, min_duration_s: float = 0.0
 ) -> list[FocusSpan]:
-    """AFK-trimmed classified focus timeline."""
-    return list(_focus_spans_cached(as_local(start), as_local(end), min_duration_s))
+    """AFK-trimmed classified focus timeline.
+
+    Accepts date or datetime. With dates, ``start`` is local midnight of
+    that day and ``end`` is local midnight of the following day, giving
+    the inclusive day-range a caller naturally expects when passing
+    ``start=date(d), end=date(d)``.
+    """
+    from ..core.parse import end_of_day_local
+    return list(_focus_spans_cached(as_local(start), end_of_day_local(end), min_duration_s))
 
 
 def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDay]:

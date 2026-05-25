@@ -86,7 +86,13 @@ def _analysis_claim_rows(graph: Any) -> list[Any]:
     claims = supported_work_claims(rows, graph=graph, limit=200)
     result: list[AnalysisClaimRow] = []
     for claim in claims:
-        relation_ids = tuple(_relation_id(value) for value in claim.strongest_relations)
+        # Prefer real edge composite IDs (source_id->target_id:relation) so
+        # load_claim_evidence can join back to evidence_edge rows. Fall back
+        # to dimension labels only if strongest_edge_ids is unpopulated (e.g.
+        # legacy callers not going through _work_claim).
+        relation_ids = claim.strongest_edge_ids or tuple(
+            _relation_id(value) for value in claim.strongest_relations
+        )
         result.append(
             AnalysisClaimRow(
                 claim_id=claim_id("supported_work", claim.date, claim.project, claim.summary),

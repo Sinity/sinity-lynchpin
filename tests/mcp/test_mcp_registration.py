@@ -34,16 +34,19 @@ def test_mcp_tools_registered() -> None:
         focus_daily,
         google_takeout_daily,
         google_takeout_events,
+        terminal_daily,
+        terminal_sessions,
         contract_status,
         materialization_status,
         personal_daily_signals,
         spotify_daily,
+        title_metadata_audit,
         web_daily,
     )
     from lynchpin.mcp.tools.capability import mcp_capability_matrix
     from lynchpin.mcp.tools.review import pr_review_rows, review_bottlenecks
-    from lynchpin.mcp.tools.runtime import mcp_runtime_status
-    from lynchpin.mcp.tools.signals import verify_vs_edit_ratio
+    from lynchpin.mcp.tools.runtime import mcp_runtime_status, mcp_surface_self_check
+    from lynchpin.mcp.tools.signals import source_observation_bounds, verify_vs_edit_ratio
     from lynchpin.mcp.tools.substrate import (
         list_evidence_graph_builds,
         list_substrate_tables,
@@ -88,9 +91,12 @@ def test_mcp_tools_registered() -> None:
         focus_daily,
         google_takeout_daily,
         google_takeout_events,
+        terminal_daily,
+        terminal_sessions,
         personal_daily_signals,
         contract_status,
         materialization_status,
+        title_metadata_audit,
         analysis_readiness,
         analysis_claims,
         claim_evidence,
@@ -114,6 +120,8 @@ def test_mcp_tools_registered() -> None:
         machine_metrics_daily,
         machine_service_state_summary,
         mcp_runtime_status,
+        mcp_surface_self_check,
+        source_observation_bounds,
         verify_vs_edit_ratio,
     ]:
         assert callable(fn)

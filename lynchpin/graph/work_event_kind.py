@@ -1,4 +1,4 @@
-"""Lynchpin re-classifier overlay for Polylogue work-event kinds.
+"""Lynchpin re-classifier overlay for upstream work-event labels.
 
 Polylogue produces a ``kind`` per ``session_work_event`` (debugging /
 implementation / testing / research / planning / review / conversation /
@@ -8,7 +8,7 @@ uncertainty silently.
 
 This module produces an independent rule-based label using the work-event
 features Lynchpin can trust (file-path extensions, tools_used patterns,
-duration buckets), then compares it against Polylogue's. When the two agree,
+duration buckets), then compares it against the source label. When the two agree,
 combined confidence is boosted; when they disagree, both are surfaced and the
 disagreement becomes a caveat.
 
@@ -42,17 +42,51 @@ def _path_signal(file_paths: Iterable[str]) -> tuple[Counter[str], int]:
         suffix = path.suffix.lower()
         name = path.name.lower()
 
-        if "tests" in parts or "test" in parts or name.startswith("test_") or name.endswith("_test.py") or name.endswith(".test.ts") or name.endswith(".test.tsx"):
+        if (
+            "tests" in parts
+            or "test" in parts
+            or name.startswith("test_")
+            or name.endswith("_test.py")
+            or name.endswith(".test.ts")
+            or name.endswith(".test.tsx")
+        ):
             scores["testing"] += 2
         if "docs" in parts or "doc" in parts or suffix in {".md", ".rst", ".txt"}:
             scores["research"] += 1
             scores["conversation"] += 1
-        if name in {"cargo.toml", "cargo.lock", "pyproject.toml", "package.json", "package-lock.json", "flake.nix", "flake.lock", "go.mod", "go.sum"}:
+        if name in {
+            "cargo.toml",
+            "cargo.lock",
+            "pyproject.toml",
+            "package.json",
+            "package-lock.json",
+            "flake.nix",
+            "flake.lock",
+            "go.mod",
+            "go.sum",
+        }:
             scores["dependency_management"] += 3
-        if suffix in {".py", ".rs", ".ts", ".tsx", ".go", ".js", ".jsx", ".rb", ".java", ".cpp", ".c", ".h", ".hpp"}:
+        if suffix in {
+            ".py",
+            ".rs",
+            ".ts",
+            ".tsx",
+            ".go",
+            ".js",
+            ".jsx",
+            ".rb",
+            ".java",
+            ".cpp",
+            ".c",
+            ".h",
+            ".hpp",
+        }:
             # Code paths are weak signal alone; pair with tools_used / kind hints below.
             scores["implementation"] += 1
-        if suffix in {".yml", ".yaml", ".toml", ".json", ".nix"} and name not in {"cargo.toml", "pyproject.toml"}:
+        if suffix in {".yml", ".yaml", ".toml", ".json", ".nix"} and name not in {
+            "cargo.toml",
+            "pyproject.toml",
+        }:
             scores["dependency_management"] += 1
         if suffix in {".sql", ".prisma"} or "schema" in parts or "migrations" in parts:
             scores["data_analysis"] += 1
@@ -96,8 +130,8 @@ def _duration_signal(duration_ms: int) -> Counter[str]:
 
 def overlay_label(
     *,
-    polylogue_kind: str | None,
-    polylogue_confidence: float,
+    source_kind: str | None,
+    source_confidence: float,
     file_paths: Iterable[str],
     tools_used: Iterable[str],
     duration_ms: int,
@@ -105,7 +139,7 @@ def overlay_label(
     """Produce a re-classified label for a single work-event.
 
     The overlay computes its own kind/confidence from features Lynchpin can
-    independently verify. If it converges with Polylogue's classification, we
+    independently verify. If it converges with the source classification, we
     return `source="agreement"` with combined confidence. If they diverge, the
     stronger signal wins but both labels stay visible.
 
@@ -128,7 +162,11 @@ def overlay_label(
     feature_count = 0
     if combined:
         overlay_kind, top_score = combined.most_common(1)[0]
-        feature_count = (1 if path_count else 0) + (1 if tool_scores else 0) + (1 if duration_scores else 0)
+        feature_count = (
+            (1 if path_count else 0)
+            + (1 if tool_scores else 0)
+            + (1 if duration_scores else 0)
+        )
         # Confidence rises with feature dimensionality and total score.
         # Caps at 0.95 so we never claim certainty.
         raw = top_score / 4.0 + 0.15 * feature_count
@@ -136,19 +174,19 @@ def overlay_label(
         if feature_count <= 1:
             overlay_conf = min(overlay_conf, 0.45)
 
-    polylogue_kind_norm = polylogue_kind or None
-    if polylogue_kind_norm and overlay_kind and polylogue_kind_norm == overlay_kind:
+    source_kind_norm = source_kind or None
+    if source_kind_norm and overlay_kind and source_kind_norm == overlay_kind:
         kind = overlay_kind
-        confidence = min(0.95, (polylogue_confidence + overlay_conf) / 1.5)
+        confidence = min(0.95, (source_confidence + overlay_conf) / 1.5)
         source: KindSource = "agreement"
-    elif overlay_kind and overlay_conf >= polylogue_confidence:
+    elif overlay_kind and overlay_conf >= source_confidence:
         kind = overlay_kind
         confidence = overlay_conf
-        source = "lynchpin_overlay" if polylogue_kind_norm is None else "disagreement"
-    elif polylogue_kind_norm:
-        kind = polylogue_kind_norm
-        confidence = polylogue_confidence
-        source = "polylogue"
+        source = "lynchpin_overlay" if source_kind_norm is None else "disagreement"
+    elif source_kind_norm:
+        kind = source_kind_norm
+        confidence = source_confidence
+        source = "source"
     elif overlay_kind:
         kind = overlay_kind
         confidence = overlay_conf
@@ -156,7 +194,7 @@ def overlay_label(
     else:
         kind = "unknown"
         confidence = 0.0
-        source = "polylogue"
+        source = "source"
 
     tier: ConfidenceTier
     if confidence >= 0.8 and (source == "agreement" or feature_count >= 2):
@@ -171,8 +209,8 @@ def overlay_label(
         confidence=confidence,
         source=source,
         tier=tier,
-        polylogue_kind=polylogue_kind_norm,
-        polylogue_confidence=polylogue_confidence,
+        source_kind=source_kind_norm,
+        source_confidence=source_confidence,
         overlay_kind=overlay_kind,
         overlay_confidence=overlay_conf,
         features={

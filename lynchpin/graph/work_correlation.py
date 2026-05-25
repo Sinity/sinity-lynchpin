@@ -94,6 +94,7 @@ class WorkEvidenceClaim:
     strongest_relations: tuple[str, ...]
     summary: str
     caveats: tuple[str, ...] = ()
+    strongest_edge_ids: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class DatasetCorrelation:
@@ -119,6 +120,7 @@ class _RelationSupport:
     dimension: str
     evidence: str
     weight: float
+    edge_id: str = ''
 
 def correlate_work_days(*, git_facts: Sequence[object]=(), github_items: Sequence[GitHubItem | dict[str, object]]=(), ai_sessions: Sequence[object]=(), raw_log_entries: Sequence[object]=(), focus_spans: Sequence[object]=(), shell_sessions: Sequence[object]=()) -> tuple[CorrelatedWorkDay, ...]:
     """Correlate heterogeneous work evidence by normalized project and date."""
@@ -366,7 +368,8 @@ def _relations_by_project_day(graph: object | None) -> dict[tuple[date, str], tu
         if relation.source_source == 'analysis' or relation.target_source == 'analysis':
             continue
         dimension = _relation_dimension(relation.relation, relation.source_source, relation.target_source)
-        support = _RelationSupport(dimension=dimension, evidence=relation.evidence, weight=relation.weight)
+        edge_id = f'{relation.source_node_id}->{relation.target_node_id}:{relation.relation}'
+        support = _RelationSupport(dimension=dimension, evidence=relation.evidence, weight=relation.weight, edge_id=edge_id)
         existing = grouped[relation.date, relation.project].get(dimension)
         if existing is None or support.weight > existing.weight:
             grouped[relation.date, relation.project][dimension] = support
@@ -374,7 +377,8 @@ def _relations_by_project_day(graph: object | None) -> dict[tuple[date, str], tu
 
 def _work_claim(row: CorrelatedWorkDay, relations: Sequence[_RelationSupport]) -> WorkEvidenceClaim:
     relation_count = len(relations)
-    return WorkEvidenceClaim(date=row.date, project=row.project, support_level=_support_level(row, relation_count), score=_claim_score(row, relation_count), sources=row.sources, relation_count=relation_count, strongest_relations=tuple((f'{relation.dimension}: {relation.evidence}' for relation in relations[:3])), summary=_claim_summary(row, relation_count), caveats=_claim_caveats(row, relation_count))
+    top = relations[:3]
+    return WorkEvidenceClaim(date=row.date, project=row.project, support_level=_support_level(row, relation_count), score=_claim_score(row, relation_count), sources=row.sources, relation_count=relation_count, strongest_relations=tuple((f'{relation.dimension}: {relation.evidence}' for relation in top)), summary=_claim_summary(row, relation_count), caveats=_claim_caveats(row, relation_count), strongest_edge_ids=tuple((rel.edge_id for rel in top if rel.edge_id)))
 
 def _relation_dimension(relation: str, source: str, target: str) -> str:
     left, right = sorted((source, target))

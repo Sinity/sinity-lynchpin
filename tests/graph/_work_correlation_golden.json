@@ -15,6 +15,10 @@
         "raw_log",
         "terminal"
       ],
+      "strongest_edge_ids": [
+        "commit:polylogue:4->ai-ev:polylogue:4:references",
+        "focus:polylogue:4->term:polylogue:4:temporal_overlap"
+      ],
       "strongest_relations": [
         "references:git+polylogue: commit-ai overlap 4",
         "temporal_overlap:activitywatch+terminal: focus-term 4"
@@ -36,6 +40,10 @@
         "github",
         "raw_log",
         "terminal"
+      ],
+      "strongest_edge_ids": [
+        "commit:sinity-lynchpin:3->ai-ev:sinity-lynchpin:3:references",
+        "focus:sinity-lynchpin:3->term:sinity-lynchpin:3:temporal_overlap"
       ],
       "strongest_relations": [
         "references:git+polylogue: commit-ai overlap 3",
@@ -59,6 +67,10 @@
         "raw_log",
         "terminal"
       ],
+      "strongest_edge_ids": [
+        "commit:sinex:2->ai-ev:sinex:2:references",
+        "focus:sinex:2->term:sinex:2:temporal_overlap"
+      ],
       "strongest_relations": [
         "references:git+polylogue: commit-ai overlap 2",
         "temporal_overlap:activitywatch+terminal: focus-term 2"
@@ -81,6 +93,10 @@
         "raw_log",
         "terminal"
       ],
+      "strongest_edge_ids": [
+        "commit:polylogue:1->ai-ev:polylogue:1:references",
+        "focus:polylogue:1->term:polylogue:1:temporal_overlap"
+      ],
       "strongest_relations": [
         "references:git+polylogue: commit-ai overlap 1",
         "temporal_overlap:activitywatch+terminal: focus-term 1"
@@ -102,6 +118,10 @@
         "github",
         "raw_log",
         "terminal"
+      ],
+      "strongest_edge_ids": [
+        "commit:sinity-lynchpin:0->ai-ev:sinity-lynchpin:0:references",
+        "focus:sinity-lynchpin:0->term:sinity-lynchpin:0:temporal_overlap"
       ],
       "strongest_relations": [
         "references:git+polylogue: commit-ai overlap 0",

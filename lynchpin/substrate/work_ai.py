@@ -65,7 +65,9 @@ def load_ai_work_events(
     sql = f"""
         SELECT
             event_id, conversation_id, provider, kind, kind_confidence,
-            start_ts, end_ts, duration_ms, file_paths, tools_used, summary
+            start_ts, end_ts, duration_ms, file_paths, tools_used, summary,
+            workflow_shape, workflow_shape_confidence,
+            terminal_state, terminal_state_confidence
         FROM ai_work_event
         {where}
         ORDER BY start_ts NULLS LAST, event_id
@@ -85,6 +87,10 @@ def load_ai_work_events(
         file_paths,
         tools_used,
         summary,
+        workflow_shape,
+        workflow_shape_confidence,
+        terminal_state,
+        terminal_state_confidence,
     ) in rows:
         results.append(
             WorkEvent(
@@ -99,6 +105,10 @@ def load_ai_work_events(
                 file_paths=tuple(file_paths) if file_paths else (),
                 tools_used=tuple(tools_used) if tools_used else (),
                 summary=summary or "",
+                workflow_shape=workflow_shape,
+                workflow_shape_confidence=workflow_shape_confidence or 0.0,
+                terminal_state=terminal_state,
+                terminal_state_confidence=terminal_state_confidence or 0.0,
             )
         )
     return results
@@ -133,7 +143,7 @@ def load_ai_work_event_labels(
     sql = f"""
         SELECT
             event_id, kind, kind_confidence, kind_source, kind_tier,
-            polylogue_kind, polylogue_confidence,
+            source_kind, source_confidence,
             overlay_kind, overlay_confidence
         FROM ai_work_event
         {where}
@@ -147,18 +157,18 @@ def load_ai_work_event_labels(
         kind_confidence,
         kind_source,
         kind_tier,
-        polylogue_kind,
-        polylogue_confidence,
+        source_kind,
+        source_confidence,
         overlay_kind,
         overlay_confidence,
     ) in rows:
         out[event_id] = WorkEventKindLabel(
             kind=kind,
             confidence=kind_confidence,
-            source=kind_source or "polylogue",
+            source=kind_source or "source",
             tier=kind_tier or "low",
-            polylogue_kind=polylogue_kind,
-            polylogue_confidence=polylogue_confidence or 0.0,
+            source_kind=source_kind,
+            source_confidence=source_confidence or 0.0,
             overlay_kind=overlay_kind,
             overlay_confidence=overlay_confidence or 0.0,
             # ``features`` (raw extractor signals) are not stored in the
@@ -174,12 +184,27 @@ def load_ai_work_event_labels(
 
 
 _AI_WORK_EVENT_COLUMNS = (
-    "event_id", "conversation_id", "provider", "project",
-    "kind", "kind_confidence", "kind_tier", "kind_source",
-    "polylogue_kind", "polylogue_confidence",
-    "overlay_kind", "overlay_confidence",
-    "file_paths", "tools_used",
-    "start_ts", "end_ts", "duration_ms",
+    "event_id",
+    "conversation_id",
+    "provider",
+    "project",
+    "kind",
+    "kind_confidence",
+    "kind_tier",
+    "kind_source",
+    "source_kind",
+    "source_confidence",
+    "overlay_kind",
+    "overlay_confidence",
+    "workflow_shape",
+    "workflow_shape_confidence",
+    "terminal_state",
+    "terminal_state_confidence",
+    "file_paths",
+    "tools_used",
+    "start_ts",
+    "end_ts",
+    "duration_ms",
     "summary",
 )
 
@@ -194,8 +219,8 @@ def promote_ai_work_events(
 ) -> int:
     """INSERT ai_work_event rows, idempotent on refresh_id.
 
-    When ``classifier`` is None, polylogue's raw kind is stored in both
-    ``kind`` and ``polylogue_kind``; overlay/tier columns are NULL.
+    When ``classifier`` is None, the source event label is stored in both
+    ``kind`` and ``source_kind``; overlay/tier columns are NULL.
     When provided, all kind/tier/source/confidence columns are derived from
     the returned ``WorkEventKindLabel``.
     """
@@ -209,8 +234,8 @@ def promote_ai_work_events(
             kind_confidence = label.confidence
             kind_tier = label.tier
             kind_source = label.source
-            polylogue_kind = label.polylogue_kind
-            polylogue_confidence = label.polylogue_confidence
+            source_kind = label.source_kind
+            source_confidence = label.source_confidence
             overlay_kind = label.overlay_kind
             overlay_confidence = label.overlay_confidence
         else:
@@ -218,20 +243,35 @@ def promote_ai_work_events(
             kind_confidence = float(ev.confidence) if ev.confidence is not None else 0.0
             kind_tier = None
             kind_source = None
-            polylogue_kind = ev.kind
-            polylogue_confidence = (
+            source_kind = ev.kind
+            source_confidence = (
                 float(ev.confidence) if ev.confidence is not None else 0.0
             )
             overlay_kind = None
             overlay_confidence = None
 
         return (
-            ev.event_id, ev.conversation_id, ev.provider, proj,
-            kind, kind_confidence, kind_tier, kind_source,
-            polylogue_kind, polylogue_confidence,
-            overlay_kind, overlay_confidence,
-            list(ev.file_paths), list(ev.tools_used),
-            ev.start, ev.end, int(ev.duration_ms),
+            ev.event_id,
+            ev.conversation_id,
+            ev.provider,
+            proj,
+            kind,
+            kind_confidence,
+            kind_tier,
+            kind_source,
+            source_kind,
+            source_confidence,
+            overlay_kind,
+            overlay_confidence,
+            getattr(ev, "workflow_shape", None),
+            float(getattr(ev, "workflow_shape_confidence", 0.0) or 0.0),
+            getattr(ev, "terminal_state", None),
+            float(getattr(ev, "terminal_state_confidence", 0.0) or 0.0),
+            list(ev.file_paths),
+            list(ev.tools_used),
+            ev.start,
+            ev.end,
+            int(ev.duration_ms),
             ev.summary or None,
         )
 

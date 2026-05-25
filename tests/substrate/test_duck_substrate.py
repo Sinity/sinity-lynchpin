@@ -252,6 +252,8 @@ def _make_work_event(
     kind: str = "implementation",
     with_timestamps: bool = True,
     project: str = "lynchpin",
+    workflow_shape: str | None = None,
+    terminal_state: str | None = None,
 ) -> "WorkEvent":  # noqa: F821
     from lynchpin.sources.polylogue import WorkEvent
 
@@ -269,6 +271,10 @@ def _make_work_event(
         file_paths=(f"src/{event_id}.py", "pyproject.toml"),
         tools_used=("Read", "Edit"),
         summary=f"work event {event_id}",
+        workflow_shape=workflow_shape,
+        workflow_shape_confidence=0.86 if workflow_shape else 0.0,
+        terminal_state=terminal_state,
+        terminal_state_confidence=0.72 if terminal_state else 0.0,
     )
 
 
@@ -278,7 +284,12 @@ def test_promote_ai_work_events_round_trip_no_classifier(tmp_path: Path) -> None
     from lynchpin.substrate.connection import apply_schema, connect
 
     events = [
-        _make_work_event("ev001", with_timestamps=True),
+        _make_work_event(
+            "ev001",
+            with_timestamps=True,
+            workflow_shape="agentic_loop",
+            terminal_state="tool_left",
+        ),
         _make_work_event("ev002", with_timestamps=False),
         _make_work_event("ev003", kind="research", with_timestamps=True),
     ]
@@ -299,6 +310,10 @@ def test_promote_ai_work_events_round_trip_no_classifier(tmp_path: Path) -> None
     assert ev1.duration_ms == 3600_000
     assert ev1.start is not None
     assert ev1.end is not None
+    assert ev1.workflow_shape == "agentic_loop"
+    assert ev1.workflow_shape_confidence == 0.86
+    assert ev1.terminal_state == "tool_left"
+    assert ev1.terminal_state_confidence == 0.72
 
     ev2 = loaded_by_id["ev002"]
     assert ev2.start is None
@@ -385,8 +400,8 @@ def test_promote_ai_work_events_with_classifier(tmp_path: Path) -> None:
         confidence=0.9,
         source="agreement",
         tier="high",
-        polylogue_kind="implementation",
-        polylogue_confidence=0.7,
+        source_kind="implementation",
+        source_confidence=0.7,
         overlay_kind="implementation",
         overlay_confidence=0.85,
         features={},
@@ -428,10 +443,10 @@ def test_load_ai_work_events_min_kind_tier(tmp_path: Path) -> None:
             return WorkEventKindLabel(
                 kind="implementation",
                 confidence=0.8,
-                source="polylogue",
+                source="source",
                 tier=tier,  # type: ignore[arg-type]
-                polylogue_kind="implementation",
-                polylogue_confidence=0.8,
+                source_kind="implementation",
+                source_confidence=0.8,
                 overlay_kind=None,
                 overlay_confidence=0.0,
                 features={},

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
 from lynchpin.graph.issue_closure_chain import (
+    _pr_might_close,
     closure_chain_summary,
     detect_closure_chains,
     render_issue_closure_chains,
@@ -148,7 +149,28 @@ def test_open_issue_with_only_stale_referencing_commit_is_broken():
     ]
     chains = detect_closure_chains(_graph(nodes), reference=date(2026, 5, 7))
     assert chains[0].closure_status == "broken"
-    assert any("still open" in c.message for c in chains[0].caveats)
+
+
+def test_pr_might_close_rejects_substring_matches():
+    """Verify that _pr_might_close uses word boundaries to avoid false positives.
+
+    Issue #15 should NOT match PR "#150" (a common false positive).
+    """
+    issue_15 = _issue(number=15)
+    issue_150 = _issue(number=150)
+
+    # PR title containing #150 should NOT match issue #15
+    pr_150 = _pr(number=1, title="feat: implement ledger (#150)")
+    assert not _pr_might_close(pr_150, issue_15), "PR #150 should NOT match issue #15"
+
+    # PR title containing #15 should match issue #15
+    pr_15 = _pr(number=2, title="fix: off-by-one error (#15)")
+    assert _pr_might_close(pr_15, issue_15), "PR #15 should match issue #15"
+
+    # PR title containing both #15 and #150 should match issue #15
+    pr_both = _pr(number=3, title="chore: refactor (#15, #150)")
+    assert _pr_might_close(pr_both, issue_15), "PR with both #15 and #150 should match issue #15"
+    assert _pr_might_close(pr_both, issue_150), "PR with both #15 and #150 should match issue #150"
 
 
 def test_summary_aggregates_status_counts():

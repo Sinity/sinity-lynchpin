@@ -167,8 +167,30 @@ def local_tz() -> tzinfo:
     return datetime.now().astimezone().tzinfo or timezone.utc
 
 
-def as_local(value: datetime) -> datetime:
-    """Convert a datetime to local timezone."""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=local_tz())
-    return value.astimezone(local_tz())
+def as_local(value: datetime | date) -> datetime:
+    """Convert a datetime (or date) to local-timezone datetime.
+
+    Accepts a plain ``date`` to interpret as midnight local time. Callers
+    using a date as an end-of-window bound must call ``end_of_day_local``
+    instead; otherwise ``date(d), date(d)`` collapses to a zero-width
+    window and queries silently return nothing.
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=local_tz())
+        return value.astimezone(local_tz())
+    return datetime(value.year, value.month, value.day, tzinfo=local_tz())
+
+
+def end_of_day_local(value: datetime | date) -> datetime:
+    """Convert a date/datetime to the exclusive end-of-day local datetime.
+
+    For a date: returns midnight of the following day in local tz, which
+    is the natural half-open ``[start, end)`` upper bound for day-inclusive
+    queries. For a datetime: returns as_local(value) unchanged — caller
+    already chose the bound semantics.
+    """
+    if isinstance(value, datetime):
+        return as_local(value)
+    next_day = value + timedelta(days=1)
+    return datetime(next_day.year, next_day.month, next_day.day, tzinfo=local_tz())

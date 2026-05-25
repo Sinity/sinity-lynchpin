@@ -87,7 +87,7 @@ def caveat_summary(caveats: tuple[EvidenceCaveat, ...]) -> dict[str, int]:
 
 @dataclass(frozen=True)
 class SourceReadiness:
-    """Availability, freshness, and caveats for one source."""
+    """Availability, observed date bounds, and caveats for one source."""
 
     source: str
     status: ReadinessStatus

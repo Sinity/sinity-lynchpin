@@ -27,7 +27,25 @@ def work_events(*args: Any, **kwargs: Any) -> Any:
 def add_polylogue(
     nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]
 ) -> None:
-    for session in session_profiles_for_date(start=start, end=end + timedelta(days=1)):
+    # Degrade gracefully when Polylogue insight products aren't materialized
+    # (daemon down, schema upgrade pending, etc.). Previously the
+    # PolylogueMaterializationError propagated all the way up through
+    # build_evidence_graph → context_pack → materialize, crashing every
+    # downstream consumer including unrelated personal-source promotions.
+    # Now we emit zero polylogue nodes and continue — exactly as we'd
+    # handle any other unavailable source.
+    from ..sources.polylogue import PolylogueMaterializationError
+    try:
+        sessions = list(
+            session_profiles_for_date(start=start, end=end + timedelta(days=1))
+        )
+    except PolylogueMaterializationError as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Polylogue insight products unavailable; emitting zero ai_session nodes: %s", exc
+        )
+        return
+    for session in sessions:
         session_date = session.canonical_session_date
         if session_date is None:
             stamp = session.first_message_at or session.last_message_at
@@ -64,6 +82,10 @@ def add_polylogue(
                         "engaged_duration_ms": session.engaged_duration_ms,
                         "tool_use_count": session.tool_use_count,
                         "work_event_kind": session.work_event_kind,
+                        "workflow_shape": session.workflow_shape,
+                        "workflow_shape_confidence": session.workflow_shape_confidence,
+                        "terminal_state": session.terminal_state,
+                        "terminal_state_confidence": session.terminal_state_confidence,
                     },
                     provenance=EvidenceProvenance("polylogue", "materialized"),
                     caveats=(),
@@ -83,8 +105,20 @@ def add_polylogue_work_events(
     from ..core.classify import resolve_project
     from .work_event_kind import overlay_label
 
+    # Same graceful-degrade as add_polylogue above.
+    from ..sources.polylogue import PolylogueMaterializationError
     session_projects: dict[str, tuple[str, ...]] = {}
-    for session in session_profiles_for_date(start=start, end=end + timedelta(days=1)):
+    try:
+        sessions = list(
+            session_profiles_for_date(start=start, end=end + timedelta(days=1))
+        )
+    except PolylogueMaterializationError as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Polylogue insight products unavailable; emitting zero work_event nodes: %s", exc
+        )
+        return
+    for session in sessions:
         projects = tuple(
             project
             for project in (normalize_project(p) for p in session.work_event_projects)
@@ -109,8 +143,8 @@ def add_polylogue_work_events(
 
         event_date = logical_date(event.start)
         label = overlay_label(
-            polylogue_kind=event.kind,
-            polylogue_confidence=float(event.confidence or 0.0),
+            source_kind=event.kind,
+            source_confidence=float(event.confidence or 0.0),
             file_paths=event.file_paths,
             tools_used=event.tools_used,
             duration_ms=int(event.duration_ms or 0),
@@ -139,7 +173,7 @@ def add_polylogue_work_events(
                     EvidenceCaveat(
                         "lynchpin_overlay",
                         "partial",
-                        f"Polylogue says '{label.polylogue_kind}', overlay says '{label.overlay_kind}' - using overlay (stronger features).",
+                        f"Source label '{label.source_kind}' conflicts with overlay label '{label.overlay_kind}' - using overlay (stronger features).",
                     )
                 )
             nodes.append(
@@ -160,10 +194,18 @@ def add_polylogue_work_events(
                         "kind_confidence": label.confidence,
                         "kind_source": label.source,
                         "kind_tier": label.tier,
-                        "polylogue_kind": label.polylogue_kind,
-                        "polylogue_confidence": label.polylogue_confidence,
+                        "source_kind": label.source_kind,
+                        "source_confidence": label.source_confidence,
                         "overlay_kind": label.overlay_kind,
                         "overlay_confidence": label.overlay_confidence,
+                        "workflow_shape": getattr(event, "workflow_shape", None),
+                        "workflow_shape_confidence": getattr(
+                            event, "workflow_shape_confidence", 0.0
+                        ),
+                        "terminal_state": getattr(event, "terminal_state", None),
+                        "terminal_state_confidence": getattr(
+                            event, "terminal_state_confidence", 0.0
+                        ),
                         "duration_ms": event.duration_ms,
                         "file_paths": list(event.file_paths),
                         "tools_used": list(event.tools_used),

@@ -100,6 +100,7 @@ class MaterializedDataset:
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
+        coverage = materialized_dataset_coverage(self)
         return {
             "name": self.name,
             "status": self.status,
@@ -108,13 +109,19 @@ class MaterializedDataset:
             "required": contract.required,
             "empty_policy": contract.empty,
             "query_mode": contract.query_mode,
+            "collection_model": contract.collection_model,
             "authority": self.authority,
             "query_surface": self.query_surface,
+            "substrate_tables": list(contract.substrate_tables),
+            "graph_node_kinds": list(contract.graph_node_kinds),
+            "mcp_tools": list(contract.mcp_tools),
+            "caveats": list(contract.caveats),
             "materialized_paths": [str(path) for path in self.materialized_paths],
             "raw_roots": [str(path) for path in self.raw_roots],
             "row_count": self.row_count,
             "first_date": self.first_date.isoformat() if self.first_date else None,
             "last_date": self.last_date.isoformat() if self.last_date else None,
+            "coverage": coverage,
             "refresh_command": self.refresh_command,
             "reason": self.reason,
         }
@@ -354,13 +361,107 @@ def materialized_dataset_overlaps(
     start: date,
     end: date,
 ) -> bool:
-    if row.status != "ready" or row.first_date is None or row.last_date is None:
-        return False
-    return _date_bounds_overlap(row.first_date, row.last_date, start=start, end=end)
+    return bool(materialized_dataset_coverage(row, start=start, end=end)["overlaps_requested_window"])
+
+
+def materialized_dataset_coverage(
+    row: MaterializedDataset,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> dict[str, Any]:
+    """Describe product/window coverage without recency heuristics.
+
+    Continuous sources are expected to cover the queried window. Export/event
+    sources only report whether their materialized rows overlap the window:
+    a gap may mean "no use" or "no export coverage" and must be interpreted by
+    the caller, not collapsed into a rigid stale-days rule.
+    """
+    try:
+        contract = source_contract(row.name)
+        collection_model = contract.collection_model
+    except KeyError:
+        collection_model = "event_export"
+    product_dated = row.first_date is not None and row.last_date is not None
+    requested_days = _requested_day_count(start, end)
+    if row.status != "ready":
+        relation = "unavailable"
+        covered_days = 0
+        overlaps = False
+        fully_covers = False
+    elif not product_dated:
+        relation = "undated"
+        covered_days = None
+        overlaps = None
+        fully_covers = None
+    elif start is None or end is None:
+        relation = "dated"
+        covered_days = None
+        overlaps = None
+        fully_covers = None
+    else:
+        covered_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
+        overlaps = covered_days > 0
+        fully_covers = covered_days >= (requested_days or 0) if requested_days is not None else False
+        if fully_covers:
+            relation = "covers_window"
+        elif overlaps:
+            relation = "partial_overlap"
+        else:
+            relation = "no_overlap"
+    ratio = (
+        round(covered_days / requested_days, 6)
+        if isinstance(covered_days, int) and requested_days
+        else None
+    )
+    return {
+        "collection_model": collection_model,
+        "product_has_date_bounds": product_dated,
+        "requested_days": requested_days,
+        "covered_days": covered_days,
+        "coverage_ratio": ratio,
+        "overlaps_requested_window": overlaps,
+        "fully_covers_requested_window": fully_covers,
+        "relation": relation,
+        "interpretation": _coverage_interpretation(collection_model, relation),
+    }
 
 
 def _date_bounds_overlap(first: date, last: date, *, start: date, end: date) -> bool:
     return first < end and last >= start
+
+
+def _requested_day_count(start: date | None, end: date | None) -> int | None:
+    if start is None or end is None or end <= start:
+        return None
+    return (end - start).days
+
+
+def _covered_day_count(first: date, last: date, *, start: date, end: date) -> int:
+    # Dataset bounds are inclusive by day; requested windows are [start, end).
+    left = max(first, start)
+    right = min(last, end)
+    if right < left:
+        return 0
+    return (right - left).days + 1
+
+
+def _coverage_interpretation(collection_model: str, relation: str) -> str:
+    if relation == "unavailable":
+        return "canonical product is not ready"
+    if relation == "undated":
+        return "product is valid metadata but has no temporal coverage bounds"
+    if relation == "no_overlap" and collection_model == "continuous":
+        return "requested window is outside known continuous-capture coverage"
+    if relation == "no_overlap":
+        return "no materialized rows overlap the requested window; for event/export sources this is not proof of zero activity"
+    if relation == "partial_overlap" and collection_model == "continuous":
+        return "continuous source only partially covers the requested window"
+    if relation == "partial_overlap":
+        return "some materialized event/export rows overlap the requested window"
+    if relation == "covers_window":
+        return "known materialized date bounds cover the requested window"
+    return "known materialized date bounds are available"
 
 
 def render_materialization_audit(rows: Iterable[MaterializedDataset]) -> str:
@@ -1038,16 +1139,31 @@ def _csv_date_bounds(paths: Iterable[Path]) -> tuple[int | None, date | None, da
 
 
 def _polylogue_date_bounds() -> tuple[date | None, date | None]:
+    """Best-effort scan over session_profile rows for first/last date.
+
+    Tolerates ``PolylogueMaterializationError`` mid-iteration — when the
+    archive is rematerializing or insight tables are incomplete the
+    iterator may raise. The materialization snapshot is a status surface;
+    it must NOT become an all-or-nothing fail-stop just because polylogue
+    is briefly in transition. Caller will surface ``readiness`` separately.
+    """
+    from .sources.polylogue import PolylogueMaterializationError
+
     first: date | None = None
     last: date | None = None
-    for profile in iter_session_profiles():
-        stamp = profile.canonical_session_date
-        if stamp is None and profile.first_message_at is not None:
-            stamp = profile.first_message_at.date()
-        if stamp is None:
-            continue
-        first = stamp if first is None or stamp < first else first
-        last = stamp if last is None or stamp > last else last
+    try:
+        for profile in iter_session_profiles():
+            stamp = profile.canonical_session_date
+            if stamp is None and profile.first_message_at is not None:
+                stamp = profile.first_message_at.date()
+            if stamp is None:
+                continue
+            first = stamp if first is None or stamp < first else first
+            last = stamp if last is None or stamp > last else last
+    except PolylogueMaterializationError:
+        # Bounds unavailable — return what we've collected so far (possibly
+        # both None). Status surfaces the error via archive_readiness().
+        pass
     return first, last
 
 

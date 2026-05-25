@@ -49,7 +49,7 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
 
     Aggregates across evidence_node metadata, substrate_source_status,
     and evidence_graph_build caveats to produce a per-source confidence
-    score based on row count, source freshness, cross-source agreement,
+    score based on row count, observed date coverage, cross-source agreement,
     and caveat count.
 
     Parameters:
@@ -88,13 +88,13 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
 
 @app.tool()
 def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
-    """Polylogue-vs-Lynchpin kind audit (Arc K.1).
+    """Source-label-vs-Lynchpin kind audit (Arc K.1).
 
     Reads ai_work_event.kind_* columns to surface agreement rates,
     disagreement cases, tier distributions, and per-kind confidence
     breakdowns. This is the quantitative foundation for the boundary doc
-    (K.4) — how often does the lynchpin overlay disagree with polylogue's
-    raw classification?
+    (K.4) — how often does the Lynchpin overlay disagree with the upstream
+    work-event label?
 
     Parameters:
         refresh_id: promote snapshot (default: latest).
@@ -105,9 +105,9 @@ def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
             "total": int,
             "tier_distribution": {"high": N, "medium": N, "low": N},
             "source_distribution": {"agreement": N, "disagreement": N,
-                                     "polylogue": N, "lynchpin_overlay": N},
+                                     "source": N, "lynchpin_overlay": N},
             "disagreement_rate": float,
-            "top_disagreements": [{"kind": str, "polylogue_kind": str,
+            "top_disagreements": [{"kind": str, "source_kind": str,
                                     "overlay_kind": str, "count": int}],
             "per_kind_confidence": [{"kind": str, "count": int,
                                       "avg_confidence": float}],
@@ -126,10 +126,10 @@ def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
         sources = {}
         for r in conn.execute('SELECT kind_source, COUNT(*) FROM ai_work_event WHERE refresh_id = ? GROUP BY kind_source', [refresh_id]).fetchall():
             sources[r[0] or 'null'] = r[1]
-        disagreements = conn.execute('\n            SELECT kind, polylogue_kind, overlay_kind, COUNT(*) AS cnt\n            FROM ai_work_event\n            WHERE refresh_id = ?\n              AND polylogue_kind IS NOT NULL\n              AND overlay_kind IS NOT NULL\n              AND polylogue_kind != overlay_kind\n            GROUP BY kind, polylogue_kind, overlay_kind\n            ORDER BY cnt DESC LIMIT 10\n        ', [refresh_id]).fetchall()
+        disagreements = conn.execute('\n            SELECT kind, source_kind, overlay_kind, COUNT(*) AS cnt\n            FROM ai_work_event\n            WHERE refresh_id = ?\n              AND source_kind IS NOT NULL\n              AND overlay_kind IS NOT NULL\n              AND source_kind != overlay_kind\n            GROUP BY kind, source_kind, overlay_kind\n            ORDER BY cnt DESC LIMIT 10\n        ', [refresh_id]).fetchall()
         per_kind = conn.execute('\n            SELECT kind, COUNT(*) AS cnt,\n                   ROUND(AVG(kind_confidence), 2) AS avg_conf\n            FROM ai_work_event\n            WHERE refresh_id = ? AND kind IS NOT NULL\n            GROUP BY kind ORDER BY cnt DESC LIMIT 20\n        ', [refresh_id]).fetchall()
     disagree_count = sources.get('disagreement', 0)
-    return {'refresh_id': refresh_id, 'total': total, 'tier_distribution': tiers, 'source_distribution': sources, 'disagreement_rate': round(disagree_count / max(total, 1), 3), 'top_disagreements': [{'kind': r[0], 'polylogue_kind': r[1], 'overlay_kind': r[2], 'count': r[3]} for r in disagreements], 'per_kind_confidence': [{'kind': r[0], 'count': r[1], 'avg_confidence': r[2]} for r in per_kind]}
+    return {'refresh_id': refresh_id, 'total': total, 'tier_distribution': tiers, 'source_distribution': sources, 'disagreement_rate': round(disagree_count / max(total, 1), 3), 'top_disagreements': [{'kind': r[0], 'source_kind': r[1], 'overlay_kind': r[2], 'count': r[3]} for r in disagreements], 'per_kind_confidence': [{'kind': r[0], 'count': r[1], 'avg_confidence': r[2]} for r in per_kind]}
 
 @app.tool()
 def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) -> dict[str, Any]:
@@ -324,3 +324,58 @@ def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -
         delta = conf_curr - conf_prior
         alert = delta < -alert_threshold_pct
     return {'current': current, 'prior': prior, 'confidence_current': round(conf_curr, 1), 'confidence_prior': round(conf_prior, 1), 'delta': round(delta, 1), 'alert': alert, 'gaps_current': gaps_curr, 'gaps_prior': gaps_prior}
+
+@app.tool()
+def cleanup_period_detect(start: str, end: str, project: str | None=None) -> list[dict[str, Any]]:
+    """Detect likely squash-cleanup periods via AI messages/commit ratio.
+
+    Identifies months where the messages-to-commits ratio is anomalously high
+    (>5000:1), indicating probable git history rewriting. These months should
+    not be compared with atomic-commit months for velocity analysis.
+
+    Args:
+        start: Start date (ISO format, e.g., "2026-05-01").
+        end: End date (ISO format, e.g., "2026-05-31").
+        project: Optional project filter (matched against commit project).
+
+    Returns:
+        List of dicts with keys:
+        - year_month: "YYYY-MM" format
+        - commit_count: commits in the month
+        - ai_messages: AI session messages in the month
+        - ratio: messages / max(1, commits)
+        - likely_cleanup: bool (True if ratio > 5000)
+    """
+    from datetime import date as _date_cls, datetime, timedelta
+    from lynchpin.substrate.connection import connect, substrate_path
+    start_d = _date_cls.fromisoformat(start)
+    end_d = _date_cls.fromisoformat(end)
+    with connect(substrate_path(), read_only=True) as conn:
+        commit_sql = "\n            SELECT\n                strftime('%Y-%m', date) as year_month,\n                COUNT(*) as commit_count\n            FROM project_day_correlation\n            WHERE date >= ? AND date <= ?\n        "
+        commit_params: list[Any] = [start_d, end_d]
+        if project:
+            commit_sql += ' AND project = ?'
+            commit_params.append(project)
+        commit_sql += ' GROUP BY year_month ORDER BY year_month'
+        commits_by_month: dict[str, int] = {}
+        for row in conn.execute(commit_sql, commit_params).fetchall():
+            commits_by_month[row[0]] = row[1]
+        messages_sql = "\n            SELECT\n                strftime('%Y-%m', date) as year_month,\n                SUM(ai_work_event_count) as ai_messages\n            FROM project_day_correlation\n            WHERE date >= ? AND date <= ?\n        "
+        messages_params: list[Any] = [start_d, end_d]
+        if project:
+            messages_sql += ' AND project = ?'
+            messages_params.append(project)
+        messages_sql += ' GROUP BY year_month ORDER BY year_month'
+        messages_by_month: dict[str, int] = {}
+        for row in conn.execute(messages_sql, messages_params).fetchall():
+            if row[1]:
+                messages_by_month[row[0]] = int(row[1])
+    all_months = sorted(set(commits_by_month.keys()) | set(messages_by_month.keys()))
+    result: list[dict[str, Any]] = []
+    for month in all_months:
+        commit_count = commits_by_month.get(month, 0)
+        ai_msgs = messages_by_month.get(month, 0)
+        ratio = ai_msgs / max(1, commit_count)
+        likely_cleanup = ratio > 5000
+        result.append({'year_month': month, 'commit_count': commit_count, 'ai_messages': ai_msgs, 'ratio': round(ratio, 1), 'likely_cleanup': likely_cleanup})
+    return result

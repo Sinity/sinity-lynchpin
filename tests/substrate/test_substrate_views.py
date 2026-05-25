@@ -704,3 +704,97 @@ class TestIssueClosureChainWalk:
         assert len(rows) == 1
         assert rows[0].root_id == "issue:linked"
         assert rows[0].chain_depth == 1
+
+
+# ---------------------------------------------------------------------------
+# file_overlap view — high-fanout path filtering (Task #57)
+# ---------------------------------------------------------------------------
+
+
+class TestFileOverlapFiltering:
+    """Verify work_event_file_overlap excludes high-fanout paths."""
+
+    def test_excludes_lockfiles_and_init_files(self, tmp_path: Path) -> None:
+        """Lockfiles (__init__.py, Cargo.lock, etc.) are excluded from overlap intersection."""
+        from datetime import datetime as dt
+        from lynchpin.core.evidence_graph import EvidenceGraph
+        from lynchpin.graph.evidence_edges import overlap_edges_via_substrate
+        from lynchpin.sources.git import GitCommitFact
+        from lynchpin.sources.polylogue import WorkEvent
+        from lynchpin.substrate.connection import apply_schema, connect
+        from lynchpin.substrate.work_ai import promote_ai_work_events
+        from lynchpin.substrate.work_commits import promote_commits
+
+        db = tmp_path / "sub.duckdb"
+        base_dt = dt(2026, 5, 3, 10, tzinfo=UTC)
+
+        with connect(db) as conn:
+            apply_schema(conn)
+
+            # Commit with high-fanout paths + meaningful paths
+            promote_commits(
+                conn,
+                refresh_id="r1",
+                facts=[
+                    GitCommitFact(
+                        repo="test-proj",
+                        commit="abc123",
+                        authored_at=base_dt,
+                        author="test",
+                        subject="feat: implementation",
+                        lines_added=50,
+                        lines_deleted=0,
+                        lines_changed=50,
+                        files_changed=3,
+                        paths=(
+                            "src/__init__.py",  # high-fanout
+                            "Cargo.lock",  # high-fanout
+                            "src/main.rs",  # meaningful
+                        ),
+                        path_roots=("src",),
+                    )
+                ],
+            )
+
+            # AI work event with same paths + high-fanout
+            promote_ai_work_events(
+                conn,
+                refresh_id="r1",
+                events=[
+                    WorkEvent(
+                        event_id="we1",
+                        conversation_id="conv1",
+                        provider="claude-code",
+                        kind="implementation",
+                        confidence=0.8,
+                        start=base_dt,
+                        end=dt(2026, 5, 3, 11, tzinfo=UTC),
+                        duration_ms=3_600_000,
+                        file_paths=(
+                            "src/__init__.py",  # high-fanout (should be excluded)
+                            "src/main.rs",  # meaningful (should be included)
+                            "pyproject.toml",  # high-fanout (should be excluded)
+                        ),
+                        tools_used=("Edit",),
+                        summary="test",
+                    )
+                ],
+                project_resolver=lambda _: "test-proj",
+            )
+
+            # Compute edges via substrate view
+            from lynchpin.substrate.graph import compute_file_overlap_edges
+            edges = compute_file_overlap_edges(conn, we_refresh_id="r1", commit_refresh_id="r1")
+
+        # Should have one edge for file_overlap
+        assert len(edges) >= 1
+        file_overlap_edges = [e for e in edges if e.relation == "file_overlap"]
+        assert len(file_overlap_edges) == 1
+        edge = file_overlap_edges[0]
+
+        # The evidence should show only the meaningful overlap (src/main.rs),
+        # NOT the high-fanout files (src/__init__.py, Cargo.lock, pyproject.toml)
+        assert "src/main.rs" in edge.evidence, f"Expected src/main.rs in {edge.evidence}"
+        assert "__init__.py" not in edge.evidence, f"__init__.py should be excluded from {edge.evidence}"
+        assert "Cargo.lock" not in edge.evidence, f"Cargo.lock should be excluded from {edge.evidence}"
+        assert "pyproject.toml" not in edge.evidence, f"pyproject.toml should be excluded from {edge.evidence}"

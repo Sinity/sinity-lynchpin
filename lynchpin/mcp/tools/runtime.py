@@ -7,6 +7,7 @@ from typing import Any
 
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import registered_tool_names
 
 
 def _git_value(repo: Path, *args: str) -> str | None:
@@ -45,6 +46,7 @@ def mcp_runtime_status() -> dict[str, Any]:
     else:
         substrate_error = None
 
+    live_tools = registered_tool_names()
     return {
         "package_root": str(package_root),
         "repo_root": str(repo_root) if repo_root else None,
@@ -54,9 +56,42 @@ def mcp_runtime_status() -> dict[str, Any]:
             "branch": git_branch,
             "dirty": bool(git_status),
         },
+        "mcp": {
+            "registered_tool_count": len(live_tools),
+        },
         "substrate": {
             "path": str(substrate_path()),
             "latest_refresh_id": latest_refresh,
             "error": substrate_error,
         },
+    }
+
+
+@app.tool()
+def mcp_surface_self_check() -> dict[str, Any]:
+    """Check contract-declared MCP tools against the live registered tool set."""
+    from lynchpin.core.source_contracts import SOURCE_CONTRACTS
+
+    status = mcp_runtime_status()
+    live = set(registered_tool_names())
+    declared = {
+        tool
+        for contract in SOURCE_CONTRACTS
+        for tool in contract.mcp_tools
+        if not tool.startswith("(")
+    }
+    missing = sorted(declared - live)
+    unmapped = sorted(live - declared)
+    return {
+        "runtime": status,
+        "declared_tool_count": len(declared),
+        "registered_tool_count": len(live),
+        "missing_declared_tools": missing,
+        "registered_unmapped_tools": unmapped,
+        "ok": not missing,
+        "restart_hint": (
+            "registered tools differ from source contracts; restart the MCP server after code changes"
+            if missing
+            else None
+        ),
     }

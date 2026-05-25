@@ -5,10 +5,12 @@ FastMCP inspects annotations at decoration time and cannot handle postponed
 string annotations for tool parameters.
 """
 
+from datetime import date as _date
 from typing import Any
 
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
+    best_refresh_id,
     json_safe as _json_safe,
     require_best_refresh_id,
 )
@@ -228,6 +230,37 @@ def google_takeout_events(
 
 
 @app.tool()
+def terminal_daily(start: str, end: str) -> list[dict[str, Any]]:
+    """Daily canonical Atuin terminal activity."""
+    from dataclasses import asdict
+    from datetime import date
+
+    from lynchpin.sources.terminal import daily_terminal_activity
+
+    rows = daily_terminal_activity(
+        start=date.fromisoformat(start),
+        end=date.fromisoformat(end),
+    )
+    return [_json_safe(asdict(row)) for row in rows]
+
+
+@app.tool()
+def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Gap-grouped canonical Atuin shell sessions."""
+    from dataclasses import asdict
+    from datetime import date
+
+    from lynchpin.core.primitives import date_to_dt_range
+    from lynchpin.sources.terminal import shell_sessions
+
+    start_dt, end_dt = date_to_dt_range(date.fromisoformat(start), date.fromisoformat(end))
+    rows = shell_sessions(start=start_dt, end=end_dt)
+    rows.sort(key=lambda row: row.start)
+    capped = rows[: min(max(limit, 1), 1000)]
+    return [_json_safe(asdict(row)) for row in capped]
+
+
+@app.tool()
 def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
     """Search canonical browser bookmarks by title, URL, domain, or folder."""
     from dataclasses import asdict
@@ -396,6 +429,44 @@ def title_metadata_status() -> dict[str, Any]:
 
 
 @app.tool()
+def title_metadata_audit(limit: int = 20) -> dict[str, Any]:
+    """Auditable shape of canonical title/window classification metadata."""
+    from collections import Counter
+
+    from lynchpin.sources.title_metadata import iter_title_classifications
+
+    source_counts: Counter[str] = Counter()
+    model_counts: Counter[str] = Counter()
+    activity_counts: Counter[str] = Counter()
+    confidence_bands: Counter[str] = Counter()
+    total = 0
+    missing_confidence = 0
+    for row in iter_title_classifications():
+        total += 1
+        source_counts[row.classification_source or "(missing)"] += 1
+        model_counts[row.model_version or "(missing)"] += 1
+        activity_counts[row.activity or "(missing)"] += 1
+        if row.confidence is None:
+            missing_confidence += 1
+            confidence_bands["missing"] += 1
+        elif row.confidence >= 0.8:
+            confidence_bands["high"] += 1
+        elif row.confidence >= 0.5:
+            confidence_bands["medium"] += 1
+        else:
+            confidence_bands["low"] += 1
+    cap = min(max(limit, 1), 100)
+    return {
+        "row_count": total,
+        "missing_confidence_count": missing_confidence,
+        "classification_sources": dict(source_counts.most_common(cap)),
+        "model_versions": dict(model_counts.most_common(cap)),
+        "activities": dict(activity_counts.most_common(cap)),
+        "confidence_bands": dict(confidence_bands),
+    }
+
+
+@app.tool()
 def activity_content_daily(start: str | None = None, end: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
     """Daily ActivityWatch content rollup joined to title metadata."""
     from dataclasses import asdict
@@ -529,3 +600,228 @@ def analysis_artifact_status() -> list[dict[str, Any]]:
         }
         for artifact in artifact_inventory()
     ]
+
+
+@app.tool()
+def operator_rhythm(
+    start: str,
+    end: str,
+    project: str | None = None,
+    refresh_id: str | None = None,
+) -> dict[str, Any]:
+    """Cross-source (hour-of-day, day-of-week) rhythm matrix.
+
+    Composes ActivityWatch focus minutes, commit_fact timestamps,
+    ai_work_event timestamps, and machine_episode pressure timestamps
+    into one matrix. Lets the operator see deep-work hours vs noise
+    hours without four separate queries.
+
+    Parameters:
+        start, end: ISO dates (inclusive).
+        project:    optional canonical project filter applied to commit_fact
+                    and ai_work_event; ActivityWatch focus stays whole-system.
+        refresh_id: substrate snapshot. Defaults to latest commit_fact build.
+
+    Returns:
+        {
+            "start": "YYYY-MM-DD",
+            "end": "YYYY-MM-DD",
+            "project": str | None,
+            "buckets": [
+                {"dow": 0-6 (Mon=0), "hour": 0-23, "focus_min", "commit_count",
+                 "ai_session_count", "pressure_episode_count"},
+                ...
+            ],
+            "partial_sources": [str, ...],
+            "peak_focus_hour": [dow, hour] | None,
+            "peak_commit_hour": [dow, hour] | None,
+            "peak_combined_hour": [dow, hour] | None,
+            "summary": str,
+        }
+    """
+    from lynchpin.analysis.operator_rhythm import compute_operator_rhythm
+    from lynchpin.sources.activitywatch import circadian
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    start_date = _date.fromisoformat(start)
+    end_date = _date.fromisoformat(end)
+
+    focus_rows: list[tuple[_date, int, float]] = []
+    try:
+        for row in circadian(start_date, end_date):
+            focus_rows.append((row.date, row.hour, row.active_min))
+    except Exception:
+        pass
+
+    commit_ts: list = []
+    ai_ts: list = []
+    pressure_ts: list = []
+
+    path = substrate_path()
+    with connect(path, read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, "commit_fact")
+        if refresh_id is not None:
+            proj_filter = " AND project = ?" if project else ""
+            params: list[Any] = [refresh_id, start_date, end_date]
+            if project:
+                params.append(project)
+
+            try:
+                commit_ts = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT authored_at FROM commit_fact "
+                        f"WHERE refresh_id = ? AND authored_at::DATE BETWEEN ? AND ?"
+                        f"{proj_filter}",
+                        params,
+                    ).fetchall()
+                ]
+            except Exception:
+                pass
+
+            # Prefer the typed ai_work_event table; fall back to the
+            # evidence graph's ai_session nodes when the typed table is
+            # empty (substrate-promote step may be partial — the graph
+            # build still has the rows). Without this fallback, rhythm
+            # silently reported zero AI activity on otherwise-busy
+            # graph builds.
+            try:
+                ai_params: list[Any] = [refresh_id, start_date, end_date]
+                if project:
+                    ai_params.append(project)
+                ai_ts = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT start_ts FROM ai_work_event "
+                        f"WHERE refresh_id = ? AND start_ts::DATE BETWEEN ? AND ? "
+                        f"AND start_ts IS NOT NULL{proj_filter}",
+                        ai_params,
+                    ).fetchall()
+                ]
+            except Exception:
+                pass
+
+            if not ai_ts and refresh_id:
+                try:
+                    node_params: list[Any] = [refresh_id, start_date, end_date]
+                    node_filter = ""
+                    if project:
+                        node_filter = " AND project = ?"
+                        node_params.append(project)
+                    ai_ts = [
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT start_ts FROM evidence_node "
+                            "WHERE refresh_id = ? AND kind = 'ai_session' "
+                            "AND start_ts IS NOT NULL "
+                            "AND start_ts::DATE BETWEEN ? AND ?"
+                            + node_filter,
+                            node_params,
+                        ).fetchall()
+                    ]
+                except Exception:
+                    pass
+
+            try:
+                pressure_ts = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT start_ts FROM evidence_node "
+                        "WHERE refresh_id = ? AND kind = 'machine_episode' "
+                        "AND start_ts IS NOT NULL AND start_ts::DATE BETWEEN ? AND ?",
+                        [refresh_id, start_date, end_date],
+                    ).fetchall()
+                ]
+            except Exception:
+                pass
+
+    rhythm = compute_operator_rhythm(
+        start=start_date,
+        end=end_date,
+        project=project,
+        focus_rows=focus_rows,
+        commit_timestamps=commit_ts,
+        ai_session_timestamps=ai_ts,
+        pressure_timestamps=pressure_ts,
+    )
+
+    return {
+        "start": _json_safe(rhythm.start),
+        "end": _json_safe(rhythm.end),
+        "project": rhythm.project,
+        "buckets": [
+            {
+                "dow": b.dow,
+                "hour": b.hour,
+                "focus_min": b.focus_min,
+                "commit_count": b.commit_count,
+                "ai_session_count": b.ai_session_count,
+                "pressure_episode_count": b.pressure_episode_count,
+            }
+            for b in rhythm.buckets
+        ],
+        "partial_sources": list(rhythm.partial_sources),
+        "peak_focus_hour": list(rhythm.peak_focus_hour) if rhythm.peak_focus_hour else None,
+        "peak_commit_hour": list(rhythm.peak_commit_hour) if rhythm.peak_commit_hour else None,
+        "peak_combined_hour": list(rhythm.peak_combined_hour) if rhythm.peak_combined_hour else None,
+        "summary": rhythm.summary,
+    }
+
+
+@app.tool()
+def activity_semantic_daily(
+    start: str,
+    end: str,
+    dimension: str = "topic_category",
+) -> list[dict[str, Any]]:
+    """Per-day rollup of activity title classification along semantic dimensions.
+
+    Uses title_classification GPT-Pro enrichment joined against actual ActivityWatch
+    usage time. Aggregates focused_seconds per dimension value per day.
+
+    Dimensions supported:
+    - topic_category: what topics were active (work, social, health, etc.)
+    - attention_level: scanning, shallow, deep, background, engaged
+    - activity: activity type label
+    - platform: platform classification
+    - mode: mode classification (e.g., active, passive, etc.)
+
+    Returns rows: {date, dimension_value, focused_minutes, focused_seconds}
+    ordered by date and focused_minutes (DESC per day).
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    start_d = _date.fromisoformat(start)
+    end_d = _date.fromisoformat(end)
+
+    # Validate dimension
+    valid_dims = {"topic_category", "attention_level", "activity", "platform", "mode"}
+    if dimension not in valid_dims:
+        raise ValueError(f"dimension must be one of {valid_dims}, got {dimension!r}")
+
+    with connect(substrate_path(), read_only=True) as conn:
+        sql = f"""
+            SELECT
+                CAST(first_date AS DATE) as date,
+                COALESCE({dimension}, 'unknown') as dim_value,
+                SUM(focused_seconds) as focused_seconds
+            FROM activity_title_usage
+            WHERE first_date >= ? AND last_date <= ?
+            GROUP BY date, dim_value
+            ORDER BY date, focused_seconds DESC
+        """
+        params: list[Any] = [start_d, end_d]
+        rows = conn.execute(sql, params).fetchall()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        focused_mins = round((row[2] or 0) / 60, 2)
+        result.append({
+            "date": _json_safe(row[0]),
+            "dimension_value": row[1],
+            "focused_seconds": row[2],
+            "focused_minutes": focused_mins,
+        })
+
+    return result

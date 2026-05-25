@@ -24,6 +24,10 @@ class WorkEvent:
     file_paths: tuple[str, ...]
     tools_used: tuple[str, ...]
     summary: str
+    workflow_shape: Optional[str] = None
+    workflow_shape_confidence: float = 0.0
+    terminal_state: Optional[str] = None
+    terminal_state_confidence: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,10 @@ class SessionProfile:
     work_event_count: int = 0
     phase_count: int = 0
     cost_is_estimated: bool = False
+    workflow_shape: Optional[str] = None
+    workflow_shape_confidence: float = 0.0
+    terminal_state: Optional[str] = None
+    terminal_state_confidence: float = 0.0
 
 
 @dataclass(frozen=True)

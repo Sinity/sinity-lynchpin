@@ -27,6 +27,7 @@ follow-up analysis-artifact promoter (M.9 / E.1).
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -219,13 +220,16 @@ def _pr_might_close(pr: EvidenceNode, issue: EvidenceNode) -> bool:
     family commonly include the issue number as ``#N``, ``(#N)`` or
     ``Closes #N``. False-positive risk is non-zero; chain caveats note the
     heuristic basis.
+
+    Regex avoids false positives: issue #15 should NOT match PR "#150".
     """
     issue_number = _payload_int(issue, "number")
     if issue_number == 0:
         return False
     title = pr.summary or ""
-    needle = f"#{issue_number}"
-    return needle in title
+    # Negative lookbehind/lookahead ensures #N is not part of a larger number
+    pattern = rf"(?<!\d)#{issue_number}(?!\d)"
+    return bool(re.search(pattern, title))
 
 
 def _commits_referencing_issue(issue_number: int, commits: Sequence[EvidenceNode]) -> list[EvidenceNode]:

@@ -5,13 +5,13 @@ import pytest
 from lynchpin.graph.source_readiness import render_source_readiness, source_readiness
 from lynchpin.graph.coverage import CoverageReport, SourceCoverage
 from lynchpin.materialization import MaterializedDataset
-from lynchpin.sources.freshness import SourceFreshness
+from lynchpin.sources.source_observations import SourceObservation
 from lynchpin.sources.polylogue import PolylogueReadiness
 
 
 @pytest.fixture(autouse=True)
-def _empty_freshness_contract(monkeypatch):
-    monkeypatch.setattr("lynchpin.graph.source_readiness.source_freshness", lambda: ())
+def _empty_observation_contract(monkeypatch):
+    monkeypatch.setattr("lynchpin.graph.source_readiness.source_observations", lambda: ())
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.coverage_report",
         lambda *, start, end: CoverageReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
@@ -282,7 +282,7 @@ def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
     assert analysis.path == str(analysis_dir)
 
 
-def test_source_readiness_uses_observed_freshness_not_directory_mtime(
+def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
     monkeypatch, tmp_path
 ):
     spotify_dir = tmp_path / "spotify"
@@ -348,15 +348,14 @@ def test_source_readiness_uses_observed_freshness_not_directory_mtime(
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
     monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_polylogue_product_counts=False: readiness)
     monkeypatch.setattr(
-        "lynchpin.graph.source_readiness.source_freshness",
+        "lynchpin.graph.source_readiness.source_observations",
         lambda: (
-            SourceFreshness(
+            SourceObservation(
                 source="spotify",
                 available=True,
                 last_observed=date(2025, 12, 18),
                 basis="substrate",
-                stale=True,
-                recommendation="Request new Spotify GDPR export",
+                recommendation=None,
                 path=None,
             ),
         ),

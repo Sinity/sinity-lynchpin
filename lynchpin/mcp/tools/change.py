@@ -172,34 +172,72 @@ def conventional_commits(
 
 @app.tool()
 def ai_tool_usage(
+    start: str | None = None,
+    end: str | None = None,
     project: str | None = None,
     refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """AI tool usage patterns from work events."""
-    from lynchpin.substrate.connection import connect, substrate_path
+) -> dict[str, Any]:
+    """AI tool usage patterns from polylogue action_events.
 
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "ai_work_event")
-            if refresh_id is None:
-                return []
+    Reads action_events table from the Polylogue archive (3.74M+ rows).
+    Returns action_kind distribution with optional date and project filtering.
+    """
+    import sqlite3
+    from datetime import datetime
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
+    from lynchpin.core.config import get_config
 
-        rows = conn.execute(f"""
-            WITH unnested AS (
-                SELECT project, UNNEST(tools_used) AS tool
-                FROM ai_work_event
-                WHERE refresh_id = ? AND len(tools_used) > 0 {proj_filter}
-            )
-            SELECT project, tool, COUNT(*) AS cnt
-            FROM unnested GROUP BY project, tool ORDER BY project, cnt DESC
-        """, params).fetchall()
+    db_path = get_config().polylogue_db
+    if not db_path.exists():
+        return {
+            "degraded": True,
+            "reason": f"polylogue database not found at {db_path}",
+            "rows": [],
+        }
 
-    return [{"project": r[0], "tool": r[1], "count": r[2]} for r in rows]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Build SQL query with optional date range and project filter
+        where_clauses = []
+        params: list[Any] = []
+
+        if start:
+            where_clauses.append("timestamp >= ?")
+            params.append(start)
+        if end:
+            where_clauses.append("timestamp <= ?")
+            params.append(end)
+
+        where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        sql = f"""
+            SELECT action_kind, COUNT(*) AS n, COUNT(DISTINCT conversation_id) AS sessions
+            FROM action_events
+            WHERE {where_clause}
+            GROUP BY action_kind
+            ORDER BY n DESC
+        """
+
+        rows = conn.execute(sql, params).fetchall()
+        result = [
+            {"action_kind": r["action_kind"], "count": r["n"], "sessions": r["sessions"]}
+            for r in rows
+        ]
+
+        conn.close()
+        return {
+            "degraded": False,
+            "reason": None,
+            "rows": result,
+        }
+    except Exception as exc:
+        return {
+            "degraded": True,
+            "reason": f"failed to read polylogue action_events: {exc}",
+            "rows": [],
+        }
 
 
 @app.tool()
@@ -237,15 +275,29 @@ def breaking_changes(
 @app.tool()
 def commit_kind_attribution(
     refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Commit kind and AI attribution correlation."""
+) -> dict[str, Any]:
+    """Commit kind and AI attribution correlation.
+
+    Returns a dict with:
+      - "degraded": bool — True if ai_attribution is all NULL
+      - "reason": str | None — explanation if degraded
+      - "rows": list[dict] — the attribution data
+    """
     from lynchpin.substrate.connection import connect, substrate_path
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = best_refresh_id(conn, "commit_fact")
             if refresh_id is None:
-                return []
+                return {"degraded": False, "reason": None, "rows": []}
+
+        # Check if any row has non-NULL ai_attribution
+        ai_check = conn.execute(
+            "SELECT COUNT(*) FROM commit_fact "
+            "WHERE refresh_id = ? AND ai_attribution IS NOT NULL",
+            [refresh_id],
+        ).fetchone()
+        has_ai_data = (ai_check[0] or 0) > 0
 
         rows = conn.execute("""
             SELECT conventional_kind, COUNT(*) AS total,
@@ -257,7 +309,18 @@ def commit_kind_attribution(
             ORDER BY total DESC
         """, [refresh_id]).fetchall()
 
-    return [{"kind": r[0], "total": r[1], "ai_assisted": r[2], "ai_pct": r[3]} for r in rows]
+        degraded = not has_ai_data and len(rows) > 0
+        reason = (
+            f"ai_attribution backfill not run for refresh_id {refresh_id!r}"
+            if degraded
+            else None
+        )
+
+    return {
+        "degraded": degraded,
+        "reason": reason,
+        "rows": [{"kind": r[0], "total": r[1], "ai_assisted": r[2], "ai_pct": r[3]} for r in rows],
+    }
 
 
 @app.tool()

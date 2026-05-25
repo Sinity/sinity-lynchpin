@@ -41,7 +41,8 @@ def run_current_state_analysis(
         weak_tags=weak_tags,
         persist_weak_tags=persist_weak_tags,
         exclude_analysis_artifacts=CURRENT_STATE_ARTIFACT_NAMES,
-        prefer_substrate=False,
+        prefer_substrate=True,
+        refresh_substrate=True,
     )
     payload = cast(dict[str, Any], jsonable(pack))
     payload["substrate_materialization"] = _promote_current_state_graph(

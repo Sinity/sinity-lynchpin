@@ -114,7 +114,7 @@ def run_substrate_promote(
             window_start=window_start,
             window_end=window_end,
         )
-    except Exception as exc:  # noqa: BLE001 — refresh promotion must be best-effort
+    except Exception as exc:  # noqa: BLE001 — record before surfacing promotion failure.
         log.warning("substrate_promote: substrate promotion failed: %s", exc)
         finished_at = datetime.now(timezone.utc)
         result = PromotionRunResult(
@@ -127,7 +127,7 @@ def run_substrate_promote(
             finished_at=finished_at,
         )
         _record_failed_promotion_run(result, window_start=window_start, window_end=window_end)
-        return result
+        raise
 
 
 def _do_promote(
@@ -241,6 +241,19 @@ def _do_promote(
         refresh_id,
         counts,
     )
+
+    # Refresh the read snapshot so MCP read tools have a usable copy
+    # during the NEXT promote's write window. The exclusive lock is
+    # released when the ``connect`` context manager exits above, so we
+    # can copy the canonical file here. Failure is non-fatal — readers
+    # will fall back to the prior snapshot or hit the lock error.
+    try:
+        from lynchpin.substrate.connection import refresh_read_snapshot
+
+        refresh_read_snapshot()
+    except Exception as exc:  # pragma: no cover — best-effort
+        log.warning("read-snapshot refresh failed (non-fatal): %s", exc)
+
     return PromotionRunResult(
         refresh_id=refresh_id or "",
         status=status,

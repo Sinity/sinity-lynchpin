@@ -234,7 +234,12 @@ def build_active_commit_facts(
 ) -> dict[str, Any]:
     """Build compact per-commit facts for active projects."""
     end = end or datetime.now(timezone.utc).date()
-    start = start or (end - timedelta(days=31))
+    # Full project history by default. Previously this defaulted to a
+    # 31-day rolling window, which silently truncated engineering_throughput
+    # and any other commit_fact consumer to the most recent month. Using
+    # 2024-01-01 as the floor — comfortably before sinnix's first commit
+    # (2024-09-17), the earliest project — preserves all observable history.
+    start = start or date(2024, 1, 1)
     facts = tuple(project_facts or collect_active_git_facts(start=start, end=end, projects=projects, profiles=profiles))
     commits = [commit.to_commit_fact_json() for project in facts for commit in project.commits]
     return {
@@ -257,7 +262,12 @@ def build_active_file_change_facts(
 ) -> dict[str, Any]:
     """Build per-file path-status facts for active-project commits."""
     end = end or datetime.now(timezone.utc).date()
-    start = start or (end - timedelta(days=31))
+    # Full project history by default. Previously this defaulted to a
+    # 31-day rolling window, which silently truncated engineering_throughput
+    # and any other commit_fact consumer to the most recent month. Using
+    # 2024-01-01 as the floor — comfortably before sinnix's first commit
+    # (2024-09-17), the earliest project — preserves all observable history.
+    start = start or date(2024, 1, 1)
     facts = tuple(project_facts or collect_active_git_facts(start=start, end=end, projects=projects, profiles=profiles))
     rows = [
         _file_change_fact_json(commit, change)
@@ -285,7 +295,12 @@ def run_active_git_facts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Materialize active commit and file-change fact artifacts from one scan."""
     end = end or datetime.now(timezone.utc).date()
-    start = start or (end - timedelta(days=31))
+    # Full project history by default. Previously this defaulted to a
+    # 31-day rolling window, which silently truncated engineering_throughput
+    # and any other commit_fact consumer to the most recent month. Using
+    # 2024-01-01 as the floor — comfortably before sinnix's first commit
+    # (2024-09-17), the earliest project — preserves all observable history.
+    start = start or date(2024, 1, 1)
     facts = collect_active_git_facts(start=start, end=end, projects=projects)
     commit_payload = build_active_commit_facts(start=start, end=end, project_facts=facts)
     file_payload = build_active_file_change_facts(start=start, end=end, project_facts=facts)

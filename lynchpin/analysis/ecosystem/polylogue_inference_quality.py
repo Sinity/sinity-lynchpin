@@ -4,9 +4,9 @@ Programmatic audit of Polylogue's work-event heuristics. For every
 ``session_work_event`` in the chosen window, compute the Lynchpin
 re-classifier overlay (Arc K) and compare. Surfaces:
 
-  - per-kind agreement / disagreement / lynchpin-only / polylogue-only
+  - per-kind agreement / disagreement / lynchpin-only / source-only
     breakdown
-  - confusion matrix (Polylogue kind × Lynchpin kind) restricted to
+  - confusion matrix (source kind × Lynchpin kind) restricted to
     disagreements — shows where Polylogue's heuristics systematically
     miss
   - confidence distribution per kind: how many events have
@@ -39,34 +39,37 @@ from ..core.io import resolve_analysis_path, save_json
 @dataclass(frozen=True)
 class KindAgreementRow:
     """Per-kind quality slice across the audit window."""
+
     kind: str
-    polylogue_count: int
+    source_count: int
     overlay_count: int
     agreement_count: int
     disagreement_count: int
     lynchpin_only_count: int
-    polylogue_only_count: int
-    avg_polylogue_confidence: float
-    median_polylogue_confidence: float
-    low_polylogue_confidence_count: int  # < 0.5
+    source_only_count: int
+    avg_source_confidence: float
+    median_source_confidence: float
+    low_source_confidence_count: int  # < 0.5
 
 
 @dataclass(frozen=True)
 class WeeklyDisagreementRow:
     """Per-week dual-inference comparison (M.19)."""
+
     week_start: date
     total_events: int
     agreement_count: int
     disagreement_count: int
     lynchpin_only_count: int
-    polylogue_only_count: int
+    source_only_count: int
     disagreement_rate: float
 
 
 @dataclass(frozen=True)
 class ConfusionEntry:
     """One cell of the disagreement confusion matrix."""
-    polylogue_kind: str
+
+    source_kind: str
     overlay_kind: str
     count: int
 
@@ -82,51 +85,62 @@ def build_polylogue_inference_quality(
     ``events_iter`` accepts caller-supplied events for tests; when omitted,
     pulls from the local Polylogue archive.
     """
-    events = tuple(events_iter) if events_iter is not None else tuple(
-        work_events(start=start, end=end + timedelta(days=1))
+    events = (
+        tuple(events_iter)
+        if events_iter is not None
+        else tuple(work_events(start=start, end=end + timedelta(days=1)))
     )
     # Restrict to the window — work_events filters loosely by start_date,
     # but be defensive in case end-edge slipped through.
     events = tuple(
-        event for event in events
+        event
+        for event in events
         if event.start is not None and start <= event.start.date() <= end
     )
 
     overall_agreement = 0
     overall_disagreement = 0
     overall_lynchpin_only = 0
-    overall_polylogue_only = 0
+    overall_source_only = 0
     overall_total = 0
 
     per_kind: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
-            "polylogue_count": 0,
+            "source_count": 0,
             "overlay_count": 0,
             "agreement_count": 0,
             "disagreement_count": 0,
             "lynchpin_only_count": 0,
-            "polylogue_only_count": 0,
-            "polylogue_confidences": [],
-            "low_polylogue_confidence_count": 0,
+            "source_only_count": 0,
+            "source_confidences": [],
+            "low_source_confidence_count": 0,
         }
     )
 
     confusion: Counter[tuple[str, str]] = Counter()
 
     weekly_buckets: dict[date, dict[str, int]] = defaultdict(
-        lambda: {"total": 0, "agreement": 0, "disagreement": 0, "lynchpin_only": 0, "polylogue_only": 0}
+        lambda: {
+            "total": 0,
+            "agreement": 0,
+            "disagreement": 0,
+            "lynchpin_only": 0,
+            "source_only": 0,
+        }
     )
 
     for event in events:
         label = overlay_label(
-            polylogue_kind=event.kind or None,
-            polylogue_confidence=float(event.confidence or 0.0),
+            source_kind=event.kind or None,
+            source_confidence=float(event.confidence or 0.0),
             file_paths=event.file_paths,
             tools_used=event.tools_used,
             duration_ms=int(event.duration_ms or 0),
         )
         overall_total += 1
-        bucket_key = _week_start(event.start.date()) if event.start else _week_start(end)
+        bucket_key = (
+            _week_start(event.start.date()) if event.start else _week_start(end)
+        )
         weekly_buckets[bucket_key]["total"] += 1
 
         category = _categorize(label)
@@ -139,23 +153,23 @@ def build_polylogue_inference_quality(
         elif category == "lynchpin_only":
             overall_lynchpin_only += 1
             weekly_buckets[bucket_key]["lynchpin_only"] += 1
-        elif category == "polylogue_only":
-            overall_polylogue_only += 1
-            weekly_buckets[bucket_key]["polylogue_only"] += 1
+        elif category == "source_only":
+            overall_source_only += 1
+            weekly_buckets[bucket_key]["source_only"] += 1
 
-        # Per-kind tally keyed by Polylogue's claimed kind.
+        # Per-kind tally keyed by the upstream source label.
         if event.kind:
             row = per_kind[event.kind]
-            row["polylogue_count"] += 1
-            row["polylogue_confidences"].append(float(event.confidence or 0.0))
+            row["source_count"] += 1
+            row["source_confidences"].append(float(event.confidence or 0.0))
             if (event.confidence or 0.0) < 0.5:
-                row["low_polylogue_confidence_count"] += 1
+                row["low_source_confidence_count"] += 1
             if category == "agreement":
                 row["agreement_count"] += 1
             elif category == "disagreement":
                 row["disagreement_count"] += 1
-            elif category == "polylogue_only":
-                row["polylogue_only_count"] += 1
+            elif category == "source_only":
+                row["source_only_count"] += 1
         if label.overlay_kind:
             row = per_kind[label.overlay_kind]
             row["overlay_count"] += 1
@@ -169,37 +183,47 @@ def build_polylogue_inference_quality(
     kind_rows: list[KindAgreementRow] = []
     for kind in sorted(per_kind):
         data = per_kind[kind]
-        confidences = data["polylogue_confidences"]
-        kind_rows.append(KindAgreementRow(
-            kind=kind,
-            polylogue_count=data["polylogue_count"],
-            overlay_count=data["overlay_count"],
-            agreement_count=data["agreement_count"],
-            disagreement_count=data["disagreement_count"],
-            lynchpin_only_count=data["lynchpin_only_count"],
-            polylogue_only_count=data["polylogue_only_count"],
-            avg_polylogue_confidence=(sum(confidences) / len(confidences)) if confidences else 0.0,
-            median_polylogue_confidence=statistics.median(confidences) if confidences else 0.0,
-            low_polylogue_confidence_count=data["low_polylogue_confidence_count"],
-        ))
+        confidences = data["source_confidences"]
+        kind_rows.append(
+            KindAgreementRow(
+                kind=kind,
+                source_count=data["source_count"],
+                overlay_count=data["overlay_count"],
+                agreement_count=data["agreement_count"],
+                disagreement_count=data["disagreement_count"],
+                lynchpin_only_count=data["lynchpin_only_count"],
+                source_only_count=data["source_only_count"],
+                avg_source_confidence=(sum(confidences) / len(confidences))
+                if confidences
+                else 0.0,
+                median_source_confidence=statistics.median(confidences)
+                if confidences
+                else 0.0,
+                low_source_confidence_count=data["low_source_confidence_count"],
+            )
+        )
 
     weekly_rows: list[WeeklyDisagreementRow] = []
     for week in sorted(weekly_buckets):
         bucket = weekly_buckets[week]
         total = bucket["total"]
-        disagree = bucket["disagreement"] + bucket["lynchpin_only"] + bucket["polylogue_only"]
-        weekly_rows.append(WeeklyDisagreementRow(
-            week_start=week,
-            total_events=total,
-            agreement_count=bucket["agreement"],
-            disagreement_count=bucket["disagreement"],
-            lynchpin_only_count=bucket["lynchpin_only"],
-            polylogue_only_count=bucket["polylogue_only"],
-            disagreement_rate=(disagree / total) if total else 0.0,
-        ))
+        disagree = (
+            bucket["disagreement"] + bucket["lynchpin_only"] + bucket["source_only"]
+        )
+        weekly_rows.append(
+            WeeklyDisagreementRow(
+                week_start=week,
+                total_events=total,
+                agreement_count=bucket["agreement"],
+                disagreement_count=bucket["disagreement"],
+                lynchpin_only_count=bucket["lynchpin_only"],
+                source_only_count=bucket["source_only"],
+                disagreement_rate=(disagree / total) if total else 0.0,
+            )
+        )
 
     confusion_rows = [
-        ConfusionEntry(polylogue_kind=p, overlay_kind=o, count=count)
+        ConfusionEntry(source_kind=p, overlay_kind=o, count=count)
         for (p, o), count in sorted(confusion.items(), key=lambda kv: -kv[1])
     ][:32]
 
@@ -211,19 +235,25 @@ def build_polylogue_inference_quality(
             "agreement_count": overall_agreement,
             "disagreement_count": overall_disagreement,
             "lynchpin_only_count": overall_lynchpin_only,
-            "polylogue_only_count": overall_polylogue_only,
-            "agreement_rate": (overall_agreement / overall_total) if overall_total else 0.0,
+            "source_only_count": overall_source_only,
+            "agreement_rate": (overall_agreement / overall_total)
+            if overall_total
+            else 0.0,
         },
         "per_kind": [_kind_row_to_dict(row) for row in kind_rows],
         "weekly": [_weekly_row_to_dict(row) for row in weekly_rows],
         "top_disagreement_pairs": [
-            {"polylogue_kind": e.polylogue_kind, "overlay_kind": e.overlay_kind, "count": e.count}
+            {
+                "source_kind": e.source_kind,
+                "overlay_kind": e.overlay_kind,
+                "count": e.count,
+            }
             for e in confusion_rows
         ],
         "caveats": [
             "Polylogue work-event kind labels and Lynchpin overlay rules are both heuristic; this audit shows divergence patterns, not which side is 'correct'",
-            "low_polylogue_confidence_count counts events with confidence < 0.5 — those carry a Polylogue self-warning already",
-            "weekly disagreement_rate aggregates disagreement + lynchpin_only + polylogue_only since all three categories represent label divergence",
+            "low_source_confidence_count counts events with source confidence < 0.5 — those carry an upstream self-warning already",
+            "weekly disagreement_rate aggregates disagreement + lynchpin_only + source_only since all three categories represent label divergence",
         ],
     }
 
@@ -250,8 +280,8 @@ def _categorize(label) -> str:
         return "disagreement"
     if label.source == "lynchpin_overlay":
         return "lynchpin_only"
-    if label.source == "polylogue":
-        return "polylogue_only"
+    if label.source == "source":
+        return "source_only"
     return "agreement"
 
 
@@ -263,15 +293,15 @@ def _week_start(d: date) -> date:
 def _kind_row_to_dict(row: KindAgreementRow) -> dict[str, Any]:
     return {
         "kind": row.kind,
-        "polylogue_count": row.polylogue_count,
+        "source_count": row.source_count,
         "overlay_count": row.overlay_count,
         "agreement_count": row.agreement_count,
         "disagreement_count": row.disagreement_count,
         "lynchpin_only_count": row.lynchpin_only_count,
-        "polylogue_only_count": row.polylogue_only_count,
-        "avg_polylogue_confidence": round(row.avg_polylogue_confidence, 3),
-        "median_polylogue_confidence": round(row.median_polylogue_confidence, 3),
-        "low_polylogue_confidence_count": row.low_polylogue_confidence_count,
+        "source_only_count": row.source_only_count,
+        "avg_source_confidence": round(row.avg_source_confidence, 3),
+        "median_source_confidence": round(row.median_source_confidence, 3),
+        "low_source_confidence_count": row.low_source_confidence_count,
     }
 
 
@@ -282,7 +312,7 @@ def _weekly_row_to_dict(row: WeeklyDisagreementRow) -> dict[str, Any]:
         "agreement_count": row.agreement_count,
         "disagreement_count": row.disagreement_count,
         "lynchpin_only_count": row.lynchpin_only_count,
-        "polylogue_only_count": row.polylogue_only_count,
+        "source_only_count": row.source_only_count,
         "disagreement_rate": round(row.disagreement_rate, 3),
     }
 

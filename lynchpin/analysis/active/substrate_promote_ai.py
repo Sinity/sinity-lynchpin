@@ -36,8 +36,8 @@ def promote_ai_sources(
 
         def _classify(ev: Any) -> Any:
             return overlay_label(
-                polylogue_kind=ev.kind,
-                polylogue_confidence=float(ev.confidence or 0.0),
+                source_kind=ev.kind,
+                source_confidence=float(ev.confidence or 0.0),
                 file_paths=ev.file_paths,
                 tools_used=ev.tools_used,
                 duration_ms=int(ev.duration_ms or 0),
@@ -85,8 +85,7 @@ def promote_ai_sources(
         elif readiness.status != "ready":
             status = "unavailable"
             reason = (
-                f"polylogue not ready (status={readiness.status}): "
-                f"{readiness.reason}"
+                f"polylogue not ready (status={readiness.status}): {readiness.reason}"
             )
         else:
             status = "unavailable"

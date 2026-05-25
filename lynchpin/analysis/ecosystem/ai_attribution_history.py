@@ -72,11 +72,16 @@ def build_active_ai_attribution_history(
     selected = set(projects or ())
 
     # Index sessions across ALL of polylogue history, not the last 31 days.
-    profiles = (
-        list(session_profiles)
-        if session_profiles is not None
-        else list(iter_session_profiles())
-    )
+    # Graceful-degrade: an empty profile list is treated as "no AI history"
+    # rather than crashing the per-commit attribution pass.
+    if session_profiles is not None:
+        profiles = list(session_profiles)
+    else:
+        from ...sources.polylogue import PolylogueMaterializationError
+        try:
+            profiles = list(iter_session_profiles())
+        except PolylogueMaterializationError:
+            profiles = []
     if profiles:
         # Find the actual span of available session data.
         session_dates = [

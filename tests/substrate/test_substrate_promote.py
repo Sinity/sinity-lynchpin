@@ -206,10 +206,10 @@ def test_substrate_promote_handles_missing_files(
     assert counts.get("symbols", 0) == 0
 
 
-def test_substrate_promote_swallows_errors(
+def test_substrate_promote_raises_infrastructure_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A broken substrate path must not raise — errors are logged and swallowed."""
+    """A broken substrate path must raise so refresh cannot look successful."""
     import lynchpin.substrate.connection as duck_conn
 
     # Point substrate to an unwriteable path.
@@ -218,16 +218,14 @@ def test_substrate_promote_swallows_errors(
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
 
-    counts = run_substrate_promote(
-        commit_facts_file=str(tmp_path / "nope.json"),
-        file_changes_file=str(tmp_path / "nope.json"),
-        symbol_changes_file=str(tmp_path / "nope.json"),
-        sources=_json_sources(),
-        write_evidence_graph=False,
-    )
-    assert counts.status == "error"
-    assert counts.counts == {}
-    assert counts.reason
+    with pytest.raises(Exception, match="Cannot open file"):
+        run_substrate_promote(
+            commit_facts_file=str(tmp_path / "nope.json"),
+            file_changes_file=str(tmp_path / "nope.json"),
+            symbol_changes_file=str(tmp_path / "nope.json"),
+            sources=_json_sources(),
+            write_evidence_graph=False,
+        )
 
 
 def test_substrate_promote_uses_derived_personal_products(

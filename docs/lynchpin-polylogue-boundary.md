@@ -22,9 +22,9 @@
   terminal, health, etc.) for cross-source SQL joins. polylogue data is
   *promoted* into the substrate, not used directly.
 - **Re-classifier overlay** (`lynchpin/graph/work_event_kind.py`) — three feature
-  extractors (path, tools, duration) produce consensus labels with confidence
-  tiers (high/medium/low). The overlay may disagree with polylogue's raw
-  classification; disagreement is tracked in `kind_source`.
+  extractors (path, tools, duration) produce resolved labels with confidence
+  tiers (high/medium/low). The overlay may disagree with the upstream event
+  label; disagreement is tracked in `kind_source`.
 - **Kind audit** (`kind_audit` MCP tool) — quantitative surface for agreement
   rates, tier distributions, and disagreement cases. Current: 25.2% disagreement
   rate across 1,295 work events.
@@ -42,11 +42,11 @@
 2. **Lynchpin never writes to polylogue.db.** All derived data lives in the
    DuckDB substrate or in lynchpin's JSON artifacts.
 
-3. **Polylogue owns inference quality.** Lynchpin's overlay is a
-   *re-classifier*, not a replacement. When the overlay disagrees with
-   polylogue, both labels are preserved (`polylogue_kind` + `overlay_kind`),
-   and the disagreement is tracked. The `kind` column represents the
-   final resolved label.
+3. **Polylogue owns archive inference; Lynchpin owns cross-source resolution.**
+   Lynchpin's overlay is a *re-classifier*, not a replacement. When the overlay
+   disagrees with the upstream event label, both labels are preserved
+   (`source_kind` + `overlay_kind`), and the disagreement is tracked. The
+   `kind` column represents the final resolved label.
 
 4. **Schema versioning is decoupled.** Polylogue's `SCHEMA_VERSION` and
    lynchpin's `SUBSTRATE_VERSION` evolve independently. When polylogue's

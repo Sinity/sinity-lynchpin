@@ -135,3 +135,40 @@ def test_activitywatch_raw_merges_archive_dbs_and_filters_bad_rows(monkeypatch, 
     events = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(8), end=dt(11)))
     assert [event.data["app"] for event in events] == ["old", "kitty"]
     assert event_bounds("aw-watcher-window_") == (date(2026, 3, 15), date(2026, 3, 15), 2)
+
+
+def test_active_intervals_accepts_date_for_inclusive_day_window(monkeypatch) -> None:
+    """active_intervals must treat ``end`` as inclusive when passed a date.
+
+    Before #24 the docstring claimed `datetime` only; callers passing
+    ``date(d), date(d)`` got `as_local(end)` → midnight start-of-day, which
+    is equal to start, yielding a zero-width window and an empty result.
+    Now both bounds accept dates and `end` expands to midnight of the next
+    day via `end_of_day_local`.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from lynchpin.sources.activitywatch import active_intervals
+    from lynchpin.sources.activitywatch_raw import AWEvent
+
+    UTC = _tz.utc
+    captured_bounds: dict[str, object] = {}
+
+    def fake_afk_events(*, start, end):
+        captured_bounds["start"] = start
+        captured_bounds["end"] = end
+        yield AWEvent(
+            bucket="aw-watcher-afk_host",
+            start=_dt(2026, 3, 15, 10, tzinfo=UTC),
+            end=_dt(2026, 3, 15, 11, tzinfo=UTC),
+            data={"status": "not-afk"},
+        )
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch.afk_events", fake_afk_events
+    )
+
+    # Pass DATE for both — previously zero-width, now spans the day.
+    intervals = active_intervals(date(2026, 3, 15), date(2026, 3, 15))
+    assert len(intervals) == 1
+    # The window passed to afk_events must be a full day, not zero-width.
+    assert captured_bounds["end"] > captured_bounds["start"]

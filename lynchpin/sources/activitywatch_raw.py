@@ -8,6 +8,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
+import functools
+
+from ..core.cache import file_signature
 from ..core.config import get_config
 from .activitywatch_models import AWEvent
 
@@ -89,7 +92,13 @@ def events_from_activitywatch_dbs(
             for bucket, start_ns, end_ns, payload in cursor:
                 if start_ns is None or end_ns is None:
                     continue
-                if end_ns <= start_ns:
+                # Window-watcher events from aw-server-rust are stored
+                # zero-duration: end == start. The effective duration is
+                # implicit (until the next event for the same bucket).
+                # _window_spans handles this downstream. Dropping these
+                # silently destroyed ~4M events in Feb-May 2026 alone.
+                # Keep zero-duration; only drop genuinely-invalid (end < start).
+                if end_ns < start_ns:
                     continue
                 payload_text = payload if isinstance(payload, str) else payload.decode("utf-8") if payload else ""
                 key = (str(bucket), int(start_ns), int(end_ns), payload_text)
@@ -115,6 +124,49 @@ def _events_from_ndjson(
     start: datetime,
     end: datetime,
 ) -> Iterator[AWEvent]:
+    """Yield AW events matching ``bucket_prefix`` and overlapping [start, end).
+
+    Backed by a process-cached full parse — the 450MB NDJSON is parsed
+    exactly once per process, then sliced in memory per call. The cache
+    is keyed by the file path and refreshes when ``path.stat()`` changes
+    (mtime + size), so a re-materialize is observed automatically.
+    """
+    all_events = _load_all_events(path)
+    for event in all_events:
+        if not event.bucket.startswith(bucket_prefix):
+            continue
+        if event.start >= end or event.end <= start:
+            continue
+        yield event
+
+
+def _load_all_events(path: Path) -> list[AWEvent]:
+    """Parse the entire AW NDJSON once per process. Caller filters.
+
+    Cached process-level keyed by ``(path, file_signature(path))`` so a
+    re-materialize invalidates the cache automatically within the same
+    process AND a stale process serving an older parse is bounded — first
+    call after the materialize sees the new signature, prior entries
+    drop on LRU eviction.
+
+    Persistent caching via cachew was attempted but rejected:
+    ``AWEvent.data: Dict[str, object]`` is not a cacheable schema. The
+    process-level layer is the layer we get. Long-running MCP server /
+    substrate promote benefit; one-shot CLIs pay the full parse each
+    invocation.
+
+    Returns events sorted by ``start`` so callers can stop scanning early.
+    """
+    return _load_all_events_keyed(path, file_signature(path))
+
+
+@functools.lru_cache(maxsize=2)
+def _load_all_events_keyed(
+    path: Path, signature: object,
+) -> list[AWEvent]:
+    """Inner cache target. The signature parameter participates in the
+    LRU key so re-materialize forces a re-parse on next call."""
+    del signature  # not used by the body, just the cache key
     rows: list[AWEvent] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -122,12 +174,10 @@ def _events_from_ndjson(
                 continue
             payload = json.loads(line)
             bucket = str(payload.get("bucket") or "")
-            if not bucket.startswith(bucket_prefix):
+            if not bucket:
                 continue
             event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
             event_end = datetime.fromisoformat(str(payload["end"]).replace("Z", "+00:00"))
-            if event_start >= end or event_end <= start:
-                continue
             data = payload.get("data")
             rows.append(
                 AWEvent(
@@ -137,7 +187,8 @@ def _events_from_ndjson(
                     data=data if isinstance(data, dict) else {},
                 )
             )
-    yield from sorted(rows, key=lambda event: event.start)
+    rows.sort(key=lambda event: event.start)
+    return rows
 
 
 def event_bounds(bucket_prefix: str, *, db_path: Optional[Path] = None) -> tuple[date | None, date | None, int]:

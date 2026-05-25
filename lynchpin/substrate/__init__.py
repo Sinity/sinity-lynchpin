@@ -17,6 +17,7 @@ from lynchpin.substrate.connection import (
     substrate_path,
     apply_schema,
     reset_substrate,
+    prune_commit_history,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "substrate_path",
     "apply_schema",
     "reset_substrate",
+    "prune_commit_history",
 ]

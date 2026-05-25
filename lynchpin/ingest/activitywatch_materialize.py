@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..sources.activitywatch_dedup import dedup_and_merge
 from ..sources.activitywatch_raw import (
+    AWEvent,
     canonical_activitywatch_events_path,
     events_from_activitywatch_dbs,
 )
@@ -17,26 +19,55 @@ from ..sources.activitywatch_raw import (
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web_")
 
 
-def materialize_activitywatch_events(*, output: Path | None = None) -> dict[str, Any]:
+def materialize_activitywatch_events(
+    *, output: Path | None = None, dedupe: bool = True
+) -> dict[str, Any]:
+    """Build the canonical AW events NDJSON.
+
+    When ``dedupe`` (default), the raw events are cleaned via
+    ``dedup_and_merge`` to repair two upstream defects: window/chrome
+    zero-duration heartbeat spam (awatcher poll/pulsetime mismatch) and
+    AFK duplicate-starttime cluster bug (PR #555 fix incomplete). See
+    ``lynchpin/sources/activitywatch_dedup.py`` for the full rationale.
+
+    Set ``dedupe=False`` to emit raw rows untouched (useful when
+    diagnosing upstream bugs).
+    """
     output = output or canonical_activitywatch_events_path()
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    # Collect raw events first, then apply dedup per bucket. The dedup
+    # function expects events to be grouped by bucket; sorting by
+    # (bucket, start) achieves that.
+    raw: list[AWEvent] = []
     for prefix in BUCKET_PREFIXES:
         for event in events_from_activitywatch_dbs(prefix):
-            data_json = json.dumps(event.data, ensure_ascii=False, sort_keys=True)
-            key = (
-                event.bucket,
-                event.start.isoformat(),
-                event.end.isoformat(),
-                data_json,
-            )
-            rows[key] = {
-                "bucket": event.bucket,
-                "start": event.start.isoformat(),
-                "end": event.end.isoformat(),
-                "data": event.data,
-            }
+            raw.append(event)
+    raw.sort(key=lambda e: (e.bucket, e.start, e.end))
+
+    if dedupe:
+        cleaned = list(dedup_and_merge(raw))
+    else:
+        cleaned = raw
+
+    # Sort the cleaned events by (bucket, start) for stable output, then
+    # dedupe via dict-by-key in case dedup_and_merge left any logical
+    # duplicates (it shouldn't, but keep the defensive layer).
+    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for event in cleaned:
+        data_json = json.dumps(event.data, ensure_ascii=False, sort_keys=True)
+        key = (
+            event.bucket,
+            event.start.isoformat(),
+            event.end.isoformat(),
+            data_json,
+        )
+        rows[key] = {
+            "bucket": event.bucket,
+            "start": event.start.isoformat(),
+            "end": event.end.isoformat(),
+            "data": event.data,
+        }
 
     ordered = [rows[key] for key in sorted(rows)]
     with output.open("w", encoding="utf-8") as handle:

@@ -100,11 +100,11 @@ def test_daily_rhythm_defaults_to_commit_fact_refresh(
     assert result[0]["total_commits"] == 1
 
 
-def test_export_staleness_uses_substrate_spotify_date(
+def test_source_observation_bounds_uses_substrate_spotify_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     setup_substrate(tmp_path, monkeypatch)
-    from lynchpin.mcp.tools.signals import export_staleness
+    from lynchpin.mcp.tools.signals import source_observation_bounds
     from lynchpin.substrate.connection import connect, substrate_path
 
     with connect(substrate_path()) as conn:
@@ -118,40 +118,38 @@ def test_export_staleness_uses_substrate_spotify_date(
             [date(2025, 12, 18), 1, 3.0, 1, 1, ["Artist"], ["Track"], "r1"],
         )
 
-    rows = {row["source"]: row for row in export_staleness()}
+    rows = {row["source"]: row for row in source_observation_bounds()}
     assert rows["spotify"]["last_known_data"] == "2025-12-18"
     assert rows["spotify"]["basis"] == "substrate"
-    assert rows["spotify"]["stale"] is True
+    assert "stale" not in rows["spotify"]
 
 
-def test_export_staleness_renders_source_freshness_contract(
+def test_source_observation_bounds_renders_source_observation_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from lynchpin.mcp.tools.signals import export_staleness
-    from lynchpin.sources.freshness import SourceFreshness
+    from lynchpin.mcp.tools.signals import source_observation_bounds
+    from lynchpin.sources.source_observations import SourceObservation
 
     monkeypatch.setattr(
-        "lynchpin.sources.freshness.source_freshness",
+        "lynchpin.sources.source_observations.source_observations",
         lambda **_kwargs: (
-            SourceFreshness(
+            SourceObservation(
                 source="spotify",
                 available=True,
                 last_observed=date(2025, 12, 18),
                 basis="substrate",
-                stale=True,
-                recommendation="Request new Spotify GDPR export",
+                recommendation=None,
                 path=None,
             ),
         ),
     )
 
-    assert export_staleness() == [
+    assert source_observation_bounds() == [
         {
             "source": "spotify",
             "available": True,
             "last_known_data": "2025-12-18",
-            "stale": True,
-            "recommendation": "Request new Spotify GDPR export",
+            "recommendation": None,
             "basis": "substrate",
             "path": None,
         }

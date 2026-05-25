@@ -125,6 +125,8 @@ def test_materialized_dataset_json_carries_contract_status_semantics(tmp_path) -
     assert payload["status"] == "partial"
     assert payload["substrate_status"] == "unavailable"
     assert payload["required"] is True
+    assert payload["collection_model"] == "continuous"
+    assert payload["coverage"]["relation"] == "unavailable"
 
 
 def test_materialized_window_overlaps_uses_known_bounds(monkeypatch) -> None:
@@ -169,6 +171,34 @@ def test_materialized_window_overlaps_uses_known_bounds(monkeypatch) -> None:
     assert not materialization.materialized_window_overlaps(
         "unknown_bounds", start=date(2020, 1, 1), end=date(2020, 1, 2)
     )
+
+
+def test_materialized_dataset_coverage_describes_window_without_age_scoring() -> None:
+    from lynchpin.materialization import materialized_dataset_coverage
+
+    row = MaterializedDataset(
+        name="reddit",
+        status="ready",
+        authority="raw fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2025, 1, 1),
+        last_date=date(2025, 1, 31),
+        refresh_command="refresh",
+        reason="ready",
+    )
+
+    coverage = materialized_dataset_coverage(
+        row,
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 2),
+    )
+
+    assert coverage["relation"] == "no_overlap"
+    assert coverage["collection_model"] == "event_export"
+    assert "not proof of zero activity" in coverage["interpretation"]
 
 
 def test_product_with_manifest_requires_valid_manifest(tmp_path) -> None:

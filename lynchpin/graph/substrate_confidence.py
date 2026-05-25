@@ -8,9 +8,9 @@ trustworthy enough to act on."
 Dimensions:
 
   - **coverage**     — source readiness status (available / partial /
-                       stale / missing) mapped to high/medium/low tiers
-  - **freshness**    — last_date relative to window end: within window /
-                       ≤7d / ≤30d / older
+                       missing) mapped to high/medium/low tiers
+  - **date_coverage** — whether observed source date bounds cover, overlap,
+                       or miss the queried analysis window
   - **kind_quality** — Arc K agreement rate over ai_work_event nodes;
                        only meaningful for the polylogue layer, "—" elsewhere
   - **cross_source** — fraction of project/days where this source has
@@ -41,7 +41,7 @@ class ConfidenceCell:
 class LayerRow:
     layer: str
     coverage: ConfidenceCell
-    freshness: ConfidenceCell
+    date_coverage: ConfidenceCell
     kind_quality: ConfidenceCell
     cross_source: ConfidenceCell
 
@@ -66,12 +66,12 @@ def build_substrate_confidence_matrix(*, readiness: SourceReadinessReport, graph
     for layer in layer_names:
         ready = layer_readiness.get(layer)
         coverage = _coverage_cell(ready)
-        freshness = _freshness_cell(ready, window_end=readiness.end)
+        date_coverage = _date_coverage_cell(ready, window_start=readiness.start, window_end=readiness.end)
         kind_quality = kind_quality_polylogue if layer == 'polylogue' else ConfidenceCell(tier='n_a', detail='—')
         cross_source = _cross_source_cell(layer, cross_source_index, window_days=_window_days(readiness))
-        row = LayerRow(layer=layer, coverage=coverage, freshness=freshness, kind_quality=kind_quality, cross_source=cross_source)
+        row = LayerRow(layer=layer, coverage=coverage, date_coverage=date_coverage, kind_quality=kind_quality, cross_source=cross_source)
         rows.append(row)
-        for cell in (coverage, freshness, kind_quality, cross_source):
+        for cell in (coverage, date_coverage, kind_quality, cross_source):
             if cell.tier != 'n_a':
                 tier_counts[cell.tier] += 1
     overall_tier, overall_summary = _overall_tier(tier_counts)
@@ -79,9 +79,9 @@ def build_substrate_confidence_matrix(*, readiness: SourceReadinessReport, graph
 
 def render_substrate_confidence_matrix(matrix: SubstrateConfidenceMatrix) -> str:
     """Render as a Markdown heat-map table for the pack header."""
-    lines = [f'_Overall substrate confidence: **{matrix.overall_tier}** — {matrix.overall_summary}_', '', '| Layer | Coverage | Freshness | Kind Quality | Cross-source |', '|---|---|---|---|---|']
+    lines = [f'_Overall substrate confidence: **{matrix.overall_tier}** — {matrix.overall_summary}_', '', '| Layer | Coverage | Date Coverage | Kind Quality | Cross-source |', '|---|---|---|---|---|']
     for row in matrix.rows:
-        lines.append(f'| {row.layer} | {_render_cell(row.coverage)} | {_render_cell(row.freshness)} | {_render_cell(row.kind_quality)} | {_render_cell(row.cross_source)} |')
+        lines.append(f'| {row.layer} | {_render_cell(row.coverage)} | {_render_cell(row.date_coverage)} | {_render_cell(row.kind_quality)} | {_render_cell(row.cross_source)} |')
     return '\n'.join(lines)
 _TIER_GLYPH: dict[Tier, str] = {'high': '✅', 'medium': '⚠️', 'low': '❌', 'absent': '⊘', 'n_a': '—'}
 
@@ -111,25 +111,28 @@ def _coverage_cell(ready) -> ConfidenceCell:
         return ConfidenceCell(tier='high', detail='available')
     if status == 'partial':
         return ConfidenceCell(tier='medium', detail=f'partial: {_short(ready.reason)}')
-    if status == 'stale':
-        return ConfidenceCell(tier='medium', detail=f'stale: {_short(ready.reason)}')
     if status == 'missing':
         return ConfidenceCell(tier='low', detail=f'missing: {_short(ready.reason)}')
     if status == 'blocked':
         return ConfidenceCell(tier='low', detail=f'blocked: {_short(ready.reason)}')
     return ConfidenceCell(tier='absent', detail=str(status))
 
-def _freshness_cell(ready, *, window_end: date) -> ConfidenceCell:
+def _date_coverage_cell(ready, *, window_start: date, window_end: date) -> ConfidenceCell:
     if ready is None or ready.last_date is None:
-        return ConfidenceCell(tier='absent', detail='no last_date')
-    delta = (window_end - ready.last_date).days
-    if delta <= 0:
-        return ConfidenceCell(tier='high', detail='live')
-    if delta <= 7:
-        return ConfidenceCell(tier='high', detail=f'{delta}d ago')
-    if delta <= 30:
-        return ConfidenceCell(tier='medium', detail=f'{delta}d ago')
-    return ConfidenceCell(tier='low', detail=f'{delta}d ago')
+        return ConfidenceCell(tier='absent', detail='no date bounds')
+    first = ready.first_date
+    last = ready.last_date
+    if first is not None and first <= window_start and (last >= window_end):
+        return ConfidenceCell(tier='high', detail='covers window')
+    if last < window_start:
+        return ConfidenceCell(tier='low', detail=f'ends before window ({last.isoformat()})')
+    if first is not None and first > window_end:
+        return ConfidenceCell(tier='low', detail=f'starts after window ({first.isoformat()})')
+    if first is not None:
+        return ConfidenceCell(tier='medium', detail=f'partial overlap {first.isoformat()} → {last.isoformat()}')
+    if last >= window_end:
+        return ConfidenceCell(tier='medium', detail=f'last date reaches window end ({last.isoformat()})')
+    return ConfidenceCell(tier='medium', detail=f'last date inside window ({last.isoformat()})')
 
 def _kind_quality_for_polylogue(graph: EvidenceGraph) -> ConfidenceCell:
     """Per Arc K: agreement rate across ai_work_event nodes."""

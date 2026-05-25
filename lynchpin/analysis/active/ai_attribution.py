@@ -48,12 +48,23 @@ def build_active_ai_attribution(
         )
     selected = set(projects or ())
 
-    sessions_by_project_day, session_windows = _index_sessions(
-        session_profiles if session_profiles is not None else iter_session_profiles(),
-        start=start,
-        end=end,
-        selected=selected,
-    )
+    # Graceful-degrade: when polylogue is rematerializing or session_insights
+    # are incomplete, iter_session_profiles() raises. Treat that as
+    # "no AI attribution available for this window" rather than crashing
+    # the whole DAG step — git facts can still be reported as unattributed.
+    from ...sources.polylogue import PolylogueMaterializationError
+    try:
+        profile_iter = (
+            session_profiles if session_profiles is not None else iter_session_profiles()
+        )
+        sessions_by_project_day, session_windows = _index_sessions(
+            profile_iter,
+            start=start,
+            end=end,
+            selected=selected,
+        )
+    except PolylogueMaterializationError:
+        sessions_by_project_day, session_windows = {}, {}
 
     rows: list[dict[str, Any]] = []
     project_counters: dict[str, Counter[str]] = defaultdict(Counter)
