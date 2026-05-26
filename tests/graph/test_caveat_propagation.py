@@ -22,14 +22,14 @@ def _caveat(source: str, status: str, message: str) -> EvidenceCaveat:
 
 def test_propagate_caveats_dedups_across_sources():
     a = (_caveat("polylogue", "partial", "stub"),)
-    b = (_caveat("polylogue", "partial", "stub"), _caveat("git", "stale", "60d"))
+    b = (_caveat("polylogue", "partial", "stub"), _caveat("git", "blocked", "60d"))
     out = propagate_caveats(a, b)
     assert len(out) == 2
-    assert {(c.source, c.status) for c in out} == {("polylogue", "partial"), ("git", "stale")}
+    assert {(c.source, c.status) for c in out} == {("polylogue", "partial"), ("git", "blocked")}
 
 
 def test_propagate_caveats_preserves_order_first_seen():
-    a = (_caveat("git", "stale", "old"),)
+    a = (_caveat("git", "blocked", "old"),)
     b = (_caveat("polylogue", "partial", "x"),)
     out = propagate_caveats(a, b)
     assert out[0].source == "git"
@@ -49,12 +49,12 @@ def test_degrade_confidence_partial_caveat_dampens():
 def test_degrade_confidence_compounds_across_layers():
     caveats = (
         _caveat("polylogue", "partial", "x"),
-        _caveat("git", "stale", "old"),
-        _caveat("activitywatch", "partial", "y"),
+        _caveat("git", "partial", "y"),
+        _caveat("activitywatch", "partial", "z"),
     )
-    # 0.85 × 0.90 × 0.85 × 0.90 = 0.585...
+    # base 0.85 × partial 0.90 ^ 3 = 0.61965
     out = degrade_confidence(0.85, caveats)
-    assert abs(out - 0.85 * 0.90 * 0.85 * 0.90) < 1e-6
+    assert abs(out - 0.85 * 0.90 * 0.90 * 0.90) < 1e-6
 
 
 def test_degrade_confidence_clamps_at_floor():
@@ -67,10 +67,10 @@ def test_caveat_summary_counts_distinct_statuses():
     caveats = (
         _caveat("polylogue", "partial", "a"),
         _caveat("git", "partial", "b"),
-        _caveat("polylogue", "stale", "c"),
+        _caveat("polylogue", "blocked", "c"),
     )
     summary = caveat_summary(caveats)
-    assert summary == {"partial": 2, "stale": 1}
+    assert summary == {"partial": 2, "blocked": 1}
 
 
 def _node(*, node_id: str, kind: str, start: datetime, project: str = "demo",
@@ -125,7 +125,7 @@ def test_chain_confidence_degrades_when_nodes_have_caveats():
     commit_dirty = _node(
         node_id="c_dirty", kind="commit", start=base + timedelta(hours=3),
         payload={"paths": ("src/dirty.py",), "conventional_kind": "feat"},
-        caveats=(_caveat("git", "stale", "old"),),
+        caveats=(_caveat("git", "blocked", "old"),),
     )
     chains = detect_chains([we_clean, commit_clean, we_dirty, commit_dirty])
     by_id = {c.id: c for c in chains if c.chain_type == "ai_work_event_to_commit"}

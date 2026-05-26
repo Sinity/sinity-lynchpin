@@ -31,3 +31,33 @@ def test_reddit_reads_comments_and_daily_activity(tmp_path, monkeypatch):
     assert summary.comment_subreddits["2026-05"]["python"] == 2
     assert days[0].comment_count == 2
     assert days[0].top_subreddits == ("python",)
+
+
+def test_split_quoted_text_extracts_blockquotes():
+    own, quotes = reddit.split_quoted_text(
+        "> they said something\n> on two lines\n\nMy response here.\n\n> another quote\n\nMore reply."
+    )
+    assert quotes == ("they said something\non two lines", "another quote")
+    # The non-quote lines are preserved verbatim including blank-line spacing
+    # the quotes used to occupy; only leading/trailing whitespace is stripped.
+    assert own == "My response here.\n\n\nMore reply."
+
+
+def test_split_quoted_text_empty_body():
+    assert reddit.split_quoted_text("") == ("", ())
+    assert reddit.split_quoted_text("no quotes here") == ("no quotes here", ())
+
+
+def test_split_quoted_text_strips_marker_only_lines():
+    # ">" alone as a paragraph separator inside quotes — common reddit pattern.
+    own, quotes = reddit.split_quoted_text("> first paragraph\n>\n> second paragraph\n\nmy reply")
+    assert quotes == ("first paragraph\n\nsecond paragraph",)
+    assert own == "my reply"
+
+
+def test_split_quoted_text_handles_nested_quotes():
+    # Reddit allows >> for nested quotes; collapsed since the level distinction
+    # rarely matters for operator-vs-extrinsic separation.
+    own, quotes = reddit.split_quoted_text(">> deeper\n> outer\n\nresponse")
+    assert quotes == ("deeper\nouter",)
+    assert own == "response"

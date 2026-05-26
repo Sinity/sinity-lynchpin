@@ -118,9 +118,21 @@ def _history_files(
     return []
 
 
-def _history_files_signature(
-    root: Optional[Path] = None, ndjson: Optional[Path] = None
-) -> object:
+def _history_files_signature(*args, **kwargs) -> object:
+    # Cachew's composite_hash invokes depends_on with whatever positional /
+    # keyword args were passed to the wrapped function. Older shape was
+    # ``def _history_files_signature(root=None, ndjson=None)`` which broke when
+    # the wrapped function was called positionally (cachew also injected the
+    # same arg as a keyword, producing
+    # ``got multiple values for argument 'root'``). Accepting *args/**kwargs
+    # makes the signature unambiguous; we normalize internally.
+    root = kwargs.get("root")
+    ndjson = kwargs.get("ndjson")
+    if args:
+        if len(args) > 0:
+            root = args[0] if root is None else root
+        if len(args) > 1:
+            ndjson = args[1] if ndjson is None else ndjson
     return files_digest(_history_files(root=root, ndjson=ndjson))
 
 

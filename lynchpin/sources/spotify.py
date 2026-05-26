@@ -228,7 +228,15 @@ class ListeningSession:
 @dataclass(frozen=True)
 class DailyListening:
     date: date
+    # Wall-clock hours during which at least one stream was playing.
+    # Capped at 24h. Computed by interval-merging stream windows so
+    # concurrent playback across devices doesn't double-count.
     hours: float
+    # Sum of stream durations across all devices. Can exceed 24h on days
+    # with multi-device concurrent playback (operator's desktop + phone
+    # both playing the same Spotify account). Useful when device count is
+    # informative; not "hours of the day" in the wall-clock sense.
+    playback_hours: float
     stream_count: int
     top_artist: str
     top_track: str
@@ -271,7 +279,13 @@ def listening_sessions(*, gap_minutes: float = 30, root: Optional[Path] = None) 
 def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
                     root: Optional[Path] = None) -> list[DailyListening]:
     """Daily listening aggregation: hours, top artists/tracks, unique counts."""
-    from ..core.primitives import TopN
+    from datetime import timedelta, timezone
+    from ..core.primitives import TopN, merge_intervals
+
+    def _to_utc(ts):
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
 
     by_day: dict[date, list[SpotifyStream]] = defaultdict(list)
     for s in iter_streams(root=root):
@@ -292,16 +306,26 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
         artist_set: set[str] = set()
         track_set: set[str] = set()
         total_ms = 0
+        intervals = []
         for s in streams:
             total_ms += s.ms_played
+            end_ts = _to_utc(s.end_time) if s.end_time else None
+            start_ts = end_ts - timedelta(milliseconds=s.ms_played) if end_ts else None
+            if start_ts is not None and end_ts is not None:
+                intervals.append((start_ts, end_ts))
             if s.artist:
                 artists.add(s.artist, s.ms_played)
                 artist_set.add(s.artist)
             if s.track:
                 tracks.add(s.track, s.ms_played)
                 track_set.add(s.track)
+        merged = merge_intervals(intervals)
+        wall_clock_s = sum((iv[1] - iv[0]).total_seconds() for iv in merged)
         result.append(DailyListening(
-            date=d, hours=round(total_ms / 3_600_000, 2), stream_count=len(streams),
+            date=d,
+            hours=round(wall_clock_s / 3600, 2),
+            playback_hours=round(total_ms / 3_600_000, 2),
+            stream_count=len(streams),
             top_artist=artists.dominant or "", top_track=tracks.dominant or "",
             unique_artists=len(artist_set), unique_tracks=len(track_set),
         ))

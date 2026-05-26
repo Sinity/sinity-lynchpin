@@ -19,6 +19,8 @@ def project_day_correlations(refresh_id: str | None=None, start: str | None=None
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
     path = substrate_path()
     with connect(path) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'project_day_correlation')
         rows = load_project_day_correlations(conn, refresh_id=refresh_id, start=start_d, end=end_d, projects=projs, min_source_count=min_source_count)
     return [dataclass_to_json_dict(row) for row in rows]
 
@@ -40,6 +42,8 @@ def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, m
     from lynchpin.substrate.derived import load_issue_closure_chain_walks
     path = substrate_path()
     with connect(path) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, 'issue_closure_chain_walk')
         rows = load_issue_closure_chain_walks(conn, refresh_id=refresh_id, project=project, min_chain_depth=min_chain_depth)
     return [dataclass_to_json_dict(row) for row in rows]
 
@@ -277,3 +281,41 @@ def walk_evidence(start_id: str, edge_kinds: list[str] | None=None, max_depth: i
         return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'reason': f'evidence_graph build {refresh_id!r} not found', 'nodes': [], 'edges': []}
     result = _walk(graph, start_id, edge_kinds=edge_kinds, max_depth=int(max_depth), max_nodes=int(max_nodes), direction=direction)
     return {'start_id': result.start_id, 'direction': result.direction, 'edge_kinds': list(result.edge_kinds) if result.edge_kinds else None, 'max_depth': result.max_depth, 'max_nodes': result.max_nodes, 'truncated': result.truncated, 'reason': result.reason, 'nodes': [{'id': step.node.id, 'kind': step.node.kind, 'source': step.node.source, 'date': _json_safe(step.node.date), 'project': step.node.project, 'summary': step.node.summary, 'depth': step.depth, 'parent_edge_source': step.parent_edge.source_id if step.parent_edge else None, 'parent_edge_target': step.parent_edge.target_id if step.parent_edge else None, 'parent_edge_relation': step.parent_edge.relation if step.parent_edge else None, 'direction_followed': step.direction_followed} for step in result.steps], 'edges': [{'source_id': edge.source_id, 'target_id': edge.target_id, 'relation': edge.relation, 'evidence': edge.evidence, 'weight': edge.weight} for edge in result.edges]}
+
+@app.tool()
+def url_crossref(start: str, end: str, min_sources: int=2, sources: str='reddit,irc,wykop,raindrop', limit: int=100) -> list[dict[str, Any]]:
+    """Aggregate URL mentions across personal sources, surface cross-channel hits.
+
+    Streams URL-bearing rows from reddit (own + extrinsic quoted blocks split
+    apart), IRC (operator vs ambient), wykop (links + comments + entries),
+    raindrop bookmarks, and web history visits — normalizes each URL (strip
+    utm/fbclid, lowercase host, drop www, https-only) — collapses by URL.
+
+    Parameters:
+    - ``start`` / ``end``: ISO date range (inclusive).
+    - ``min_sources``: minimum distinct source count for a URL to be returned.
+      Default 2 surfaces URLs that crossed channels (mentioned somewhere AND
+      bookmarked or visited). Pass 1 for the full ranking.
+    - ``sources``: comma-separated subset of
+      ``reddit,irc,wykop,raindrop,web`` — defaults to the four text-mention
+      sources, excluding ``web`` because the visit firehose is huge.
+    - ``limit``: max rows returned, ranked by total mention count.
+
+    Each row carries:
+    - ``url``, ``domain``, ``total_mentions``
+    - ``by_source`` map (irc=N, reddit=N, …)
+    - ``by_role`` map (own/quoted/mention/visit/bookmark/link counts)
+    - ``first_seen`` / ``last_seen`` ISO timestamps
+    - ``sample_snippets`` (up to 3 distinct context strings)
+
+    The ``own`` vs ``quoted`` role split is important: a URL in a reddit
+    blockquote is something sinity was responding to, not something sinity
+    shared. Same for ``mention`` (ambient IRC) vs ``own`` (operator IRC).
+    """
+    from datetime import date
+    from lynchpin.analysis.url_crossref import aggregate_by_url, iter_url_mentions
+    src_set = {s.strip() for s in sources.split(',') if s.strip()}
+    mentions = iter_url_mentions(start=date.fromisoformat(start), end=date.fromisoformat(end), sources=src_set)
+    aggs = aggregate_by_url(mentions)
+    filtered = [a for a in aggs if len(a.by_source) >= min_sources][:limit]
+    return [{'url': a.url, 'domain': a.domain, 'total_mentions': a.total_mentions, 'by_source': a.by_source, 'by_role': a.by_role, 'first_seen': a.first_seen.isoformat() if a.first_seen else None, 'last_seen': a.last_seen.isoformat() if a.last_seen else None, 'sample_snippets': list(a.sample_snippets)} for a in filtered]

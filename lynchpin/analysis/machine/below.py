@@ -70,7 +70,11 @@ def analyze_below_exports(
     caveats = []
     if not system:
         caveats.append("no bounded below system exports found")
-    caveats.append("live /var/log/below store is not promoted wholesale; export bounded windows for incidents and experiments")
+    # Live below store now lives under /realm/data/captures/machine/below
+    # (relocated 2026-05-26; /var/log/below remains as a backwards-compatible
+    # symlink); the warning is about the lack of wholesale promotion, not the
+    # specific filesystem location.
+    caveats.append("live below time-travel store is not promoted wholesale; export bounded windows for incidents and experiments")
     system_rows = [row for row in system if row is not None]
     return BelowAnalysis(
         window_count=len(system_rows),

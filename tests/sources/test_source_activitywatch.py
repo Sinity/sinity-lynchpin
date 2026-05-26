@@ -166,6 +166,22 @@ def test_active_intervals_accepts_date_for_inclusive_day_window(monkeypatch) -> 
     monkeypatch.setattr(
         "lynchpin.sources.activitywatch.afk_events", fake_afk_events
     )
+    # Bypass the keylog-driven repair pass — this test is about the
+    # date-input / window-clipping plumbing, not the repair pipeline.
+    # Stub repair_afk_events to pass events through unchanged.
+    from types import SimpleNamespace
+
+    def _passthrough(events, **kwargs):
+        for e in events:
+            status = (e.data or {}).get("status") or "unknown"
+            yield SimpleNamespace(
+                bucket=e.bucket, start=e.start, end=e.end,
+                status=status, original_status=status, repaired=False,
+            )
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_repair.repair_afk_events", _passthrough
+    )
 
     # Pass DATE for both — previously zero-width, now spans the day.
     intervals = active_intervals(date(2026, 3, 15), date(2026, 3, 15))

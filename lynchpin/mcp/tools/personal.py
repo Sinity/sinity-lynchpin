@@ -262,16 +262,21 @@ def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, 
 
 @app.tool()
 def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
-    """Search canonical browser bookmarks by title, URL, domain, or folder."""
+    """Search canonical browser bookmarks by title, URL, domain, or folder.
+
+    Query is split on whitespace; every term must appear (case-insensitive)
+    somewhere in the bookmark's title + URL + domain + folder concatenation.
+    Empty query returns the first ``limit`` rows.
+    """
     from dataclasses import asdict
 
     from lynchpin.sources.bookmarks import iter_bookmarks
 
-    needle = query.lower()
+    terms = [t for t in query.lower().split() if t]
     rows: list[dict[str, Any]] = []
     for row in iter_bookmarks():
         haystack = " ".join([row.title, row.url, row.domain, row.folder]).lower()
-        if needle and needle not in haystack:
+        if terms and not all(t in haystack for t in terms):
             continue
         rows.append(_json_safe(asdict(row)))
         if len(rows) >= limit:
@@ -325,12 +330,52 @@ def communication_daily(start: str, end: str) -> list[dict[str, Any]]:
 
 @app.tool()
 def focus_daily(start: str, end: str) -> list[dict[str, Any]]:
-    """Daily canonical ARBTT focus activity."""
+    """Daily focus activity from whichever capture covered each date.
+
+    Dispatches per-date to ActivityWatch (2024-10 → present) or ARBTT
+    (2022-07 → 2022-09); the two coverages don't overlap so each requested
+    date gets at most one row. Every row carries ``source`` (``"activitywatch"``
+    or ``"arbtt"``) so callers can tell them apart. AW rows carry their full
+    schema (``deep_work_min``, ``fragmentation_score``, ``hourly_active`` …);
+    ARBTT rows carry a smaller schema and the AW-only fields are absent.
+    Dates outside both coverage intervals (e.g., 2022-10 → 2024-09) simply
+    produce no row, distinguishable from in-coverage zero-activity days only
+    by calling ``coverage_report``.
+    """
+    from datetime import date
+
+    from lynchpin.sources.activitywatch import daily_activity
+    from lynchpin.sources.arbtt import daily_arbtt_activity
+
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    rows: list[dict[str, Any]] = []
+    for row in daily_activity(start=start_d, end=end_d):
+        rows.append({**_json_safe(row.__dict__), "source": "activitywatch"})
+    for row in daily_arbtt_activity(start=start_d, end=end_d):
+        rows.append({**_json_safe(row.__dict__), "source": "arbtt"})
+    rows.sort(key=lambda r: r["date"])
+    return rows
+
+
+@app.tool()
+def arbtt_focus_daily(start: str, end: str) -> list[dict[str, Any]]:
+    """Daily focus activity from the historical ARBTT capture.
+
+    ARBTT covers 2022-07-12 → 2022-09-26 only. For current focus use
+    ``focus_daily`` (ActivityWatch).
+    """
     from datetime import date
 
     from lynchpin.sources.arbtt import daily_arbtt_activity
 
-    return [_json_safe(row.__dict__) for row in daily_arbtt_activity(start=date.fromisoformat(start), end=date.fromisoformat(end))]
+    return [
+        _json_safe(row.__dict__)
+        for row in daily_arbtt_activity(
+            start=date.fromisoformat(start),
+            end=date.fromisoformat(end),
+        )
+    ]
 
 
 @app.tool()
@@ -775,10 +820,17 @@ def activity_semantic_daily(
     end: str,
     dimension: str = "topic_category",
 ) -> list[dict[str, Any]]:
-    """Per-day rollup of activity title classification along semantic dimensions.
+    """Distribution of activity-title classifications along a semantic dimension
+    for titles active within the requested window.
 
-    Uses title_classification GPT-Pro enrichment joined against actual ActivityWatch
-    usage time. Aggregates focused_seconds per dimension value per day.
+    Uses title_classification GPT-Pro enrichment joined against actual
+    ActivityWatch usage. Each row is a (first_observed_date, dimension_value)
+    bucket aggregating the LIFETIME focused_seconds of titles whose
+    observation interval [first_date, last_date] intersects the requested
+    window. ``focused_seconds`` is therefore an upper bound on time spent
+    on that bucket during the window — finer-grained per-day attribution
+    isn't available because activity_title_usage rolls each (title_hash, app)
+    into a single row across its entire history.
 
     Dimensions supported:
     - topic_category: what topics were active (work, social, health, etc.)
@@ -788,7 +840,7 @@ def activity_semantic_daily(
     - mode: mode classification (e.g., active, passive, etc.)
 
     Returns rows: {date, dimension_value, focused_minutes, focused_seconds}
-    ordered by date and focused_minutes (DESC per day).
+    ordered by date and focused_seconds (DESC per date).
     """
     from lynchpin.substrate.connection import connect, substrate_path
 
@@ -801,17 +853,22 @@ def activity_semantic_daily(
         raise ValueError(f"dimension must be one of {valid_dims}, got {dimension!r}")
 
     with connect(substrate_path(), read_only=True) as conn:
+        # Interval-intersect: title's observed lifetime [first_date, last_date]
+        # must overlap the requested window [start_d, end_d]. The previous
+        # ``first_date >= start AND last_date <= end`` filter required the
+        # entire title lifetime to be contained in the window — excluded
+        # long-running titles even when they were active during the window.
         sql = f"""
             SELECT
                 CAST(first_date AS DATE) as date,
                 COALESCE({dimension}, 'unknown') as dim_value,
                 SUM(focused_seconds) as focused_seconds
             FROM activity_title_usage
-            WHERE first_date >= ? AND last_date <= ?
+            WHERE first_date <= ? AND last_date >= ?
             GROUP BY date, dim_value
             ORDER BY date, focused_seconds DESC
         """
-        params: list[Any] = [start_d, end_d]
+        params: list[Any] = [end_d, start_d]
         rows = conn.execute(sql, params).fetchall()
 
     result: list[dict[str, Any]] = []

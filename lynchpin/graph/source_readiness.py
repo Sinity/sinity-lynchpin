@@ -53,8 +53,8 @@ def _path_source(source: str, exists: bool, path: Path | str | None, ok_reason: 
         last_date = getattr(coverage, 'last_date', last_date)
         count = count if count is not None else getattr(coverage, 'row_count', None)
         coverage_status = getattr(coverage, 'status', None)
-        if coverage_status in {'partial', 'blocked', 'missing'}:
-            status = 'partial' if coverage_status == 'partial' else 'blocked' if coverage_status == 'blocked' else 'missing'
+        if coverage_status in {'partial', 'out_of_range', 'missing'}:
+            status = 'partial' if coverage_status == 'partial' else 'out_of_range' if coverage_status == 'out_of_range' else 'missing'
             hint = getattr(coverage, 'repair_hint', None)
             reason = getattr(coverage, 'reason', '')
             caveats = tuple((item for item in (reason, hint) if item))
@@ -72,7 +72,7 @@ def _materialized_contract_source(source: str, ok_reason: str, missing_reason: s
     row = rows.get(source)
     if row is None:
         return SourceReadiness(source=source, status='missing', reason=missing_reason, cost='materialized')
-    status: ReadinessStatus = 'available' if row.status == 'ready' else 'partial' if row.status in {'partial', 'degraded', 'stale'} else 'missing'
+    status: ReadinessStatus = 'available' if row.status == 'ready' else 'partial' if row.status in {'partial', 'degraded'} else 'missing'
     return SourceReadiness(source=source, status=status, reason=ok_reason if row.status == 'ready' else row.reason, cost='materialized', path=str(row.materialized_paths[0]) if row.materialized_paths else None, count=row.row_count, first_date=row.first_date, last_date=row.last_date, caveats=() if row.status == 'ready' else (row.refresh_command,))
 
 def _polylogue_source(*, include_product_counts: bool) -> SourceReadiness:

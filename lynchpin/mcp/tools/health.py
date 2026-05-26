@@ -68,22 +68,6 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    with connect(substrate_path(), read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, 'evidence_node')
-            if refresh_id is None:
-                return {'error': 'no promote runs'}
-        dimensions = []
-        for row in conn.execute("\n            SELECT\n                source,\n                COUNT(*) AS node_count,\n                COUNT(DISTINCT project) AS project_count,\n                COALESCE(DATE_DIFF('day', MIN(date), MAX(date)), 0) AS date_span_days,\n                COALESCE(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END), 0) > 0 AS has_caveats\n            FROM evidence_node\n            WHERE refresh_id = ?\n            GROUP BY source\n            ORDER BY node_count DESC\n        ", [refresh_id]).fetchall():
-            dimensions.append({'source': row[0], 'node_count': row[1], 'project_count': row[2], 'date_span_days': row[3], 'has_caveats': bool(row[4])})
-        status_map = {}
-        for srow in conn.execute('SELECT source, status FROM substrate_source_status WHERE refresh_id = ?', [refresh_id]).fetchall():
-            status_map[srow[0]] = srow[1]
-        for dim in dimensions:
-            dim['status'] = status_map.get(dim['source'], 'unknown')
-        total_nodes = sum((d['node_count'] for d in dimensions))
-        healthy = sum((1 for d in dimensions if d['status'] == 'ok'))
-        confidence = healthy / max(len(dimensions), 1) * 100
     return {'refresh_id': refresh_id, 'dimensions': dimensions, 'summary': {'total_nodes': total_nodes, 'source_count': len(dimensions), 'healthy_source_count': healthy, 'confidence_pct': round(confidence, 1)}}
 
 @app.tool()
@@ -162,7 +146,7 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
             if refresh_id is None:
                 return {'error': 'no promote runs'}
         total = conn.execute('SELECT COUNT(*) FROM symbol_change WHERE refresh_id = ?', [refresh_id]).fetchone()[0]
-        rows = conn.execute("\n            WITH ranked AS (\n                SELECT project, date, qualified_name, change_type,\n                       ROW_NUMBER() OVER (\n                           PARTITION BY qualified_name\n                           ORDER BY date DESC, sha DESC\n                       ) AS rn\n                FROM symbol_change\n                WHERE refresh_id = ?\n            ),\n            latest AS (\n                SELECT project, date, qualified_name, change_type\n                FROM ranked WHERE rn = 1\n            )\n            SELECT project, date,\n                   COUNT(*) AS total_syms,\n                   SUM(CASE WHEN change_type != 'D' THEN 1 ELSE 0 END) AS surviving\n            FROM latest\n            GROUP BY project, date\n            HAVING COUNT(*) >= ?\n            ORDER BY date, project\n        ", [refresh_id, int(min_symbols)]).fetchall()
+        rows = conn.execute("\n            WITH ranked AS (\n                SELECT project, date, qualified_name, change_type,\n                       ROW_NUMBER() OVER (\n                           PARTITION BY qualified_name\n                           ORDER BY date DESC, sha DESC\n                       ) AS rn\n                FROM symbol_change\n                WHERE refresh_id = ?\n            ),\n            latest AS (\n                SELECT project, date, qualified_name, change_type\n                FROM ranked WHERE rn = 1\n            )\n            SELECT project, date,\n                   COUNT(*) AS total_syms,\n                   SUM(CASE WHEN change_type != 'DELETED' THEN 1 ELSE 0 END) AS surviving\n            FROM latest\n            GROUP BY project, date\n            HAVING COUNT(*) >= ?\n            ORDER BY date, project\n        ", [refresh_id, int(min_symbols)]).fetchall()
         surviving_total = sum((r[3] for r in rows))
         per_day = [{'project': r[0], 'date': _json_safe(r[1]), 'total': r[2], 'surviving': r[3], 'rate': round(r[3] / max(r[2], 1), 3)} for r in rows]
     return {'refresh_id': refresh_id, 'total_symbols': total, 'surviving': surviving_total, 'overall_survival_rate': round(surviving_total / max(total, 1), 3), 'per_project_day': per_day}

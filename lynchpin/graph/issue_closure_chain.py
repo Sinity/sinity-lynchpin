@@ -281,9 +281,13 @@ def _classify_closure(
         # in-progress from stalled.
         oldest = min((pr.start or pr.end or datetime.now(timezone.utc) for pr in linked_prs), default=None)
         if oldest and (reference_date - oldest.date()).days >= _STALE_REFERENCE_DAYS:
+            # Lifecycle "stalled" is a github-domain concept, not a data
+            # readiness one — encode it in the message; the caveat status
+            # stays in the ReadinessStatus vocabulary (partial = closure
+            # evidence intersects the window but does not satisfy it).
             caveats.append(EvidenceCaveat(
                 "github",
-                "stale",
+                "partial",
                 f"linked PR(s) opened ≥{_STALE_REFERENCE_DAYS} days ago without merge — possibly stalled",
             ))
         return "partial", tuple(caveats)
@@ -297,7 +301,7 @@ def _classify_closure(
         if latest_commit_ts and (reference_date - latest_commit_ts.date()).days >= _STALE_REFERENCE_DAYS:
             caveats.append(EvidenceCaveat(
                 "github",
-                "stale",
+                "partial",
                 f"commit referenced this issue ≥{_STALE_REFERENCE_DAYS}d ago but issue is still open",
             ))
             return "broken", tuple(caveats)

@@ -59,100 +59,63 @@ class CoverageReport:
 def coverage_report(*, start: date, end: date) -> CoverageReport:
     cfg = get_config()
     from ..materialization import audit_materialization
+    from ..core.source_contracts import source_contract
 
-    datasets = {row.name: row for row in audit_materialization(cfg=cfg)}
-    rows = [
-        _from_materialized_dataset(
-            "activitywatch",
-            datasets["activitywatch"],
-            start=start,
-            end=end,
-            path=cfg.activitywatch_db,
-            basis="canonical-ndjson",
-            repair_hint="Run python -m lynchpin.ingest.activitywatch_materialize",
-        ),
-        _from_materialized_dataset(
-            "terminal",
-            datasets["atuin"],
-            start=start,
-            end=end,
-            path=cfg.atuin_db,
-            basis="canonical-ndjson",
-            repair_hint="Run python -m lynchpin.ingest.terminal_materialize",
-        ),
-        _from_materialized_dataset(
-            "webhistory",
-            datasets["webhistory"],
-            start=start,
-            end=end,
-            path=cfg.webhistory_ndjson,
-            basis="canonical-ndjson",
-            repair_hint="Add a newer browser capture/Takeout archive, then run python -m lynchpin.ingest.webhistory",
-        ),
-        _from_materialized_dataset(
-            "sleep",
-            datasets["sleep"],
-            start=start,
-            end=end,
-            path=cfg.sleep_jsonl,
-            basis="processed-jsonl",
-            repair_hint="Refresh Samsung Health/Sleep-as-Android export",
-        ),
-        _from_materialized_dataset(
-            "health",
-            datasets["health"],
-            start=start,
-            end=end,
-            path=cfg.samsung_gdpr_cloud_dir,
-            basis="processed-jsonl",
-            repair_hint="Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export",
-        ),
-        _from_materialized_dataset(
-            "spotify",
-            datasets["spotify"],
-            start=start,
-            end=end,
-            path=cfg.spotify_root,
-            basis="canonical-ndjson",
-            repair_hint="Request a fresh Spotify GDPR export",
-        ),
-        _from_materialized_dataset(
-            "reddit",
-            datasets["reddit"],
-            start=start,
-            end=end,
-            path=cfg.reddit_export_dir,
-            basis="canonical-csv",
-            repair_hint="Request a fresh Reddit GDPR export",
-        ),
-        _from_materialized_dataset(
-            "messenger",
-            datasets["facebook_messenger"],
-            start=start,
-            end=end,
-            path=cfg.fbmessenger_gdpr_root,
-            basis="canonical-ndjson",
-            repair_hint="Request a fresh Facebook Messenger export",
-        ),
-        _from_materialized_dataset(
-            "raindrop",
-            datasets["raindrop"],
-            start=start,
-            end=end,
-            path=cfg.raindrop_csv,
-            basis="canonical-csv",
-            repair_hint="Request a fresh Raindrop export",
-        ),
-        _from_materialized_dataset(
-            "substance",
-            datasets["substance"],
-            start=start,
-            end=end,
-            path=cfg.exports_root / "health/processed/substance_log_unified.csv",
-            basis="processed-csv",
-            repair_hint="Extend /realm/data/exports/health/processed/substance_log_unified.csv with current rows",
-        ),
-    ]
+    # A small set of per-source overrides: display name (if different from
+    # the contract name) and an actionable repair hint when the materializer
+    # can't fix it locally. Everything else is derived from the materialized
+    # dataset itself — path is the first materialized output, basis falls
+    # back to "canonical-ndjson", repair hint defaults to the contract's
+    # refresh_command.
+    _OVERRIDES: dict[str, dict[str, str]] = {
+        "atuin": {"display": "terminal"},
+        "facebook_messenger": {"display": "messenger"},
+        "health": {
+            "repair_hint": "Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export",
+        },
+        "sleep": {"repair_hint": "Refresh Samsung Health/Sleep-as-Android export"},
+        "spotify": {"repair_hint": "Request a fresh Spotify GDPR export"},
+        "reddit": {"repair_hint": "Request a fresh Reddit GDPR export"},
+        "facebook_messenger": {"display": "messenger", "repair_hint": "Request a fresh Facebook Messenger export"},
+        "raindrop": {"repair_hint": "Request a fresh Raindrop export"},
+        "substance": {
+            "repair_hint": "Extend /realm/data/exports/health/processed/substance_log_unified.csv with current rows",
+        },
+        "webhistory": {
+            "repair_hint": "Add a newer browser capture/Takeout archive, then run python -m lynchpin.ingest.webhistory",
+        },
+    }
+
+    rows = []
+    for dataset in audit_materialization(cfg=cfg):
+        try:
+            contract = source_contract(dataset.name)
+        except KeyError:
+            contract = None
+        # Non-temporal sources (title classifications keyed by title_hash,
+        # the substrate-promotion stage) and derived metadata rollups don't
+        # have an intrinsic coverage interval. Their usefulness for a query
+        # window is determined by the temporal sources they classify or
+        # aggregate, not by their own row dates. Skip them in the per-query
+        # coverage report.
+        if contract is not None and contract.collection_model in {"metadata", "stage"}:
+            continue
+        override = _OVERRIDES.get(dataset.name, {})
+        display = override.get("display", dataset.name)
+        path = dataset.materialized_paths[0] if dataset.materialized_paths else None
+        default_hint = f"Refresh: {contract.refresh_command}" if contract else None
+        repair_hint = override.get("repair_hint", default_hint)
+        rows.append(
+            _from_materialized_dataset(
+                display,
+                dataset,
+                start=start,
+                end=end,
+                path=path,
+                basis="canonical-ndjson",
+                repair_hint=repair_hint,
+            )
+        )
     return CoverageReport(
         start=start,
         end=end,
@@ -216,7 +179,10 @@ def _coverage_status(first: date | None, last: date | None, start: date, end: da
         return "available", "parsed rows cover the requested window"
     if first < end and last >= start:
         return "partial", "parsed rows only partially cover the requested window"
-    return "blocked", "parsed rows do not intersect the requested window"
+    return (
+        "out_of_range",
+        "parsed rows do not intersect the requested window",
+    )
 
 
 def _from_materialized_dataset(

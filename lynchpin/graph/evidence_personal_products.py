@@ -13,6 +13,7 @@ def add_personal_products(nodes: list[EvidenceNode], *, start: date, end: date) 
     _add_google_takeout(nodes, start=start, end=end)
     _add_bookmarks(nodes, start=start, end=end)
     _add_communications(nodes, start=start, end=end)
+    _add_irc(nodes, start=start, end=end)
     _add_arbtt(nodes, start=start, end=end)
 
 
@@ -160,6 +161,49 @@ def _add_arbtt(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
                 },
                 provenance=EvidenceProvenance("arbtt", "materialized"),
                 caveats=(),
+            )
+        )
+
+
+def _add_irc(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
+    if not _source_overlaps("irc", start=start, end=end):
+        return
+
+    from ..sources.irc_raw import daily_irc_activity
+
+    rows = daily_irc_activity(start=start, end=end)
+    for row in rows:
+        nodes.append(
+            EvidenceNode(
+                id=f"irc:{row.date.isoformat()}",
+                kind="communication_activity",
+                source="irc",
+                date=row.date,
+                project=None,
+                summary=(
+                    f"{row.total_messages} IRC messages across "
+                    f"{len(row.channels)} channels "
+                    f"({row.operator_messages} from operator), "
+                    f"{row.unique_speakers} speakers, "
+                    f"{row.session_count} sessions"
+                ),
+                payload={
+                    "total_messages": row.total_messages,
+                    "operator_messages": row.operator_messages,
+                    "unique_speakers": row.unique_speakers,
+                    "session_count": row.session_count,
+                    "conversation_count": row.conversation_count,
+                    "channels": list(row.channels),
+                    "channel_breakdown": [
+                        {"channel": ch, "messages": n}
+                        for ch, n in row.channel_breakdown
+                    ],
+                },
+                provenance=EvidenceProvenance("irc", "raw_weechat_logs"),
+                caveats=(
+                    "WeeChat raw log parsing; meta/server lines excluded from counts",
+                    "total_messages includes all channel traffic; operator_messages isolates operator-authored",
+                ),
             )
         )
 

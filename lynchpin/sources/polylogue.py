@@ -269,12 +269,25 @@ def _probe_required_insight_reads() -> str | None:
 
 
 def _require_materialized_products() -> None:
+    """Refuse to read profile / work-event products only when the archive
+    can't serve them at all.
+
+    ``degraded`` is treated as readable-with-caveat. Polylogue flags rows
+    where its inference fell back to heuristics (work-event-weak,
+    engaged-duration-session-total, etc.) as degraded, but the rows are
+    still present and downstream consumers handle missing inference
+    fields gracefully. Raising here instead would mean ~half of recent
+    sessions are unreadable just because polylogue's quality bar isn't met.
+    ``unavailable`` (empty archive, facade broken) still raises so analysis
+    fails fast rather than returning silently-empty results.
+    """
     readiness = archive_readiness()
-    if readiness.status != "ready":
-        raise PolylogueMaterializationError(
-            f"Polylogue insight products are not materialized: {readiness.reason}. "
-            "Run `polylogue doctor --repair --target session_insights`."
-        )
+    if readiness.status in {"ready", "degraded"}:
+        return
+    raise PolylogueMaterializationError(
+        f"Polylogue insight products are not materialized: {readiness.reason}. "
+        "Run `polylogue doctor --repair --target session_insights`."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

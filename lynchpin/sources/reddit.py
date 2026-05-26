@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -34,7 +35,49 @@ __all__ = [
     "iter_message_headers",
     "daily_activity",
     "subreddit_distribution",
+    "split_quoted_text",
 ]
+
+
+_QUOTE_LINE_RE = re.compile(r"^\s*>+\s?", flags=re.MULTILINE)
+
+
+def split_quoted_text(body: str) -> tuple[str, tuple[str, ...]]:
+    """Split a reddit-markdown body into (operator_text, quoted_blocks).
+
+    Reddit uses ``>`` at line-start for blockquotes — these are typically
+    extrinsic text the operator is responding to (the parent comment's words,
+    a pasted excerpt, etc.), not the operator's own writing.
+
+    Returns ``(operator_text, quoted_blocks)``:
+    - ``operator_text`` — body with all ``>``-prefixed lines removed and
+      whitespace collapsed; an approximation of "what sinity actually said".
+    - ``quoted_blocks`` — tuple of contiguous quoted segments in source
+      order, each with the leading ``>`` markers stripped. Multi-line
+      blockquotes (consecutive ``>`` lines, optionally with a ``>>`` nested
+      level) are merged into one block.
+
+    Limitations: blockquotes inside code fences (```` ``` ````) are treated as
+    quotes, not code. Reddit doesn't use ``>`` for anything else at line-start
+    so false positives are rare in practice.
+    """
+    if not body:
+        return "", ()
+    quoted_blocks: list[str] = []
+    own_lines: list[str] = []
+    current_quote: list[str] = []
+    for line in body.splitlines():
+        if _QUOTE_LINE_RE.match(line):
+            current_quote.append(_QUOTE_LINE_RE.sub("", line, count=1))
+        else:
+            if current_quote:
+                quoted_blocks.append("\n".join(current_quote).strip())
+                current_quote = []
+            own_lines.append(line)
+    if current_quote:
+        quoted_blocks.append("\n".join(current_quote).strip())
+    own_text = "\n".join(own_lines).strip()
+    return own_text, tuple(b for b in quoted_blocks if b)
 
 @dataclass
 class RedditComment:
@@ -46,6 +89,16 @@ class RedditComment:
     parent: str
     gildings: Optional[int]
     source: str
+
+    def split_quoted(self) -> tuple[str, tuple[str, ...]]:
+        """Convenience: return ``split_quoted_text(self.body)``.
+
+        ``own_text`` is what sinity actually wrote; ``quoted_blocks`` are the
+        extrinsic blockquotes (typically the parent comment being responded to).
+        Use ``own_text`` for any operator-language analysis to avoid mixing in
+        ~42% of characters that are other people's words.
+        """
+        return split_quoted_text(self.body or "")
 
 
 @dataclass

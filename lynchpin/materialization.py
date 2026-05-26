@@ -63,6 +63,7 @@ from .ingest.google_takeout_products import (
 from .ingest.bookmarks_materialize import materialize_bookmarks
 from .ingest.communications_materialize import materialize_communication_events
 from .ingest.arbtt_materialize import materialize_arbtt_events
+from .ingest.irc_materialize import materialize_irc_events
 from .sources.activitywatch_raw import canonical_activitywatch_events_path
 from .sources.activity_content import activity_content_daily_path, activity_content_manifest_path, activity_title_usage_path
 from .sources.machine import canonical_machine_table_path
@@ -73,6 +74,7 @@ from .sources.polylogue import archive_readiness, iter_session_profiles
 from .sources.bookmarks import bookmarks_manifest_path, bookmarks_path
 from .sources.communications import communication_events_path, communication_manifest_path
 from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
+from .sources.irc_raw import irc_events_path, irc_manifest_path, irc_raw_root
 from .sources.personal_signals import (
     personal_daily_signals_manifest_path,
     personal_daily_signals_path,
@@ -181,6 +183,7 @@ def _dataset_builders() -> dict[str, Any]:
         "machine": _machine_dataset,
         "spotify_daily": _spotify_daily_dataset,
         "personal_daily_signals": _personal_daily_signals_dataset,
+        "irc": _irc_dataset,
     }
 
 
@@ -202,6 +205,7 @@ def _materializers() -> dict[str, Callable[[], Any]]:
         "machine": materialize_machine_telemetry,
         "spotify_daily": materialize_spotify_daily,
         "personal_daily_signals": materialize_personal_daily_signals,
+        "irc": materialize_irc_events,
     }
 
 
@@ -931,6 +935,29 @@ def _arbtt_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=_date_from_iso(meta.get("last_date")),
         refresh_command="python -m lynchpin.ingest.arbtt_materialize",
         reason="canonical ARBTT focus events are present" if ready else "canonical ARBTT product is missing or empty; ensure arbtt-dump is available",
+    )
+
+
+def _irc_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    path = irc_events_path()
+    manifest = irc_manifest_path()
+    meta = _load_json(manifest)
+    raw_root = irc_raw_root()
+    raw_files = tuple(raw_root.rglob("*.log")) if raw_root.exists() else ()
+    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    ready = _product_with_manifest_exists(path, manifest) and (row_count or 0) > 0
+    return MaterializedDataset(
+        name="irc",
+        status="ready" if ready else "partial" if raw_files else "missing",
+        authority="raw WeeChat IRC log files",
+        query_surface="lynchpin.sources.irc_raw",
+        materialized_paths=(path, manifest),
+        raw_roots=(raw_root,),
+        row_count=row_count,
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        refresh_command="python -m lynchpin.ingest.irc_materialize",
+        reason="canonical IRC events ndjson is present" if ready else "raw WeeChat logs need materialization" if raw_files else "no raw IRC log files found",
     )
 
 

@@ -21,6 +21,7 @@ __all__ = [
     "iter_contacts",
     "iter_daily_activity",
     "iter_events",
+    "iter_gmail",
     "iter_keep_notes",
     "iter_my_activity",
     "iter_play_store",
@@ -78,6 +79,34 @@ def iter_tasks() -> Iterator[dict[str, Any]]:
 
 def iter_youtube() -> Iterator[dict[str, Any]]:
     yield from _iter_rows("youtube.ndjson")
+
+
+def iter_gmail() -> Iterator[dict[str, Any]]:
+    """Yield Gmail messages as dict rows from Takeout .mbox archives.
+
+    Delegates to ``gmail_takeout.iter_gmail_messages_deduped`` and
+    serialises each ``GmailMessage`` to a dict for compatibility with
+    the existing ``iter_events`` pattern.
+    """
+    from .gmail_takeout import GmailMessage, iter_gmail_messages_deduped
+
+    for msg in iter_gmail_messages_deduped():
+        if msg.timestamp is None:
+            continue
+        yield {
+            "product": "gmail",
+            "timestamp": msg.timestamp.isoformat(),
+            "message_id": msg.message_id,
+            "thread_id": msg.thread_id,
+            "sender": msg.sender,
+            "recipients": list(msg.recipients),
+            "cc": list(msg.cc),
+            "subject": msg.subject,
+            "body_preview": msg.body_preview,
+            "label": msg.label,
+            "archive_source": msg.archive_source,
+            "size_bytes": msg.size_bytes,
+        }
 
 
 def iter_assets() -> Iterator[dict[str, Any]]:

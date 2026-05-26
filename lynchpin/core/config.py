@@ -110,8 +110,11 @@ class LynchpinConfig:
             "samsung_gdpr_cloud": self.samsung_gdpr_cloud_dir.exists(),
             "clipboard": self.clipboard_live_file.exists() or any(path.exists() for path in self.clipboard_export_files),
             "irc": self.irc_root.exists(),
+            "irc_raw": (self.irc_root / "_raw").exists(),
             "raw_log": self.raw_log_file.exists(),
             "machine": self.machine_telemetry_db.exists(),
+            "gmail_takeout": (self.exports_root / "google/raw/takeout").exists(),
+            "raindrop_live": _raindrop_live_available(),
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
@@ -405,6 +408,13 @@ def _resolve_raindrop_csv(env_value: Optional[str], root: Path) -> Optional[Path
         return None
     candidates = sorted(root.glob("raindrop*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
+
+
+def _raindrop_live_available() -> bool:
+    import os
+    if os.environ.get("RAINDROP_API_TOKEN", "").strip():
+        return True
+    return False
 
 
 def _resolve_fbmessenger_db(*candidates: Path) -> str:

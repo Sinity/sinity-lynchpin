@@ -121,25 +121,36 @@ def _source_observed_date(
 
 
 def _materialized_last_dates() -> dict[str, tuple[date | None, Path | None]]:
+    """Map source-observation keys to (last_date, manifest_path) tuples.
+
+    Drives the ``basis="materialized"`` tier of ``_source_observed_date``.
+    The source-observation vocabulary differs slightly from the dataset
+    contract vocabulary (``fbmessenger`` here vs. ``facebook_messenger`` in
+    source_contracts); explicit aliases below cover the renames. Every
+    dataset with a materialized ``last_date`` in the audit gets exposed
+    so the filesystem-mtime fallback only fires for sources that have no
+    manifest at all.
+    """
     from lynchpin.materialization import audit_materialization
 
-    mapping = {
-        "atuin": "atuin",
+    # Source-observation key → dataset-contract name (only where they differ).
+    _aliases = {
         "fbmessenger": "facebook_messenger",
-        "reddit": "reddit",
-        "sleep": "sleep",
-        "spotify": "spotify",
-        "webhistory": "webhistory",
-        "raindrop": "raindrop",
     }
     rows = {row.name: row for row in audit_materialization()}
     out: dict[str, tuple[date | None, Path | None]] = {}
-    for source, contract in mapping.items():
-        row = rows.get(contract)
-        if row is None:
+    # Every dataset with materialized last_date; aliases override the key.
+    for contract_name, row in rows.items():
+        if row.last_date is None:
             continue
         path = row.materialized_paths[0] if row.materialized_paths else None
-        out[source] = (row.last_date, path)
+        out[contract_name] = (row.last_date, path)
+    for source_key, contract_name in _aliases.items():
+        row = rows.get(contract_name)
+        if row is None or row.last_date is None:
+            continue
+        path = row.materialized_paths[0] if row.materialized_paths else None
+        out[source_key] = (row.last_date, path)
     return out
 
 
@@ -155,9 +166,12 @@ def _configured_path(source: str) -> Path | None:
         "codex": cfg.codex_sessions_root,
         "dendron": cfg.dendron_root,
         "git_baseline": cfg.baseline_dir / "git_numstat.jsonl",
+        "gmail_takeout": cfg.exports_root / "google/raw/takeout",
         "goodreads": cfg.goodreads_library,
         "irc": cfg.irc_root,
+        "irc_raw": cfg.irc_root / "_raw",
         "keylog": cfg.keylog_root,
+        "raindrop_live": cfg.repo_root / ".lynchpin/raindrop_last_cursor.json",
         "machine": cfg.machine_telemetry_db,
         "polylogue": cfg.polylogue_db,
         "raw_log": cfg.raw_log_file,

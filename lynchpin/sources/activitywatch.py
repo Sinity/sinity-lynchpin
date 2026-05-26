@@ -97,29 +97,65 @@ _ACTIVE_STATUSES = {"not-afk", "active", "present"}
 _AFK_STATUSES = {"afk", "away"}
 
 
+def _repaired_afk_events(
+    start: datetime, end: datetime
+) -> tuple[list, list]:
+    """Return (active_clipped, afk_clipped) interval lists for [start, end).
+
+    Pulls raw AFK events, runs them through the keylog-driven repair
+    (``activitywatch_repair.repair_afk_events``) so fabricated multi-hour
+    not-afk events are split around keylog-silent periods, then clips
+    each segment to the requested window before merging.
+
+    Without repair, awatcher's not-afk events that fabricate hours of
+    activity (Nov 4: 28h continuous not-afk while keylog shows 23h of
+    zero keystrokes) inflate downstream focused_seconds by an order of
+    magnitude.
+    """
+    from .activitywatch_repair import repair_afk_events
+
+    raw = list(afk_events(start=start, end=end))
+    active_segs: list[Interval] = []
+    afk_segs: list[Interval] = []
+    for repaired in repair_afk_events(raw):
+        s, e = as_local(repaired.start), as_local(repaired.end)
+        # Clip to requested window AND skip segments outside it
+        if e <= start or s >= end:
+            continue
+        clipped = (max(start, s), min(end, e))
+        if repaired.status == "not-afk":
+            active_segs.append(clipped)
+        elif repaired.status == "afk":
+            afk_segs.append(clipped)
+    return merge_intervals(active_segs), merge_intervals(afk_segs)
+
+
 def active_intervals(start: datetime | date, end: datetime | date) -> list[Interval]:
-    """AFK-active intervals over [start, end). If ``end`` is a date, the
-    upper bound expands to midnight of the following day so passing
-    ``date(d), date(d)`` gives the natural one-day window instead of a
-    zero-width range that silently returns empty.
+    """Keylog-repaired AFK-active intervals over [start, end).
+
+    Returns the merged set of intervals during which the operator was
+    genuinely active. The underlying AFK events are first repaired
+    against keylog ground truth (``activitywatch_repair``) before
+    clipping to the requested window — fabricated multi-hour not-afk
+    claims are split around keylog-silent periods.
+
+    If ``end`` is a date, expands to midnight of the next day.
     """
     from ..core.parse import end_of_day_local
-    return merge_intervals(
-        (as_local(e.start), as_local(e.end))
-        for e in afk_events(start=as_local(start), end=end_of_day_local(end))
-        if str((e.data or {}).get("status") or "").strip().lower() in _ACTIVE_STATUSES
-    )
+    lower = as_local(start)
+    upper = end_of_day_local(end)
+    active, _ = _repaired_afk_events(lower, upper)
+    return active
 
 
 def afk_intervals(start: datetime | date, end: datetime | date) -> list[Interval]:
-    """AFK-inactive intervals over [start, end). See ``active_intervals``
-    for the end-bound semantics."""
+    """Keylog-repaired AFK intervals over [start, end). Mirror of
+    ``active_intervals``; sees the same repair pass."""
     from ..core.parse import end_of_day_local
-    return merge_intervals(
-        (as_local(e.start), as_local(e.end))
-        for e in afk_events(start=as_local(start), end=end_of_day_local(end))
-        if str((e.data or {}).get("status") or "").strip().lower() in _AFK_STATUSES
-    )
+    lower = as_local(start)
+    upper = end_of_day_local(end)
+    _, afk = _repaired_afk_events(lower, upper)
+    return afk
 
 
 def active_seconds_by_date(start: date, end: date) -> dict[date, float]:
@@ -410,13 +446,17 @@ def _window_spans(
     classification_cache: dict[
         tuple[str, str, str, str], tuple[str | None, str | None]
     ] = {}
+    from .title_metadata import normalize_app
     for evt_start, evt_end, evt in timed:
         if not evt.data.get("app"):
             continue
         title = str(evt.data.get("title") or "(untitled)").strip()
         if title.lower() == "application not responding":
             continue
-        app = str(evt.data["app"])
+        # Canonicalize app (lowercase) so case-variant pairs like
+        # Antigravity/antigravity collapse to one entry in downstream
+        # aggregations. See `normalize_app` for rationale.
+        app = normalize_app(str(evt.data["app"]))
         cwd = str(evt.data.get("cwd") or "")
         url = str(evt.data.get("url") or "")
         cache_key = (app, title, cwd, url)

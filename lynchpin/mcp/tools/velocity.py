@@ -261,9 +261,9 @@ def symbol_velocity(
             FROM project_day_correlation p
             FULL OUTER JOIN (
                 SELECT project, date,
-                       SUM(CASE WHEN change_type = 'A' THEN 1 ELSE 0 END) AS added,
-                       SUM(CASE WHEN change_type = 'M' THEN 1 ELSE 0 END) AS modified,
-                       SUM(CASE WHEN change_type = 'R' THEN 1 ELSE 0 END) AS renamed,
+                       SUM(CASE WHEN change_type = 'ADDED' THEN 1 ELSE 0 END) AS added,
+                       SUM(CASE WHEN change_type = 'MODIFIED' THEN 1 ELSE 0 END) AS modified,
+                       SUM(CASE WHEN change_type = 'RENAMED' THEN 1 ELSE 0 END) AS renamed,
                        COUNT(*) AS total
                 FROM symbol_change
                 WHERE refresh_id = ? {inner_filter}
@@ -374,10 +374,6 @@ _NON_CODE_PATH_PATTERNS = (
     "/__snapshots__/",
     "/generated/",
     "/.lynchpin/generated/",
-    # Lynchpin retrospective scaffold dumps (now also stripped from history,
-    # but pattern preserved so future re-introductions get excluded).
-    "retrospective/scaffold/",
-    "/scaffold/",
     "ai_activity.json",
     "focus_timeline.json",
     "narrative_window.json",
@@ -580,13 +576,14 @@ def engineering_throughput(
         # row = (period, n, la, ld, fc) from the SELECT above
         _, n, la, ld, fc = row
         clean_la, clean_ld = file_rows.get(period_date, (la or 0, ld or 0))
-        # symbol_change.change_type uses single-letter codes (A=added,
-        # M=modified, R=renamed, D=deleted). The schema produces the
-        # uppercase form per lynchpin/substrate/work_symbols.py:139.
+        # symbol_change.change_type is stored as uppercase words
+        # ('ADDED'/'MODIFIED'/'RENAMED'/'DELETED') by the materializer in
+        # analysis.code_index.symbol_changes. The single-letter / lowercase
+        # fallbacks remain in case a future writer changes encoding.
         sym_bucket = symbol_rows.get(period_date, {})
-        sa = sym_bucket.get("A", 0) + sym_bucket.get("added", 0)
-        sm = sym_bucket.get("M", 0) + sym_bucket.get("modified", 0)
-        sr = sym_bucket.get("R", 0) + sym_bucket.get("renamed", 0)
+        sa = sym_bucket.get("ADDED", 0) + sym_bucket.get("A", 0) + sym_bucket.get("added", 0)
+        sm = sym_bucket.get("MODIFIED", 0) + sym_bucket.get("M", 0) + sym_bucket.get("modified", 0)
+        sr = sym_bucket.get("RENAMED", 0) + sym_bucket.get("R", 0) + sym_bucket.get("renamed", 0)
         mean_lpc = round(clean_la / max(1, n), 1)
         # granularity_index is undefined (None) when clean_la == 0
         # (zero-line weeks have no meaningful granularity)

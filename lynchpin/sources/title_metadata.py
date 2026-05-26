@@ -24,6 +24,7 @@ __all__ = [
     "hash_title",
     "iter_title_classifications",
     "load_title_classification_map",
+    "normalize_app",
     "normalize_title",
     "title_metadata_manifest_path",
     "title_metadata_path",
@@ -143,8 +144,34 @@ def normalize_title(app: str, title: str) -> str:
     return t.strip() or (title.strip() or "")
 
 
+def normalize_app(app: str) -> str:
+    """Canonicalize an app identifier — lowercase to collapse case variants.
+
+    The Wayland xdg-toplevel app_id convention is lowercase (`firefox`,
+    `kitty`, etc.), but real-world data has case variants emerging from
+    desktop-file misconfiguration, app version changes, or runtime
+    overrides. Concrete pairs seen in the operator's archive:
+      Antigravity / antigravity            60,504 events
+      google-chrome-beta / Google-chrome-beta  57,619 events
+      xdg-desktop-portal-gtk / Xdg-…           7,746 events
+      spotify / Spotify                          688 events
+
+    Lowercasing collapses these to the canonical form so aggregations
+    by app (focused_seconds per app, top-apps rollups, etc.) don't
+    double-count.
+    """
+    return (app or "").strip().lower()
+
+
 def hash_title(app: str, normalized_title: str) -> str:
-    return hashlib.md5(f"{app}\0{normalized_title}".encode()).hexdigest()
+    """Compute the title-classification lookup key.
+
+    Lowercases ``app`` so ``Antigravity`` and ``antigravity`` (and similar
+    case variants) hash to the same classification entry. The title is
+    NOT lowercased — case carries meaning in titles (e.g., proper nouns,
+    code identifiers, command-line flags).
+    """
+    return hashlib.md5(f"{normalize_app(app)}\0{normalized_title}".encode()).hexdigest()
 
 
 def iter_title_classifications(path: Path | None = None) -> Iterator[TitleClassification]:

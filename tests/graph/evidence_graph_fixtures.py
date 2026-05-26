@@ -50,5 +50,6 @@ def _mock_empty_sources(monkeypatch):
     monkeypatch.setattr(f'{system}.add_temporal_signals', lambda nodes, **kwargs: None)
     monkeypatch.setattr(f'{system}.add_readiness', lambda nodes, **kwargs: None)
     monkeypatch.setattr(f'{system}.add_health', lambda nodes, **kwargs: None)
+    monkeypatch.setattr('lynchpin.materialization.materialized_window_overlaps', lambda *args, **kwargs: False)
     monkeypatch.setattr('lynchpin.graph.evidence_analysis.latest_artifacts', lambda **kwargs: ())
     monkeypatch.setattr('lynchpin.graph.evidence_graph.source_readiness', lambda **kwargs: type('obj', (), {'caveats': ()})())

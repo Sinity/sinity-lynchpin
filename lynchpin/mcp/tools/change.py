@@ -32,10 +32,14 @@ def refactor_candidates(
         if project:
             params.append(project)
 
+        # symbol_change.change_type is stored uppercase-word
+        # ('ADDED'/'MODIFIED'/'DELETED'/'RENAMED') by the materializer in
+        # analysis.code_index.symbol_changes — the single-letter labels in
+        # the schema comment are misleading.
         renamed = conn.execute(f"""
             SELECT project, qualified_name, date, sha, path
             FROM symbol_change
-            WHERE refresh_id = ? AND change_type = 'R' {proj_filter}
+            WHERE refresh_id = ? AND change_type = 'RENAMED' {proj_filter}
             ORDER BY date
         """, params).fetchall()
 
@@ -43,12 +47,12 @@ def refactor_candidates(
             WITH added AS (
                 SELECT project, qualified_name, date, sha
                 FROM symbol_change
-                WHERE refresh_id = ? AND change_type = 'A' {proj_filter}
+                WHERE refresh_id = ? AND change_type = 'ADDED' {proj_filter}
             ),
             deleted AS (
                 SELECT project, qualified_name, date, sha
                 FROM symbol_change
-                WHERE refresh_id = ? AND change_type = 'D' {proj_filter}
+                WHERE refresh_id = ? AND change_type = 'DELETED' {proj_filter}
             )
             SELECT a.project, d.qualified_name AS old_name,
                    a.qualified_name AS new_name,

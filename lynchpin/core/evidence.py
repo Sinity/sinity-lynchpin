@@ -7,7 +7,18 @@ from datetime import date, datetime
 from typing import Literal
 
 CostClass = Literal["materialized", "network"]
-ReadinessStatus = Literal["available", "partial", "stale", "missing", "blocked"]
+# Per-query view of how a source intersects the requested window.
+# "available"     — full coverage of the requested range.
+# "partial"       — coverage interval intersects but does not contain the range.
+# "out_of_range"  — source has known coverage that does not intersect the range.
+#                   (No obstruction — the data is simply elsewhere on the
+#                   timeline. E.g. a 2022 arbtt archive vs. a 2026 query.)
+# "missing"       — source has no parsed rows / no materialized product.
+# "blocked"       — source errored / cannot be read (genuine obstruction:
+#                   missing credentials, broken file, parse failure).
+# There is intentionally no "stale" status: dataset coverage is a property of
+# the dataset (first_date..last_date), not a global freshness verdict.
+ReadinessStatus = Literal["available", "partial", "out_of_range", "missing", "blocked"]
 
 
 @dataclass(frozen=True)
@@ -46,7 +57,7 @@ def dedupe_caveats(caveats: tuple[EvidenceCaveat, ...]) -> tuple[EvidenceCaveat,
 _STATUS_DEGRADATION: dict[ReadinessStatus, float] = {
     "available": 1.00,
     "partial": 0.90,
-    "stale": 0.85,
+    "out_of_range": 0.40,
     "missing": 0.40,
     "blocked": 0.40,
 }
@@ -101,7 +112,7 @@ class SourceReadiness:
 
     @property
     def usable(self) -> bool:
-        return self.status in {"available", "partial", "stale"}
+        return self.status in {"available", "partial"}
 
 
 @dataclass(frozen=True)

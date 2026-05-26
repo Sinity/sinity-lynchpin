@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 SourceEmptiness = Literal["valid", "degraded", "invalid"]
-DatasetStatus = Literal["ready", "empty", "missing", "stale", "partial", "degraded", "error"]
+DatasetStatus = Literal["ready", "empty", "missing", "partial", "degraded", "error"]
 SubstrateStatus = Literal["ok", "empty", "unavailable", "error"]
 ContractKind = Literal["dataset", "stage"]
 QueryMode = Literal["canonical", "substrate", "live"]
@@ -183,6 +183,13 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         refresh_command="python -m lynchpin.ingest.personal_signals_materialize personal-daily-signals",
         query_mode="canonical",
     ),
+    SourceContract(
+        name="irc",
+        authority="raw WeeChat IRC logs under irc_root/_raw",
+        query_surface="lynchpin.sources.irc_raw",
+        refresh_command="python -m lynchpin.ingest.irc_materialize",
+        required=False,
+    ),
 )
 
 _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
@@ -320,7 +327,7 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "collection_model": "historical",
         "substrate_tables": ("personal_daily_signal",),
         "graph_node_kinds": ("arbtt_focus_activity",),
-        "mcp_tools": ("focus_daily",),
+        "mcp_tools": ("arbtt_focus_daily",),
         "caveats": ("historical focus source; weaker title/category attribution than ActivityWatch",),
     },
     "machine": {
@@ -348,6 +355,14 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "substrate_tables": ("personal_daily_signal", "activity_content_day", "activity_content_bucket", "activity_title_usage"),
         "graph_node_kinds": ("health_metric", "sleep_quality", "communication_activity", "bookmark_activity", "activity_content_day"),
         "mcp_tools": ("personal_daily_signals", "derived_product_status"),
+    },
+    "irc": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("communication_activity",),
+        "caveats": (
+            "WeeChat raw log parsing; meta/server lines flagged separately",
+            "nick normalization is heuristic; see _KNOWN_ALIASES for explicit mappings",
+        ),
     },
 }
 
@@ -401,7 +416,7 @@ def dataset_status_to_substrate_status(status: DatasetStatus | str) -> Substrate
         return "ok"
     if status == "empty":
         return "empty"
-    if status in {"missing", "partial", "stale"}:
+    if status in {"missing", "partial"}:
         return "unavailable"
     return "error"
 

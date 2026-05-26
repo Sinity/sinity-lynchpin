@@ -369,7 +369,7 @@ def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
             sources=(
                 SourceCoverage(
                     source="spotify",
-                    status="blocked",
+                    status="out_of_range",
                     reason="parsed rows do not intersect the requested window",
                     requested_start=start,
                     requested_end=end,
@@ -384,6 +384,6 @@ def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
     report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
     spotify = report.by_source()["spotify"]
 
-    assert spotify.status == "blocked"
+    assert spotify.status == "out_of_range"
     assert spotify.last_date == date(2025, 12, 18)
     assert spotify.caveats[0] == "parsed rows do not intersect the requested window"

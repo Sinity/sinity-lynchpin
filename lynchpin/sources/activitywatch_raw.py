@@ -235,4 +235,16 @@ def afk_events(**kw: Any) -> Iterator[AWEvent]:
 
 
 def web_events(**kw: Any) -> Iterator[AWEvent]:
-    return events("aw-watcher-web_", **kw)
+    """Yield events from any aw-watcher-web browser-tab tracker.
+
+    The bucket-name convention for web watchers is
+    ``aw-watcher-web-<browser>_<hostname>`` (hyphen separator between
+    ``web`` and the browser name, then underscore for hostname). E.g.
+    ``aw-watcher-web-chrome_desktop``, ``aw-watcher-web-firefox``.
+
+    The old prefix here (``aw-watcher-web_``) matched none of the
+    5 buckets that actually exist in the operator's archive, so all
+    372k web-tab events were silently invisible to lynchpin. Use the
+    hyphen prefix to catch all per-browser variants.
+    """
+    return events("aw-watcher-web-", **kw)

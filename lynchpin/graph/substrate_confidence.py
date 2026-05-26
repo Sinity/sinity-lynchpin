@@ -113,6 +113,8 @@ def _coverage_cell(ready) -> ConfidenceCell:
         return ConfidenceCell(tier='medium', detail=f'partial: {_short(ready.reason)}')
     if status == 'missing':
         return ConfidenceCell(tier='low', detail=f'missing: {_short(ready.reason)}')
+    if status == 'out_of_range':
+        return ConfidenceCell(tier='low', detail=f'out_of_range: {_short(ready.reason)}')
     if status == 'blocked':
         return ConfidenceCell(tier='low', detail=f'blocked: {_short(ready.reason)}')
     return ConfidenceCell(tier='absent', detail=str(status))

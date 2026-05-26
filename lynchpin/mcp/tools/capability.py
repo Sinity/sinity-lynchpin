@@ -23,7 +23,7 @@ from lynchpin.mcp.server import app
 def _materialization_status_label(status: str) -> str:
     if status == "ready":
         return "ready"
-    if status in {"partial", "stale", "degraded"}:
+    if status in {"partial", "degraded"}:
         return "partial"
     if status in {"missing", "empty"}:
         return "missing"
