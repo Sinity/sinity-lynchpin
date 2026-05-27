@@ -10,9 +10,9 @@ import re
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 from ..core.config import get_config
 from ..core.parse import as_local
@@ -181,12 +181,30 @@ def _categorise_command(cwd: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def recordings(*, start: Optional[datetime] = None, end: Optional[datetime] = None) -> Iterator[TerminalRecording]:
-    """Parse asciinema .cast files from the asciinema captures directory."""
+def recordings(
+    *,
+    start: Optional[Union[date, datetime]] = None,
+    end: Optional[Union[date, datetime]] = None,
+) -> Iterator[TerminalRecording]:
+    """Parse asciinema .cast files from the asciinema captures directory.
+
+    ``start`` and ``end`` accept either ``date`` or ``datetime``. Dates
+    are normalized to local-midnight datetimes so the comparison against
+    each recording's ``created_at`` (a datetime) works.
+    """
+    from ..core.parse import local_tz
+
     cfg = get_config()
     root = cfg.asciinema_root
     if not root.exists():
         return
+
+    tz = local_tz()
+    if isinstance(start, date) and not isinstance(start, datetime):
+        start = datetime.combine(start, time.min, tzinfo=tz)
+    if isinstance(end, date) and not isinstance(end, datetime):
+        end = datetime.combine(end, time.min, tzinfo=tz)
+
     cast_files = sorted(root.rglob("*.cast"))
     for cast_path in cast_files:
         rec = _parse_cast_file(cast_path)
@@ -210,13 +228,31 @@ def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
     except (json.JSONDecodeError, OSError):
         return None
 
-    if not isinstance(header, dict) or header.get("version") not in (2, "2"):
+    # Accept asciinema v2 and v3. v3 (released 2025-08) replaced the top-level
+    # "width"/"height" with a nested "term": {"cols": ..., "rows": ...}
+    # block. v3 also drops the header-level "duration" field — duration is
+    # only computable by reading every event row, which is too expensive for
+    # the operator's archive (~3k files). We approximate from file mtime:
+    # since asciinema writes events as the session runs, mtime is the last
+    # event time, and (mtime - created_at) is the session duration. This is
+    # an upper bound — gaps in stdout don't produce events so a session
+    # that sat idle then was closed will look longer than its active span.
+    if not isinstance(header, dict) or header.get("version") not in (2, "2", 3, "3"):
         return None
 
     env = header.get("env") or {}
     timestamp = header.get("timestamp")
     created = datetime.fromtimestamp(timestamp, tz=timezone.utc) if isinstance(timestamp, (int, float)) else None
     duration = header.get("duration")
+    if duration is None and created is not None:
+        # mtime fallback for v3 (and any v2 missing the field).
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            delta = (mtime - created).total_seconds()
+            if delta > 0:
+                duration = delta
+        except OSError:
+            pass
 
     return TerminalRecording(
         session_id=path.stem,
@@ -224,7 +260,7 @@ def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
         created_at=created,
         duration_s=float(duration) if duration else None,
         title=header.get("title") or env.get("TITLE"),
-        shell=env.get("SHELL"),
+        shell=env.get("SHELL") or header.get("command"),
     )
 
 

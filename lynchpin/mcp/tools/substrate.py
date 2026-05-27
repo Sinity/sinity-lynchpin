@@ -1026,3 +1026,91 @@ def substrate_prune(
         "edges_deleted": edges_before - edges_after,
         "dry_run": False,
     }
+
+
+@app.tool()
+def substrate_consistency_audit() -> dict[str, Any]:
+    """Cross-check substrate_source_status.row_count against actual row counts.
+
+    Status rows that record promotion outcomes can drift from reality when
+    a promote-then-effect-disappears sequence occurs (e.g., a transaction
+    rolled back silently after status was recorded, or another process
+    touched the table). This tool walks every status row with status='ok',
+    looks up the actual ``COUNT(*)`` for the same (table, refresh_id), and
+    reports discrepancies.
+
+    Returns:
+        {
+            "discrepancies": [
+                {"source": str, "table": str, "refresh_id": str,
+                 "claimed_rows": int, "actual_rows": int,
+                 "diff": int},  # negative when actual < claimed (missing data)
+                ...
+            ],
+            "checked_count": int,    # number of (source, refresh_id) pairs audited
+            "trustworthy": bool,     # true iff zero discrepancies
+        }
+
+    Notes:
+    - Sources whose status maps to multiple tables (e.g. evidence_graph_substrate)
+      are skipped here; their integrity is covered by other reports.
+    - A row_count mismatch isn't necessarily corruption — a later refresh
+      could legitimately have promoted/replaced rows. But the status table
+      should still match observable state, so any drift is worth surfacing.
+    """
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    # source name → table name (where they differ from the source name).
+    source_to_table: dict[str, str] = {
+        "commits": "commit_fact",
+        "file_changes": "file_change_fact",
+        "symbols": "symbol_change",
+        "ai_attribution": "ai_work_event",
+        "pr_review": "pr_review_row",
+        "personal_daily_signals": "personal_daily_signal",
+    }
+    # Skip sources without a single backing table.
+    skip_sources = {
+        "evidence_graph",
+        "evidence_graph_substrate",
+    }
+
+    with connect(substrate_path(), read_only=True) as conn:
+        rows = conn.execute("""
+            SELECT source, refresh_id, row_count
+            FROM substrate_source_status
+            WHERE status='ok' AND row_count IS NOT NULL
+            ORDER BY recorded_at DESC
+        """).fetchall()
+
+        discrepancies: list[dict[str, Any]] = []
+        checked = 0
+        for source, refresh_id, claimed in rows:
+            if source in skip_sources:
+                continue
+            table = source_to_table.get(source, source)
+            exists = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+                [table],
+            ).fetchone()
+            if not exists:
+                continue
+            actual = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE refresh_id=?", [refresh_id],
+            ).fetchone()[0]
+            checked += 1
+            if actual != claimed:
+                discrepancies.append({
+                    "source": source,
+                    "table": table,
+                    "refresh_id": refresh_id,
+                    "claimed_rows": claimed,
+                    "actual_rows": actual,
+                    "diff": actual - claimed,
+                })
+
+    return {
+        "discrepancies": discrepancies,
+        "checked_count": checked,
+        "trustworthy": not discrepancies,
+    }

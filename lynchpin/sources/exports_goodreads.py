@@ -87,7 +87,15 @@ def _resolve_library(path: Optional[Path]) -> Optional[Path]:
     return candidate if candidate.exists() else None
 
 
-def _library_signature(path: Optional[Path] = None) -> object:
+def _library_signature(*args: object, **kwargs: object) -> object:
+    # Cachew calls depends_on(*args, **kwargs) using the wrapped function's args;
+    # tolerate either positional or keyword 'path' to avoid "multiple values for
+    # argument" errors when the caller mixes both styles internally.
+    path = kwargs.get("path")
+    if path is None and args:
+        path = args[0]
+    if not isinstance(path, Path) and path is not None:
+        path = Path(path) if isinstance(path, str) else None
     resolved = _resolve_library(path)
     if not resolved:
         return ("", ("", None, None))

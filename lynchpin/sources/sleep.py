@@ -73,6 +73,7 @@ class SleepEntry:
     segments: tuple[SleepSegment, ...]
     avg_score: Optional[float]
     metrics: Optional[SleepMetrics] = None
+    source: Optional[str] = None  # 'merged' | 'combined_only' | 'saa_only' | 'samsung_only' | 'stage_derived'
 
     @property
     def quality_label(self) -> str:
@@ -195,21 +196,74 @@ def _hydrate_entry(rec: dict[str, Any]) -> SleepEntry | None:
         rem_pct=_safe_float(metrics.get("rem_pct")),
         stage_count=rec.get("stage_count"),
     )
-    return SleepEntry(date=d, total_minutes=total_min, segments=tuple(segments), avg_score=avg, metrics=sleep_metrics)
+    return SleepEntry(
+        date=d, total_minutes=total_min, segments=tuple(segments),
+        avg_score=avg, metrics=sleep_metrics,
+        source=rec.get("source") if isinstance(rec.get("source"), str) else None,
+    )
+
+
+# Source priority for picking one canonical entry per date.
+# 'merged' is the most authoritative (paired SAA+SH), 'stage_derived' the least
+# (raw from individual stage events; multiple per night common).
+_SOURCE_PRIORITY = {
+    "merged": 0,
+    "combined_only": 1,
+    "saa_only": 2,
+    "samsung_only": 3,
+    "stage_derived": 4,
+    None: 5,
+}
 
 
 def entries() -> Iterator[SleepEntry]:
-    """Yield sleep entries from canonical sleep_merged.jsonl records."""
+    """Yield every sleep row from sleep_merged.jsonl, including same-date duplicates.
+
+    The merged JSONL contains multiple rows per date by design (SAA + SH +
+    per-stage derivations). Use ``canonical_entries`` to collapse to one per
+    date.
+    """
     cfg = get_config()
     yield from read_jsonl_with(cfg.sleep_jsonl, _hydrate_entry, source_name="sleep_merged")
 
 
+def canonical_entries() -> Iterator[SleepEntry]:
+    """Yield one representative SleepEntry per date.
+
+    Picks the highest-priority source for each date (``merged`` > ``combined_only``
+    > ``saa_only`` > ``samsung_only`` > ``stage_derived``). Ties broken by
+    longest ``total_minutes``. Resolves the 56% same-date duplication observed
+    in 2017-2025 sleep records caused by overlapping device exports.
+    """
+    by_date: dict[date, SleepEntry] = {}
+    for e in entries():
+        prev = by_date.get(e.date)
+        if prev is None:
+            by_date[e.date] = e
+            continue
+        prio_new = _SOURCE_PRIORITY.get(e.source, 5)
+        prio_old = _SOURCE_PRIORITY.get(prev.source, 5)
+        if prio_new < prio_old:
+            by_date[e.date] = e
+        elif prio_new == prio_old and e.total_minutes > prev.total_minutes:
+            by_date[e.date] = e
+    for d in sorted(by_date.keys()):
+        yield by_date[d]
+
+
 def sleep_for_date(target: date) -> Optional[SleepEntry]:
-    return next((e for e in entries() if e.date == target), None)
+    """Return the canonical (one-per-date) sleep entry for ``target``."""
+    return next((e for e in canonical_entries() if e.date == target), None)
 
 
-def entries_in_range(start: date, end: date) -> list[SleepEntry]:
-    return [e for e in entries() if start <= e.date <= end]
+def entries_in_range(start: date, end: date, *, canonical: bool = True) -> list[SleepEntry]:
+    """List sleep entries between ``start`` and ``end`` inclusive.
+
+    Default ``canonical=True`` returns one entry per date. Set ``canonical=False``
+    to get the raw multi-row stream (useful for cross-device comparison).
+    """
+    source = canonical_entries() if canonical else entries()
+    return [e for e in source if start <= e.date <= end]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

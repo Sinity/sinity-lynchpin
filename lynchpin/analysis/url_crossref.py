@@ -225,6 +225,14 @@ def _iter_irc_mentions(start: date, end: date) -> Iterator[URLMention]:
     for msg in iter_messages():
         if not msg.timestamp:
             continue
+        # Skip server / meta lines: weechat captures the libera channel as
+        # plain logs alongside chat, plus per-channel join/part/quit/mode
+        # notifications appear in chat logs too. These can carry URLs in
+        # MOTD, channel topic, server notices — they are NOT operator-shared
+        # nor real human mentions and would otherwise inflate URL counts.
+        # In a quick audit: 6.2% of URL-bearing rows are meta lines.
+        if msg.is_meta:
+            continue
         d = msg.timestamp.date()
         if d < start or d > end:
             continue

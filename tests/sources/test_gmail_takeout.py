@@ -43,8 +43,13 @@ def test_parse_date_returns_none_for_garbage():
 
 
 def test_looks_outbound_matches_operator_names():
-    assert _looks_outbound("sinity@example.com") is True
+    # Strict address-match: only the operator's known sending addresses
+    # qualify. Random sinity@somewhere is NOT operator (operator's mail
+    # is ezo.dev@gmail.com).
+    assert _looks_outbound("ezo.dev@gmail.com") is True
     assert _looks_outbound("ilukbas@gmail.com") is True
+    assert _looks_outbound("sinity@substack.com") is True
+    assert _looks_outbound("sinity@example.com") is False
     assert _looks_outbound("random@example.com") is False
 
 
@@ -112,3 +117,31 @@ def test_daily_gmail_activity_returns_list():
     assert isinstance(result, list)
     for day in result:
         assert day.message_count >= 0
+
+
+def test_looks_outbound_matches_only_operator_email_address():
+    """Display names are set by the sending service, so a GitHub
+    notification with display 'Sinity' from notifications@github.com is
+    inbound, not outbound. Only the email address in the From header is
+    authoritative.
+
+    Regression: the prior implementation substring-matched on the whole
+    From field, which produced 45 false-positive outbound rows (vs 37
+    real outbound) on the operator's archive.
+    """
+    from lynchpin.sources.gmail_takeout import _looks_outbound
+
+    # Inbound: display name happens to contain 'Sinity' / 'ezodev' but
+    # address is someone else's.
+    assert not _looks_outbound('"Sinity" <notifications@github.com>')
+    assert not _looks_outbound("Sinity from foo <noreply@example.com>")
+    assert not _looks_outbound("ezodev_recipient <random@otherdomain.com>")
+    # Operator's actual addresses.
+    assert _looks_outbound("Ezo <ezo.dev@gmail.com>")
+    assert _looks_outbound("ezo.dev@gmail.com")
+    assert _looks_outbound("Sinity <ezo.dev@gmail.com>")
+    assert _looks_outbound("ilukbas@gmail.com")
+    assert _looks_outbound("Sinity from Sinity <sinity@substack.com>")
+    # Empty / garbage.
+    assert not _looks_outbound("")
+    assert not _looks_outbound("no email here")

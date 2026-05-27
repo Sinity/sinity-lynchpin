@@ -109,6 +109,10 @@ def parse_date_from_any(value: object) -> Optional[date]:
         return date.fromisoformat(text[:10])
     except ValueError:
         dt = parse_datetime(text)
+        if dt:
+            return dt.date()
+        # Fallback: multi-format (e.g., Goodreads YYYY/MM/DD)
+        dt = parse_date(text)
         return dt.date() if dt else None
 
 

@@ -309,7 +309,40 @@ def daily_gmail_activity(
     return result
 
 
+import re as _re
+
+# Operator email addresses that ever sent mail. Match exact addresses
+# inside the From header, NOT substrings on the display name — the display
+# name is set by the SENDING service, so e.g. ``"Sinity" <notifications@
+# github.com>`` is a GitHub notification addressed TO sinity, not FROM sinity.
+# An earlier heuristic matched 'sinity' anywhere and miscounted 45 such
+# rows as outbound (vs. only 37 actual ezo.dev sends).
+_OPERATOR_EMAIL_ADDRESSES: frozenset[str] = frozenset({
+    "ezo.dev@gmail.com",
+    "ilukbas@gmail.com",
+    "sinity@substack.com",  # operator's substack publisher address
+})
+
+_EMAIL_ADDR_RE = _re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _extract_email_address(header_value: str) -> str:
+    """Extract the first email address from a From-style header."""
+    if not header_value:
+        return ""
+    match = _EMAIL_ADDR_RE.search(header_value)
+    return match.group(0).lower() if match else ""
+
+
 def _looks_outbound(sender: str) -> bool:
-    """Heuristic: does the sender look like the operator?"""
-    sender_lower = sender.lower()
-    return any(name in sender_lower for name in ("sinity", "sinity", "ilukbas", "ezodev"))
+    """True iff the From-header email address is one of the operator's
+    known sending addresses.
+
+    Doesn't match on display name because services freely set arbitrary
+    display names (often the *recipient's* name) — substring matching
+    on the display field produced 45 false positives out of 91 in
+    one audit (GitHub notifications carrying ``"Sinity"`` as the From
+    display while actually originating at ``notifications@github.com``).
+    """
+    addr = _extract_email_address(sender)
+    return addr in _OPERATOR_EMAIL_ADDRESSES

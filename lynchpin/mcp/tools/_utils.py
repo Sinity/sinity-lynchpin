@@ -127,17 +127,24 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
     except Exception:
         pass
 
-    # Fall back to latest materialized_at with warning
+    # Fallback path: no substrate_source_status entry for this source.
+    # Rank by row_count DESC then materialized_at DESC — same logic as the
+    # ok-status branch above. Picking purely by latest materialized_at here
+    # silently selects narrow recent refreshes (e.g., a dag run that only
+    # promoted 6 rows for activity_content_day while an earlier
+    # current-state run promoted 404) and produces nearly-empty downstream
+    # queries.
     row = conn.execute(
-        f"SELECT refresh_id FROM {table} "
-        f"GROUP BY refresh_id ORDER BY {order_expr} DESC LIMIT 1"
+        f"SELECT refresh_id, COUNT(*) AS rc FROM {table} "
+        f"GROUP BY refresh_id ORDER BY rc DESC, {order_expr} DESC LIMIT 1"
     ).fetchone()
 
     if row:
         logger = logging.getLogger(__name__)
         logger.warning(
             f"best_refresh_id({table!r}): no refresh_id with source_status "
-            f"'{source_name}:ok' found; using latest materialized_at {row[0]!r}"
+            f"'{source_name}:ok' found; using highest-coverage refresh "
+            f"{row[0]!r} (row_count={row[1]})"
         )
     return row[0] if row else None
 

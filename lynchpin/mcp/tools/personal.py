@@ -882,3 +882,104 @@ def activity_semantic_daily(
         })
 
     return result
+
+
+@app.tool()
+def operator_public_text_daily(
+    start: str,
+    end: str,
+    sources: str = "irc,reddit,wykop,messenger,gmail",
+    monthly: bool = False,
+) -> list[dict[str, Any]]:
+    """Operator-authored public-text per day across human-facing channels.
+
+    Aggregates the volume of text the operator produced to other humans:
+    IRC operator messages, reddit comment own_text (>-blockquotes
+    excluded), reddit posts, wykop entries/comments, messenger outbound.
+    Polylogue (AI chat) is intentionally not included — AI conversations
+    are not 'public-text-to-humans' and conflating them would mask the
+    cross-platform 2025 decline visible in this surface.
+
+    Parameters:
+    - ``start``/``end``: ISO date range (inclusive).
+    - ``sources``: comma-separated subset of
+      ``irc,reddit,wykop,messenger``. Default = all.
+    - ``monthly``: if True, return monthly rollups instead of daily rows.
+
+    Daily rows: ``date``, ``total_chars``, ``message_count``,
+    ``channel_count``, ``by_channel`` (map of channel→{chars,messages}).
+    Days with zero activity across selected sources are omitted.
+
+    Monthly rows: ``month``, ``total_chars``, ``message_count``,
+    ``active_days``.
+    """
+    from datetime import date
+
+    from lynchpin.analysis.operator_public_text import (
+        monthly_rollup,
+        operator_public_text_daily as _build,
+    )
+
+    src_set = {s.strip() for s in sources.split(",") if s.strip()}
+    rows = _build(
+        start=date.fromisoformat(start),
+        end=date.fromisoformat(end),
+        sources=src_set,
+    )
+    if monthly:
+        return [
+            {
+                "month": m,
+                "total_chars": chars,
+                "message_count": msgs,
+                "active_days": days,
+            }
+            for m, chars, msgs, days in monthly_rollup(rows)
+        ]
+    return [
+        {
+            "date": r.date.isoformat(),
+            "total_chars": r.total_chars,
+            "message_count": r.message_count,
+            "channel_count": r.channel_count,
+            "by_channel": r.by_channel,
+        }
+        for r in rows
+    ]
+
+
+@app.tool()
+def operator_public_text_coverage(
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
+    """Per-source coverage for ``operator_public_text_daily`` query windows.
+
+    Distinguishes "operator wrote nothing through this source" (real
+    silence) from "this source's data doesn't cover the window" (missing
+    data). Call this alongside ``operator_public_text_daily`` to interpret
+    zero-contribution channels correctly.
+
+    Returns per-source rows: ``source``, ``status``
+    (available / partial / out_of_range / missing), ``last_date`` ISO,
+    ``reason``. Sources not represented in ``coverage_report`` (wykop,
+    gmail at the moment) are reported as ``available`` with reason noted —
+    they may still have stale data but lynchpin doesn't currently track it.
+    """
+    from datetime import date
+
+    from lynchpin.analysis.operator_public_text import coverage_summary
+
+    rows = coverage_summary(
+        start=date.fromisoformat(start),
+        end=date.fromisoformat(end),
+    )
+    return [
+        {
+            "source": r.source,
+            "status": r.status,
+            "last_date": r.last_date.isoformat() if r.last_date else None,
+            "reason": r.reason,
+        }
+        for r in rows
+    ]

@@ -146,3 +146,51 @@ def test_best_refresh_id_returns_none_for_empty_table(monkeypatch, tmp_path) -> 
     with connect(substrate_path(), read_only=True) as conn:
         result = best_refresh_id(conn, "commit_fact")
     assert result is None
+
+
+def test_fallback_prefers_high_coverage_over_recent_when_no_status(
+    monkeypatch, tmp_path
+) -> None:
+    """When no substrate_source_status row exists for a table, the fallback
+    must rank by row_count DESC first, materialized_at DESC as tiebreaker.
+
+    Regression for the bug where activity_content_day had a recent dag-refresh
+    with 6 rows and an older current-state refresh with 404 rows; the
+    "latest materialized_at" fallback picked the 6-row refresh and downstream
+    queries silently returned mostly-empty results.
+    """
+    import duckdb
+
+    db_path = _setup_test_db(tmp_path)
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.substrate_path",
+        lambda: str(db_path),
+    )
+
+    conn = duckdb.connect(str(db_path))
+    older_comprehensive = "current-state:wide"
+    newer_narrow = "dag:narrow"
+
+    # Older refresh: 5 rows (comprehensive)
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO commit_fact VALUES (?, ?, ?)",
+            [f"sha-old-{i}", older_comprehensive,
+             datetime(2026, 5, 24, 10, tzinfo=timezone.utc)],
+        )
+    # Newer refresh: 1 row (narrow window)
+    conn.execute(
+        "INSERT INTO commit_fact VALUES (?, ?, ?)",
+        ["sha-new", newer_narrow,
+         datetime(2026, 5, 25, 0, tzinfo=timezone.utc)],
+    )
+
+    conn.close()
+
+    from lynchpin.substrate.connection import connect, substrate_path
+    with connect(substrate_path(), read_only=True) as test_conn:
+        result = best_refresh_id(test_conn, "commit_fact")
+    assert result == older_comprehensive, (
+        f"expected the 5-row refresh to win over the 1-row recent refresh "
+        f"in the no-status fallback, got {result!r}"
+    )

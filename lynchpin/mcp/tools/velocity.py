@@ -1,26 +1,10 @@
 """Velocity MCP tools: time-series, narratives, symbol churn, temporal rhythm."""
-
 from typing import Any
-
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import (
-    best_refresh_id as _best_refresh_id,
-    json_safe as _json_safe,
-    latest_refresh_id as _latest_refresh_id,
-)
-
-
-
-
-# ── D.4 Velocity Series ──────────────────────────────────────────────────────
-
+from lynchpin.mcp.tools._utils import best_refresh_id as _best_refresh_id, json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
 
 @app.tool()
-def velocity_series(
-    projects: list[str] | None = None,
-    refresh_id: str | None = None,
-    window_days: int = 7,
-) -> list[dict[str, Any]]:
+def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None, window_days: int=7) -> list[dict[str, Any]]:
     """Project velocity time-series with rolling windows (Arc D.4).
 
     SQL window functions over project_day_correlation. Returns daily commit
@@ -36,58 +20,26 @@ def velocity_series(
           "rolling_avg": float, "cumulative": int, "source_count": int}]
     """
     from lynchpin.substrate.connection import connect, substrate_path
-
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, "project_day_correlation")
+            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
             if refresh_id is None:
                 return []
-
-    proj_filter = ""
+    proj_filter = ''
     params: list[Any] = [refresh_id]
     if projects:
-        placeholders = ",".join(["?"] * len(projects))
-        proj_filter = f"AND project IN ({placeholders})"
+        placeholders = ','.join(['?'] * len(projects))
+        proj_filter = f'AND project IN ({placeholders})'
         params.extend(projects)
-
     with connect(path, read_only=True) as conn:
-        sql = f"""
-            SELECT project, date, commit_count,
-                   ROUND(AVG(commit_count) OVER (
-                       PARTITION BY project ORDER BY date
-                       ROWS BETWEEN {int(window_days) - 1} PRECEDING AND CURRENT ROW
-                   ), 1) AS rolling_avg,
-                   SUM(commit_count) OVER (
-                       PARTITION BY project ORDER BY date
-                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                   ) AS cumulative,
-                   source_count
-            FROM project_day_correlation
-            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}
-            ORDER BY project, date
-        """
+        sql = f'\n            SELECT project, date, commit_count,\n                   ROUND(AVG(commit_count) OVER (\n                       PARTITION BY project ORDER BY date\n                       ROWS BETWEEN {int(window_days) - 1} PRECEDING AND CURRENT ROW\n                   ), 1) AS rolling_avg,\n                   SUM(commit_count) OVER (\n                       PARTITION BY project ORDER BY date\n                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n                   ) AS cumulative,\n                   source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}\n            ORDER BY project, date\n        '
         rows = conn.execute(sql, params).fetchall()
-
-    cols = ["project", "date", "commit_count", "rolling_avg", "cumulative", "source_count"]
-    return [
-        {c: _json_safe(v) for c, v in zip(cols, row)}
-        for row in rows
-    ]
-
-
-# ── E.3 Gap Draft ────────────────────────────────────────────────────────────
-
-
-
-# ── M.6 Velocity Narrative ───────────────────────────────────────────────────
-
+    cols = ['project', 'date', 'commit_count', 'rolling_avg', 'cumulative', 'source_count']
+    return [{c: _json_safe(v) for c, v in zip(cols, row)} for row in rows]
 
 @app.tool()
-def velocity_narrative(
-    projects: list[str] | None = None,
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
+def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
     """Auto-summary of project velocity over the latest refresh window (Arc M.6).
 
     Aggregates project_day_correlation into a narrative summary: total
@@ -110,114 +62,41 @@ def velocity_narrative(
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, "project_day_correlation")
+            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
             if refresh_id is None:
-                return {"error": "no promote runs"}
-
-        # Window bounds
-        win = conn.execute("""
-            SELECT MIN(date), MAX(date)
-            FROM project_day_correlation WHERE refresh_id = ?
-        """, [refresh_id]).fetchone()
-
-        proj_filter = ""
+                return {'error': 'no promote runs'}
+        win = conn.execute('\n            SELECT MIN(date), MAX(date)\n            FROM project_day_correlation WHERE refresh_id = ?\n        ', [refresh_id]).fetchone()
+        proj_filter = ''
         params: list[Any] = [refresh_id]
         if projects:
-            placeholders = ",".join(["?"] * len(projects))
-            proj_filter = f"AND project IN ({placeholders})"
+            placeholders = ','.join(['?'] * len(projects))
+            proj_filter = f'AND project IN ({placeholders})'
             params.extend(projects)
-
-        # Projects summary
-        proj_rows = conn.execute(f"""
-            SELECT project,
-                   SUM(commit_count) AS commits,
-                   COUNT(*) AS active_days,
-                   ROUND(AVG(commit_count), 1) AS avg_daily
-            FROM project_day_correlation
-            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}
-            GROUP BY project ORDER BY commits DESC
-        """, params).fetchall()
-
-        # Peak
-        peak = conn.execute(f"""
-            SELECT project, date, commit_count
-            FROM project_day_correlation
-            WHERE refresh_id = ? {proj_filter}
-            ORDER BY commit_count DESC LIMIT 1
-        """, params).fetchone()
-
-        total_commits = sum(r[1] for r in proj_rows)
-        total_days = sum(r[2] for r in proj_rows)
-
-        projects_list = [
-            {"project": r[0], "commits": r[1],
-             "active_days": r[2], "avg_daily": r[3]}
-            for r in proj_rows
-        ]
-
-        # Build narrative text
+        proj_rows = conn.execute(f'\n            SELECT project,\n                   SUM(commit_count) AS commits,\n                   COUNT(*) AS active_days,\n                   ROUND(AVG(commit_count), 1) AS avg_daily\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND commit_count > 0 {proj_filter}\n            GROUP BY project ORDER BY commits DESC\n        ', params).fetchall()
+        peak = conn.execute(f'\n            SELECT project, date, commit_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? {proj_filter}\n            ORDER BY commit_count DESC LIMIT 1\n        ', params).fetchone()
+        total_commits = sum((r[1] for r in proj_rows))
+        total_days = sum((r[2] for r in proj_rows))
+        projects_list = [{'project': r[0], 'commits': r[1], 'active_days': r[2], 'avg_daily': r[3]} for r in proj_rows]
         if proj_rows:
             top = proj_rows[0]
-            lines = [
-                f"In the window {win[0]} → {win[1]}: "
-                f"{total_commits} commits across {len(proj_rows)} projects "
-                f"({total_days} active project-days).",
-                "",
-                f"**{top[0]}** led with {top[1]} commits over "
-                f"{top[2]} active days (avg {top[3]}/day).",
-            ]
+            lines = [f'In the window {win[0]} → {win[1]}: {total_commits} commits across {len(proj_rows)} projects ({total_days} active project-days).', '', f'**{top[0]}** led with {top[1]} commits over {top[2]} active days (avg {top[3]}/day).']
             if peak:
-                lines.append(
-                    f"Peak day: **{peak[0]}** on {peak[1]} "
-                    f"({peak[2]} commits)."
-                )
+                lines.append(f'Peak day: **{peak[0]}** on {peak[1]} ({peak[2]} commits).')
             if len(proj_rows) > 1:
-                rest = [f"**{p[0]}** ({p[1]} commits)" for p in proj_rows[1:4]]
-                lines.append(
-                    f"Also active: {', '.join(rest)}."
-                )
+                rest = [f'**{p[0]}** ({p[1]} commits)' for p in proj_rows[1:4]]
+                lines.append(f"Also active: {', '.join(rest)}.")
             if len(proj_rows) > 4:
-                lines.append(
-                    f"(+{len(proj_rows) - 4} more projects with lower activity)"
-                )
-            summary = "\n".join(lines)
+                lines.append(f'(+{len(proj_rows) - 4} more projects with lower activity)')
+            summary = '\n'.join(lines)
         else:
-            summary = "No project activity in this window."
-
-    return {
-        "window": {"start": _json_safe(win[0]), "end": _json_safe(win[1])},
-        "total_commits": total_commits,
-        "total_active_days": total_days,
-        "peak": {
-            "project": peak[0], "date": _json_safe(peak[1]),
-            "commits": peak[2],
-        } if peak else None,
-        "projects": projects_list,
-        "summary_text": summary,
-    }
-
-
-# ── A.1 D.3 WorkPackageDurability ────────────────────────────────────────────
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Phase B — New capabilities from the complete substrate
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-# ── B.1 Symbol-Level Velocity ────────────────────────────────────────────────
-
+            summary = 'No project activity in this window.'
+    return {'window': {'start': _json_safe(win[0]), 'end': _json_safe(win[1])}, 'total_commits': total_commits, 'total_active_days': total_days, 'peak': {'project': peak[0], 'date': _json_safe(peak[1]), 'commits': peak[2]} if peak else None, 'projects': projects_list, 'summary_text': summary}
 
 @app.tool()
-def symbol_velocity(
-    projects: list[str] | None = None,
-    refresh_id: str | None = None,
-) -> list[dict[str, Any]]:
+def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
     """Symbol-level churn per project per day (Phase B.1).
 
     Extends commit-count velocity with symbol-change dimensions: added,
@@ -234,67 +113,24 @@ def symbol_velocity(
           "symbols_renamed": int, "symbols_total": int}]
     """
     from lynchpin.substrate.connection import connect, substrate_path
-
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
                 return []
-
-        outer_filter = ""
-        inner_filter = ""
+        outer_filter = ''
+        inner_filter = ''
         params: list[Any] = [refresh_id, refresh_id]
         if projects:
-            placeholders = ",".join(["?"] * len(projects))
-            outer_filter = f"AND p.project IN ({placeholders})"
-            inner_filter = f"AND project IN ({placeholders})"
+            placeholders = ','.join(['?'] * len(projects))
+            outer_filter = f'AND p.project IN ({placeholders})'
+            inner_filter = f'AND project IN ({placeholders})'
             params = [refresh_id, *projects, refresh_id, *projects]
-
-        rows = conn.execute(f"""
-            SELECT COALESCE(p.project, sym.project) AS project,
-                   COALESCE(p.date, sym.date) AS date,
-                   COALESCE(p.commit_count, 0) AS commit_count,
-                   COALESCE(sym.added, 0) AS symbols_added,
-                   COALESCE(sym.modified, 0) AS symbols_modified,
-                   COALESCE(sym.renamed, 0) AS symbols_renamed,
-                   COALESCE(sym.total, 0) AS symbols_total
-            FROM project_day_correlation p
-            FULL OUTER JOIN (
-                SELECT project, date,
-                       SUM(CASE WHEN change_type = 'ADDED' THEN 1 ELSE 0 END) AS added,
-                       SUM(CASE WHEN change_type = 'MODIFIED' THEN 1 ELSE 0 END) AS modified,
-                       SUM(CASE WHEN change_type = 'RENAMED' THEN 1 ELSE 0 END) AS renamed,
-                       COUNT(*) AS total
-                FROM symbol_change
-                WHERE refresh_id = ? {inner_filter}
-                GROUP BY project, date
-            ) sym ON p.project = sym.project AND p.date = sym.date
-               AND p.refresh_id = ?
-            {outer_filter}
-            ORDER BY project, date
-        """, params).fetchall()
-
-    return [
-        {"project": r[0], "date": _json_safe(r[1]),
-         "commit_count": r[2], "symbols_added": r[3],
-         "symbols_modified": r[4], "symbols_renamed": r[5],
-         "symbols_total": r[6]}
-        for r in rows
-    ]
-
-
-# ── B.2 File Hotspot Detection ───────────────────────────────────────────────
-
-
-
-# ── B.3 Temporal Rhythm Analysis ─────────────────────────────────────────────
-
+        rows = conn.execute(f"\n            SELECT COALESCE(p.project, sym.project) AS project,\n                   COALESCE(p.date, sym.date) AS date,\n                   COALESCE(p.commit_count, 0) AS commit_count,\n                   COALESCE(sym.added, 0) AS symbols_added,\n                   COALESCE(sym.modified, 0) AS symbols_modified,\n                   COALESCE(sym.renamed, 0) AS symbols_renamed,\n                   COALESCE(sym.total, 0) AS symbols_total\n            FROM project_day_correlation p\n            FULL OUTER JOIN (\n                SELECT project, date,\n                       SUM(CASE WHEN change_type = 'ADDED' THEN 1 ELSE 0 END) AS added,\n                       SUM(CASE WHEN change_type = 'MODIFIED' THEN 1 ELSE 0 END) AS modified,\n                       SUM(CASE WHEN change_type = 'RENAMED' THEN 1 ELSE 0 END) AS renamed,\n                       COUNT(*) AS total\n                FROM symbol_change\n                WHERE refresh_id = ? {inner_filter}\n                GROUP BY project, date\n            ) sym ON p.project = sym.project AND p.date = sym.date\n               AND p.refresh_id = ?\n            {outer_filter}\n            ORDER BY project, date\n        ", params).fetchall()
+    return [{'project': r[0], 'date': _json_safe(r[1]), 'commit_count': r[2], 'symbols_added': r[3], 'symbols_modified': r[4], 'symbols_renamed': r[5], 'symbols_total': r[6]} for r in rows]
 
 @app.tool()
-def temporal_rhythm(
-    project: str | None = None,
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
+def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> dict[str, Any]:
     """Commit time-of-day × day-of-week patterns per project (Phase B.3).
 
     Groups commit_fact by hour and weekday to surface work rhythms:
@@ -312,113 +148,39 @@ def temporal_rhythm(
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
-                return {"hourly": [], "weekday": [], "peak_hour": None, "peak_weekday": None}
-
-        proj_filter = "AND project = ?" if project else ""
+                return {'hourly': [], 'weekday': [], 'peak_hour': None, 'peak_weekday': None}
+        proj_filter = 'AND project = ?' if project else ''
         params: list[Any] = [refresh_id]
         if project:
             params.append(project)
-
-        hourly = conn.execute(f"""
-            SELECT EXTRACT(HOUR FROM authored_at)::INTEGER AS hr,
-                   COUNT(*) AS cnt
-            FROM commit_fact
-            WHERE refresh_id = ? {proj_filter}
-            GROUP BY hr ORDER BY hr
-        """, params).fetchall()
-
-        weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-
-        weekday = conn.execute(f"""
-            SELECT EXTRACT(DOW FROM authored_at)::INTEGER AS dow,
-                   COUNT(*) AS cnt
-            FROM commit_fact
-            WHERE refresh_id = ? {proj_filter}
-            GROUP BY dow ORDER BY dow
-        """, params).fetchall()
-
+        hourly = conn.execute(f'\n            SELECT EXTRACT(HOUR FROM authored_at)::INTEGER AS hr,\n                   COUNT(*) AS cnt\n            FROM commit_fact\n            WHERE refresh_id = ? {proj_filter}\n            GROUP BY hr ORDER BY hr\n        ', params).fetchall()
+        weekday_names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+        weekday = conn.execute(f'\n            SELECT EXTRACT(DOW FROM authored_at)::INTEGER AS dow,\n                   COUNT(*) AS cnt\n            FROM commit_fact\n            WHERE refresh_id = ? {proj_filter}\n            GROUP BY dow ORDER BY dow\n        ', params).fetchall()
     peak_hour = max(hourly, key=lambda r: r[1])[0] if hourly else None
     peak_dow = max(weekday, key=lambda r: r[1]) if weekday else None
-
-    return {
-        "hourly": [{"hour": r[0], "count": r[1]} for r in hourly],
-        "weekday": [{"weekday": r[0], "name": weekday_names[r[0]], "count": r[1]}
-                     for r in weekday],
-        "peak_hour": peak_hour,
-        "peak_weekday": weekday_names[peak_dow[0]] if peak_dow else None,
-    }
-
-
-# ── B.4 Evidence Confidence Tiering ──────────────────────────────────────────
-
-
-# Path patterns that are NOT real-engineering code: lockfiles, snapshots,
-# generated artifacts, fixture data, minified bundles. Used to compute
-# `lines_added_clean` in engineering_throughput.
-_NON_CODE_PATH_PATTERNS = (
-    "Cargo.lock",
-    "flake.lock",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "uv.lock",
-    "poetry.lock",
-    "Pipfile.lock",
-    ".snap",
-    "/fixtures/",
-    "/__snapshots__/",
-    "/generated/",
-    "/.lynchpin/generated/",
-    "ai_activity.json",
-    "focus_timeline.json",
-    "narrative_window.json",
-    ".min.js",
-    ".min.css",
-)
-
+    return {'hourly': [{'hour': r[0], 'count': r[1]} for r in hourly], 'weekday': [{'weekday': r[0], 'name': weekday_names[r[0]], 'count': r[1]} for r in weekday], 'peak_hour': peak_hour, 'peak_weekday': weekday_names[peak_dow[0]] if peak_dow else None}
+_NON_CODE_PATH_PATTERNS = ('Cargo.lock', 'flake.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'uv.lock', 'poetry.lock', 'Pipfile.lock', '.snap', '/fixtures/', '/__snapshots__/', '/generated/', '/.lynchpin/generated/', 'ai_activity.json', 'focus_timeline.json', 'narrative_window.json', '.min.js', '.min.css')
 
 def _refresh_with_best_coverage(conn: Any, project: str) -> str | None:
     """Choose a refresh_id where both commit_fact and file_change_fact have
     rows for `project`. Resolves the current-state/dag shadowing bug where
     one refresh has commits but the other has file_changes.
     """
-    rows = conn.execute(
-        """
-        SELECT cf.refresh_id, COUNT(DISTINCT cf.sha) AS commits,
-               COUNT(fcf.path) AS file_changes
-        FROM commit_fact cf
-        LEFT JOIN file_change_fact fcf
-          ON fcf.refresh_id = cf.refresh_id AND fcf.sha = cf.sha
-        WHERE cf.project = ?
-        GROUP BY cf.refresh_id
-        HAVING commits > 0 AND file_changes > 0
-        ORDER BY file_changes DESC, commits DESC
-        """,
-        [project],
-    ).fetchall()
+    rows = conn.execute('\n        SELECT cf.refresh_id, COUNT(DISTINCT cf.sha) AS commits,\n               COUNT(fcf.path) AS file_changes\n        FROM commit_fact cf\n        LEFT JOIN file_change_fact fcf\n          ON fcf.refresh_id = cf.refresh_id AND fcf.sha = cf.sha\n        WHERE cf.project = ?\n        GROUP BY cf.refresh_id\n        HAVING commits > 0 AND file_changes > 0\n        ORDER BY file_changes DESC, commits DESC\n        ', [project]).fetchall()
     return rows[0][0] if rows else None
-
 
 def _is_non_code_path(path: str) -> bool:
     """True iff a path matches any non-code pattern (lockfiles/snapshots/etc.)."""
     if not path:
         return False
-    return any(pattern in path for pattern in _NON_CODE_PATH_PATTERNS)
-
+    return any((pattern in path for pattern in _NON_CODE_PATH_PATTERNS))
 
 @app.tool()
-def engineering_throughput(
-    project: str,
-    start: str | None = None,
-    end: str | None = None,
-    granularity: str = "week",
-    refresh_id: str | None = None,
-) -> dict[str, Any]:
+def engineering_throughput(project: str, start: str | None=None, end: str | None=None, granularity: str='week', refresh_id: str | None=None) -> dict[str, Any]:
     """Decomposed engineering-throughput estimate for a project window.
 
     Composes commit_fact + file_change_fact + symbol_change so that the
@@ -456,93 +218,38 @@ def engineering_throughput(
         }
     """
     from datetime import date as _d
-
     from lynchpin.substrate.connection import connect, substrate_path
-
-    if granularity not in ("day", "week", "month"):
-        return {
-            "project": project, "granularity": granularity,
-            "refresh_id": None, "degraded": True,
-            "reason": f"unsupported granularity {granularity!r} (use day, week, or month)",
-            "substrate_window": None, "periods": [],
-        }
-
+    if granularity not in ('day', 'week', 'month'):
+        return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported granularity {granularity!r} (use day, week, or month)', 'substrate_window': None, 'periods': []}
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            # Pick the refresh that has the richest *combined* coverage of
-            # commit_fact + file_change_fact for this project. Picking the
-            # refresh with most commit rows alone backfires when that
-            # refresh's file_change_fact has narrow project scope (e.g.
-            # current-state:2024-09-01 only covers intercept-bounce +
-            # knowledgebase, not sinex/sinnix/sinity-lynchpin).
             refresh_id = _refresh_with_best_coverage(conn, project)
             if refresh_id is None:
-                refresh_id = _best_refresh_id(conn, "commit_fact")
-
+                refresh_id = _best_refresh_id(conn, 'commit_fact')
         if refresh_id is None:
-            return {
-                "project": project, "granularity": granularity,
-                "refresh_id": None, "degraded": True,
-                "reason": "no commit_fact promote runs found",
-                "substrate_window": None, "periods": [],
-            }
-
-        bounds = conn.execute(
-            "SELECT MIN(authored_at::DATE), MAX(authored_at::DATE) "
-            "FROM commit_fact WHERE refresh_id = ?",
-            [refresh_id],
-        ).fetchone()
-        substrate_window = {
-            "start": _json_safe(bounds[0]),
-            "end": _json_safe(bounds[1]),
-        }
-
-        proj_check = conn.execute(
-            "SELECT COUNT(*) FROM commit_fact WHERE refresh_id = ? AND project = ?",
-            [refresh_id, project],
-        ).fetchone()
+            return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': 'no commit_fact promote runs found', 'substrate_window': None, 'periods': []}
+        bounds = conn.execute('SELECT MIN(authored_at::DATE), MAX(authored_at::DATE) FROM commit_fact WHERE refresh_id = ?', [refresh_id]).fetchone()
+        substrate_window = {'start': _json_safe(bounds[0]), 'end': _json_safe(bounds[1])}
+        proj_check = conn.execute('SELECT COUNT(*) FROM commit_fact WHERE refresh_id = ? AND project = ?', [refresh_id, project]).fetchone()
         if proj_check[0] == 0:
-            return {
-                "project": project, "granularity": granularity,
-                "refresh_id": refresh_id, "degraded": True,
-                "reason": f"no commit_fact rows for project {project!r} in this snapshot",
-                "substrate_window": substrate_window, "periods": [],
-            }
-
+            return {'project': project, 'granularity': granularity, 'refresh_id': refresh_id, 'degraded': True, 'reason': f'no commit_fact rows for project {project!r} in this snapshot', 'substrate_window': substrate_window, 'periods': []}
         params: list[Any] = [refresh_id, project]
-        date_filter = ""
+        date_filter = ''
         if start:
-            date_filter += " AND authored_at::DATE >= ?"
+            date_filter += ' AND authored_at::DATE >= ?'
             params.append(_d.fromisoformat(start))
         if end:
-            date_filter += " AND authored_at::DATE <= ?"
+            date_filter += ' AND authored_at::DATE <= ?'
             params.append(_d.fromisoformat(end))
-
-        commits_sql = f"""
-            SELECT date_trunc('{granularity}', authored_at)::DATE AS period,
-                   COUNT(*) AS n,
-                   SUM(lines_added) AS la, SUM(lines_deleted) AS ld,
-                   SUM(files_changed) AS fc
-            FROM commit_fact
-            WHERE refresh_id = ? AND project = ?{date_filter}
-            GROUP BY period ORDER BY period
-        """
+        commits_sql = f"\n            SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                   COUNT(*) AS n,\n                   SUM(lines_added) AS la, SUM(lines_deleted) AS ld,\n                   SUM(files_changed) AS fc\n            FROM commit_fact\n            WHERE refresh_id = ? AND project = ?{date_filter}\n            GROUP BY period ORDER BY period\n        "
         commit_rows = {r[0]: r for r in conn.execute(commits_sql, params).fetchall()}
-
-        # file_change_fact for clean line counts
         file_rows: dict[Any, tuple[int, int]] = {}
         try:
-            file_sql = f"""
-                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,
-                       SUM(lines_added) AS la, SUM(lines_deleted) AS ld, path
-                FROM file_change_fact
-                WHERE refresh_id = ? AND project = ?{date_filter}
-                GROUP BY period, path
-            """
+            file_sql = f"\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       SUM(lines_added) AS la, SUM(lines_deleted) AS ld, path\n                FROM file_change_fact\n                WHERE refresh_id = ? AND project = ?{date_filter}\n                GROUP BY period, path\n            "
             agg_clean: dict[Any, tuple[int, int]] = {}
             for period, la, ld, p in conn.execute(file_sql, params).fetchall():
-                if _is_non_code_path(p or ""):
+                if _is_non_code_path(p or ''):
                     continue
                 la = la or 0
                 ld = ld or 0
@@ -552,73 +259,38 @@ def engineering_throughput(
             fcf_present = True
         except Exception:
             fcf_present = False
-
-        # symbol_change for symbol counts
         symbol_rows: dict[Any, dict[str, int]] = {}
         try:
-            sym_sql = f"""
-                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,
-                       change_type, COUNT(*) AS n
-                FROM symbol_change sc
-                JOIN commit_fact cf USING (sha)
-                WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}
-                GROUP BY period, change_type
-            """
+            sym_sql = f"\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       change_type, COUNT(*) AS n\n                FROM symbol_change sc\n                JOIN commit_fact cf USING (sha)\n                WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}\n                GROUP BY period, change_type\n            "
             for period, ct, n in conn.execute(sym_sql, params).fetchall():
                 bucket = symbol_rows.setdefault(period, {})
                 bucket[ct] = n
             sc_present = bool(symbol_rows)
         except Exception:
             sc_present = False
-
     periods = []
     for period_date, row in sorted(commit_rows.items(), key=lambda kv: kv[0]):
-        # row = (period, n, la, ld, fc) from the SELECT above
         _, n, la, ld, fc = row
         clean_la, clean_ld = file_rows.get(period_date, (la or 0, ld or 0))
-        # symbol_change.change_type is stored as uppercase words
-        # ('ADDED'/'MODIFIED'/'RENAMED'/'DELETED') by the materializer in
-        # analysis.code_index.symbol_changes. The single-letter / lowercase
-        # fallbacks remain in case a future writer changes encoding.
         sym_bucket = symbol_rows.get(period_date, {})
-        sa = sym_bucket.get("ADDED", 0) + sym_bucket.get("A", 0) + sym_bucket.get("added", 0)
-        sm = sym_bucket.get("MODIFIED", 0) + sym_bucket.get("M", 0) + sym_bucket.get("modified", 0)
-        sr = sym_bucket.get("RENAMED", 0) + sym_bucket.get("R", 0) + sym_bucket.get("renamed", 0)
+        sa = sym_bucket.get('ADDED', 0) + sym_bucket.get('A', 0) + sym_bucket.get('added', 0)
+        sm = sym_bucket.get('MODIFIED', 0) + sym_bucket.get('M', 0) + sym_bucket.get('modified', 0)
+        sr = sym_bucket.get('RENAMED', 0) + sym_bucket.get('R', 0) + sym_bucket.get('renamed', 0)
         mean_lpc = round(clean_la / max(1, n), 1)
-        # granularity_index is undefined (None) when clean_la == 0
-        # (zero-line weeks have no meaningful granularity)
-        granularity_index = (
-            round(n / clean_la * 1000, 3) if clean_la > 0 else None
-        )
-        periods.append({
-            "period_start": _json_safe(period_date),
-            "commit_count": n,
-            "files_changed": fc or 0,
-            "lines_added": la or 0,
-            "lines_deleted": ld or 0,
-            "lines_added_clean": clean_la,
-            "lines_deleted_clean": clean_ld,
-            "symbols_added": sa,
-            "symbols_modified": sm,
-            "symbols_renamed": sr,
-            "symbols_total": sa + sm + sr,
-            "mean_lines_per_commit_clean": mean_lpc,
-            "granularity_index": granularity_index,
-        })
-
+        granularity_index = round(n / clean_la * 1000, 3) if clean_la > 0 else None
+        if granularity_index is None:
+            commit_regime = None
+        elif granularity_index < 0.5:
+            commit_regime = 'pr_squash_merge'
+        elif granularity_index > 1.0:
+            commit_regime = 'atomic_commits'
+        else:
+            commit_regime = 'transitional'
+        periods.append({'period_start': _json_safe(period_date), 'commit_count': n, 'files_changed': fc or 0, 'lines_added': la or 0, 'lines_deleted': ld or 0, 'lines_added_clean': clean_la, 'lines_deleted_clean': clean_ld, 'symbols_added': sa, 'symbols_modified': sm, 'symbols_renamed': sr, 'symbols_total': sa + sm + sr, 'mean_lines_per_commit_clean': mean_lpc, 'granularity_index': granularity_index, 'commit_regime': commit_regime})
     reasons = []
     if not fcf_present:
-        reasons.append("file_change_fact empty for this snapshot — lines_added_clean falls back to raw lines_added")
+        reasons.append('file_change_fact empty for this snapshot — lines_added_clean falls back to raw lines_added')
     if not sc_present:
-        reasons.append("symbol_change empty for this snapshot — symbol counts all zero")
+        reasons.append('symbol_change empty for this snapshot — symbol counts all zero')
     degraded = bool(reasons)
-
-    return {
-        "project": project,
-        "granularity": granularity,
-        "refresh_id": refresh_id,
-        "degraded": degraded,
-        "reason": "; ".join(reasons) if reasons else None,
-        "substrate_window": substrate_window,
-        "periods": periods,
-    }
+    return {'project': project, 'granularity': granularity, 'refresh_id': refresh_id, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}
