@@ -36,7 +36,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Iterator, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)

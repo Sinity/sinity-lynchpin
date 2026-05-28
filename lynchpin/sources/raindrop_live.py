@@ -22,8 +22,7 @@ import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 from ..core.config import get_config
 from ..core.parse import parse_datetime

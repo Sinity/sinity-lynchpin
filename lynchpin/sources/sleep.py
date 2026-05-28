@@ -266,6 +266,37 @@ def entries_in_range(start: date, end: date, *, canonical: bool = True) -> list[
     return [e for e in source if start <= e.date <= end]
 
 
+@dataclass(frozen=True)
+class SleepDayActivity:
+    date: date
+    total_hours: Optional[float] = None
+    score: Optional[float] = None
+    quality: Optional[str] = None
+    deep_sleep_hours: Optional[float] = None
+    rem_hours: Optional[float] = None
+    light_sleep_hours: Optional[float] = None
+    awake_hours: Optional[float] = None
+    hr_min_bpm: Optional[float] = None
+    hr_max_bpm: Optional[float] = None
+    hr_avg_bpm: Optional[float] = None
+    respiratory_rate: Optional[float] = None
+    snoring_seconds: Optional[float] = None
+    skin_temp_c: Optional[float] = None
+
+
+def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
+    """Per-day sleep activity summary."""
+    result: list[SleepDayActivity] = []
+    for entry in entries_in_range(start, end, canonical=True):
+        result.append(SleepDayActivity(
+            date=entry.date,
+            total_hours=round(entry.total_minutes / 60, 2) if entry.total_minutes else None,
+            score=round(entry.avg_score, 2) if entry.avg_score else None,
+            quality=entry.quality_label,
+        ))
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Sleep stage analysis
 # ══════════════════════════════════════════════════════════════════════════════

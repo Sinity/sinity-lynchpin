@@ -26,7 +26,7 @@ Limits:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Protocol, Sequence
 
 __all__ = [
@@ -86,12 +86,12 @@ def attribute_spans(
     work_event start wins (deterministic).
     """
     # Pre-filter work_events to those with both timestamps + a conversation_id.
-    candidates = [
+    candidates: list[WorkEventWindow] = [
         we for we in work_events
         if we.start is not None and we.end is not None and we.conversation_id
     ]
     # Sort by start so we can stop scanning early per span.
-    candidates.sort(key=lambda we: (we.start, we.end))
+    candidates.sort(key=lambda we: (we.start or datetime.min.replace(tzinfo=timezone.utc), we.end or datetime.min.replace(tzinfo=timezone.utc)))
 
     result: list[SpanAttribution | None] = []
     for span in spans:
@@ -111,16 +111,16 @@ def _best_match(
     slack = timedelta(seconds=slack_s)
     best: SpanAttribution | None = None
     for we in candidates:
-        # ``we.start`` / ``we.end`` are not-None by pre-filter above.
-        we_start = we.start - slack  # type: ignore[operator]
-        we_end = we.end + slack  # type: ignore[operator]
+        # candidates are pre-filtered: start/end are never None here
+        assert we.start is not None and we.end is not None
+        we_start = we.start - slack
+        we_end = we.end + slack
         if we_start > span_end:
-            # Sorted: any further candidates start even later. Stop.
             break
         if we_end < span_start:
             continue
-        overlap_start = max(span_start, we.start)  # type: ignore[arg-type]
-        overlap_end = min(span_end, we.end)  # type: ignore[arg-type]
+        overlap_start = max(span_start, we.start)
+        overlap_end = min(span_end, we.end)
         overlap_s = max((overlap_end - overlap_start).total_seconds(), 0.0)
         # Slack-only overlap (no real intersection) still counts but at
         # reduced weight — give it a nominal 0.1s so it ranks below real

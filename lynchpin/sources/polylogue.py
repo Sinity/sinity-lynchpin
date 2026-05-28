@@ -1047,7 +1047,6 @@ def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:
         combined_work_kinds: Counter[str] = Counter()
         for t in thread_data:
             combined_work_kinds.update(t["work_kinds"])
-        total_threads = len(thread_data)
         total_messages = sum(t["message_count"] for t in thread_data)
 
         result.append(

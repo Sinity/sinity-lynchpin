@@ -166,3 +166,7 @@ class AWDayActivity:
     dominant_mode: str | None
     dominant_project: str | None
     hourly_active: tuple[float, ...]  # 24 floats: active minutes per hour
+    outage_hours: float = 0.0  # hours where AW data was unavailable (not operator AFK)
+    presence_active_hours: float = 0.0  # cross-source presence: hours with confirmed operator activity
+    presence_typing_hours: float = 0.0  # subset of presence_active_hours with active typing
+    presence_data_gap_hours: float = 0.0  # hours where neither AW nor keylog had data

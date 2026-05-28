@@ -28,6 +28,7 @@ __all__ = [
     "shell_sessions",
     "recordings",
     "daily_terminal_activity",
+    "daily_activity",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -347,3 +348,6 @@ def daily_terminal_activity(*, start: date, end: date) -> list[DailyTerminalActi
             categories=dict(cat_counter),
         ))
     return result
+
+
+daily_activity = daily_terminal_activity

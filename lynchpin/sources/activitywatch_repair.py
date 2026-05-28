@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator

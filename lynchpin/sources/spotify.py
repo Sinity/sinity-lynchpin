@@ -21,6 +21,7 @@ __all__ = [
     "top_names",
     "listening_sessions",
     "daily_listening",
+    "daily_activity",
 ]
 
 @dataclass
@@ -330,6 +331,9 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
             unique_artists=len(artist_set), unique_tracks=len(track_set),
         ))
     return result
+
+
+daily_activity = daily_listening
 
 
 def _stream_end_time(stream: SpotifyStream) -> datetime:

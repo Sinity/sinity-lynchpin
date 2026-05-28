@@ -88,7 +88,7 @@ def iter_gmail() -> Iterator[dict[str, Any]]:
     serialises each ``GmailMessage`` to a dict for compatibility with
     the existing ``iter_events`` pattern.
     """
-    from .gmail_takeout import GmailMessage, iter_gmail_messages_deduped
+    from .gmail_takeout import iter_gmail_messages_deduped
 
     for msg in iter_gmail_messages_deduped():
         if msg.timestamp is None:

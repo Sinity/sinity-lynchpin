@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from pathlib import Path
+from typing import Any, Iterator, Optional
 
 from ..core.parse import parse_datetime as _parse_dt
-from . import health_reader
+from ..core.source import read_jsonl_with
 from .health_models import (
     ActivityDaySummary,
     CalorieBurn,
@@ -55,12 +56,12 @@ __all__ = [
 def daily_steps(*, start: Optional[date] = None, end: Optional[date] = None) -> list[StepDay]:
     """Daily step counts from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_steps.jsonl"):
+    for r in _load_jsonl("health_steps.jsonl"):
         d = r.get("date")
         if not d or d < "2000":
             continue
         d_date = date.fromisoformat(d)
-        if not health_reader.in_range(d_date, start, end):
+        if not _in_range(d_date, start, end):
             continue
         result.append(StepDay(
             date=d_date,
@@ -74,11 +75,11 @@ def daily_steps(*, start: Optional[date] = None, end: Optional[date] = None) -> 
 def stress_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[StressMeasurement]:
     """Stress score measurements from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_stress.jsonl"):
+    for r in _load_jsonl("health_stress.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         result.append(StressMeasurement(timestamp=ts, score=r.get("score")))
     return result
@@ -87,11 +88,11 @@ def stress_measurements(*, start: Optional[date] = None, end: Optional[date] = N
 def hrv_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[HRVMeasurement]:
     """Heart rate variability measurements from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_hrv.jsonl"):
+    for r in _load_jsonl("health_hrv.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         result.append(HRVMeasurement(
             timestamp=ts,
@@ -105,12 +106,12 @@ def hrv_measurements(*, start: Optional[date] = None, end: Optional[date] = None
 def daily_vitality(*, start: Optional[date] = None, end: Optional[date] = None) -> list[VitalityDay]:
     """Daily vitality/activity scores from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_vitality.jsonl"):
+    for r in _load_jsonl("health_vitality.jsonl"):
         d = r.get("date")
         if not d or d < "2000":
             continue
         d_date = date.fromisoformat(d)
-        if not health_reader.in_range(d_date, start, end):
+        if not _in_range(d_date, start, end):
             continue
         result.append(VitalityDay(
             date=d_date,
@@ -128,11 +129,11 @@ def daily_vitality(*, start: Optional[date] = None, end: Optional[date] = None) 
 def heart_rate_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[HeartRateMeasurement]:
     """Heart rate measurements from Samsung Health (hourly bins)."""
     result = []
-    for r in health_reader.load_jsonl("health_heart_rate.jsonl"):
+    for r in _load_jsonl("health_heart_rate.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         hr = r.get("heart_rate")
         if hr is None:
@@ -149,11 +150,11 @@ def heart_rate_measurements(*, start: Optional[date] = None, end: Optional[date]
 def spo2_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SpO2Measurement]:
     """Blood oxygen (SpO2) measurements from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_spo2.jsonl"):
+    for r in _load_jsonl("health_spo2.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         spo2 = r.get("spo2")
         if spo2 is None:
@@ -171,12 +172,12 @@ def spo2_measurements(*, start: Optional[date] = None, end: Optional[date] = Non
 def weight_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[WeightMeasurement]:
     """Weight and body composition from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_weight.jsonl"):
+    for r in _load_jsonl("health_weight.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
         d = ts.date()
-        if not health_reader.in_range(d, start, end):
+        if not _in_range(d, start, end):
             continue
         w = r.get("weight_kg")
         if w is None:
@@ -197,11 +198,11 @@ def weight_measurements(*, start: Optional[date] = None, end: Optional[date] = N
 def skin_temperature(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SkinTemperature]:
     """Skin temperature readings from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_skin_temperature.jsonl"):
+    for r in _load_jsonl("health_skin_temperature.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         temp = r.get("temperature")
         if temp is None:
@@ -218,11 +219,11 @@ def skin_temperature(*, start: Optional[date] = None, end: Optional[date] = None
 def floors_climbed(*, start: Optional[date] = None, end: Optional[date] = None) -> list[FloorClimbed]:
     """Floor climbing events from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_floors.jsonl"):
+    for r in _load_jsonl("health_floors.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         fl = r.get("floor")
         if fl is None:
@@ -237,11 +238,11 @@ def floors_climbed(*, start: Optional[date] = None, end: Optional[date] = None) 
 def mood_entries(*, start: Optional[date] = None, end: Optional[date] = None) -> list[MoodEntry]:
     """Mood log entries from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_mood.jsonl"):
+    for r in _load_jsonl("health_mood.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         mt = r.get("mood_type")
         if mt is None:
@@ -256,12 +257,12 @@ def mood_entries(*, start: Optional[date] = None, end: Optional[date] = None) ->
 def snoring_records(*, start: Optional[date] = None, end: Optional[date] = None) -> list[SnoringRecord]:
     """Snoring tracking records from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_snoring.jsonl"):
+    for r in _load_jsonl("health_snoring.jsonl"):
         st = _parse_dt(r.get("start_time"))
         et = _parse_dt(r.get("end_time"))
         if st is None or et is None:
             continue
-        if not health_reader.in_range(st.date(), start, end):
+        if not _in_range(st.date(), start, end):
             continue
         result.append(SnoringRecord(
             start=st,
@@ -274,11 +275,11 @@ def snoring_records(*, start: Optional[date] = None, end: Optional[date] = None)
 def respiratory_rate(*, start: Optional[date] = None, end: Optional[date] = None) -> list[RespiratoryMeasurement]:
     """Respiratory rate measurements from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_respiratory.jsonl"):
+    for r in _load_jsonl("health_respiratory.jsonl"):
         ts = _parse_dt(r.get("start_time"))
         if ts is None:
             continue
-        if not health_reader.in_range(ts.date(), start, end):
+        if not _in_range(ts.date(), start, end):
             continue
         avg = r.get("avg_rate")
         if avg is None:
@@ -295,11 +296,11 @@ def respiratory_rate(*, start: Optional[date] = None, end: Optional[date] = None
 def ecg_measurements(*, start: Optional[date] = None, end: Optional[date] = None) -> list[ECGMeasurement]:
     """ECG readings from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_ecg.jsonl"):
+    for r in _load_jsonl("health_ecg.jsonl"):
         st = _parse_dt(r.get("start_time"))
         if st is None:
             continue
-        if not health_reader.in_range(st.date(), start, end):
+        if not _in_range(st.date(), start, end):
             continue
         result.append(ECGMeasurement(
             start=st,
@@ -316,12 +317,12 @@ def ecg_measurements(*, start: Optional[date] = None, end: Optional[date] = None
 def activity_summaries(*, start: Optional[date] = None, end: Optional[date] = None) -> list[ActivityDaySummary]:
     """Daily activity summary from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_activity_summary.jsonl"):
+    for r in _load_jsonl("health_activity_summary.jsonl"):
         d = r.get("date")
         if not d or d < "2000":
             continue
         d_date = date.fromisoformat(d)
-        if not health_reader.in_range(d_date, start, end):
+        if not _in_range(d_date, start, end):
             continue
         active_ms = r.get("active_time_ms", 0)
         result.append(ActivityDaySummary(
@@ -336,12 +337,12 @@ def activity_summaries(*, start: Optional[date] = None, end: Optional[date] = No
 def movement_records(*, start: Optional[date] = None, end: Optional[date] = None) -> list[MovementRecord]:
     """Movement events from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_movement.jsonl"):
+    for r in _load_jsonl("health_movement.jsonl"):
         st = _parse_dt(r.get("start_time"))
         et = _parse_dt(r.get("end_time"))
         if st is None or et is None:
             continue
-        if not health_reader.in_range(st.date(), start, end):
+        if not _in_range(st.date(), start, end):
             continue
         dur_ms = r.get("duration_ms", 0)
         result.append(MovementRecord(
@@ -356,12 +357,12 @@ def movement_records(*, start: Optional[date] = None, end: Optional[date] = None
 def calorie_burns(*, start: Optional[date] = None, end: Optional[date] = None) -> list[CalorieBurn]:
     """Daily calorie burn totals from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_calories.jsonl"):
+    for r in _load_jsonl("health_calories.jsonl"):
         d = r.get("date")
         if not d or d < "2000":
             continue
         d_date = date.fromisoformat(d)
-        if not health_reader.in_range(d_date, start, end):
+        if not _in_range(d_date, start, end):
             continue
         active = r.get("active_calorie") or 0
         rest = r.get("rest_calorie") or 0
@@ -376,12 +377,12 @@ def calorie_burns(*, start: Optional[date] = None, end: Optional[date] = None) -
 def nap_sessions(*, start: Optional[date] = None, end: Optional[date] = None) -> list[NapSession]:
     """Nap sessions from Samsung Health."""
     result = []
-    for r in health_reader.load_jsonl("health_naps.jsonl"):
+    for r in _load_jsonl("health_naps.jsonl"):
         st = _parse_dt(r.get("start_time"))
         et = _parse_dt(r.get("end_time"))
         if st is None or et is None:
             continue
-        if not health_reader.in_range(st.date(), start, end):
+        if not _in_range(st.date(), start, end):
             continue
         dur = r.get("duration_min")
         if dur is None:
@@ -394,3 +395,20 @@ def nap_sessions(*, start: Optional[date] = None, end: Optional[date] = None) ->
             after_vitality=r.get("after_vitality"),
         ))
     return result
+
+
+# ── Internal helpers (previously health_reader.py) ──────────────────────────
+
+_PROCESSED = Path("/realm/data/exports/health/processed")
+
+
+def _load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
+    yield from read_jsonl_with(_PROCESSED / filename, lambda p: p, source_name=filename)
+
+
+def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:
+    if start and d < start:
+        return False
+    if end and d > end:
+        return False
+    return True

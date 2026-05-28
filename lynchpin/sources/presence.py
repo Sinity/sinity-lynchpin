@@ -126,11 +126,11 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
         tzinfo=timezone.utc)
 
     # Buckets
-    nonafk = defaultdict(float)
-    afk = defaultdict(float)
-    afk_events = defaultdict(int)
-    win_events = defaultdict(int)
-    presses = defaultdict(int)
+    nonafk: dict[datetime, float] = defaultdict(float)
+    afk: dict[datetime, float] = defaultdict(float)
+    afk_events: dict[datetime, int] = defaultdict(int)
+    win_events: dict[datetime, int] = defaultdict(int)
+    presses: dict[datetime, int] = defaultdict(int)
     aw_data_hours: set[datetime] = set()
     kl_data_dates: set[date] = set()
 
@@ -183,15 +183,15 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
                 win_events[_hr(s)] += 1
 
     # Keylog
-    for f in sorted(KEYLOG_DIR.glob("*.jsonl")) if KEYLOG_DIR.exists() else []:
+    for kl_file in sorted(KEYLOG_DIR.glob("*.jsonl")) if KEYLOG_DIR.exists() else []:
         try:
-            d = date.fromisoformat(f.name[:10])
+            d = date.fromisoformat(kl_file.name[:10])
         except ValueError:
             continue
         if d < start or d > end:
             continue
         kl_data_dates.add(d)
-        with f.open() as fh:
+        with kl_file.open() as fh:
             for line in fh:
                 try:
                     p = json.loads(line)

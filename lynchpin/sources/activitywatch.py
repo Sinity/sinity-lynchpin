@@ -19,7 +19,7 @@ from collections import defaultdict
 from bisect import bisect_left
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
-from typing import Iterator, Sequence, TypeVar
+from typing import Iterable, Iterator, Sequence, TypeVar
 
 from ..core.classify import classify
 from ..core.title_features import extract_title_features
@@ -99,7 +99,7 @@ _AFK_STATUSES = {"afk", "away"}
 
 def _repaired_afk_events(
     start: datetime, end: datetime
-) -> tuple[list, list]:
+) -> tuple[list[Interval], list[Interval]]:
     """Return (active_clipped, afk_clipped) interval lists for [start, end).
 
     Pulls raw AFK events, runs them through the keylog-driven repair
@@ -185,9 +185,78 @@ def focus_spans(
     that day and ``end`` is local midnight of the following day, giving
     the inclusive day-range a caller naturally expects when passing
     ``start=date(d), end=date(d)``.
+
+    After classification, spans without a project are cross-referenced
+    against polylogue work_events to recover session→project attribution
+    for AI-coding terminal windows (kitty, foot, etc.) that the
+    window-title classifier cannot resolve.
     """
     from ..core.parse import end_of_day_local
-    return list(_focus_spans_cached(as_local(start), end_of_day_local(end), min_duration_s))
+    spans = list(_focus_spans_cached(as_local(start), end_of_day_local(end), min_duration_s))
+    return _enrich_with_polylogue(spans, as_local(start), end_of_day_local(end))
+
+
+def _enrich_with_polylogue(
+    spans: list[FocusSpan], start: datetime, end: datetime
+) -> list[FocusSpan]:
+    """Backfill project attribution via polylogue work_event overlap.
+
+    When a focused span on a terminal app has no project, we check whether
+    it temporally overlaps a polylogue work_event. If it does, we inherit
+    the work_event's session→project mapping.
+
+    Gracefully returns spans unchanged when polylogue is unavailable or
+    its insight products are not materialized.
+    """
+    # Only relevant for spans that need attribution
+    needy = [
+        (i, s) for i, s in enumerate(spans)
+        if s.kind == "focused" and not s.project
+    ]
+    if not needy:
+        return spans
+
+    # Lazy imports to avoid circular deps and to keep polylogue optional
+    try:
+        from .polylogue import work_events, session_profiles_for_date
+        from .window_session_attribution import attribute_spans
+    except ImportError:
+        return spans
+
+    try:
+        events = work_events(start=start.date(), end=end.date())
+    except Exception:
+        return spans  # polylogue unavailable — spans stay as-is
+
+    if not events:
+        return spans
+
+    # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow
+    from .window_session_attribution import SpanWindow, WorkEventWindow
+    from typing import cast
+    needy_spans = [s for _, s in needy]
+    attributions = attribute_spans(
+        cast("Iterable[SpanWindow]", needy_spans),
+        cast("Sequence[WorkEventWindow]", events),
+    )
+
+    # Build conversation_id → projects lookup from session profiles
+    conv_projects: dict[str, tuple[str, ...]] = {}
+    try:
+        for profile in session_profiles_for_date(start=start.date(), end=end.date()):
+            if profile.work_event_projects:
+                conv_projects[profile.conversation_id] = profile.work_event_projects
+    except Exception:
+        pass  # session profiles unavailable — can't resolve projects
+
+    for (idx, span), attr in zip(needy, attributions):
+        if attr is None or attr.confidence < 0.3:
+            continue
+        projects = conv_projects.get(attr.conversation_id, ())
+        if projects:
+            span.project = projects[0]  # type: ignore[misc]
+
+    return spans
 
 
 def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDay]:
@@ -1094,7 +1163,11 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     """Composite daily aggregation — the AW equivalent of git.daily_activity.
 
     Combines active_seconds_by_date, deep_work, fragmentation, attention,
-    and circadian profile into one per-day record.
+    circadian profile, and AW outage detection into one per-day record.
+
+    ``outage_hours`` reports hours where AW data was unavailable due to
+    watcher/daemon downtime rather than operator AFK. Days with high
+    outage_hours should not be interpreted as low-activity days.
     """
     s = datetime.combine(start, time.min)
     e = datetime.combine(end + timedelta(days=1), time.min)
@@ -1105,6 +1178,7 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     att_data = attention(start=start, end=end)
     circ_data = circadian(start=s, end=e)
     sessions = app_sessions(start=s, end=e)
+    outage_map = _daily_outage_hours(start=s, end=e)
 
     dw_by_day: dict[date, float] = {}
     for b in dw_blocks:
@@ -1129,11 +1203,18 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
         if d not in proj_by_day and sess.project:
             proj_by_day[d] = sess.project
 
-    all_dates = sorted(set(active_map) | set(dw_by_day) | set(frag_by_day))
+    # Cross-source presence (keylog + AW, resilience against AW outages)
+    presence_map = _daily_presence_summary(start=start, end=end)
+
+    all_dates = sorted(
+        set(active_map) | set(dw_by_day) | set(frag_by_day)
+        | set(outage_map) | set(presence_map)
+    )
     result: list[AWDayActivity] = []
     for d in all_dates:
         if d < start or d > end:
             continue
+        pres = presence_map.get(d, {})
         result.append(
             AWDayActivity(
                 date=d,
@@ -1144,6 +1225,53 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
                 dominant_mode=mode_by_day.get(d),
                 dominant_project=proj_by_day.get(d),
                 hourly_active=tuple(hourly.get(d, [0.0] * 24)),
+                outage_hours=round(outage_map.get(d, 0) / 3600, 2),
+                presence_active_hours=round(pres.get("active_hours", 0), 2),
+                presence_typing_hours=round(pres.get("typing_hours", 0), 2),
+                presence_data_gap_hours=round(pres.get("data_gap_hours", 0), 2),
             )
         )
     return result
+
+
+def _daily_presence_summary(
+    *, start: date, end: date
+) -> dict[date, dict[str, float]]:
+    """Compute cross-source presence summary per day from hourly_presence()."""
+    try:
+        from .presence import hourly_presence
+        hours = list(hourly_presence(start, end))
+    except Exception:
+        return {}
+
+    by_day: dict[date, dict[str, float]] = defaultdict(
+        lambda: {"active_hours": 0, "typing_hours": 0, "data_gap_hours": 0}
+    )
+    for h in hours:
+        d = h.hour_utc.date()
+        if h.derived_state in ("active_typing", "active_no_typing"):
+            by_day[d]["active_hours"] += 1
+        if h.derived_state == "active_typing":
+            by_day[d]["typing_hours"] += 1
+        if h.derived_state == "data_gap":
+            by_day[d]["data_gap_hours"] += 1
+    return dict(by_day)
+
+
+def _daily_outage_hours(*, start: datetime, end: datetime) -> dict[date, float]:
+    """Compute per-day AW outage seconds from cross-bucket gap detection."""
+    try:
+        from .activitywatch_outages import detect_data_outages
+        outages = detect_data_outages(start=start, end=end)
+    except Exception:
+        return {}
+
+    by_day: dict[date, float] = defaultdict(float)
+    for outage in outages:
+        d = outage.start.date()
+        # Only count patterns A (full outage) and B (awatcher process died)
+        # Pattern C (afk-only silent) is tricky — window+web still work,
+        # so it's partial. Count at 50% weight.
+        weight = 1.0 if outage.pattern in ("A", "B") else 0.5
+        by_day[d] += outage.duration_s * weight
+    return dict(by_day)

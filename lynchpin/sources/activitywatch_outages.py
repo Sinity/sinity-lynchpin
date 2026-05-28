@@ -49,7 +49,7 @@ without this detection.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from .activitywatch_models import AWEvent

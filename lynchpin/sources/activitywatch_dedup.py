@@ -39,7 +39,6 @@ intervals you can integrate over to get honest focus seconds.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import Iterable, Iterator
 
 from .activitywatch_raw import AWEvent

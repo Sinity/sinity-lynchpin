@@ -61,6 +61,7 @@ __all__ = [
     "summarize_events_by_month",
     "WebDayActivity",
     "daily_browsing",
+    "daily_activity",
     "domain_breakdown",
 ]
 
@@ -765,6 +766,9 @@ def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity
             )
         )
     return result
+
+
+daily_activity = daily_browsing
 
 
 def domain_breakdown(

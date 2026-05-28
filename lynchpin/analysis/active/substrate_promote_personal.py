@@ -239,18 +239,18 @@ def promote_personal_sources(
         try:
             from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
 
-            content_rows = [
-                row
-                for row in iter_activity_content_days()
-                if window_start <= row.date < window_end
-            ]
+            # Promote ALL NDJSON rows, not just the current window.
+            # Window-filtering caused coverage gaps between DAG runs —
+            # dates present in the NDJSON but falling outside the
+            # incremental window were silently dropped. Full promotion
+            # is cheap (511 rows) and the dedup step in the promoter
+            # removes stale refresh_ids for the same dates.
+            content_rows = list(iter_activity_content_days())
             usage_rows = [
                 row
                 for row in iter_activity_title_usage()
                 if row.last_date is not None
                 and row.first_date is not None
-                and row.first_date < window_end
-                and row.last_date >= window_start
             ]
             counts["activity_content_day"] = promote_activity_content_days(
                 conn,

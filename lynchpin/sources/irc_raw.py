@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path

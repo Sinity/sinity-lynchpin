@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Iterator, Optional
 
@@ -102,7 +102,6 @@ def _build_title_classification_map() -> dict[tuple[str, str], dict]:
     unclassified.
     """
     from ..sources.activity_content import iter_activity_title_usage
-    from ..sources.title_metadata import normalize_title
     out: dict[tuple[str, str], dict] = {}
     for row in iter_activity_title_usage():
         out[row.app, row.normalized_title] = {'activity': row.activity, 'content_type': row.content_type, 'attention_level': row.attention_level, 'topic_category': row.topic_category, 'platform': row.platform}

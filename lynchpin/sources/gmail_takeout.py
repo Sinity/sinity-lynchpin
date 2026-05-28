@@ -21,6 +21,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
+import re
+
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -309,8 +311,6 @@ def daily_gmail_activity(
     return result
 
 
-import re as _re
-
 # Operator email addresses that ever sent mail. Match exact addresses
 # inside the From header, NOT substrings on the display name — the display
 # name is set by the SENDING service, so e.g. ``"Sinity" <notifications@
@@ -323,7 +323,7 @@ _OPERATOR_EMAIL_ADDRESSES: frozenset[str] = frozenset({
     "sinity@substack.com",  # operator's substack publisher address
 })
 
-_EMAIL_ADDR_RE = _re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_EMAIL_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 
 def _extract_email_address(header_value: str) -> str:
