@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
 from .io import save_json
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ModuleStats:
@@ -67,8 +70,8 @@ def _count_lines(path: Path) -> tuple[int, int, int]:
                     comment += 1
                 else:
                     code += 1
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.warning("self_analysis: could not read %s: %s", str(path), exc)
     return code, blank, comment
 
 

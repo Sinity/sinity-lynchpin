@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -87,7 +88,10 @@ def events_from_activitywatch_dbs(
     seen: set[tuple[str, int, int, str]] = set()
     rows: list[AWEvent] = []
     for candidate in _candidate_dbs(db_path):
-        with _connect(candidate) as conn:
+        # `with conn:` only manages the transaction, not the handle; closing()
+        # guarantees the sqlite connection is released per archive DB so we do
+        # not leak file handles across the (potentially many) candidate DBs.
+        with closing(_connect(candidate)) as conn:
             cursor = conn.execute(query, params)
             for bucket, start_ns, end_ns, payload in cursor:
                 if start_ns is None or end_ns is None:
@@ -206,7 +210,10 @@ def event_bounds(bucket_prefix: str, *, db_path: Optional[Path] = None) -> tuple
             conn = _connect(candidate)
         except sqlite3.Error:
             continue
-        with conn:
+        # closing() releases the handle even though `with conn:` (transaction
+        # context) would not — otherwise scanning every archive DB leaks one
+        # sqlite handle per candidate.
+        with closing(conn):
             try:
                 rows = conn.execute(query, (f"{bucket_prefix}%",))
             except sqlite3.Error:

@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from ..core.config import get_config
+from ..core.coverage import CAPTURE_SOURCES, CoverageBounds, _classify_source
 
 
 @dataclass(frozen=True)
@@ -146,11 +147,11 @@ def _materialized_last_dates() -> dict[str, tuple[date | None, Path | None]]:
         path = row.materialized_paths[0] if row.materialized_paths else None
         out[contract_name] = (row.last_date, path)
     for source_key, contract_name in _aliases.items():
-        row = rows.get(contract_name)
-        if row is None or row.last_date is None:
+        aliased = rows.get(contract_name)
+        if aliased is None or aliased.last_date is None:
             continue
-        path = row.materialized_paths[0] if row.materialized_paths else None
-        out[source_key] = (row.last_date, path)
+        path = aliased.materialized_paths[0] if aliased.materialized_paths else None
+        out[source_key] = (aliased.last_date, path)
     return out
 
 
@@ -213,4 +214,90 @@ def _mtime_date(path: Path | None) -> date | None:
     return None
 
 
-__all__ = ["SourceObservation", "source_observations"]
+def coverage_bounds(
+    today: date | None = None,
+    *,
+    substrate_dates: Mapping[str, date] | None = None,
+) -> dict[str, CoverageBounds]:
+    """Return ``CoverageBounds`` keyed by source name for every configured source.
+
+    Reuses the same observed-date discovery already performed by
+    ``source_observations()`` — no additional file scanning.  Each bound is
+    tagged as ``"capture"`` or ``"export"`` based on ``CAPTURE_SOURCES``.
+
+    The ``first`` bound is populated from materialized dataset metadata when
+    available; otherwise it is ``None`` (first-date was not observable from
+    filesystem mtime alone).  The ``last`` bound mirrors ``last_observed``
+    from ``source_observations()``.
+
+    Parameters
+    ----------
+    today:
+        Reference date forwarded to ``source_observations()``.
+    substrate_dates:
+        Optional promoted substrate dates forwarded to ``source_observations()``.
+
+    Returns
+    -------
+    dict[str, CoverageBounds]
+        One entry per source key returned by ``available_sources()``.
+        Sources that are unavailable have ``first=None`` and ``last=None``.
+
+    Example
+    -------
+    ::
+
+        bounds = coverage_bounds()
+        spotify = bounds["spotify"]
+        if spotify.covers(date(2025, 12, 1)):
+            ...  # safe to query
+        start, end = spotify.clamp(date(2025, 1, 1), date(2026, 5, 30)) or (None, None)
+        print(spotify.provenance())
+        # → "spotify: covers 2020-01-01 → 2025-12-18 (export)"
+    """
+    observations = source_observations(today=today, substrate_dates=substrate_dates)
+    first_dates = _materialized_first_dates_map()
+    result: dict[str, CoverageBounds] = {}
+    for obs in observations:
+        first = first_dates.get(obs.source) if obs.available else None
+        result[obs.source] = CoverageBounds(
+            source=obs.source,
+            first=first,
+            last=obs.last_observed,
+            kind=_classify_source(obs.source),
+        )
+    return result
+
+
+def _materialized_first_dates_map() -> dict[str, date]:
+    """Map source key → first_date from materialized dataset manifests.
+
+    Parallel to ``_materialized_last_dates()`` but returning the ``first_date``
+    field.  Uses the same alias mapping so ``fbmessenger`` → ``facebook_messenger``.
+    """
+    from lynchpin.materialization import audit_materialization
+
+    _aliases = {
+        "fbmessenger": "facebook_messenger",
+    }
+    rows = {row.name: row for row in audit_materialization()}
+    out: dict[str, date] = {}
+    for contract_name, row in rows.items():
+        if row.first_date is None:
+            continue
+        out[contract_name] = row.first_date
+    for source_key, contract_name in _aliases.items():
+        aliased = rows.get(contract_name)
+        if aliased is None or aliased.first_date is None:
+            continue
+        out[source_key] = aliased.first_date
+    return out
+
+
+__all__ = [
+    "CoverageBounds",
+    "CAPTURE_SOURCES",
+    "SourceObservation",
+    "coverage_bounds",
+    "source_observations",
+]

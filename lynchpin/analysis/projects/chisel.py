@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from ...core.errors import MaterializationError
 try:
     from rich.console import Console
     from rich.table import Table
@@ -136,9 +137,9 @@ def _run_repomix(repomix_bin: str, output_path: Path, plan: RepoPlan, args: list
     result = _run([repomix_bin, '.', *args], cwd=plan.path)
     if result.returncode != 0:
         details = (result.stderr or result.stdout or 'repomix failed').strip()
-        raise RuntimeError(f'{plan.name}: {details}')
+        raise MaterializationError(plan.name, reason=details)
     if not output_path.exists():
-        raise RuntimeError(f'{plan.name}: output not written: {output_path}')
+        raise MaterializationError(plan.name, reason=f'output not written: {output_path}')
     stripped = _sanitize_xml(output_path)
     if stripped:
         _print(f'  [dim]┄ {output_path.name}: {stripped:,} ctrl bytes stripped[/dim]')

@@ -11,6 +11,8 @@ from . import evidence_activitywatch
 from . import evidence_web_media
 from . import evidence_terminal
 from . import evidence_raw_log
+from . import evidence_clipboard
+from . import evidence_irc
 from . import evidence_personal_products
 log = logging.getLogger(__name__)
 
@@ -27,6 +29,12 @@ def add_base_source_nodes(nodes: list[EvidenceNode], edges: list[EvidenceEdge], 
     log.info('evidence_sources: raw log')
     evidence_raw_log.add_raw_log(nodes, start=start, end=end, selected=selected)
     log.info('evidence_sources: raw log complete nodes=%d', len(nodes))
+    log.info('evidence_sources: clipboard')
+    evidence_clipboard.add_clipboard(nodes, start=start, end=end, selected=selected)
+    log.info('evidence_sources: clipboard complete nodes=%d', len(nodes))
+    log.info('evidence_sources: irc')
+    evidence_irc.add_irc(nodes, start=start, end=end, selected=selected)
+    log.info('evidence_sources: irc complete nodes=%d', len(nodes))
     log.info('evidence_sources: activitywatch')
     evidence_activitywatch.add_focus(nodes, start=start, end=end, selected=selected, mode=mode)
     log.info('evidence_sources: activitywatch complete nodes=%d', len(nodes))

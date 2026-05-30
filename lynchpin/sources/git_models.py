@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 
-@dataclass
+@dataclass(frozen=True)
 class GitCommit:
     date: date
     repo: str
@@ -18,7 +18,7 @@ class GitCommit:
     subject: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class GitCommitActivity:
     repo: str
     timestamp: datetime
@@ -95,7 +95,7 @@ class CommitSession:
     lines_changed: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoInfo:
     name: str
     path: Path
@@ -105,7 +105,7 @@ class RepoInfo:
     last_commit_at: Optional[datetime]
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoFile:
     repo: str
     relative: str
@@ -113,7 +113,7 @@ class RepoFile:
     category: Optional[str]
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoCommitSummary:
     repo: str
     sha: str
@@ -122,7 +122,7 @@ class RepoCommitSummary:
     subject: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class TokeiLanguageStat:
     language: str
     code: int
@@ -130,7 +130,7 @@ class TokeiLanguageStat:
     blanks: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class TokeiReport:
     repo: str
     total_code: int

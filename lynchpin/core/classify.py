@@ -11,8 +11,27 @@ import functools
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .projects import ALL_PROJECTS, canonical_project_name
+
+# Closed vocabulary of activity modes produced by the classify cascade.
+# Every branch in ``classify()`` must assign one of these literals; mypy will
+# flag any deviation.  Runtime values are unchanged — still plain strings.
+AttributionMode = Literal[
+    "admin",
+    "chat",
+    "coding",
+    "media",
+    "planning",
+    "recovery",
+    "research",
+    "shell",
+    "social",
+    "unknown",
+    "web",
+    "writing",
+]
 
 # ── Lookup tables (the real domain knowledge) ─────────────────────────────────
 
@@ -84,7 +103,7 @@ _PROJECT_RESOLVED_PATHS: list[tuple[str, Path]] = [
 
 @dataclass(frozen=True)
 class Attribution:
-    mode: str
+    mode: AttributionMode
     project: str | None
     topic: str | None
 
@@ -116,14 +135,17 @@ def classify(
     text = " ".join(p for p in [title, cwd, url] if p).lower()
 
     # Mode classification — priority cascade
+    mode: AttributionMode
     if kind == "afk":
         mode = "recovery"
     elif source == "git.commit":
         mode = "coding"
     elif source == "polylogue.session" and evidence.get("work_event_kind"):
-        mode = POLYLOGUE_WORK_EVENT_MODE_MAP.get(str(evidence["work_event_kind"]), "chat")
+        # POLYLOGUE_WORK_EVENT_MODE_MAP values are all valid AttributionMode literals.
+        mapped = POLYLOGUE_WORK_EVENT_MODE_MAP.get(str(evidence["work_event_kind"]), "chat")
+        mode = mapped  # type: ignore[assignment]  # map values are AttributionMode strings
     elif mode_hint and mode_hint not in {"unknown", ""}:
-        mode = mode_hint
+        mode = mode_hint  # type: ignore[assignment]  # caller-supplied hint; may not be in Literal
     elif _matches_domain_or_text(domain_l, text, AI_DOMAINS) or source in {"chatlog.transcript", "polylogue.session"}:
         mode = "chat"
     elif _matches_domain_or_text(domain_l, text, MEDIA_DOMAINS) or app_l in MEDIA_APPS:

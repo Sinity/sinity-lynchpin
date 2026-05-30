@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .core.config import LynchpinConfig, get_config
+from .core.errors import MaterializationError
 from .core.source_contracts import (
     DatasetStatus,
     SOURCE_CONTRACT_NAMES,
@@ -212,7 +213,10 @@ def _materializers() -> dict[str, Callable[[], Any]]:
 def _materialize_webhistory() -> None:
     cfg = get_config()
     if cfg.webhistory_ndjson is None:
-        raise RuntimeError("canonical webhistory output path is not configured")
+        raise MaterializationError(
+            "webhistory",
+            reason="canonical webhistory output path is not configured",
+        )
     build_full_history(data_dir=cfg.webhistory_dir, output=cfg.webhistory_ndjson)
 
 

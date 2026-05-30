@@ -1,4 +1,5 @@
 """Cross-Project Productivity and Structural Metrics Suite"""
+import logging
 import os
 from collections import Counter
 from datetime import datetime
@@ -7,6 +8,8 @@ from ..core.io import save_json
 from ..core.fs import walk_files
 from ..core.git import get_log
 from ...core.projects import ALL_PROJECTS
+
+logger = logging.getLogger(__name__)
 
 PROJECTS_META = {
     name: {"era": p.era, "ext": p.extensions, "path": p.path}
@@ -43,7 +46,8 @@ def analyze_structural(base_dir):
                     continue
                 with open(fp, 'r', errors='ignore') as f_obj:
                     lines = f_obj.readlines()
-            except Exception:
+            except Exception as exc:
+                logger.debug("metrics: could not read %s: %s", fp, exc)
                 continue
             
             n = len(lines)

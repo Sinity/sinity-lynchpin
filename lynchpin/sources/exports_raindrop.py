@@ -11,6 +11,7 @@ from typing import Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import parse_datetime
+from ..core.primitives import logical_date
 
 __all__ = [
     "RaindropBookmark",
@@ -25,7 +26,7 @@ __all__ = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class RaindropBookmark:
     id: int
     title: str
@@ -150,7 +151,10 @@ def daily_raindrop_activity(*, start: date, end: date) -> list[RaindropDayActivi
     for bookmark in iter_raindrop_bookmarks():
         if bookmark.created is None:
             continue
-        d = bookmark.created.date()
+        d = logical_date(bookmark.created)
+        # NOTE: original predicate was exclusive on end (d >= end → skip).
+        # Semantics differ from in_date_range (inclusive both ends) so the
+        # hand-rolled check is preserved as-is to avoid a behaviour change.
         if d < start or d >= end:
             continue
         count, tags = by_date[d]

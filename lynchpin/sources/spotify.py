@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta, date
+from datetime import timedelta, date, timezone
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +10,7 @@ from typing import Iterator, Optional
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
+from ..core.primitives import logical_date
 
 __all__ = [
     "SpotifyStream",
@@ -24,7 +25,7 @@ __all__ = [
     "daily_activity",
 ]
 
-@dataclass
+@dataclass(frozen=True)
 class SpotifyStream:
     end_time: Optional[datetime]
     artist: str
@@ -181,7 +182,7 @@ def _parse_time(entry: dict[object, object]) -> Optional[datetime]:
         raw_obj = entry["endTime"]
         if isinstance(raw_obj, str):
             try:
-                return datetime.strptime(raw_obj, "%Y-%m-%d %H:%M")
+                return datetime.strptime(raw_obj, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
             except ValueError:
                 pass
     if "ts" in entry and isinstance(entry["ts"], str):
@@ -283,7 +284,7 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
     from datetime import timedelta, timezone
     from ..core.primitives import TopN, merge_intervals
 
-    def _to_utc(ts):
+    def _to_utc(ts: datetime) -> datetime:
         if ts.tzinfo is None:
             return ts.replace(tzinfo=timezone.utc)
         return ts.astimezone(timezone.utc)
@@ -292,7 +293,7 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
     for s in iter_streams(root=root):
         if s.end_time is None:
             continue
-        d = s.end_time.date()
+        d = logical_date(s.end_time)
         if start and d < start:
             continue
         if end and d > end:
@@ -344,3 +345,39 @@ def _stream_end_time(stream: SpotifyStream) -> datetime:
 
 def _optional_str(value: object) -> str | None:
     return str(value) if value not in (None, "") else None
+
+
+def daily_genre_minutes(
+    start: date, end: date, *, cache_path: Optional[Path] = None
+) -> dict[date, dict[str, float]]:
+    """Per logical day, minutes of listening attributed to each artist genre.
+
+    Genres are absent from the export, so each streamed artist's genres are
+    resolved via the Spotify catalog API (``spotify_genres.artist_genres_by_name``,
+    disk-cached). A stream's minutes are added to every genre of its artist; a day
+    only appears if it had a covered stream (missing != zero). Requires
+    SPOTIFY_CLIENT_ID/SECRET — raises SourceUnavailableError otherwise.
+    """
+    from collections import defaultdict
+
+    from ..core.parse import in_date_range
+    from .spotify_genres import artist_genres_by_name
+
+    streams = [
+        s
+        for s in iter_streams()
+        if s.end_time is not None
+        and s.artist
+        and in_date_range(logical_date(s.end_time), start, end)
+    ]
+    names = {s.artist for s in streams}
+    genres_by_name = artist_genres_by_name(names, cache_path=cache_path)
+
+    out: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for stream in streams:
+        assert stream.end_time is not None  # filtered above
+        day = logical_date(stream.end_time)
+        minutes = stream.ms_played / 60_000.0
+        for genre in genres_by_name.get(stream.artist, []):
+            out[day][genre] += minutes
+    return {day: dict(genres) for day, genres in out.items()}

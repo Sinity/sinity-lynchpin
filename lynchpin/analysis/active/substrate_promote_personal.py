@@ -150,6 +150,28 @@ def promote_personal_sources(
                 window_end=window_end,
             )
 
+    # ── operator_day: materialize the wide cross-source daily matrix ─────
+    # Self-contained best-effort: the heavy operator_daily_matrix build runs
+    # here in the offline refresh so MCP correlation tools can read it via
+    # fast SQL. Failure is logged and never aborts the rest of the promotion.
+    try:
+        from lynchpin.analysis.operator_daily import operator_daily_matrix
+        from lynchpin.substrate.personal import promote_operator_day_rows
+
+        operator_rows = [
+            r
+            for r in operator_daily_matrix(window_start, window_end)
+            if window_start <= r.date < window_end
+        ]
+        if operator_rows:
+            counts["operator_day"] = promote_operator_day_rows(
+                conn,
+                refresh_id=refresh_id,
+                rows=operator_rows,
+            )
+    except Exception as exc:
+        log.warning("substrate_promote: operator_day promotion skipped: %s", exc)
+
     # ── spotify_daily: best-effort promotion from streaming history ──────
     if selection.includes(SOURCE_SPOTIFY_DAILY):
         try:

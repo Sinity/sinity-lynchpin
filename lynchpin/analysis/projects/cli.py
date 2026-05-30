@@ -13,7 +13,6 @@ from ..active.snapshot import run_active_project_snapshot
 from ..change.commit_capsules import run_active_commit_semantics
 from ..change.work_packages import run_active_work_packages
 from ..code_index.python_analysis import run_active_python_complexity, run_active_python_import_graph
-from ..code_index.symbol_changes import run_active_symbol_changes
 from ..code_index.symbol_diffs import run_active_symbol_diffs
 from ..code_index.symbol_index import run_active_symbol_index
 from ..frontier.ci_health import run_active_ci_health
@@ -427,26 +426,6 @@ def register_commands(parent: typer.Typer) -> None:
     ) -> None:
         target = out or resolve_analysis_path("active_symbol_index.json")
         run_active_symbol_index(target, projects=list(project or []))
-
-    @parent.command(
-        "active-symbol-changes",
-        help="Correlate symbol index with file-change facts (path-level)",
-    )
-    def _active_symbol_changes(
-        start: str = typer.Option(None, "--start"),
-        end: str = typer.Option(None, "--end"),
-        project: list[str] = typer.Option(None, "--project"),
-        symbol_index: str | None = typer.Option(None, "--symbol-index"),
-        file_changes: str | None = typer.Option(None, "--file-changes"),
-        out: str | None = typer.Option(None, "--out"),
-    ) -> None:
-        target = out or resolve_analysis_path("active_symbol_changes.json")
-        run_active_symbol_changes(
-            target,
-            start=_opt_date(start), end=_opt_date(end), projects=list(project or []),
-            symbol_index_file=symbol_index or resolve_analysis_path("active_symbol_index.json"),
-            file_changes_file=file_changes or resolve_analysis_path("active_file_change_facts.json"),
-        )
 
     @parent.command(
         "active-symbol-diffs",

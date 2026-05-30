@@ -9,7 +9,7 @@ from datetime import date as _date_type, datetime
 from ..core.primitives import TopN
 
 
-@dataclass
+@dataclass(frozen=True)
 class WebHistoryEntry:
     date: str
     record_json: str
@@ -53,7 +53,7 @@ class WebDayActivity:
     top_titles: tuple[str, ...]
 
 
-@dataclass
+@dataclass  # not frozen: mutable accumulator bucket mutated in-loop in web.py
 class _WebDayBucket:
     count: int = 0
     domains: TopN = dataclass_field(default_factory=lambda: TopN(10))

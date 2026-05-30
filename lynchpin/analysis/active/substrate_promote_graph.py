@@ -42,10 +42,12 @@ def promote_graph_source(
             refresh_id=refresh_id,
             graph=graph,
         )
+        from lynchpin.graph.evidence_graph import analysis_claim_rows
+
         claim_count = promote_analysis_claims(
             conn,
             refresh_id=refresh_id,
-            claims=_analysis_claim_rows(graph),
+            claims=analysis_claim_rows(graph),
         )
         counts["evidence_graph_nodes"] = graph_counts.get("nodes", 0)
         counts["evidence_graph_edges"] = graph_counts.get("edges", 0)
@@ -72,74 +74,3 @@ def promote_graph_source(
             window_start=window_start,
             window_end=window_end,
         )
-
-
-def _analysis_claim_rows(graph: Any) -> list[Any]:
-    from lynchpin.graph.work_correlation import supported_work_claims, work_day_correlations
-    from lynchpin.substrate.claims import AnalysisClaimRow, claim_id
-
-    rows = work_day_correlations(
-        start=graph.start,
-        end=graph.end,
-        graph=graph,
-    )
-    claims = supported_work_claims(rows, graph=graph, limit=200)
-    result: list[AnalysisClaimRow] = []
-    for claim in claims:
-        # Prefer real edge composite IDs (source_id->target_id:relation) so
-        # load_claim_evidence can join back to evidence_edge rows. Fall back
-        # to dimension labels only if strongest_edge_ids is unpopulated (e.g.
-        # legacy callers not going through _work_claim).
-        relation_ids = claim.strongest_edge_ids or tuple(
-            _relation_id(value) for value in claim.strongest_relations
-        )
-        result.append(
-            AnalysisClaimRow(
-                claim_id=claim_id("supported_work", claim.date, claim.project, claim.summary),
-                claim_type="supported_work",
-                project=claim.project,
-                date=claim.date,
-                support_level=claim.support_level,
-                confidence=_confidence_for_support(claim.support_level),
-                score=claim.score,
-                summary=claim.summary,
-                source_ids=(),
-                relation_ids=relation_ids,
-                caveats=claim.caveats,
-                payload={
-                    "sources": list(claim.sources),
-                    "relation_count": claim.relation_count,
-                    "strongest_relations": list(claim.strongest_relations),
-                },
-            )
-        )
-    for node in graph.nodes:
-        if node.kind not in {"analysis_claim", "machine_experiment_claim"}:
-            continue
-        payload = node.payload or {}
-        confidence = payload.get("confidence")
-        result.append(
-            AnalysisClaimRow(
-                claim_id=claim_id(node.kind, node.id),
-                claim_type=str(payload.get("claim_type") or node.kind),
-                project=node.project,
-                date=node.date,
-                support_level=str(payload.get("support_level") or ""),
-                confidence=float(confidence) if isinstance(confidence, (int, float)) else 0.0,
-                score=float(confidence) if isinstance(confidence, (int, float)) else 0.0,
-                summary=node.summary,
-                source_ids=(node.id,),
-                relation_ids=(),
-                caveats=tuple(c.message for c in node.caveats),
-                payload=dict(payload),
-            )
-        )
-    return result
-
-
-def _confidence_for_support(level: str) -> float:
-    return {"strong": 0.85, "moderate": 0.65, "weak": 0.35}.get(level, 0.25)
-
-
-def _relation_id(value: str) -> str:
-    return value.split(": ", 1)[0]

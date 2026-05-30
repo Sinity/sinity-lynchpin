@@ -1,5 +1,6 @@
 """Tests for sources/git.py — commit parsing, daily activity, burst detection."""
 
+import os
 import subprocess
 from datetime import date, datetime, timedelta
 
@@ -7,6 +8,7 @@ from lynchpin.sources.git import (
     _parse_prefix, _count_bursts, _path_root, _parse_date, _parse_git_shortstat,
     GitCommitFact, commit_facts, github_context_for_commits,
 )
+from lynchpin.core.primitives import logical_date
 from lynchpin.sources.github import GitHubActor, GitHubItem
 
 
@@ -139,6 +141,48 @@ def test_commit_facts_defaults_to_current_history_ref(tmp_path):
 
     assert [row.subject for row in default_rows] == ["feat: base"]
     assert {row.subject for row in all_rows} == {"feat: base", "feat: side"}
+
+
+def _init_repo(repo):
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
+
+
+def _commit_at(repo, name, msg, author_date):
+    (repo / name).write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", name], cwd=repo, check=True)
+    env = {
+        "GIT_AUTHOR_DATE": author_date,
+        "GIT_COMMITTER_DATE": author_date,
+    }
+    subprocess.run(
+        ["git", "commit", "-m", msg], cwd=repo, check=True, capture_output=True, env={**os.environ, **env}
+    )
+
+
+def test_commits_bucket_by_logical_day_not_author_tz(tmp_path):
+    """A commit at 23:30-08:00 is the next local logical day, not the author-tz date.
+
+    Author-tz ``.date()`` would file 2026-03-15T23:30-08:00 on Mar 15; the local
+    logical day (Europe/Warsaw, after the 6 AM boundary) is Mar 16. This pins the
+    fix that aligns git day attribution with AW/terminal logical days.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    author_date = "2026-03-15T23:30:00-08:00"
+    _commit_at(repo, "a.txt", "feat: edge commit", author_date)
+
+    aware = datetime.fromisoformat(author_date)
+    expected_day = logical_date(aware)
+    assert expected_day != aware.date()  # guards against author-tz regression
+
+    # commit_facts is the per-repo entry point; the range filter inside
+    # _iter_repo_commit_records now buckets by logical_date.
+    facts = list(commit_facts(start=expected_day, end=expected_day, repo_paths=(repo,)))
+    assert [f.subject for f in facts] == ["feat: edge commit"]
+    assert logical_date(facts[0].authored_at) == expected_day
 
 
 def test_commit_facts_can_skip_numstat_paths(tmp_path):

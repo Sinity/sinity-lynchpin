@@ -31,6 +31,8 @@ from ..core.primitives import (
     split_by_day,
     split_by_hour,
     duration_s,
+    logical_date,
+    date_to_dt_range,
     Interval,
 )
 from ..core.parse import as_local
@@ -159,8 +161,11 @@ def afk_intervals(start: datetime | date, end: datetime | date) -> list[Interval
 
 
 def active_seconds_by_date(start: date, end: date) -> dict[date, float]:
-    s = datetime.combine(start, time.min)
-    e = datetime.combine(end + timedelta(days=1), time.min)
+    # Construct the window on the 6 AM logical boundary so the first/last
+    # logical day are fully covered, then bucket via split_by_day (which keys
+    # by logical_date). Building a midnight window would half-populate the
+    # edge days relative to logical-day totals produced elsewhere.
+    s, e = date_to_dt_range(start, end)
     totals: dict[date, float] = {}
     for iv in active_intervals(s, e):
         for day, seg in split_by_day(*iv):
@@ -537,7 +542,10 @@ def _window_spans(
             # Enrich with title feature extraction — better project + AI detection
             feat = extract_title_features(app, title)
             project = attr.project or feat.project
-            mode = attr.mode if attr.mode != "unknown" else None
+            # Mixing local: holds an Attribution.mode, a title-feature domain
+            # category, or "coding" — a plain mode string, not the closed
+            # AttributionMode vocabulary. Annotated to avoid Literal narrowing.
+            mode: str | None = attr.mode if attr.mode != "unknown" else None
             # Title features can improve mode when classify returns unknown
             if mode is None and feat.domain_category:
                 mode = feat.domain_category
@@ -708,7 +716,7 @@ def _append_or_merge_win(target: list[_WindowSpan], span: _WindowSpan) -> None:
             and prev.title == span.title
             and prev.mode == span.mode
             and prev.project == span.project
-            and prev.start.date() == span.start.date()
+            and logical_date(prev.start) == logical_date(span.start)
             and prev.end >= span.start
         ):
             target[-1] = replace(prev, end=max(prev.end, span.end))
@@ -727,7 +735,7 @@ def _merge_adjacent(spans: Sequence[FocusSpan]) -> Iterator[FocusSpan]:
             and current.title == s.title
             and current.mode == s.mode
             and current.project == s.project
-            and current.date == s.date
+            and logical_date(current.start) == logical_date(s.start)
             and current.end >= s.start
         ):
             current = FocusSpan(
@@ -761,7 +769,7 @@ def _merge_timeline_adjacent(
             and current.mode == span.mode
             and current.project == span.project
             and current.source == span.source
-            and current.date == span.date
+            and logical_date(current.start) == logical_date(span.start)
             and current.end >= span.start
         ):
             current = FocusTimelineSpan(
@@ -804,7 +812,8 @@ def app_sessions(
         end_of=lambda s: s.end,
         max_gap=120,
         absorb_interruption=30,
-        compatible=lambda a, b: a.app == b.app and a.date == b.date,
+        compatible=lambda a, b: a.app == b.app
+        and logical_date(a.start) == logical_date(b.start),
     ):
         wall = duration_s((g.start, g.end))
         if wall < min_duration_s:
@@ -903,12 +912,15 @@ def _deep_compatible(a: AppSession, b: AppSession) -> bool:
 
 
 def circadian(*, start: date, end: date) -> list[CircadianProfile]:
-    s = datetime.combine(start, time.min)
-    e = datetime.combine(end + timedelta(days=1), time.min)
+    # Logical-boundary window so the edge days are fully covered, matching
+    # active_seconds_by_date and the logical_date bucketing below.
+    s, e = date_to_dt_range(start, end)
     buckets: dict[tuple[date, int], tuple[TopN, TopN, float, float]] = {}
     for span in focus_spans(start=s, end=e, min_duration_s=30):
         for hour, seg in split_by_hour(span.start, span.end):
-            key = (span.date, hour)
+            # Bucket by the segment's logical day: a span straddling the 6 AM
+            # boundary contributes its sub-segments to the correct logical days.
+            key = (logical_date(seg[0]), hour)
             modes, projects, active, recovery = buckets.get(
                 key, (TopN(1), TopN(1), 0.0, 0.0)
             )
@@ -949,7 +961,7 @@ def loops(
     ]
     by_day: dict[date, list[FocusSpan]] = {}
     for s in spans:
-        by_day.setdefault(s.date, []).append(s)
+        by_day.setdefault(logical_date(s.start), []).append(s)
 
     result: list[FocusLoop] = []
     for day in sorted(by_day):
@@ -1011,12 +1023,11 @@ def _ctx(s: FocusSpan) -> tuple[str | None, str | None]:
 
 
 def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
-    s = datetime.combine(start, time.min)
-    e = datetime.combine(end + timedelta(days=1), time.min)
+    s, e = date_to_dt_range(start, end)
     sessions = app_sessions(start=s, end=e)
     by_day: dict[date, list[AppSession]] = {}
     for sess in sessions:
-        by_day.setdefault(sess.start.date(), []).append(sess)
+        by_day.setdefault(logical_date(sess.start), []).append(sess)
 
     result: list[FragmentationMetrics] = []
     for day, ds in sorted(by_day.items()):
@@ -1074,14 +1085,13 @@ def _session_ctx(s: AppSession) -> str:
 
 
 def attention(*, start: date, end: date) -> list[AttentionMetrics]:
-    s = datetime.combine(start, time.min)
-    e = datetime.combine(end + timedelta(days=1), time.min)
+    s, e = date_to_dt_range(start, end)
     spans = focus_spans(start=s, end=e, min_duration_s=60)
     by_day: dict[date, dict[str, float]] = {}
     for span in spans:
         if span.kind != "focused" or not span.project:
             continue
-        bucket = by_day.setdefault(span.date, {})
+        bucket = by_day.setdefault(logical_date(span.start), {})
         bucket[span.project] = bucket.get(span.project, 0) + span.duration_s
 
     result: list[AttentionMetrics] = []
@@ -1169,20 +1179,20 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     watcher/daemon downtime rather than operator AFK. Days with high
     outage_hours should not be interpreted as low-activity days.
     """
-    s = datetime.combine(start, time.min)
-    e = datetime.combine(end + timedelta(days=1), time.min)
+    s, e = date_to_dt_range(start, end)
 
     active_map = active_seconds_by_date(start, end)
     dw_blocks = deep_work(start=s, end=e)
     frag_data = fragmentation(start=start, end=end)
     att_data = attention(start=start, end=end)
-    circ_data = circadian(start=s, end=e)
+    circ_data = circadian(start=start, end=end)
     sessions = app_sessions(start=s, end=e)
     outage_map = _daily_outage_hours(start=s, end=e)
 
     dw_by_day: dict[date, float] = {}
     for b in dw_blocks:
-        dw_by_day[b.start.date()] = dw_by_day.get(b.start.date(), 0) + b.duration_min
+        d = logical_date(b.start)
+        dw_by_day[d] = dw_by_day.get(d, 0) + b.duration_min
 
     frag_by_day = {f.date: f.fragmentation for f in frag_data}
     att_by_day = {a.date: a.project_count for a in att_data}
@@ -1197,7 +1207,7 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     mode_by_day: dict[date, str] = {}
     proj_by_day: dict[date, str] = {}
     for sess in sessions:
-        d = sess.start.date()
+        d = logical_date(sess.start)
         if d not in mode_by_day and sess.mode:
             mode_by_day[d] = sess.mode
         if d not in proj_by_day and sess.project:
@@ -1248,7 +1258,7 @@ def _daily_presence_summary(
         lambda: {"active_hours": 0, "typing_hours": 0, "data_gap_hours": 0}
     )
     for h in hours:
-        d = h.hour_utc.date()
+        d = logical_date(h.hour_utc)
         if h.derived_state in ("active_typing", "active_no_typing"):
             by_day[d]["active_hours"] += 1
         if h.derived_state == "active_typing":
@@ -1268,7 +1278,7 @@ def _daily_outage_hours(*, start: datetime, end: datetime) -> dict[date, float]:
 
     by_day: dict[date, float] = defaultdict(float)
     for outage in outages:
-        d = outage.start.date()
+        d = logical_date(outage.start)
         # Only count patterns A (full outage) and B (awatcher process died)
         # Pattern C (afk-only silent) is tricky — window+web still work,
         # so it's partial. Count at 50% weight.

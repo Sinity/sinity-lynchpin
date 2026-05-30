@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class WykopLinkComment:
     id: int
     created_at: Optional[datetime]
@@ -41,7 +41,7 @@ class WykopLinkComment:
     tags: list[str]
 
 
-@dataclass
+@dataclass(frozen=True)
 class WykopEntry:
     id: int
     created_at: Optional[datetime]
@@ -52,7 +52,7 @@ class WykopEntry:
     votes_down: Optional[int]
 
 
-@dataclass
+@dataclass(frozen=True)
 class WykopEntryComment:
     id: int
     created_at: Optional[datetime]

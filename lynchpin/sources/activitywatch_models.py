@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Dict
 
 
-@dataclass
+@dataclass(frozen=True)
 class AWEvent:
     bucket: str
     start: datetime

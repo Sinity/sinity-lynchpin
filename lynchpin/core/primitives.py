@@ -1,4 +1,16 @@
-"""Shared data manipulation primitives: TopN, group_by_gap, interval arithmetic."""
+"""Shared data manipulation primitives: TopN, group_by_gap, interval arithmetic.
+
+Logical-day bucketing
+---------------------
+``logical_date`` is THE canonical function for mapping any datetime to the
+"logical day" it belongs to under the 6 AM (``DAY_BOUNDARY_HOUR``) boundary.
+Any caller that needs to assign an event to a day must use it instead of
+``.date()`` — a raw ``.date()`` buckets by calendar midnight in whatever tz the
+datetime happens to carry (UTC, author-local, naive), which fragments late-night
+activity across the wrong day and mixes timezones. ``logical_date`` localizes via
+``as_local`` first, so a UTC-aware, author-local, or naive-local datetime all
+resolve to the same local logical day before the boundary rule is applied.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +18,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, date
 from typing import Callable, Generic, Iterable, Iterator, Sequence, TypeVar
+
+from lynchpin.core.parse import as_local
 
 T = TypeVar("T")
 
@@ -76,13 +90,22 @@ def group_by_gap(
 
     If absorb_interruption > 0, incompatible items shorter than that duration
     are absorbed as interruptions rather than breaking the group.
+
+    Precondition: items are grouped by ascending start time. We enforce this
+    with a stable sort on entry rather than trusting the caller — an out-of-order
+    or equal-start item would otherwise produce a negative gap (which always
+    compares ``<= max_gap`` and thus always merges) and could move ``current_end``
+    backward, silently corrupting group boundaries. The stable sort preserves the
+    relative order of equal-start items, so ties keep their incoming sequence.
     """
+    ordered = sorted(items, key=start_of)
+
     current: list[T] = []
     current_start: datetime | None = None
     current_end: datetime | None = None
     interruptions = 0
 
-    for item in items:
+    for item in ordered:
         item_start = start_of(item)
         item_end = end_of(item)
 
@@ -127,9 +150,27 @@ def group_by_gap(
 Interval = tuple[datetime, datetime]
 
 
+def _normalize_interval(interval: Interval) -> Interval:
+    """Normalize both bounds of an interval to local-tz-aware datetimes.
+
+    Interval producers are inconsistent: ``date_to_dt_range`` yields naive
+    datetimes while ``as_local``-derived spans are tz-aware. Comparing a naive
+    bound against an aware one raises ``TypeError`` deep inside the merge/sort
+    machinery. We normalize via ``as_local`` (convert, never strip) so every
+    bound is local-tz-aware and comparisons are well defined without shifting
+    the represented instant.
+    """
+    return as_local(interval[0]), as_local(interval[1])
+
+
 def merge_intervals(intervals: Iterable[Interval]) -> list[Interval]:
-    """Merge overlapping or adjacent intervals."""
-    sorted_ivs = sorted(intervals, key=lambda iv: (iv[0], iv[1]))
+    """Merge overlapping or adjacent intervals.
+
+    Bounds are normalized to local tz on entry (see ``_normalize_interval``), so
+    a mix of naive and tz-aware inputs is safe.
+    """
+    normalized = (_normalize_interval(iv) for iv in intervals)
+    sorted_ivs = sorted(normalized, key=lambda iv: (iv[0], iv[1]))
     if not sorted_ivs:
         return []
     merged: list[list[datetime]] = [[sorted_ivs[0][0], sorted_ivs[0][1]]]
@@ -152,7 +193,14 @@ def intersect_intervals(
     """Find overlapping portions of span with sorted timeline intervals.
 
     Returns (overlaps, new_start_index) for efficient sequential calls.
+
+    The span bounds and every timeline bound are normalized to local tz on
+    entry (see ``_normalize_interval``), so a mix of naive (``date_to_dt_range``)
+    and tz-aware (``as_local``) inputs compares cleanly instead of raising
+    ``TypeError``.
     """
+    span_start, span_end = _normalize_interval((span_start, span_end))
+    timeline = [_normalize_interval(iv) for iv in timeline]
     idx = start_index
     while idx < len(timeline) and timeline[idx][1] <= span_start:
         idx += 1
@@ -181,18 +229,34 @@ is typically 3-5 AM.
 
 
 def logical_date(dt: datetime) -> date:
-    """Map a datetime to its logical date, using DAY_BOUNDARY_HOUR.
+    """Map a datetime to its logical date under DAY_BOUNDARY_HOUR. THE bucketer.
 
-    Before the boundary hour, the datetime belongs to the previous calendar date.
+    This is the single canonical way to assign any datetime to a "day" in this
+    codebase. Callers must use it instead of ``dt.date()``: a raw ``.date()``
+    buckets by calendar midnight in whatever tz ``dt`` carries (UTC / author-local
+    / naive), splitting late-night activity onto the wrong day and mixing zones.
+
+    The input is localized via ``as_local`` first, so UTC-aware, author-local, and
+    naive-local datetimes all resolve to the same local logical day. Before the
+    boundary hour (default 06:00 local), the datetime belongs to the previous
+    calendar date — 03:00 on Mar 15 is still "Mar 14" for a late sleeper.
     """
-    if dt.hour < DAY_BOUNDARY_HOUR:
-        return (dt - timedelta(days=1)).date()
-    return dt.date()
+    local = as_local(dt)
+    if local.hour < DAY_BOUNDARY_HOUR:
+        return (local - timedelta(days=1)).date()
+    return local.date()
 
 
 def split_by_day(start: datetime, end: datetime) -> Iterator[tuple[date, Interval]]:
-    """Split an interval into per-day segments using DAY_BOUNDARY_HOUR."""
+    """Split an interval into per-day segments using DAY_BOUNDARY_HOUR.
+
+    Bounds are localized via ``as_local`` first so segment boundaries and the
+    yielded logical date are computed in the same (local) timezone — consistent
+    with ``logical_date``.
+    """
     boundary = time(hour=DAY_BOUNDARY_HOUR)
+    start = as_local(start)
+    end = as_local(end)
     cursor = start
     while cursor < end:
         # Next boundary: today's boundary if before it, else tomorrow's

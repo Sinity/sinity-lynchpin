@@ -85,6 +85,8 @@ def test_entries_ignore_legacy_metrics_shape(tmp_path, monkeypatch):
 
 
 def test_sleep_stages_loader(monkeypatch):
+    # 02:00 local is before the 6 AM logical-day boundary, so logical_date maps
+    # it to 2026-03-14 (the previous calendar day / "night of"). Query that date.
     def fake_load(filename):
         assert filename == "health_sleep_stages.jsonl"
         yield {
@@ -96,7 +98,7 @@ def test_sleep_stages_loader(monkeypatch):
         }
 
     monkeypatch.setattr("lynchpin.sources.sleep._load_jsonl", fake_load)
-    result = sleep_stages(start=date(2026, 3, 15), end=date(2026, 3, 15))
+    result = sleep_stages(start=date(2026, 3, 14), end=date(2026, 3, 14))
     assert len(result) == 1
     assert result[0].stage == "deep"
     assert result[0].duration_min == 60.0

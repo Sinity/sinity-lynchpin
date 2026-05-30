@@ -74,15 +74,39 @@ def iter_dates(start: date, end: date) -> Iterator[date]:
         current += timedelta(days=1)
 
 
+def in_date_range(d: date, start: date, end: date) -> bool:
+    """Return True if ``d`` falls within [start, end], inclusive on BOTH ends.
+
+    This is the canonical predicate for the ``if d < start or d > end: continue``
+    filter reimplemented across ~25 source modules (and the local ``_in_range``
+    in ``sources/health_loaders.py``). Inclusive both ends matches the dominant
+    existing convention in those loops, where a query for ``start..end`` is
+    expected to include events landing on ``end`` itself.
+
+    Bucket a datetime with ``primitives.logical_date`` before passing it here so
+    the day assignment honours the 6 AM boundary rather than calendar midnight.
+    """
+    return start <= d <= end
+
+
 # ── Polymorphic parsers (accept any input type) ──────────────────────────────
 
 
 def parse_datetime(value: object) -> Optional[datetime]:
-    """Parse anything into a datetime. Handles str, datetime, None, Z-suffix, ' UTC' suffix."""
+    """Parse anything into a local-tz-aware datetime.
+
+    Handles str, datetime, None, ``Z`` suffix, and `` UTC`` suffix. Every
+    successfully parsed result is normalized via ``as_local`` so that callers
+    never have to reason about a mix of naive and tz-aware datetimes — a UTC,
+    naive, or already-local input all come back as the same instant expressed
+    in local time. This prevents the downstream
+    ``TypeError: can't compare offset-naive and offset-aware datetimes`` that
+    arises when one parsed value carries a tz and another does not.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return as_local(value)
     text = str(value).strip()
     if not text:
         return None
@@ -91,7 +115,7 @@ def parse_datetime(value: object) -> Optional[datetime]:
     elif text.endswith(" UTC"):
         text = text[:-4] + "+00:00"
     try:
-        return datetime.fromisoformat(text)
+        return as_local(datetime.fromisoformat(text))
     except ValueError:
         return None
 

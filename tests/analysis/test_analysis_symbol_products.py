@@ -3,23 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from lynchpin.analysis.code_index.symbol_changes import build_active_symbol_changes
 from lynchpin.analysis.code_index.symbol_diffs import build_active_symbol_diffs
 
 
 def _write_json(path: Path, payload: object) -> Path:
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
-
-
-def test_symbol_changes_requires_materialized_symbol_index(tmp_path: Path) -> None:
-    file_changes = _write_json(tmp_path / "file_changes.json", {"file_changes": []})
-
-    with pytest.raises(FileNotFoundError, match="active symbol index is missing"):
-        build_active_symbol_changes(
-            symbol_index_file=tmp_path / "missing-symbols.json",
-            file_changes_file=file_changes,
-        )
 
 
 def test_symbol_diffs_requires_materialized_commit_facts(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ Absorbs: captures/atuin, captures/terminal_capture*, processed/shell_sessions, m
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sqlite3
@@ -15,9 +16,9 @@ from pathlib import Path
 from typing import Iterator, Optional, Union
 
 from ..core.config import get_config
-from ..core.parse import as_local
+from ..core.parse import as_local, in_date_range
 from ..core.projects import canonical_project_name
-from ..core.primitives import TopN, group_by_gap, date_to_dt_range
+from ..core.primitives import TopN, group_by_gap, date_to_dt_range, logical_date
 
 __all__ = [
     "AtuinCommand",
@@ -35,7 +36,7 @@ __all__ = [
 # Data types
 # ══════════════════════════════════════════════════════════════════════════════
 
-@dataclass
+@dataclass(frozen=True)
 class AtuinCommand:
     timestamp: datetime
     duration_ns: Optional[int]
@@ -98,7 +99,7 @@ def canonical_atuin_history_path() -> Path:
 
 def commands_from_atuin_db(db: Path) -> Iterator[AtuinCommand]:
     """Yield shell commands directly from an Atuin SQLite DB for materializers."""
-    with sqlite3.connect(str(db)) as conn:
+    with contextlib.closing(sqlite3.connect(str(db))) as conn:
         unit = _detect_unit(conn)
         query = "SELECT timestamp, duration, exit, cwd, command FROM history"
         query += " ORDER BY timestamp"
@@ -322,7 +323,9 @@ def daily_terminal_activity(*, start: date, end: date) -> list[DailyTerminalActi
     sessions = shell_sessions(start=s_dt, end=e_dt)
     by_day: dict[date, list[ShellSession]] = defaultdict(list)
     for s in sessions:
-        by_day[s.start.date()].append(s)
+        d = logical_date(s.start)
+        if in_date_range(d, start, end):
+            by_day[d].append(s)
 
     result: list[DailyTerminalActivity] = []
     for day in sorted(by_day):

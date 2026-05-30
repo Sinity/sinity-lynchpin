@@ -1,5 +1,11 @@
 """Lynchpin re-classifier overlay for upstream work-event labels.
 
+Logic half (core-vs-graph split): this module computes ``WorkEventKindLabel``
+values — the independent rule-based label and its agreement/disagreement with
+the upstream polylogue ``kind``. The label DTO and its type aliases it returns
+live in ``lynchpin/core/work_event_kind.py``.
+
+
 Polylogue produces a ``kind`` per ``session_work_event`` (debugging /
 implementation / testing / research / planning / review / conversation /
 data_analysis / refactoring). The classifier is heuristic and uneven —

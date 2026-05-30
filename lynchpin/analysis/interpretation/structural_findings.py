@@ -7,6 +7,7 @@ promoted only when the matched path changed recently.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from ..core.io import load_json_object, resolve_analysis_path, save_json
+
+logger = logging.getLogger(__name__)
 
 _RULES_DIR = Path(__file__).resolve().parent.parent / "tool_rules" / "ast-grep"
 
@@ -111,6 +114,7 @@ def _run_rules(
     recently_changed: dict[str, set[str]],
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
+    skipped_lines = 0
     for rule_path in rule_paths:
         if not rule_path.exists():
             continue
@@ -131,6 +135,7 @@ def _run_rules(
             try:
                 match = json.loads(line)
             except json.JSONDecodeError:
+                skipped_lines += 1
                 continue
             if not isinstance(match, dict):
                 continue
@@ -157,6 +162,11 @@ def _run_rules(
                 "recently_changed": is_recent,
                 "caveats": ["structural match requires human interpretation"],
             })
+    if skipped_lines:
+        logger.warning(
+            "structural_findings: %d ast-grep JSON lines skipped for %s",
+            skipped_lines, project,
+        )
     return findings
 
 

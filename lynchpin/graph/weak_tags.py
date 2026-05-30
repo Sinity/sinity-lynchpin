@@ -6,6 +6,7 @@ not a substitute for model-assisted semantic classification or grounded content
 analysis.
 """
 from __future__ import annotations
+import contextlib
 import json
 import re
 import sqlite3
@@ -118,18 +119,19 @@ def save_weak_tags(enrichment: WeakTagEnrichment) -> None:
     db = _weak_tags_db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
     project_key = _project_key({node.project for node in enrichment.graph.nodes if node.project})
-    with sqlite3.connect(db) as conn:
-        _ensure_schema(conn)
-        params = (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode)
-        conn.execute('DELETE FROM weak_tags_annotations WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
-        conn.execute('DELETE FROM weak_tags_clusters WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
-        conn.execute('DELETE FROM weak_tags_moments WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
-        for annotation in enrichment.annotations:
-            conn.execute('INSERT INTO weak_tags_annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, annotation.id, annotation.node_id, annotation.category, annotation.label, annotation.summary, annotation.confidence, _json(annotation.payload), _json(annotation.caveats)))
-        for cluster in enrichment.clusters:
-            conn.execute('INSERT INTO weak_tags_clusters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, cluster.id, cluster.date.isoformat(), cluster.project, _json(cluster.node_ids), _json(cluster.annotation_ids), _json(cluster.labels), cluster.summary, _json(cluster.support_sources), cluster.score))
-        for moment in enrichment.moments:
-            conn.execute('INSERT INTO weak_tags_moments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, moment.id, moment.date.isoformat(), moment.project, moment.cluster_id, moment.title, moment.summary, moment.score, _json({'source_node_ids': moment.source_node_ids, 'labels': moment.labels, 'caveats': moment.caveats})))
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        with conn:
+            _ensure_schema(conn)
+            params = (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode)
+            conn.execute('DELETE FROM weak_tags_annotations WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+            conn.execute('DELETE FROM weak_tags_clusters WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+            conn.execute('DELETE FROM weak_tags_moments WHERE start_date = ? AND end_date = ? AND project_key = ? AND mode = ?', params)
+            for annotation in enrichment.annotations:
+                conn.execute('INSERT INTO weak_tags_annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, annotation.id, annotation.node_id, annotation.category, annotation.label, annotation.summary, annotation.confidence, _json(annotation.payload), _json(annotation.caveats)))
+            for cluster in enrichment.clusters:
+                conn.execute('INSERT INTO weak_tags_clusters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, cluster.id, cluster.date.isoformat(), cluster.project, _json(cluster.node_ids), _json(cluster.annotation_ids), _json(cluster.labels), cluster.summary, _json(cluster.support_sources), cluster.score))
+            for moment in enrichment.moments:
+                conn.execute('INSERT INTO weak_tags_moments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (enrichment.start.isoformat(), enrichment.end.isoformat(), project_key, enrichment.mode, moment.id, moment.date.isoformat(), moment.project, moment.cluster_id, moment.title, moment.summary, moment.score, _json({'source_node_ids': moment.source_node_ids, 'labels': moment.labels, 'caveats': moment.caveats})))
 
 def _annotate_graph(graph: EvidenceGraph) -> tuple[WeakTagAnnotation, ...]:
     annotations: list[WeakTagAnnotation] = []

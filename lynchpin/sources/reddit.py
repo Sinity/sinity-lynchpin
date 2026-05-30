@@ -11,8 +11,8 @@ from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
-from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int
-from ..core.primitives import TopN
+from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int, in_date_range
+from ..core.primitives import TopN, logical_date
 
 logger = logging.getLogger(__name__)
 TextTokenizer = Callable[[str], Iterable[str]]
@@ -79,7 +79,7 @@ def split_quoted_text(body: str) -> tuple[str, tuple[str, ...]]:
     own_text = "\n".join(own_lines).strip()
     return own_text, tuple(b for b in quoted_blocks if b)
 
-@dataclass
+@dataclass(frozen=True)
 class RedditComment:
     id: str
     created: Optional[datetime]
@@ -101,7 +101,7 @@ class RedditComment:
         return split_quoted_text(self.body or "")
 
 
-@dataclass
+@dataclass(frozen=True)
 class RedditPost:
     id: str
     created: Optional[datetime]
@@ -113,7 +113,7 @@ class RedditPost:
     source: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class RedditSavedItem:
     id: str
     permalink: str
@@ -121,7 +121,7 @@ class RedditSavedItem:
     source: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class RedditVote:
     id: str
     permalink: str
@@ -130,7 +130,7 @@ class RedditVote:
     source: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class RedditMessageHeader:
     id: str
     created: Optional[datetime]
@@ -453,7 +453,7 @@ class RedditDayActivity:
     total_words: int
 
 
-@dataclass
+@dataclass  # not frozen: mutable accumulator bucket mutated in-loop in daily_activity()
 class _RedditDayBucket:
     comments: int = 0
     posts: int = 0
@@ -469,8 +469,8 @@ def daily_activity(*, start: date, end: date) -> list[RedditDayActivity]:
     for comment in iter_comments():
         if comment.created is None:
             continue
-        d = comment.created.date()
-        if d < start or d > end:
+        d = logical_date(comment.created)
+        if not in_date_range(d, start, end):
             continue
         bucket = by_day[d]
         bucket.comments += 1
@@ -479,8 +479,8 @@ def daily_activity(*, start: date, end: date) -> list[RedditDayActivity]:
     for post in iter_posts():
         if post.created is None:
             continue
-        d = post.created.date()
-        if d < start or d > end:
+        d = logical_date(post.created)
+        if not in_date_range(d, start, end):
             continue
         by_day[d].posts += 1
 
@@ -500,8 +500,8 @@ def subreddit_distribution(*, start: date, end: date) -> list[tuple[str, int, fl
     for comment in iter_comments():
         if comment.created is None:
             continue
-        d = comment.created.date()
-        if d < start or d > end:
+        d = logical_date(comment.created)
+        if not in_date_range(d, start, end):
             continue
         subs[comment.subreddit or "unknown"] += 1
     total = sum(subs.values())

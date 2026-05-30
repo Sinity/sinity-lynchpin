@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import LynchpinConfig
+from ..core.errors import SchemaVersionError
 from ..core.source import SourceReadiness
 
 
@@ -46,7 +47,7 @@ def readiness(path: Path | None = None) -> SourceReadiness:
             path=inventory_path,
             row_count=0,
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, SchemaVersionError) as exc:
         return SourceReadiness(
             status="error",
             reason=str(exc),
@@ -70,7 +71,7 @@ def read_inventory(path: Path | None = None) -> SinnixRuntimeInventory:
         raise ValueError(f"{inventory_path} is not a JSON object")
     schema = payload.get("schema")
     if schema != SCHEMA:
-        raise ValueError(f"{inventory_path} schema {schema!r} != {SCHEMA!r}")
+        raise SchemaVersionError(found=schema, expected=SCHEMA, source="sinnix_runtime_inventory")
     return SinnixRuntimeInventory(
         hostname=str(payload.get("hostname") or ""),
         classes=_dict_value(payload.get("classes"), "classes"),

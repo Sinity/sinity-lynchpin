@@ -29,6 +29,7 @@ Example:
 
 from __future__ import annotations
 
+import logging
 import bisect
 import math
 import statistics
@@ -45,6 +46,8 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 
 from ..sources.samsung_binning import HRBin, HRVBin, StressBin
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -110,8 +113,26 @@ class LinearModelFit:
     cv_std_r2: Optional[float] = None
 
     def summary(self) -> str:
+        # Lead with CV R² (out-of-sample generalisation estimate).
+        # In-sample figures are labelled explicitly so an LLM consumer
+        # cannot mistake them for a generalisation claim.
+        # Construct-validity caveat: Samsung's stress formula is proprietary;
+        # models here are observational approximations, not verified reverse-engineering.
+        if self.cv_mean_r2 is not None:
+            headline = (
+                f"Linear Model (n={self.n_samples}): "
+                f"CV R²={self.cv_mean_r2:.4f} ± {self.cv_std_r2:.4f} "
+                f"[in-sample R²={self.r2:.4f}, adj-R²={self.adj_r2:.4f}]"
+            )
+        else:
+            headline = (
+                f"Linear Model (n={self.n_samples}): "
+                f"in-sample R²={self.r2:.4f}, adj-R²={self.adj_r2:.4f} "
+                f"(no CV — too few samples)"
+            )
         lines = [
-            f"Linear Model (n={self.n_samples}, R²={self.r2:.4f}, adj-R²={self.adj_r2:.4f})",
+            headline,
+            "NOTE: Samsung stress formula is proprietary; R² reflects observational fit only.",
             f"RMSE={self.rmse:.2f}, MAE={self.mae:.2f}",
             "",
             "Coefficients:",
@@ -122,8 +143,9 @@ class LinearModelFit:
             sig = "*" if pv < 0.05 else ("**" if pv < 0.01 else ("***" if pv < 0.001 else ""))
             lines.append(f"  {name:20s} {coef:+.4f}  (p={pv:.4f}{sig})")
         lines.append(f"  {'(intercept)':20s} {self.intercept:+.4f}")
-        if self.cv_mean_r2 is not None:
-            lines.append(f"\nCV (TimeSeriesSplit): R²={self.cv_mean_r2:.4f} ± {self.cv_std_r2:.4f}")
+        if self.cv_mean_r2 is not None and self.cv_r2_scores:
+            folds = ", ".join(f"{s:.3f}" for s in self.cv_r2_scores)
+            lines.append(f"\nCV folds (TimeSeriesSplit): [{folds}]")
         return "\n".join(lines)
 
 
@@ -143,17 +165,34 @@ class RFModelFit:
     cv_std_r2: Optional[float] = None
 
     def summary(self) -> str:
+        # Lead with CV R² (out-of-sample generalisation estimate).
+        # In-sample / held-out split figures labelled explicitly.
+        # Construct-validity caveat: Samsung's stress formula is proprietary;
+        # models here are observational approximations, not verified reverse-engineering.
+        if self.cv_mean_r2 is not None:
+            headline = (
+                f"RandomForest (n={self.n_samples}, trees={self.n_trees}): "
+                f"CV R²={self.cv_mean_r2:.4f} ± {self.cv_std_r2:.4f} "
+                f"[in-sample train={self.r2_train:.4f}, held-out test={self.r2_test:.4f}]"
+            )
+        else:
+            headline = (
+                f"RandomForest (n={self.n_samples}, trees={self.n_trees}): "
+                f"in-sample train R²={self.r2_train:.4f}, held-out test R²={self.r2_test:.4f} "
+                f"(no CV — too few samples)"
+            )
         lines = [
-            f"RandomForest (n={self.n_samples}, trees={self.n_trees})",
-            f"R² train={self.r2_train:.4f}, test={self.r2_test:.4f}",
+            headline,
+            "NOTE: Samsung stress formula is proprietary; R² reflects observational fit only.",
             f"RMSE test={self.rmse_test:.2f}, MAE test={self.mae_test:.2f}",
             "",
             "Feature importance:",
         ]
         for name, imp in sorted(self.feature_importance.items(), key=lambda kv: -kv[1]):
             lines.append(f"  {name:20s} {imp:.4f}  ({imp * 100:.1f}%)")
-        if self.cv_mean_r2 is not None:
-            lines.append(f"\nCV (TimeSeriesSplit): R²={self.cv_mean_r2:.4f} ± {self.cv_std_r2:.4f}")
+        if self.cv_mean_r2 is not None and self.cv_r2_scores:
+            folds = ", ".join(f"{s:.3f}" for s in self.cv_r2_scores)
+            lines.append(f"\nCV folds (TimeSeriesSplit): [{folds}]")
         return "\n".join(lines)
 
 
@@ -628,21 +667,36 @@ def residual_hrv_correlation(
         return {}
 
     X, y = rows_to_matrix(usable, ["hr"], target="stress")
-    residual = y - (
-        LinearRegression(fit_intercept=True).fit(X, y).predict(X)
-    )
+    lr = LinearRegression(fit_intercept=True)
+    lr.fit(X, y)
+    residual_all = y - lr.predict(X)
 
-    sdnn_vals = [r.sdnn for r in usable if r.sdnn is not None]
-    rmssd_vals = [r.rmssd for r in usable if r.rmssd is not None]
-    # Only use rows where HRV is also available for the same residual index
-    if len(sdnn_vals) < 10:
+    # Build row-aligned pairs in one pass so residual[i] always matches
+    # the HRV value from the same row.  Do NOT use positional-prefix slicing
+    # (residual[:k]) — that aligns residual[i] with HRV from a *different* row
+    # whenever any usable row has sdnn but not rmssd (or vice-versa).
+    sdnn_pairs: list[tuple[float, float]] = []
+    rmssd_pairs: list[tuple[float, float]] = []
+    for i, row in enumerate(usable):
+        res = float(residual_all[i])
+        if row.sdnn is not None:
+            sdnn_pairs.append((res, row.sdnn))
+        if row.rmssd is not None:
+            rmssd_pairs.append((res, row.rmssd))
+
+    if len(sdnn_pairs) < 10:
         return {}
 
-    return {
-        "residual_vs_sdnn": float(np.corrcoef(residual[:len(sdnn_vals)], sdnn_vals)[0, 1]),
-        "residual_vs_rmssd": float(np.corrcoef(residual[:len(rmssd_vals)], rmssd_vals)[0, 1]),
+    sdnn_res, sdnn_vals = zip(*sdnn_pairs)
+
+    result: dict[str, float] = {
+        "residual_vs_sdnn": float(np.corrcoef(sdnn_res, sdnn_vals)[0, 1]),
         "n_rows": len(usable),
     }
+    if len(rmssd_pairs) >= 10:
+        rmssd_res, rmssd_vals = zip(*rmssd_pairs)
+        result["residual_vs_rmssd"] = float(np.corrcoef(rmssd_res, rmssd_vals)[0, 1])
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -718,7 +772,15 @@ class StressModelReport:
             "── Feature subset comparison ──",
         ]
         for label, m in self.feature_comparison.items():
-            lines.append(f"  {label}: R²={m.r2:.4f}, adj-R²={m.adj_r2:.4f}, RMSE={m.rmse:.2f}")
+            cv_part = (
+                f", CV R²={m.cv_mean_r2:.4f}±{m.cv_std_r2:.4f}"
+                if m.cv_mean_r2 is not None
+                else ""
+            )
+            lines.append(
+                f"  {label}: in-sample R²={m.r2:.4f}, adj-R²={m.adj_r2:.4f}"
+                f"{cv_part}, RMSE={m.rmse:.2f}"
+            )
 
         lines.append("")
         lines.append("── HR-only model ──")
@@ -776,8 +838,11 @@ def build_report(
     if rf and any(r.has_hrv for r in rows):
         try:
             rf_model = fit_rf_model(rows, features=["hr", "sdnn", "rmssd"])
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(
+                "RandomForest model fit failed — HRV-based stress features will be absent: %s",
+                exc,
+            )
 
     return StressModelReport(
         n_aligned_total=len(rows),

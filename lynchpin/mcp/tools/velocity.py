@@ -180,7 +180,7 @@ def _is_non_code_path(path: str) -> bool:
     return any((pattern in path for pattern in _NON_CODE_PATH_PATTERNS))
 
 @app.tool()
-def engineering_throughput(project: str, start: str | None=None, end: str | None=None, granularity: str='week', refresh_id: str | None=None) -> dict[str, Any]:
+def engineering_throughput(project: str, start: str | None=None, end: str | None=None, granularity: str='week', refresh_id: str | None=None, grouping: str='raw') -> dict[str, Any]:
     """Decomposed engineering-throughput estimate for a project window.
 
     Composes commit_fact + file_change_fact + symbol_change so that the
@@ -195,6 +195,12 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
         start, end:  ISO dates; default = full window of the snapshot.
         granularity: "day" | "week" | "month". Aggregation period.
         refresh_id:  substrate snapshot. Defaults to latest commit_fact build.
+        grouping:    "raw" (per-commit, default) or "pr" (group commits
+                     by PR number extracted from subject, falling back to
+                     sha for commits without ``(#N)``).  "pr" normalises
+                     across the March 2026 workflow regime change so that
+                     atomic-commit months are comparable with squash-merge
+                     months.
 
     Returns rows shaped:
         {
@@ -221,6 +227,8 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
     from lynchpin.substrate.connection import connect, substrate_path
     if granularity not in ('day', 'week', 'month'):
         return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported granularity {granularity!r} (use day, week, or month)', 'substrate_window': None, 'periods': []}
+    if grouping not in ('raw', 'pr'):
+        return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported grouping {grouping!r} (use raw or pr)', 'substrate_window': None, 'periods': []}
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
@@ -242,11 +250,17 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
         if end:
             date_filter += ' AND authored_at::DATE <= ?'
             params.append(_d.fromisoformat(end))
-        commits_sql = f"\n            SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                   COUNT(*) AS n,\n                   SUM(lines_added) AS la, SUM(lines_deleted) AS ld,\n                   SUM(files_changed) AS fc\n            FROM commit_fact\n            WHERE refresh_id = ? AND project = ?{date_filter}\n            GROUP BY period ORDER BY period\n        "
+        if grouping == 'pr':
+            commits_sql = f"\n                WITH pr_commits AS (\n                    SELECT\n                        COALESCE(\n                            NULLIF(regexp_extract(subject, '\\(#(\\d+)\\)', 1), ''),\n                            sha\n                        ) AS group_key,\n                        MAX(authored_at) AS authored_at,\n                        SUM(lines_added) AS lines_added,\n                        SUM(lines_deleted) AS lines_deleted,\n                        SUM(files_changed) AS files_changed,\n                        COUNT(*) AS commits_in_group\n                    FROM commit_fact\n                    WHERE refresh_id = ? AND project = ?{date_filter}\n                    GROUP BY group_key\n                )\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       COUNT(*) AS n,\n                       SUM(lines_added) AS la, SUM(lines_deleted) AS ld,\n                       SUM(files_changed) AS fc\n                FROM pr_commits\n                GROUP BY period ORDER BY period\n            "
+        else:
+            commits_sql = f"\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       COUNT(*) AS n,\n                       SUM(lines_added) AS la, SUM(lines_deleted) AS ld,\n                       SUM(files_changed) AS fc\n                FROM commit_fact\n                WHERE refresh_id = ? AND project = ?{date_filter}\n                GROUP BY period ORDER BY period\n            "
         commit_rows = {r[0]: r for r in conn.execute(commits_sql, params).fetchall()}
         file_rows: dict[Any, tuple[int, int]] = {}
         try:
-            file_sql = f"\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       SUM(lines_added) AS la, SUM(lines_deleted) AS ld, path\n                FROM file_change_fact\n                WHERE refresh_id = ? AND project = ?{date_filter}\n                GROUP BY period, path\n            "
+            if grouping == 'pr':
+                file_sql = f"\n                    WITH pr_files AS (\n                        SELECT\n                            COALESCE(\n                                NULLIF(regexp_extract(cf.subject, '\\(#(\\d+)\\)', 1), ''),\n                                cf.sha\n                            ) AS group_key,\n                            MAX(cf.authored_at) AS authored_at,\n                            fcf.path,\n                            SUM(fcf.lines_added) AS la,\n                            SUM(fcf.lines_deleted) AS ld\n                        FROM file_change_fact fcf\n                        JOIN commit_fact cf USING (sha)\n                        WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}\n                        GROUP BY group_key, fcf.path\n                    )\n                    SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                           SUM(la) AS la, SUM(ld) AS ld, path\n                    FROM pr_files\n                    GROUP BY period, path\n                "
+            else:
+                file_sql = f"\n                    SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                           SUM(lines_added) AS la, SUM(lines_deleted) AS ld, path\n                    FROM file_change_fact\n                    WHERE refresh_id = ? AND project = ?{date_filter}\n                    GROUP BY period, path\n                "
             agg_clean: dict[Any, tuple[int, int]] = {}
             for period, la, ld, p in conn.execute(file_sql, params).fetchall():
                 if _is_non_code_path(p or ''):
@@ -261,7 +275,10 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
             fcf_present = False
         symbol_rows: dict[Any, dict[str, int]] = {}
         try:
-            sym_sql = f"\n                SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                       change_type, COUNT(*) AS n\n                FROM symbol_change sc\n                JOIN commit_fact cf USING (sha)\n                WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}\n                GROUP BY period, change_type\n            "
+            if grouping == 'pr':
+                sym_sql = f"\n                    WITH pr_symbols AS (\n                        SELECT\n                            COALESCE(\n                                NULLIF(regexp_extract(cf.subject, '\\(#(\\d+)\\)', 1), ''),\n                                cf.sha\n                            ) AS group_key,\n                            sc.change_type,\n                            sc.qualified_name,\n                            sc.path,\n                            MAX(cf.authored_at) AS authored_at\n                        FROM symbol_change sc\n                        JOIN commit_fact cf USING (sha)\n                        WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}\n                        GROUP BY group_key, sc.change_type, sc.qualified_name, sc.path\n                    )\n                    SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                           change_type, COUNT(*) AS n\n                    FROM pr_symbols\n                    GROUP BY period, change_type\n                "
+            else:
+                sym_sql = f"\n                    SELECT date_trunc('{granularity}', authored_at)::DATE AS period,\n                           change_type, COUNT(*) AS n\n                    FROM symbol_change sc\n                    JOIN commit_fact cf USING (sha)\n                    WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}\n                    GROUP BY period, change_type\n                "
             for period, ct, n in conn.execute(sym_sql, params).fetchall():
                 bucket = symbol_rows.setdefault(period, {})
                 bucket[ct] = n
@@ -293,4 +310,4 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
     if not sc_present:
         reasons.append('symbol_change empty for this snapshot — symbol counts all zero')
     degraded = bool(reasons)
-    return {'project': project, 'granularity': granularity, 'refresh_id': refresh_id, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}
+    return {'project': project, 'granularity': granularity, 'grouping': grouping, 'refresh_id': refresh_id, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}

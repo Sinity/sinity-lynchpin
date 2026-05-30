@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+from ..core.errors import SourceUnavailableError
+
 SMS_ROOT = Path(
     "/realm/data/exports/samsung/processed/2026-03-30-gdpr-extracted/"
     "samsungcloud_gk000066110887_20260329_access/SMS"
@@ -206,7 +208,7 @@ def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
     """Oldest and newest message dates."""
     messages = list(iter_messages(root))
     if not messages:
-        raise ValueError("No SMS messages found")
+        raise SourceUnavailableError("sms", reason="No SMS messages found")
     return messages[0].date, messages[-1].date
 
 

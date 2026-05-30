@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class DendronNote:
     """Representation of a Dendron/Markdown note inside the knowledgebase."""
 

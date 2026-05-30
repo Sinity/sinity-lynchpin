@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
-from ..core.parse import parse_datetime as _parse_dt, safe_float as _safe_float
+from ..core.parse import parse_datetime as _parse_dt, safe_float as _safe_float, in_date_range
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 
@@ -263,7 +263,7 @@ def entries_in_range(start: date, end: date, *, canonical: bool = True) -> list[
     to get the raw multi-row stream (useful for cross-device comparison).
     """
     source = canonical_entries() if canonical else entries()
-    return [e for e in source if start <= e.date <= end]
+    return [e for e in source if in_date_range(e.date, start, end)]
 
 
 @dataclass(frozen=True)
@@ -310,7 +310,7 @@ def sleep_stages(*, start: Optional[date] = None, end: Optional[date] = None) ->
         et = _parse_dt(r.get("end_time"))
         if st is None or et is None:
             continue
-        if not _in_range(st.date(), start, end):
+        if not _in_range(logical_date(st), start, end):
             continue
         stage = r.get("stage")
         sleep_id = r.get("sleep_id")

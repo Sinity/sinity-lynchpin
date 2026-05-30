@@ -112,7 +112,7 @@ def test_respiratory_rate_preserves_upper_limit(monkeypatch):
             "upper_limit": 20.0,
         }
 
-    monkeypatch.setattr("lynchpin.sources.health_reader.load_jsonl", fake_load)
+    monkeypatch.setattr("lynchpin.sources.health_loaders.load_jsonl", fake_load)
     result = respiratory_rate(start=date(2025, 5, 21), end=date(2025, 5, 21))
     assert result == [RespiratoryMeasurement(
         timestamp=result[0].timestamp,
@@ -135,7 +135,7 @@ def test_ecg_measurements_loader(monkeypatch):
             "data_mime": "application/pdf",
         }
 
-    monkeypatch.setattr("lynchpin.sources.health_reader.load_jsonl", fake_load)
+    monkeypatch.setattr("lynchpin.sources.health_loaders.load_jsonl", fake_load)
     result = ecg_measurements(start=date(2023, 3, 22), end=date(2023, 3, 22))
     assert len(result) == 1
     assert isinstance(result[0], ECGMeasurement)

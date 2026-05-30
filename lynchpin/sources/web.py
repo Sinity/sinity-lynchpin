@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 from ..core.cache import file_digest, files_digest, persistent_cache
 from ..core.config import get_config
+from ..core.parse import in_date_range
+from ..core.primitives import logical_date
 from .web_models import (
     WebDayActivity,
     WebHistoryEntry,
@@ -152,7 +154,7 @@ def _load_entries(
             }
             entries.append(
                 WebHistoryEntry(
-                    date=visit.timestamp.date().isoformat(),
+                    date=logical_date(visit.timestamp).isoformat(),
                     record_json=json.dumps(record, ensure_ascii=False),
                     source_file=str(file),
                 )
@@ -732,10 +734,12 @@ def _iter_all_visits(
     for v in source:
         if v.timestamp is None:
             continue
-        d = v.timestamp.date()
-        if start and d < start:
+        d = logical_date(v.timestamp)
+        if start and end and not in_date_range(d, start, end):
             continue
-        if end and d > end:
+        if start and not end and d < start:
+            continue
+        if end and not start and d > end:
             continue
         yield v
 
@@ -744,7 +748,7 @@ def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity
     """Daily web browsing aggregation: visits, domains, top sites."""
     by_day: defaultdict[_date_type, _WebDayBucket] = defaultdict(_WebDayBucket)
     for v in _iter_all_visits(start=start, end=end):
-        d = v.timestamp.date()
+        d = logical_date(v.timestamp)
         bucket = by_day[d]
         bucket.count += 1
         domain = _normalize_domain(urlparse(v.url or "").netloc)

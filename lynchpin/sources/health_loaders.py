@@ -402,8 +402,13 @@ def nap_sessions(*, start: Optional[date] = None, end: Optional[date] = None) ->
 _PROCESSED = Path("/realm/data/exports/health/processed")
 
 
-def _load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
+def load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
+    """Public, patchable entry point for loading a processed-health JSONL file."""
     yield from read_jsonl_with(_PROCESSED / filename, lambda p: p, source_name=filename)
+
+
+def _load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
+    yield from load_jsonl(filename)
 
 
 def _in_range(d: date, start: Optional[date], end: Optional[date]) -> bool:

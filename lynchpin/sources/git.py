@@ -28,7 +28,8 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, TypedDict
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
-from ..core.parse import parse_date_from_any
+from ..core.parse import in_date_range, parse_date_from_any
+from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 from ..core.projects import ALL_PROJECTS
 from .github import GitHubItem, extract_commit_refs, fetch_issue, fetch_pr, repo_slug
@@ -116,23 +117,38 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def commits() -> Iterator[GitCommit]:
+    """Yield baseline commits, surfacing baseline coverage gaps on every call.
+
+    Git is a capture (live ``git log`` + baseline JSONL), so a stale baseline is
+    a real coverage gap, not a cosmetic staleness alarm. The coverage check runs
+    in this thin, uncached wrapper so it fires on every call — the underlying
+    hydration is memoized by ``_commits_cached`` and would otherwise suppress the
+    signal exactly when a long-lived process keeps serving cached data.
+    """
+    path = get_config().baseline_dir / "git_numstat.jsonl"
+    if path.exists():
+        import time as _time
+
+        age_days = (_time.time() - path.stat().st_mtime) / 86400
+        if age_days > 7:
+            log.info(
+                "git baseline coverage gap: git_numstat.jsonl last refreshed %d days "
+                "ago — pre-repo history may be incomplete; run baseline to refresh",
+                int(age_days),
+            )
+    yield from _commits_cached()
+
+
 @persistent_cache(
     "git_commits",
     depends_on=lambda: file_signature(get_config().baseline_dir / "git_numstat.jsonl"),
 )
-def commits() -> Iterator[GitCommit]:
+def _commits_cached() -> Iterator[GitCommit]:
     cfg = get_config()
     path = cfg.baseline_dir / "git_numstat.jsonl"
     if not path.exists():
         return iter(())
-    import time as _time
-
-    age_days = (_time.time() - path.stat().st_mtime) / 86400
-    if age_days > 7:
-        log.warning(
-            "git_numstat.jsonl is %d days stale — run baseline to refresh",
-            int(age_days),
-        )
 
     def _hydrate(rec: dict[str, Any]) -> GitCommit | None:
         dt = _parse_date(rec.get("date"))
@@ -164,7 +180,7 @@ def commits_in_range(start: date, end: date) -> Iterator[GitCommit]:
                 continue
             seen.add(rec.commit)
             yield GitCommit(
-                date=rec.authored_at.date(),
+                date=logical_date(rec.authored_at),
                 repo=rec.repo,
                 commit=rec.commit,
                 lines_added=sum(a for _, a, _ in rec.path_changes),
@@ -280,7 +296,7 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
 
     grouped: dict[tuple[date, str], list[GitCommitFact]] = defaultdict(list)
     for f in facts:
-        grouped[(f.date, f.repo)].append(f)
+        grouped[(logical_date(f.authored_at), f.repo)].append(f)
 
     result: list[GitDayActivity] = []
     for (d, repo), day_facts in sorted(grouped.items()):
@@ -666,7 +682,7 @@ def _iter_repo_commit_records(
         if line.startswith("COMMIT|"):
             if current is not None:
                 rec = _finalize_record(repo_path.name, current)
-                if rec and start <= rec.authored_at.date() <= end:
+                if rec and in_date_range(logical_date(rec.authored_at), start, end):
                     yield rec
             parts = line.split("|", 4)
             current = {
@@ -691,7 +707,7 @@ def _iter_repo_commit_records(
             )
     if current:
         rec = _finalize_record(repo_path.name, current)
-        if rec and start <= rec.authored_at.date() <= end:
+        if rec and in_date_range(logical_date(rec.authored_at), start, end):
             yield rec
     proc.communicate()
 
@@ -812,7 +828,7 @@ def _fetch_coauthor_info(repo: str, after: date, before: date) -> dict[str, list
         str(repo_path),
         "log",
         "--format=%H%n%b%n---END---",
-        f"--after={after.isoformat()}",
+        f"--after={(after - timedelta(days=1)).isoformat()}",
         f"--before={(before + timedelta(days=1)).isoformat()}",
     ]
     try:

@@ -390,3 +390,96 @@ class TestIterGestaltEvents:
         )
         visits = list(iter_gestalt_events(tmp_path))
         assert len(visits) == 2
+
+
+# ---------------------------------------------------------------------------
+# daily_browsing — logical-date bucketing (fix: was UTC .date())
+# ---------------------------------------------------------------------------
+
+
+def _make_ndjson_with_visits(tmp_path, visits_iso: list[str]) -> "Path":
+    """Write an NDJSON file with visits at given ISO timestamps."""
+    ndjson = tmp_path / "full_history.ndjson"
+    lines = [
+        json.dumps({"url": f"https://example.com/{i}", "title": f"Page {i}", "iso_time": ts})
+        for i, ts in enumerate(visits_iso)
+    ]
+    ndjson.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return ndjson
+
+
+def test_daily_browsing_post_midnight_utc_visit_attributed_to_logical_day(tmp_path, monkeypatch):
+    """A visit at 02:00 local on May 15 (before the 06:00 boundary) must be
+    attributed to logical day May 14, not the calendar day of the UTC timestamp.
+
+    Before the fix, daily_browsing used .date() on the UTC timestamp, so for a
+    UTC+2 operator the visit stored as 2026-05-15T00:00Z would land on May 15.
+    After the fix it uses logical_date → May 14.
+    """
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing
+    from lynchpin.core.parse import local_tz
+
+    tz = local_tz()
+    # 02:00 local on May 15 — before 06:00 boundary, logical day = May 14
+    local_dt = datetime(2026, 5, 15, 2, 0, tzinfo=tz)
+    utc_iso = local_dt.astimezone(timezone.utc).isoformat()
+
+    ndjson = _make_ndjson_with_visits(tmp_path, [utc_iso])
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+
+    result = daily_browsing(start=_date(2026, 5, 14), end=_date(2026, 5, 14))
+    assert len(result) == 1, (
+        "Post-midnight local visit (02:00 local May 15 = logical May 14) "
+        "must appear on May 14, not May 15"
+    )
+    assert result[0].date == _date(2026, 5, 14)
+
+
+def test_daily_browsing_post_midnight_visit_excluded_from_next_day_query(tmp_path, monkeypatch):
+    """The same 02:00 local visit must NOT appear when querying only May 15."""
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing
+    from lynchpin.core.parse import local_tz
+
+    tz = local_tz()
+    local_dt = datetime(2026, 5, 15, 2, 0, tzinfo=tz)
+    utc_iso = local_dt.astimezone(timezone.utc).isoformat()
+
+    ndjson = _make_ndjson_with_visits(tmp_path, [utc_iso])
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+
+    result = daily_browsing(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
+    assert result == [], (
+        "Post-midnight visit (logical May 14) must not appear when querying May 15"
+    )
+
+
+def test_daily_browsing_normal_daytime_visit_unaffected(tmp_path, monkeypatch):
+    """Visits during normal hours (12:00 local) still land on their calendar day."""
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing
+    from lynchpin.core.parse import local_tz
+
+    tz = local_tz()
+    local_dt = datetime(2026, 5, 15, 12, 0, tzinfo=tz)
+    utc_iso = local_dt.astimezone(timezone.utc).isoformat()
+
+    ndjson = _make_ndjson_with_visits(tmp_path, [utc_iso])
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+
+    result = daily_browsing(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
+    assert len(result) == 1
+    assert result[0].date == _date(2026, 5, 15)

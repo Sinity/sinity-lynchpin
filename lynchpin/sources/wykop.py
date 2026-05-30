@@ -28,6 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
+from ..core.errors import SourceUnavailableError
+
 WYKOP_ROOT = Path("/realm/data/exports/wykop/raw/Sinity")
 
 
@@ -271,7 +273,7 @@ def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
         if newest is None or c.created_at > newest:
             newest = c.created_at
     if oldest is None or newest is None:
-        raise ValueError("No comments found")
+        raise SourceUnavailableError("wykop", reason="No comments found")
     return oldest, newest
 
 

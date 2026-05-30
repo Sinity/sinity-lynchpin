@@ -7,6 +7,7 @@ evidence is unavailable, degraded, or complete.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -536,9 +537,10 @@ def _cache_path() -> Path:
 
 def _cache_get(key: str, *, max_age_seconds: int) -> str | None:
     try:
-        with sqlite3.connect(str(_cache_path())) as conn:
-            _ensure_cache(conn)
-            row = conn.execute("SELECT fetched_at, payload FROM github_cache WHERE cache_key = ?", (key,)).fetchone()
+        with contextlib.closing(sqlite3.connect(str(_cache_path()))) as conn:
+            with conn:
+                _ensure_cache(conn)
+                row = conn.execute("SELECT fetched_at, payload FROM github_cache WHERE cache_key = ?", (key,)).fetchone()
     except sqlite3.Error:
         return None
     if row is None:
@@ -551,12 +553,13 @@ def _cache_get(key: str, *, max_age_seconds: int) -> str | None:
 
 def _cache_put(key: str, payload: str) -> None:
     try:
-        with sqlite3.connect(str(_cache_path())) as conn:
-            _ensure_cache(conn)
-            conn.execute(
-                "INSERT OR REPLACE INTO github_cache(cache_key, fetched_at, payload) VALUES (?, ?, ?)",
-                (key, time.time(), payload),
-            )
+        with contextlib.closing(sqlite3.connect(str(_cache_path()))) as conn:
+            with conn:
+                _ensure_cache(conn)
+                conn.execute(
+                    "INSERT OR REPLACE INTO github_cache(cache_key, fetched_at, payload) VALUES (?, ?, ?)",
+                    (key, time.time(), payload),
+                )
     except sqlite3.Error:
         return
 

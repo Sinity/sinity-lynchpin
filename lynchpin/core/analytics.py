@@ -21,10 +21,15 @@ from typing import Sequence
 @dataclass(frozen=True)
 class TrendResult:
     direction: str     # "rising" | "falling" | "stable"
-    slope: float       # Sen's slope (units per time step)
-    p_value: float     # Mann-Kendall p-value
+    slope: float       # Sen's slope (units per sample step; see caveat)
+    p_value: float     # Mann-Kendall p-value (normal approximation of S)
     significant: bool  # p < 0.05
     n: int
+    caveat: str = (
+        "Mann-Kendall + Sen's slope assume IID, evenly-spaced samples. "
+        "Pass a contiguous daily series; gaps alias the slope (per-sample, "
+        "not per-calendar-day) and bias the variance/p-value."
+    )
 
 
 @dataclass(frozen=True)
@@ -39,18 +44,26 @@ class ChangePoint:
 @dataclass(frozen=True)
 class PeriodicComponent:
     period: float      # in samples (e.g., 7.0 = weekly if daily data)
-    amplitude: float   # relative to mean
+    amplitude: float   # DFT amplitude 2*sqrt(re^2+im^2)/n (data units, ~peak sinusoid amplitude)
     power: float       # spectral power (higher = stronger signal)
     label: str         # human-readable: "weekly", "biweekly", etc.
+    selection: str = "heuristic"  # how this component was kept; see detect_periodicity
+    caveat: str = (
+        "DFT assumes an evenly-sampled, gapless series. Period is in samples "
+        "(days for daily data). Components are kept by a power heuristic, NOT a "
+        "calibrated significance test."
+    )
 
 
 @dataclass(frozen=True)
 class CorrelationResult:
     lag: int
     r: float           # Pearson correlation coefficient
-    p_value: float
-    significant: bool  # p < 0.05
+    p_value: float     # raw two-tailed t-test p-value at this lag
+    significant: bool  # significant AFTER multiple-comparison correction (see q_value)
     n: int
+    q_value: float | None = None  # Benjamini-Hochberg FDR-adjusted p across the lag family
+    note: str = ""     # provenance/disclaimer (e.g. "not a VAR Granger test")
 
 
 @dataclass(frozen=True)
@@ -69,6 +82,7 @@ class DayCluster:
     size: int
     centroid: dict[str, float]
     members: list[int] = field(default_factory=list)  # indices
+    silhouette: float = 0.0  # overall silhouette of the chosen clustering (same on every cluster)
 
 
 @dataclass(frozen=True)
@@ -93,11 +107,28 @@ class RegimeResult:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def detect_trend(values: Sequence[float], *, min_samples: int = 7) -> TrendResult:
+def detect_trend(values: Sequence[float], *, min_samples: int = 10) -> TrendResult:
     """Mann-Kendall trend test with Sen's slope estimator.
 
     Robust, non-parametric. Works well with noisy, non-normal daily data.
     Returns significance via p-value from normal approximation of S statistic.
+
+    ASSUMPTIONS (not enforced — ``values`` carries no timestamps):
+
+    - Samples are **evenly spaced** (one value per day). Sen's slope below is
+      computed per *sample index distance* ``j - i``, so a gappy series yields a
+      per-sample slope, not a per-calendar-day slope. Callers must pass a dense,
+      contiguous daily series (today's callers in ``graph.temporal_signals`` and
+      ``analysis.machine`` do).
+    - Observations are treated as **independent**. Positive autocorrelation
+      (common in daily behavioural data) inflates the S-statistic variance and
+      makes the normal-approximation p-value anti-conservative (too significant).
+      The returned ``caveat`` field records this; no variance-correction (e.g.
+      Hamed-Rao) is applied.
+
+    ``min_samples`` defaults to 10: below ~10 points the normal approximation of
+    the Mann-Kendall S distribution is unreliable and Sen's slope median is too
+    sparse to be stable.
     """
     n = len(values)
     if n < min_samples:
@@ -132,12 +163,13 @@ def detect_trend(values: Sequence[float], *, min_samples: int = 7) -> TrendResul
         z = 0.0
     p_value = 2 * norm_sf(abs(z))
 
-    # Sen's slope: median of all pairwise slopes
+    # Sen's slope: median of all pairwise slopes. Denominator is the sample
+    # index distance (j - i); with an evenly-spaced daily series this is the
+    # per-day slope. See ASSUMPTIONS in the docstring.
     slopes = []
     for i in range(n):
         for j in range(i + 1, n):
-            if j != i:
-                slopes.append((values[j] - values[i]) / (j - i))
+            slopes.append((values[j] - values[i]) / (j - i))
     slope = statistics.median(slopes) if slopes else 0.0
 
     direction = "rising" if s > 0 and p_value < 0.05 else "falling" if s < 0 and p_value < 0.05 else "stable"
@@ -154,36 +186,46 @@ def detect_changepoints(
 ) -> list[ChangePoint]:
     """Binary segmentation change point detection.
 
-    Recursively splits the series at the point that maximally reduces
-    total squared-error cost. Stops when penalty exceeds improvement.
+    Recursively splits the series at the point that maximally reduces total
+    squared-error cost (residual SSE). A split is accepted when its SSE gain
+    exceeds ``penalty``.
+
+    Decision criterion (SIC / BIC for a piecewise-constant-mean Gaussian model):
+    each added changepoint introduces one extra mean parameter, so the marginal
+    penalty is ``log(n) * sigma^2`` where ``sigma^2`` is the residual variance
+    estimate. Both the SSE ``gain`` and ``penalty`` are therefore in the *same
+    squared data units* — the previous formulation already had matching units,
+    but the criterion is now stated explicitly and the per-split SSE gain is
+    surfaced via ``ChangePoint.cost_reduction`` (previously a dead 0).
     """
     n = len(values)
     if n < 2 * min_segment:
         return []
 
     if penalty is None:
-        # BIC-inspired penalty: log(n) * variance
+        # BIC penalty: log(n) data-points worth of residual variance per
+        # changepoint. sigma^2 has squared data units, matching the SSE gain.
         var = statistics.variance(values) if n > 1 else 1.0
         penalty = math.log(n) * var if var > 0 else 1.0
 
-    points: list[int] = []
+    points: list[tuple[int, float]] = []  # (index, SSE gain at that split)
     _binary_segment(list(values), 0, n, min_segment, penalty, max_changepoints, points)
     points.sort()
 
     result: list[ChangePoint] = []
-    for idx in points:
+    for idx, gain in points:
         before = values[:idx]
         after = values[idx:]
         bm = statistics.mean(before) if before else 0
         am = statistics.mean(after) if after else 0
         mag = (am - bm) / abs(bm) if abs(bm) > 1e-9 else 0
         result.append(ChangePoint(index=idx, before_mean=round(bm, 3), after_mean=round(am, 3),
-                                  magnitude=round(mag, 3), cost_reduction=0))
+                                  magnitude=round(mag, 3), cost_reduction=round(gain, 3)))
     return result
 
 
 def _binary_segment(values: list[float], start: int, end: int, min_seg: int,
-                    penalty: float, max_cp: int, points: list[int]) -> None:
+                    penalty: float, max_cp: int, points: list[tuple[int, float]]) -> None:
     if end - start < 2 * min_seg or len(points) >= max_cp:
         return
     best_idx = -1
@@ -199,7 +241,7 @@ def _binary_segment(values: list[float], start: int, end: int, min_seg: int,
             best_idx = i
 
     if best_idx >= 0 and best_gain > penalty:
-        points.append(best_idx)
+        points.append((best_idx, best_gain))
         _binary_segment(values, start, best_idx, min_seg, penalty, max_cp, points)
         _binary_segment(values, best_idx, end, min_seg, penalty, max_cp, points)
 
@@ -222,8 +264,30 @@ def _segment_cost(values: list[float], start: int, end: int) -> float:
 def detect_periodicity(values: Sequence[float], *, min_period: float = 2, max_period: float | None = None) -> list[PeriodicComponent]:
     """Detect periodic components via discrete Fourier transform.
 
-    Returns significant periodic components sorted by power.
-    Uses pure Python DFT (no numpy required) — fast enough for <2000 samples.
+    Returns periodic components sorted by spectral power, kept by a power
+    heuristic (see below). Uses pure Python DFT (no numpy required) — fast
+    enough for <2000 samples.
+
+    EVEN-SAMPLING REQUIREMENT (NOT enforced — ``values`` carries no time axis):
+    the DFT correlates each value against its *array position* ``j``, so the
+    frequency grid (``period = n / k``) is only meaningful when ``values`` is a
+    **dense, gapless, evenly-spaced series** (one sample per day for daily data).
+    Missing days shift later samples and alias energy across the spectrum,
+    producing spurious periods. Callers MUST pass a contiguous daily series
+    (today's caller in ``graph.temporal_signals`` does). For genuinely irregular
+    timestamps use ``scipy.signal.lombscargle`` instead — this function is the
+    wrong tool there.
+
+    SIGNIFICANCE IS HEURISTIC, NOT CALIBRATED: components are kept when their
+    power exceeds ``max(2 * median_power, 0.1 * top_power)``. This is a
+    relative noise-floor cut with no null model and no p-value — it does not
+    control a false-positive rate. The ``power > 2*median`` framing previously
+    described as "significance" is recorded on each component as
+    ``selection="heuristic"`` so downstream consumers do not over-read it.
+
+    Amplitude is the relative DFT amplitude ``2*sqrt(re^2+im^2)/n`` (i.e.
+    ``2*sqrt(power/n)`` with ``power = (re^2+im^2)/n``); the prior code divided
+    by ``n`` twice and reported amplitudes ~``n``× too small.
     """
     n = len(values)
     if n < 8:
@@ -244,9 +308,9 @@ def detect_periodicity(values: Sequence[float], *, min_period: float = 2, max_pe
         real = sum(centered[j] * math.cos(2 * math.pi * k * j / n) for j in range(n))
         imag = sum(centered[j] * math.sin(2 * math.pi * k * j / n) for j in range(n))
         power = (real ** 2 + imag ** 2) / n
-        amplitude = 2 * math.sqrt(power) / n
+        # Relative DFT amplitude: 2*sqrt(re^2+im^2)/n == 2*sqrt(power/n).
+        amplitude = 2 * math.sqrt(power / n)
 
-        # Significance: power should be notably above noise floor
         if power > 0:
             components.append(PeriodicComponent(
                 period=round(period, 2), amplitude=round(amplitude, 4),
@@ -258,7 +322,7 @@ def detect_periodicity(values: Sequence[float], *, min_period: float = 2, max_pe
     if not components:
         return []
 
-    # Filter: keep only those with power > 2× median power (simple significance)
+    # Heuristic noise-floor cut (NOT a calibrated significance test).
     median_power = statistics.median(c.power for c in components) if len(components) > 3 else 0
     threshold = max(median_power * 2, components[0].power * 0.1)
     return [c for c in components if c.power >= threshold][:5]
@@ -282,18 +346,29 @@ def _period_label(period: float) -> str:
 
 
 def cross_correlate(
-    a: Sequence[float], b: Sequence[float], *, max_lag: int = 3
+    a: Sequence[float], b: Sequence[float], *, max_lag: int = 3, fdr: float = 0.05
 ) -> list[CorrelationResult]:
-    """Lagged Pearson cross-correlation with t-test significance.
+    """Lagged Pearson cross-correlation with FDR-corrected significance.
 
     Positive lag means b is shifted forward (a leads b).
     e.g., lag=1: does today's a predict tomorrow's b?
+
+    The 2*max_lag+1 lags form a family of simultaneous tests. Reporting raw
+    per-lag ``p < 0.05`` over that family inflates the false-positive rate, so
+    ``significant`` is set from a **Benjamini-Hochberg FDR** correction (target
+    ``fdr``, default 0.05) applied across all returned lags. The raw t-test
+    p-value is preserved in ``p_value`` and the adjusted value in ``q_value``.
+
+    This measures *correlation*, not causation: a significant lagged correlation
+    does not establish that ``a`` drives ``b`` (confounders, common trends, and
+    autocorrelation can all produce it).
     """
     results: list[CorrelationResult] = []
     n = min(len(a), len(b))
     if n < 5:
         return results
 
+    raw: list[tuple[int, float, float]] = []  # (lag, r, p)
     for lag in range(-max_lag, max_lag + 1):
         if lag >= 0:
             x = list(a[:n - lag])
@@ -313,11 +388,44 @@ def cross_correlate(
         else:
             t_stat = r * math.sqrt((m - 2) / (1 - r ** 2))
             p = _t_test_p(t_stat, m - 2)
-        results.append(CorrelationResult(lag=lag, r=round(r, 4), p_value=round(p, 4),
-                                         significant=p < 0.05, n=m))
+        raw.append((lag, r, p))
+
+    if not raw:
+        return results
+
+    # Benjamini-Hochberg FDR across the lag family.
+    q_by_lag = _benjamini_hochberg({lag: p for lag, _r, p in raw})
+
+    for lag, r, p in raw:
+        # recompute m for n field
+        m = (n - lag) if lag >= 0 else (n + lag)
+        q = q_by_lag[lag]
+        results.append(CorrelationResult(
+            lag=lag, r=round(r, 4), p_value=round(p, 4),
+            significant=q < fdr, n=m, q_value=round(q, 4),
+        ))
 
     results.sort(key=lambda c: c.p_value)
     return results
+
+
+def _benjamini_hochberg(pvals: dict[int, float]) -> dict[int, float]:
+    """Benjamini-Hochberg step-up FDR adjustment.
+
+    Returns a dict mapping each key to its BH-adjusted p-value (q-value).
+    Adjusted values are monotone in rank and clamped to <= 1.
+    """
+    items = sorted(pvals.items(), key=lambda kv: kv[1])
+    total = len(items)
+    adjusted: dict[int, float] = {}
+    prev = 1.0
+    # Walk from largest p to smallest, enforcing monotonicity.
+    for rank in range(total, 0, -1):
+        key, p = items[rank - 1]
+        q = min(prev, p * total / rank)
+        adjusted[key] = q
+        prev = q
+    return adjusted
 
 
 def _pearson_r(x: list[float], y: list[float]) -> float | None:
@@ -338,12 +446,20 @@ def _pearson_r(x: list[float], y: list[float]) -> float | None:
 
 
 def cluster_days(
-    features: Sequence[dict[str, float]], *, k: int | None = None, max_k: int = 5
+    features: Sequence[dict[str, float]], *, k: int | None = None, max_k: int = 5,
+    random_state: int = 42,
 ) -> list[DayCluster]:
     """K-means clustering of feature vectors.
 
     Auto-selects k via silhouette score if not specified.
     Features should be pre-normalized (or at similar scales).
+
+    Deterministic: ``random_state`` (default 42, matching ``detect_regimes`` and
+    ``productivity_predictors``) seeds k-means++ initialization. Each fit uses
+    multiple random restarts and keeps the lowest-inertia solution, so labels are
+    reproducible across runs. The overall silhouette of the chosen clustering is
+    reported on ``DayCluster.silhouette`` (same value on every returned cluster)
+    so instability / weak separation is visible to consumers.
     """
     n = len(features)
     if n < 4:
@@ -366,14 +482,15 @@ def cluster_days(
     if k is None:
         best_k, best_score = 2, -1.0
         for trial_k in range(2, min(max_k + 1, n // 2 + 1)):
-            labels = _kmeans(matrix, trial_k)
+            labels = _kmeans(matrix, trial_k, seed=random_state)
             score = _silhouette(matrix, labels)
             if score > best_score:
                 best_score = score
                 best_k = trial_k
         k = best_k
 
-    labels = _kmeans(matrix, k)
+    labels = _kmeans(matrix, k, seed=random_state)
+    silhouette = round(_silhouette(matrix, labels), 3)
 
     # Build clusters
     clusters: dict[int, list[int]] = {}
@@ -390,23 +507,48 @@ def cluster_days(
         result.append(DayCluster(
             cluster_id=cid, label=f"cluster_{cid}_{top_feature}",
             size=len(members), centroid=centroid, members=members,
+            silhouette=silhouette,
         ))
     return result
 
 
-def _kmeans(matrix: list[list[float]], k: int, max_iter: int = 50) -> list[int]:
+def _kmeans(
+    matrix: list[list[float]], k: int, max_iter: int = 50, *,
+    seed: int = 42, n_restarts: int = 5,
+) -> list[int]:
+    """Seeded, multi-restart k-means; returns the lowest-inertia labelling.
+
+    ``seed`` makes initialization deterministic (was unseeded ``random`` →
+    non-reproducible labels). ``n_restarts`` independent k-means++ runs guard
+    against poor local optima; the run with the smallest within-cluster sum of
+    squared distances (inertia) wins.
+    """
     import random
+
+    best_labels: list[int] | None = None
+    best_inertia = math.inf
+    for restart in range(n_restarts):
+        rng = random.Random(seed + restart)
+        labels = _kmeans_once(matrix, k, max_iter, rng)
+        inertia = _inertia(matrix, labels, k)
+        if inertia < best_inertia:
+            best_inertia = inertia
+            best_labels = labels
+    return best_labels if best_labels is not None else [0] * len(matrix)
+
+
+def _kmeans_once(matrix: list[list[float]], k: int, max_iter: int, rng) -> list[int]:  # type: ignore[no-untyped-def]
     n = len(matrix)
     dim = len(matrix[0]) if matrix else 0
     # Initialize centroids via k-means++
-    centroids = [matrix[random.randint(0, n - 1)][:]]
+    centroids = [matrix[rng.randint(0, n - 1)][:]]
     for _ in range(1, k):
         dists = [min(_dist(row, c) for c in centroids) for row in matrix]
         total = sum(dists)
         if total == 0:
-            centroids.append(matrix[random.randint(0, n - 1)][:])
+            centroids.append(matrix[rng.randint(0, n - 1)][:])
             continue
-        r = random.random() * total
+        r = rng.random() * total
         cumsum = 0.0
         for i, d in enumerate(dists):
             cumsum += d
@@ -431,6 +573,19 @@ def _kmeans(matrix: list[list[float]], k: int, max_iter: int = 50) -> list[int]:
             if members:
                 centroids[c] = [statistics.mean(members[j][d] for j in range(len(members))) for d in range(dim)]
     return labels
+
+
+def _inertia(matrix: list[list[float]], labels: list[int], k: int) -> float:
+    """Within-cluster sum of squared distances to each cluster's centroid."""
+    dim = len(matrix[0]) if matrix else 0
+    total = 0.0
+    for c in range(k):
+        members = [matrix[i] for i in range(len(matrix)) if labels[i] == c]
+        if not members:
+            continue
+        centroid = [statistics.mean(m[d] for m in members) for d in range(dim)]
+        total += sum(_dist(m, centroid) for m in members)
+    return total
 
 
 def _dist(a: list[float], b: list[float]) -> float:
@@ -479,10 +634,12 @@ def anomaly_score(value: float, history: Sequence[float], *, method: str = "iqr"
 
 
 def _iqr_anomaly(value: float, history: Sequence[float]) -> AnomalyResult:
-    sorted_h = sorted(history)
-    n = len(sorted_h)
-    q1 = sorted_h[n // 4]
-    q3 = sorted_h[3 * n // 4]
+    # Linear-interpolation quartiles (method="inclusive" matches numpy's default
+    # "linear" percentile). Nearest-rank indexing (sorted_h[n//4]) was biased and
+    # far too tight for small n (e.g. n=5 took the 2nd and 4th raw values as
+    # Q1/Q3), making the IQR fence over-sensitive. anomaly_score guards n >= 5,
+    # and statistics.quantiles requires n >= 2, so this is always valid here.
+    q1, _median, q3 = statistics.quantiles(history, n=4, method="inclusive")
     iqr = q3 - q1
     if iqr == 0:
         return AnomalyResult(value=value, score=0, threshold=0, is_anomaly=False, direction="normal")
@@ -524,14 +681,33 @@ def norm_cdf(x: float) -> float:
 
 
 def norm_sf(x: float) -> float:
-    """Standard normal survival function P(Z > x)."""
+    """Standard normal survival function P(Z > x).
+
+    NUMERICAL CAVEAT: computed as ``1 - norm_cdf(x)``, which underflows to 0.0
+    for large ``x`` (roughly ``x > 8``) due to float64 catastrophic cancellation.
+    Two-tailed p-values built from ``2 * norm_sf(abs(z))`` therefore report
+    exactly 0.0 for very strong signals rather than a tiny positive value. This
+    is harmless for the ``p < 0.05`` thresholds used here but should not be read
+    as an exact tail probability. scipy's ``norm.sf`` does not have this issue;
+    callers needing accurate deep tails should use it directly.
+    """
     return 1 - norm_cdf(x)
 
 
 def _t_test_p(t_stat: float, df: int) -> float:
-    """Approximate two-tailed p-value for t-distribution.
+    """Two-tailed p-value for the t-distribution.
 
-    Uses scipy if available, otherwise normal approximation.
+    Prefers scipy (``scipy.stats.t.sf``), which is an available dependency in
+    this project; falls back to a standard-normal approximation only if scipy is
+    missing at runtime.
+
+    DIVERGENCE CAVEAT: the two paths disagree for small ``df``. The normal
+    fallback (``2 * norm_sf``) has thinner tails than Student's t, so it
+    *overstates* significance (returns p-values smaller than the true t-test) at
+    low degrees of freedom — exactly the small-sample regime this module often
+    runs in. It also underflows to 0.0 for large ``|t_stat|`` (see ``norm_sf``).
+    With scipy installed (the normal case here) the t-distribution is used
+    exactly, so results are stable; the fallback exists only for degraded envs.
     """
     if df <= 0:
         return 1.0
@@ -694,22 +870,34 @@ def correlation_matrix(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Granger-style causality (lagged correlation significance)
+# Lead-lag correlation (NOT causality)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def granger_test(
-    cause: Sequence[float], effect: Sequence[float], *, max_lag: int = 3
+def lagged_correlation(
+    leading: Sequence[float], following: Sequence[float], *, max_lag: int = 3
 ) -> list[CorrelationResult]:
-    """Test if `cause` Granger-causes `effect` via lagged cross-correlation.
+    """Lead-lag correlation: does `leading` correlate with later `following`?
 
-    This is a simplified Granger test using lagged Pearson correlation with
-    significance testing, not a full VAR-based test. Sufficient for daily
-    behavioral data where we want to detect lead-lag relationships like
-    "does sleep predict next-day productivity?".
+    Returns the positive-lag (``leading`` precedes ``following``) cross-
+    correlations that survive the FDR correction in ``cross_correlate``, sorted
+    by significance.
 
-    Returns only positive lags (cause leads effect) sorted by significance.
+    NOT A CAUSALITY TEST. This is lagged Pearson correlation, not a VAR-based
+    Granger-causality test: it does not control for ``following``'s own past or
+    confounders. A surviving lag is evidence of a temporal lead-lag *association*
+    ("sleep tends to precede next-day productivity"), not that ``leading`` causes
+    ``following``. This disclaimer travels with each result via
+    ``CorrelationResult.note`` so downstream consumers cannot lose it. (Renamed
+    from ``granger_test`` precisely because that name invited a causal reading.)
     """
-    results = cross_correlate(cause, effect, max_lag=max_lag)
-    # Keep only positive lags (cause leads) and significant results
-    return [r for r in results if r.lag > 0 and r.significant]
+    results = cross_correlate(leading, following, max_lag=max_lag)
+    note = "lagged correlation, not a VAR Granger-causality test; association only, not causation"
+    return [
+        CorrelationResult(
+            lag=r.lag, r=r.r, p_value=r.p_value, significant=r.significant,
+            n=r.n, q_value=r.q_value, note=note,
+        )
+        for r in results
+        if r.lag > 0 and r.significant
+    ]

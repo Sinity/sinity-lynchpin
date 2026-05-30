@@ -34,7 +34,10 @@ _HUNK_RE = re.compile(
 )
 _DIFF_HEADER_RE = re.compile(r"^diff --git a/(.+) b/(.+)$")
 _GIT_TIMEOUT_S = 60
-_MAX_COMMITS_PER_PROJECT = 500
+# No commit-count cap — the caller controls cardinality via the
+# ``start``/``end`` window.  A narrow window (e.g. 31 days → a few
+# hundred commits) keeps ``git show`` cost bounded; widening the
+# window intentionally means accepting the extra work.
 
 
 def build_active_symbol_diffs(
@@ -98,9 +101,8 @@ def build_active_symbol_diffs(
         if not repo_root or not Path(repo_root).is_dir():
             caveats.append(f"{project}: repository root not found on disk; skipped")
             continue
-        # process most recent commits first; cap to bound work
+        # process most recent commits first
         commits.sort(key=lambda c: c.get("timestamp") or "", reverse=True)
-        commits = commits[:_MAX_COMMITS_PER_PROJECT]
         project_events, project_summary = _process_project(
             project=project,
             repo_root=Path(repo_root),
@@ -261,14 +263,18 @@ def _git_show_unified0(*, repo_root: Path, sha: str) -> dict[str, list[dict[str,
     try:
         result = subprocess.run(
             cmd, cwd=str(repo_root),
-            capture_output=True, text=True, timeout=_GIT_TIMEOUT_S,
+            capture_output=True, timeout=_GIT_TIMEOUT_S,
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
     if result.returncode != 0:
         return None
-    return _parse_unified0_diff(result.stdout)
+    # Git output may contain non-UTF-8 bytes from old commits (binary
+    # files, legacy encodings). Replace invalid sequences rather than
+    # crashing the whole symbol-extraction step.
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    return _parse_unified0_diff(stdout)
 
 
 def _parse_unified0_diff(output: str) -> dict[str, list[dict[str, int]]]:
@@ -360,7 +366,6 @@ def _methodology() -> dict[str, Any]:
         "lines_added": "count of lines whose new-side number falls inside the symbol range",
         "lines_removed": "count of lines whose old-side number falls inside the symbol range",
         "breaking_candidate": "exported symbol whose change_type begins with D (delete) or R (rename)",
-        "limits": f"capped at {_MAX_COMMITS_PER_PROJECT} most-recent commits per project",
     }
 
 

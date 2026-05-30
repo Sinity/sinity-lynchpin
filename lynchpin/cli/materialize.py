@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..materialization import (
     audit_materialization,
     plan_materializations,
@@ -110,7 +111,10 @@ def _all_history_window() -> tuple[date, date]:
         if row.status == "ready" and row.first_date is not None and row.last_date is not None
     ]
     if not rows:
-        raise RuntimeError("no ready materialized dataset has date bounds")
+        raise MaterializationError(
+            "materialized-datasets",
+            reason="no ready materialized dataset has date bounds",
+        )
     start = min(row.first_date for row in rows if row.first_date is not None)
     last = max(row.last_date for row in rows if row.last_date is not None)
     return start, last + timedelta(days=1)

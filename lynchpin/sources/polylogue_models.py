@@ -44,7 +44,7 @@ class DaySessionSummary:
     providers: dict[str, int]  # provider → session count
 
 
-@dataclass
+@dataclass  # not frozen: mutable accumulator bucket mutated in-loop in polylogue.py
 class _DaySummaryBucket:
     session_count: int = 0
     total_cost_usd: float = 0.0
@@ -55,7 +55,7 @@ class _DaySummaryBucket:
     providers: dict[str, int] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass  # not frozen: mutable accumulator bucket mutated in-loop in polylogue.py
 class _ProfileDayBucket:
     session_count: int = 0
     total_messages: int = 0
@@ -186,7 +186,7 @@ class WorkPattern:
     top_projects: tuple[str, ...]
 
 
-@dataclass
+@dataclass  # not frozen: mutable accumulator bucket mutated in-loop in polylogue.py
 class _WorkPatternBucket:
     sessions: int = 0
     ms: int = 0

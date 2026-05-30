@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.errors import SchemaVersionError
 from ..sources.title_metadata import title_metadata_path
 
 
@@ -95,7 +96,11 @@ def _select_source_table(conn: Any) -> str:
         return "gpt_classifications"
     if "semantic_classifications" in names:
         return "semantic_classifications"
-    raise RuntimeError("classification DuckDB has no supported classification table")
+    raise SchemaVersionError(
+        found=sorted(names),
+        expected="semantic_classifications_unified | gpt_classifications | semantic_classifications",
+        source="classification DuckDB",
+    )
 
 
 def _canonical_payload(row: dict[str, Any]) -> dict[str, Any]:

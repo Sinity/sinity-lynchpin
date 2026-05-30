@@ -1,4 +1,10 @@
-"""Shared work-event kind label contract."""
+"""Shared work-event kind label contract.
+
+Data-model half: the ``WorkEventKindLabel`` DTO plus the ``KindSource`` /
+``ConfidenceTier`` type aliases. This is the pure type contract with no
+classification logic. The re-classifier that produces these labels (the
+"graph" half) lives in ``lynchpin/graph/work_event_kind.py``.
+"""
 
 from __future__ import annotations
 
