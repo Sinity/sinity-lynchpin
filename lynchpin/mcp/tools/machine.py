@@ -13,7 +13,7 @@ from lynchpin.mcp.tools._utils import best_refresh_id, json_safe as _json_safe
 
 
 def _analysis_artifact(name: str) -> dict[str, Any] | None:
-    from lynchpin.analysis.core.io import resolve_analysis_path
+    from lynchpin.core.io import resolve_analysis_path
 
     path = Path(resolve_analysis_path(name))
     if not path.exists():
@@ -24,7 +24,7 @@ def _analysis_artifact(name: str) -> dict[str, Any] | None:
 
 
 def _required_analysis_artifact(name: str) -> dict[str, Any]:
-    from lynchpin.analysis.core.io import resolve_analysis_path
+    from lynchpin.core.io import resolve_analysis_path
 
     path = Path(resolve_analysis_path(name))
     payload = _analysis_artifact(name)
@@ -67,6 +67,7 @@ def machine_metrics_daily(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_machine_metric_daily
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -74,36 +75,13 @@ def machine_metrics_daily(
             if refresh_id is None:
                 return []
 
-        sql = """
-            SELECT
-                observed_at::DATE AS day,
-                host,
-                COUNT(*) AS samples,
-                AVG(cpu_package_w) AS avg_cpu_package_w,
-                MAX(cpu_package_w) AS max_cpu_package_w,
-                AVG(gpu_power_w) AS avg_gpu_power_w,
-                MAX(gpu_power_w) AS max_gpu_power_w,
-                AVG(io_psi_some_avg10) AS avg_io_psi_some_avg10,
-                MAX(io_psi_some_avg10) AS max_io_psi_some_avg10,
-                AVG(latency_oversleep_ms) AS avg_latency_oversleep_ms,
-                MAX(latency_oversleep_ms) AS max_latency_oversleep_ms,
-                MAX(dstate_task_count) AS max_dstate_task_count
-            FROM machine_metric_sample
-            WHERE refresh_id = ?
-        """
-        params: list[Any] = [refresh_id]
-        if start:
-            sql += " AND observed_at::DATE >= ?"
-            params.append(_date.fromisoformat(start))
-        if end:
-            sql += " AND observed_at::DATE <= ?"
-            params.append(_date.fromisoformat(end))
-        if host:
-            sql += " AND host = ?"
-            params.append(host)
-        sql += " GROUP BY day, host ORDER BY day, host"
-
-        rows = conn.execute(sql, params).fetchall()
+        rows = load_machine_metric_daily(
+            conn,
+            refresh_id=refresh_id,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
+            host=host,
+        )
 
     return [
         {
@@ -119,6 +97,61 @@ def machine_metrics_daily(
             "avg_latency_oversleep_ms": row[9],
             "max_latency_oversleep_ms": row[10],
             "max_dstate_task_count": row[11],
+        }
+        for row in rows
+    ]
+
+
+@app.tool()
+def machine_metrics_by_context(
+    start: str | None = None,
+    end: str | None = None,
+    host: str | None = None,
+    refresh_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Daily machine-metric series segmented by the Layer-1 context vector.
+
+    Splits each day by software_revision (the NixOS generation active at each
+    sample, via an ASOF join on activated_at <= observed_at) and hardware_regime
+    (GPU PCIe link gen/width), aggregating CPU/GPU power and CPU/IO pressure.
+    Use this to compare a metric across generation boundaries or PCIe link
+    regimes. ``generation`` is null for samples predating any activation record
+    (missing generation telemetry is reported as null, never imputed).
+    """
+    from datetime import date as _date
+
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_machine_metric_series_by_context
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_refresh_id(conn, "machine_metric_sample")
+            if refresh_id is None:
+                return []
+        generations_refresh_id = best_refresh_id(conn, "sinnix_generation")
+
+        rows = load_machine_metric_series_by_context(
+            conn,
+            refresh_id=refresh_id,
+            generations_refresh_id=generations_refresh_id,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
+            host=host,
+        )
+
+    return [
+        {
+            "day": _json_safe(row[0]),
+            "generation": row[1],
+            "sinnix_revision": row[2],
+            "gpu_pcie_gen": row[3],
+            "gpu_pcie_width": row[4],
+            "samples": row[5],
+            "avg_cpu_package_w": row[6],
+            "avg_gpu_power_w": row[7],
+            "avg_io_psi_full_avg10": row[8],
+            "max_io_psi_full_avg10": row[9],
+            "avg_cpu_psi_some_avg60": row[10],
         }
         for row in rows
     ]
@@ -282,6 +315,7 @@ def machine_service_state_summary(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_machine_service_state_summary
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -289,38 +323,14 @@ def machine_service_state_summary(
             if refresh_id is None:
                 return []
 
-        sql = """
-            SELECT
-                host,
-                unit,
-                scope,
-                COUNT(*) AS samples,
-                SUM(CASE WHEN active_state = 'active' THEN 1 ELSE 0 END) AS active_samples,
-                MAX(memory_current_bytes) AS max_memory_current_bytes,
-                MAX(cpu_usage_nsec) AS max_cpu_usage_nsec,
-                MAX(io_read_bytes) AS max_io_read_bytes,
-                MAX(io_write_bytes) AS max_io_write_bytes,
-                MIN(observed_at) AS first_observed_at,
-                MAX(observed_at) AS last_observed_at
-            FROM machine_service_state
-            WHERE refresh_id = ?
-        """
-        params: list[Any] = [refresh_id]
-        if start:
-            sql += " AND observed_at::DATE >= ?"
-            params.append(_date.fromisoformat(start))
-        if end:
-            sql += " AND observed_at::DATE <= ?"
-            params.append(_date.fromisoformat(end))
-        if host:
-            sql += " AND host = ?"
-            params.append(host)
-        if unit:
-            sql += " AND unit = ?"
-            params.append(unit)
-        sql += " GROUP BY host, unit, scope ORDER BY host, scope, unit"
-
-        rows = conn.execute(sql, params).fetchall()
+        rows = load_machine_service_state_summary(
+            conn,
+            refresh_id=refresh_id,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
+            host=host,
+            unit=unit,
+        )
 
     return [
         {
@@ -355,38 +365,11 @@ def borg_drill_history(
     one archive whose chunks were re-read and verified end-to-end.
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_borg_drill_runs, load_borg_drill_summary
 
-    where_clauses: list[str] = []
-    params: list[Any] = []
-    if status:
-        where_clauses.append("status = ?")
-        params.append(status)
-    if repo:
-        where_clauses.append("repo = ?")
-        params.append(repo)
-    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-    sql = f"""
-        SELECT repo, archive, started_at, ended_at, duration_s, exit_code,
-               status, within_days
-        FROM borg_drill_run
-        {where_sql}
-        ORDER BY started_at DESC
-        LIMIT ?
-    """
-    params.append(max(int(limit), 0))
     with connect(substrate_path(), read_only=True) as conn:
-        rows = conn.execute(sql, params).fetchall()
-        summary_row = conn.execute(
-            """
-            SELECT
-                COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE status = 'ok') AS ok_count,
-                COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
-                MAX(started_at) AS last_started_at
-            FROM borg_drill_run
-            """
-        ).fetchone()
+        rows = load_borg_drill_runs(conn, limit=limit, status=status, repo=repo)
+        summary_row = load_borg_drill_summary(conn)
 
     return {
         "summary": {
@@ -427,22 +410,10 @@ def sinnix_generation_history(
     sample's observed_at is the generation that produced the sample.
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_sinnix_generation_rows
 
-    where = ""
-    params: list[Any] = []
-    if host:
-        where = "WHERE host = ?"
-        params.append(host)
-    sql = f"""
-        SELECT host, generation, activated_at, store_path, sinnix_revision, nixos_label
-        FROM sinnix_generation
-        {where}
-        ORDER BY activated_at DESC
-        LIMIT ?
-    """
-    params.append(max(int(limit), 0))
     with connect(substrate_path(), read_only=True) as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = load_sinnix_generation_rows(conn, limit=limit, host=host)
     return [
         {
             "host": row[0],
@@ -480,51 +451,15 @@ def machine_bufferbloat_summary(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_bufferbloat_daily
 
-    where_clauses: list[str] = [
-        "bloat IS NOT NULL",
-        "json_extract_string(bloat, '$.avg_ms') IS NOT NULL",
-    ]
-    params: list[Any] = []
-    if start:
-        where_clauses.append("CAST(observed_at AS DATE) >= ?")
-        params.append(_date.fromisoformat(start))
-    if end:
-        where_clauses.append("CAST(observed_at AS DATE) <= ?")
-        params.append(_date.fromisoformat(end))
-    if interface:
-        where_clauses.append("interface = ?")
-        params.append(interface)
-    where_sql = " AND ".join(where_clauses)
-
-    sql = f"""
-        WITH parsed AS (
-            SELECT
-                CAST(observed_at AS DATE) AS day,
-                interface,
-                CAST(json_extract_string(bloat, '$.avg_ms') AS DOUBLE) AS avg_ms,
-                CAST(json_extract_string(bloat, '$.min_ms') AS DOUBLE) AS min_ms,
-                CAST(json_extract_string(bloat, '$.max_ms') AS DOUBLE) AS max_ms,
-                CAST(json_extract_string(bloat, '$.loss')   AS DOUBLE) AS loss
-            FROM machine_network_sample
-            WHERE {where_sql}
-        )
-        SELECT
-            day,
-            interface,
-            COUNT(*)                                         AS sample_count,
-            quantile_cont(avg_ms, 0.50)                      AS avg_ms_p50,
-            quantile_cont(avg_ms, 0.95)                      AS avg_ms_p95,
-            MAX(avg_ms)                                      AS avg_ms_max,
-            quantile_cont(loss,   0.50)                      AS loss_p50,
-            quantile_cont(loss,   0.95)                      AS loss_p95,
-            MAX(loss)                                        AS loss_max
-        FROM parsed
-        GROUP BY day, interface
-        ORDER BY day, interface
-    """
     with connect(substrate_path(), read_only=True) as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = load_bufferbloat_daily(
+            conn,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
+            interface=interface,
+        )
 
     return {
         "summary": {

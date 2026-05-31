@@ -37,6 +37,7 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "machine_network_sample",
         "machine_service_state",
         "machine_experiment_run",
+        "work_observation",
     }
     assert expected <= table_names
     assert {

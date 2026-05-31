@@ -28,6 +28,7 @@ SOURCE_MACHINE_SERVICE_STATE = "machine_service_state"
 SOURCE_MACHINE_EXPERIMENTS = "machine_experiments"
 SOURCE_SINNIX_GENERATION = "sinnix_generation"
 SOURCE_BORG_DRILL = "borg_drill_run"
+SOURCE_WORK_OBSERVATIONS = "work_observations"
 
 ALL_SOURCE_IDS = frozenset(PROMOTION_STAGE_NAMES)
 

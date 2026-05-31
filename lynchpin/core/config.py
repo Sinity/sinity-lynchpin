@@ -79,6 +79,7 @@ class LynchpinConfig:
     machine_telemetry_db: Path
     sinnix_generations_jsonl: Path
     borg_drill_jsonl: Path
+    xtask_history_db: Path
     sinnix_runtime_inventory_json: Path
     browser_bookmarks_root: Path
     arbtt_root: Path
@@ -113,6 +114,7 @@ class LynchpinConfig:
             "irc_raw": (self.irc_root / "_raw").exists(),
             "raw_log": self.raw_log_file.exists(),
             "machine": self.machine_telemetry_db.exists(),
+            "xtask_history": self.xtask_history_db.exists(),
             "gmail_takeout": (self.exports_root / "google/raw/takeout").exists(),
             "raindrop_live": _raindrop_live_available(),
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
@@ -270,6 +272,7 @@ class LynchpinConfig:
             "LYNCHPIN_BORG_DRILL_JSONL",
             machine_capture_root / "borg_drill.jsonl",
         ))
+        xtask_history_db = _resolve_xtask_history_db(os.environ.get("LYNCHPIN_XTASK_HISTORY_DB"))
         sinnix_runtime_inventory_json = Path(os.environ.get(
             "LYNCHPIN_SINNIX_RUNTIME_INVENTORY_JSON",
             "/etc/sinnix/runtime-inventory.json",
@@ -326,6 +329,7 @@ class LynchpinConfig:
             machine_telemetry_db=machine_telemetry_db,
             sinnix_generations_jsonl=sinnix_generations_jsonl,
             borg_drill_jsonl=borg_drill_jsonl,
+            xtask_history_db=xtask_history_db,
             sinnix_runtime_inventory_json=sinnix_runtime_inventory_json,
             browser_bookmarks_root=browser_bookmarks_root,
             arbtt_root=arbtt_root,
@@ -415,6 +419,21 @@ def _raindrop_live_available() -> bool:
     if os.environ.get("RAINDROP_API_TOKEN", "").strip():
         return True
     return False
+
+
+def _resolve_xtask_history_db(env_value: str | None) -> Path:
+    if env_value:
+        return Path(env_value).expanduser()
+    state_dir = os.environ.get("SINEX_STATE_DIR")
+    if state_dir:
+        return Path(state_dir).expanduser() / "xtask-history.db"
+    root = Path("/var/cache/sinex/sinity")
+    candidates = sorted(
+        root.glob("*/dev-state/state/xtask-history.db") if root.exists() else (),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else root / "xtask-history.db"
 
 
 def _resolve_fbmessenger_db(*candidates: Path) -> str:

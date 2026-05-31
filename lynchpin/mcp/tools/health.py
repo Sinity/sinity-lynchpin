@@ -21,11 +21,12 @@ def substrate_gap_draft() -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_source_gap_rows
     with connect(substrate_path(), read_only=True) as conn:
         refresh_id = _latest_refresh_id(conn)
         if refresh_id is None:
             return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
-        gaps = conn.execute("SELECT source, status, reason, row_count FROM substrate_source_status WHERE refresh_id = ? AND status IN ('unavailable', 'error') ORDER BY source", [refresh_id]).fetchall()
+        gaps = load_source_gap_rows(conn, refresh_id=refresh_id)
         gap_list = [{'source': r[0], 'status': r[1], 'reason': r[2], 'row_count': r[3]} for r in gaps]
         if not gap_list:
             return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
@@ -68,6 +69,7 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_evidence_node_by_source, load_source_status_map
     return {'refresh_id': refresh_id, 'dimensions': dimensions, 'summary': {'total_nodes': total_nodes, 'source_count': len(dimensions), 'healthy_source_count': healthy, 'confidence_pct': round(confidence, 1)}}
 
 @app.tool()
@@ -98,20 +100,21 @@ def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_ai_work_event_count, load_ai_work_event_disagreements, load_ai_work_event_per_kind_confidence, load_ai_work_event_source_distribution, load_ai_work_event_tier_distribution
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
                 return {'error': 'no promote runs'}
-        total = conn.execute('SELECT COUNT(*) FROM ai_work_event WHERE refresh_id = ?', [refresh_id]).fetchone()[0]
+        total = load_ai_work_event_count(conn, refresh_id=refresh_id)
         tiers = {}
-        for r in conn.execute('SELECT kind_tier, COUNT(*) FROM ai_work_event WHERE refresh_id = ? GROUP BY kind_tier', [refresh_id]).fetchall():
+        for r in load_ai_work_event_tier_distribution(conn, refresh_id=refresh_id):
             tiers[r[0] or 'null'] = r[1]
         sources = {}
-        for r in conn.execute('SELECT kind_source, COUNT(*) FROM ai_work_event WHERE refresh_id = ? GROUP BY kind_source', [refresh_id]).fetchall():
+        for r in load_ai_work_event_source_distribution(conn, refresh_id=refresh_id):
             sources[r[0] or 'null'] = r[1]
-        disagreements = conn.execute('\n            SELECT kind, source_kind, overlay_kind, COUNT(*) AS cnt\n            FROM ai_work_event\n            WHERE refresh_id = ?\n              AND source_kind IS NOT NULL\n              AND overlay_kind IS NOT NULL\n              AND source_kind != overlay_kind\n            GROUP BY kind, source_kind, overlay_kind\n            ORDER BY cnt DESC LIMIT 10\n        ', [refresh_id]).fetchall()
-        per_kind = conn.execute('\n            SELECT kind, COUNT(*) AS cnt,\n                   ROUND(AVG(kind_confidence), 2) AS avg_conf\n            FROM ai_work_event\n            WHERE refresh_id = ? AND kind IS NOT NULL\n            GROUP BY kind ORDER BY cnt DESC LIMIT 20\n        ', [refresh_id]).fetchall()
+        disagreements = load_ai_work_event_disagreements(conn, refresh_id=refresh_id)
+        per_kind = load_ai_work_event_per_kind_confidence(conn, refresh_id=refresh_id)
     disagree_count = sources.get('disagreement', 0)
     return {'refresh_id': refresh_id, 'total': total, 'tier_distribution': tiers, 'source_distribution': sources, 'disagreement_rate': round(disagree_count / max(total, 1), 3), 'top_disagreements': [{'kind': r[0], 'source_kind': r[1], 'overlay_kind': r[2], 'count': r[3]} for r in disagreements], 'per_kind_confidence': [{'kind': r[0], 'count': r[1], 'avg_confidence': r[2]} for r in per_kind]}
 
@@ -140,13 +143,14 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_symbol_change_count, load_symbol_survival_by_project_day
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _latest_refresh_id(conn)
             if refresh_id is None:
                 return {'error': 'no promote runs'}
-        total = conn.execute('SELECT COUNT(*) FROM symbol_change WHERE refresh_id = ?', [refresh_id]).fetchone()[0]
-        rows = conn.execute("\n            WITH ranked AS (\n                SELECT project, date, qualified_name, change_type,\n                       ROW_NUMBER() OVER (\n                           PARTITION BY qualified_name\n                           ORDER BY date DESC, sha DESC\n                       ) AS rn\n                FROM symbol_change\n                WHERE refresh_id = ?\n            ),\n            latest AS (\n                SELECT project, date, qualified_name, change_type\n                FROM ranked WHERE rn = 1\n            )\n            SELECT project, date,\n                   COUNT(*) AS total_syms,\n                   SUM(CASE WHEN change_type != 'DELETED' THEN 1 ELSE 0 END) AS surviving\n            FROM latest\n            GROUP BY project, date\n            HAVING COUNT(*) >= ?\n            ORDER BY date, project\n        ", [refresh_id, int(min_symbols)]).fetchall()
+        total = load_symbol_change_count(conn, refresh_id=refresh_id)
+        rows = load_symbol_survival_by_project_day(conn, refresh_id=refresh_id, min_symbols=min_symbols)
         surviving_total = sum((r[3] for r in rows))
         per_day = [{'project': r[0], 'date': _json_safe(r[1]), 'total': r[2], 'surviving': r[3], 'rate': round(r[3] / max(r[2], 1), 3)} for r in rows]
     return {'refresh_id': refresh_id, 'total_symbols': total, 'surviving': surviving_total, 'overall_survival_rate': round(surviving_total / max(total, 1), 3), 'per_project_day': per_day}
@@ -154,13 +158,14 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
 @app.tool()
 def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_evidence_node_source_caveats
     RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low'}
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_id(conn, 'evidence_node')
             if refresh_id is None:
                 return []
-        rows = conn.execute('\n            SELECT source,\n                   COUNT(*) AS node_count,\n                   ROUND(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END)\n                         * 100.0 / COUNT(*), 1) AS caveated_pct\n            FROM evidence_node\n            WHERE refresh_id = ?\n            GROUP BY source\n            ORDER BY node_count DESC\n        ', [refresh_id]).fetchall()
+        rows = load_evidence_node_source_caveats(conn, refresh_id=refresh_id)
     results = []
     for r in rows:
         base = RELIABILITY.get(r[0], 'low')
@@ -195,12 +200,13 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
           "source_count": int, "detail": str}]
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_project_day_anomaly_rows
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_id(conn, 'project_day_correlation')
             if refresh_id is None:
                 return []
-        rows = conn.execute('\n            SELECT project, date, commit_count, ai_work_event_count,\n                   focus_seconds, source_count\n            FROM project_day_correlation\n            WHERE refresh_id = ? AND source_count >= 1\n        ', [refresh_id]).fetchall()
+        rows = load_project_day_anomaly_rows(conn, refresh_id=refresh_id)
     if not rows:
         return []
     from collections import defaultdict
@@ -288,16 +294,17 @@ def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -
          "gaps_current": int, "gaps_prior": int}
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_ordered_refresh_ids, load_source_status_by_refresh
     with connect(substrate_path(), read_only=True) as conn:
-        refresh_ids = [r[0] for r in conn.execute('SELECT DISTINCT refresh_id FROM substrate_source_status ORDER BY recorded_at').fetchall()]
+        refresh_ids = load_ordered_refresh_ids(conn)
     if len(refresh_ids) < 2:
         return {'alert': False, 'detail': 'need 2+ refresh snapshots for trend', 'current': refresh_ids[-1] if refresh_ids else None, 'prior': None}
     current = refresh_id or refresh_ids[-1]
     prior = refresh_ids[-2]
     with connect(substrate_path(), read_only=True) as conn:
 
-        def _conf(rid):
-            rows = conn.execute('SELECT status, COUNT(*) FROM substrate_source_status WHERE refresh_id = ? GROUP BY status', [rid]).fetchall()
+        def _conf(rid: str) -> tuple[float, int]:
+            rows = load_source_status_by_refresh(conn, refresh_id=rid)
             statuses = {r[0]: r[1] for r in rows}
             total = sum(statuses.values())
             ok_count = statuses.get('ok', 0)
@@ -330,28 +337,17 @@ def cleanup_period_detect(start: str, end: str, project: str | None=None) -> lis
         - ratio: messages / max(1, commits)
         - likely_cleanup: bool (True if ratio > 5000)
     """
-    from datetime import date as _date_cls, datetime, timedelta
+    from datetime import date as _date_cls
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_health import load_commits_by_month, load_ai_messages_by_month
     start_d = _date_cls.fromisoformat(start)
     end_d = _date_cls.fromisoformat(end)
     with connect(substrate_path(), read_only=True) as conn:
-        commit_sql = "\n            SELECT\n                strftime('%Y-%m', date) as year_month,\n                COUNT(*) as commit_count\n            FROM project_day_correlation\n            WHERE date >= ? AND date <= ?\n        "
-        commit_params: list[Any] = [start_d, end_d]
-        if project:
-            commit_sql += ' AND project = ?'
-            commit_params.append(project)
-        commit_sql += ' GROUP BY year_month ORDER BY year_month'
         commits_by_month: dict[str, int] = {}
-        for row in conn.execute(commit_sql, commit_params).fetchall():
+        for row in load_commits_by_month(conn, start=start_d, end=end_d, project=project):
             commits_by_month[row[0]] = row[1]
-        messages_sql = "\n            SELECT\n                strftime('%Y-%m', date) as year_month,\n                SUM(ai_work_event_count) as ai_messages\n            FROM project_day_correlation\n            WHERE date >= ? AND date <= ?\n        "
-        messages_params: list[Any] = [start_d, end_d]
-        if project:
-            messages_sql += ' AND project = ?'
-            messages_params.append(project)
-        messages_sql += ' GROUP BY year_month ORDER BY year_month'
         messages_by_month: dict[str, int] = {}
-        for row in conn.execute(messages_sql, messages_params).fetchall():
+        for row in load_ai_messages_by_month(conn, start=start_d, end=end_d, project=project):
             if row[1]:
                 messages_by_month[row[0]] = int(row[1])
     all_months = sorted(set(commits_by_month.keys()) | set(messages_by_month.keys()))

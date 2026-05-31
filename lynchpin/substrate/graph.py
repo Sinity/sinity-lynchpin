@@ -505,6 +505,7 @@ def promote_evidence_graph(
             extractor=_extract_node,
             refresh_id_position="first",
             delete_existing=False,
+            wrap_transaction=False,  # this fn owns the surrounding transaction
         )
         log.info("promote_evidence_graph: writing evidence_edge rows")
         edge_count = promote_rows(
@@ -516,6 +517,7 @@ def promote_evidence_graph(
             extractor=_extract_edge,
             refresh_id_position="first",
             delete_existing=False,
+            wrap_transaction=False,  # this fn owns the surrounding transaction
         )
         conn.execute("COMMIT")
     except Exception:

@@ -11,7 +11,7 @@ from typing import Any
 
 from ...graph.evidence_graph import build_base_evidence_graph
 from ...graph.work_correlation import CorrelatedWorkDay, work_day_correlations
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 @dataclass
 class _Micro:

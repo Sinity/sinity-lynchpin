@@ -26,6 +26,7 @@ from .substrate_promote_graph import promote_graph_source
 from .substrate_promote_machine import promote_machine_tables
 from .substrate_promote_personal import promote_personal_sources
 from .substrate_promote_review import promote_review_source
+from .substrate_promote_work import promote_work_sources
 from .substrate_promote_status import (
     MACHINE_SOURCE_IDS,
     SOURCE_AI_WORK_EVENTS,
@@ -39,6 +40,7 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_SERVICE_STATE,
     SOURCE_SINNIX_GENERATION,
     SOURCE_BORG_DRILL,
+    SOURCE_WORK_OBSERVATIONS,
     SOURCE_PR_REVIEW,
     SOURCE_PERSONAL_DAILY_SIGNAL,
     SOURCE_SPOTIFY_DAILY,
@@ -160,6 +162,7 @@ def _do_promote(
     with connect(substrate_path()) as conn:
         apply_schema(conn)
 
+        log.info("promote: artifacts (commits + files + symbols)…")
         promote_artifact_sources(
             conn,
             refresh_id=refresh_id,
@@ -171,6 +174,7 @@ def _do_promote(
             selection=selection,
         )
 
+        log.info("promote: AI work events…")
         promote_ai_sources(
             conn,
             refresh_id=refresh_id,
@@ -180,6 +184,7 @@ def _do_promote(
             selection=selection,
         )
 
+        log.info("promote: evidence graph…")
         promote_graph_source(
             conn,
             refresh_id=refresh_id,
@@ -190,6 +195,7 @@ def _do_promote(
             write_evidence_graph=write_evidence_graph,
         )
 
+        log.info("promote: PR review rows…")
         promote_review_source(
             conn,
             refresh_id=refresh_id,
@@ -198,6 +204,17 @@ def _do_promote(
             selection=selection,
         )
 
+        log.info("promote: work observations…")
+        promote_work_sources(
+            conn,
+            refresh_id=refresh_id,
+            window_start=window_start,
+            window_end=window_end,
+            counts=counts,
+            selection=selection,
+        )
+
+        log.info("promote: personal sources…")
         promote_personal_sources(
             conn,
             refresh_id=refresh_id,
@@ -208,6 +225,7 @@ def _do_promote(
         )
 
         if selection.includes(*MACHINE_SOURCE_IDS):
+            log.info("promote: machine telemetry…")
             promote_machine_tables(
                 conn,
                 refresh_id=refresh_id,
@@ -367,4 +385,5 @@ __all__ = [
     "SOURCE_MACHINE_EXPERIMENTS",
     "SOURCE_SINNIX_GENERATION",
     "SOURCE_BORG_DRILL",
+    "SOURCE_WORK_OBSERVATIONS",
 ]

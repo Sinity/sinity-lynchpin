@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any
 
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _GUARDRAIL_CATEGORIES = {"test", "ci", "lint", "type", "benchmark", "config", "nix", "guardrail"}

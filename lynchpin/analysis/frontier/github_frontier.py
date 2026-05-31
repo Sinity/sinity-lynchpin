@@ -23,7 +23,7 @@ from ...sources.github import (
     fetch_issues,
     fetch_prs,
 )
-from ..core.io import load_json_if_exists, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_if_exists, resolve_analysis_path, save_json
 
 log = logging.getLogger(__name__)
 

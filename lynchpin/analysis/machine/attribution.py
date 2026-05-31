@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from lynchpin.analysis.core.io import save_json
+from lynchpin.core.io import save_json
 from lynchpin.analysis.machine.below import DEFAULT_STABILITY_ROOT, BelowAnalysis, BelowEntitySummary, analyze_below_exports
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
 from lynchpin.core.parse import as_local

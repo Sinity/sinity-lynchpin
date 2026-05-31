@@ -10,7 +10,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from ..core.io import save_json
+from lynchpin.core.io import save_json
 from ..core.graph_metrics import compute_graph_metrics, distribution_stats
 from ..core.textshape import compute_repetition_metrics
 from ..maps import dependency_map as dependency_map_module

@@ -33,7 +33,7 @@ from typing import Any, Iterable
 
 from ...graph.work_event_kind import overlay_label
 from ...sources.polylogue import WorkEvent, work_events
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)

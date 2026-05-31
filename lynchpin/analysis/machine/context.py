@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from lynchpin.analysis.core.io import save_json
+from lynchpin.core.io import save_json
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
 from lynchpin.core.parse import as_local
 
@@ -88,7 +88,11 @@ def analyze_machine_context_windows(
     bounded_start, bounded_end = _analysis_dates(start, end, episode_analysis.coverage.first_observed_at, episode_analysis.coverage.last_observed_at)
     caveats = list(episode_analysis.caveats)
     if windows is None:
-        workload_windows, source_caveats = _collect_workload_windows(start=bounded_start, end=bounded_end)
+        workload_windows, source_caveats = _collect_workload_windows(
+            start=bounded_start,
+            end=bounded_end,
+            path=path,
+        )
         caveats.extend(source_caveats)
     else:
         workload_windows = list(windows)
@@ -138,20 +142,21 @@ def _analysis_dates(
     return start or today, end or today
 
 
-def _collect_workload_windows(*, start: date, end: date) -> tuple[list[WorkloadWindow], list[str]]:
+def _collect_workload_windows(*, start: date, end: date, path: Path | None = None) -> tuple[list[WorkloadWindow], list[str]]:
     windows: list[WorkloadWindow] = []
     caveats: list[str] = []
     start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc)
 
     for collector in (
+        _work_observation_windows,
         _polylogue_windows,
         _terminal_windows,
         _git_windows,
         _deep_work_windows,
     ):
         try:
-            windows.extend(collector(start=start, end=end, start_dt=start_dt, end_dt=end_dt))
+            windows.extend(collector(start=start, end=end, start_dt=start_dt, end_dt=end_dt, path=path))
         except Exception as exc:
             caveats.append(f"{collector.__name__.removeprefix('_').removesuffix('_windows')} windows unavailable: {exc}")
 
@@ -160,7 +165,63 @@ def _collect_workload_windows(*, start: date, end: date) -> tuple[list[WorkloadW
     return windows, caveats
 
 
-def _polylogue_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime) -> list[WorkloadWindow]:
+def _work_observation_windows(
+    *,
+    start: date,
+    end: date,
+    start_dt: datetime,
+    end_dt: datetime,
+    path: Path | None = None,
+) -> list[WorkloadWindow]:
+    del start, end
+    from lynchpin.analysis.machine.sql import latest_machine_rows
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    sql = f"""
+        SELECT source, source_id, project, command, cwd, started_at, ended_at,
+               duration_s, status, exit_code, host, git_commit, git_dirty,
+               live_stage, args
+        FROM ({latest_machine_rows("work_observation")})
+        WHERE started_at >= ? AND started_at <= ?
+        ORDER BY started_at, source_id
+    """
+    result: list[WorkloadWindow] = []
+    with connect(path or substrate_path(), read_only=True) as conn:
+        rows = conn.execute(sql, [start_dt, end_dt]).fetchall()
+    for row in rows:
+        ended_at = row[6]
+        if ended_at is None:
+            duration_s = float(row[7] or 0.0)
+            ended_at = row[5] if duration_s <= 0 else row[5] + timedelta(seconds=duration_s)
+        command = tuple(str(part) for part in (row[3] or ()))
+        summary = " ".join(command) if command else str(row[0])
+        if row[8] and row[8] != "success":
+            summary = f"{summary} ({row[8]})"
+        result.append(WorkloadWindow(
+            source=str(row[0]),
+            window_id=str(row[1]),
+            started_at=row[5],
+            ended_at=ended_at,
+            projects=tuple(p for p in (row[2],) if p),
+            provider=None,
+            work_kind="xtask_invocation",
+            summary=summary,
+            payload={
+                "cwd": row[4],
+                "status": row[8],
+                "exit_code": row[9],
+                "host": row[10],
+                "git_commit": row[11],
+                "git_dirty": row[12],
+                "live_stage": row[13],
+                "args": row[14],
+            },
+        ))
+    return result
+
+
+def _polylogue_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime, path: Path | None = None) -> list[WorkloadWindow]:
+    del path
     del start_dt, end_dt
     from lynchpin.sources.polylogue import session_profiles_for_date
 
@@ -188,7 +249,8 @@ def _polylogue_windows(*, start: date, end: date, start_dt: datetime, end_dt: da
     return result
 
 
-def _terminal_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime) -> list[WorkloadWindow]:
+def _terminal_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime, path: Path | None = None) -> list[WorkloadWindow]:
+    del path
     del start, end
     from lynchpin.sources.terminal import shell_sessions
 
@@ -212,7 +274,8 @@ def _terminal_windows(*, start: date, end: date, start_dt: datetime, end_dt: dat
     return result
 
 
-def _git_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime) -> list[WorkloadWindow]:
+def _git_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime, path: Path | None = None) -> list[WorkloadWindow]:
+    del path
     del start_dt, end_dt
     from lynchpin.sources.git import commit_sessions
 
@@ -236,7 +299,8 @@ def _git_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime
     return result
 
 
-def _deep_work_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime) -> list[WorkloadWindow]:
+def _deep_work_windows(*, start: date, end: date, start_dt: datetime, end_dt: datetime, path: Path | None = None) -> list[WorkloadWindow]:
+    del path
     del start, end
     from lynchpin.sources.activitywatch import deep_work
 

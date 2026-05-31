@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from ..analysis.core.io import load_json_if_exists, resolve_analysis_path
+from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceEdge, EvidenceNode
 from ..core.parse import parse_datetime

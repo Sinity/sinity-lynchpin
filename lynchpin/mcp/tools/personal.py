@@ -26,26 +26,18 @@ def spotify_daily(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import load_spotify_daily_rows
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = require_best_refresh_id(conn, "spotify_daily", tool="spotify_daily")
 
-        sql = (
-            "SELECT date, track_count, minutes_played, unique_artists, "
-            "unique_tracks, top_artists, top_tracks FROM spotify_daily "
-            "WHERE refresh_id = ?"
+        rows = load_spotify_daily_rows(
+            conn,
+            refresh_id=refresh_id,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
         )
-        params: list[Any] = [refresh_id]
-        if start:
-            sql += " AND date >= ?"
-            params.append(_date.fromisoformat(start))
-        if end:
-            sql += " AND date <= ?"
-            params.append(_date.fromisoformat(end))
-        sql += " ORDER BY date"
-
-        rows = conn.execute(sql, params).fetchall()
 
     return [
         {
@@ -391,6 +383,7 @@ def personal_daily_signals(
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import load_personal_daily_signals
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -400,26 +393,15 @@ def personal_daily_signals(
                 tool="personal_daily_signals",
             )
 
-        sql = (
-            "SELECT source, date, metric, value, dimensions "
-            "FROM personal_daily_signal WHERE refresh_id = ?"
+        rows = load_personal_daily_signals(
+            conn,
+            refresh_id=refresh_id,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None,
+            source=source,
+            metric=metric,
+            limit=limit,
         )
-        params: list[Any] = [refresh_id]
-        if start:
-            sql += " AND date >= ?"
-            params.append(_date.fromisoformat(start))
-        if end:
-            sql += " AND date < ?"
-            params.append(_date.fromisoformat(end))
-        if source:
-            sql += " AND source = ?"
-            params.append(source)
-        if metric:
-            sql += " AND metric = ?"
-            params.append(metric)
-        sql += " ORDER BY date, source, metric LIMIT ?"
-        params.append(min(max(limit, 1), 10_000))
-        rows = conn.execute(sql, params).fetchall()
 
     return [
         {
@@ -687,6 +669,12 @@ def operator_rhythm(
     from lynchpin.analysis.operator_rhythm import compute_operator_rhythm
     from lynchpin.sources.activitywatch import circadian
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_signals import (
+        load_ai_session_timestamps_in_range,
+        load_ai_work_event_timestamps_in_range,
+        load_commit_timestamps_in_range,
+        load_pressure_timestamps_in_range,
+    )
 
     start_date = _date.fromisoformat(start)
     end_date = _date.fromisoformat(end)
@@ -707,21 +695,10 @@ def operator_rhythm(
         if refresh_id is None:
             refresh_id = best_refresh_id(conn, "commit_fact")
         if refresh_id is not None:
-            proj_filter = " AND project = ?" if project else ""
-            params: list[Any] = [refresh_id, start_date, end_date]
-            if project:
-                params.append(project)
-
             try:
-                commit_ts = [
-                    r[0]
-                    for r in conn.execute(
-                        f"SELECT authored_at FROM commit_fact "
-                        f"WHERE refresh_id = ? AND authored_at::DATE BETWEEN ? AND ?"
-                        f"{proj_filter}",
-                        params,
-                    ).fetchall()
-                ]
+                commit_ts = load_commit_timestamps_in_range(
+                    conn, refresh_id=refresh_id, start=start_date, end=end_date, project=project
+                )
             except Exception:
                 pass
 
@@ -732,52 +709,24 @@ def operator_rhythm(
             # silently reported zero AI activity on otherwise-busy
             # graph builds.
             try:
-                ai_params: list[Any] = [refresh_id, start_date, end_date]
-                if project:
-                    ai_params.append(project)
-                ai_ts = [
-                    r[0]
-                    for r in conn.execute(
-                        f"SELECT start_ts FROM ai_work_event "
-                        f"WHERE refresh_id = ? AND start_ts::DATE BETWEEN ? AND ? "
-                        f"AND start_ts IS NOT NULL{proj_filter}",
-                        ai_params,
-                    ).fetchall()
-                ]
+                ai_ts = load_ai_work_event_timestamps_in_range(
+                    conn, refresh_id=refresh_id, start=start_date, end=end_date, project=project
+                )
             except Exception:
                 pass
 
             if not ai_ts and refresh_id:
                 try:
-                    node_params: list[Any] = [refresh_id, start_date, end_date]
-                    node_filter = ""
-                    if project:
-                        node_filter = " AND project = ?"
-                        node_params.append(project)
-                    ai_ts = [
-                        r[0]
-                        for r in conn.execute(
-                            "SELECT start_ts FROM evidence_node "
-                            "WHERE refresh_id = ? AND kind = 'ai_session' "
-                            "AND start_ts IS NOT NULL "
-                            "AND start_ts::DATE BETWEEN ? AND ?"
-                            + node_filter,
-                            node_params,
-                        ).fetchall()
-                    ]
+                    ai_ts = load_ai_session_timestamps_in_range(
+                        conn, refresh_id=refresh_id, start=start_date, end=end_date, project=project
+                    )
                 except Exception:
                     pass
 
             try:
-                pressure_ts = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT start_ts FROM evidence_node "
-                        "WHERE refresh_id = ? AND kind = 'machine_episode' "
-                        "AND start_ts IS NOT NULL AND start_ts::DATE BETWEEN ? AND ?",
-                        [refresh_id, start_date, end_date],
-                    ).fetchall()
-                ]
+                pressure_ts = load_pressure_timestamps_in_range(
+                    conn, refresh_id=refresh_id, start=start_date, end=end_date
+                )
             except Exception:
                 pass
 
@@ -842,8 +791,6 @@ def activity_semantic_daily(
     Returns rows: {date, dimension_value, focused_minutes, focused_seconds}
     ordered by date and focused_seconds (DESC per date).
     """
-    from lynchpin.substrate.connection import connect, substrate_path
-
     start_d = _date.fromisoformat(start)
     end_d = _date.fromisoformat(end)
 
@@ -852,24 +799,18 @@ def activity_semantic_daily(
     if dimension not in valid_dims:
         raise ValueError(f"dimension must be one of {valid_dims}, got {dimension!r}")
 
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_signals import load_activity_title_usage_by_dimension
+
     with connect(substrate_path(), read_only=True) as conn:
         # Interval-intersect: title's observed lifetime [first_date, last_date]
         # must overlap the requested window [start_d, end_d]. The previous
         # ``first_date >= start AND last_date <= end`` filter required the
         # entire title lifetime to be contained in the window — excluded
         # long-running titles even when they were active during the window.
-        sql = f"""
-            SELECT
-                CAST(first_date AS DATE) as date,
-                COALESCE({dimension}, 'unknown') as dim_value,
-                SUM(focused_seconds) as focused_seconds
-            FROM activity_title_usage
-            WHERE first_date <= ? AND last_date >= ?
-            GROUP BY date, dim_value
-            ORDER BY date, focused_seconds DESC
-        """
-        params: list[Any] = [end_d, start_d]
-        rows = conn.execute(sql, params).fetchall()
+        rows = load_activity_title_usage_by_dimension(
+            conn, start=start_d, end=end_d, dimension=dimension
+        )
 
     result: list[dict[str, Any]] = []
     for row in rows:

@@ -1,0 +1,110 @@
+"""Work-observation table readers and promoters."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from datetime import date
+from typing import TYPE_CHECKING, Any
+
+from lynchpin.substrate._helpers import promote_rows
+
+if TYPE_CHECKING:
+    import duckdb
+
+
+_WORK_OBSERVATION_COLUMNS = (
+    "source", "source_id", "work_kind", "project", "command", "cwd",
+    "started_at", "ended_at", "duration_s", "status", "exit_code", "host",
+    "git_commit", "git_dirty", "live_stage", "args",
+    "cpu_usage_avg", "memory_usage_max_mb",
+    "process_cpu_usage_avg", "process_memory_usage_max_mb",
+    "root_process_cpu_usage_avg", "root_process_memory_usage_max_mb",
+    "shared_nix_daemon_cpu_usage_avg", "shared_nix_daemon_memory_usage_max_mb",
+    "shared_nix_build_slice_cpu_usage_avg",
+    "shared_nix_build_slice_memory_usage_max_mb",
+    "shared_background_slice_cpu_usage_avg",
+    "shared_background_slice_memory_usage_max_mb",
+    "host_cpu_pressure_some_avg10_max", "host_io_pressure_some_avg10_max",
+    "host_io_pressure_full_avg10_max", "host_memory_pressure_some_avg10_max",
+    "host_memory_pressure_full_avg10_max", "shm_free_min_mb", "shm_used_max_mb",
+    "process_count_max", "resource_sample_count",
+)
+
+
+def promote_work_observations(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+) -> int:
+    return promote_rows(
+        conn,
+        table="work_observation",
+        columns=_WORK_OBSERVATION_COLUMNS,
+        refresh_id=refresh_id,
+        rows=rows,
+        extractor=lambda r: (
+            "xtask_history", r.source_id, "xtask_invocation", r.project,
+            list(r.command), r.cwd, r.started_at, r.ended_at, r.duration_s,
+            r.status, r.exit_code, r.host, r.git_commit, r.git_dirty,
+            r.live_stage, r.args_json, r.cpu_usage_avg, r.memory_usage_max_mb,
+            r.process_cpu_usage_avg, r.process_memory_usage_max_mb,
+            r.root_process_cpu_usage_avg, r.root_process_memory_usage_max_mb,
+            r.shared_nix_daemon_cpu_usage_avg,
+            r.shared_nix_daemon_memory_usage_max_mb,
+            r.shared_nix_build_slice_cpu_usage_avg,
+            r.shared_nix_build_slice_memory_usage_max_mb,
+            r.shared_background_slice_cpu_usage_avg,
+            r.shared_background_slice_memory_usage_max_mb,
+            r.host_cpu_pressure_some_avg10_max, r.host_io_pressure_some_avg10_max,
+            r.host_io_pressure_full_avg10_max,
+            r.host_memory_pressure_some_avg10_max,
+            r.host_memory_pressure_full_avg10_max, r.shm_free_min_mb,
+            r.shm_used_max_mb, r.process_count_max, r.resource_sample_count,
+        ),
+        batch_size=10_000,
+    )
+
+
+def load_work_observations(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    project: str | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+    if start is not None:
+        clauses.append("started_at::DATE >= ?")
+        params.append(start)
+    if end is not None:
+        clauses.append("started_at::DATE < ?")
+        params.append(end)
+    if project is not None:
+        clauses.append("project = ?")
+        params.append(project)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(min(max(int(limit), 1), 10_000))
+    rows = conn.execute(
+        f"""
+        SELECT source, source_id, work_kind, project, command, cwd,
+               started_at, ended_at, duration_s, status, exit_code, host,
+               git_commit, git_dirty, live_stage, args, refresh_id
+        FROM work_observation
+        {where}
+        ORDER BY started_at DESC, source_id DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    columns = [desc[0] for desc in (conn.description or [])]
+    return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+__all__ = ["load_work_observations", "promote_work_observations"]

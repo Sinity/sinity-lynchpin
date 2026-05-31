@@ -14,6 +14,12 @@ class StepDay:
     distance_m: Optional[float]
     speed_mps: Optional[float]
 
+    def __post_init__(self) -> None:
+        if self.steps < 0:
+            raise ValueError(
+                f"StepDay.steps ({self.steps}) must be >= 0"
+            )
+
 
 @dataclass(frozen=True)
 class StressMeasurement:
@@ -84,12 +90,28 @@ class MoodEntry:
     timestamp: datetime
     mood_type: int
 
+    def __post_init__(self) -> None:
+        if not (1 <= self.mood_type <= 5):
+            raise ValueError(
+                f"MoodEntry.mood_type ({self.mood_type}) must be in [1, 5]"
+            )
+
 
 @dataclass(frozen=True)
 class SnoringRecord:
     start: datetime
     end: datetime
     duration_s: int
+
+    def __post_init__(self) -> None:
+        if self.end < self.start:
+            raise ValueError(
+                f"SnoringRecord.end ({self.end}) precedes start ({self.start})"
+            )
+        if self.duration_s < 0:
+            raise ValueError(
+                f"SnoringRecord.duration_s ({self.duration_s}) must be >= 0"
+            )
 
 
 @dataclass(frozen=True)
@@ -119,6 +141,12 @@ class DailyStressSummary:
     min_score: int
     max_score: int
 
+    def __post_init__(self) -> None:
+        if self.measurement_count < 0:
+            raise ValueError(
+                f"DailyStressSummary.measurement_count ({self.measurement_count}) must be >= 0"
+            )
+
 
 @dataclass(frozen=True)
 class DailyHeartRateSummary:
@@ -128,6 +156,16 @@ class DailyHeartRateSummary:
     min_hr: float
     max_hr: float
     resting_hr: float
+
+    def __post_init__(self) -> None:
+        if self.measurement_count < 0:
+            raise ValueError(
+                f"DailyHeartRateSummary.measurement_count ({self.measurement_count}) must be >= 0"
+            )
+        if self.max_hr < self.min_hr:
+            raise ValueError(
+                f"DailyHeartRateSummary.max_hr ({self.max_hr}) is less than min_hr ({self.min_hr})"
+            )
 
 
 @dataclass(frozen=True)
@@ -158,6 +196,12 @@ class ActivityDaySummary:
     calories: Optional[float] = None
     step_count: Optional[int] = None
 
+    def __post_init__(self) -> None:
+        if self.active_time_min < 0:
+            raise ValueError(
+                f"ActivityDaySummary.active_time_min ({self.active_time_min}) must be >= 0"
+            )
+
 
 @dataclass(frozen=True)
 class MovementRecord:
@@ -166,11 +210,27 @@ class MovementRecord:
     movement_type: Optional[str] = None
     duration_min: float = 0.0
 
+    def __post_init__(self) -> None:
+        if self.end < self.start:
+            raise ValueError(
+                f"MovementRecord.end ({self.end}) precedes start ({self.start})"
+            )
+        if self.duration_min < 0:
+            raise ValueError(
+                f"MovementRecord.duration_min ({self.duration_min}) must be >= 0"
+            )
+
 
 @dataclass(frozen=True)
 class CalorieBurn:
     date: date
     calories: float
+
+    def __post_init__(self) -> None:
+        if self.calories < 0:
+            raise ValueError(
+                f"CalorieBurn.calories ({self.calories}) must be >= 0"
+            )
 
 
 @dataclass(frozen=True)
@@ -180,3 +240,13 @@ class NapSession:
     duration_min: float
     before_vitality: Optional[float] = None
     after_vitality: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.end < self.start:
+            raise ValueError(
+                f"NapSession.end ({self.end}) precedes start ({self.start})"
+            )
+        if self.duration_min < 0:
+            raise ValueError(
+                f"NapSession.duration_min ({self.duration_min}) must be >= 0"
+            )

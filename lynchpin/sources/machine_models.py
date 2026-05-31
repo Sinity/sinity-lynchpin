@@ -18,6 +18,12 @@ class MachineSourceReadiness:
     live_db: Path
     live_rows: int
 
+    def __post_init__(self) -> None:
+        if self.live_rows < 0:
+            raise ValueError(
+                f"MachineSourceReadiness.live_rows ({self.live_rows}) must be >= 0"
+            )
+
 
 @dataclass(frozen=True)
 class MachineMetricSample:

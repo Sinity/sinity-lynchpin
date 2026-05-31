@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from ..core.commit_stats import collect_commit_stats, parse_iso_datetime
-from ..core.io import save_json
+from lynchpin.core.io import save_json
 from ..core.canonical import load_analysis_spec
 
 NS_PER_SECOND = 1_000_000_000

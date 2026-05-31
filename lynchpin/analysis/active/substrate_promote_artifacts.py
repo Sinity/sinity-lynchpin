@@ -34,6 +34,9 @@ def promote_artifact_sources(
     counts: dict[str, int],
     selection: SourceSelection,
 ) -> None:
+    if not selection.includes(SOURCE_COMMITS, SOURCE_FILE_CHANGES, SOURCE_SYMBOLS):
+        return
+
     from lynchpin.substrate.work_commits import promote_commits
     from lynchpin.substrate.work_files import promote_file_changes
     from lynchpin.substrate.work_symbols import promote_symbol_changes

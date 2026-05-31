@@ -29,6 +29,16 @@ class WorkEvent:
     terminal_state: Optional[str] = None
     terminal_state_confidence: float = 0.0
 
+    def __post_init__(self) -> None:
+        if self.duration_ms < 0:
+            raise ValueError(
+                f"WorkEvent.duration_ms ({self.duration_ms}) must be >= 0"
+            )
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"WorkEvent.confidence ({self.confidence}) must be in [0.0, 1.0]"
+            )
+
 
 @dataclass(frozen=True)
 class DaySessionSummary:
@@ -42,6 +52,20 @@ class DaySessionSummary:
     work_event_breakdown: dict[str, int]  # kind → count
     repos_active: tuple[str, ...]
     providers: dict[str, int]  # provider → session count
+
+    def __post_init__(self) -> None:
+        if self.session_count < 0:
+            raise ValueError(
+                f"DaySessionSummary.session_count ({self.session_count}) must be >= 0"
+            )
+        if self.total_messages < 0:
+            raise ValueError(
+                f"DaySessionSummary.total_messages ({self.total_messages}) must be >= 0"
+            )
+        if self.total_words < 0:
+            raise ValueError(
+                f"DaySessionSummary.total_words ({self.total_words}) must be >= 0"
+            )
 
 
 @dataclass  # not frozen: mutable accumulator bucket mutated in-loop in polylogue.py
@@ -75,6 +99,20 @@ class MessageRecord:
     has_tool_use: bool
     has_thinking: bool
     approx_tokens: int
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError(
+                f"MessageRecord.ordinal ({self.ordinal}) must be >= 0"
+            )
+        if self.word_count < 0:
+            raise ValueError(
+                f"MessageRecord.word_count ({self.word_count}) must be >= 0"
+            )
+        if self.approx_tokens < 0:
+            raise ValueError(
+                f"MessageRecord.approx_tokens ({self.approx_tokens}) must be >= 0"
+            )
 
 
 @dataclass(frozen=True)
@@ -135,6 +173,28 @@ class SessionProfile:
     workflow_shape_confidence: float = 0.0
     terminal_state: Optional[str] = None
     terminal_state_confidence: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.message_count < 0:
+            raise ValueError(
+                f"SessionProfile.message_count ({self.message_count}) must be >= 0"
+            )
+        if self.word_count < 0:
+            raise ValueError(
+                f"SessionProfile.word_count ({self.word_count}) must be >= 0"
+            )
+        if self.tool_use_count < 0:
+            raise ValueError(
+                f"SessionProfile.tool_use_count ({self.tool_use_count}) must be >= 0"
+            )
+        if self.thinking_count < 0:
+            raise ValueError(
+                f"SessionProfile.thinking_count ({self.thinking_count}) must be >= 0"
+            )
+        if self.substantive_count < 0:
+            raise ValueError(
+                f"SessionProfile.substantive_count ({self.substantive_count}) must be >= 0"
+            )
 
 
 @dataclass(frozen=True)

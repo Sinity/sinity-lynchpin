@@ -9,7 +9,7 @@ from typing import Any, Sequence, cast
 from ...graph.context_pack import context_pack, render_context_pack
 from ...core.parse import as_local
 from ...core.serialization import jsonable
-from ..core.io import save_json, save_text
+from lynchpin.core.io import save_json, save_text
 
 CURRENT_STATE_ARTIFACT_NAMES = (
     "current_state_context_pack.json",

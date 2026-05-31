@@ -26,7 +26,7 @@ from ...core.projects import canonical_project_name
 from ...sources.polylogue import SessionProfile, iter_session_profiles
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 
 def build_active_ai_attribution(

@@ -14,7 +14,7 @@ from typing import Any
 
 from ...core.projects import ALL_PROJECTS, ProjectProfile, canonical_project_name, project_profiles
 from ...sources.github import extract_commit_refs
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 # Use separators that are not treated as line boundaries by str.splitlines().
 _COMMIT_PREFIX = "\x02"
@@ -237,8 +237,9 @@ def build_active_commit_facts(
     # Full project history by default. Previously this defaulted to a
     # 31-day rolling window, which silently truncated engineering_throughput
     # and any other commit_fact consumer to the most recent month. Using
-    # 2024-01-01 as the floor — comfortably before sinnix's first commit
-    # (2024-09-17), the earliest project — preserves all observable history.
+    # Default to full history — narrower windows are opt-in via explicit
+    # ``--start``/``--end`` on the CLI.  The floor date comfortably
+    # precedes sinnix's first commit (2024-09-17).
     start = start or date(2024, 1, 1)
     facts = tuple(project_facts or collect_active_git_facts(start=start, end=end, projects=projects, profiles=profiles))
     commits = [commit.to_commit_fact_json() for project in facts for commit in project.commits]
@@ -265,8 +266,9 @@ def build_active_file_change_facts(
     # Full project history by default. Previously this defaulted to a
     # 31-day rolling window, which silently truncated engineering_throughput
     # and any other commit_fact consumer to the most recent month. Using
-    # 2024-01-01 as the floor — comfortably before sinnix's first commit
-    # (2024-09-17), the earliest project — preserves all observable history.
+    # Default to full history — narrower windows are opt-in via explicit
+    # ``--start``/``--end`` on the CLI.  The floor date comfortably
+    # precedes sinnix's first commit (2024-09-17).
     start = start or date(2024, 1, 1)
     facts = tuple(project_facts or collect_active_git_facts(start=start, end=end, projects=projects, profiles=profiles))
     rows = [
@@ -298,8 +300,9 @@ def run_active_git_facts(
     # Full project history by default. Previously this defaulted to a
     # 31-day rolling window, which silently truncated engineering_throughput
     # and any other commit_fact consumer to the most recent month. Using
-    # 2024-01-01 as the floor — comfortably before sinnix's first commit
-    # (2024-09-17), the earliest project — preserves all observable history.
+    # Default to full history — narrower windows are opt-in via explicit
+    # ``--start``/``--end`` on the CLI.  The floor date comfortably
+    # precedes sinnix's first commit (2024-09-17).
     start = start or date(2024, 1, 1)
     facts = collect_active_git_facts(start=start, end=end, projects=projects)
     commit_payload = build_active_commit_facts(start=start, end=end, project_facts=facts)

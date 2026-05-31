@@ -37,6 +37,7 @@ def promote_rows(
     batch_size: int | None = None,
     refresh_id_position: RefreshIdPosition = "last",
     delete_existing: bool = True,
+    wrap_transaction: bool = True,
 ) -> int:
     """INSERT rows into ``table``, idempotent on refresh_id.
 
@@ -61,39 +62,90 @@ def promote_rows(
 
     Returns the number of rows inserted (zero if ``rows`` was empty).
     """
-    if delete_existing:
-        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
-
     if refresh_id_position == "first":
-        column_list = ", ".join(("refresh_id", *columns))
+        ordered_columns = ("refresh_id", *columns)
 
         def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
             return (refresh_id, *extracted)
     else:
-        column_list = ", ".join((*columns, "refresh_id"))
+        ordered_columns = (*columns, "refresh_id")
 
         def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
             return (*extracted, refresh_id)
 
+    column_list = ", ".join(ordered_columns)
     placeholders = ", ".join(["?"] * (len(columns) + 1))
     insert_sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
 
+    try:
+        import pandas as _pd
+    except ImportError:  # pragma: no cover - pandas ships with the analytics env
+        _pd = None
+
     total = 0
     buffer: list[tuple[Any, ...]] = []
+    df_token = "_promote_rows_df"
 
     def flush() -> None:
         nonlocal total
         if not buffer:
             return
-        conn.executemany(insert_sql, buffer)
+        # Fast path: DuckDB ingests a pandas DataFrame vectorized (~383x faster
+        # than row-by-row executemany on a nullable-BIGINT A/B, byte-identical
+        # output via convert_dtypes which preserves nullable ints). Only usable
+        # when no value is an actual STRUCT/LIST container (dict/list/tuple/set);
+        # JSON columns hold strings and are fine. Fall back to executemany for
+        # container values or when pandas is unavailable.
+        if _pd is not None and not any(
+            isinstance(v, (dict, list, tuple, set, frozenset))
+            for r in buffer for v in r
+        ):
+            frame = _pd.DataFrame(buffer, columns=list(ordered_columns)).convert_dtypes()
+            conn.register(df_token, frame)
+            try:
+                conn.execute(
+                    f"INSERT INTO {table} ({column_list}) SELECT * FROM {df_token}"
+                )
+            finally:
+                conn.unregister(df_token)
+        else:
+            conn.executemany(insert_sql, buffer)
         total += len(buffer)
         buffer.clear()
 
-    for row in rows:
-        buffer.append(build_tuple(extractor(row)))
-        if batch_size is not None and len(buffer) >= batch_size:
-            flush()
+    # Wrap DELETE + every INSERT batch in ONE transaction. In DuckDB autocommit,
+    # executemany commits (and fsyncs the WAL) per row — measured at ~120KB-1.8MB
+    # written/row and ~99% of substrate-promote wall-time (the artifacts promote
+    # wrote 20GB / took 14min for ~163k rows). A single explicit transaction
+    # collapses that to one commit: commit_fact A/B showed 85.5s/7.6GB -> 2.6s/29MB
+    # (33x faster, 260x fewer bytes). Callers that already manage their own
+    # transaction (e.g. the evidence-graph promote) pass wrap_transaction=False;
+    # we cannot probe-by-BEGIN because a nested BEGIN error aborts the caller's
+    # open transaction.
+    #
+    # The DELETE stays in autocommit, BEFORE the INSERT transaction: DuckDB's
+    # primary-key index does not reflect an in-transaction DELETE, so a
+    # DELETE-then-INSERT of the same refresh_id within one transaction trips a
+    # phantom duplicate-key constraint (the same limitation evidence-graph works
+    # around). Committing the DELETE first keeps idempotent re-promotion correct;
+    # only the row-by-row INSERT churn needed batching.
+    if delete_existing:
+        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
 
-    flush()
+    if wrap_transaction:
+        conn.execute("BEGIN TRANSACTION")
+    try:
+        for row in rows:
+            buffer.append(build_tuple(extractor(row)))
+            if batch_size is not None and len(buffer) >= batch_size:
+                flush()
+        flush()
+        if wrap_transaction:
+            conn.execute("COMMIT")
+    except Exception:
+        if wrap_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
     log.debug("promote_rows: %d rows into %s for refresh_id=%s", total, table, refresh_id)
     return total

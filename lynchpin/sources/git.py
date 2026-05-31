@@ -5,7 +5,7 @@ history refs. Callers can opt into all local refs for branch archaeology.
 Baseline JSONL provides historical data before repos existed locally.
 
 Graduated API:
-  commits_in_range(start, end) → daily_activity(), commit_sessions()
+  commits_in_range(*, start, end) → daily_activity(), commit_sessions()
   commit_facts(), file_change_facts(), patch_excerpt()
   repos(), repo_files(), recent_commits(), repo_tokei()
   iter_numstat() — threaded multi-repo shortstat
@@ -166,7 +166,7 @@ def _commits_cached() -> Iterator[GitCommit]:
     return read_jsonl_with(path, _hydrate, source_name="git_numstat")
 
 
-def commits_in_range(start: date, end: date) -> Iterator[GitCommit]:
+def commits_in_range(*, start: date, end: date) -> Iterator[GitCommit]:
     """Yield commits in date range from live git log (primary) + baseline JSONL (historical).
 
     Live git log covers all active repos. Baseline JSONL provides history for

@@ -11,6 +11,8 @@ no module computed, plus arbitrary (multi-year) window support:
   #5  HRV / stress       — does today's HRV (rmssd) or stress predict the NEXT
       × next-day code      day's git commit volume and code churn (lines added +
                           deleted)?
+  #6  HRV / stress       — does today's HRV (rmssd) or stress track same-day /
+      × fragmentation      next-day focus fragmentation (context-switch rate)?
   #11 multi-year         — ``analyze`` accepts arbitrary windows; with
                           ``full_history=True`` the window is derived from the
                           intersection of the relevant sources' coverage bounds
@@ -22,7 +24,7 @@ This mirrors ``substance_health.py`` (the hardened gold-standard pattern), and
 every reported association carries the machinery to avoid false LLM claims:
 
 * **Multiple comparisons.** ``analyze`` evaluates many (pair × lag) correlations
-  across three correlation families. Reporting raw ``p < 0.05`` over that family
+  across four correlation families. Reporting raw ``p < 0.05`` over that family
   inflates false positives. Every ``LagCorrelation`` carries a raw two-tailed
   ``p_value``, a Benjamini-Hochberg FDR ``q_value`` computed across the *entire*
   test family (all pairs × all lags in one ``analyze`` call), and a
@@ -261,9 +263,36 @@ def analyze(
         ),
     )
 
+    hrv_attention = _build_family(
+        "hrv_attention",
+        rows_by_date,
+        bounds,
+        predictors=[
+            ("hrv_rmssd", lambda r: r.hrv_rmssd, (_HEALTH_KEY, "health")),
+            ("stress_mean", lambda r: r.stress_mean, (_HEALTH_KEY, "health")),
+        ],
+        outcomes=[
+            ("aw_fragmentation", lambda r: r.aw_fragmentation, (_AW_KEY, "activitywatch")),
+        ],
+        # Same-day (lag=0) is the headline here — physiological state and
+        # attention scatter co-occur; lag=1 kept as a next-day control.
+        lags=(0, 1),
+        note=(
+            "Today's HRV (rmssd) / stress vs same-day and next-day focus "
+            "fragmentation (context-switch rate). Each pair is gated by BOTH "
+            "health (ends 2026-03-29) and ActivityWatch coverage; higher "
+            "fragmentation = more scattered attention."
+        ),
+    )
+
     # ── One FDR pass over the ENTIRE family (all pairs × all lags). ──
-    raw = music_focus.raw + web_productivity.raw + hrv_stress_code.raw
-    report.families = [music_focus.family, web_productivity.family, hrv_stress_code.family]
+    raw = music_focus.raw + web_productivity.raw + hrv_stress_code.raw + hrv_attention.raw
+    report.families = [
+        music_focus.family,
+        web_productivity.family,
+        hrv_stress_code.family,
+        hrv_attention.family,
+    ]
     report.n_tests = len(raw)
 
     if raw:

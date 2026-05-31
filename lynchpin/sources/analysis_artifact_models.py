@@ -21,6 +21,12 @@ class AnalysisArtifact:
     status: str
     reason: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.size_bytes < 0:
+            raise ValueError(
+                f"AnalysisArtifact.size_bytes ({self.size_bytes}) must be >= 0"
+            )
+
     @property
     def date(self) -> date:
         return self.modified_at.date()
@@ -40,6 +46,12 @@ class AnalysisClaim:
     payload: dict[str, Any]
     confidence: float
     generated_at: datetime | None
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"AnalysisClaim.confidence ({self.confidence}) must be in [0.0, 1.0]"
+            )
 
 
 ClaimExtractor = Callable[..., tuple[AnalysisClaim, ...]]

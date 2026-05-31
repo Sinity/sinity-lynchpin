@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.analysis.core.io import save_json
+from lynchpin.core.io import save_json
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.mcp.tools._utils import best_refresh_id

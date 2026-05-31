@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from ..core.canonical import JsonObject
-from ..core.io import resolve_analysis_path, save_json, save_text
+from lynchpin.core.io import resolve_analysis_path, save_json, save_text
 
 
 def _run_cargo_metadata(repo_dir: str) -> JsonObject:

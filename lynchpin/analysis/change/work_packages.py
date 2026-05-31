@@ -14,7 +14,7 @@ from typing import Any
 from ...core.parse import parse_datetime
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 _DEFAULT_GAP_DAYS = 2
 

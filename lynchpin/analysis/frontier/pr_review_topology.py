@@ -47,7 +47,7 @@ from ...sources.github import (
     fetch_pr,
     fetch_prs,
 )
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)

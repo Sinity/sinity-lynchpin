@@ -248,10 +248,10 @@ def narrate(
         moment_limit=moment_limit, min_score=min_score,
     )
     if out:
-        from ..analysis.core.io import save_text
+        from lynchpin.core.io import save_text
         save_text(out, render_narrative_markdown(report) + "\n")
     if json_out:
-        from ..analysis.core.io import save_json
+        from lynchpin.core.io import save_json
         save_json(json_out, render_narrative_json(report), sort_keys=True)
     return report
 

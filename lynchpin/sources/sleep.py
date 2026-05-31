@@ -256,7 +256,7 @@ def sleep_for_date(target: date) -> Optional[SleepEntry]:
     return next((e for e in canonical_entries() if e.date == target), None)
 
 
-def entries_in_range(start: date, end: date, *, canonical: bool = True) -> list[SleepEntry]:
+def entries_in_range(*, start: date, end: date, canonical: bool = True) -> list[SleepEntry]:
     """List sleep entries between ``start`` and ``end`` inclusive.
 
     Default ``canonical=True`` returns one entry per date. Set ``canonical=False``
@@ -287,7 +287,7 @@ class SleepDayActivity:
 def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
     """Per-day sleep activity summary."""
     result: list[SleepDayActivity] = []
-    for entry in entries_in_range(start, end, canonical=True):
+    for entry in entries_in_range(start=start, end=end, canonical=True):
         result.append(SleepDayActivity(
             date=entry.date,
             total_hours=round(entry.total_minutes / 60, 2) if entry.total_minutes else None,
@@ -420,7 +420,7 @@ class SleepProductivity:
 
 def sleep_productivity(*, start: date, end: date) -> list[SleepProductivity]:
     """Join sleep data with next-day AW active hours and deep work. Lazy import to avoid circular."""
-    sleep_data = entries_in_range(start, end)
+    sleep_data = entries_in_range(start=start, end=end)
     if not sleep_data:
         return []
 

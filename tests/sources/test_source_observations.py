@@ -192,6 +192,46 @@ def test_source_observations_prefers_materialized_dates(monkeypatch, tmp_path) -
     assert path == source_path
 
 
+def test_coverage_bounds_audits_materialization_once(monkeypatch, tmp_path) -> None:
+    from lynchpin.materialization import MaterializedDataset
+
+    calls = 0
+    source_path = tmp_path / "spotify.ndjson"
+    rows = [
+        MaterializedDataset(
+            name="spotify",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(source_path,),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2020, 1, 1),
+            last_date=date(2025, 12, 18),
+            refresh_command="refresh",
+            reason="ready",
+        )
+    ]
+
+    def audit():
+        nonlocal calls
+        calls += 1
+        return rows
+
+    monkeypatch.setattr("lynchpin.materialization.audit_materialization", audit)
+    monkeypatch.setattr(
+        source_observations,
+        "get_config",
+        lambda: SimpleNamespace(available_sources=lambda: {"spotify": True}),
+    )
+
+    bounds = source_observations.coverage_bounds(today=date(2026, 5, 16))
+
+    assert calls == 1
+    assert bounds["spotify"].first == date(2020, 1, 1)
+    assert bounds["spotify"].last == date(2025, 12, 18)
+
+
 def test_mtime_date_walks_directory_for_newest_entry(tmp_path) -> None:
     """Directory roots (asciinema, keylog, dendron, …) need newest
     contained file's mtime, not the directory's own — the directory mtime

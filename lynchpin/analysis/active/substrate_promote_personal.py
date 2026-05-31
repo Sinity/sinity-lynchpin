@@ -29,6 +29,16 @@ def promote_personal_sources(
     counts: dict[str, int],
     selection: SourceSelection,
 ) -> None:
+    if not selection.includes(
+        SOURCE_SINNIX_GENERATION,
+        SOURCE_BORG_DRILL,
+        SOURCE_SPOTIFY_DAILY,
+        SOURCE_TITLE_CLASSIFICATION,
+        SOURCE_ACTIVITY_CONTENT,
+        SOURCE_PERSONAL_DAILY_SIGNAL,
+    ):
+        return
+
     from lynchpin.substrate.personal import (
         promote_borg_drill_runs,
         promote_activity_content_buckets,

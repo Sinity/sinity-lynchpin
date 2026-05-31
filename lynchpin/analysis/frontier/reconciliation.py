@@ -29,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from os import PathLike
 from typing import Any, Sequence
 
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 def build_active_frontier_reconciliation(

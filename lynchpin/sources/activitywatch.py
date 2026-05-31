@@ -221,47 +221,66 @@ def _enrich_with_polylogue(
     if not needy:
         return spans
 
-    # Lazy imports to avoid circular deps and to keep polylogue optional
-    try:
-        from .polylogue import work_events, session_profiles_for_date
-        from .window_session_attribution import attribute_spans
-    except ImportError:
+    context = _polylogue_attribution_context(start.date(), end.date())
+    if context is None:
         return spans
+    events, conv_projects = context
 
-    try:
-        events = work_events(start=start.date(), end=end.date())
-    except Exception:
-        return spans  # polylogue unavailable — spans stay as-is
-
-    if not events:
-        return spans
-
-    # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow
-    from .window_session_attribution import SpanWindow, WorkEventWindow
+    # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow.
+    from .window_session_attribution import SpanWindow, WorkEventWindow, attribute_spans
     from typing import cast
+
     needy_spans = [s for _, s in needy]
     attributions = attribute_spans(
         cast("Iterable[SpanWindow]", needy_spans),
         cast("Sequence[WorkEventWindow]", events),
     )
 
-    # Build conversation_id → projects lookup from session profiles
-    conv_projects: dict[str, tuple[str, ...]] = {}
-    try:
-        for profile in session_profiles_for_date(start=start.date(), end=end.date()):
-            if profile.work_event_projects:
-                conv_projects[profile.conversation_id] = profile.work_event_projects
-    except Exception:
-        pass  # session profiles unavailable — can't resolve projects
-
     for (idx, span), attr in zip(needy, attributions):
         if attr is None or attr.confidence < 0.3:
             continue
         projects = conv_projects.get(attr.conversation_id, ())
         if projects:
-            span.project = projects[0]  # type: ignore[misc]
+            spans[idx] = replace(span, project=projects[0])
 
     return spans
+
+
+@functools.lru_cache(maxsize=32)
+def _polylogue_attribution_context(
+    start: date,
+    end: date,
+) -> tuple[tuple[object, ...], dict[str, tuple[str, ...]]] | None:
+    """Return cached Polylogue attribution inputs for an AW date window.
+
+    ``focus_spans`` is called by several daily ActivityWatch composites over the
+    same window. When Polylogue insight products are incomplete, repeatedly
+    probing ``work_events``/``session_profiles_for_date`` dominates the AW path
+    and emits the same warning several times. Cache both successful context and
+    graceful unavailability for the process; source products are refresh-run
+    inputs, not per-call mutable state.
+    """
+    try:
+        from .polylogue import work_events, session_profiles_for_date
+    except ImportError:
+        return None
+
+    try:
+        events = tuple(work_events(start=start, end=end))
+    except Exception:
+        return None
+    if not events:
+        return None
+
+    conv_projects: dict[str, tuple[str, ...]] = {}
+    try:
+        for profile in session_profiles_for_date(start=start, end=end):
+            if profile.work_event_projects:
+                conv_projects[profile.conversation_id] = profile.work_event_projects
+    except Exception:
+        pass  # session profiles unavailable — can't resolve projects
+
+    return events, conv_projects
 
 
 def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDay]:

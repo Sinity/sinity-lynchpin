@@ -27,6 +27,13 @@ class SourceObservation:
     path: str | None = None
 
 
+@dataclass(frozen=True)
+class _MaterializedBounds:
+    first: date | None
+    last: date | None
+    path: Path | None
+
+
 _REPAIR_HINTS = {
     "fbmessenger": "Request new Facebook GDPR export",
     "raindrop": "Request new Raindrop export",
@@ -77,10 +84,11 @@ def _cache_key() -> tuple[tuple[tuple[str, bool], ...], str, str, str]:
 def _compute_source_observations(
     reference: date,
     substrate_dates: Mapping[str, date],
+    materialized_dates: Mapping[str, tuple[date | None, Path | None]] | None = None,
 ) -> tuple[SourceObservation, ...]:
     cfg = get_config()
     available = cfg.available_sources()
-    materialized_dates = _materialized_last_dates()
+    materialized_dates = materialized_dates or _materialized_last_dates()
     rows: list[SourceObservation] = []
     for source, is_available in sorted(available.items()):
         observed, basis, path = _source_observed_date(
@@ -132,26 +140,39 @@ def _materialized_last_dates() -> dict[str, tuple[date | None, Path | None]]:
     so the filesystem-mtime fallback only fires for sources that have no
     manifest at all.
     """
+    return {
+        key: (bounds.last, bounds.path)
+        for key, bounds in _materialized_date_bounds().items()
+        if bounds.last is not None
+    }
+
+
+def _materialized_date_bounds() -> dict[str, _MaterializedBounds]:
+    """Map source-observation keys to first/last materialized bounds.
+
+    ``coverage_bounds()`` needs both first and last dates. The previous
+    implementation called ``audit_materialization()`` twice, which cost ~10s
+    inside every operator_daily build on the live repo. Keep one audit pass and
+    derive both views from it.
+    """
     from lynchpin.materialization import audit_materialization
 
-    # Source-observation key → dataset-contract name (only where they differ).
-    _aliases = {
+    aliases = {
         "fbmessenger": "facebook_messenger",
     }
     rows = {row.name: row for row in audit_materialization()}
-    out: dict[str, tuple[date | None, Path | None]] = {}
-    # Every dataset with materialized last_date; aliases override the key.
+    out: dict[str, _MaterializedBounds] = {}
     for contract_name, row in rows.items():
-        if row.last_date is None:
+        if row.first_date is None and row.last_date is None:
             continue
         path = row.materialized_paths[0] if row.materialized_paths else None
-        out[contract_name] = (row.last_date, path)
-    for source_key, contract_name in _aliases.items():
+        out[contract_name] = _MaterializedBounds(row.first_date, row.last_date, path)
+    for source_key, contract_name in aliases.items():
         aliased = rows.get(contract_name)
-        if aliased is None or aliased.last_date is None:
+        if aliased is None or (aliased.first_date is None and aliased.last_date is None):
             continue
         path = aliased.materialized_paths[0] if aliased.materialized_paths else None
-        out[source_key] = (aliased.last_date, path)
+        out[source_key] = _MaterializedBounds(aliased.first_date, aliased.last_date, path)
     return out
 
 
@@ -174,6 +195,7 @@ def _configured_path(source: str) -> Path | None:
         "keylog": cfg.keylog_root,
         "raindrop_live": cfg.repo_root / ".lynchpin/raindrop_last_cursor.json",
         "machine": cfg.machine_telemetry_db,
+        "xtask_history": cfg.xtask_history_db,
         "polylogue": cfg.polylogue_db,
         "raw_log": cfg.raw_log_file,
         "samsung_gdpr_cloud": cfg.samsung_gdpr_cloud_dir,
@@ -255,11 +277,28 @@ def coverage_bounds(
         print(spotify.provenance())
         # → "spotify: covers 2020-01-01 → 2025-12-18 (export)"
     """
-    observations = source_observations(today=today, substrate_dates=substrate_dates)
-    first_dates = _materialized_first_dates_map()
+    materialized_bounds = _materialized_date_bounds()
+    materialized_last_dates = {
+        key: (bounds.last, bounds.path)
+        for key, bounds in materialized_bounds.items()
+        if bounds.last is not None
+    }
+    observations = (
+        _compute_source_observations(
+            today or date.today(),
+            dict(substrate_dates or {}),
+            materialized_last_dates,
+        )
+        if substrate_dates is not None or today is not None
+        else _compute_source_observations(date.today(), {}, materialized_last_dates)
+    )
     result: dict[str, CoverageBounds] = {}
     for obs in observations:
-        first = first_dates.get(obs.source) if obs.available else None
+        first = (
+            materialized_bounds[obs.source].first
+            if obs.available and obs.source in materialized_bounds
+            else None
+        )
         result[obs.source] = CoverageBounds(
             source=obs.source,
             first=first,
@@ -275,23 +314,11 @@ def _materialized_first_dates_map() -> dict[str, date]:
     Parallel to ``_materialized_last_dates()`` but returning the ``first_date``
     field.  Uses the same alias mapping so ``fbmessenger`` → ``facebook_messenger``.
     """
-    from lynchpin.materialization import audit_materialization
-
-    _aliases = {
-        "fbmessenger": "facebook_messenger",
+    return {
+        key: bounds.first
+        for key, bounds in _materialized_date_bounds().items()
+        if bounds.first is not None
     }
-    rows = {row.name: row for row in audit_materialization()}
-    out: dict[str, date] = {}
-    for contract_name, row in rows.items():
-        if row.first_date is None:
-            continue
-        out[contract_name] = row.first_date
-    for source_key, contract_name in _aliases.items():
-        aliased = rows.get(contract_name)
-        if aliased is None or aliased.first_date is None:
-            continue
-        out[source_key] = aliased.first_date
-    return out
 
 
 __all__ = [

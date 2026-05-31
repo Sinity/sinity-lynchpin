@@ -5,7 +5,7 @@ from __future__ import annotations
 import typer
 
 from ..core import canonical as canonical_module
-from ..core.io import resolve_analysis_path
+from lynchpin.core.io import resolve_analysis_path
 
 
 def register_commands(app: typer.Typer, *, analysis_spec: str) -> None:

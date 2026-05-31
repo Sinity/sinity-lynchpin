@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.analysis.core.io import save_json
+from lynchpin.core.io import save_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 

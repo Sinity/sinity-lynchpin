@@ -182,6 +182,7 @@ def _dataset_builders() -> dict[str, Any]:
         "browser_bookmarks": _bookmarks_dataset,
         "arbtt": _arbtt_dataset,
         "machine": _machine_dataset,
+        "xtask_history": _xtask_history_dataset,
         "spotify_daily": _spotify_daily_dataset,
         "personal_daily_signals": _personal_daily_signals_dataset,
         "irc": _irc_dataset,
@@ -1007,6 +1008,44 @@ def _spotify_daily_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=_date_from_iso(meta.get("last_date")),
         refresh_command=contract.refresh_command,
         reason="canonical Spotify daily product is present" if ready else "canonical Spotify daily product or manifest is missing/malformed",
+    )
+
+
+def _xtask_history_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("xtask_history")
+    path = cfg.xtask_history_db
+    row_count: int | None = None
+    first: date | None = None
+    last: date | None = None
+    if path.exists():
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations"
+                ).fetchone()
+            finally:
+                conn.close()
+            row_count = _int_or_none(row[0]) if row else None
+            first = _date_from_iso(row[1]) if row and row[1] else None
+            last = _date_from_iso(row[2]) if row and row[2] else None
+        except Exception:
+            row_count = None
+    ready = path.exists() and row_count is not None
+    return MaterializedDataset(
+        name="xtask_history",
+        status="ready" if ready else "missing",
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path,),
+        raw_roots=(path.parent,),
+        row_count=row_count,
+        first_date=first,
+        last_date=last,
+        refresh_command=contract.refresh_command,
+        reason="live xtask history SQLite is readable" if ready else f"xtask history SQLite is missing or unreadable at {path}",
     )
 
 

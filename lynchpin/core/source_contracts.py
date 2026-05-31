@@ -170,6 +170,12 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         refresh_command="python -m lynchpin.ingest.machine_materialize",
     ),
     SourceContract(
+        name="xtask_history",
+        authority="Sinex xtask-history SQLite ledger",
+        query_surface="lynchpin.sources.xtask_history.iter_invocations",
+        refresh_command="xtask records this live; no Lynchpin materializer",
+    ),
+    SourceContract(
         name="spotify_daily",
         authority="canonical Spotify stream materialization",
         query_surface="lynchpin.sources.personal_signals.iter_spotify_daily_signals",
@@ -345,6 +351,13 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "borg_drill_history", "sinnix_generation_history",
         ),
     },
+    "xtask_history": {
+        "collection_model": "continuous",
+        "substrate_tables": ("work_observation",),
+        "caveats": (
+            "Sinex xtask invocation ledger; observational runtime/resource windows, not controlled experiments",
+        ),
+    },
     "spotify_daily": {
         "collection_model": "derived",
         "substrate_tables": ("spotify_daily",),
@@ -389,6 +402,7 @@ PROMOTION_STAGE_CONTRACTS: tuple[StageContract, ...] = (
     StageContract("machine_experiments", "machine_experiment_run", required=False),
     StageContract("sinnix_generation", "sinnix_generation", required=False),
     StageContract("borg_drill_run", "borg_drill_run", required=False),
+    StageContract("work_observations", "work_observation", required=False),
 )
 
 SOURCE_CONTRACT_BY_NAME = {contract.name: contract for contract in SOURCE_CONTRACTS}

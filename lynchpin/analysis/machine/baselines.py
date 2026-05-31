@@ -9,7 +9,7 @@ from pathlib import Path
 import statistics
 from typing import Any, Iterable
 
-from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.analysis.machine.telemetry import analyze_machine_telemetry
 from lynchpin.core.analytics import ChangePoint, detect_changepoints

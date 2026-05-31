@@ -20,6 +20,10 @@ def refactor_candidates(
     from difflib import SequenceMatcher
 
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import (
+        load_added_deleted_symbol_pairs,
+        load_renamed_symbols,
+    )
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -27,42 +31,12 @@ def refactor_candidates(
             if refresh_id is None:
                 return []
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
-
         # symbol_change.change_type is stored uppercase-word
         # ('ADDED'/'MODIFIED'/'DELETED'/'RENAMED') by the materializer in
         # analysis.code_index.symbol_changes — the single-letter labels in
         # the schema comment are misleading.
-        renamed = conn.execute(f"""
-            SELECT project, qualified_name, date, sha, path
-            FROM symbol_change
-            WHERE refresh_id = ? AND change_type = 'RENAMED' {proj_filter}
-            ORDER BY date
-        """, params).fetchall()
-
-        pairs = conn.execute(f"""
-            WITH added AS (
-                SELECT project, qualified_name, date, sha
-                FROM symbol_change
-                WHERE refresh_id = ? AND change_type = 'ADDED' {proj_filter}
-            ),
-            deleted AS (
-                SELECT project, qualified_name, date, sha
-                FROM symbol_change
-                WHERE refresh_id = ? AND change_type = 'DELETED' {proj_filter}
-            )
-            SELECT a.project, d.qualified_name AS old_name,
-                   a.qualified_name AS new_name,
-                   a.date, a.sha
-            FROM added a
-            JOIN deleted d ON a.project = d.project
-            WHERE a.date >= d.date
-            ORDER BY a.date
-            LIMIT 500
-        """, [refresh_id] + ([project] if project else []) + [refresh_id] + ([project] if project else [])).fetchall()
+        renamed = load_renamed_symbols(conn, refresh_id=refresh_id, project=project)
+        pairs = load_added_deleted_symbol_pairs(conn, refresh_id=refresh_id, project=project)
 
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -110,6 +84,7 @@ def file_hotspots(
 ) -> list[dict[str, Any]]:
     """Churn hotspots by path root."""
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import load_file_churn_hotspots
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -117,25 +92,9 @@ def file_hotspots(
             if refresh_id is None:
                 return []
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
-        params.append(int(top_n))
-
-        rows = conn.execute(f"""
-            SELECT path_root,
-                   COUNT(DISTINCT sha) AS commits,
-                   COUNT(*) AS file_changes,
-                   COUNT(DISTINCT project) AS project_count,
-                   MODE(project) AS top_project
-            FROM file_change_fact
-            WHERE refresh_id = ? AND path_root IS NOT NULL
-              AND path_root != '' {proj_filter}
-            GROUP BY path_root
-            ORDER BY commits DESC
-            LIMIT ?
-        """, params).fetchall()
+        rows = load_file_churn_hotspots(
+            conn, refresh_id=refresh_id, top_n=top_n, project=project
+        )
 
     return [
         {"path_root": r[0], "commits": r[1], "file_changes": r[2], "project_count": r[3], "top_project": r[4]}
@@ -150,6 +109,7 @@ def conventional_commits(
 ) -> list[dict[str, Any]]:
     """Conventional commit distribution per project."""
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import load_conventional_commit_distribution
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -157,19 +117,9 @@ def conventional_commits(
             if refresh_id is None:
                 return []
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
-
-        rows = conn.execute(f"""
-            SELECT project, conventional_kind, COUNT(*) AS cnt,
-                   ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(PARTITION BY project), 1) AS pct
-            FROM commit_fact
-            WHERE refresh_id = ? AND conventional_kind IS NOT NULL {proj_filter}
-            GROUP BY project, conventional_kind
-            ORDER BY project, cnt DESC
-        """, params).fetchall()
+        rows = load_conventional_commit_distribution(
+            conn, refresh_id=refresh_id, project=project
+        )
 
     return [{"project": r[0], "kind": r[1], "count": r[2], "pct": r[3]} for r in rows]
 
@@ -187,7 +137,6 @@ def ai_tool_usage(
     Returns action_kind distribution with optional date and project filtering.
     """
     import sqlite3
-    from datetime import datetime
 
     from lynchpin.core.config import get_config
 
@@ -251,6 +200,7 @@ def breaking_changes(
 ) -> list[dict[str, Any]]:
     """Breaking change tracker per project."""
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import load_breaking_change_commits
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -258,17 +208,7 @@ def breaking_changes(
             if refresh_id is None:
                 return []
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
-
-        rows = conn.execute(f"""
-            SELECT project, sha, subject, authored_at
-            FROM commit_fact
-            WHERE refresh_id = ? AND breaking_change = TRUE {proj_filter}
-            ORDER BY authored_at DESC
-        """, params).fetchall()
+        rows = load_breaking_change_commits(conn, refresh_id=refresh_id, project=project)
 
     return [
         {"project": r[0], "sha": r[1][:8], "subject": r[2][:80], "date": _json_safe(r[3])}
@@ -288,6 +228,10 @@ def commit_kind_attribution(
       - "rows": list[dict] — the attribution data
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import (
+        load_ai_attribution_count,
+        load_commit_kind_ai_attribution,
+    )
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -296,22 +240,10 @@ def commit_kind_attribution(
                 return {"degraded": False, "reason": None, "rows": []}
 
         # Check if any row has non-NULL ai_attribution
-        ai_check = conn.execute(
-            "SELECT COUNT(*) FROM commit_fact "
-            "WHERE refresh_id = ? AND ai_attribution IS NOT NULL",
-            [refresh_id],
-        ).fetchone()
-        has_ai_data = (ai_check[0] or 0) > 0
+        ai_count = load_ai_attribution_count(conn, refresh_id=refresh_id)
+        has_ai_data = ai_count > 0
 
-        rows = conn.execute("""
-            SELECT conventional_kind, COUNT(*) AS total,
-                   SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END) AS ai_assisted,
-                   ROUND(SUM(CASE WHEN ai_attribution IS NOT NULL THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS ai_pct
-            FROM commit_fact
-            WHERE refresh_id = ? AND conventional_kind IS NOT NULL
-            GROUP BY conventional_kind
-            ORDER BY total DESC
-        """, [refresh_id]).fetchall()
+        rows = load_commit_kind_ai_attribution(conn, refresh_id=refresh_id)
 
         degraded = not has_ai_data and len(rows) > 0
         reason = (
@@ -335,6 +267,7 @@ def symbol_churn_hotspots(
 ) -> list[dict[str, Any]]:
     """Symbol churn hotspots by file path."""
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.readers_change import load_symbol_churn_hotspots
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -342,24 +275,8 @@ def symbol_churn_hotspots(
             if refresh_id is None:
                 return []
 
-        proj_filter = "AND project = ?" if project else ""
-        params: list[Any] = [refresh_id]
-        if project:
-            params.append(project)
-        params.append(int(top_n))
-
-        rows = conn.execute(f"""
-            SELECT path,
-                   COUNT(DISTINCT qualified_name) AS symbols,
-                   COUNT(DISTINCT sha) AS commits,
-                   COUNT(*) AS changes,
-                   COUNT(DISTINCT project) AS projects
-            FROM symbol_change
-            WHERE refresh_id = ? AND path IS NOT NULL AND path != ''
-              {proj_filter}
-            GROUP BY path
-            ORDER BY symbols DESC
-            LIMIT ?
-        """, params).fetchall()
+        rows = load_symbol_churn_hotspots(
+            conn, refresh_id=refresh_id, top_n=top_n, project=project
+        )
 
     return [{"path": r[0], "symbols": r[1], "commits": r[2], "changes": r[3], "projects": r[4]} for r in rows]

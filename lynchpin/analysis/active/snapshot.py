@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.projects import ALL_PROJECTS, ProjectProfile
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 from .git_facts import (
     ActiveCommitRecord,
     conventional_kind,

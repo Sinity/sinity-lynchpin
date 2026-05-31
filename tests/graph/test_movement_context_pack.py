@@ -231,7 +231,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "lynchpin.analysis.core.io.get_config",
+        "lynchpin.core.io.get_config",
         lambda: type("Cfg", (), {"analysis_output_dir": analysis_root})(),
     )
 
@@ -250,7 +250,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
 
 def test_context_pack_surfaces_missing_machine_analysis_artifacts(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "lynchpin.analysis.core.io.get_config",
+        "lynchpin.core.io.get_config",
         lambda: type("Cfg", (), {"analysis_output_dir": tmp_path / "analysis"})(),
     )
 

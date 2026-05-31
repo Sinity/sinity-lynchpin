@@ -180,7 +180,7 @@ def _window_personal_daily_signal_rows(
     if _overlaps(audit_by_name, "sleep", window_start, window_end):
         from ..sources.sleep import entries_in_range
 
-        for entry in entries_in_range(window_start, window_end):
+        for entry in entries_in_range(start=window_start, end=window_end):
             add("sleep", entry.date, "sleep_minutes", float(entry.total_minutes), quality=entry.quality_label)
             if entry.avg_score is not None:
                 add("sleep", entry.date, "sleep_score", float(entry.avg_score))

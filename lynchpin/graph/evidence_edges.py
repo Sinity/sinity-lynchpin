@@ -88,7 +88,7 @@ def temporal_overlap_edges(nodes: Sequence[EvidenceNode]) -> tuple[EvidenceEdge,
 
 def load_symbol_changes_index() -> dict[str, list[dict[str, Any]]]:
     import json
-    from ..analysis.core.io import resolve_analysis_path
+    from lynchpin.core.io import resolve_analysis_path
     path = resolve_analysis_path('active_symbol_changes.json')
     try:
         with open(path, encoding='utf-8') as f:

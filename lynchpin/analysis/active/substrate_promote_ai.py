@@ -31,8 +31,27 @@ def promote_ai_sources(
     try:
         from lynchpin.core.classify import resolve_project
         from lynchpin.graph.work_event_kind import overlay_label
-        from lynchpin.sources.polylogue import work_events
+        from lynchpin.sources.polylogue import archive_readiness, work_events
         from lynchpin.substrate.work_ai import promote_ai_work_events
+
+        # Check readiness first — polylogue may be rematerializing,
+        # in which case work_events() can block for minutes.
+        readiness = archive_readiness()
+        if readiness.status != "ready":
+            log.warning(
+                "substrate_promote: polylogue not ready (status=%s: %s); "
+                "AI work events skipped this run",
+                readiness.status, readiness.reason,
+            )
+            record_source_status(
+                conn, refresh_id=refresh_id, source=SOURCE_AI_WORK_EVENTS,
+                status="unavailable",
+                reason=f"polylogue not ready ({readiness.status}): {readiness.reason}",
+                row_count=0, window_start=window_start, window_end=window_end,
+            )
+            return
+
+        import concurrent.futures
 
         def _classify(ev: Any) -> Any:
             return overlay_label(
@@ -50,7 +69,25 @@ def promote_ai_sources(
                     return project
             return None
 
-        events = list(work_events(start=window_start, end=window_end))
+        def _fetch() -> list[Any]:
+            return list(work_events(start=window_start, end=window_end))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_fetch)
+            try:
+                events = future.result(timeout=45)
+            except concurrent.futures.TimeoutError:
+                log.warning(
+                    "substrate_promote: polylogue work_events() timed out "
+                    "(45 s); AI sources skipped this run"
+                )
+                record_source_status(
+                    conn, refresh_id=refresh_id, source=SOURCE_AI_WORK_EVENTS,
+                    status="unavailable",
+                    reason="polylogue API call timed out",
+                    row_count=0, window_start=window_start, window_end=window_end,
+                )
+                return
         if events:
             counts["ai_work_events"] = promote_ai_work_events(
                 conn,

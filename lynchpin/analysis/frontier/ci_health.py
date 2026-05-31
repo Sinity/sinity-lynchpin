@@ -24,7 +24,7 @@ import yaml
 
 from ...core.parse import parse_datetime
 from ...sources.github import repo_slug
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 _WORKFLOW_GLOB = ".github/workflows"

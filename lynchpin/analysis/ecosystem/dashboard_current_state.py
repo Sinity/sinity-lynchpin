@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from ..core.io import load_analysis_artifact
+from lynchpin.core.io import load_analysis_artifact
 
 
 def current_state_payload() -> dict[str, Any]:

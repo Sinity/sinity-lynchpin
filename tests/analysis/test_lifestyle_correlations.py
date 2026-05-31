@@ -42,11 +42,13 @@ def _day(
     web_social_visits: int = 0,
     hrv_rmssd: float | None = None,
     stress_mean: float | None = None,
+    aw_fragmentation: float | None = None,
 ) -> OperatorDay:
     """One OperatorDay with explicit ``sources_present`` (missing ≠ zero)."""
     row = OperatorDay(date=d)
     row.spotify_hours = spotify_hours
     row.aw_deep_work_min = deep_work_min
+    row.aw_fragmentation = aw_fragmentation
     row.git_commits = git_commits
     row.git_lines_added = git_lines_added
     row.git_lines_deleted = git_lines_deleted
@@ -105,6 +107,7 @@ def test_fdr_correction_suppresses_pure_noise(monkeypatch: pytest.MonkeyPatch) -
                 web_social_visits=rng.randint(0, 150),
                 hrv_rmssd=rng.uniform(20.0, 70.0),
                 stress_mean=rng.uniform(20.0, 80.0),
+                aw_fragmentation=rng.uniform(0.0, 1.0),
             )
         )
     end = rows[-1].date
@@ -121,9 +124,9 @@ def test_fdr_correction_suppresses_pure_noise(monkeypatch: pytest.MonkeyPatch) -
     assert not any(c.significant for c in report.lag_correlations)
     assert report.n_tests == len(report.lag_correlations)
     assert "Benjamini-Hochberg" in report.summary
-    # All three families should be represented in the test family.
+    # All four families should be represented in the test family.
     fams = {c.family for c in report.lag_correlations}
-    assert fams == {"music_focus", "web_productivity", "hrv_stress_code"}
+    assert fams == {"music_focus", "web_productivity", "hrv_stress_code", "hrv_attention"}
 
 
 def test_planted_music_focus_signal_survives_fdr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,6 +214,55 @@ def test_planted_hrv_next_day_code_signal_survives_fdr(monkeypatch: pytest.Monke
         and c.lag_days == 1
         for c in sig
     ), "lag-1 HRV→next-day commits should survive FDR"
+
+
+def test_planted_hrv_fragmentation_signal_survives_fdr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A same-day HRV→focus-fragmentation link must survive FDR (the #6 family).
+
+    Plants a strong negative same-day association (higher HRV → lower
+    fragmentation) and asserts the hrv_attention family flags it, proving the
+    fragmentation × HRV pairing is actually computed and coverage-gated.
+    """
+    start = date(2024, 1, 1)
+    rng = random.Random(13)
+    rows = []
+    n = 150
+    hrv_series = [float(20 + (i % 8) * 6) for i in range(n)]  # 20..62 cycling
+    for i in range(n):
+        d = start + timedelta(days=i)
+        hrv = hrv_series[i]
+        # higher HRV -> lower fragmentation (same-day), with noise.
+        frag = max(0.0, 0.9 - 0.012 * hrv + rng.uniform(-0.05, 0.05))
+        rows.append(
+            _day(
+                d,
+                present={"spotify", "activitywatch", "git", "web", "health"},
+                spotify_hours=rng.uniform(0.0, 6.0),
+                deep_work_min=rng.uniform(0.0, 240.0),
+                git_commits=rng.randint(0, 12),
+                git_lines_added=rng.randint(0, 500),
+                git_lines_deleted=rng.randint(0, 500),
+                web_visits=rng.randint(10, 400),
+                web_social_visits=rng.randint(0, 150),
+                hrv_rmssd=hrv,
+                stress_mean=rng.uniform(20.0, 80.0),
+                aw_fragmentation=frag,
+            )
+        )
+    end = rows[-1].date
+    _patch(monkeypatch, rows, _full_cov(start, end))
+
+    report = analyze(start, end, max_lag=3)
+    sig = [c for c in report.lag_correlations if c.significant]
+    match = [
+        c for c in sig
+        if c.family == "hrv_attention"
+        and c.predictor == "hrv_rmssd"
+        and c.outcome == "aw_fragmentation"
+        and c.lag_days == 0
+    ]
+    assert match, "same-day HRV→fragmentation link should survive FDR"
+    assert match[0].r < 0, "higher HRV should track lower fragmentation"
 
 
 def test_out_of_coverage_and_absent_days_excluded(monkeypatch: pytest.MonkeyPatch) -> None:

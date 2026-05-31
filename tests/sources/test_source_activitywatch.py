@@ -11,7 +11,11 @@ from pathlib import Path
 from lynchpin.sources.activitywatch import (
     FocusSpan, AppSession, _merge_adjacent, _focus_stretches, _session_ctx, _deep_compatible,
 )
-from lynchpin.sources.activitywatch_raw import event_bounds, events_from_activitywatch_dbs
+from lynchpin.sources.activitywatch_raw import (
+    event_bounds,
+    events,
+    events_from_activitywatch_dbs,
+)
 
 UTC = timezone.utc
 def dt(h, m=0, s=0): return datetime(2026, 3, 15, h, m, s, tzinfo=UTC)
@@ -135,6 +139,44 @@ def test_activitywatch_raw_merges_archive_dbs_and_filters_bad_rows(monkeypatch, 
     events = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(8), end=dt(11)))
     assert [event.data["app"] for event in events] == ["old", "kitty"]
     assert event_bounds("aw-watcher-window_") == (date(2026, 3, 15), date(2026, 3, 15), 2)
+
+
+def test_activitywatch_ndjson_events_use_bucket_index(monkeypatch, tmp_path: Path) -> None:
+    """Canonical NDJSON reads should slice matching buckets, not full-scan all events."""
+    path = tmp_path / "activitywatch/events.ndjson"
+    path.parent.mkdir()
+    rows = [
+        {
+            "bucket": "aw-watcher-afk_host",
+            "start": "2026-03-15T09:00:00+00:00",
+            "end": "2026-03-15T10:00:00+00:00",
+            "data": {"status": "not-afk"},
+        },
+        {
+            "bucket": "aw-watcher-window_host",
+            "start": "2026-03-15T10:00:00+00:00",
+            "end": "2026-03-15T10:00:00+00:00",
+            "data": {"app": "kitty"},
+        },
+        {
+            "bucket": "aw-watcher-web-firefox_host",
+            "start": "2026-03-15T11:00:00+00:00",
+            "end": "2026-03-15T12:00:00+00:00",
+            "data": {"url": "https://example.com"},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    class Config:
+        captures_root = tmp_path
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+
+    window = list(events("aw-watcher-window_", start=dt(8), end=dt(13)))
+    web = list(events("aw-watcher-web-", start=dt(8), end=dt(13)))
+
+    assert [event.data for event in window] == [{"app": "kitty"}]
+    assert [event.data for event in web] == [{"url": "https://example.com"}]
 
 
 def test_active_intervals_accepts_date_for_inclusive_day_window(monkeypatch) -> None:

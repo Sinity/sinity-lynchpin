@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 from typing import Any, Sequence
 
-from lynchpin.analysis.core.io import save_json
+from lynchpin.core.io import save_json
 
 
 DEFAULT_STABILITY_ROOT = Path("/realm/data/captures/stability-lab")

@@ -24,7 +24,7 @@ from ..interpretation.shape import run_active_guardrails, run_active_hotspots
 from ..interpretation.structural_findings import run_active_structural_findings
 from ..interpretation.velocity_windows import run_project_velocity_windows
 from .velocity_renderer import DEFAULT_OUTPUT, build_velocity_dashboard
-from ..core.io import resolve_analysis_path
+from lynchpin.core.io import resolve_analysis_path
 
 
 def _split_names(value: str) -> list[str] | None:

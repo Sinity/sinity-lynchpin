@@ -52,6 +52,16 @@ class WebDayActivity:
     top_domains: tuple[tuple[str, float], ...]
     top_titles: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if self.visit_count < 0:
+            raise ValueError(
+                f"WebDayActivity.visit_count ({self.visit_count}) must be >= 0"
+            )
+        if self.unique_domains < 0:
+            raise ValueError(
+                f"WebDayActivity.unique_domains ({self.unique_domains}) must be >= 0"
+            )
+
 
 @dataclass  # not frozen: mutable accumulator bucket mutated in-loop in web.py
 class _WebDayBucket:

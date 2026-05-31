@@ -7,7 +7,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from ...core.config import get_config
+from .config import get_config
 
 T = TypeVar("T")
 

@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 from typing import Any
 
-from lynchpin.analysis.core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 from lynchpin.core.parse import parse_datetime
 from lynchpin.core.projects import canonical_project_name
 from lynchpin.sources.terminal import AtuinCommand

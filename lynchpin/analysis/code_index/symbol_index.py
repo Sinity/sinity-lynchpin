@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.projects import ProjectProfile
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 from ..active.git_facts import select_active_profiles, tracked_files
 
 _MAX_FILE_BYTES = 1_000_000

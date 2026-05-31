@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
-from .io import save_json
+from ...core.io import save_json
 
 logger = logging.getLogger(__name__)
 

@@ -16,7 +16,7 @@ from lynchpin.analysis.core.git import run_git
 
 from ...core.config import get_config
 from ..core.textshape import compute_repetition_metrics
-from ..core.io import save_json
+from lynchpin.core.io import save_json
 
 SKIP_DIRS = {
     ".git",

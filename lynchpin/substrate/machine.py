@@ -486,12 +486,322 @@ def promote_machine_experiment_runs(
     )
 
 
+def load_machine_metric_daily(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    start: date | None = None,
+    end: date | None = None,
+    host: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Return daily aggregated machine telemetry rows.
+
+    Returns (day, host, samples, avg_cpu_package_w, max_cpu_package_w,
+    avg_gpu_power_w, max_gpu_power_w, avg_io_psi_some_avg10,
+    max_io_psi_some_avg10, avg_latency_oversleep_ms,
+    max_latency_oversleep_ms, max_dstate_task_count) tuples.
+    """
+    sql = """
+        SELECT
+            observed_at::DATE AS day,
+            host,
+            COUNT(*) AS samples,
+            AVG(cpu_package_w) AS avg_cpu_package_w,
+            MAX(cpu_package_w) AS max_cpu_package_w,
+            AVG(gpu_power_w) AS avg_gpu_power_w,
+            MAX(gpu_power_w) AS max_gpu_power_w,
+            AVG(io_psi_some_avg10) AS avg_io_psi_some_avg10,
+            MAX(io_psi_some_avg10) AS max_io_psi_some_avg10,
+            AVG(latency_oversleep_ms) AS avg_latency_oversleep_ms,
+            MAX(latency_oversleep_ms) AS max_latency_oversleep_ms,
+            MAX(dstate_task_count) AS max_dstate_task_count
+        FROM machine_metric_sample
+        WHERE refresh_id = ?
+    """
+    params: list[Any] = [refresh_id]
+    if start:
+        sql += " AND observed_at::DATE >= ?"
+        params.append(start)
+    if end:
+        sql += " AND observed_at::DATE <= ?"
+        params.append(end)
+    if host:
+        sql += " AND host = ?"
+        params.append(host)
+    sql += " GROUP BY day, host ORDER BY day, host"
+    return conn.execute(sql, params).fetchall()
+
+
+def load_machine_metric_series_by_context(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    generations_refresh_id: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    host: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Daily machine-metric series SEGMENTED by the Layer-1 context vector.
+
+    Each (logical) day is split by **software_revision** (the NixOS generation
+    active at each sample, resolved with an ASOF join: greatest
+    ``activated_at <= observed_at``) and **hardware_regime** (GPU PCIe link
+    gen/width). This is the set-based companion to
+    ``analysis.machine.context_spine.resolve_machine_context`` and answers the
+    Phase-1 question "show this metric series segmented by generation /
+    hardware-regime". Generation is ``NULL`` for samples that predate any
+    activation record (honest: missing generation telemetry, never imputed).
+
+    Returns (day, generation, sinnix_revision, gpu_pcie_gen, gpu_pcie_width,
+    samples, avg_cpu_package_w, avg_gpu_power_w, avg_io_psi_full_avg10,
+    max_io_psi_full_avg10, avg_cpu_psi_some_avg60) tuples, ordered by
+    (day, generation, gpu_pcie_gen).
+
+    ``generations_refresh_id`` pins the generation timeline to one promote batch
+    (sinnix_generation is re-promoted each refresh); pass the best generation
+    refresh_id. When ``None``, all generation rows are considered (duplicates
+    across batches share activated_at, so the ASOF match is unchanged).
+    """
+    gen_where = "WHERE refresh_id = ?" if generations_refresh_id else ""
+    sql = f"""
+        WITH gens AS (
+            SELECT host, generation, sinnix_revision, activated_at
+            FROM sinnix_generation
+            {gen_where}
+        )
+        SELECT
+            m.observed_at::DATE AS day,
+            g.generation,
+            g.sinnix_revision,
+            m.gpu_pcie_gen,
+            m.gpu_pcie_width,
+            COUNT(*) AS samples,
+            AVG(m.cpu_package_w) AS avg_cpu_package_w,
+            AVG(m.gpu_power_w) AS avg_gpu_power_w,
+            AVG(m.io_psi_full_avg10) AS avg_io_psi_full_avg10,
+            MAX(m.io_psi_full_avg10) AS max_io_psi_full_avg10,
+            AVG(m.cpu_psi_some_avg60) AS avg_cpu_psi_some_avg60
+        FROM machine_metric_sample m
+        ASOF LEFT JOIN gens g
+            ON m.host = g.host AND m.observed_at >= g.activated_at
+        WHERE m.refresh_id = ?
+    """
+    params: list[Any] = []
+    if generations_refresh_id:
+        params.append(generations_refresh_id)
+    params.append(refresh_id)
+    if start:
+        sql += " AND m.observed_at::DATE >= ?"
+        params.append(start)
+    if end:
+        sql += " AND m.observed_at::DATE <= ?"
+        params.append(end)
+    if host:
+        sql += " AND m.host = ?"
+        params.append(host)
+    sql += (
+        " GROUP BY day, g.generation, g.sinnix_revision,"
+        " m.gpu_pcie_gen, m.gpu_pcie_width"
+        " ORDER BY day, g.generation, m.gpu_pcie_gen"
+    )
+    return conn.execute(sql, params).fetchall()
+
+
+def load_machine_service_state_summary(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    start: date | None = None,
+    end: date | None = None,
+    host: str | None = None,
+    unit: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Return aggregated service state rows.
+
+    Returns (host, unit, scope, samples, active_samples,
+    max_memory_current_bytes, max_cpu_usage_nsec, max_io_read_bytes,
+    max_io_write_bytes, first_observed_at, last_observed_at) tuples.
+    """
+    sql = """
+        SELECT
+            host,
+            unit,
+            scope,
+            COUNT(*) AS samples,
+            SUM(CASE WHEN active_state = 'active' THEN 1 ELSE 0 END) AS active_samples,
+            MAX(memory_current_bytes) AS max_memory_current_bytes,
+            MAX(cpu_usage_nsec) AS max_cpu_usage_nsec,
+            MAX(io_read_bytes) AS max_io_read_bytes,
+            MAX(io_write_bytes) AS max_io_write_bytes,
+            MIN(observed_at) AS first_observed_at,
+            MAX(observed_at) AS last_observed_at
+        FROM machine_service_state
+        WHERE refresh_id = ?
+    """
+    params: list[Any] = [refresh_id]
+    if start:
+        sql += " AND observed_at::DATE >= ?"
+        params.append(start)
+    if end:
+        sql += " AND observed_at::DATE <= ?"
+        params.append(end)
+    if host:
+        sql += " AND host = ?"
+        params.append(host)
+    if unit:
+        sql += " AND unit = ?"
+        params.append(unit)
+    sql += " GROUP BY host, unit, scope ORDER BY host, scope, unit"
+    return conn.execute(sql, params).fetchall()
+
+
+def load_borg_drill_runs(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    limit: int = 50,
+    status: str | None = None,
+    repo: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Return borg_drill_run rows ordered by started_at DESC.
+
+    Returns (repo, archive, started_at, ended_at, duration_s, exit_code,
+    status, within_days) tuples.
+    """
+    where_clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    if repo:
+        where_clauses.append("repo = ?")
+        params.append(repo)
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sql = f"""
+        SELECT repo, archive, started_at, ended_at, duration_s, exit_code,
+               status, within_days
+        FROM borg_drill_run
+        {where_sql}
+        ORDER BY started_at DESC
+        LIMIT ?
+    """
+    params.append(max(int(limit), 0))
+    return conn.execute(sql, params).fetchall()
+
+
+def load_borg_drill_summary(
+    conn: "duckdb.DuckDBPyConnection",
+) -> tuple[Any, ...] | None:
+    """Return (total, ok_count, failed_count, last_started_at) summary."""
+    return conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status = 'ok') AS ok_count,
+            COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+            MAX(started_at) AS last_started_at
+        FROM borg_drill_run
+        """
+    ).fetchone()
+
+
+def load_sinnix_generation_rows(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    limit: int = 50,
+    host: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Return sinnix_generation rows ordered by activated_at DESC.
+
+    Returns (host, generation, activated_at, store_path, sinnix_revision,
+    nixos_label) tuples.
+    """
+    where = ""
+    params: list[Any] = []
+    if host:
+        where = "WHERE host = ?"
+        params.append(host)
+    sql = f"""
+        SELECT host, generation, activated_at, store_path, sinnix_revision, nixos_label
+        FROM sinnix_generation
+        {where}
+        ORDER BY activated_at DESC
+        LIMIT ?
+    """
+    params.append(max(int(limit), 0))
+    return conn.execute(sql, params).fetchall()
+
+
+def load_bufferbloat_daily(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    interface: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Return per-day bufferbloat aggregates from machine_network_sample.
+
+    Returns (day, interface, sample_count, avg_ms_p50, avg_ms_p95,
+    avg_ms_max, loss_p50, loss_p95, loss_max) tuples.
+    """
+    where_clauses: list[str] = [
+        "bloat IS NOT NULL",
+        "json_extract_string(bloat, '$.avg_ms') IS NOT NULL",
+    ]
+    params: list[Any] = []
+    if start:
+        where_clauses.append("CAST(observed_at AS DATE) >= ?")
+        params.append(start)
+    if end:
+        where_clauses.append("CAST(observed_at AS DATE) <= ?")
+        params.append(end)
+    if interface:
+        where_clauses.append("interface = ?")
+        params.append(interface)
+    where_sql = " AND ".join(where_clauses)
+
+    sql = f"""
+        WITH parsed AS (
+            SELECT
+                CAST(observed_at AS DATE) AS day,
+                interface,
+                CAST(json_extract_string(bloat, '$.avg_ms') AS DOUBLE) AS avg_ms,
+                CAST(json_extract_string(bloat, '$.min_ms') AS DOUBLE) AS min_ms,
+                CAST(json_extract_string(bloat, '$.max_ms') AS DOUBLE) AS max_ms,
+                CAST(json_extract_string(bloat, '$.loss')   AS DOUBLE) AS loss
+            FROM machine_network_sample
+            WHERE {where_sql}
+        )
+        SELECT
+            day,
+            interface,
+            COUNT(*)                                         AS sample_count,
+            quantile_cont(avg_ms, 0.50)                      AS avg_ms_p50,
+            quantile_cont(avg_ms, 0.95)                      AS avg_ms_p95,
+            MAX(avg_ms)                                      AS avg_ms_max,
+            quantile_cont(loss,   0.50)                      AS loss_p50,
+            quantile_cont(loss,   0.95)                      AS loss_p95,
+            MAX(loss)                                        AS loss_max
+        FROM parsed
+        GROUP BY day, interface
+        ORDER BY day, interface
+    """
+    return conn.execute(sql, params).fetchall()
+
+
 __all__ = [
+    "load_bufferbloat_daily",
+    "load_borg_drill_runs",
+    "load_borg_drill_summary",
     "load_machine_experiment_runs",
     "load_machine_gpu_samples",
+    "load_machine_metric_daily",
     "load_machine_metric_samples",
+    "load_machine_metric_series_by_context",
     "load_machine_network_samples",
+    "load_machine_service_state_summary",
     "load_machine_service_states",
+    "load_sinnix_generation_rows",
     "promote_machine_experiment_runs",
     "promote_machine_gpu_samples",
     "promote_machine_metric_samples",

@@ -48,6 +48,35 @@ class ProjectContextSlice:
 
 
 @dataclass(frozen=True)
+class PhysiologySummary:
+    """Operator physiological state over the window, from health + sleep sources.
+
+    Missing days are excluded from every mean (never counted as zero); each
+    metric carries the number of days that actually had data. A ``None`` mean
+    means no measured data for that signal in the window — not a measured zero.
+    These signals are export-bound and frequently stale, so observed last-dates
+    and a coverage caveat are surfaced rather than implied.
+    """
+
+    window_start: date
+    window_end: date
+    sleep_hours_mean: float | None
+    sleep_days: int
+    sleep_score_mean: float | None
+    stress_mean: float | None
+    stress_days: int
+    hrv_rmssd_mean: float | None
+    hrv_days: int
+    resting_hr_mean: float | None
+    resting_hr_days: int
+    steps_mean: float | None
+    steps_days: int
+    last_health_date: date | None
+    last_sleep_date: date | None
+    caveats: tuple[EvidenceCaveat, ...]
+
+
+@dataclass(frozen=True)
 class ContextPack:
     start: datetime
     end: datetime
@@ -64,6 +93,7 @@ class ContextPack:
     salient_anomalies: tuple[EvidenceNode, ...]
     readiness_forecast: EvidenceNode | None
     caveats: tuple[EvidenceCaveat, ...]
+    physiology: PhysiologySummary | None = None
 
 
 def context_pack(
@@ -225,6 +255,80 @@ def _materialize_context_graph(
     )
 
 
+def _mean_present(values: Iterable[float | int | None]) -> tuple[float | None, int]:
+    """Mean over the present (non-None) values; (None, 0) when all are missing."""
+    present = [float(v) for v in values if v is not None]
+    if not present:
+        return None, 0
+    return sum(present) / len(present), len(present)
+
+
+def _build_physiology(*, start: datetime, end: datetime) -> PhysiologySummary | None:
+    """Summarize operator physiology (sleep + health) over the window.
+
+    Sourced directly from the health/sleep source modules (not analysis), with
+    missing-day exclusion and an explicit staleness caveat when the observed
+    health data ends before the requested window. Returns None when neither
+    source has any data in the window — so the section is omitted rather than
+    rendering empty rows.
+    """
+    from ..sources.health_daily import daily_health_summary
+    from ..sources.sleep import entries_in_range
+
+    s, e = start.date(), end.date()
+    try:
+        health = daily_health_summary(start=s, end=e)
+    except Exception:
+        health = []
+    try:
+        sleep = entries_in_range(start=s, end=e)
+    except Exception:
+        sleep = []
+
+    if not health and not sleep:
+        return None
+
+    sleep_hours_mean, sleep_days = _mean_present(en.total_minutes / 60.0 for en in sleep)
+    sleep_score_mean, _ = _mean_present(en.avg_score for en in sleep)
+    stress_mean, stress_days = _mean_present(h.stress_avg for h in health)
+    hrv_mean, hrv_days = _mean_present(h.hrv_rmssd_avg for h in health)
+    resting_hr_mean, resting_hr_days = _mean_present(h.heart_rate_resting for h in health)
+    steps_mean, steps_days = _mean_present(h.steps for h in health)
+    last_health = max((h.date for h in health), default=None)
+    last_sleep = max((en.date for en in sleep), default=None)
+
+    caveats: list[EvidenceCaveat] = []
+    observed_last = max([d for d in (last_health, last_sleep) if d is not None], default=None)
+    if observed_last is not None and observed_last < e:
+        caveats.append(
+            EvidenceCaveat(
+                "physiology",
+                "partial",
+                f"Physiology signals end {observed_last.isoformat()}, before the window "
+                f"end {e.isoformat()}; means cover only the observed days, not the full window.",
+            )
+        )
+
+    return PhysiologySummary(
+        window_start=s,
+        window_end=e,
+        sleep_hours_mean=sleep_hours_mean,
+        sleep_days=sleep_days,
+        sleep_score_mean=sleep_score_mean,
+        stress_mean=stress_mean,
+        stress_days=stress_days,
+        hrv_rmssd_mean=hrv_mean,
+        hrv_days=hrv_days,
+        resting_hr_mean=resting_hr_mean,
+        resting_hr_days=resting_hr_days,
+        steps_mean=steps_mean,
+        steps_days=steps_days,
+        last_health_date=last_health,
+        last_sleep_date=last_sleep,
+        caveats=tuple(caveats),
+    )
+
+
 def graph_context_pack(
     graph: EvidenceGraph,
     *,
@@ -269,7 +373,25 @@ def graph_context_pack(
         salient_anomalies=anomalies,
         readiness_forecast=readiness,
         caveats=_pack_caveats(evidence_pack=evidence_pack, graph=graph),
+        physiology=_build_physiology(start=start, end=end),
     )
+
+
+def _render_physiology(p: PhysiologySummary) -> str:
+    def fmt(v: float | None, unit: str = "", prec: int = 1) -> str:
+        return f"{v:.{prec}f}{unit}" if v is not None else "—"
+
+    lines = [
+        f"- Sleep: {fmt(p.sleep_hours_mean, 'h')} mean over {p.sleep_days}d "
+        f"(score {fmt(p.sleep_score_mean)})",
+        f"- Stress: {fmt(p.stress_mean)} ({p.stress_days}d) · "
+        f"HRV rmssd {fmt(p.hrv_rmssd_mean)} ({p.hrv_days}d) · "
+        f"resting HR {fmt(p.resting_hr_mean, ' bpm')} ({p.resting_hr_days}d)",
+        f"- Steps: {fmt(p.steps_mean, '', 0)} mean ({p.steps_days}d)",
+    ]
+    for c in p.caveats:
+        lines.append(f"- _caveat:_ {c.message}")
+    return "\n".join(lines)
 
 
 def render_context_pack(pack: ContextPack) -> str:
@@ -331,6 +453,15 @@ def render_context_pack(pack: ContextPack) -> str:
             for c in pack.salient_chains:
                 lines.append(f"- {c.date.isoformat()} — {c.summary} (confidence {c.confidence:.0%})")
             lines.append("")
+    if pack.physiology is not None:
+        lines.extend(
+            [
+                "## Operator Physiology",
+                "",
+                _render_physiology(pack.physiology),
+                "",
+            ]
+        )
     if pack.weak_tags is not None:
         lines.extend(
             [
@@ -766,7 +897,7 @@ class _MachineAnalysisArtifacts:
 def _load_machine_analysis_artifacts() -> _MachineAnalysisArtifacts:
     from json import JSONDecodeError, loads
 
-    from ..analysis.core.io import resolve_analysis_path
+    from lynchpin.core.io import resolve_analysis_path
 
     payloads: dict[str, dict[str, object]] = {}
     missing: list[str] = []

@@ -10,6 +10,7 @@ def latest_machine_rows(table: str) -> str:
         "machine_service_state": "observed_at, host, scope, unit",
         "machine_network_sample": "observed_at, host, interface",
         "machine_experiment_run": "run_id",
+        "work_observation": "source, source_id",
     }[table]
     return f"""
         SELECT * EXCLUDE (_rn)

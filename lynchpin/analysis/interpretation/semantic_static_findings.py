@@ -20,7 +20,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 _RULES_DIR = Path(__file__).resolve().parent.parent / "tool_rules" / "semgrep" / "lynchpin-privacy"
 

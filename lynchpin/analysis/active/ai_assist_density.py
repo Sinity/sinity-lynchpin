@@ -34,7 +34,7 @@ from ...core.projects import canonical_project_name
 from ...sources.polylogue import WorkEvent, work_events
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 
 _HIGH_EVENT_THRESHOLD = 3

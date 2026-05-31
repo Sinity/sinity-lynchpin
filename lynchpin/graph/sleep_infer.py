@@ -86,7 +86,7 @@ def infer_sleep(
             gaps.append((prev_end, next_start, gap_h))
 
     # Load watch sleep data
-    watch_entries = list(entries_in_range(start - timedelta(days=1), end + timedelta(days=1)))
+    watch_entries = list(entries_in_range(start=start - timedelta(days=1), end=end + timedelta(days=1)))
     architecture_by_date = {
         arch.date: arch
         for arch in sleep_architecture(start=start - timedelta(days=1), end=end)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 
 def register_commands(app: typer.Typer) -> None:

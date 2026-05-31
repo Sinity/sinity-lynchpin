@@ -39,7 +39,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     )
 
     config = type("Config", (), {"analysis_output_dir": analysis_root})()
-    monkeypatch.setattr("lynchpin.analysis.core.io.get_config", lambda: config)
+    monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
 
     from lynchpin.mcp.tools.machine import (
         machine_below_attributions,
@@ -66,7 +66,7 @@ def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Pat
     analysis_root = tmp_path / "analysis"
     analysis_root.mkdir()
     config = type("Config", (), {"analysis_output_dir": analysis_root})()
-    monkeypatch.setattr("lynchpin.analysis.core.io.get_config", lambda: config)
+    monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
 
     from lynchpin.mcp.tools.machine import machine_context_windows, machine_episodes
 

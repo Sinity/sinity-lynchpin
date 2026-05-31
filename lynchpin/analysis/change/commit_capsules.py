@@ -17,7 +17,7 @@ from typing import Any
 
 from ...substrate.work_commits import read_commit_facts
 from ...substrate.connection import connect, substrate_path
-from ..core.io import resolve_analysis_path, save_json
+from lynchpin.core.io import resolve_analysis_path, save_json
 
 
 _OPERATION_LABELS = (

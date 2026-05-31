@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timezone
+from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
@@ -135,13 +136,47 @@ def _events_from_ndjson(
     is keyed by the file path and refreshes when ``path.stat()`` changes
     (mtime + size), so a re-materialize is observed automatically.
     """
-    all_events = _load_all_events(path)
-    for event in all_events:
-        if not event.bucket.startswith(bucket_prefix):
+    by_bucket = _load_events_by_bucket(path)
+    for bucket, bucket_events in by_bucket.items():
+        if not bucket.startswith(bucket_prefix):
             continue
-        if event.start >= end or event.end <= start:
-            continue
-        yield event
+        starts = tuple(event.start for event in bucket_events)
+        idx = bisect_left(starts, start)
+        # Non-window events can overlap the left edge. Step back until events no
+        # longer cross the requested start; zero-duration window events stay at
+        # idx and keep their existing implicit-duration behavior downstream.
+        while idx > 0 and bucket_events[idx - 1].end > start:
+            idx -= 1
+        for event in bucket_events[idx:]:
+            if event.start >= end:
+                break
+            if event.end <= start:
+                continue
+            yield event
+
+
+def _load_events_by_bucket(path: Path) -> dict[str, tuple[AWEvent, ...]]:
+    """Return cached AW events grouped by bucket and sorted by start time.
+
+    ``activitywatch.daily_activity`` calls multiple derived helpers over the
+    same window. Each helper queries one bucket prefix; scanning the full parsed
+    450MB event list for every prefix made one-shot refreshes spend tens of
+    seconds before the first daily row. Bucket indexing keeps the full-file parse
+    cost once per process, then slices only the matching bucket.
+    """
+    return _load_events_by_bucket_keyed(path, file_signature(path))
+
+
+@functools.lru_cache(maxsize=2)
+def _load_events_by_bucket_keyed(
+    path: Path,
+    signature: object,
+) -> dict[str, tuple[AWEvent, ...]]:
+    del signature
+    buckets: dict[str, list[AWEvent]] = {}
+    for event in _load_all_events(path):
+        buckets.setdefault(event.bucket, []).append(event)
+    return {bucket: tuple(events) for bucket, events in buckets.items()}
 
 
 def _load_all_events(path: Path) -> list[AWEvent]:

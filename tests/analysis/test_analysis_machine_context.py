@@ -81,3 +81,73 @@ def test_machine_context_keeps_windows_without_episode_support(tmp_path):
     assert analysis.windows[0].interpretation == "no detected machine episode overlap"
     assert "workload window has no project attribution" in analysis.windows[0].caveats
     assert "no detected machine episode overlaps this window" in analysis.windows[0].caveats
+
+
+def test_machine_context_collects_work_observation_windows(tmp_path, monkeypatch):
+    from lynchpin.analysis.machine import context as context_mod
+    from lynchpin.sources.xtask_history import XtaskInvocation
+    from lynchpin.substrate.work_observations import promote_work_observations
+
+    db = tmp_path / "sub.duckdb"
+    started = datetime(2026, 5, 1, 12, tzinfo=timezone.utc)
+    ended = datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc)
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_work_observations(
+            conn,
+            refresh_id="r1",
+            rows=[
+                XtaskInvocation(
+                    source_id="xtask:1",
+                    command=("check", "clippy"),
+                    cwd="/realm/project/sinex",
+                    started_at=started,
+                    ended_at=ended,
+                    duration_s=60.0,
+                    status="success",
+                    exit_code=0,
+                    host="sinnix-prime",
+                    project="sinex",
+                    git_commit="abc123",
+                    git_dirty=True,
+                    live_stage="clippy",
+                    args_json="[]",
+                    cpu_usage_avg=None,
+                    memory_usage_max_mb=None,
+                    process_cpu_usage_avg=None,
+                    process_memory_usage_max_mb=None,
+                    root_process_cpu_usage_avg=None,
+                    root_process_memory_usage_max_mb=None,
+                    shared_nix_daemon_cpu_usage_avg=None,
+                    shared_nix_daemon_memory_usage_max_mb=None,
+                    shared_nix_build_slice_cpu_usage_avg=None,
+                    shared_nix_build_slice_memory_usage_max_mb=None,
+                    shared_background_slice_cpu_usage_avg=None,
+                    shared_background_slice_memory_usage_max_mb=None,
+                    host_cpu_pressure_some_avg10_max=None,
+                    host_io_pressure_some_avg10_max=None,
+                    host_io_pressure_full_avg10_max=None,
+                    host_memory_pressure_some_avg10_max=None,
+                    host_memory_pressure_full_avg10_max=None,
+                    shm_free_min_mb=None,
+                    shm_used_max_mb=None,
+                    process_count_max=None,
+                    resource_sample_count=None,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(context_mod, "_polylogue_windows", lambda **_: [])
+    monkeypatch.setattr(context_mod, "_terminal_windows", lambda **_: [])
+    monkeypatch.setattr(context_mod, "_git_windows", lambda **_: [])
+    monkeypatch.setattr(context_mod, "_deep_work_windows", lambda **_: [])
+
+    analysis = analyze_machine_context_windows(
+        start=started.date(),
+        end=started.date(),
+        path=db,
+    )
+
+    assert analysis.source_counts == {"xtask_history": 1}
+    assert analysis.windows[0].projects == ("sinex",)
+    assert analysis.windows[0].summary == "check clippy"

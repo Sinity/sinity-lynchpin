@@ -12,7 +12,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..core.io import load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 _IGNORED_PATH_PARTS = {
     ".agent",

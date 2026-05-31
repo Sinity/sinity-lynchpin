@@ -118,7 +118,12 @@ def test_promote_rows_refresh_id_first_position():
 
 
 class _CountingConn:
-    """Wraps a DuckDB connection to record executemany batch sizes."""
+    """Wraps a DuckDB connection to record per-flush batch sizes.
+
+    Records a flush regardless of insert mechanism: executemany (container
+    columns / no pandas) or the pandas DataFrame fast path (register). The test
+    asserts chunked flushing, not which mechanism does the insert.
+    """
 
     def __init__(self, conn):
         self._conn = conn
@@ -131,6 +136,13 @@ class _CountingConn:
         rows = list(rows)
         self.flush_counts.append(len(rows))
         return self._conn.executemany(sql, rows)
+
+    def register(self, name, frame):
+        self.flush_counts.append(len(frame))
+        return self._conn.register(name, frame)
+
+    def unregister(self, name):
+        return self._conn.unregister(name)
 
 
 def test_promote_rows_batch_size_flushes_in_chunks():

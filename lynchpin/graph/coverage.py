@@ -69,7 +69,6 @@ def coverage_report(*, start: date, end: date) -> CoverageReport:
     # refresh_command.
     _OVERRIDES: dict[str, dict[str, str]] = {
         "atuin": {"display": "terminal"},
-        "facebook_messenger": {"display": "messenger"},
         "health": {
             "repair_hint": "Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export",
         },
