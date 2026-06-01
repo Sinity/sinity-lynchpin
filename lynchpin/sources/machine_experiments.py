@@ -1,10 +1,12 @@
 """Machine experiment manifests captured by Sinnix.
 
-Each experiment run is a directory under the host machine capture root:
-``experiments/<run_id>/manifest.json``. The manifest stores the treatment,
-workload, git state, and pre/post machine state for one benchmark or stress
-run. Lynchpin keeps raw JSON intact and promotes typed rows into DuckDB so
-experiments can be joined to the telemetry stream.
+Each experiment run is a ``manifest.json`` somewhere under the host machine
+capture root. Exported controlled-benchmark bundles use nested
+``<run_group>/runs/<run_id>/manifest.json`` directories; ad hoc runs may use a
+flat ``<run_id>/manifest.json`` directory. The manifest stores the treatment,
+workload, git state, and pre/post machine state for one benchmark or stress run.
+Lynchpin keeps raw JSON intact and promotes typed rows into DuckDB so experiments
+can be joined to the telemetry stream.
 """
 
 from __future__ import annotations
@@ -28,16 +30,22 @@ __all__ = [
 @dataclass(frozen=True)
 class MachineExperimentRun:
     run_id: str
+    run_group_id: str | None
     host: str
     workload: str
     command: tuple[str, ...]
     cwd: str | None
     started_at: datetime
     ended_at: datetime | None
+    monotonic_started_ns: int | None
+    monotonic_ended_ns: int | None
     exit_status: int | None
+    execution_outcome: dict[str, Any]
     service_profile: str | None
     cache_profile: str | None
+    measurement_context: dict[str, Any]
     planned_treatment: dict[str, Any]
+    nix_internal_json_path: str | None
     git_root: str | None
     git_head: str | None
     git_branch: str | None
@@ -75,6 +83,10 @@ def _as_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+def _as_int(value: object) -> int | None:
+    return int(value) if isinstance(value, int) else None
+
+
 def _within_window(started_at: datetime, start: date | None, end: date | None) -> bool:
     day = started_at.date()
     if start is not None and day < start:
@@ -91,6 +103,11 @@ def _read_manifest(path: Path) -> MachineExperimentRun | None:
         return None
     if not isinstance(payload, dict):
         return None
+    if (
+        payload.get("schema") == "lynchpin.machine_experiment.template.v1"
+        or payload.get("template_status") is not None
+    ):
+        return None
     started_at = _as_utc(payload.get("started_at"))
     if started_at is None:
         return None
@@ -98,17 +115,25 @@ def _read_manifest(path: Path) -> MachineExperimentRun | None:
     git = _as_dict(payload.get("git"))
     return MachineExperimentRun(
         run_id=str(payload.get("run_id") or path.parent.name),
+        run_group_id=(
+            str(payload["run_group_id"])
+            if payload.get("run_group_id") is not None
+            else None
+        ),
         host=str(payload.get("host") or ""),
         workload=str(payload.get("workload") or ""),
         command=_as_tuple(payload.get("command")),
         cwd=str(payload["cwd"]) if payload.get("cwd") is not None else None,
         started_at=started_at,
         ended_at=_as_utc(payload.get("ended_at")),
+        monotonic_started_ns=_as_int(payload.get("monotonic_started_ns")),
+        monotonic_ended_ns=_as_int(payload.get("monotonic_ended_ns")),
         exit_status=(
             int(payload["exit_status"])
             if payload.get("exit_status") is not None
             else None
         ),
+        execution_outcome=_as_dict(payload.get("execution_outcome")),
         service_profile=(
             str(payload["service_profile"])
             if payload.get("service_profile") is not None
@@ -119,7 +144,13 @@ def _read_manifest(path: Path) -> MachineExperimentRun | None:
             if payload.get("cache_profile") is not None
             else None
         ),
+        measurement_context=_as_dict(payload.get("measurement_context")),
         planned_treatment=_as_dict(payload.get("planned_treatment")),
+        nix_internal_json_path=(
+            str(payload["nix_internal_json_path"])
+            if payload.get("nix_internal_json_path") is not None
+            else None
+        ),
         git_root=str(git["root"]) if git.get("root") is not None else None,
         git_head=str(git["head"]) if git.get("head") is not None else None,
         git_branch=str(git["branch"]) if git.get("branch") is not None else None,
@@ -142,7 +173,7 @@ def experiment_runs(
     if not base.exists():
         return
     runs: list[MachineExperimentRun] = []
-    for manifest in base.glob("*/manifest.json"):
+    for manifest in base.rglob("manifest.json"):
         run = _read_manifest(manifest)
         if run is None or not _within_window(run.started_at, start, end):
             continue

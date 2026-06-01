@@ -30,12 +30,55 @@ _WORK_OBSERVATION_COLUMNS = (
     "process_count_max", "resource_sample_count",
 )
 
+_WORK_OBSERVATION_STAGE_COLUMNS = (
+    "source", "source_id", "invocation_source_id", "stage_name", "started_at",
+    "duration_s", "success",
+)
+
+_WORK_OBSERVATION_TEST_RESULT_COLUMNS = (
+    "source", "source_id", "invocation_source_id", "test_name", "package",
+    "status", "duration_s", "attempt", "slot_name", "slot_wait_ms",
+    "cleanup_ms", "failure_type", "test_mode", "nats_context",
+)
+
 
 def promote_work_observations(
     conn: "duckdb.DuckDBPyConnection",
     *,
     refresh_id: str,
     rows: Iterable[Any],
+) -> int:
+    return _promote_work_observation_rows(
+        conn,
+        refresh_id=refresh_id,
+        rows=rows,
+        source="xtask_history",
+        work_kind="xtask_invocation",
+    )
+
+
+def promote_polylogue_devtools_observations(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+) -> int:
+    return _promote_work_observation_rows(
+        conn,
+        refresh_id=refresh_id,
+        rows=rows,
+        source=None,
+        work_kind=None,
+    )
+
+
+def _promote_work_observation_rows(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+    source: str | None,
+    work_kind: str | None,
 ) -> int:
     return promote_rows(
         conn,
@@ -44,7 +87,7 @@ def promote_work_observations(
         refresh_id=refresh_id,
         rows=rows,
         extractor=lambda r: (
-            "xtask_history", r.source_id, "xtask_invocation", r.project,
+            source or r.source, r.source_id, work_kind or r.work_kind, r.project,
             list(r.command), r.cwd, r.started_at, r.ended_at, r.duration_s,
             r.status, r.exit_code, r.host, r.git_commit, r.git_dirty,
             r.live_stage, r.args_json, r.cpu_usage_avg, r.memory_usage_max_mb,
@@ -63,6 +106,48 @@ def promote_work_observations(
             r.shm_used_max_mb, r.process_count_max, r.resource_sample_count,
         ),
         batch_size=10_000,
+    )
+
+
+def promote_work_observation_stages(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+) -> int:
+    return promote_rows(
+        conn,
+        table="work_observation_stage",
+        columns=_WORK_OBSERVATION_STAGE_COLUMNS,
+        refresh_id=refresh_id,
+        rows=rows,
+        extractor=lambda r: (
+            "xtask_history", r.source_id, r.invocation_source_id, r.stage_name,
+            r.started_at, r.duration_s, r.success,
+        ),
+        batch_size=10_000,
+    )
+
+
+def promote_work_observation_test_results(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+) -> int:
+    return promote_rows(
+        conn,
+        table="work_observation_test_result",
+        columns=_WORK_OBSERVATION_TEST_RESULT_COLUMNS,
+        refresh_id=refresh_id,
+        rows=rows,
+        extractor=lambda r: (
+            "xtask_history", r.source_id, r.invocation_source_id, r.test_name,
+            r.package, r.status, r.duration_s, r.attempt, r.slot_name,
+            r.slot_wait_ms, r.cleanup_ms, r.failure_type, r.test_mode,
+            r.nats_context,
+        ),
+        batch_size=50_000,
     )
 
 
@@ -107,4 +192,10 @@ def load_work_observations(
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-__all__ = ["load_work_observations", "promote_work_observations"]
+__all__ = [
+    "load_work_observations",
+    "promote_polylogue_devtools_observations",
+    "promote_work_observation_stages",
+    "promote_work_observation_test_results",
+    "promote_work_observations",
+]

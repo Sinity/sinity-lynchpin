@@ -55,6 +55,13 @@ class CommandPerformanceAnalysis:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _StateWindow:
+    started_at: datetime
+    ended_at: datetime
+    row: dict[str, Any]
+
+
 def analyze_command_performance(
     *,
     start: date,
@@ -108,7 +115,7 @@ def write_command_performance_analysis(
     return analysis
 
 
-def _command_window(command: AtuinCommand, states: list[dict[str, Any]]) -> CommandPerformanceWindow | None:
+def _command_window(command: AtuinCommand, states: list[_StateWindow]) -> CommandPerformanceWindow | None:
     duration = _duration_seconds(command)
     started_at = command.timestamp
     ended_at = started_at + timedelta(seconds=duration)
@@ -130,26 +137,35 @@ def _command_window(command: AtuinCommand, states: list[dict[str, Any]]) -> Comm
     )
 
 
-def _state_rows(payload: object) -> list[dict[str, Any]]:
+def _state_rows(payload: object) -> list[_StateWindow]:
     if not isinstance(payload, dict):
         return []
     rows = payload.get("windows")
     if not isinstance(rows, list):
         return []
-    return [row for row in rows if isinstance(row, dict) and _dt(row.get("started_at")) and _dt(row.get("ended_at"))]
+    result: list[_StateWindow] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        started_at = _dt(row.get("started_at"))
+        ended_at = _dt(row.get("ended_at"))
+        if started_at is None or ended_at is None:
+            continue
+        result.append(_StateWindow(started_at=started_at, ended_at=ended_at, row=row))
+    return sorted(result, key=lambda row: row.started_at)
 
 
-def _best_state(started_at: datetime, ended_at: datetime, states: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float]:
+def _best_state(started_at: datetime, ended_at: datetime, states: list[_StateWindow]) -> tuple[dict[str, Any] | None, float]:
     best: dict[str, Any] | None = None
     best_overlap = 0.0
-    for row in states:
-        state_start = _dt(row.get("started_at"))
-        state_end = _dt(row.get("ended_at"))
-        if state_start is None or state_end is None:
+    for state in states:
+        if state.started_at >= ended_at:
+            break
+        if state.ended_at <= started_at:
             continue
-        overlap = max(0.0, (min(ended_at, state_end) - max(started_at, state_start)).total_seconds())
+        overlap = max(0.0, (min(ended_at, state.ended_at) - max(started_at, state.started_at)).total_seconds())
         if overlap > best_overlap:
-            best = row
+            best = state.row
             best_overlap = overlap
     return best, best_overlap
 

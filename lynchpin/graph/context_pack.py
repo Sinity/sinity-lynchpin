@@ -794,6 +794,20 @@ def _render_machine_analysis_artifacts(
                 f"work={_format_mapping_counts(work_states)}"
             )
 
+    observations = artifacts.payloads.get("machine_work_observations.json")
+    if observations is not None:
+        daily = _artifact_rows(observations, "daily")
+        sinex_check = _artifact_rows(observations, "sinex_check_daily")
+        stages = _artifact_rows(observations, "stage_summaries")
+        tests = _artifact_rows(observations, "test_summaries")
+        if daily or stages or tests:
+            lines.append(
+                "- Work observations: "
+                f"{len(daily)} daily groups; "
+                f"sinex-check days={len(sinex_check)}; "
+                f"stages={len(stages)}; tests={len(tests)}"
+            )
+
     commands = artifacts.payloads.get("command_performance_windows.json")
     if commands is not None:
         tools = _artifact_rows(commands, "tools")
@@ -827,6 +841,69 @@ def _render_machine_analysis_artifacts(
             )
             lines.append(f"- Observational command deltas: {len(delta_rows)} matched cohorts; {rendered}")
 
+    candidates = artifacts.payloads.get("machine_attribution_candidates.json")
+    if candidates is not None:
+        candidate_rows = _artifact_rows(candidates, "candidates")
+        if candidate_rows:
+            frontier_count = candidates.get("pareto_frontier_count")
+            if not isinstance(frontier_count, int):
+                frontier_count = sum(1 for row in candidate_rows if row.get("pareto_frontier"))
+            validation_counts = _top_counts(row.get("validation_status") for row in candidate_rows)
+            family_counts = _top_counts(row.get("mechanism_family") for row in candidate_rows)
+            top = sorted(
+                candidate_rows,
+                key=lambda row: _row_float(row, "priority_score"),
+                reverse=True,
+            )[:3]
+            rendered = ", ".join(str(row.get("metric") or row.get("candidate_id")) for row in top)
+            lines.append(
+                "- Attribution candidates: "
+                f"{len(candidate_rows)} non-causal candidates; "
+                f"frontier={frontier_count}; "
+                f"validation={validation_counts}; "
+                f"families={family_counts}; "
+                f"top={rendered}"
+            )
+
+    feature_frames = artifacts.payloads.get("machine_analysis_feature_frames.json")
+    mining = artifacts.payloads.get("machine_mining.json")
+    dataset_diagnostics = artifacts.payloads.get("machine_dataset_diagnostics.json")
+    validation = artifacts.payloads.get("machine_validation_design.json")
+    matched = artifacts.payloads.get("machine_matched_designs.json")
+    comparisons = artifacts.payloads.get("machine_comparisons.json")
+    if any(payload is not None for payload in (feature_frames, mining, dataset_diagnostics, validation, matched, comparisons)):
+        feature_frame = feature_frames.get("frame") if isinstance(feature_frames, dict) and isinstance(feature_frames.get("frame"), dict) else {}
+        feature_audit = dataset_diagnostics.get("feature_audit") if isinstance(dataset_diagnostics, dict) and isinstance(dataset_diagnostics.get("feature_audit"), dict) else {}
+        mining_audit = dataset_diagnostics.get("mining_audit") if isinstance(dataset_diagnostics, dict) and isinstance(dataset_diagnostics.get("mining_audit"), dict) else {}
+        lines.append(
+            "- Dataset mining infra: "
+            f"feature_rows={_payload_count(feature_frame, 'row_count')}; "
+            f"feature_status={feature_audit.get('status', 'unknown')}; "
+            f"multiplicity={mining_audit.get('multiplicity_status', 'unknown')}; "
+            f"cohorts={_payload_count(mining, 'cohort_count')}; "
+            f"boundaries={_payload_count(validation, 'boundary_count')}; "
+            f"matched_designs={_payload_count(matched, 'design_count')}; "
+            f"contrasts={_payload_count(comparisons, 'contrast_count')}"
+        )
+
+    derivations = artifacts.payloads.get("machine_derivation_inventory.json")
+    plans = artifacts.payloads.get("machine_benchmark_plans.json")
+    bundle = artifacts.payloads.get("machine_benchmark_manifest_bundle.json")
+    preflight = artifacts.payloads.get("machine_benchmark_preflight.json")
+    queue = artifacts.payloads.get("machine_benchmark_execution_queue.json")
+    manifests = artifacts.payloads.get("machine_experiment_manifest_diagnostics.json")
+    if derivations is not None or plans is not None or bundle is not None or preflight is not None or manifests is not None:
+        lines.append(
+            "- Controlled benchmark infra: "
+            f"derivations={_payload_count(derivations, 'ready_target_count')}; "
+            f"ready_plans={_payload_count(plans, 'ready_plan_count')}; "
+            f"run_templates={_payload_count(bundle, 'run_template_count')}; "
+            f"preflight_ready={_payload_count(preflight, 'ready_run_count')}; "
+            f"queue_ready={_payload_count(queue, 'ready_group_count')}/{_payload_count(queue, 'queue_count')}; "
+            f"executed_valid={_payload_count(manifests, 'controlled_benchmark_valid_count')}; "
+            f"legacy_observational={_payload_count(manifests, 'legacy_observational_count')}"
+        )
+
     devshell = artifacts.payloads.get("devshell_performance.json")
     if devshell is not None:
         summaries = _artifact_rows(devshell, "summaries")
@@ -840,10 +917,17 @@ def _render_machine_analysis_artifacts(
 
     attribution = artifacts.payloads.get("machine_below_attribution.json")
     if attribution is not None:
-        unattributed = attribution.get("unattributed_pressure_episode_count")
+        bounded = attribution.get("attributed_episode_count")
+        workload = attribution.get("workload_resource_attributed_pressure_episode_count")
+        residual = attribution.get("residual_unattributed_pressure_episode_count")
         pressure = attribution.get("pressure_episode_count")
         if pressure is not None:
-            lines.append(f"- Below attribution: {unattributed}/{pressure} pressure episodes lack bounded below overlap")
+            lines.append(
+                "- Process attribution: "
+                f"bounded_below={bounded or 0}/{pressure}; "
+                f"workload_resource={workload or 0}/{pressure}; "
+                f"residual_unattributed={residual if residual is not None else attribution.get('unattributed_pressure_episode_count')}"
+            )
 
     baselines = artifacts.payloads.get("machine_observational_baselines.json")
     if baselines is not None:
@@ -853,10 +937,109 @@ def _render_machine_analysis_artifacts(
 
     claims = artifacts.payloads.get("machine_experiment_claims.json")
     if claims is not None:
+        estimate_rows = _artifact_rows(claims, "effect_estimates")
+        estimate_text = _machine_effect_estimate_summary(estimate_rows)
         lines.append(
             "- Experiment claim packs: "
             f"{claims.get('controlled_claim_count', 0)} controlled / "
             f"{claims.get('observational_claim_count', 0)} observational"
+            f"{'; ' + estimate_text if estimate_text else ''}"
+        )
+
+    attribution_claims = artifacts.payloads.get("machine_attribution_claims.json")
+    if attribution_claims is not None:
+        by_support = attribution_claims.get("by_support_level")
+        support_text = _format_mapping_counts(by_support) if isinstance(by_support, dict) else ""
+        lines.append(
+            "- Attribution claim ledger: "
+            f"{attribution_claims.get('claim_count', 0)} claims"
+            f"{'; ' + support_text if support_text else ''}"
+        )
+
+    mechanisms = artifacts.payloads.get("machine_mechanism_hypotheses.json")
+    if mechanisms is not None:
+        rows = _artifact_rows(mechanisms, "mechanisms")
+        families = _top_counts(row.get("mechanism_family") for row in rows)
+        lines.append(
+            "- Mechanism hypotheses: "
+            f"{mechanisms.get('mechanism_count', len(rows))} families"
+            f"{'; ' + families if families else ''}"
+        )
+
+    instrumentation_gaps = artifacts.payloads.get("machine_instrumentation_gaps.json")
+    if instrumentation_gaps is not None:
+        by_source = instrumentation_gaps.get("by_missing_source")
+        source_text = _format_mapping_counts(by_source) if isinstance(by_source, dict) else ""
+        lines.append(
+            "- Instrumentation gaps: "
+            f"{instrumentation_gaps.get('gap_count', 0)} gaps"
+            f"{'; ' + source_text if source_text else ''}"
+        )
+
+    negative_controls = artifacts.payloads.get("machine_negative_controls.json")
+    if negative_controls is not None:
+        by_status = negative_controls.get("by_status")
+        status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
+        lines.append(
+            "- Negative controls: "
+            f"{negative_controls.get('control_count', 0)} checks"
+            f"{'; ' + status_text if status_text else ''}"
+        )
+
+    assumption_checks = artifacts.payloads.get("machine_assumption_checks.json")
+    if assumption_checks is not None:
+        by_status = assumption_checks.get("by_status")
+        status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
+        lines.append(
+            "- Assumption checks: "
+            f"{assumption_checks.get('check_count', 0)} checks"
+            f"{'; ' + status_text if status_text else ''}"
+        )
+
+    calibration = artifacts.payloads.get("machine_calibration_fixtures.json")
+    if calibration is not None:
+        by_status = calibration.get("by_status")
+        status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
+        lines.append(
+            "- Calibration fixtures: "
+            f"{calibration.get('fixture_count', 0)} fixtures"
+            f"{'; ' + status_text if status_text else ''}"
+        )
+
+    measurement = artifacts.payloads.get("machine_measurement_system.json")
+    if measurement is not None:
+        by_status = measurement.get("by_status")
+        status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
+        lines.append(
+            "- Measurement system: "
+            f"{measurement.get('check_count', 0)} checks"
+            f"{'; ' + status_text if status_text else ''}"
+        )
+
+    support = artifacts.payloads.get("machine_support_assessment.json")
+    if support is not None:
+        assessments = _artifact_rows(support, "assessments")
+        support_levels = _top_counts(row.get("support_level") for row in assessments)
+        refusal_reasons = _top_counts(
+            reason
+            for row in assessments
+            for reason in _row_list(row, "refusal_reasons")[:1]
+        )
+        next_actions = _top_counts(
+            gap.get("next_action")
+            for row in assessments
+            for gap in _row_list(row, "instrumentation_gaps")
+            if isinstance(gap, dict)
+        )
+        lines.append(
+            "- Causal support gate: "
+            f"{support.get('refusal_count', 0)}/{support.get('assessment_count', 0)} refused; "
+            f"support={support_levels}; "
+            f"top_refusal={refusal_reasons}; "
+            f"next={next_actions}; "
+            f"ready_plans={support.get('ready_plan_count', 0)}; "
+            f"run_templates={support.get('run_template_count', 0)}; "
+            f"controlled_claims={support.get('controlled_claim_count', 0)}"
         )
 
     readiness = artifacts.payloads.get("machine_analysis_readiness.json")
@@ -865,6 +1048,16 @@ def _render_machine_analysis_artifacts(
         if dimensions:
             statuses = _top_counts(row.get("status") for row in dimensions)
             lines.append(f"- Machine analysis readiness: {statuses}")
+
+    refresh_report = artifacts.payloads.get("machine_analysis_refresh_report.json")
+    if refresh_report is not None:
+        by_status = refresh_report.get("by_status")
+        status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
+        lines.append(
+            "- Machine refresh report: "
+            f"{refresh_report.get('step_count', 0)} steps"
+            f"{'; ' + status_text if status_text else ''}"
+        )
 
     if not lines:
         return ""
@@ -877,13 +1070,36 @@ _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_episode_analysis.json",
     "machine_context_windows.json",
     "machine_work_state_windows.json",
+    "machine_work_observations.json",
+    "machine_analysis_feature_frames.json",
+    "machine_mining.json",
+    "machine_dataset_diagnostics.json",
+    "machine_validation_design.json",
+    "machine_matched_designs.json",
+    "machine_comparisons.json",
     "command_performance_windows.json",
     "machine_observational_deltas.json",
+    "machine_attribution_candidates.json",
+    "machine_derivation_inventory.json",
+    "machine_benchmark_plans.json",
+    "machine_benchmark_manifest_bundle.json",
+    "machine_benchmark_preflight.json",
+    "machine_benchmark_execution_queue.json",
+    "machine_experiment_manifest_diagnostics.json",
     "devshell_performance.json",
     "machine_below_attribution.json",
     "machine_observational_baselines.json",
     "machine_experiment_claims.json",
+    "machine_attribution_claims.json",
+    "machine_mechanism_hypotheses.json",
+    "machine_instrumentation_gaps.json",
+    "machine_negative_controls.json",
+    "machine_assumption_checks.json",
+    "machine_calibration_fixtures.json",
+    "machine_measurement_system.json",
+    "machine_support_assessment.json",
     "machine_analysis_readiness.json",
+    "machine_analysis_refresh_report.json",
 )
 
 
@@ -935,6 +1151,13 @@ def _artifact_rows(payload: object, key: str) -> list[dict[str, object]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _payload_count(payload: object, key: str) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    value = payload.get(key)
+    return int(value) if isinstance(value, (int, float, str)) and str(value).strip() else 0
 
 
 def _row_projects(row: dict[str, object]) -> set[str]:
@@ -993,6 +1216,25 @@ def _format_mapping_counts(mapping: Mapping[str, object], *, limit: int = 4) -> 
     if not counts:
         return "none"
     return ", ".join(f"{key}×{count}" for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit])
+
+
+def _machine_effect_estimate_summary(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return ""
+    top = max(rows, key=lambda row: abs(_row_float(row, "delta")))
+    pieces = [
+        f"estimates={len(rows)}",
+        f"top={top.get('run_group_id') or 'unknown'}",
+        f"estimator={top.get('estimator') or 'unknown'}",
+        f"delta={top.get('delta')}",
+    ]
+    if top.get("ci_low") is not None and top.get("ci_high") is not None:
+        pieces.append(f"ci95=[{top.get('ci_low')}, {top.get('ci_high')}]")
+    if top.get("p_value") is not None:
+        pieces.append(f"p={top.get('p_value')}")
+    if top.get("p_value_method"):
+        pieces.append(f"p_method={top.get('p_value_method')}")
+    return "; ".join(pieces)
 
 
 def _pack_caveats(*, evidence_pack: CurrentStateEvidencePack, graph: EvidenceGraph) -> tuple[EvidenceCaveat, ...]:

@@ -75,14 +75,14 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
         log.info('evidence_graph: loading base sources start=%s end=%s github_frontier=%s', start, end, include_github_frontier)
         evidence_sources.add_base_source_nodes(nodes, edges, start=start, end=end, selected=selected, mode=mode, include_spotify=False)
     log.info('evidence_graph: base graph nodes=%d edges=%d', len(nodes), len(edges))
-    log.info('evidence_graph: adding machine analysis nodes')
-    add_machine_analysis_nodes(nodes, edges, start=start, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
-    log.info('evidence_graph: after machine analysis nodes=%d edges=%d', len(nodes), len(edges))
     now = datetime.now().astimezone()
     log.info('evidence_graph: adding analysis artifacts')
     evidence_analysis.add_analysis_artifacts(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
     log.info('evidence_graph: adding analysis claims')
     evidence_analysis.add_analysis_claims(nodes, edges, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+    log.info('evidence_graph: adding machine analysis nodes')
+    add_machine_analysis_nodes(nodes, edges, start=start, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
+    log.info('evidence_graph: after machine analysis nodes=%d edges=%d', len(nodes), len(edges))
     return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
 
 def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime, promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:

@@ -491,6 +491,8 @@ def _network_rows(conn: Any, *, start: date | None, end: date | None) -> list[di
 
 def _service_rows(conn: Any, *, start: date | None, end: date | None) -> list[dict[str, Any]]:
     where, params = _window_clause(start, end)
+    failed_clause = "(active_state = 'failed' OR sub_state = 'failed')"
+    where = f"{where} AND {failed_clause}" if where else f"WHERE {failed_clause}"
     service_rows = latest_machine_rows("machine_service_state")
     rows = conn.execute(
         f"""

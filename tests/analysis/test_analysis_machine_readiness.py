@@ -88,8 +88,9 @@ def test_machine_readiness_limits_sparse_below_attribution(monkeypatch, tmp_path
     dimensions = {row.dimension: row for row in analysis.dimensions}
     below = dimensions["below_process_attribution"]
     assert below.status == "limited"
-    assert "attributed_pressure_episodes=1/10" in below.evidence
-    assert "most pressure episodes lack bounded below process/cgroup attribution" in below.caveats
+    assert "bounded_below_attributed_pressure_episodes=1/10" in below.evidence
+    assert "combined_attributed_pressure_episodes=1/10" in below.evidence
+    assert "most pressure episodes lack bounded below or workload resource attribution" in below.caveats
 
 
 def test_machine_readiness_marks_missing_controlled_claims(monkeypatch, tmp_path):

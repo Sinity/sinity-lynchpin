@@ -103,6 +103,45 @@ def file_hotspots(
 
 
 @app.tool()
+def code_history_claims(
+    start: str,
+    end: str,
+    project: str | None = None,
+    top_n: int = 25,
+) -> list[dict[str, Any]]:
+    """Observational git-history claims: hotspots, broad changes, and rework pressure."""
+    from datetime import date
+
+    from lynchpin.analysis.code_history_claims import (
+        code_history_claims as _code_history_claims,
+    )
+
+    rows = _code_history_claims(
+        start=date.fromisoformat(start),
+        end=date.fromisoformat(end),
+        project=project,
+        top_n=min(max(top_n, 1), 200),
+    )
+    return [
+        {
+            "claim_id": row.claim_id,
+            "claim_type": row.claim_type,
+            "project": row.project,
+            "date": _json_safe(row.date),
+            "support_level": row.support_level,
+            "confidence": row.confidence,
+            "score": row.score,
+            "summary": row.summary,
+            "source_ids": list(row.source_ids),
+            "relation_ids": list(row.relation_ids),
+            "caveats": list(row.caveats),
+            "payload": _json_safe(row.payload),
+        }
+        for row in rows
+    ]
+
+
+@app.tool()
 def conventional_commits(
     project: str | None = None,
     refresh_id: str | None = None,

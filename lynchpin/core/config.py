@@ -56,6 +56,9 @@ class LynchpinConfig:
     polylogue_root: Path
     polylogue_archive_root: Path
     polylogue_db: Path
+    polylogue_project_root: Path
+    polylogue_devtools_xtask_jsonl: Path
+    polylogue_devtools_logs_dir: Path
     fbmessenger_gdpr_root: Path
     fbmessenger_db: Path
     asciinema_root: Path
@@ -100,6 +103,10 @@ class LynchpinConfig:
                 self.polylogue_db.exists()
                 or self.polylogue_root.exists()
                 or self.polylogue_archive_root.exists()
+            ),
+            "polylogue_devtools": (
+                self.polylogue_devtools_xtask_jsonl.exists()
+                or self.polylogue_devtools_logs_dir.exists()
             ),
             "fbmessenger": self.fbmessenger_gdpr_root.exists() or Path(self.fbmessenger_db).exists(),
             "asciinema": self.asciinema_root.exists(),
@@ -208,6 +215,18 @@ class LynchpinConfig:
                 os.environ.get("POLYLOGUE_DB_PATH", xdg_data_home / "polylogue" / "polylogue.db"),
             )
         ).expanduser()
+        polylogue_project_root = Path(os.environ.get(
+            "LYNCHPIN_POLYLOGUE_PROJECT_ROOT",
+            os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue"),
+        )).expanduser()
+        polylogue_devtools_xtask_jsonl = Path(os.environ.get(
+            "LYNCHPIN_POLYLOGUE_DEVTOOLS_XTASK_JSONL",
+            polylogue_project_root / ".agent/xtask/tasks.jsonl",
+        )).expanduser()
+        polylogue_devtools_logs_dir = Path(os.environ.get(
+            "LYNCHPIN_POLYLOGUE_DEVTOOLS_LOGS_DIR",
+            polylogue_project_root / ".local/logs",
+        )).expanduser()
 
         fbmessenger_gdpr_root = Path(os.environ.get(
             "LYNCHPIN_FBMESSENGER_GDPR", exports_root / "comms/facebook-messenger/processed/gdpr"
@@ -312,6 +331,9 @@ class LynchpinConfig:
             spotify_root=spotify_root, polylogue_root=polylogue_root,
             polylogue_archive_root=polylogue_archive_root,
             polylogue_db=polylogue_db,
+            polylogue_project_root=polylogue_project_root,
+            polylogue_devtools_xtask_jsonl=polylogue_devtools_xtask_jsonl,
+            polylogue_devtools_logs_dir=polylogue_devtools_logs_dir,
             fbmessenger_gdpr_root=fbmessenger_gdpr_root, fbmessenger_db=fbmessenger_db,
             asciinema_root=asciinema_root, audio_root=audio_root,
             screenshot_root=screenshot_root, keylog_root=keylog_root,

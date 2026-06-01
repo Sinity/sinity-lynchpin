@@ -6,10 +6,6 @@ date coverage, materialization status, and known caveats. Call this before
 designing a new analysis or when unsure whether a question can be answered
 through current MCP exposure.
 
-This is a per-source view; ``mcp_capability_map`` (in substrate.py) is a
-per-tool view of analytic MCP tools and their backing contracts. They are
-complementary.
-
 NOTE: do NOT add ``from __future__ import annotations`` here.
 FastMCP inspects annotations at decoration time and cannot handle postponed
 string annotations for tool parameters.
@@ -45,15 +41,21 @@ def mcp_capability_matrix() -> list[dict[str, Any]]:
     decide whether to query MCP, drop to ``query_substrate``, or shell out to
     raw CLI.
     """
-    from lynchpin.core.source_contracts import SOURCE_CONTRACTS
+    from lynchpin.core.config import get_config
+    from lynchpin.core.source_contracts import SOURCE_CONTRACT_ALIASES, SOURCE_CONTRACTS
     from lynchpin.materialization import audit_materialization
 
     audit_by_name = {row.name: row for row in audit_materialization()}
+    available_sources = get_config().available_sources()
+    aliases_by_contract: dict[str, list[str]] = {}
+    for source_key, contract_name in SOURCE_CONTRACT_ALIASES.items():
+        aliases_by_contract.setdefault(contract_name, []).append(source_key)
 
     rows: list[dict[str, Any]] = []
     for contract in SOURCE_CONTRACTS:
         name = contract.name
         audit = audit_by_name.get(name)
+        source_keys = [name, *sorted(aliases_by_contract.get(name, []))]
         materialized_paths = (
             [str(p) for p in audit.materialized_paths] if audit else []
         )
@@ -70,6 +72,8 @@ def mcp_capability_matrix() -> list[dict[str, Any]]:
         rows.append(
             {
                 "source": name,
+                "source_keys": source_keys,
+                "source_available": any(available_sources.get(key, False) for key in source_keys),
                 "raw_authority": raw_authority,
                 "materialized_product": materialized_product,
                 "materialized_paths": materialized_paths,

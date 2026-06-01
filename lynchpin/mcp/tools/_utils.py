@@ -81,6 +81,9 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
         "evidence_node": "evidence_graph",
         "evidence_edge": "evidence_graph",
         "ai_work_event": "ai_attribution",
+        "work_observation": "work_observations",
+        "work_observation_stage": "work_observations",
+        "work_observation_test_result": "work_observations",
     }
     source_name = table_to_source.get(table, table)
 
@@ -156,7 +159,7 @@ def require_best_refresh_id(conn: Any, table: str, *, tool: str) -> str:
         raise RuntimeError(
             f"{tool} requires substrate table {table!r}, but no promoted rows exist. "
             "Run `python -m lynchpin.cli.materialize --all --promote --start YYYY-MM-DD --end YYYY-MM-DD` "
-            "and inspect `contract_status` / `substrate_readiness_report`."
+            "and inspect `materialization_status` / `substrate_readiness_report`."
         )
     return refresh_id
 

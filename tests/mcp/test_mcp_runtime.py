@@ -54,7 +54,9 @@ def test_mcp_capability_matrix_reports_contract_capabilities_without_stale_scori
     rows = {row["source"]: row for row in mcp_capability_matrix()}
 
     takeout = rows["google_takeout"]
+    assert "gmail_takeout" in takeout["source_keys"]
     assert "google_takeout_events" in takeout["mcp_tools"]
+    assert "google_takeout_retrospective" in takeout["mcp_tools"]
     assert "google_activity_day" in takeout["graph_node_kinds"]
     assert "freshness" not in takeout
     assert "last_date" in takeout["date_bounds"]
@@ -62,3 +64,9 @@ def test_mcp_capability_matrix_reports_contract_capabilities_without_stale_scori
     terminal = rows["atuin"]
     assert terminal["collection_model"] == "continuous"
     assert "terminal_daily" in terminal["mcp_tools"]
+
+    messenger = rows["facebook_messenger"]
+    assert "fbmessenger" in messenger["source_keys"]
+
+    raw_log = rows["raw_log"]
+    assert raw_log["graph_node_kinds"] == ["raw_log"]

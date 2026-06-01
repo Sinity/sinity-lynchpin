@@ -46,6 +46,40 @@ def claims_for_artifact(
     return extractor(artifact, payload, selected=selected)
 
 
+def _machine_attribution_claims(
+    artifact: AnalysisArtifact,
+    payload: dict[str, Any],
+    *,
+    selected: set[str],
+) -> tuple[AnalysisClaim, ...]:
+    claims = []
+    rows = payload.get("claims")
+    if not isinstance(rows, list):
+        return ()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        project = str(row.get("project") or "")
+        if not project:
+            project = "sinity-lynchpin"
+        if selected and project not in selected:
+            continue
+        confidence = row.get("confidence")
+        claims.append(
+            AnalysisClaim(
+                id=str(row.get("claim_id") or f"machine-attribution:{len(claims)}"),
+                artifact_name=artifact.name,
+                claim_type=str(row.get("claim_type") or "machine_attribution"),
+                project=project,
+                summary=str(row.get("summary") or "machine attribution claim"),
+                payload=dict(row.get("payload") or {}),
+                confidence=float(confidence) if isinstance(confidence, (int, float)) else 0.0,
+                generated_at=artifact.generated_at,
+            )
+        )
+    return tuple(claims)
+
+
 _CLAIM_EXTRACTORS: dict[str, ClaimExtractor] = {
     "active_project_snapshot.json": _active_project_snapshot_claims,
     "active_work_packages.json": _active_work_package_claims,
@@ -68,4 +102,5 @@ _CLAIM_EXTRACTORS: dict[str, ClaimExtractor] = {
     "active_ci_health.json": _active_ci_health_claims,
     "active_ai_attribution.json": _active_ai_attribution_claims,
     "cross_project_metrics.json": _cross_project_metrics_claims,
+    "machine_attribution_claims.json": _machine_attribution_claims,
 }

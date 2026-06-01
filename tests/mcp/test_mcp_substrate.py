@@ -273,17 +273,26 @@ def test_promotion_runs_and_analysis_claim_tools(
             ],
         )
 
-    from lynchpin.mcp.tools.substrate import analysis_claims, claim_evidence, promotion_runs, substrate_run_steps
+    from lynchpin.mcp.tools.substrate import (
+        analysis_claim_calibration,
+        analysis_claims,
+        claim_evidence,
+        promotion_runs,
+        substrate_run_steps,
+    )
 
     runs = promotion_runs(refresh_id="rid-claims")
     steps = substrate_run_steps(refresh_id="rid-claims")
     claims = analysis_claims(refresh_id="rid-claims")
+    calibration = analysis_claim_calibration(refresh_id="rid-claims")
     evidence = claim_evidence("claim:fixture", refresh_id="rid-claims")
 
     assert runs[0]["status"] == "ok"
     assert steps[0]["step"] == "analysis_claims"
     assert claims[0]["summary"] == "fixture claim"
     assert claims[0]["caveats"] == ["fixture caveat"]
+    assert calibration["claim_count"] == 1
+    assert calibration["issue_counts"]["missing_evidence_ids"] == 1
     assert evidence["claim_id"] == "claim:fixture"
 
 
@@ -326,3 +335,109 @@ def test_readiness_report_after_successful_promote(tmp_path: Path, monkeypatch: 
     counts = result["summary"]
     total = counts["ok"] + counts["empty"] + counts["unavailable"] + counts["error"]
     assert total == len(result["sources"])
+
+
+def test_machine_work_observation_tools_read_promoted_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.substrate.connection import connect
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO work_observation (
+                source, source_id, work_kind, project, command, started_at,
+                ended_at, duration_s, status, host, refresh_id
+            )
+            VALUES (
+                'xtask', 'xtask:live:1', 'xtask_invocation', 'sinex',
+                ['check'], TIMESTAMPTZ '2026-05-31 12:00:00+00',
+                TIMESTAMPTZ '2026-05-31 12:02:00+00', 120.0, 'success',
+                'sinnix-prime', 'r1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO work_observation_stage (
+                source, source_id, invocation_source_id, stage_name,
+                started_at, duration_s, success, refresh_id
+            )
+            VALUES (
+                'xtask', 'xtask:live:stage:1', 'xtask:live:1', 'clippy',
+                TIMESTAMPTZ '2026-05-31 12:00:00+00', 42.0, true, 'r1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO work_observation_stage (
+                source, source_id, invocation_source_id, stage_name,
+                started_at, duration_s, success, refresh_id
+            )
+            VALUES (
+                'xtask', 'xtask:live:stage:2', 'xtask:live:1', 'compile',
+                TIMESTAMPTZ '2026-05-31 12:01:00+00', 84.0, false, 'r1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO work_observation_test_result (
+                source, source_id, invocation_source_id, test_name, package,
+                status, duration_s, refresh_id
+            )
+            VALUES (
+                'xtask', 'xtask:live:test:1', 'xtask:live:1',
+                'pkg::test_slow', 'pkg', 'pass', 3.5, 'r1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO work_observation_test_result (
+                source, source_id, invocation_source_id, test_name, package,
+                status, duration_s, refresh_id
+            )
+            VALUES (
+                'xtask', 'xtask:live:test:2', 'xtask:live:1',
+                'pkg::test_fail', 'pkg', 'fail', 4.5, 'r1'
+            )
+            """
+        )
+
+    from lynchpin.mcp.tools.machine import (
+        machine_work_observation_daily,
+        machine_work_slow_tests,
+        machine_work_stage_daily,
+        machine_work_failures,
+        machine_work_stage_summary,
+        machine_work_test_summary,
+    )
+
+    daily = machine_work_observation_daily(project="sinex", command_contains="check")
+    assert daily["summary"]["row_count"] == 1
+    assert daily["rows"][0]["observation_count"] == 1
+    assert daily["rows"][0]["median_duration_s"] == 120.0
+
+    stages = machine_work_stage_summary(stage_name="clippy")
+    assert stages["rows"][0]["stage_name"] == "clippy"
+    assert stages["rows"][0]["median_duration_s"] == 42.0
+
+    tests = machine_work_test_summary(package="pkg")
+    assert tests["rows"][0]["package"] == "pkg"
+    assert {row["status"] for row in tests["rows"]} == {"pass", "fail"}
+
+    slow_tests = machine_work_slow_tests(package="pkg", project="sinex")
+    assert slow_tests["rows"][0]["test_name"] == "pkg::test_fail"
+    assert slow_tests["rows"][0]["duration_s"] == 4.5
+
+    stage_daily = machine_work_stage_daily(stage_name="compile", project="sinex")
+    assert stage_daily["rows"][0]["stage_name"] == "compile"
+    assert stage_daily["rows"][0]["success_count"] == 0
+
+    failures = machine_work_failures(project="sinex", package="pkg")
+    assert failures["rows"][0]["failure_kind"] == "test"
+    assert failures["rows"][0]["source_id"] == "xtask:live:test:2"

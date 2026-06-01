@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import sqlite3
 
 import pytest
 
@@ -12,6 +13,7 @@ from lynchpin.sources.polylogue import PolylogueReadiness
 @pytest.fixture(autouse=True)
 def _empty_observation_contract(monkeypatch):
     monkeypatch.setattr("lynchpin.graph.source_readiness.source_observations", lambda: ())
+    monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_paths", lambda: ())
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.coverage_report",
         lambda *, start, end: CoverageReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
@@ -125,6 +127,34 @@ def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
     rendered = render_source_readiness(report)
     assert "Source" in rendered
     assert "polylogue" in rendered
+
+
+def test_xtask_source_readiness_summarizes_ledgers(monkeypatch, tmp_path):
+    db = tmp_path / "xtask-history.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE invocations (started_at TEXT)")
+        conn.execute("CREATE TABLE stage_timings (id INTEGER)")
+        conn.execute("CREATE TABLE test_results (id INTEGER)")
+        conn.execute("INSERT INTO invocations VALUES ('2026-05-30T10:00:00+00:00')")
+        conn.execute("INSERT INTO invocations VALUES ('2026-05-31T10:00:00+00:00')")
+        conn.execute("INSERT INTO stage_timings VALUES (1)")
+        conn.execute("INSERT INTO test_results VALUES (1)")
+        conn.execute("INSERT INTO test_results VALUES (2)")
+
+    monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_paths", lambda: (("live", db),))
+
+    from lynchpin.graph.source_readiness import _xtask_history_source
+
+    readiness = _xtask_history_source()
+
+    assert readiness.source == "xtask_history"
+    assert readiness.status == "available"
+    assert readiness.count == 2
+    assert readiness.first_date == date(2026, 5, 30)
+    assert readiness.last_date == date(2026, 5, 31)
+    assert "2 stages" not in readiness.reason
+    assert "1 stages" in readiness.reason
+    assert "2 test results" in readiness.reason
 
 
 def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):

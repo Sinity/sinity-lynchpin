@@ -199,11 +199,15 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     (analysis_root / "machine_below_attribution.json").write_text(
-        '{"pressure_episode_count":3,"unattributed_pressure_episode_count":2}',
+        '{"pressure_episode_count":3,"attributed_episode_count":0,"workload_resource_attributed_pressure_episode_count":1,"residual_unattributed_pressure_episode_count":2}',
         encoding="utf-8",
     )
     (analysis_root / "machine_work_state_windows.json").write_text(
         '{"window_count":2,"pressure_state_counts":{"io_pressure":1,"quiet":1},"work_state_counts":{"test_workload":1,"devshell_activation":1}}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_work_observations.json").write_text(
+        '{"daily":[{"date":"2026-05-01","project":"sinity-lynchpin","command":["pytest"],"observation_count":1}],"sinex_check_daily":[],"stage_summaries":[{"stage_name":"pytest"}],"test_summaries":[{"package":"lynchpin"}]}',
         encoding="utf-8",
     )
     (analysis_root / "command_performance_windows.json").write_text(
@@ -212,6 +216,58 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     )
     (analysis_root / "machine_observational_deltas.json").write_text(
         '{"deltas":[{"tool":"pytest","work_state":"test_workload","pressure_state":"io_pressure","median_delta_seconds":4.2}]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_attribution_candidates.json").write_text(
+        '{"pareto_frontier_count":1,"pareto_frontier_ids":["c1"],"candidates":[{"candidate_id":"c1","metric":"command.pytest.duration_seconds","mechanism_family":"stage_regression_or_workload_mix","priority_score":8.4,"validation_status":"design_ready","pareto_frontier":true}]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_analysis_feature_frames.json").write_text(
+        '{"frame":{"row_count":3525}}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_mining.json").write_text(
+        '{"cohort_count":48}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_dataset_diagnostics.json").write_text(
+        '{"feature_audit":{"status":"ready_for_mining"},"mining_audit":{"multiplicity_status":"registered"}}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_validation_design.json").write_text(
+        '{"boundary_count":12}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_matched_designs.json").write_text(
+        '{"design_count":9}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_comparisons.json").write_text(
+        '{"contrast_count":31}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_derivation_inventory.json").write_text(
+        '{"ready_target_count":7,"targets":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_plans.json").write_text(
+        '{"ready_plan_count":10,"plans":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_manifest_bundle.json").write_text(
+        '{"run_template_count":120,"groups":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_preflight.json").write_text(
+        '{"ready_run_count":120,"run_count":120}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_execution_queue.json").write_text(
+        '{"queue_count":10,"ready_group_count":10,"blocked_group_count":0,"run_template_count":120,"ready_run_count":120}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_experiment_manifest_diagnostics.json").write_text(
+        '{"controlled_benchmark_valid_count":0,"legacy_observational_count":55,"diagnostics":[]}',
         encoding="utf-8",
     )
     (analysis_root / "devshell_performance.json").write_text(
@@ -223,11 +279,47 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     (analysis_root / "machine_experiment_claims.json").write_text(
-        '{"controlled_claim_count":0,"observational_claim_count":4}',
+        '{"controlled_claim_count":0,"observational_claim_count":4,"effect_estimates":[{"run_group_id":"grp1","estimator":"stratified_bootstrap_mean_delta","delta":-2.5,"ci_low":-4.0,"ci_high":-1.0,"p_value":0.125,"p_value_method":"exact_stratified_label_permutation_two_sided"}]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_attribution_claims.json").write_text(
+        '{"claim_count":25,"by_support_level":{"insufficient":25},"claims":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_mechanism_hypotheses.json").write_text(
+        '{"mechanism_count":2,"mechanisms":[{"mechanism_family":"resource_contention"},{"mechanism_family":"stage_regression_or_workload_mix"}]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_instrumentation_gaps.json").write_text(
+        '{"gap_count":3,"by_missing_source":{"controlled_benchmark_run":2,"nix_internal_json":1},"gaps":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_negative_controls.json").write_text(
+        '{"control_count":8,"by_status":{"passed":6,"failed":2},"controls":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_assumption_checks.json").write_text(
+        '{"check_count":25,"by_status":{"failed":25},"checks":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_calibration_fixtures.json").write_text(
+        '{"fixture_count":8,"by_status":{"passed":8},"fixtures":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_measurement_system.json").write_text(
+        '{"check_count":5,"by_status":{"passed":3,"untestable":2},"checks":[]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_support_assessment.json").write_text(
+        '{"assessment_count":25,"refusal_count":13,"natural_experiment_support_count":12,"ready_plan_count":10,"run_template_count":120,"controlled_claim_count":0,"assessments":[{"claim_id":"c1","support_level":"insufficient","refusal_reasons":["missing controlled benchmark run"],"instrumentation_gaps":[{"missing_source":"controlled_benchmark_run","next_action":"execute the approved manifest and promote run logs/telemetry"}]},{"claim_id":"c2","support_level":"natural_experiment","refusal_reasons":[],"instrumentation_gaps":[]}]}',
         encoding="utf-8",
     )
     (analysis_root / "machine_analysis_readiness.json").write_text(
         '{"dimensions":[{"dimension":"continuous_machine_telemetry","status":"stable"},{"dimension":"controlled_benchmark_claims","status":"missing"}]}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_analysis_refresh_report.json").write_text(
+        '{"step_count":31,"by_status":{"success":31},"steps":[]}',
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -241,11 +333,26 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Episodes in window: 1" in rendered
     assert "Work windows with machine episodes: 1/1" in rendered
     assert "Work-state segmentation: 2 windows" in rendered
+    assert "Work observations: 1 daily groups" in rendered
+    assert "Process attribution: bounded_below=0/3; workload_resource=1/3; residual_unattributed=2" in rendered
     assert "Command performance: 3 commands" in rendered
     assert "Observational command deltas: 1 matched cohorts" in rendered
+    assert "Attribution candidates: 1 non-causal candidates; frontier=1; validation=design_ready×1; families=stage_regression_or_workload_mix×1; top=command.pytest.duration_seconds" in rendered
+    assert "Dataset mining infra: feature_rows=3525; feature_status=ready_for_mining; multiplicity=registered; cohorts=48; boundaries=12; matched_designs=9; contrasts=31" in rendered
+    assert "Controlled benchmark infra: derivations=7; ready_plans=10; run_templates=120; preflight_ready=120; queue_ready=10/10; executed_valid=0; legacy_observational=55" in rendered
     assert "Devshell/Nix performance: 2 commands" in rendered
     assert "0 controlled / 4 observational" in rendered
+    assert "estimates=1; top=grp1; estimator=stratified_bootstrap_mean_delta; delta=-2.5; ci95=[-4.0, -1.0]; p=0.125; p_method=exact_stratified_label_permutation_two_sided" in rendered
+    assert "Attribution claim ledger: 25 claims; insufficient×25" in rendered
+    assert "Mechanism hypotheses: 2 families; resource_contention×1, stage_regression_or_workload_mix×1" in rendered
+    assert "Instrumentation gaps: 3 gaps; controlled_benchmark_run×2, nix_internal_json×1" in rendered
+    assert "Negative controls: 8 checks; passed×6, failed×2" in rendered
+    assert "Assumption checks: 25 checks; failed×25" in rendered
+    assert "Calibration fixtures: 8 fixtures; passed×8" in rendered
+    assert "Measurement system: 5 checks; passed×3, untestable×2" in rendered
+    assert "Causal support gate: 13/25 refused; support=insufficient×1, natural_experiment×1; top_refusal=missing controlled benchmark run×1; next=execute the approved manifest and promote run logs/telemetry×1; ready_plans=10; run_templates=120; controlled_claims=0" in rendered
     assert "Machine analysis readiness: missing×1, stable×1" in rendered
+    assert "Machine refresh report: 31 steps; success×31" in rendered
 
 
 def test_context_pack_surfaces_missing_machine_analysis_artifacts(monkeypatch, tmp_path):

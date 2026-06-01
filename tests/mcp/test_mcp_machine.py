@@ -23,9 +23,12 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
             "attributed_episode_count": 1,
             "pressure_episode_count": 1,
             "unattributed_pressure_episode_count": 0,
+            "workload_resource_attributed_pressure_episode_count": 1,
+            "residual_unattributed_pressure_episode_count": 0,
             "capture_count": 1,
             "caveats": [],
             "attributions": [{"episode_kind": "load_pressure", "capture_id": "cap1", "episode_started_at": "2026-05-01T12:00:00+00:00", "episode_ended_at": "2026-05-01T12:05:00+00:00", "overlap_seconds": 60.0, "severity": 0.2}],
+            "workload_resource_attributions": [{"episode_kind": "load_pressure", "work_source_id": "xtask:1", "episode_started_at": "2026-05-01T12:00:00+00:00", "episode_ended_at": "2026-05-01T12:05:00+00:00", "overlap_seconds": 30.0, "severity": 0.2}],
         }),
         encoding="utf-8",
     )
@@ -34,7 +37,247 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         encoding="utf-8",
     )
     (analysis_root / "machine_experiment_claims.json").write_text(
-        json.dumps({"run_count": 1, "controlled_claim_count": 0, "observational_claim_count": 1, "caveats": ["no controlled claims"], "claim_packs": [{"run_id": "run1", "workload": "xtask", "claim_mode": "manifest_observational", "started_at": "2026-05-01T12:00:00+00:00"}]}),
+        json.dumps({
+            "run_count": 1,
+            "controlled_claim_count": 0,
+            "observational_claim_count": 1,
+            "caveats": ["no controlled claims"],
+            "claim_packs": [{
+                "run_id": "run1",
+                "run_group_id": "grp1",
+                "workload": "xtask",
+                "claim_mode": "manifest_observational",
+                "started_at": "2026-05-01T12:00:00+00:00",
+                "internal_json": {"phases": [{"activity_id": "a1", "name": "build xtask", "duration_seconds": 1.2}]},
+            }],
+            "effect_estimates": [{"run_group_id": "grp1", "metric": "duration_seconds", "delta": 1.0}],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_analysis_feature_frames.json").write_text(
+        json.dumps({"frame": {"frame_id": "frame1", "unit_type": "work_observation_stage", "row_count": 1, "outcome_metric": "stage.duration_s", "leakage_status": "ok", "rows": [{"unit_id": "stage1"}]}}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_mining.json").write_text(
+        json.dumps({
+            "scan": {"scan_id": "scan1", "comparison_universe_size": 3},
+            "cohort_count": 1,
+            "cohorts": [{"cohort_id": "cohort1", "row_count": 2, "dimensions": {"project": "sinex", "stage_name": "test"}}],
+            "lagged_exposure_count": 1,
+            "lagged_exposures": [{"summary_id": "lag1", "dimensions": {"project": "sinex", "stage_name": "test"}, "pressure_metric": "host_io_pressure_some_avg10_max"}],
+            "anomaly_cluster_count": 1,
+            "anomaly_clusters": [{"cluster_id": "cluster1", "dimensions": {"project": "sinex", "stage_name": "test"}, "anomaly_count": 2}],
+            "caveats": ["exploratory"],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_dataset_diagnostics.json").write_text(
+        json.dumps({
+            "diagnostic_count": 2,
+            "feature_audit": {"status": "ready_for_mining", "row_count": 8},
+            "mining_audit": {"multiplicity_status": "registered", "comparison_universe_size": 3},
+            "diagnostics": [{"diagnostic_id": "diag1", "diagnostic_kind": "feature_frame_coverage", "severity": "info"}],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_validation_design.json").write_text(
+        json.dumps({"boundary_count": 1, "split": {"split_id": "split1"}, "boundaries": [{"boundary_id": "boundary1", "boundary_type": "git_commit_transition", "dimensions": {"project": "sinex"}}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_matched_designs.json").write_text(
+        json.dumps({"design_count": 1, "supportable_design_count": 1, "designs": [{"design_id": "design1", "boundary_id": "boundary1", "candidate_id": "cand1", "identification_status": "design_ready"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_negative_controls.json").write_text(
+        json.dumps({"control_count": 1, "by_status": {"passed": 1}, "controls": [{"control_id": "neg1", "boundary_id": "boundary1", "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_comparisons.json").write_text(
+        json.dumps({
+            "contrast_count": 1,
+            "multiplicity_policy": "BH",
+            "contrasts": [{"contrast_id": "contrast1", "statistical_signal": "screening_signal", "median_delta": 3.0}],
+            "caveats": ["observational"],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_attribution_candidates.json").write_text(
+        json.dumps({
+            "candidate_count": 1,
+            "pareto_frontier_count": 1,
+            "pareto_frontier_ids": ["cand1"],
+            "candidates": [{
+                "candidate_id": "cand1",
+                "project": "sinex",
+                "validation_status": "design_ready",
+                "mechanism_family": "stage_regression_or_workload_mix",
+                "pareto_frontier": True,
+                "priority_score": 8.4,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_plans.json").write_text(
+        json.dumps({"plan_count": 1, "ready_plan_count": 0, "plans": [{"plan_id": "plan1", "candidate_id": "cand1", "planning_status": "needs_binding", "manifest_preview": {"controlled_benchmark": {"run_group_id": "grp1"}}}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_manifest_bundle.json").write_text(
+        json.dumps({
+            "group_count": 1,
+            "run_template_count": 2,
+            "groups": [{"run_group_id": "grp1", "run_templates": [{"run_id": "template1"}]}],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_preflight.json").write_text(
+        json.dumps({
+            "run_count": 2,
+            "ready_run_count": 2,
+            "issue_count": 0,
+            "warning_count": 2,
+            "runs": [{"run_id": "template1", "run_group_id": "grp1", "ready": True}],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_benchmark_execution_queue.json").write_text(
+        json.dumps({
+            "queue_count": 1,
+            "ready_group_count": 1,
+            "blocked_group_count": 0,
+            "run_template_count": 2,
+            "ready_run_count": 2,
+            "items": [{
+                "queue_id": "machine-benchmark-execution:grp1",
+                "candidate_id": "cand1",
+                "run_group_id": "grp1",
+                "ready_to_export": True,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_experiment_manifest_diagnostics.json").write_text(
+        json.dumps({
+            "root": "/realm/data/captures/machine/experiments",
+            "root_exists": True,
+            "manifest_count": 2,
+            "source_loadable_count": 2,
+            "controlled_benchmark_valid_count": 1,
+            "validation_issue_count": 1,
+            "promotion_issue_count": 0,
+            "controlled_run_invalid_count": 0,
+            "legacy_observational_count": 1,
+            "by_kind": {"executed_run": 1, "legacy_or_ad_hoc_run": 1},
+            "diagnostics": [
+                {
+                    "relative_path": "grp1/runs/run1/manifest.json",
+                    "manifest_kind": "executed_run",
+                    "source_loadable": True,
+                    "controlled_benchmark_valid": True,
+                    "issues": [],
+                },
+                {
+                    "relative_path": "legacy/manifest.json",
+                    "manifest_kind": "legacy_or_ad_hoc_run",
+                    "source_loadable": True,
+                    "controlled_benchmark_valid": False,
+                    "issues": ["missing measurement_context"],
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_derivation_inventory.json").write_text(
+        json.dumps({"target_count": 1, "ready_target_count": 1, "targets": [{"project": "sinex", "attr": "xtask", "eval_status": "ready"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_support_assessment.json").write_text(
+        json.dumps({
+            "assessment_count": 2,
+            "refusal_count": 1,
+            "controlled_claim_count": 0,
+            "natural_experiment_support_count": 1,
+            "assessments": [
+                {"assessment_id": "assess1", "candidate_id": "cand1", "support_level": "insufficient"},
+                {"assessment_id": "assess2", "candidate_id": "cand2", "support_level": "natural_experiment"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_mechanism_hypotheses.json").write_text(
+        json.dumps({
+            "mechanism_count": 1,
+            "mechanisms": [{
+                "mechanism_id": "machine-mechanism:stage_regression_or_workload_mix",
+                "candidate_ids": ["cand1"],
+                "mechanism_family": "stage_regression_or_workload_mix",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_instrumentation_gaps.json").write_text(
+        json.dumps({
+            "gap_count": 1,
+            "by_missing_source": {"controlled_benchmark_run": 1},
+            "gaps": [{
+                "gap_id": "gap1",
+                "candidate_id": "cand1",
+                "project": "sinex",
+                "missing_source": "controlled_benchmark_run",
+                "missing": "executed_controlled_run",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_attribution_claims.json").write_text(
+        json.dumps({
+            "claim_count": 2,
+            "by_support_level": {"insufficient": 1, "natural_experiment": 1},
+            "claims": [
+                {"claim_id": "claim1", "support_level": "insufficient", "source_ids": ["cand1"]},
+                {"claim_id": "claim2", "support_level": "natural_experiment", "source_ids": ["cand1", "design1"]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_assumption_checks.json").write_text(
+        json.dumps({
+            "check_count": 2,
+            "by_status": {"failed": 1, "passed": 1},
+            "checks": [
+                {"assumption_id": "a1", "claim_id": "claim1", "check_status": "failed"},
+                {"assumption_id": "a2", "claim_id": "claim2", "check_status": "passed"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_analysis_readiness.json").write_text(
+        json.dumps({
+            "tables": [{"table": "machine_metric_sample", "row_count": 10}],
+            "artifacts": [{"artifact": "machine_experiment_claims.json", "present": True}],
+            "dimensions": [{"dimension": "controlled_benchmark_claims", "status": "missing"}],
+            "caveats": ["not controlled"],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_analysis_refresh_report.json").write_text(
+        json.dumps({"step_count": 1, "by_status": {"success": 1}, "steps": [{"name": "x"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_calibration_fixtures.json").write_text(
+        json.dumps({"fixture_count": 1, "by_status": {"passed": 1}, "fixtures": [{"fixture_id": "fixture1", "fixture_kind": "null", "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_measurement_system.json").write_text(
+        json.dumps({"check_count": 1, "by_status": {"passed": 1}, "checks": [{"check_id": "measure1", "check_kind": "timer_resolution_clock_source", "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_work_observations.json").write_text(
+        json.dumps({
+            "daily": [{"date": "2026-05-01", "project": "sinex", "command": ["xtask", "check"], "observation_count": 1}],
+            "stage_summaries": [{"stage_name": "test", "observation_count": 2}],
+            "test_summaries": [{"package": "sinex-primitives", "status": "pass", "test_count": 2}],
+            "failure_summaries": [{"failure_kind": "test", "package": "sinex-primitives", "failure_count": 1}],
+        }),
         encoding="utf-8",
     )
 
@@ -43,23 +286,215 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
 
     from lynchpin.mcp.tools.machine import (
         machine_below_attributions,
+        machine_calibration_fixtures,
+        machine_measurement_system,
+        machine_dataset_diagnostics,
+        machine_dataset_inventory,
+        machine_refresh_health,
         machine_context_windows,
         machine_episodes,
         machine_experiment_claims,
+        machine_benchmark_runs,
+        machine_benchmark_phases,
+        machine_benchmark_estimates,
+        machine_feature_frames,
+        machine_comparisons,
+        machine_attribution_candidates,
+        machine_observation_cohorts,
+        machine_discovery_validation_splits,
+        machine_boundary_candidates,
+        machine_benchmark_plans,
+        machine_benchmark_plan_template,
+        machine_benchmark_manifest_bundle,
+        machine_benchmark_execution_queue,
+        machine_experiment_manifest_diagnostics,
+        machine_benchmark_readiness,
+        machine_derivation_inventory,
+        machine_support_assessments,
+        machine_attribution_candidate_details,
+        machine_mechanism_hypotheses,
+        machine_instrumentation_gaps,
+        machine_attribution_claims,
+        machine_claim_evidence,
+        machine_assumption_checks,
+        machine_status,
+        machine_validation_design,
+        machine_matched_designs,
+        machine_negative_controls,
+        machine_lagged_exposures,
+        machine_anomaly_clusters,
+        machine_mining_scans,
         machine_observational_baselines,
+        machine_work_observation_artifact,
     )
 
     assert len(machine_episodes(start="2026-05-01", kind="load_pressure")) == 1
+    inventory = machine_dataset_inventory()
+    assert inventory["summary"]["table_count"] == 1
+    health = machine_refresh_health()
+    assert health["summary"]["status"] == "degraded"
+    assert health["latest_refresh_report"]["step_count"] == 1
+    calibration = machine_calibration_fixtures(kind="null", status="passed")
+    assert calibration["fixtures"][0]["fixture_id"] == "fixture1"
+    measurement = machine_measurement_system(kind="timer_resolution_clock_source", status="passed")
+    assert measurement["checks"][0]["check_id"] == "measure1"
+    work_observations = machine_work_observation_artifact()
+    assert work_observations["summary"]["failure_summary_count"] == 1
+    assert work_observations["failure_summaries"][0]["failure_kind"] == "test"
+    dataset_diag = machine_dataset_diagnostics(kind="feature_frame_coverage", severity="info")
+    assert dataset_diag["summary"]["feature_status"] == "ready_for_mining"
+    assert dataset_diag["diagnostics"][0]["diagnostic_id"] == "diag1"
     assert len(machine_context_windows(project="sinity-lynchpin", has_episodes=True)) == 1
     result = machine_below_attributions(episode_kind="load_pressure")
     assert result["summary"]["attributed_episode_count"] == 1
     assert result["attributions"][0]["capture_id"] == "cap1"
+    workload_result = machine_below_attributions(episode_kind="load_pressure", attribution_source="workload_resource")
+    assert workload_result["summary"]["workload_resource_attributed_pressure_episode_count"] == 1
+    assert workload_result["attributions"][0]["work_source_id"] == "xtask:1"
     baselines = machine_observational_baselines(dimension="hour", key="12")
     assert baselines["summary"]["family_counts"]["hour"] == 1
     assert baselines["rows"][0]["sample_count"] == 10
     claims = machine_experiment_claims(claim_mode="manifest_observational")
     assert claims["summary"]["observational_claim_count"] == 1
     assert claims["claim_packs"][0]["run_id"] == "run1"
+    runs = machine_benchmark_runs(run_group_id="grp1", workload="xtask")
+    assert runs["runs"][0]["run_id"] == "run1"
+    phases = machine_benchmark_phases(run_id="run1", phase="build")
+    assert phases["phases"][0]["activity_id"] == "a1"
+    estimates = machine_benchmark_estimates(run_group_id="grp1", metric="duration_seconds")
+    assert estimates["estimates"][0]["delta"] == 1.0
+    frames = machine_feature_frames()
+    assert frames["summary"]["frame_id"] == "frame1"
+    assert frames["summary"]["leakage_status"] == "ok"
+    mining = machine_mining_scans()
+    assert mining["scan"]["scan_id"] == "scan1"
+    assert mining["summary"]["cohort_count"] == 1
+    assert mining["summary"]["lagged_exposure_count"] == 1
+    assert mining["summary"]["anomaly_cluster_count"] == 1
+    lagged = machine_lagged_exposures(project="sinex", pressure_metric="host_io_pressure_some_avg10_max")
+    assert lagged["lagged_exposures"][0]["summary_id"] == "lag1"
+    clusters = machine_anomaly_clusters(project="sinex")
+    assert clusters["anomaly_clusters"][0]["cluster_id"] == "cluster1"
+    cohorts = machine_observation_cohorts(dimension="stage_name", project="sinex")
+    assert cohorts["cohorts"][0]["cohort_id"] == "cohort1"
+    validation = machine_validation_design()
+    assert validation["summary"]["boundary_count"] == 1
+    assert validation["boundaries"][0]["boundary_id"] == "boundary1"
+    splits = machine_discovery_validation_splits(project="sinex")
+    assert splits["split"]["split_id"] == "split1"
+    boundaries = machine_boundary_candidates(boundary_type="git_commit_transition", project="sinex")
+    assert boundaries["boundaries"][0]["boundary_id"] == "boundary1"
+    matched = machine_matched_designs(status="design_ready")
+    assert matched["summary"]["design_count"] == 1
+    assert matched["designs"][0]["design_id"] == "design1"
+    from lynchpin.mcp.tools.machine import machine_matched_comparisons
+    matched_comparisons = machine_matched_comparisons(candidate_id="cand1", boundary_id="boundary1")
+    assert matched_comparisons["comparisons"][0]["design_id"] == "design1"
+    negative = machine_negative_controls(status="passed")
+    assert negative["summary"]["control_count"] == 1
+    assert negative["controls"][0]["control_id"] == "neg1"
+    comparisons = machine_comparisons(signal="screening_signal")
+    assert comparisons["summary"]["contrast_count"] == 1
+    assert comparisons["contrasts"][0]["contrast_id"] == "contrast1"
+    candidates = machine_attribution_candidates(
+        validation_status="design_ready",
+        mechanism_family="stage_regression_or_workload_mix",
+        pareto_frontier=True,
+    )
+    assert candidates["summary"]["pareto_frontier_count"] == 1
+    assert candidates["summary"]["by_validation_status"] == {"design_ready": 1}
+    assert candidates["candidates"][0]["candidate_id"] == "cand1"
+    plans = machine_benchmark_plans(status="needs_binding", run_group_id="grp1", candidate_id="cand1")
+    assert plans["summary"]["plan_count"] == 1
+    assert plans["plans"][0]["plan_id"] == "plan1"
+    template = machine_benchmark_plan_template("cand1")
+    assert template["summary"]["planning_status"] == "needs_binding"
+    bundle = machine_benchmark_manifest_bundle()
+    assert bundle["summary"]["run_template_count"] == 2
+    assert bundle["groups"][0]["run_group_id"] == "grp1"
+    queue = machine_benchmark_execution_queue(ready_only=True)
+    assert queue["summary"]["ready_group_count"] == 1
+    assert queue["items"][0]["run_group_id"] == "grp1"
+    manifest_diag = machine_experiment_manifest_diagnostics(kind="executed_run", controlled_valid=True)
+    assert manifest_diag["summary"]["controlled_benchmark_valid_count"] == 1
+    assert manifest_diag["diagnostics"][0]["relative_path"] == "grp1/runs/run1/manifest.json"
+    readiness = machine_benchmark_readiness(payload_json=json.dumps({
+        "controlled_benchmark": {
+            "run_group_id": "grp1",
+            "derivations": [{"drv_path": "/nix/store/demo.drv"}],
+            "cache_conditions": ["cold", "warm"],
+            "assignment_seed": 1,
+            "randomized_order": [
+                {"run_id": "r1", "treatment_label": "baseline", "cache_condition": "cold"},
+                {"run_id": "r2", "treatment_label": "turbo", "cache_condition": "cold"},
+                {"run_id": "r3", "treatment_label": "baseline", "cache_condition": "warm"},
+                {"run_id": "r4", "treatment_label": "turbo", "cache_condition": "warm"},
+            ],
+            "control_label": "baseline",
+            "treatment_label": "turbo",
+            "internal_json": {
+                "path": "/tmp/run.ndjson",
+                "log_format": "internal-json",
+                "capture_stream": "stderr",
+                "argv_template": ["nix", "build", "--log-format", "internal-json", "{derivation_key}"],
+            },
+            "telemetry": {"window_source": "manifest_timestamps"},
+        },
+        "pre_analysis": {
+            "research_question": "Does turbo change duration?",
+            "hypothesis": "turbo affects duration",
+            "estimand": "mean delta",
+            "unit": "run",
+            "primary_metric": "duration_seconds",
+            "inclusion_rules": ["successful command exit"],
+            "exclusion_rules": ["missing internal-json"],
+            "blocking_keys": ["cache_condition", "derivation"],
+            "support_ceiling": "controlled",
+            "causal_model": {"treatment_variable": "turbo", "outcome_variable": "duration_seconds"},
+            "instrumentation_bundle": {"name": "build_phase"},
+            "power_note": {"status": "fixture"},
+        },
+    }))
+    assert readiness["readiness"]["controlled"] is True
+    derivations = machine_derivation_inventory(project="sinex")
+    assert derivations["summary"]["ready_target_count"] == 1
+    assert derivations["targets"][0]["attr"] == "xtask"
+    assessments = machine_support_assessments(support_level="insufficient")
+    assert assessments["summary"]["refusal_count"] == 1
+    assert assessments["summary"]["by_support_level"] == {"insufficient": 1}
+    assert assessments["assessments"][0]["assessment_id"] == "assess1"
+    details = machine_attribution_candidate_details("cand1")
+    assert details["summary"]["status"] == "found"
+    assert details["candidate"]["candidate_id"] == "cand1"
+    assert details["summary"]["run_group_ids"] == ["grp1"]
+    assert details["manifest_groups"][0]["run_group_id"] == "grp1"
+    assert details["preflight_runs"][0]["run_id"] == "template1"
+    assert details["support_assessments"][0]["assessment_id"] == "assess1"
+    assert details["instrumentation_gaps"][0]["gap_id"] == "gap1"
+    assert details["attribution_claims"][0]["claim_id"] == "claim1"
+    mechanisms = machine_mechanism_hypotheses(family="stage_regression_or_workload_mix", candidate_id="cand1")
+    assert mechanisms["summary"]["mechanism_count"] == 1
+    assert mechanisms["mechanisms"][0]["mechanism_id"] == "machine-mechanism:stage_regression_or_workload_mix"
+    gaps = machine_instrumentation_gaps(project="sinex", source="controlled_benchmark_run")
+    assert gaps["summary"]["gap_count"] == 1
+    assert gaps["gaps"][0]["gap_id"] == "gap1"
+    attribution_claims = machine_attribution_claims(support_level="insufficient")
+    assert attribution_claims["summary"]["claim_count"] == 2
+    assert len(attribution_claims["claims"]) == 1
+    assert attribution_claims["claims"][0]["claim_id"] == "claim1"
+    claim_evidence = machine_claim_evidence("claim1")
+    assert claim_evidence["source_ids"] == ["cand1"]
+    assert claim_evidence["claim"]["claim_id"] == "claim1"
+    assumptions = machine_assumption_checks(status="failed")
+    assert assumptions["summary"]["check_count"] == 2
+    assert len(assumptions["checks"]) == 1
+    assert assumptions["checks"][0]["assumption_id"] == "a1"
+    status = machine_status()
+    assert status["artifacts"]["available"] == 11
+    assert status["support"]["natural_experiment"] == 1
+    assert status["experiment_manifests"]["legacy_observational_count"] == 1
+    assert status["claims"]["by_support_level"] == {"insufficient": 1, "natural_experiment": 1}
+    assert status["assumptions"]["by_status"] == {"failed": 1, "passed": 1}
 
 
 def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

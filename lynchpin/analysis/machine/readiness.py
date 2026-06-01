@@ -213,12 +213,34 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
         ("machine_below_analysis.json", "window_count"),
         ("machine_below_attribution.json", "attributed_episode_count"),
         ("machine_context_windows.json", "window_count"),
+        ("machine_work_observations.json", None),
+        ("machine_analysis_feature_frames.json", "frame.row_count"),
+        ("machine_mining.json", "cohort_count"),
+        ("machine_dataset_diagnostics.json", "diagnostic_count"),
+        ("machine_validation_design.json", "boundary_count"),
+        ("machine_matched_designs.json", "design_count"),
+        ("machine_negative_controls.json", "control_count"),
+        ("machine_comparisons.json", "contrast_count"),
         ("machine_work_state_windows.json", "window_count"),
         ("command_performance_windows.json", "command_count"),
         ("machine_observational_deltas.json", "delta_count"),
+        ("machine_attribution_candidates.json", "candidate_count"),
+        ("machine_derivation_inventory.json", "ready_target_count"),
+        ("machine_benchmark_plans.json", "plan_count"),
+        ("machine_benchmark_manifest_bundle.json", "run_template_count"),
+        ("machine_benchmark_preflight.json", "ready_run_count"),
+        ("machine_experiment_manifest_diagnostics.json", "manifest_count"),
+        ("machine_support_assessment.json", "assessment_count"),
+        ("machine_mechanism_hypotheses.json", "mechanism_count"),
+        ("machine_instrumentation_gaps.json", "gap_count"),
+        ("machine_calibration_fixtures.json", "fixture_count"),
+        ("machine_measurement_system.json", "check_count"),
+        ("machine_attribution_claims.json", "claim_count"),
+        ("machine_assumption_checks.json", "check_count"),
         ("devshell_performance.json", "command_count"),
         ("machine_observational_baselines.json", None),
         ("machine_experiment_claims.json", "run_count"),
+        ("machine_analysis_refresh_report.json", "step_count"),
     )
     result = []
     for artifact, count_path in artifacts:
@@ -363,21 +385,24 @@ def _network_caveats(row_count: int) -> tuple[str, ...]:
 def _below_attribution_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
     payload_dict = load_analysis_artifact(artifact.artifact) or {}
     attributed = _int_value(payload_dict.get("attributed_episode_count"))
+    workload_attributed = _int_value(payload_dict.get("workload_resource_attributed_pressure_episode_count"))
     pressure = _int_value(payload_dict.get("pressure_episode_count"))
     if pressure == 0:
         status = "stable"
         caveats: tuple[str, ...] = ()
     else:
-        ratio = attributed / pressure
+        ratio = (attributed + workload_attributed) / pressure
         status = "stable" if ratio >= 0.8 else "limited"
         caveats = () if status == "stable" else (
-            "most pressure episodes lack bounded below process/cgroup attribution",
+            "most pressure episodes lack bounded below or workload resource attribution",
         )
     return _dimension(
         "below_process_attribution",
         status,
         (
-            f"attributed_pressure_episodes={attributed}/{pressure}",
+            f"bounded_below_attributed_pressure_episodes={attributed}/{pressure}",
+            f"workload_resource_attributed_pressure_episodes={workload_attributed}/{pressure}",
+            f"combined_attributed_pressure_episodes={attributed + workload_attributed}/{pressure}",
             f"artifact_primary_count={artifact.primary_count or 0}",
         ),
         caveats,

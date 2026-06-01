@@ -68,16 +68,22 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
     db = tmp_path / "sub.duckdb"
     run = MachineExperimentRun(
         run_id="run-1",
+        run_group_id="grp1",
         host="sinnix-prime",
         workload="sinex.xtask",
         command=("xtask", "test"),
         cwd="/realm/project/sinex",
         started_at=datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
         ended_at=datetime(2026, 5, 12, 12, 1, tzinfo=timezone.utc),
+        monotonic_started_ns=1,
+        monotonic_ended_ns=60_000_000_000,
         exit_status=0,
+        execution_outcome={"status": "success"},
         service_profile="full",
         cache_profile="warm",
+        measurement_context={"host_boot_id": "boot1"},
         planned_treatment={"turbo": "on"},
+        nix_internal_json_path="/tmp/run-1/nix-internal-json.ndjson",
         git_root="/realm/project/sinex",
         git_head="abc123",
         git_branch="master",
@@ -94,8 +100,14 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
 
     assert len(loaded) == 1
     assert loaded[0]["run_id"] == "run-1"
+    assert loaded[0]["run_group_id"] == "grp1"
     assert loaded[0]["command"] == ["xtask", "test"]
+    assert loaded[0]["monotonic_started_ns"] == 1
+    assert loaded[0]["monotonic_ended_ns"] == 60_000_000_000
+    assert loaded[0]["execution_outcome"] == '{"status": "success"}'
+    assert loaded[0]["measurement_context"] == '{"host_boot_id": "boot1"}'
     assert loaded[0]["planned_treatment"] == '{"turbo": "on"}'
+    assert loaded[0]["nix_internal_json_path"] == "/tmp/run-1/nix-internal-json.ndjson"
 
 
 def test_promote_machine_gpu_samples_round_trip(tmp_path):

@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from lynchpin.core.io import save_json
+from lynchpin.analysis.machine.controlled_benchmarks import (
+    benchmark_readiness,
+    bootstrap_delta_ci,
+    selected_run_assignment_issues,
+    stratified_bootstrap_delta_ci,
+)
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
+from lynchpin.analysis.machine.nix_internal_json import summarize_internal_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.mcp.tools._utils import best_refresh_id
 from lynchpin.substrate.connection import connect, substrate_path
@@ -40,24 +47,34 @@ class ExperimentEpisodeOverlap:
 @dataclass(frozen=True)
 class MachineExperimentClaimPack:
     run_id: str
+    run_group_id: str | None
     host: str
     workload: str
     claim_mode: str
     treatment_label: str
+    cache_condition: str | None
+    derivation_key: str | None
     started_at: datetime
     ended_at: datetime | None
+    monotonic_started_ns: int | None
+    monotonic_ended_ns: int | None
     duration_seconds: float | None
     exit_status: int | None
+    execution_outcome: dict[str, Any]
     command: tuple[str, ...]
     cwd: str | None
+    measurement_context: dict[str, Any]
+    nix_internal_json_path: str | None
     git_root: str | None
     git_head: str | None
     git_branch: str | None
     git_dirty: bool | None
     manifest_path: str
     telemetry: ExperimentTelemetryWindow
+    internal_json: dict[str, Any]
     episodes: tuple[ExperimentEpisodeOverlap, ...]
     effect_estimates: tuple[dict[str, Any], ...]
+    benchmark_readiness: dict[str, Any]
     caveats: tuple[str, ...]
 
 
@@ -67,6 +84,7 @@ class MachineExperimentClaims:
     controlled_claim_count: int
     observational_claim_count: int
     claim_packs: list[MachineExperimentClaimPack]
+    effect_estimates: list[dict[str, Any]]
     caveats: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -79,13 +97,15 @@ def analyze_machine_experiment_claims(
     end: date | None = None,
     path: Path | None = None,
     refresh_id: str | None = None,
+    include_episodes: bool = True,
 ) -> MachineExperimentClaims:
     with connect(path or substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = best_refresh_id(conn, "machine_experiment_run")
         runs = _runs(conn, start=start, end=end, refresh_id=refresh_id)
-        episodes = _episodes_for_runs(runs, path=path)
+        episodes = _episodes_for_runs(runs, path=path) if include_episodes else []
         packs = [_claim_pack(conn, run, episodes=episodes) for run in runs]
+        estimates = _effect_estimates(packs)
 
     caveats: list[str] = []
     if refresh_id is None:
@@ -99,6 +119,7 @@ def analyze_machine_experiment_claims(
         controlled_claim_count=sum(1 for pack in packs if pack.claim_mode == "controlled_benchmark"),
         observational_claim_count=sum(1 for pack in packs if pack.claim_mode != "controlled_benchmark"),
         claim_packs=packs,
+        effect_estimates=estimates,
         caveats=sorted(dict.fromkeys(caveats)),
     )
 
@@ -132,8 +153,11 @@ def _runs(conn: Any, *, start: date | None, end: date | None, refresh_id: str | 
     rows = conn.execute(
         f"""
         SELECT
-            run_id, host, workload, command, cwd, started_at, ended_at,
-            exit_status, service_profile, cache_profile, planned_treatment,
+            run_id, run_group_id, host, workload, command, cwd,
+            started_at, ended_at, monotonic_started_ns, monotonic_ended_ns,
+            exit_status, execution_outcome,
+            service_profile, cache_profile, measurement_context, planned_treatment,
+            nix_internal_json_path,
             git_root, git_head, git_branch, git_dirty, pre_state, post_state,
             notes, manifest_path, refresh_id
         FROM machine_experiment_run
@@ -162,30 +186,56 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
     ended_at = run.get("ended_at")
     duration = (ended_at - started_at).total_seconds() if ended_at is not None and ended_at > started_at else None
     planned = _json_dict(run.get("planned_treatment"))
-    claim_mode = _claim_mode(planned)
+    readiness = benchmark_readiness(planned)
     telemetry = _telemetry_window(conn, run)
+    internal_json = summarize_internal_json(_internal_json_path(run, readiness))
+    assignment_issues = selected_run_assignment_issues(
+        planned,
+        payload_run_id=str(run["run_id"]),
+        payload_run_group_id=str(run["run_group_id"]) if run.get("run_group_id") is not None else None,
+    )
+    claim_mode = _claim_mode(planned, internal_json.to_dict(), telemetry, assignment_issues=assignment_issues)
     overlaps = _episode_overlaps(run, episodes=episodes)
-    caveats = _run_caveats(run, planned, telemetry, duration, claim_mode)
+    caveats = _run_caveats(
+        run,
+        planned,
+        telemetry,
+        internal_json.to_dict(),
+        duration,
+        claim_mode,
+        readiness,
+        assignment_issues=assignment_issues,
+    )
     return MachineExperimentClaimPack(
         run_id=str(run["run_id"]),
+        run_group_id=readiness.run_group_id,
         host=str(run["host"]),
         workload=str(run["workload"]),
         claim_mode=claim_mode,
         treatment_label=_treatment_label(planned),
+        cache_condition=_cache_condition(planned),
+        derivation_key=_selected_run_field(planned, "derivation_key"),
         started_at=started_at,
         ended_at=ended_at,
+        monotonic_started_ns=_int_or_none(run.get("monotonic_started_ns")),
+        monotonic_ended_ns=_int_or_none(run.get("monotonic_ended_ns")),
         duration_seconds=round(duration, 3) if duration is not None else None,
         exit_status=run.get("exit_status"),
+        execution_outcome=_json_dict(run.get("execution_outcome")),
         command=tuple(str(item) for item in (run.get("command") or [])),
         cwd=run.get("cwd"),
+        measurement_context=_json_dict(run.get("measurement_context")),
+        nix_internal_json_path=_internal_json_path(run, readiness),
         git_root=run.get("git_root"),
         git_head=run.get("git_head"),
         git_branch=run.get("git_branch"),
         git_dirty=run.get("git_dirty"),
         manifest_path=str(run["manifest_path"]),
         telemetry=telemetry,
+        internal_json=internal_json.to_dict(),
         episodes=overlaps,
         effect_estimates=(),
+        benchmark_readiness=readiness.to_dict(),
         caveats=tuple(caveats),
     )
 
@@ -195,6 +245,9 @@ def _telemetry_window(conn: Any, run: dict[str, Any]) -> ExperimentTelemetryWind
     ended_at = run.get("ended_at")
     if ended_at is None or ended_at <= started_at:
         ended_at = started_at + timedelta(minutes=5)
+    elif (ended_at - started_at).total_seconds() < 60:
+        started_at = started_at - timedelta(seconds=30)
+        ended_at = ended_at + timedelta(seconds=30)
     metric_rows = latest_machine_rows("machine_metric_sample")
     rows = conn.execute(
         f"""
@@ -262,18 +315,26 @@ def _run_caveats(
     run: dict[str, Any],
     planned: dict[str, Any],
     telemetry: ExperimentTelemetryWindow,
+    internal_json: dict[str, Any],
     duration: float | None,
     claim_mode: str,
+    readiness: Any,
+    assignment_issues: tuple[str, ...],
 ) -> list[str]:
     caveats = ["manifest-backed claim pack; raw manifest remains the provenance source"]
     if claim_mode != "controlled_benchmark":
         caveats.append("observational manifest only; do not use controlled benchmark language")
-    if not _has_randomization(planned):
-        caveats.append("manifest lacks randomized run order or control/treatment matrix")
+    caveats.extend(f"controlled benchmark contract gap: {issue}" for issue in readiness.issues)
+    caveats.extend(f"selected-run assignment gap: {issue}" for issue in assignment_issues)
     if duration is None:
         caveats.append("manifest has no positive duration; telemetry join uses a five-minute inspection window")
     if telemetry.sample_count == 0:
         caveats.append("no machine telemetry samples overlap the run window")
+    elif duration is not None and duration < 60:
+        caveats.append("machine telemetry joined with cadence padding for short run")
+    if not _has_complete_internal_json_phase(internal_json):
+        caveats.append("internal-json has no complete timed phase")
+    caveats.extend(f"internal-json caveat: {issue}" for issue in internal_json.get("caveats", ()))
     if run.get("git_dirty") is True:
         caveats.append("git checkout was dirty during run")
     if run.get("exit_status") not in (None, 0):
@@ -281,25 +342,152 @@ def _run_caveats(
     return caveats
 
 
-def _claim_mode(planned: dict[str, Any]) -> str:
-    return "controlled_benchmark" if _has_randomization(planned) and _has_control(planned) else "manifest_observational"
-
-
-def _has_randomization(planned: dict[str, Any]) -> bool:
-    return planned.get("randomized") is True or any(
-        key in planned for key in ("randomization", "randomized_order", "run_manifest", "assignment_seed")
+def _claim_mode(
+    planned: dict[str, Any],
+    internal_json: dict[str, Any],
+    telemetry: ExperimentTelemetryWindow,
+    *,
+    assignment_issues: tuple[str, ...],
+) -> str:
+    return (
+        "controlled_benchmark"
+        if benchmark_readiness(planned).controlled
+        and not assignment_issues
+        and internal_json.get("exists") is True
+        and _has_internal_json_phase(internal_json)
+        and telemetry.sample_count > 0
+        else "manifest_observational"
     )
 
 
-def _has_control(planned: dict[str, Any]) -> bool:
-    return any(key in planned for key in ("control", "control_label", "treatment", "treatment_label", "matrix"))
+def _has_internal_json_phase(internal_json: dict[str, Any]) -> bool:
+    return any(isinstance(phase, dict) for phase in internal_json.get("phases", ()))
+
+
+def _has_complete_internal_json_phase(internal_json: dict[str, Any]) -> bool:
+    return any(
+        isinstance(phase, dict) and phase.get("status") == "complete"
+        for phase in internal_json.get("phases", ())
+    )
 
 
 def _treatment_label(planned: dict[str, Any]) -> str:
+    selected = planned.get("selected_run")
+    if isinstance(selected, dict):
+        for key in ("treatment_label", "treatment"):
+            if selected.get(key) is not None:
+                return f"{key}={selected[key]}"
     for key in ("treatment_label", "treatment", "turbo", "trigger", "purpose", "capture_kind"):
         if planned.get(key) is not None:
             return f"{key}={planned[key]}"
     return "unspecified"
+
+
+def _cache_condition(planned: dict[str, Any]) -> str | None:
+    selected = planned.get("selected_run")
+    if isinstance(selected, dict) and selected.get("cache_condition") is not None:
+        return str(selected["cache_condition"])
+    for key in ("cache_condition", "cache_profile"):
+        if planned.get(key) is not None:
+            return str(planned[key])
+    benchmark = planned.get("controlled_benchmark") or planned.get("benchmark")
+    if isinstance(benchmark, dict) and benchmark.get("cache_condition") is not None:
+        return str(benchmark["cache_condition"])
+    return None
+
+
+def _selected_run_field(planned: dict[str, Any], key: str) -> str | None:
+    selected = planned.get("selected_run")
+    if isinstance(selected, dict) and selected.get(key) is not None:
+        return str(selected[key])
+    return None
+
+
+def _effect_estimates(packs: list[MachineExperimentClaimPack]) -> list[dict[str, Any]]:
+    by_group: dict[str, list[MachineExperimentClaimPack]] = {}
+    for pack in packs:
+        if pack.claim_mode != "controlled_benchmark" or pack.run_group_id is None:
+            continue
+        if pack.duration_seconds is None:
+            continue
+        by_group.setdefault(pack.run_group_id, []).append(pack)
+
+    estimates: list[dict[str, Any]] = []
+    for run_group_id, rows in sorted(by_group.items()):
+        readiness = rows[0].benchmark_readiness
+        control_label = str(readiness.get("control_label") or "control")
+        treatment_label = str(readiness.get("treatment_label") or "treatment")
+        control = tuple(
+            float(row.duration_seconds)
+            for row in rows
+            if row.duration_seconds is not None and row.treatment_label.endswith(f"={control_label}")
+        )
+        treatment = tuple(
+            float(row.duration_seconds)
+            for row in rows
+            if row.duration_seconds is not None and row.treatment_label.endswith(f"={treatment_label}")
+        )
+        seed = sum(ord(ch) for ch in run_group_id)
+        estimate = _stratified_effect_estimate(
+            rows,
+            control_label=control_label,
+            treatment_label=treatment_label,
+            seed=seed,
+        ) or bootstrap_delta_ci(
+            control,
+            treatment,
+            metric="duration_seconds",
+            control_label=control_label,
+            treatment_label=treatment_label,
+            seed=seed,
+        )
+        if estimate is None:
+            continue
+        estimates.append({"run_group_id": run_group_id, **estimate.to_dict()})
+    return estimates
+
+
+def _stratified_effect_estimate(
+    rows: list[MachineExperimentClaimPack],
+    *,
+    control_label: str,
+    treatment_label: str,
+    seed: int,
+) -> Any:
+    control_by_stratum: dict[str, list[float]] = {}
+    treatment_by_stratum: dict[str, list[float]] = {}
+    for row in rows:
+        if row.duration_seconds is None:
+            continue
+        stratum = _estimator_stratum(row)
+        if stratum is None:
+            continue
+        if row.treatment_label.endswith(f"={control_label}"):
+            control_by_stratum.setdefault(stratum, []).append(float(row.duration_seconds))
+        elif row.treatment_label.endswith(f"={treatment_label}"):
+            treatment_by_stratum.setdefault(stratum, []).append(float(row.duration_seconds))
+
+    complete = {
+        stratum
+        for stratum in set(control_by_stratum) | set(treatment_by_stratum)
+        if control_by_stratum.get(stratum) and treatment_by_stratum.get(stratum)
+    }
+    if not complete:
+        return None
+    return stratified_bootstrap_delta_ci(
+        {key: tuple(value) for key, value in control_by_stratum.items()},
+        {key: tuple(value) for key, value in treatment_by_stratum.items()},
+        metric="duration_seconds",
+        control_label=control_label,
+        treatment_label=treatment_label,
+        seed=seed,
+    )
+
+
+def _estimator_stratum(row: MachineExperimentClaimPack) -> str | None:
+    if row.cache_condition is None or row.derivation_key is None:
+        return None
+    return f"cache={row.cache_condition}|derivation={row.derivation_key}"
 
 
 def _json_dict(value: Any) -> dict[str, Any]:
@@ -312,6 +500,17 @@ def _json_dict(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _int_or_none(value: Any) -> int | None:
+    return int(value) if isinstance(value, int) else None
+
+
+def _internal_json_path(run: dict[str, Any], readiness: Any) -> str | None:
+    value = run.get("nix_internal_json_path")
+    if value is not None:
+        return str(value)
+    return readiness.internal_json_path
 
 
 def _overlap_seconds(started_at: datetime, ended_at: datetime, episode: MachineEpisode) -> float:

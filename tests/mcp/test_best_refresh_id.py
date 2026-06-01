@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from lynchpin.mcp.tools._utils import best_refresh_id
 
 
@@ -94,6 +92,51 @@ def test_best_refresh_id_prefers_ok_source_status(monkeypatch, tmp_path) -> None
     with connect(substrate_path(), read_only=True) as test_conn:
         result = best_refresh_id(test_conn, "commit_fact")
     assert result == older_id
+
+
+def test_best_refresh_id_maps_work_observation_tables_to_source_status(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE work_observation (
+            source_id VARCHAR,
+            refresh_id VARCHAR,
+            materialized_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR,
+            source VARCHAR,
+            status VARCHAR,
+            recorded_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO work_observation VALUES (?, ?, ?)",
+        ["older", "r-old", datetime(2026, 5, 24, 10, tzinfo=timezone.utc)],
+    )
+    conn.execute(
+        "INSERT INTO work_observation VALUES (?, ?, ?)",
+        ["newer", "r-new", datetime(2026, 5, 25, 10, tzinfo=timezone.utc)],
+    )
+    conn.execute(
+        "INSERT INTO substrate_source_status VALUES (?, ?, ?, ?)",
+        ["r-old", "work_observations", "ok", datetime(2026, 5, 24, 11, tzinfo=timezone.utc)],
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert best_refresh_id(test_conn, "work_observation") == "r-old"
+    finally:
+        test_conn.close()
 
 
 def test_best_refresh_id_falls_back_to_latest_materialized_at(

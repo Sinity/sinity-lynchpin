@@ -70,6 +70,13 @@ class MachineContextAnalysis:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _EpisodeBounds:
+    episode: MachineEpisode
+    started_at: datetime
+    ended_at: datetime
+
+
 def analyze_machine_context_windows(
     *,
     start: date | None = None,
@@ -77,6 +84,8 @@ def analyze_machine_context_windows(
     path: Path | None = None,
     windows: Iterable[WorkloadWindow] | None = None,
     max_windows: int = 500,
+    include_polylogue: bool = False,
+    include_ambient_sources: bool = False,
 ) -> MachineContextAnalysis:
     """Overlay typed machine episodes onto development/activity windows.
 
@@ -92,16 +101,20 @@ def analyze_machine_context_windows(
             start=bounded_start,
             end=bounded_end,
             path=path,
+            include_polylogue=include_polylogue,
+            include_ambient_sources=include_ambient_sources,
         )
         caveats.extend(source_caveats)
     else:
         workload_windows = list(windows)
 
+    workload_windows.sort(key=lambda row: (row.started_at, row.source, row.window_id))
+    if max_windows > 0 and len(workload_windows) > max_windows:
+        workload_windows = workload_windows[-max_windows:]
+        caveats.append(f"machine context windows truncated to latest {max_windows} rows")
+
     joined = _join_windows(workload_windows, episode_analysis.episodes)
     joined.sort(key=lambda row: (row.started_at, row.source, row.window_id))
-    if max_windows > 0 and len(joined) > max_windows:
-        joined = joined[-max_windows:]
-        caveats.append(f"machine context windows truncated to latest {max_windows} rows")
 
     return MachineContextAnalysis(
         window_count=len(joined),
@@ -120,8 +133,17 @@ def write_machine_context_analysis(
     end: date | None = None,
     path: Path | None = None,
     max_windows: int = 500,
+    include_polylogue: bool = False,
+    include_ambient_sources: bool = False,
 ) -> MachineContextAnalysis:
-    analysis = analyze_machine_context_windows(start=start, end=end, path=path, max_windows=max_windows)
+    analysis = analyze_machine_context_windows(
+        start=start,
+        end=end,
+        path=path,
+        max_windows=max_windows,
+        include_polylogue=include_polylogue,
+        include_ambient_sources=include_ambient_sources,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **analysis.to_dict()}
     save_json(out, json.loads(json.dumps(payload, default=str)), sort_keys=True)
@@ -142,19 +164,32 @@ def _analysis_dates(
     return start or today, end or today
 
 
-def _collect_workload_windows(*, start: date, end: date, path: Path | None = None) -> tuple[list[WorkloadWindow], list[str]]:
+def _collect_workload_windows(
+    *,
+    start: date,
+    end: date,
+    path: Path | None = None,
+    include_polylogue: bool = False,
+    include_ambient_sources: bool = False,
+) -> tuple[list[WorkloadWindow], list[str]]:
     windows: list[WorkloadWindow] = []
     caveats: list[str] = []
     start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc)
 
-    for collector in (
-        _work_observation_windows,
-        _polylogue_windows,
-        _terminal_windows,
-        _git_windows,
-        _deep_work_windows,
-    ):
+    collectors = [_work_observation_windows]
+    if include_ambient_sources:
+        collectors.extend([_terminal_windows, _git_windows, _deep_work_windows])
+    else:
+        caveats.append(
+            "ambient terminal/git/ActivityWatch windows skipped by default; pass include_ambient_sources=True to opt in"
+        )
+    if include_polylogue:
+        collectors.insert(1, _polylogue_windows)
+    else:
+        caveats.append("polylogue session windows skipped by default; pass include_polylogue=True to opt in")
+
+    for collector in collectors:
         try:
             windows.extend(collector(start=start, end=end, start_dt=start_dt, end_dt=end_dt, path=path))
         except Exception as exc:
@@ -178,7 +213,7 @@ def _work_observation_windows(
     from lynchpin.substrate.connection import connect, substrate_path
 
     sql = f"""
-        SELECT source, source_id, project, command, cwd, started_at, ended_at,
+        SELECT source, source_id, work_kind, project, command, cwd, started_at, ended_at,
                duration_s, status, exit_code, host, git_commit, git_dirty,
                live_stage, args
         FROM ({latest_machine_rows("work_observation")})
@@ -189,32 +224,32 @@ def _work_observation_windows(
     with connect(path or substrate_path(), read_only=True) as conn:
         rows = conn.execute(sql, [start_dt, end_dt]).fetchall()
     for row in rows:
-        ended_at = row[6]
+        ended_at = row[7]
         if ended_at is None:
-            duration_s = float(row[7] or 0.0)
-            ended_at = row[5] if duration_s <= 0 else row[5] + timedelta(seconds=duration_s)
-        command = tuple(str(part) for part in (row[3] or ()))
+            duration_s = float(row[8] or 0.0)
+            ended_at = row[6] if duration_s <= 0 else row[6] + timedelta(seconds=duration_s)
+        command = tuple(str(part) for part in (row[4] or ()))
         summary = " ".join(command) if command else str(row[0])
-        if row[8] and row[8] != "success":
-            summary = f"{summary} ({row[8]})"
+        if row[9] and row[9] != "success":
+            summary = f"{summary} ({row[9]})"
         result.append(WorkloadWindow(
             source=str(row[0]),
             window_id=str(row[1]),
-            started_at=row[5],
+            started_at=row[6],
             ended_at=ended_at,
-            projects=tuple(p for p in (row[2],) if p),
+            projects=tuple(p for p in (row[3],) if p),
             provider=None,
-            work_kind="xtask_invocation",
+            work_kind=str(row[2]) if row[2] else None,
             summary=summary,
             payload={
-                "cwd": row[4],
-                "status": row[8],
-                "exit_code": row[9],
-                "host": row[10],
-                "git_commit": row[11],
-                "git_dirty": row[12],
-                "live_stage": row[13],
-                "args": row[14],
+                "cwd": row[5],
+                "status": row[9],
+                "exit_code": row[10],
+                "host": row[11],
+                "git_commit": row[12],
+                "git_dirty": row[13],
+                "live_stage": row[14],
+                "args": row[15],
             },
         ))
     return result
@@ -324,21 +359,36 @@ def _deep_work_windows(*, start: date, end: date, start_dt: datetime, end_dt: da
 
 
 def _join_windows(windows: Iterable[WorkloadWindow], episodes: Iterable[MachineEpisode]) -> list[MachineContextWindow]:
-    episode_rows = list(episodes)
+    episode_rows = tuple(
+        _EpisodeBounds(
+            episode=episode,
+            started_at=_aware(episode.started_at),
+            ended_at=_aware(episode.ended_at),
+        )
+        for episode in episodes
+    )
     result: list[MachineContextWindow] = []
     for window in windows:
+        window_start = _aware(window.started_at)
+        window_end = _aware(window.ended_at)
+        overlap_rows: list[MachineEpisodeOverlap] = []
+        intervals: list[tuple[datetime, datetime]] = []
+        for row in episode_rows:
+            left = max(window_start, row.started_at)
+            right = min(window_end, row.ended_at)
+            if right <= left:
+                continue
+            overlap_seconds = round((right - left).total_seconds(), 3)
+            intervals.append((left, right))
+            overlap_rows.append(_episode_overlap(row.episode, overlap_seconds=overlap_seconds))
         overlaps = tuple(
             sorted(
-                (
-                    _episode_overlap(window, episode)
-                    for episode in episode_rows
-                    if _overlap_seconds(window.started_at, window.ended_at, episode.started_at, episode.ended_at) > 0
-                ),
+                overlap_rows,
                 key=lambda row: (-row.overlap_seconds, -row.severity, row.kind, row.host),
             )
         )
-        duration = _duration_seconds(window.started_at, window.ended_at)
-        overlap_seconds = round(_union_overlap_seconds(window, episode_rows), 3)
+        duration = max(0.0, (window_end - window_start).total_seconds())
+        total_overlap_seconds = round(_merged_interval_seconds(intervals), 3)
         caveats = _window_caveats(window, overlaps)
         result.append(MachineContextWindow(
             source=window.source,
@@ -350,7 +400,7 @@ def _join_windows(windows: Iterable[WorkloadWindow], episodes: Iterable[MachineE
             provider=window.provider,
             work_kind=window.work_kind,
             summary=window.summary,
-            overlap_seconds=overlap_seconds,
+            overlap_seconds=total_overlap_seconds,
             episode_count=len(overlaps),
             episodes=overlaps,
             interpretation=_interpretation(overlaps),
@@ -359,13 +409,13 @@ def _join_windows(windows: Iterable[WorkloadWindow], episodes: Iterable[MachineE
     return result
 
 
-def _episode_overlap(window: WorkloadWindow, episode: MachineEpisode) -> MachineEpisodeOverlap:
+def _episode_overlap(episode: MachineEpisode, *, overlap_seconds: float) -> MachineEpisodeOverlap:
     return MachineEpisodeOverlap(
         kind=episode.kind,
         host=episode.host,
         started_at=episode.started_at,
         ended_at=episode.ended_at,
-        overlap_seconds=round(_overlap_seconds(window.started_at, window.ended_at, episode.started_at, episode.ended_at), 3),
+        overlap_seconds=overlap_seconds,
         severity=episode.severity,
         confidence=episode.confidence,
         subject=episode.subject,
@@ -373,15 +423,7 @@ def _episode_overlap(window: WorkloadWindow, episode: MachineEpisode) -> Machine
     )
 
 
-def _union_overlap_seconds(window: WorkloadWindow, episodes: Iterable[MachineEpisode]) -> float:
-    intervals: list[tuple[datetime, datetime]] = []
-    window_start = _aware(window.started_at)
-    window_end = _aware(window.ended_at)
-    for episode in episodes:
-        left = max(window_start, _aware(episode.started_at))
-        right = min(window_end, _aware(episode.ended_at))
-        if right > left:
-            intervals.append((left, right))
+def _merged_interval_seconds(intervals: list[tuple[datetime, datetime]]) -> float:
     if not intervals:
         return 0.0
     intervals.sort()
@@ -427,16 +469,6 @@ def _episode_kind_counts(windows: Iterable[MachineContextWindow]) -> dict[str, i
         for episode in window.episodes:
             counts[episode.kind] = counts.get(episode.kind, 0) + 1
     return dict(sorted(counts.items()))
-
-
-def _overlap_seconds(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> float:
-    left = max(_aware(a_start), _aware(b_start))
-    right = min(_aware(a_end), _aware(b_end))
-    return max(0.0, (right - left).total_seconds())
-
-
-def _duration_seconds(started_at: datetime, ended_at: datetime) -> float:
-    return max(0.0, (_aware(ended_at) - _aware(started_at)).total_seconds())
 
 
 def _aware(value: datetime) -> datetime:

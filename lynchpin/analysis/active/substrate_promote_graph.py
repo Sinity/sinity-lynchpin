@@ -49,16 +49,19 @@ def promote_graph_source(
             refresh_id=refresh_id,
             claims=analysis_claim_rows(graph),
         )
-        counts["evidence_graph_nodes"] = graph_counts.get("nodes", 0)
-        counts["evidence_graph_edges"] = graph_counts.get("edges", 0)
+        node_count = graph_counts.get("nodes", 0)
+        edge_count = graph_counts.get("edges", 0)
+        counts["evidence_graph_nodes"] = node_count
+        counts["evidence_graph_edges"] = edge_count
         counts["analysis_claims"] = claim_count
+        status = "ok" if node_count > 0 else "empty"
         record_source_status(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_EVIDENCE_GRAPH,
-            status="ok",
-            reason=None,
-            row_count=counts["evidence_graph_nodes"],
+            status=status,
+            reason=None if node_count > 0 else "evidence graph build produced no nodes",
+            row_count=node_count,
             window_start=window_start,
             window_end=window_end,
         )

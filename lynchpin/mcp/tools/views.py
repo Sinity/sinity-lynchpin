@@ -146,32 +146,6 @@ def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) ->
     return diffs
 
 @app.tool()
-def project_relationship_graph(refresh_id: str | None=None, min_edge_count: int=1) -> list[dict[str, Any]]:
-    """Cross-project evidence edge graph (Arc M.11).
-
-    Finds edges between evidence nodes in different projects — shared AI
-    sessions, commit references across repos, temporal co-occurrence.
-    Produces a directed graph: (source_project, target_project, edge_count)
-    suitable for visualization or dependency analysis.
-
-    Parameters:
-        refresh_id:     promote snapshot (default: latest).
-        min_edge_count: minimum edge count to include a pair.
-
-    Returns:
-        [{"source_project": str, "target_project": str, "edge_count": int}]
-    """
-    from lynchpin.substrate.connection import connect, substrate_path
-    path = substrate_path()
-    with connect(path, read_only=True) as conn:
-        if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'evidence_node')
-            if refresh_id is None:
-                return []
-        rows = conn.execute('\n            SELECT ns.project AS proj_a, nt.project AS proj_b,\n                   COUNT(*) AS edge_count\n            FROM evidence_edge e\n            JOIN evidence_node ns\n              ON ns.id = e.source_id AND ns.refresh_id = e.refresh_id\n            JOIN evidence_node nt\n              ON nt.id = e.target_id AND nt.refresh_id = e.refresh_id\n            WHERE ns.project IS NOT NULL\n              AND nt.project IS NOT NULL\n              AND ns.project != nt.project\n              AND e.refresh_id = ?\n            GROUP BY ns.project, nt.project\n            HAVING COUNT(*) >= ?\n            ORDER BY edge_count DESC\n        ', [refresh_id, int(min_edge_count)]).fetchall()
-    return [{'source_project': r[0], 'target_project': r[1], 'edge_count': r[2]} for r in rows]
-
-@app.tool()
 def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
     """PR review SLO dashboard over pr_review_row (Arc M.9).
 

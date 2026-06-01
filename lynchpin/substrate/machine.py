@@ -177,9 +177,11 @@ def load_machine_experiment_runs(
     result = conn.execute(
         f"""
         SELECT
-            run_id, host, workload, command, cwd,
-            started_at, ended_at, exit_status,
-            service_profile, cache_profile, planned_treatment,
+            run_id, run_group_id, host, workload, command, cwd,
+            started_at, ended_at, monotonic_started_ns, monotonic_ended_ns,
+            exit_status, execution_outcome,
+            service_profile, cache_profile, measurement_context, planned_treatment,
+            nix_internal_json_path,
             git_root, git_head, git_branch, git_dirty,
             pre_state, post_state, notes, manifest_path, refresh_id
         FROM machine_experiment_run
@@ -454,9 +456,11 @@ def promote_machine_network_samples(
 
 
 _EXPERIMENT_RUN_COLUMNS = (
-    "run_id", "host", "workload", "command", "cwd",
-    "started_at", "ended_at", "exit_status",
-    "service_profile", "cache_profile", "planned_treatment",
+    "run_id", "run_group_id", "host", "workload", "command", "cwd",
+    "started_at", "ended_at", "monotonic_started_ns", "monotonic_ended_ns",
+    "exit_status", "execution_outcome",
+    "service_profile", "cache_profile", "measurement_context", "planned_treatment",
+    "nix_internal_json_path",
     "git_root", "git_head", "git_branch", "git_dirty",
     "pre_state", "post_state", "notes", "manifest_path",
 )
@@ -476,9 +480,12 @@ def promote_machine_experiment_runs(
         refresh_id=refresh_id,
         rows=runs,
         extractor=lambda r: (
-            r.run_id, r.host, r.workload, list(r.command), r.cwd,
-            r.started_at, r.ended_at, r.exit_status,
-            r.service_profile, r.cache_profile, json.dumps(r.planned_treatment),
+            r.run_id, r.run_group_id, r.host, r.workload, list(r.command), r.cwd,
+            r.started_at, r.ended_at, r.monotonic_started_ns, r.monotonic_ended_ns,
+            r.exit_status, json.dumps(r.execution_outcome),
+            r.service_profile, r.cache_profile,
+            json.dumps(r.measurement_context), json.dumps(r.planned_treatment),
+            r.nix_internal_json_path,
             r.git_root, r.git_head, r.git_branch, r.git_dirty,
             json.dumps(r.pre_state), json.dumps(r.post_state),
             list(r.notes), str(r.manifest_path),

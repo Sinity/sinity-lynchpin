@@ -469,49 +469,6 @@ def analysis_readiness(
 
 
 @app.tool()
-def mcp_capability_map() -> list[dict[str, Any]]:
-    """Analytic MCP tools with their backing contract or substrate stage."""
-    capabilities = [
-        ("contract_status", "dataset", "source_contracts", "dict/status"),
-        ("contract_coverage", "dataset", "source_contracts", "dict/status"),
-        ("analysis_readiness", "dataset+stage", "source_contracts/substrate_source_status", "dict/status"),
-        ("promotion_runs", "stage", "substrate_promotion_run", "dict/status"),
-        ("substrate_run_steps", "stage", "substrate_run_step", "dict/status"),
-        ("analysis_claims", "stage", "analysis_claim", "raises when unpromoted"),
-        ("claim_evidence", "stage", "analysis_claim/evidence_node/evidence_edge", "dict/status"),
-        ("spotify_daily", "stage", "spotify_daily", "raises when unpromoted"),
-        ("personal_daily_signals", "stage", "personal_daily_signal", "raises when unpromoted"),
-        ("activity_content_daily", "stage", "activity_content_day", "raises when unpromoted"),
-        ("activity_title_usage", "stage", "activity_title_usage", "raises when unpromoted"),
-        ("activity_unmatched_titles", "stage", "activity_title_usage", "raises when unpromoted"),
-        ("title_metadata_status", "dataset", "title_metadata", "dict/status"),
-        ("title_metadata_audit", "dataset", "title_metadata", "dict/status"),
-        ("google_takeout_daily", "dataset", "google_takeout", "returns empty list for covered zero-activity windows"),
-        ("google_takeout_events", "dataset", "google_takeout", "returns empty list for covered zero-activity windows"),
-        ("terminal_daily", "dataset", "atuin", "returns empty list for covered zero-activity windows"),
-        ("terminal_sessions", "dataset", "atuin", "returns empty list for covered zero-activity windows"),
-        ("source_observation_bounds", "dataset", "source observation bounds", "no age-based stale scoring"),
-        ("mcp_surface_self_check", "runtime", "source_contracts/FastMCP registry", "dict/status"),
-        ("source_correlation", "stage", "evidence_graph", "raises when unpromoted"),
-        ("project_day_correlations", "stage", "evidence_graph", "raises when unpromoted"),
-        ("closure_chain_walks", "stage", "evidence_graph", "raises when unpromoted"),
-        ("file_overlap_edges", "stage", "ai_work_events", "raises when unpromoted"),
-        ("symbol_overlap_edges", "stage", "ai_work_events", "raises when unpromoted"),
-        ("pr_review_rows", "stage", "pr_review", "raises when unpromoted"),
-        ("query_substrate", "raw", "DuckDB", "SELECT-only escape hatch"),
-    ]
-    return [
-        {
-            "tool": tool,
-            "backing_kind": backing_kind,
-            "backing": backing,
-            "failure_semantics": failure_semantics,
-        }
-        for tool, backing_kind, backing, failure_semantics in capabilities
-    ]
-
-
-@app.tool()
 def promotion_runs(
     refresh_id: str | None = None,
     status: str | None = None,
@@ -655,6 +612,25 @@ def claim_evidence(
     if row is None:
         return {"summary": {"status": "missing"}, "claim_id": claim_id}
     return _json_safe(row)
+
+
+@app.tool()
+def analysis_claim_calibration(
+    refresh_id: str | None = None,
+    project: str | None = None,
+    claim_type: str | None = None,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Internal-consistency audit for persisted analysis claims."""
+    from lynchpin.analysis.claim_calibration import calibrate_claims
+
+    rows = analysis_claims(
+        refresh_id=refresh_id,
+        project=project,
+        claim_type=claim_type,
+        limit=min(max(limit, 1), 10_000),
+    )
+    return _json_safe(calibrate_claims(rows).to_json())
 
 
 @app.tool()

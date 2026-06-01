@@ -24,7 +24,7 @@ def source_readiness(*, start: date, end: date, include_polylogue_product_counts
     coverage = coverage_report(start=start, end=end).by_source()
     exports_root = getattr(cfg, 'exports_root', None)
     comms_root = exports_root / 'comms' if exports_root is not None else None
-    items: list[SourceReadiness] = [_path_source('activitywatch', available['activitywatch'], cfg.activitywatch_db, 'ActivityWatch focus database is present', 'ActivityWatch focus database is missing', coverage=coverage.get('activitywatch')), _path_source('terminal', available['atuin'], cfg.atuin_db, 'Atuin shell history database is present', 'Atuin shell history database is missing', coverage=coverage.get('terminal')), _path_source('git', cfg.sinnix_root.parent.exists(), cfg.sinnix_root.parent, 'local project git repositories are read live', 'project checkout root is missing'), _polylogue_source(include_product_counts=include_polylogue_product_counts), _path_source('raw_log', available['raw_log'], cfg.raw_log_file, 'knowledgebase raw-log is present', 'knowledgebase raw-log is missing', count_fn=_line_count), _path_source('browser', available['webhistory'], cfg.webhistory_ndjson, 'canonical browser history NDJSON is present', 'canonical browser history NDJSON is missing', observation=observations.get('webhistory'), coverage=coverage.get('webhistory')), _optional_product_source('browser_bookmarks', getattr(cfg, 'browser_bookmarks_root', None), 'processed/bookmarks.ndjson', 'canonical browser bookmark product is present', 'canonical browser bookmark product is missing'), _optional_product_source('communications', comms_root, 'processed/communication_events.ndjson', 'canonical communication event product is present', 'canonical communication event product is missing'), _optional_product_source('arbtt', getattr(cfg, 'arbtt_root', None), 'processed/events.ndjson', 'canonical ARBTT focus product is present', 'canonical ARBTT focus product is missing'), _materialized_contract_source('title_metadata', 'canonical title metadata product is present', 'canonical title metadata product is missing'), _materialized_contract_source('activity_content', 'canonical ActivityWatch content metadata product is present', 'canonical ActivityWatch content metadata product is missing'), _path_source('sleep', available['sleep'], cfg.sleep_jsonl, 'sleep processed export is present', 'sleep processed export is missing', observation=observations.get('sleep'), coverage=coverage.get('sleep')), _path_source('health', cfg.samsung_gdpr_cloud_dir.exists(), cfg.samsung_gdpr_cloud_dir, 'Samsung health export root is present', 'Samsung health export root is missing', coverage=coverage.get('health')), _path_source('spotify', available['spotify'], cfg.spotify_root, 'Spotify processed export is present', 'Spotify processed export is missing', observation=observations.get('spotify'), coverage=coverage.get('spotify')), _path_source('reddit', available['reddit'], cfg.reddit_export_dir, 'Reddit processed export is present', 'Reddit processed export is missing', observation=observations.get('reddit'), coverage=coverage.get('reddit')), _path_source('messenger', available['fbmessenger'], cfg.fbmessenger_gdpr_root if cfg.fbmessenger_gdpr_root.exists() else cfg.fbmessenger_db, 'Facebook Messenger export/database is present', 'Facebook Messenger export/database is missing', observation=observations.get('fbmessenger'), coverage=coverage.get('messenger')), _path_source('raindrop', available['raindrop'], cfg.raindrop_csv, 'Raindrop CSV export is present', 'Raindrop CSV export is missing', observation=observations.get('raindrop'), coverage=coverage.get('raindrop')), _path_source('substance', (cfg.exports_root / 'health/processed/substance_log_unified.csv').exists(), cfg.exports_root / 'health/processed/substance_log_unified.csv', 'substance log is present', 'substance log is missing', coverage=coverage.get('substance')), _machine_source(), _sinnix_runtime_inventory_source(), _analysis_source(include_inventory=include_analysis_inventory), SourceReadiness(source='github', status='available' if include_github_frontier else 'partial', reason='GitHub frontier fetch is enabled for this analysis' if include_github_frontier else 'GitHub is optional network evidence; use --github-frontier to fetch/cache it', cost='network', path=None, caveats=() if include_github_frontier else ('disabled outside network mode',))]
+    items: list[SourceReadiness] = [_path_source('activitywatch', available['activitywatch'], cfg.activitywatch_db, 'ActivityWatch focus database is present', 'ActivityWatch focus database is missing', coverage=coverage.get('activitywatch')), _path_source('terminal', available['atuin'], cfg.atuin_db, 'Atuin shell history database is present', 'Atuin shell history database is missing', coverage=coverage.get('terminal')), _path_source('git', cfg.sinnix_root.parent.exists(), cfg.sinnix_root.parent, 'local project git repositories are read live', 'project checkout root is missing'), _polylogue_source(include_product_counts=include_polylogue_product_counts), _path_source('raw_log', available['raw_log'], cfg.raw_log_file, 'knowledgebase raw-log is present', 'knowledgebase raw-log is missing', count_fn=_line_count), _path_source('browser', available['webhistory'], cfg.webhistory_ndjson, 'canonical browser history NDJSON is present', 'canonical browser history NDJSON is missing', observation=observations.get('webhistory'), coverage=coverage.get('webhistory')), _optional_product_source('browser_bookmarks', getattr(cfg, 'browser_bookmarks_root', None), 'processed/bookmarks.ndjson', 'canonical browser bookmark product is present', 'canonical browser bookmark product is missing'), _optional_product_source('communications', comms_root, 'processed/communication_events.ndjson', 'canonical communication event product is present', 'canonical communication event product is missing'), _optional_product_source('arbtt', getattr(cfg, 'arbtt_root', None), 'processed/events.ndjson', 'canonical ARBTT focus product is present', 'canonical ARBTT focus product is missing'), _materialized_contract_source('title_metadata', 'canonical title metadata product is present', 'canonical title metadata product is missing'), _materialized_contract_source('activity_content', 'canonical ActivityWatch content metadata product is present', 'canonical ActivityWatch content metadata product is missing'), _path_source('sleep', available['sleep'], cfg.sleep_jsonl, 'sleep processed export is present', 'sleep processed export is missing', observation=observations.get('sleep'), coverage=coverage.get('sleep')), _path_source('health', cfg.samsung_gdpr_cloud_dir.exists(), cfg.samsung_gdpr_cloud_dir, 'Samsung health export root is present', 'Samsung health export root is missing', coverage=coverage.get('health')), _path_source('spotify', available['spotify'], cfg.spotify_root, 'Spotify processed export is present', 'Spotify processed export is missing', observation=observations.get('spotify'), coverage=coverage.get('spotify')), _path_source('reddit', available['reddit'], cfg.reddit_export_dir, 'Reddit processed export is present', 'Reddit processed export is missing', observation=observations.get('reddit'), coverage=coverage.get('reddit')), _path_source('messenger', available['fbmessenger'], cfg.fbmessenger_gdpr_root if cfg.fbmessenger_gdpr_root.exists() else cfg.fbmessenger_db, 'Facebook Messenger export/database is present', 'Facebook Messenger export/database is missing', observation=observations.get('fbmessenger'), coverage=coverage.get('messenger')), _path_source('raindrop', available['raindrop'], cfg.raindrop_csv, 'Raindrop CSV export is present', 'Raindrop CSV export is missing', observation=observations.get('raindrop'), coverage=coverage.get('raindrop')), _path_source('substance', (cfg.exports_root / 'health/processed/substance_log_unified.csv').exists(), cfg.exports_root / 'health/processed/substance_log_unified.csv', 'substance log is present', 'substance log is missing', coverage=coverage.get('substance')), _machine_source(), _xtask_history_source(), _polylogue_devtools_source(), _sinnix_runtime_inventory_source(), _analysis_source(include_inventory=include_analysis_inventory), SourceReadiness(source='github', status='available' if include_github_frontier else 'partial', reason='GitHub frontier fetch is enabled for this analysis' if include_github_frontier else 'GitHub is optional network evidence; use --github-frontier to fetch/cache it', cost='network', path=None, caveats=() if include_github_frontier else ('disabled outside network mode',))]
     return SourceReadinessReport(start=start, end=end, generated_at=datetime.now(timezone.utc), sources=tuple(sorted(items, key=lambda item: item.source)))
 
 def render_source_readiness(report: SourceReadinessReport) -> str:
@@ -123,6 +123,45 @@ def _machine_source() -> SourceReadiness:
         caveats = ()
     return SourceReadiness(source='machine', status=status, reason=ready.reason, cost='materialized', path=str(path), count=ready.live_rows if ready.live_rows else None, last_date=_mtime_date(path), caveats=caveats)
 
+def _xtask_history_source() -> SourceReadiness:
+    from sqlite3 import connect as sqlite_connect
+    from ..sources.xtask_history import xtask_history_paths
+    paths = tuple(((label, path) for label, path in xtask_history_paths() if path.exists()))
+    if not paths:
+        return SourceReadiness(source='xtask_history', status='missing', reason='xtask invocation ledgers are missing', cost='materialized')
+    invocation_count = 0
+    stage_count = 0
+    test_count = 0
+    first_seen: date | None = None
+    last_seen: date | None = None
+    caveats: list[str] = []
+    for label, path in paths:
+        try:
+            with sqlite_connect(path) as conn:
+                inv, first_raw, last_raw = conn.execute('SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations').fetchone()
+                invocation_count += int(inv or 0)
+                stage_count += _sqlite_count(conn, 'stage_timings')
+                test_count += _sqlite_count(conn, 'test_results')
+                first_seen = _min_date(first_seen, _iso_date(first_raw))
+                last_seen = _max_date(last_seen, _iso_date(last_raw))
+        except Exception as exc:
+            caveats.append(f'{label}: {exc}')
+    status: ReadinessStatus = 'available' if invocation_count else 'partial'
+    reason = f'{len(paths)} xtask ledger(s): {invocation_count} invocations, {stage_count} stages, {test_count} test results'
+    if invocation_count == 0:
+        reason = 'xtask ledgers are present but contain no invocation rows'
+    caveats.append('xtask history is observational operator telemetry, not a controlled benchmark')
+    return SourceReadiness(source='xtask_history', status=status, reason=reason, cost='materialized', path=':'.join((str(path) for _, path in paths)), count=invocation_count, first_date=first_seen, last_date=last_seen, caveats=tuple(caveats))
+
+def _polylogue_devtools_source() -> SourceReadiness:
+    from ..sources.polylogue_devtools import source_readiness
+    ready = source_readiness()
+    present = ready.xtask_path.exists() or ready.logs_dir.exists()
+    count = ready.xtask_rows + ready.meta_files
+    if not present:
+        return SourceReadiness(source='polylogue_devtools', status='missing', reason='Polylogue devtool JSONL/log ledgers are missing', cost='materialized')
+    return SourceReadiness(source='polylogue_devtools', status='available' if count else 'partial', reason=f'{ready.xtask_rows} xtask rows, {ready.meta_files} log meta files', cost='materialized', path=f'{ready.xtask_path}:{ready.logs_dir}', count=count, first_date=ready.first_seen.date() if ready.first_seen else None, last_date=ready.last_seen.date() if ready.last_seen else None, caveats=('repo-local Polylogue development tooling history, not chat archive content', '.local/logs metrics can contribute resource windows for machine attribution'))
+
 def _sinnix_runtime_inventory_source() -> SourceReadiness:
     from ..sources.sinnix_runtime_inventory import readiness as inventory_readiness
     cfg = get_config()
@@ -153,6 +192,39 @@ def _line_count(path: Path) -> int | None:
             return sum((1 for _ in handle))
     except OSError:
         return None
+
+def _sqlite_count(conn: Any, table: str) -> int:
+    try:
+        row = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
+    except Exception:
+        return 0
+    return int(row[0] or 0) if row else 0
+
+def _iso_date(value: object) -> date | None:
+    if value is None:
+        return None
+    text = str(value)
+    try:
+        return datetime.fromisoformat(text.replace('Z', '+00:00')).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+
+def _min_date(left: date | None, right: date | None) -> date | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
+
+def _max_date(left: date | None, right: date | None) -> date | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
 
 def _coverage_window(item: SourceReadiness) -> str:
     if item.first_date and item.last_date:

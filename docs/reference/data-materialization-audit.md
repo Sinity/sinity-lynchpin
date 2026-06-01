@@ -182,7 +182,7 @@ Derived products now live under `/realm/data/derived/lynchpin/`:
 Substrate promotion copies those products into DuckDB instead of rebuilding
 daily personal metrics at snapshot time. Missing derived products are repair
 signals; direct `substrate_snapshot` requires them to exist. MCP exposes
-`derived_product_status`, `materialization_status`, and `substrate_run_steps`
+`materialization_status`, `mcp_capability_matrix`, and `substrate_run_steps`
 for observability.
 
 The former `/realm/data/libraries/machine-recovery` staging tree has been

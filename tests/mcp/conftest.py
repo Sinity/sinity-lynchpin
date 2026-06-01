@@ -38,6 +38,9 @@ def stub_live_promote_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     )
     monkeypatch.setattr("lynchpin.sources.machine_experiments.experiment_runs", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine_experiments.experiment_root", lambda: tmp_path / "experiments")
+    monkeypatch.setattr("lynchpin.sources.xtask_history.iter_all_invocations", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.xtask_history.iter_all_stage_timings", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("lynchpin.sources.xtask_history.iter_all_test_results", lambda *args, **kwargs: iter(()))
 
 
 def dt(y: int, m: int, d: int, h: int = 12) -> datetime:

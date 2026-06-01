@@ -222,6 +222,50 @@ def google_takeout_events(
 
 
 @app.tool()
+def google_takeout_retrospective(
+    start: str | None = None,
+    end: str | None = None,
+    session_gap_min: int = 45,
+    top_n: int = 25,
+) -> dict[str, Any]:
+    """Mine Google Takeout events into sessions, anomalies, searches, and co-occurrences."""
+    from datetime import date
+
+    from lynchpin.analysis.google_takeout_mining import (
+        google_takeout_retrospective as _retrospective,
+    )
+
+    start_d = date.fromisoformat(start) if start else None
+    end_d = date.fromisoformat(end) if end else None
+    return _retrospective(
+        start=start_d,
+        end=end_d,
+        session_gap_min=session_gap_min,
+        top_n=min(max(top_n, 1), 200),
+    ).to_json()
+
+
+@app.tool()
+def personal_interest_trace(
+    start: str | None = None,
+    end: str | None = None,
+    top_n: int = 50,
+) -> dict[str, Any]:
+    """Weak-label interest traces across searches, bookmarks, and web domains."""
+    from datetime import date
+
+    from lynchpin.analysis.personal_interest_fusion import (
+        personal_interest_trace as _personal_interest_trace,
+    )
+
+    return _personal_interest_trace(
+        start=date.fromisoformat(start) if start else None,
+        end=date.fromisoformat(end) if end else None,
+        top_n=min(max(top_n, 1), 500),
+    ).to_json()
+
+
+@app.tool()
 def terminal_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily canonical Atuin terminal activity."""
     from dataclasses import asdict
@@ -421,21 +465,6 @@ def materialization_status() -> list[dict[str, Any]]:
     from lynchpin.materialization import audit_materialization
 
     return [row.to_json() for row in audit_materialization()]
-
-
-@app.tool()
-def contract_status() -> list[dict[str, Any]]:
-    """Dataset contract readiness, coverage, and repair commands."""
-    return materialization_status()
-
-
-@app.tool()
-def derived_product_status() -> list[dict[str, Any]]:
-    """Readiness rows for canonical derived products consumed by substrate promotion."""
-    from lynchpin.materialization import audit_materialization
-
-    names = {"title_metadata", "activity_content", "spotify_daily", "personal_daily_signals"}
-    return [row.to_json() for row in audit_materialization() if row.name in names]
 
 
 @app.tool()

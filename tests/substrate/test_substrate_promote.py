@@ -25,6 +25,8 @@ UTC = timezone.utc
 def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
     """Substrate-promotion unit tests must not ingest live personal archives."""
     monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda *args, **kwargs: False)
+    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.iter_invocations", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
@@ -53,6 +55,16 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch | None = None) -> None:
 
 def _dt(y: int, m: int, d: int, h: int = 12) -> datetime:
     return datetime(y, m, d, h, 0, 0, tzinfo=UTC)
+
+
+def test_machine_sqlite_window_filter_uses_half_open_text_range() -> None:
+    from lynchpin.analysis.active.substrate_promote_machine import _source_window_filter
+
+    sql, params = _source_window_filter(date(2026, 5, 1), date(2026, 5, 3))
+
+    assert sql == "WHERE observed_at >= ? AND observed_at < ?"
+    assert "CAST" not in sql
+    assert params == ["2026-05-01", "2026-05-04"]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -249,6 +261,10 @@ def test_substrate_promote_uses_derived_personal_products(
     monkeypatch.setattr(
         "lynchpin.sources.spotify.iter_streams",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("raw streams must not be read")),
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.operator_daily.operator_daily_matrix",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("targeted promote must not build operator_day")),
     )
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
@@ -772,6 +788,61 @@ def test_source_status_recorded_on_successful_promote(
 
     assert commits_row == ("ok", 2)
     assert fc_row == ("empty",)
+
+
+def test_evidence_graph_empty_promote_is_not_reported_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A graph build with zero nodes is a materialized empty state, not success."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    from lynchpin.analysis.active.substrate_promote_graph import promote_graph_source
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_EVIDENCE_GRAPH,
+        SourceSelection,
+    )
+    from lynchpin.core.evidence_graph import EvidenceGraph
+    from lynchpin.materialization import audit_materialization
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+
+    graph = EvidenceGraph(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 2),
+        generated_at=datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_graph.build_evidence_graph",
+        lambda *args, **kwargs: graph,
+    )
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_graph.analysis_claim_rows",
+        lambda *args, **kwargs: [],
+    )
+
+    with connect(substrate_path()) as conn:
+        apply_schema(conn)
+        counts: dict[str, int] = {}
+        promote_graph_source(
+            conn,
+            refresh_id="dag:test-empty-graph",
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 2),
+            counts=counts,
+            selection=SourceSelection.from_collection({SOURCE_EVIDENCE_GRAPH}),
+            write_evidence_graph=True,
+        )
+        status_row = conn.execute(
+            "SELECT status, reason, row_count FROM substrate_source_status "
+            "WHERE refresh_id = ? AND source = ?",
+            ["dag:test-empty-graph", SOURCE_EVIDENCE_GRAPH],
+        ).fetchone()
+
+    audit = {row.name: row for row in audit_materialization()}
+
+    assert counts["evidence_graph_nodes"] == 0
+    assert status_row == ("empty", "evidence graph build produced no nodes", 0)
+    assert audit["evidence_graph_substrate"].status == "empty"
 
 
 def test_source_status_idempotent_on_re_run(

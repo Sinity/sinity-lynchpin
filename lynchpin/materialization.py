@@ -163,19 +163,28 @@ def audit_materialization(
 
 def _dataset_builders() -> dict[str, Any]:
     return {
+        "asciinema": _asciinema_dataset,
         "webhistory": _webhistory_dataset,
         "google_takeout": _google_takeout_dataset,
         "polylogue": _polylogue_dataset,
+        "codex": _codex_dataset,
         "activitywatch": _activitywatch_dataset,
+        "clipboard": _clipboard_dataset,
         "title_metadata": _title_metadata_dataset,
         "activity_content": _activity_content_dataset,
         "atuin": _atuin_dataset,
+        "dendron": _dendron_dataset,
         "evidence_graph_substrate": _git_substrate_dataset,
+        "goodreads": _goodreads_dataset,
         "health": _health_dataset,
+        "keylog": _keylog_dataset,
+        "raw_log": _raw_log_dataset,
         "sleep": _sleep_dataset,
         "substance": _substance_dataset,
         "spotify": _spotify_dataset,
         "reddit": _reddit_dataset,
+        "samsung_gdpr_cloud": _samsung_gdpr_cloud_dataset,
+        "sinnix_runtime_inventory": _sinnix_runtime_inventory_dataset,
         "facebook_messenger": _messenger_dataset,
         "communications": _communications_dataset,
         "raindrop": _raindrop_dataset,
@@ -183,9 +192,11 @@ def _dataset_builders() -> dict[str, Any]:
         "arbtt": _arbtt_dataset,
         "machine": _machine_dataset,
         "xtask_history": _xtask_history_dataset,
+        "polylogue_devtools": _polylogue_devtools_dataset,
         "spotify_daily": _spotify_daily_dataset,
         "personal_daily_signals": _personal_daily_signals_dataset,
         "irc": _irc_dataset,
+        "wykop": _wykop_dataset,
     }
 
 
@@ -717,12 +728,184 @@ def _atuin_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+def _raw_source_dataset(
+    cfg: LynchpinConfig,
+    *,
+    name: str,
+    raw_roots: tuple[Path, ...],
+    authority: str,
+    query_surface: str,
+    refresh_command: str,
+    row_count: int | None = None,
+    materialized_paths: tuple[Path, ...] = (),
+) -> MaterializedDataset:
+    existing = tuple(path for path in raw_roots if path.exists())
+    status: Status = "ready" if existing else "missing"
+    observed = max((_path_mtime_date(path) for path in existing), default=None)
+    return MaterializedDataset(
+        name=name,
+        status=status,
+        authority=authority,
+        query_surface=query_surface,
+        materialized_paths=materialized_paths,
+        raw_roots=raw_roots,
+        row_count=row_count,
+        first_date=None,
+        last_date=observed,
+        refresh_command=refresh_command,
+        reason=(
+            "raw source authority is present"
+            if existing
+            else "configured raw source authority is missing"
+        ),
+    )
+
+
+def _asciinema_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="asciinema",
+        raw_roots=(cfg.asciinema_root,),
+        authority="asciinema terminal recording captures",
+        query_surface="lynchpin.sources.terminal.recordings",
+        refresh_command="asciinema recording capture writes under /realm/data/captures/asciinema",
+        row_count=_count_files(cfg.asciinema_root, suffixes=(".cast",)),
+    )
+
+
+def _codex_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="codex",
+        raw_roots=(cfg.codex_sessions_root,),
+        authority="Codex session JSONL archive",
+        query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
+        refresh_command="polylogued tails Codex session logs into the Polylogue archive",
+        row_count=_count_files(cfg.codex_sessions_root, suffixes=(".jsonl",)),
+    )
+
+
+def _clipboard_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    raw_roots = (cfg.clipboard_live_file, *cfg.clipboard_export_files)
+    return _raw_source_dataset(
+        cfg,
+        name="clipboard",
+        raw_roots=raw_roots,
+        authority="Clipse live clipboard history plus exported clipboard snapshots",
+        query_surface="lynchpin.sources.clipboard",
+        refresh_command="clipse records live; export snapshots are read from configured raw files",
+        row_count=sum(1 for path in raw_roots if path.exists()),
+    )
+
+
+def _dendron_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="dendron",
+        raw_roots=(cfg.dendron_root,),
+        authority="knowledgebase/Dendron markdown notes",
+        query_surface="lynchpin.sources.exports_dendron",
+        refresh_command="edit knowledgebase notes; Lynchpin reads the note tree directly",
+        row_count=_count_files(cfg.dendron_root, suffixes=(".md",)),
+    )
+
+
+def _goodreads_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="goodreads",
+        raw_roots=(cfg.goodreads_library,),
+        authority="Goodreads library export CSV",
+        query_surface="lynchpin.sources.exports_goodreads",
+        refresh_command="replace /realm/data/exports/goodreads/raw/library_export.csv",
+        row_count=_csv_count(cfg.goodreads_library),
+    )
+
+
+def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    logs_root = cfg.keylog_root / "logs"
+    return _raw_source_dataset(
+        cfg,
+        name="keylog",
+        raw_roots=(logs_root,),
+        authority="scribe-tap keylog captures",
+        query_surface="lynchpin.sources.keylog",
+        refresh_command="scribe-tap records live keylog captures",
+        row_count=_count_files(logs_root),
+    )
+
+
+def _raw_log_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="raw_log",
+        raw_roots=(cfg.raw_log_file,),
+        authority="operator raw-log file",
+        query_surface="lynchpin.sources.raw_log",
+        refresh_command="append operator raw-log entries",
+        row_count=_line_count(cfg.raw_log_file) if cfg.raw_log_file.exists() else None,
+    )
+
+
+def _samsung_gdpr_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="samsung_gdpr_cloud",
+        raw_roots=(cfg.samsung_gdpr_cloud_dir,),
+        authority="Samsung GDPR cloud export",
+        query_surface="lynchpin.sources.samsung_gdpr_cloud",
+        refresh_command="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
+        row_count=_count_files(cfg.samsung_gdpr_cloud_dir),
+    )
+
+
+def _sinnix_runtime_inventory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="sinnix_runtime_inventory",
+        raw_roots=(cfg.sinnix_runtime_inventory_json,),
+        authority="Sinnix runtime inventory JSON",
+        query_surface="lynchpin.sources.sinnix_runtime_inventory",
+        refresh_command="refresh Sinnix runtime inventory from the Sinnix capture pipeline",
+        row_count=1 if cfg.sinnix_runtime_inventory_json.exists() else None,
+    )
+
+
+def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _raw_source_dataset(
+        cfg,
+        name="wykop",
+        raw_roots=(cfg.wykop_root,),
+        authority="Wykop GDPR export",
+        query_surface="lynchpin.sources.wykop",
+        refresh_command="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
+        row_count=_count_files(cfg.wykop_root, suffixes=(".csv", ".json", ".jsonl")),
+    )
+
+
 def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     from .substrate.connection import substrate_path
 
     path = substrate_path()
     builds = _sqlite_duck_count(path, "evidence_graph_build")
-    status = "ready" if builds and builds > 0 else "partial"
+    latest_build_counts = _duck_latest_graph_build_counts(path)
+    latest_status = _duck_latest_source_status(path, "evidence_graph")
+    latest_node_count = latest_build_counts[0] if latest_build_counts else None
+    if builds and builds > 0 and latest_node_count and latest_node_count > 0:
+        status: Status = "ready"
+        reason = "DuckDB evidence graph builds are present"
+    elif builds and builds > 0 and latest_node_count == 0:
+        status = "empty"
+        reason = "latest evidence graph build contains no nodes"
+    elif latest_status and latest_status[0] == "empty":
+        status = "empty"
+        reason = latest_status[1] or "latest evidence graph promotion produced no nodes"
+    elif latest_status and latest_status[0] == "error":
+        status = "degraded"
+        reason = latest_status[1] or "latest evidence graph promotion errored"
+    else:
+        status = "partial"
+        reason = "no materialized evidence graph build recorded"
     return MaterializedDataset(
         name="evidence_graph_substrate",
         status=status,
@@ -734,7 +917,7 @@ def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         first_date=None,
         last_date=None,
         refresh_command="python -m lynchpin.cli.current_state --refresh-substrate --start 2013-01-01 --end $(date +%F)",
-        reason="DuckDB evidence graph builds are present" if status == "ready" else "no materialized evidence graph build recorded",
+        reason=reason,
     )
 
 
@@ -1049,6 +1232,35 @@ def _xtask_history_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+def _polylogue_devtools_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .sources.polylogue_devtools import source_readiness
+
+    contract = source_contract("polylogue_devtools")
+    ready = source_readiness(
+        xtask_path=cfg.polylogue_devtools_xtask_jsonl,
+        logs_dir=cfg.polylogue_devtools_logs_dir,
+    )
+    row_count = ready.xtask_rows + ready.meta_files
+    present = ready.xtask_path.exists() or ready.logs_dir.exists()
+    return MaterializedDataset(
+        name="polylogue_devtools",
+        status="ready" if present and row_count else "partial" if present else "missing",
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(ready.xtask_path, ready.logs_dir),
+        raw_roots=(cfg.polylogue_project_root,),
+        row_count=row_count if present else None,
+        first_date=ready.first_seen.date() if ready.first_seen else None,
+        last_date=ready.last_seen.date() if ready.last_seen else None,
+        refresh_command=contract.refresh_command,
+        reason=(
+            f"Polylogue devtools ledgers readable: {ready.xtask_rows} xtask rows, {ready.meta_files} meta files"
+            if present
+            else f"Polylogue devtools ledgers missing under {cfg.polylogue_project_root}"
+        ),
+    )
+
+
 def _personal_daily_signals_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("personal_daily_signals")
     path = personal_daily_signals_path()
@@ -1300,6 +1512,35 @@ def _count_files(root: Path, *, suffixes: tuple[str, ...] | None = None) -> int:
     )
 
 
+def _path_mtime_date(path: Path) -> date | None:
+    try:
+        if not path.exists():
+            return None
+        if path.is_file():
+            return datetime.fromtimestamp(path.stat().st_mtime).date()
+        latest = path.stat().st_mtime
+        for child in path.iterdir():
+            try:
+                latest = max(latest, child.stat().st_mtime)
+            except OSError:
+                continue
+        return datetime.fromtimestamp(latest).date()
+    except OSError:
+        return None
+
+
+def _csv_count(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)
+            return sum(1 for _ in reader)
+    except OSError:
+        return None
+
+
 def _sqlite_count(path: Path, table: str) -> int | None:
     try:
         with sqlite3.connect(path) as conn:
@@ -1323,3 +1564,55 @@ def _sqlite_duck_count(path: Path, table: str) -> int | None:
     except Exception:
         return None
     return int(row[0]) if row else None
+
+
+def _duck_latest_source_status(path: Path, source: str) -> tuple[str, str | None] | None:
+    if not path.exists():
+        return None
+    try:
+        import duckdb
+
+        conn = duckdb.connect(str(path), read_only=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT status, reason
+                FROM substrate_source_status
+                WHERE source = ?
+                ORDER BY recorded_at DESC
+                LIMIT 1
+                """,
+                [source],
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return str(row[0]), row[1]
+
+
+def _duck_latest_graph_build_counts(path: Path) -> tuple[int, int] | None:
+    if not path.exists():
+        return None
+    try:
+        import duckdb
+
+        conn = duckdb.connect(str(path), read_only=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT node_count, edge_count
+                FROM evidence_graph_build
+                ORDER BY materialized_at DESC, generated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return int(row[0]), int(row[1])
