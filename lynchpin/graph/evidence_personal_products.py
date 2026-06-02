@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from ..core.evidence import EvidenceProvenance
+from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
 
 
@@ -201,8 +201,16 @@ def _add_irc(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
                 },
                 provenance=EvidenceProvenance("irc", "raw_weechat_logs"),
                 caveats=(
-                    "WeeChat raw log parsing; meta/server lines excluded from counts",
-                    "total_messages includes all channel traffic; operator_messages isolates operator-authored",
+                    EvidenceCaveat(
+                        "irc",
+                        "partial",
+                        "WeeChat raw log parsing; meta/server lines excluded from counts.",
+                    ),
+                    EvidenceCaveat(
+                        "irc",
+                        "partial",
+                        "total_messages includes all channel traffic; operator_messages isolates operator-authored.",
+                    ),
                 ),
             )
         )

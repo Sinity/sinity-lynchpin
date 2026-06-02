@@ -10,7 +10,7 @@ def _no_substrate_overlap(monkeypatch):
     monkeypatch.setattr('lynchpin.graph.evidence_edges.overlap_edges_via_substrate', lambda nodes, **kwargs: ())
 
 @pytest.fixture(autouse=True)
-def _mock_empty_sources(monkeypatch):
+def _mock_empty_sources(monkeypatch, tmp_path):
     """Default all source functions to return empty — individual tests
     override with their own monkeypatch.setattr calls as needed.
 
@@ -52,4 +52,7 @@ def _mock_empty_sources(monkeypatch):
     monkeypatch.setattr(f'{system}.add_health', lambda nodes, **kwargs: None)
     monkeypatch.setattr('lynchpin.materialization.materialized_window_overlaps', lambda *args, **kwargs: False)
     monkeypatch.setattr('lynchpin.graph.evidence_analysis.latest_artifacts', lambda **kwargs: ())
+    empty_analysis_root = tmp_path / '_empty_analysis'
+    empty_analysis_root.mkdir()
+    monkeypatch.setattr('lynchpin.core.io.get_config', lambda: type('obj', (), {'analysis_output_dir': empty_analysis_root})())
     monkeypatch.setattr('lynchpin.graph.evidence_graph.source_readiness', lambda **kwargs: type('obj', (), {'caveats': ()})())

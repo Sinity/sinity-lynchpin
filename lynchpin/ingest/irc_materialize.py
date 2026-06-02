@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..core.config import get_config
 from ..sources.irc_raw import (
-    irc_channels,
     irc_events_path,
     irc_manifest_path,
     irc_raw_root,

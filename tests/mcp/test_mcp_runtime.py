@@ -65,6 +65,11 @@ def test_mcp_capability_matrix_reports_contract_capabilities_without_stale_scori
     assert terminal["collection_model"] == "continuous"
     assert "terminal_daily" in terminal["mcp_tools"]
 
+    artifacts = rows["analysis_artifacts"]
+    assert artifacts["collection_model"] == "derived"
+    assert "analysis_artifact_inventory" in artifacts["mcp_tools"]
+    assert "read_analysis_artifact" in artifacts["mcp_tools"]
+
     messenger = rows["facebook_messenger"]
     assert "fbmessenger" in messenger["source_keys"]
 

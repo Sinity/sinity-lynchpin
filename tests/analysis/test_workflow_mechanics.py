@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 
-from lynchpin.analysis.workflow_mechanics import analyze_workflow_mechanics
+from lynchpin.analysis.workflow_mechanics import (
+    analyze_workflow_mechanics,
+    write_workflow_mechanics_report,
+)
 from lynchpin.substrate.connection import apply_schema, connect
 from lynchpin.substrate.work_observations import promote_work_observations
 
@@ -34,6 +38,24 @@ def test_workflow_mechanics_detects_retry_chain(tmp_path) -> None:
     assert summary["command_key"] == "xtask test"
     assert summary["failure_count"] == 2
     assert summary["retry_chain_count"] == 1
+
+
+def test_write_workflow_mechanics_report_persists_artifact(tmp_path) -> None:
+    db = tmp_path / "sub.duckdb"
+    out = tmp_path / "workflow_mechanics.json"
+    base = datetime(2026, 5, 31, 12, tzinfo=UTC)
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_work_observations(conn, refresh_id="r1", rows=[
+            _invocation("i1", base, status="failed", exit_code=1),
+            _invocation("i2", base + timedelta(minutes=3), status="success", exit_code=0),
+        ])
+
+    write_workflow_mechanics_report(out, path=str(db), refresh_id="r1")
+    payload = json.loads(out.read_text(encoding="utf-8"))
+
+    assert payload["invocation_count"] == 2
+    assert payload["retry_chain_count"] == 1
 
 
 def _invocation(

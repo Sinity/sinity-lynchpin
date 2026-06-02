@@ -97,10 +97,11 @@ def test_health_modeling_report_speed():
     from lynchpin.sources.samsung_binning import iter_stress_bins, iter_hrv_bins, iter_hr_bins
     from lynchpin.analysis.health_modeling import align_signals, build_report
 
+    stress = list(iter_stress_bins())[:50000]
+    hrv = list(iter_hrv_bins())
+    hr = list(iter_hr_bins())[:50000]
+
     def load():
-        stress = list(iter_stress_bins())[:50000]
-        hrv = list(iter_hrv_bins())
-        hr = list(iter_hr_bins())[:50000]
         rows = align_signals(iter(stress), iter(hrv), iter(hr))
         return build_report(rows)
 

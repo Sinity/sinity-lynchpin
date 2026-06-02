@@ -2,7 +2,6 @@
 
 from datetime import date
 
-import pytest
 
 
 def test_operator_daily_matrix_basic():

@@ -9,7 +9,6 @@ Tests invariants that must hold for any valid input:
 
 from pathlib import Path
 
-import pytest
 
 
 # ── SMS CSV parsing ──────────────────────────────────────────────────────────

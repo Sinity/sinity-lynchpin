@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
 
 from lynchpin.ingest.webhistory import build_full_history, full_history_manifest_path
 from lynchpin.materialization import MaterializedDataset, render_materialization_audit
@@ -87,6 +88,30 @@ def test_materialization_contract_names_have_builders() -> None:
     from lynchpin.materialization import _dataset_builders
 
     assert tuple(_dataset_builders()) == SOURCE_CONTRACT_NAMES
+
+
+def test_analysis_artifacts_dataset_reports_generated_products(tmp_path) -> None:
+    from lynchpin.materialization import _analysis_artifacts_dataset
+
+    root = tmp_path / "analysis"
+    root.mkdir()
+    (root / "workflow_mechanics.json").write_text(
+        json.dumps({"generated_at_utc": "2026-06-02T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    row = _analysis_artifacts_dataset(SimpleNamespace(analysis_output_dir=root))
+
+    assert row.name == "analysis_artifacts"
+    assert row.status == "ready"
+    assert row.row_count == 1
+    assert row.first_date is None
+    assert row.last_date is None
+    assert row.to_json()["mcp_tools"] == [
+        "analysis_artifact_status",
+        "analysis_artifact_inventory",
+        "read_analysis_artifact",
+    ]
 
 
 def test_materialization_contract_names_have_explicit_local_materializer_policy() -> None:

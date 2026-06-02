@@ -6,7 +6,6 @@ import pytest
 
 from lynchpin.sources.gmail_takeout import (
     GmailMessage,
-    _extract_body_preview,
     _normalize_thread_id,
     _parse_date,
     _looks_outbound,

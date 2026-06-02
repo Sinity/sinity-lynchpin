@@ -40,6 +40,9 @@ def test_source_contracts_carry_capability_and_coverage_policy() -> None:
     assert "title_metadata_audit" in contracts["title_metadata"].mcp_tools
     assert contracts["atuin"].collection_model == "continuous"
     assert "terminal_daily" in contracts["atuin"].mcp_tools
+    assert contracts["analysis_artifacts"].collection_model == "derived"
+    assert "analysis_artifact_inventory" in contracts["analysis_artifacts"].mcp_tools
+    assert "read_analysis_artifact" in contracts["analysis_artifacts"].mcp_tools
     assert contracts["clipboard"].graph_node_kinds == ("clipboard_entry",)
     assert contracts["raw_log"].graph_node_kinds == ("raw_log",)
     assert contracts["wykop"].substrate_daily_signal is True

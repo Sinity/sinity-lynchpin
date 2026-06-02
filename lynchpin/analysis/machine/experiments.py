@@ -61,6 +61,7 @@ class MachineExperimentClaimPack:
     duration_seconds: float | None
     exit_status: int | None
     execution_outcome: dict[str, Any]
+    manifest_validation: dict[str, Any]
     command: tuple[str, ...]
     cwd: str | None
     measurement_context: dict[str, Any]
@@ -142,6 +143,7 @@ def write_machine_experiment_claims(
 def _runs(conn: Any, *, start: date | None, end: date | None, refresh_id: str | None) -> list[dict[str, Any]]:
     if refresh_id is None:
         return []
+    columns = _table_columns(conn, "machine_experiment_run")
     clauses = ["refresh_id = ?"]
     params: list[Any] = [refresh_id]
     if start is not None:
@@ -159,7 +161,12 @@ def _runs(conn: Any, *, start: date | None, end: date | None, refresh_id: str | 
             service_profile, cache_profile, measurement_context, planned_treatment,
             nix_internal_json_path,
             git_root, git_head, git_branch, git_dirty, pre_state, post_state,
-            notes, manifest_path, refresh_id
+            notes,
+            {_select_or_default(columns, "validation_status", "'unknown' AS validation_status")},
+            {_select_or_default(columns, "validation_issues", "[]::VARCHAR[] AS validation_issues")},
+            {_select_or_default(columns, "validation_warnings", "[]::VARCHAR[] AS validation_warnings")},
+            {_select_or_default(columns, "manifest_validation", "'{}'::JSON AS manifest_validation")},
+            manifest_path, refresh_id
         FROM machine_experiment_run
         WHERE {" AND ".join(clauses)}
         ORDER BY started_at, run_id
@@ -168,6 +175,15 @@ def _runs(conn: Any, *, start: date | None, end: date | None, refresh_id: str | 
     ).fetchall()
     columns = [desc[0] for desc in (conn.description or [])]
     return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def _table_columns(conn: Any, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _select_or_default(columns: set[str], column: str, default_expression: str) -> str:
+    return column if column in columns else default_expression
 
 
 def _episodes_for_runs(runs: list[dict[str, Any]], *, path: Path | None) -> list[MachineEpisode]:
@@ -194,7 +210,15 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
         payload_run_id=str(run["run_id"]),
         payload_run_group_id=str(run["run_group_id"]) if run.get("run_group_id") is not None else None,
     )
-    claim_mode = _claim_mode(planned, internal_json.to_dict(), telemetry, assignment_issues=assignment_issues)
+    validation_issues = tuple(_string_list(run.get("validation_issues")))
+    claim_mode = _claim_mode(
+        planned,
+        internal_json.to_dict(),
+        telemetry,
+        assignment_issues=assignment_issues,
+        validation_status=str(run.get("validation_status") or "unknown"),
+        validation_issues=validation_issues,
+    )
     overlaps = _episode_overlaps(run, episodes=episodes)
     caveats = _run_caveats(
         run,
@@ -222,6 +246,7 @@ def _claim_pack(conn: Any, run: dict[str, Any], *, episodes: list[MachineEpisode
         duration_seconds=round(duration, 3) if duration is not None else None,
         exit_status=run.get("exit_status"),
         execution_outcome=_json_dict(run.get("execution_outcome")),
+        manifest_validation=_manifest_validation_payload(run),
         command=tuple(str(item) for item in (run.get("command") or [])),
         cwd=run.get("cwd"),
         measurement_context=_json_dict(run.get("measurement_context")),
@@ -326,6 +351,10 @@ def _run_caveats(
         caveats.append("observational manifest only; do not use controlled benchmark language")
     caveats.extend(f"controlled benchmark contract gap: {issue}" for issue in readiness.issues)
     caveats.extend(f"selected-run assignment gap: {issue}" for issue in assignment_issues)
+    if run.get("validation_status") == "unknown":
+        caveats.append("manifest validation status is unknown; substrate row predates validation columns")
+    caveats.extend(f"manifest validation issue: {issue}" for issue in _string_list(run.get("validation_issues")))
+    caveats.extend(f"manifest validation warning: {issue}" for issue in _string_list(run.get("validation_warnings")))
     if duration is None:
         caveats.append("manifest has no positive duration; telemetry join uses a five-minute inspection window")
     if telemetry.sample_count == 0:
@@ -348,11 +377,15 @@ def _claim_mode(
     telemetry: ExperimentTelemetryWindow,
     *,
     assignment_issues: tuple[str, ...],
+    validation_status: str,
+    validation_issues: tuple[str, ...],
 ) -> str:
     return (
         "controlled_benchmark"
         if benchmark_readiness(planned).controlled
         and not assignment_issues
+        and validation_status == "valid"
+        and not validation_issues
         and internal_json.get("exists") is True
         and _has_internal_json_phase(internal_json)
         and telemetry.sample_count > 0
@@ -500,6 +533,31 @@ def _json_dict(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, tuple):
+        return [str(item) for item in value]
+    if not value:
+        return []
+    try:
+        decoded = json.loads(str(value))
+    except json.JSONDecodeError:
+        return [str(value)]
+    return [str(item) for item in decoded] if isinstance(decoded, list) else [str(value)]
+
+
+def _manifest_validation_payload(run: dict[str, Any]) -> dict[str, Any]:
+    payload = _json_dict(run.get("manifest_validation"))
+    if payload:
+        return payload
+    return {
+        "valid": True if run.get("validation_status") == "valid" else False if run.get("validation_status") == "invalid" else None,
+        "issues": _string_list(run.get("validation_issues")),
+        "warnings": _string_list(run.get("validation_warnings")),
+    }
 
 
 def _int_or_none(value: Any) -> int | None:

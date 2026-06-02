@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
 
-from lynchpin.analysis.code_history_claims import CodeHistoryInputs, code_history_claims
+from lynchpin.analysis.code_history_claims import (
+    CodeHistoryInputs,
+    code_history_claims,
+    write_code_history_claims,
+)
 from lynchpin.sources.git_models import GitCommitFact, GitFileChangeFact
 
 
@@ -79,3 +84,27 @@ def test_code_history_claims_emit_hotspot_broad_change_and_rework() -> None:
     assert by_type["code_broad_change"].source_ids == ("d" * 40,)
     assert by_type["code_rework_pressure"].payload["rework_count"] == 2
     assert by_type["code_rework_pressure"].support_level == "moderate"
+
+
+def test_write_code_history_claims_persists_durable_artifact(tmp_path) -> None:
+    out = tmp_path / "code_history_claims.json"
+    inputs = CodeHistoryInputs(
+        commits=(_commit("d" * 40, "refactor: sweep", files=50, churn=6000),),
+        file_changes=(
+            _file_change("a" * 40, "src/a.py", churn=400),
+            _file_change("b" * 40, "src/b.py", churn=400),
+        ),
+    )
+
+    rows = write_code_history_claims(
+        out,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+        inputs=inputs,
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+
+    assert rows
+    assert payload["window"] == {"start": "2026-05-01", "end": "2026-05-03"}
+    assert payload["claim_count"] == len(payload["claims"])
+    assert payload["claims"][0]["claim_id"].startswith("claim:")

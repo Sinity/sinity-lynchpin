@@ -476,6 +476,8 @@ def _matched_design_candidates(payload: dict[str, Any] | None) -> list[MachineAt
             continue
         stage = str(row.get("stage_name") or "unknown")
         project = str(row.get("project")) if row.get("project") else None
+        boundary_type = str(row.get("boundary_type") or "git_commit_transition")
+        factor = _boundary_factor(boundary_type=boundary_type, stage=stage)
         ready_bonus = 2.0 if row.get("identification_status") == "design_ready" else 0.5
         negative_bonus = 1.25 if row.get("negative_control_status") == "passed" else 0.5
         score = did * min(treated_n, control_n) * ready_bonus * negative_bonus
@@ -484,7 +486,7 @@ def _matched_design_candidates(payload: dict[str, Any] | None) -> list[MachineAt
                 candidate_id=_candidate_id("matched-design", row.get("design_id"), project),
                 project=project,
                 metric=str(row.get("outcome_metric") or "stage.duration_s"),
-                suspected_factor=f"git_boundary:{stage}",
+                suspected_factor=factor,
                 mechanism_family="natural_experiment_boundary",
                 support_ceiling=str(row.get("support_ceiling") or "candidate"),
                 priority_score=round(score, 3),
@@ -505,7 +507,7 @@ def _matched_design_candidates(payload: dict[str, Any] | None) -> list[MachineAt
                 suggested_benchmark_manifest=_suggested_manifest(
                     workload=f"xtask-stage:{stage}",
                     metric=str(row.get("outcome_metric") or "stage.duration_s"),
-                    treatment_label=f"git_boundary:{stage}",
+                    treatment_label=factor,
                 ),
                 caveats=tuple(str(item) for item in row.get("caveats", ()) if item),
                 discovery_window=discovery_window,
@@ -515,6 +517,14 @@ def _matched_design_candidates(payload: dict[str, Any] | None) -> list[MachineAt
             )
         )
     return result
+
+
+def _boundary_factor(*, boundary_type: str, stage: str) -> str:
+    if boundary_type == "temporal_run_gap_transition":
+        return f"temporal_gap_boundary:{stage}"
+    if boundary_type == "git_commit_transition":
+        return f"git_boundary:{stage}"
+    return f"{boundary_type or 'boundary'}:{stage}"
 
 
 def _delta_candidates(payload: dict[str, Any]) -> list[MachineAttributionCandidate]:

@@ -168,6 +168,7 @@ def _dataset_builders() -> dict[str, Any]:
         "google_takeout": _google_takeout_dataset,
         "polylogue": _polylogue_dataset,
         "codex": _codex_dataset,
+        "polylogue_devtools": _polylogue_devtools_dataset,
         "activitywatch": _activitywatch_dataset,
         "clipboard": _clipboard_dataset,
         "title_metadata": _title_metadata_dataset,
@@ -175,8 +176,9 @@ def _dataset_builders() -> dict[str, Any]:
         "atuin": _atuin_dataset,
         "dendron": _dendron_dataset,
         "evidence_graph_substrate": _git_substrate_dataset,
-        "goodreads": _goodreads_dataset,
+        "analysis_artifacts": _analysis_artifacts_dataset,
         "health": _health_dataset,
+        "goodreads": _goodreads_dataset,
         "keylog": _keylog_dataset,
         "raw_log": _raw_log_dataset,
         "sleep": _sleep_dataset,
@@ -192,7 +194,6 @@ def _dataset_builders() -> dict[str, Any]:
         "arbtt": _arbtt_dataset,
         "machine": _machine_dataset,
         "xtask_history": _xtask_history_dataset,
-        "polylogue_devtools": _polylogue_devtools_dataset,
         "spotify_daily": _spotify_daily_dataset,
         "personal_daily_signals": _personal_daily_signals_dataset,
         "irc": _irc_dataset,
@@ -918,6 +919,33 @@ def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=None,
         refresh_command="python -m lynchpin.cli.current_state --refresh-substrate --start 2013-01-01 --end $(date +%F)",
         reason=reason,
+    )
+
+
+def _analysis_artifacts_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .sources.analysis_artifacts import artifact_inventory
+
+    root = cfg.analysis_output_dir
+    artifacts = artifact_inventory(root)
+    count = len(artifacts)
+    return MaterializedDataset(
+        name="analysis_artifacts",
+        status="ready" if count else "empty" if root.exists() else "missing",
+        authority="generated Lynchpin analysis products under the configured analysis output directory",
+        query_surface="lynchpin.sources.analysis_artifacts",
+        materialized_paths=tuple(item.path for item in artifacts),
+        raw_roots=(root,),
+        row_count=count if root.exists() else None,
+        first_date=None,
+        last_date=None,
+        refresh_command="python -m lynchpin.analysis refresh",
+        reason=(
+            f"{count} generated analysis artifacts are visible"
+            if count
+            else "analysis output directory exists but contains no readable artifacts"
+            if root.exists()
+            else "analysis output directory is missing"
+        ),
     )
 
 

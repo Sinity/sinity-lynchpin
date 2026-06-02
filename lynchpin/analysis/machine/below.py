@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import statistics
+import subprocess
 from typing import Any, Sequence
 
 from lynchpin.core.io import save_json
 
 
 DEFAULT_STABILITY_ROOT = Path("/realm/data/captures/stability-lab")
+DEFAULT_LIVE_BELOW_STORE = Path("/realm/data/captures/machine/below/store")
 
 
 @dataclass(frozen=True)
@@ -45,9 +47,37 @@ class BelowEntitySummary:
 
 
 @dataclass(frozen=True)
+class BelowLiveStoreSummary:
+    store_path: str
+    index_count: int
+    data_count: int
+    first_observed_at: datetime | None
+    last_observed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class BelowWindowExport:
+    capture_id: str
+    report_path: str
+    system_rows: int
+    process_rows: int
+    cgroup_rows: int
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BelowFailedExport:
+    capture_id: str
+    report_path: str
+    missing_files: tuple[str, ...]
+    empty_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BelowAnalysis:
     window_count: int
     system: list[BelowSystemSummary]
+    live_store: BelowLiveStoreSummary
     top_process_count: int
     top_processes: list[BelowEntitySummary]
     top_cgroup_count: int
@@ -61,29 +91,162 @@ class BelowAnalysis:
 def analyze_below_exports(
     *,
     root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
     top_n: int = 20,
 ) -> BelowAnalysis:
     captures = _discover_reports(root)
     system = [_system_summary(report) for report in captures if (report / "below-system.csv").exists()]
     processes = _entity_summaries(captures, "process", top_n=top_n)
     cgroups = _entity_summaries(captures, "cgroup", top_n=top_n)
+    live = _live_store_summary(live_store)
     caveats = []
     if not system:
         caveats.append("no bounded below system exports found")
-    # Live below store now lives under /realm/data/captures/machine/below
-    # (relocated 2026-05-26; /var/log/below remains as a backwards-compatible
-    # symlink); the warning is about the lack of wholesale promotion, not the
-    # specific filesystem location.
-    caveats.append("live below time-travel store is not promoted wholesale; export bounded windows for incidents and experiments")
+    if live.index_count:
+        caveats.append("live below store is indexed but not decoded/promoted; export bounded windows for incidents and experiments")
+    else:
+        caveats.append("live below store has no index files; process/cgroup attribution requires bounded exports")
     system_rows = [row for row in system if row is not None]
     return BelowAnalysis(
         window_count=len(system_rows),
         system=system_rows,
+        live_store=live,
         top_process_count=len(processes),
         top_processes=processes,
         top_cgroup_count=len(cgroups),
         top_cgroups=cgroups,
         caveats=caveats,
+    )
+
+
+def failed_below_exports(*, root: Path = DEFAULT_STABILITY_ROOT) -> list[BelowFailedExport]:
+    """Return bounded export reports that exist but have no usable system rows."""
+    failed: list[BelowFailedExport] = []
+    required = ("below-system.csv", "below-top-processes.csv", "below-top-cgroups.csv")
+    for report in _discover_reports(root):
+        missing = tuple(name for name in required if not (report / name).exists())
+        empty = tuple(
+            name for name in required
+            if (report / name).exists() and _csv_data_row_count(report / name) == 0
+        )
+        if "below-system.csv" in missing or "below-system.csv" in empty:
+            failed.append(
+                BelowFailedExport(
+                    capture_id=report.parent.name,
+                    report_path=str(report),
+                    missing_files=missing,
+                    empty_files=empty,
+                )
+            )
+    return failed
+
+
+def export_live_below_window(
+    *,
+    root: Path = DEFAULT_STABILITY_ROOT,
+    begin: str | datetime,
+    end: str | datetime | None = None,
+    duration: str | None = "5 min",
+    capture_id: str | None = None,
+    top_n: int = 20,
+    below_binary: str = "below",
+    timeout_s: int = 60,
+) -> BelowWindowExport:
+    """Export one live ``below`` store window into the bounded CSV shape.
+
+    The exporter intentionally uses ``below dump`` instead of decoding the
+    binary store. This keeps Lynchpin coupled to below's public CLI and writes
+    the same ``*/report/below-*.csv`` files that ``analyze_below_exports``
+    already consumes.
+    """
+    if end is None and not duration:
+        raise ValueError("either end or duration is required")
+    begin_arg = _below_time_arg(begin)
+    end_arg = _below_time_arg(end) if end is not None else None
+    capture = capture_id or _capture_id(begin_arg, end_arg or duration or "")
+    report = root / capture / "report"
+    report.mkdir(parents=True, exist_ok=True)
+
+    errors: list[str] = []
+    system_rows = _export_dump(
+        report / "below-system.csv",
+        header=("Datetime", "Usage", "IOWait", "Available", "OOM Kills", "Running Procs", ""),
+        command=_below_dump_command(
+            below_binary,
+            "system",
+            begin=begin_arg,
+            end=end_arg,
+            duration=duration if end_arg is None else None,
+            fields=(
+                "datetime",
+                "cpu.usage_pct",
+                "cpu.iowait_pct",
+                "mem.available",
+                "vm.oom_kill",
+                "stat.running_processes",
+            ),
+        ),
+        timeout_s=timeout_s,
+        errors=errors,
+    )
+    process_rows = _export_dump(
+        report / "below-top-processes.csv",
+        header=("Datetime", "Pid", "Comm", "State", "CPU", "RSS", "Cmdline", ""),
+        command=_below_dump_command(
+            below_binary,
+            "process",
+            begin=begin_arg,
+            end=end_arg,
+            duration=duration if end_arg is None else None,
+            fields=("datetime", "pid", "comm", "state", "cpu.usage_pct", "mem.rss_bytes", "cmdline"),
+            top_n=top_n,
+            sort_by="cpu.usage_pct",
+        ),
+        timeout_s=timeout_s,
+        errors=errors,
+    )
+    cgroup_rows = _export_dump(
+        report / "below-top-cgroups.csv",
+        header=(
+            "Datetime",
+            "Name",
+            "Full Path",
+            "CPU Usage",
+            "Mem Total",
+            "CPU Some Pressure",
+            "Mem Pressure",
+            "RW Total",
+            "",
+        ),
+        command=_below_dump_command(
+            below_binary,
+            "cgroup",
+            begin=begin_arg,
+            end=end_arg,
+            duration=duration if end_arg is None else None,
+            fields=(
+                "datetime",
+                "name",
+                "full_path",
+                "cpu.usage_pct",
+                "mem.total",
+                "pressure.cpu_some_pct",
+                "pressure.memory_full_pct",
+                "io.rwbytes_per_sec",
+            ),
+            top_n=top_n,
+            sort_by="cpu.usage_pct",
+        ),
+        timeout_s=timeout_s,
+        errors=errors,
+    )
+    return BelowWindowExport(
+        capture_id=capture,
+        report_path=str(report),
+        system_rows=system_rows,
+        process_rows=process_rows,
+        cgroup_rows=cgroup_rows,
+        errors=tuple(errors),
     )
 
 
@@ -94,13 +257,115 @@ def _discover_reports(root: Path) -> list[Path]:
     return list(reports.values())
 
 
+def _live_store_summary(store: Path) -> BelowLiveStoreSummary:
+    epochs: list[int] = []
+    data_count = 0
+    if store.exists():
+        data_count = sum(1 for path in store.glob("data_*") if path.is_file())
+        for path in store.glob("index_*"):
+            if not path.is_file():
+                continue
+            try:
+                epochs.append(int(path.name.split("_", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+    first = datetime.fromtimestamp(min(epochs), timezone.utc) if epochs else None
+    last = datetime.fromtimestamp(max(epochs), timezone.utc) + timedelta(days=1) if epochs else None
+    return BelowLiveStoreSummary(
+        store_path=str(store),
+        index_count=len(epochs),
+        data_count=data_count,
+        first_observed_at=first,
+        last_observed_at=last,
+    )
+
+
+def _below_time_arg(value: str | datetime) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
+def _capture_id(begin: str, end_or_duration: str) -> str:
+    raw = f"live-below-{begin}-{end_or_duration}"
+    return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+
+
+def _below_dump_command(
+    below_binary: str,
+    kind: str,
+    *,
+    begin: str,
+    end: str | None,
+    duration: str | None,
+    fields: Sequence[str],
+    top_n: int | None = None,
+    sort_by: str | None = None,
+) -> list[str]:
+    command = [
+        below_binary,
+        "dump",
+        kind,
+        "-b",
+        begin,
+    ]
+    if end is not None:
+        command.extend(("-e", end))
+    elif duration is not None:
+        command.extend(("--duration", duration))
+    command.extend(("-f", *fields, "-O", "tsv", "--raw", "--disable-title"))
+    if top_n is not None and top_n > 0:
+        command.extend(("--top", str(top_n)))
+    if sort_by is not None:
+        command.extend(("-s", sort_by, "--rsort"))
+    return command
+
+
+def _export_dump(
+    out: Path,
+    *,
+    header: Sequence[str],
+    command: Sequence[str],
+    timeout_s: int,
+    errors: list[str],
+) -> int:
+    rows: list[list[str]] = []
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"{out.name}: {exc}")
+    else:
+        if proc.returncode != 0:
+            detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"exit {proc.returncode}"
+            errors.append(f"{out.name}: {detail}")
+        else:
+            rows = _parse_tsv_rows(proc.stdout)
+    with out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        writer.writerows((*row, "") for row in rows)
+    return len(rows)
+
+
+def _parse_tsv_rows(text: str) -> list[list[str]]:
+    return [line.rstrip("\t").split("\t") for line in text.splitlines() if line.strip()]
+
+
+def _csv_data_row_count(path: Path) -> int:
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        next(reader, None)
+        return sum(1 for row in reader if any(cell.strip() for cell in row))
+
+
 def write_below_analysis(
     out: Path,
     *,
     root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
     top_n: int = 20,
 ) -> BelowAnalysis:
-    analysis = analyze_below_exports(root=root, top_n=top_n)
+    analysis = analyze_below_exports(root=root, live_store=live_store, top_n=top_n)
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **analysis.to_dict()}
     save_json(

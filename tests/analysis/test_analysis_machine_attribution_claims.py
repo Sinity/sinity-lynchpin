@@ -140,6 +140,137 @@ def test_machine_attribution_claim_analysis_preserves_support_sources(tmp_path) 
     ]
 
 
+def test_machine_attribution_claim_ids_include_source_evidence() -> None:
+    from lynchpin.analysis.machine.attribution_claims import MachineAttributionClaim
+
+    base = dict(
+        claim_type="machine_attribution",
+        project="sinex",
+        date=None,
+        metric="stage.duration_s",
+        effect_kind="temporal_gap_boundary:test",
+        support_level="natural_experiment",
+        confidence=0.6,
+        summary="Natural-experiment design support available",
+        baseline={},
+        comparison={},
+        estimate={"effect_estimate": {"difference_in_differences": 9.0}},
+        caveats=(),
+    )
+
+    left = MachineAttributionClaim(source_ids=("assessment:1", "design:1"), **base).to_analysis_claim()
+    right = MachineAttributionClaim(source_ids=("assessment:2", "design:2"), **base).to_analysis_claim()
+
+    assert left.claim_id != right.claim_id
+    assert left.score == 9.0
+
+
+def test_machine_attribution_claim_analysis_enriches_natural_experiment_estimates(tmp_path) -> None:
+    from lynchpin.analysis.machine.attribution_claims import analyze_machine_attribution_claims
+    from lynchpin.core.io import save_json
+
+    support = tmp_path / "machine_support_assessment.json"
+    experiments = tmp_path / "machine_experiment_claims.json"
+    matched = tmp_path / "machine_matched_designs.json"
+    negative = tmp_path / "machine_negative_controls.json"
+    save_json(
+        support,
+        {
+            "assessments": [{
+                "assessment_id": "assess1",
+                "candidate_id": "cand1",
+                "project": "sinex",
+                "metric": "stage.duration_s",
+                "suspected_factor": "temporal_gap_boundary:test",
+                "support_level": "natural_experiment",
+                "confidence": 0.66,
+                "decision": "promote_claim_candidate",
+                "source_artifacts": ["machine_matched_designs.json", "machine_negative_controls.json"],
+                "source_ids": ["design1", "boundary1"],
+                "caveats": ["observational boundary"],
+                "mechanism": {"suspected_driver": "cache_state"},
+                "summary": "Natural-experiment design support available",
+            }]
+        },
+        sort_keys=True,
+    )
+    save_json(experiments, {"effect_estimates": [], "claim_packs": []}, sort_keys=True)
+    save_json(
+        matched,
+        {
+            "designs": [{
+                "design_id": "design1",
+                "boundary_id": "boundary1",
+                "boundary_type": "temporal_gap_boundary",
+                "boundary_at": "2026-05-01T10:00:00+00:00",
+                "project": "sinex",
+                "stage_name": "test",
+                "outcome_metric": "stage.duration_s",
+                "treated_before_n": 4,
+                "treated_after_n": 5,
+                "treated_delta": 30.0,
+                "control_before_n": 6,
+                "control_after_n": 6,
+                "control_delta": 7.0,
+                "difference_in_differences": 23.0,
+                "placebo_delta": 1.5,
+                "balance": {"before_ratio": 0.9},
+                "negative_control_status": "passed",
+                "identification_status": "supportable",
+                "support_ceiling": "natural_experiment",
+                "caveats": ["non-randomized"],
+            }]
+        },
+        sort_keys=True,
+    )
+    save_json(
+        negative,
+        {
+            "controls": [{
+                "control_id": "control1",
+                "design_id": "design1",
+                "control_kind": "placebo",
+                "support_required": True,
+                "status": "passed",
+                "primary_delta": 30.0,
+                "control_delta": 7.0,
+                "placebo_delta": 1.5,
+                "interpretation": "placebo stable",
+                "support_consequence": "retain support",
+            }]
+        },
+        sort_keys=True,
+    )
+
+    analysis = analyze_machine_attribution_claims(
+        support_assessment_path=support,
+        experiment_claims_path=experiments,
+        matched_designs_path=matched,
+        negative_controls_path=negative,
+    )
+
+    row = analysis.claims[0]
+    estimate = row["payload"]["estimate"]
+    assert row["score"] == 23.0
+    assert estimate["estimator"] == "matched median difference-in-differences"
+    assert estimate["interval_status"] == "not_estimated_for_natural_experiment"
+    assert estimate["boundary"]["boundary_id"] == "boundary1"
+    assert estimate["sample_counts"] == {
+        "treated_before_n": 4,
+        "treated_after_n": 5,
+        "control_before_n": 6,
+        "control_after_n": 6,
+    }
+    assert estimate["effect_estimate"]["difference_in_differences"] == 23.0
+    assert estimate["negative_control_status"] == "passed"
+    assert estimate["negative_controls"][0]["interpretation"] == "placebo stable"
+    assert estimate["negative_control_sensitivity"]["passed_count"] == 1
+    assert estimate["assumption_ledger"]["checked_caveats"] == [
+        "observational boundary",
+        "non-randomized",
+    ]
+
+
 def test_machine_attribution_claim_analysis_promotes_controlled_estimates(tmp_path) -> None:
     from lynchpin.analysis.machine.attribution_claims import analyze_machine_attribution_claims
     from lynchpin.core.io import save_json

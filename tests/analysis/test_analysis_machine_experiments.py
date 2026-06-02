@@ -157,12 +157,14 @@ def test_machine_experiment_claims_allow_controlled_mode_only_with_manifest_stru
                 run_id, run_group_id, host, workload, command, started_at, ended_at,
                 monotonic_started_ns, monotonic_ended_ns, execution_outcome,
                 measurement_context, nix_internal_json_path,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES (
                 'run-treatment', 'grp-1', 'host', 'xtask', ['just','check'], ?, ?,
                 100, 200, '{"status":"success","censored":false}',
                 '{"host_boot_id":"boot1"}', ?,
-                ?, '{}', '{}', [], '/tmp/run-treatment/manifest.json', 'r1'
+                ?, '{}', '{}', [],
+                'valid', '{"valid":true}', '/tmp/run-treatment/manifest.json', 'r1'
             )
             """,
             [
@@ -190,6 +192,130 @@ def test_machine_experiment_claims_allow_controlled_mode_only_with_manifest_stru
     assert analysis.claim_packs[0].nix_internal_json_path == str(internal_json)
 
 
+def test_machine_experiment_claims_demote_manifest_validation_issues(tmp_path):
+    db = tmp_path / "sub.duckdb"
+    internal_json = tmp_path / "internal.ndjson"
+    internal_json.write_text(
+        "\n".join([
+            '{"action":"start","id":1,"timestamp":"2026-05-01T12:00:00+00:00"}',
+            '{"action":"stop","id":1,"timestamp":"2026-05-01T12:00:01+00:00"}',
+        ]),
+        encoding="utf-8",
+    )
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO machine_experiment_run (
+                run_id, run_group_id, host, workload, command, started_at, ended_at,
+                monotonic_started_ns, monotonic_ended_ns, execution_outcome,
+                measurement_context, nix_internal_json_path,
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, validation_issues, validation_warnings,
+                manifest_validation, manifest_path, refresh_id
+            ) VALUES (
+                'run-treatment', 'grp-1', 'host', 'xtask', ['just','check'], ?, ?,
+                100, 200, '{"status":"success","censored":false}',
+                '{"host_boot_id":"boot1"}', ?,
+                ?, '{}', '{}', [],
+                'invalid', ['missing monotonic timestamp'], [],
+                '{"valid":false,"issues":["missing monotonic timestamp"]}',
+                '/tmp/run-treatment/manifest.json', 'r1'
+            )
+            """,
+            [
+                datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+                datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
+                str(internal_json),
+                _controlled_planned("turbo", run_id="run-treatment", internal_json=str(internal_json)),
+            ],
+        )
+        _insert_metric(conn, datetime(2026, 5, 1, 12, 0, 30, tzinfo=timezone.utc))
+
+    analysis = analyze_machine_experiment_claims(path=db, refresh_id="r1", include_episodes=False)
+
+    pack = analysis.claim_packs[0]
+    assert analysis.controlled_claim_count == 0
+    assert pack.claim_mode == "manifest_observational"
+    assert pack.manifest_validation["valid"] is False
+    assert any("manifest validation issue: missing monotonic timestamp" in caveat for caveat in pack.caveats)
+
+
+def test_machine_experiment_claims_tolerate_legacy_schema_without_validation_columns(tmp_path):
+    db = tmp_path / "legacy.duckdb"
+    with connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE machine_experiment_run (
+                run_id VARCHAR, run_group_id VARCHAR, host VARCHAR, workload VARCHAR,
+                command VARCHAR[], cwd VARCHAR, started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ,
+                monotonic_started_ns BIGINT, monotonic_ended_ns BIGINT,
+                exit_status INTEGER, execution_outcome JSON,
+                service_profile VARCHAR, cache_profile VARCHAR, measurement_context JSON,
+                planned_treatment JSON, nix_internal_json_path VARCHAR,
+                git_root VARCHAR, git_head VARCHAR, git_branch VARCHAR, git_dirty BOOLEAN,
+                pre_state JSON, post_state JSON, notes VARCHAR[],
+                manifest_path VARCHAR, refresh_id VARCHAR, materialized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE machine_metric_sample (
+                observed_at TIMESTAMPTZ, host VARCHAR, source VARCHAR,
+                load_1m DOUBLE, mem_avail_mb INTEGER, io_psi_full_avg10 DOUBLE,
+                io_psi_full_avg60 DOUBLE, gpu_pcie_gen INTEGER, gpu_pcie_width INTEGER,
+                refresh_id VARCHAR, materialized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO machine_experiment_run (
+                run_id, run_group_id, host, workload, command, cwd, started_at, ended_at,
+                monotonic_started_ns, monotonic_ended_ns, exit_status, execution_outcome,
+                service_profile, cache_profile, measurement_context, planned_treatment,
+                nix_internal_json_path, git_root, git_head, git_branch, git_dirty,
+                pre_state, post_state, notes, manifest_path, refresh_id
+            ) VALUES (
+                'legacy-run', 'grp-legacy', 'host', 'xtask', ['just','check'], NULL, ?, ?,
+                NULL, NULL, 0, '{"status":"success"}',
+                NULL, NULL, '{}', '{"turbo":"observed"}',
+                NULL, '/realm/project/sinex', 'abc', 'master', false,
+                '{}', '{}', [], '/tmp/legacy/manifest.json', 'legacy-refresh'
+            )
+            """,
+            [
+                datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+                datetime(2026, 5, 1, 12, 2, tzinfo=timezone.utc),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO machine_metric_sample (
+                observed_at, host, source, load_1m, mem_avail_mb, io_psi_full_avg10,
+                io_psi_full_avg60, gpu_pcie_gen, gpu_pcie_width, refresh_id
+            ) VALUES (
+                ?, 'host', 'machine.telemetry', 1.0, 32000, 0.1, 0.1, 4, 16, 'legacy-refresh'
+            )
+            """,
+            [datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc)],
+        )
+
+    analysis = analyze_machine_experiment_claims(
+        path=db,
+        refresh_id="legacy-refresh",
+        include_episodes=False,
+    )
+
+    pack = analysis.claim_packs[0]
+    assert pack.run_id == "legacy-run"
+    assert pack.manifest_validation == {"valid": None, "issues": [], "warnings": []}
+    assert analysis.controlled_claim_count == 0
+    assert pack.claim_mode == "manifest_observational"
+    assert any("manifest validation status is unknown" in caveat for caveat in pack.caveats)
+
+
 def test_machine_experiment_claims_pads_telemetry_for_short_controlled_runs(tmp_path):
     db = tmp_path / "sub.duckdb"
     internal_json = tmp_path / "internal.ndjson"
@@ -208,12 +334,14 @@ def test_machine_experiment_claims_pads_telemetry_for_short_controlled_runs(tmp_
                 run_id, run_group_id, host, workload, command, started_at, ended_at,
                 monotonic_started_ns, monotonic_ended_ns, execution_outcome,
                 measurement_context, nix_internal_json_path,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES (
                 'run-treatment', 'grp-1', 'host', 'xtask', ['just','check'], ?, ?,
                 100, 200, '{"status":"success","censored":false}',
                 '{"host_boot_id":"boot1"}', ?,
-                ?, '{}', '{}', [], '/tmp/run-treatment/manifest.json', 'r1'
+                ?, '{}', '{}', [],
+                'valid', '{"valid":true}', '/tmp/run-treatment/manifest.json', 'r1'
             )
             """,
             [
@@ -250,10 +378,12 @@ def test_machine_experiment_claims_demote_executed_run_group_mismatch(tmp_path):
             """
             INSERT INTO machine_experiment_run (
                 run_id, run_group_id, host, workload, command, started_at, ended_at,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES (
                 'run-treatment', 'other-group', 'host', 'xtask', ['just','check'], ?, ?,
-                ?, '{}', '{}', [], '/tmp/run-treatment/manifest.json', 'r1'
+                ?, '{}', '{}', [],
+                'valid', '{"valid":true}', '/tmp/run-treatment/manifest.json', 'r1'
             )
             """,
             [
@@ -288,10 +418,12 @@ def test_machine_experiment_claims_demote_selected_run_mismatch(tmp_path):
             """
             INSERT INTO machine_experiment_run (
                 run_id, host, workload, command, started_at, ended_at,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES (
                 'run-control', 'host', 'xtask', ['just','check'], ?, ?,
-                ?, '{}', '{}', [], '/tmp/run-control/manifest.json', 'r1'
+                ?, '{}', '{}', [],
+                'valid', '{"valid":true}', '/tmp/run-control/manifest.json', 'r1'
             )
             """,
             [
@@ -355,15 +487,18 @@ def test_machine_experiment_claims_emit_bootstrap_estimate_for_run_group(tmp_pat
             """
             INSERT INTO machine_experiment_run (
                 run_id, host, workload, command, started_at, ended_at,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES
                 (
                     'run-control', 'host', 'xtask', ['just','check'], ?, ?,
-                    ?, '{}', '{}', [], '/tmp/run-control/manifest.json', 'r1'
+                    ?, '{}', '{}', [],
+                    'valid', '{"valid":true}', '/tmp/run-control/manifest.json', 'r1'
                 ),
                 (
                     'run-treatment', 'host', 'xtask', ['just','check'], ?, ?,
-                    ?, '{}', '{}', [], '/tmp/run-treatment/manifest.json', 'r1'
+                    ?, '{}', '{}', [],
+                    'valid', '{"valid":true}', '/tmp/run-treatment/manifest.json', 'r1'
                 )
             """,
             [
@@ -406,10 +541,12 @@ def test_machine_experiment_claims_estimate_from_selected_run_labels(tmp_path):
                 """
                 INSERT INTO machine_experiment_run (
                     run_id, host, workload, command, started_at, ended_at,
-                    planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                    planned_treatment, pre_state, post_state, notes,
+                    validation_status, manifest_validation, manifest_path, refresh_id
                 ) VALUES (
                     ?, 'host', 'xtask', ['just','check'], ?, ?,
-                    ?, '{}', '{}', [], ?, 'r1'
+                    ?, '{}', '{}', [],
+                    'valid', '{"valid":true}', ?, 'r1'
                 )
                 """,
                 [
@@ -464,10 +601,12 @@ def test_machine_experiment_claims_use_stratified_estimator_for_complete_blocks(
                 """
                 INSERT INTO machine_experiment_run (
                     run_id, host, workload, command, started_at, ended_at,
-                    planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                    planned_treatment, pre_state, post_state, notes,
+                    validation_status, manifest_validation, manifest_path, refresh_id
                 ) VALUES (
                     ?, 'host', 'xtask', ['just','check'], ?, ?,
-                    ?, '{}', '{}', [], ?, 'r1'
+                    ?, '{}', '{}', [],
+                    'valid', '{"valid":true}', ?, 'r1'
                 )
                 """,
                 [
@@ -506,10 +645,12 @@ def test_machine_experiment_claims_require_complete_phase_and_telemetry(tmp_path
             """
             INSERT INTO machine_experiment_run (
                 run_id, host, workload, command, started_at, ended_at,
-                planned_treatment, pre_state, post_state, notes, manifest_path, refresh_id
+                planned_treatment, pre_state, post_state, notes,
+                validation_status, manifest_validation, manifest_path, refresh_id
             ) VALUES (
                 'run-treatment', 'host', 'xtask', ['just','check'], ?, ?,
-                ?, '{}', '{}', [], '/tmp/run-treatment/manifest.json', 'r1'
+                ?, '{}', '{}', [],
+                'valid', '{"valid":true}', '/tmp/run-treatment/manifest.json', 'r1'
             )
             """,
             [

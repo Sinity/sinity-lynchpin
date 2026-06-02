@@ -47,6 +47,7 @@ def add_machine_analysis_nodes(
         "attribution_claims": "machine_attribution_claims.json",
         "assumption_checks": "machine_assumption_checks.json",
         "below": "machine_below_attribution.json",
+        "below_export_queue": "machine_below_export_queue.json",
         "baselines": "machine_observational_baselines.json",
         "claims": "machine_experiment_claims.json",
     }
@@ -278,6 +279,16 @@ def add_machine_analysis_nodes(
         payloads.get("benchmark_execution_queue"),
         start=start,
         artifact_name=artifacts["benchmark_execution_queue"],
+    )
+    _add_machine_below_export_queue_nodes(
+        nodes,
+        edges,
+        payloads.get("below_export_queue"),
+        start=start,
+        end=end,
+        episode_ids=episode_ids,
+        episode_bound_ids=episode_bound_ids,
+        artifact_name=artifacts["below_export_queue"],
     )
     _add_machine_manifest_diagnostic_nodes(nodes, payloads.get("manifest_diagnostics"), start=start, artifact_name=artifacts["manifest_diagnostics"])
     _add_machine_support_assessment_nodes(nodes, edges, payloads.get("support_assessment"), start=start, selected=selected, artifact_name=artifacts["support_assessment"])
@@ -684,6 +695,7 @@ def _add_machine_claim_nodes(
         run_node_id = f"machine-benchmark-run:{run_id}"
         if run_group_id:
             run_ids_by_group.setdefault(run_group_id, []).append(run_node_id)
+        manifest_validation = row.get("manifest_validation") if isinstance(row.get("manifest_validation"), dict) else {}
         nodes.append(
             EvidenceNode(
                 id=run_node_id,
@@ -705,6 +717,9 @@ def _add_machine_claim_nodes(
                     "duration_seconds": row.get("duration_seconds"),
                     "exit_status": row.get("exit_status"),
                     "execution_outcome": row.get("execution_outcome") or {},
+                    "manifest_validation_status": _machine_manifest_validation_status(manifest_validation),
+                    "manifest_validation_issues": tuple(str(item) for item in manifest_validation.get("issues", ()) if item),
+                    "manifest_validation_warnings": tuple(str(item) for item in manifest_validation.get("warnings", ()) if item),
                     "telemetry": row.get("telemetry") or {},
                     "internal_json_path": row.get("nix_internal_json_path"),
                 },
@@ -1070,6 +1085,66 @@ def _add_machine_benchmark_execution_queue_nodes(
                     "execution_queue_for_candidate",
                     "ranked execution handoff was generated for candidate",
                     1.0,
+                )
+            )
+
+
+def _add_machine_below_export_queue_nodes(
+    nodes: list[EvidenceNode],
+    edges: list[EvidenceEdge],
+    payload: object,
+    *,
+    start: date,
+    end: date,
+    episode_ids: dict[tuple[str, str, str, str], str],
+    episode_bound_ids: dict[tuple[str, str, str, str], str],
+    artifact_name: str,
+) -> None:
+    for item in _machine_rows(payload, "items"):
+        begin = _machine_dt(item.get("begin"))
+        export_end = _machine_dt(item.get("end")) or begin
+        if begin is None or not _machine_overlaps(begin, export_end, start=start, end=end):
+            continue
+        capture_id = str(item.get("capture_id") or begin.isoformat())
+        episode_kind = str(item.get("episode_kind") or "pressure")
+        node_id = f"machine-below-export-queue:{capture_id}"
+        nodes.append(
+            EvidenceNode(
+                id=node_id,
+                kind="machine_below_export_queue_item",
+                source="below",
+                date=logical_date(begin),
+                project=None,
+                start=begin,
+                end=export_end,
+                summary=f"below export queue: {episode_kind} in {capture_id}",
+                payload={
+                    "capture_id": capture_id,
+                    "episode_kind": item.get("episode_kind"),
+                    "host": item.get("host"),
+                    "episode_started_at": item.get("episode_started_at"),
+                    "episode_ended_at": item.get("episode_ended_at"),
+                    "begin": item.get("begin"),
+                    "end": item.get("end"),
+                    "severity": item.get("severity"),
+                    "confidence": item.get("confidence"),
+                    "reason": item.get("reason"),
+                },
+                provenance=EvidenceProvenance("below", "materialized", path=artifact_name),
+                caveats=(
+                    EvidenceCaveat("below", "partial", "queue item is a non-executing live below export handoff"),
+                ),
+            )
+        )
+        target_id = episode_ids.get(_machine_queue_episode_key(item)) or episode_bound_ids.get(_machine_queue_bounds_key(item))
+        if target_id is not None:
+            edges.append(
+                EvidenceEdge(
+                    node_id,
+                    target_id,
+                    "below_export_queue_targets_episode",
+                    "queued live below export targets a residual machine pressure episode",
+                    _bounded_weight(item.get("severity"), None),
                 )
             )
 
@@ -1482,6 +1557,17 @@ def _dict_rows(value: object) -> list[dict[str, Any]]:
     return [row for row in value if isinstance(row, dict)]
 
 
+def _machine_manifest_validation_status(payload: dict[str, Any]) -> str | None:
+    if payload.get("valid") is True:
+        return "valid"
+    if payload.get("valid") is False:
+        return "invalid"
+    if "valid" in payload:
+        return "unknown"
+    status = payload.get("status") or payload.get("validation_status")
+    return str(status) if status else None
+
+
 def _machine_embedded_rows(row: dict[str, Any], key: str) -> list[dict[str, Any]]:
     rows = row.get(key)
     if not isinstance(rows, list):
@@ -1577,6 +1663,24 @@ def _machine_attribution_episode_key(row: dict[str, Any]) -> tuple[str, str, str
 
 
 def _machine_attribution_bounds_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("episode_kind") or ""),
+        str(row.get("host") or ""),
+        str(row.get("episode_started_at") or ""),
+        str(row.get("episode_ended_at") or ""),
+    )
+
+
+def _machine_queue_episode_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("episode_kind") or ""),
+        str(row.get("host") or ""),
+        str(row.get("episode_started_at") or ""),
+        "",
+    )
+
+
+def _machine_queue_bounds_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         str(row.get("episode_kind") or ""),
         str(row.get("host") or ""),

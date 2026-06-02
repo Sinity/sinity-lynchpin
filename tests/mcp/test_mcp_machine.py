@@ -32,6 +32,30 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         }),
         encoding="utf-8",
     )
+    (analysis_root / "machine_telemetry_analysis.json").write_text(
+        json.dumps({
+            "coverage": {"sample_count": 10, "first_observed_at": "2026-05-01T00:00:00+00:00"},
+            "daily": [{"day": "2026-05-01", "sample_count": 10, "avg_load_1m": 1.2}],
+            "signals": [{"metric": "avg_load_1m", "trend": "flat"}],
+            "hardware_regimes": [{"gpu_pcie_gen": 4, "gpu_pcie_width": 16, "sample_count": 10}],
+            "correlations": [{"left": "avg_load_1m", "right": "avg_io_psi_some", "correlations": {}}],
+            "caveats": ["sample"],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_below_analysis.json").write_text(
+        json.dumps({
+            "window_count": 1,
+            "live_store": {"index_count": 2},
+            "system": [{"capture_id": "cap1", "sample_count": 4, "avg_cpu_pct": 12.0}],
+            "top_processes": [{"capture_id": "cap1", "key": "pytest", "avg_cpu_pct": 8.0}],
+            "top_cgroups": [{"capture_id": "cap1", "key": "user.slice", "avg_cpu_pct": 6.0}],
+            "top_process_count": 1,
+            "top_cgroup_count": 1,
+            "caveats": [],
+        }),
+        encoding="utf-8",
+    )
     (analysis_root / "machine_observational_baselines.json").write_text(
         json.dumps({"generated_for": {"metrics": ["load_1m"]}, "caveats": ["observational"], "by_hour": [{"key": "12", "sample_count": 10}], "by_source": [], "by_hardware_regime": [], "daily_signals": [{"metric": "p95_load_1m", "sample_count": 8}], "era_comparisons": [], "work_context": []}),
         encoding="utf-8",
@@ -48,6 +72,11 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
                 "workload": "xtask",
                 "claim_mode": "manifest_observational",
                 "started_at": "2026-05-01T12:00:00+00:00",
+                "manifest_validation": {
+                    "valid": False,
+                    "issues": ["measurement_context.system_generation missing"],
+                    "warnings": ["planned_treatment not controlled-ready: missing fixed derivation set"],
+                },
                 "internal_json": {"phases": [{"activity_id": "a1", "name": "build xtask", "duration_seconds": 1.2}]},
             }],
             "effect_estimates": [{"run_group_id": "grp1", "metric": "duration_seconds", "delta": 1.0}],
@@ -89,7 +118,16 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         encoding="utf-8",
     )
     (analysis_root / "machine_negative_controls.json").write_text(
-        json.dumps({"control_count": 1, "by_status": {"passed": 1}, "controls": [{"control_id": "neg1", "boundary_id": "boundary1", "status": "passed"}]}),
+        json.dumps({
+            "control_count": 1,
+            "by_status": {"passed": 1},
+            "controls": [{
+                "control_id": "neg1",
+                "design_id": "design1",
+                "boundary_id": "boundary1",
+                "status": "passed",
+            }],
+        }),
         encoding="utf-8",
     )
     (analysis_root / "machine_comparisons.json").write_text(
@@ -152,6 +190,24 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
                 "run_group_id": "grp1",
                 "ready_to_export": True,
             }],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_below_export_queue.json").write_text(
+        json.dumps({
+            "queue_count": 1,
+            "failed_capture_count": 1,
+            "root": "/realm/data/captures/stability-lab",
+            "live_store": "/realm/data/captures/machine/below/store",
+            "failed_captures": [{"capture_id": "pressure-empty-1"}],
+            "items": [{
+                "capture_id": "pressure-load-1",
+                "episode_kind": "load_pressure",
+                "severity": 1.0,
+                "begin": "2026-05-15 03:11:51+02:00",
+                "end": "2026-05-15 03:20:35+02:00",
+            }],
+            "caveats": ["dry-run only"],
         }),
         encoding="utf-8",
     )
@@ -233,8 +289,20 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
             "claim_count": 2,
             "by_support_level": {"insufficient": 1, "natural_experiment": 1},
             "claims": [
-                {"claim_id": "claim1", "support_level": "insufficient", "source_ids": ["cand1"]},
-                {"claim_id": "claim2", "support_level": "natural_experiment", "source_ids": ["cand1", "design1"]},
+                {
+                    "claim_id": "claim1",
+                    "project": "sinex",
+                    "support_level": "insufficient",
+                    "source_ids": ["assess1", "cand1"],
+                    "payload": {"metric": "stage.duration_s"},
+                },
+                {
+                    "claim_id": "claim2",
+                    "project": "sinex",
+                    "support_level": "natural_experiment",
+                    "source_ids": ["assess2", "cand1", "design1"],
+                    "payload": {"metric": "stage.duration_s"},
+                },
             ],
         }),
         encoding="utf-8",
@@ -280,12 +348,73 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         }),
         encoding="utf-8",
     )
+    (analysis_root / "machine_work_state_windows.json").write_text(
+        json.dumps({
+            "window_count": 1,
+            "pressure_state_counts": {"io_pressure": 1},
+            "work_state_counts": {"test_workload": 1},
+            "hardware_regime_counts": {"gen4x16": 1},
+            "repo_state_counts": {"sinex": 1},
+            "windows": [{
+                "window_id": "state1",
+                "started_at": "2026-05-01T12:00:00+00:00",
+                "ended_at": "2026-05-01T12:05:00+00:00",
+                "pressure_state": "io_pressure",
+                "work_state": "test_workload",
+                "projects": ["sinex"],
+            }],
+            "caveats": [],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "command_performance_windows.json").write_text(
+        json.dumps({
+            "command_count": 1,
+            "tools": [{"tool": "pytest", "command_count": 1, "pressure_overlap_count": 1}],
+            "windows": [{
+                "tool": "pytest",
+                "project": "sinex",
+                "command": ["pytest"],
+                "duration_seconds": 12.0,
+                "machine_pressure_state": "io_pressure",
+            }],
+            "caveats": [],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_observational_deltas.json").write_text(
+        json.dumps({
+            "cohort_count": 1,
+            "delta_count": 1,
+            "cohorts": [{"tool": "pytest", "work_state": "test_workload", "pressure_state": "io_pressure"}],
+            "deltas": [{"tool": "pytest", "work_state": "test_workload", "pressure_state": "io_pressure", "median_delta_seconds": 3.0}],
+            "caveats": ["observational"],
+        }),
+        encoding="utf-8",
+    )
+    (analysis_root / "devshell_performance.json").write_text(
+        json.dumps({
+            "command_count": 1,
+            "summaries": [{"command_class": "direnv_activation", "command_count": 1}],
+            "windows": [{
+                "command_class": "direnv_activation",
+                "command": ["direnv", "allow"],
+                "duration_seconds": 2.0,
+                "machine_pressure_state": "io_pressure",
+            }],
+            "caveats": [],
+        }),
+        encoding="utf-8",
+    )
 
     config = type("Config", (), {"analysis_output_dir": analysis_root})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
 
     from lynchpin.mcp.tools.machine import (
         machine_below_attributions,
+        machine_below_analysis,
+        machine_command_performance,
+        machine_devshell_performance,
         machine_calibration_fixtures,
         machine_measurement_system,
         machine_dataset_diagnostics,
@@ -293,6 +422,8 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         machine_refresh_health,
         machine_context_windows,
         machine_episodes,
+        machine_telemetry_analysis,
+        machine_observational_deltas,
         machine_experiment_claims,
         machine_benchmark_runs,
         machine_benchmark_phases,
@@ -307,6 +438,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         machine_benchmark_plan_template,
         machine_benchmark_manifest_bundle,
         machine_benchmark_execution_queue,
+        machine_below_export_queue,
         machine_experiment_manifest_diagnostics,
         machine_benchmark_readiness,
         machine_derivation_inventory,
@@ -326,6 +458,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         machine_mining_scans,
         machine_observational_baselines,
         machine_work_observation_artifact,
+        machine_work_state_windows,
     )
 
     assert len(machine_episodes(start="2026-05-01", kind="load_pressure")) == 1
@@ -351,13 +484,33 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     workload_result = machine_below_attributions(episode_kind="load_pressure", attribution_source="workload_resource")
     assert workload_result["summary"]["workload_resource_attributed_pressure_episode_count"] == 1
     assert workload_result["attributions"][0]["work_source_id"] == "xtask:1"
+    telemetry = machine_telemetry_analysis(section="signals")
+    assert telemetry["summary"]["coverage"]["sample_count"] == 10
+    assert telemetry["rows"][0]["metric"] == "avg_load_1m"
+    below_analysis = machine_below_analysis(section="processes", capture_id="cap1")
+    assert below_analysis["summary"]["live_store"]["index_count"] == 2
+    assert below_analysis["rows"][0]["key"] == "pytest"
+    state_windows = machine_work_state_windows(pressure_state="io_pressure", work_state="test_workload", project="sinex")
+    assert state_windows["summary"]["filtered_count"] == 1
+    assert state_windows["windows"][0]["window_id"] == "state1"
+    command_perf = machine_command_performance(tool="pytest", project="sinex", pressure_only=True)
+    assert command_perf["summary"]["tool_count"] == 1
+    assert command_perf["windows"][0]["duration_seconds"] == 12.0
+    deltas = machine_observational_deltas(tool="pytest", pressure_state="io_pressure")
+    assert deltas["summary"]["filtered_delta_count"] == 1
+    assert deltas["deltas"][0]["median_delta_seconds"] == 3.0
+    devshell = machine_devshell_performance(command_class="direnv_activation", pressure_only=True)
+    assert devshell["summary"]["summary_count"] == 1
+    assert devshell["windows"][0]["duration_seconds"] == 2.0
     baselines = machine_observational_baselines(dimension="hour", key="12")
     assert baselines["summary"]["family_counts"]["hour"] == 1
     assert baselines["rows"][0]["sample_count"] == 10
     claims = machine_experiment_claims(claim_mode="manifest_observational")
     assert claims["summary"]["observational_claim_count"] == 1
+    assert claims["summary"]["by_manifest_validation_status"] == {"invalid": 1}
     assert claims["claim_packs"][0]["run_id"] == "run1"
     runs = machine_benchmark_runs(run_group_id="grp1", workload="xtask")
+    assert runs["summary"]["by_manifest_validation_status"] == {"invalid": 1}
     assert runs["runs"][0]["run_id"] == "run1"
     phases = machine_benchmark_phases(run_id="run1", phase="build")
     assert phases["phases"][0]["activity_id"] == "a1"
@@ -415,6 +568,11 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     queue = machine_benchmark_execution_queue(ready_only=True)
     assert queue["summary"]["ready_group_count"] == 1
     assert queue["items"][0]["run_group_id"] == "grp1"
+    below_queue = machine_below_export_queue(kind="load_pressure")
+    assert below_queue["summary"]["queue_count"] == 1
+    assert below_queue["summary"]["failed_capture_count"] == 1
+    assert below_queue["items"][0]["capture_id"] == "pressure-load-1"
+    assert below_queue["failed_captures"][0]["capture_id"] == "pressure-empty-1"
     manifest_diag = machine_experiment_manifest_diagnostics(kind="executed_run", controlled_valid=True)
     assert manifest_diag["summary"]["controlled_benchmark_valid_count"] == 1
     assert manifest_diag["diagnostics"][0]["relative_path"] == "grp1/runs/run1/manifest.json"
@@ -478,23 +636,40 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     gaps = machine_instrumentation_gaps(project="sinex", source="controlled_benchmark_run")
     assert gaps["summary"]["gap_count"] == 1
     assert gaps["gaps"][0]["gap_id"] == "gap1"
-    attribution_claims = machine_attribution_claims(support_level="insufficient")
+    attribution_claims = machine_attribution_claims(
+        support_level="insufficient",
+        project="sinex",
+        metric="stage.duration_s",
+    )
     assert attribution_claims["summary"]["claim_count"] == 2
+    assert attribution_claims["summary"]["filters"] == {
+        "support_level": "insufficient",
+        "project": "sinex",
+        "metric": "stage.duration_s",
+    }
     assert len(attribution_claims["claims"]) == 1
     assert attribution_claims["claims"][0]["claim_id"] == "claim1"
-    claim_evidence = machine_claim_evidence("claim1")
-    assert claim_evidence["source_ids"] == ["cand1"]
-    assert claim_evidence["claim"]["claim_id"] == "claim1"
+    claim_evidence = machine_claim_evidence("claim2")
+    assert claim_evidence["source_ids"] == ["assess2", "cand1", "design1"]
+    assert claim_evidence["claim"]["claim_id"] == "claim2"
+    assert claim_evidence["support_assessments"][0]["assessment_id"] == "assess1"
+    assert claim_evidence["support_assessments"][1]["assessment_id"] == "assess2"
+    assert claim_evidence["matched_designs"][0]["design_id"] == "design1"
+    assert claim_evidence["negative_controls"][0]["control_id"] == "neg1"
     assumptions = machine_assumption_checks(status="failed")
     assert assumptions["summary"]["check_count"] == 2
     assert len(assumptions["checks"]) == 1
     assert assumptions["checks"][0]["assumption_id"] == "a1"
     status = machine_status()
-    assert status["artifacts"]["available"] == 11
+    assert status["artifacts"]["available"] == 12
     assert status["support"]["natural_experiment"] == 1
     assert status["experiment_manifests"]["legacy_observational_count"] == 1
     assert status["claims"]["by_support_level"] == {"insufficient": 1, "natural_experiment": 1}
+    assert status["measurement"]["by_status"] == {"passed": 1}
     assert status["assumptions"]["by_status"] == {"failed": 1, "passed": 1}
+    assert status["assumptions"]["failed_by_support_level"] == {"unknown": 1}
+    assert "readiness dimension controlled_benchmark_claims is missing" in status["blockers"]
+    assert "1 unclassified attribution assumption checks failed" in status["blockers"]
 
 
 def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

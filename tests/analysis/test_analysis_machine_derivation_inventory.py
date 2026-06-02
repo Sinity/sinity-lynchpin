@@ -166,6 +166,49 @@ def test_derivations_from_inventory_filters_ready_project_targets() -> None:
     },)
 
 
+def test_default_derivation_roots_include_polylogue_project(monkeypatch, tmp_path) -> None:
+    import lynchpin.analysis.machine.derivation_inventory as inv
+
+    polylogue_root = tmp_path / "polylogue"
+    lynchpin_root = tmp_path / "lynchpin"
+    monkeypatch.setattr(
+        inv,
+        "get_config",
+        lambda: type(
+            "Cfg",
+            (),
+            {"polylogue_project_root": polylogue_root, "repo_root": lynchpin_root},
+        )(),
+    )
+
+    assert inv._default_roots() == (
+        ("sinex", inv.Path("/realm/project/sinex")),
+        ("polylogue", polylogue_root),
+        ("sinity-lynchpin", lynchpin_root),
+    )
+
+
+def test_derivations_for_candidate_selects_polylogue_targets() -> None:
+    from lynchpin.analysis.machine.derivation_inventory import derivations_for_candidate
+
+    rows = derivations_for_candidate(
+        {
+            "targets": [
+                {"project": "polylogue", "attr": "polylogue", "drv_path": "/nix/store/poly.drv", "eval_status": "ready"},
+                {"project": "polylogue", "attr": "api-python", "drv_path": "/nix/store/api.drv", "eval_status": "ready"},
+                {"project": "sinex", "attr": "xtask", "drv_path": "/nix/store/xtask.drv", "eval_status": "ready"},
+            ]
+        },
+        {
+            "project": "polylogue",
+            "metric": "work.failure_count",
+            "suggested_benchmark_manifest": {"workload": "invocation:polylogue"},
+        },
+    )
+
+    assert [row["name"] for row in rows] == ["polylogue", "api-python"]
+
+
 def test_derivations_for_candidate_selects_workload_specific_target() -> None:
     from lynchpin.analysis.machine.derivation_inventory import derivations_for_candidate
 

@@ -102,6 +102,14 @@ _AFK_STATUSES = {"afk", "away"}
 def _repaired_afk_events(
     start: datetime, end: datetime
 ) -> tuple[list[Interval], list[Interval]]:
+    active, afk = _repaired_afk_events_cached(start, end)
+    return list(active), list(afk)
+
+
+@functools.lru_cache(maxsize=16)
+def _repaired_afk_events_cached(
+    start: datetime, end: datetime
+) -> tuple[tuple[Interval, ...], tuple[Interval, ...]]:
     """Return (active_clipped, afk_clipped) interval lists for [start, end).
 
     Pulls raw AFK events, runs them through the keylog-driven repair
@@ -129,7 +137,7 @@ def _repaired_afk_events(
             active_segs.append(clipped)
         elif repaired.status == "afk":
             afk_segs.append(clipped)
-    return merge_intervals(active_segs), merge_intervals(afk_segs)
+    return tuple(merge_intervals(active_segs)), tuple(merge_intervals(afk_segs))
 
 
 def active_intervals(start: datetime | date, end: datetime | date) -> list[Interval]:
@@ -182,7 +190,11 @@ _FocusCountSpan = TypeVar("_FocusCountSpan", FocusSpan, FocusTimelineSpan)
 
 
 def focus_spans(
-    *, start: datetime | date, end: datetime | date, min_duration_s: float = 0.0
+    *,
+    start: datetime | date,
+    end: datetime | date,
+    min_duration_s: float = 0.0,
+    enrich_polylogue: bool = True,
 ) -> list[FocusSpan]:
     """AFK-trimmed classified focus timeline.
 
@@ -194,11 +206,16 @@ def focus_spans(
     After classification, spans without a project are cross-referenced
     against polylogue work_events to recover session→project attribution
     for AI-coding terminal windows (kitty, foot, etc.) that the
-    window-title classifier cannot resolve.
+    window-title classifier cannot resolve. Pass ``enrich_polylogue=False`` for
+    numeric rollups that must not block on semantic chat products.
     """
     from ..core.parse import end_of_day_local
-    spans = list(_focus_spans_cached(as_local(start), end_of_day_local(end), min_duration_s))
-    return _enrich_with_polylogue(spans, as_local(start), end_of_day_local(end))
+    lower = as_local(start)
+    upper = end_of_day_local(end)
+    spans = list(_focus_spans_cached(lower, upper, min_duration_s))
+    if not enrich_polylogue:
+        return spans
+    return _enrich_with_polylogue(spans, lower, upper)
 
 
 def _enrich_with_polylogue(
@@ -305,8 +322,7 @@ def project_focus_days(*, start: datetime, end: datetime) -> list[ProjectFocusDa
 def _focus_spans_cached(
     start: datetime, end: datetime, min_dur: float
 ) -> tuple[FocusSpan, ...]:
-    active = active_intervals(start, end)
-    afk = afk_intervals(start, end)
+    active, afk = _repaired_afk_events(start, end)
     windows = _window_spans(start, end, active=active, min_duration_s=0.0)
 
     # Collect all boundary points
@@ -824,6 +840,12 @@ def app_sessions(
         for s in focus_spans(start=start, end=end, min_duration_s=10.0)
         if s.kind == "focused" and s.app and s.title
     ]
+    return _app_sessions_from_spans(spans, min_duration_s=min_duration_s)
+
+
+def _app_sessions_from_spans(
+    spans: Sequence[FocusSpan], *, min_duration_s: float = 60
+) -> list[AppSession]:
     sessions: list[AppSession] = []
     for g in group_by_gap(
         spans,
@@ -880,10 +902,21 @@ def deep_work(
     min_minutes: float = 30,
     max_interruption_ratio: float = 0.15,
 ) -> list[DeepWorkBlock]:
+    return _deep_work_from_sessions(
+        app_sessions(start=start, end=end),
+        min_minutes=min_minutes,
+        max_interruption_ratio=max_interruption_ratio,
+    )
+
+
+def _deep_work_from_sessions(
+    sessions: Sequence[AppSession],
+    *,
+    min_minutes: float = 30,
+    max_interruption_ratio: float = 0.15,
+) -> list[DeepWorkBlock]:
     productive = [
-        s
-        for s in app_sessions(start=start, end=end)
-        if s.project or (s.mode or "") in _PRODUCTIVE_MODES
+        s for s in sessions if s.project or (s.mode or "") in _PRODUCTIVE_MODES
     ]
     blocks: list[DeepWorkBlock] = []
     for g in group_by_gap(
@@ -934,8 +967,20 @@ def circadian(*, start: date, end: date) -> list[CircadianProfile]:
     # Logical-boundary window so the edge days are fully covered, matching
     # active_seconds_by_date and the logical_date bucketing below.
     s, e = date_to_dt_range(start, end)
+    return _circadian_from_spans(focus_spans(start=s, end=e, min_duration_s=30))
+
+
+def _spans_with_min(
+    spans: Sequence[FocusSpan], *, min_duration_s: float
+) -> Iterator[FocusSpan]:
+    for span in spans:
+        if span.duration_s >= min_duration_s:
+            yield span
+
+
+def _circadian_from_spans(spans: Sequence[FocusSpan]) -> list[CircadianProfile]:
     buckets: dict[tuple[date, int], tuple[TopN, TopN, float, float]] = {}
-    for span in focus_spans(start=s, end=e, min_duration_s=30):
+    for span in _spans_with_min(spans, min_duration_s=30):
         for hour, seg in split_by_hour(span.start, span.end):
             # Bucket by the segment's logical day: a span straddling the 6 AM
             # boundary contributes its sub-segments to the correct logical days.
@@ -1043,7 +1088,12 @@ def _ctx(s: FocusSpan) -> tuple[str | None, str | None]:
 
 def fragmentation(*, start: date, end: date) -> list[FragmentationMetrics]:
     s, e = date_to_dt_range(start, end)
-    sessions = app_sessions(start=s, end=e)
+    return _fragmentation_from_sessions(app_sessions(start=s, end=e))
+
+
+def _fragmentation_from_sessions(
+    sessions: Sequence[AppSession],
+) -> list[FragmentationMetrics]:
     by_day: dict[date, list[AppSession]] = {}
     for sess in sessions:
         by_day.setdefault(logical_date(sess.start), []).append(sess)
@@ -1105,9 +1155,12 @@ def _session_ctx(s: AppSession) -> str:
 
 def attention(*, start: date, end: date) -> list[AttentionMetrics]:
     s, e = date_to_dt_range(start, end)
-    spans = focus_spans(start=s, end=e, min_duration_s=60)
+    return _attention_from_spans(focus_spans(start=s, end=e, min_duration_s=60))
+
+
+def _attention_from_spans(spans: Sequence[FocusSpan]) -> list[AttentionMetrics]:
     by_day: dict[date, dict[str, float]] = {}
-    for span in spans:
+    for span in _spans_with_min(spans, min_duration_s=60):
         if span.kind != "focused" or not span.project:
             continue
         bucket = by_day.setdefault(logical_date(span.start), {})
@@ -1201,11 +1254,18 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     s, e = date_to_dt_range(start, end)
 
     active_map = active_seconds_by_date(start, end)
-    dw_blocks = deep_work(start=s, end=e)
-    frag_data = fragmentation(start=start, end=end)
-    att_data = attention(start=start, end=end)
-    circ_data = circadian(start=start, end=end)
-    sessions = app_sessions(start=s, end=e)
+    spans = focus_spans(start=s, end=e, min_duration_s=10, enrich_polylogue=False)
+    sessions = _app_sessions_from_spans(
+        [
+            span
+            for span in spans
+            if span.kind == "focused" and span.app and span.title
+        ]
+    )
+    dw_blocks = _deep_work_from_sessions(sessions)
+    frag_data = _fragmentation_from_sessions(sessions)
+    att_data = _attention_from_spans(spans)
+    circ_data = _circadian_from_spans(spans)
     outage_map = _daily_outage_hours(start=s, end=e)
 
     dw_by_day: dict[date, float] = {}

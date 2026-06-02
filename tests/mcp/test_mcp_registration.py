@@ -86,6 +86,10 @@ def test_mcp_tools_registered() -> None:
         web_daily,
     )
     from lynchpin.mcp.tools.capability import mcp_capability_matrix
+    from lynchpin.mcp.tools.artifacts import (
+        analysis_artifact_inventory,
+        read_analysis_artifact,
+    )
     from lynchpin.mcp.tools.review import pr_review_rows, review_bottlenecks
     from lynchpin.mcp.tools.runtime import mcp_runtime_status, mcp_surface_self_check
     from lynchpin.mcp.tools.signals import source_observation_bounds, verify_vs_edit_ratio
@@ -146,6 +150,8 @@ def test_mcp_tools_registered() -> None:
         claim_evidence,
         contract_coverage,
         mcp_capability_matrix,
+        analysis_artifact_inventory,
+        read_analysis_artifact,
         promotion_runs,
         substrate_run_steps,
         refactor_candidates,

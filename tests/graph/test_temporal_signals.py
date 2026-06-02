@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,40 @@ def test_loader_failure_is_silent() -> None:
         start=date(2026, 5, 1), end=date(2026, 5, 7), specs=(spec,)
     )
     assert events == ()
+
+
+def test_default_activitywatch_signal_loaders_share_daily_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.graph.temporal_signals as ts
+
+    calls = {"daily": 0}
+    rows = tuple(
+        SimpleNamespace(
+            date=date(2026, 4, 1) + timedelta(days=i),
+            deep_work_min=float(i),
+            active_hours=float(i) / 10,
+            fragmentation_score=float(i) / 100,
+        )
+        for i in range(60)
+    )
+
+    def fake_daily_activity(*, start: date, end: date):
+        calls["daily"] += 1
+        return rows
+
+    ts._activitywatch_daily_rows.cache_clear()
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch.daily_activity",
+        fake_daily_activity,
+    )
+
+    ts._load_deep_work(date(2026, 4, 1), date(2026, 5, 30))
+    ts._load_active_hours(date(2026, 4, 1), date(2026, 5, 30))
+    ts._load_fragmentation(date(2026, 4, 1), date(2026, 5, 30))
+
+    assert calls["daily"] == 1
+    ts._activitywatch_daily_rows.cache_clear()
 
 
 def test_evidence_graph_includes_temporal_nodes(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,6 @@ Covers:
 from __future__ import annotations
 
 import duckdb
-import pytest
 
 from lynchpin.mcp.tools.change import commit_kind_attribution
 

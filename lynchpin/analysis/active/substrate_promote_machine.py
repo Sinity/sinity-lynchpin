@@ -7,6 +7,8 @@ SQLite extension is unavailable or the canonical DB path is absent.
 
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import logging
 import time
 from datetime import date, timedelta
@@ -373,7 +375,9 @@ def _promote_experiments(
         from lynchpin.substrate.machine import promote_machine_experiment_runs
 
         exp_root = experiment_root()
-        runs = list(experiment_runs(start=window_start, end=window_end))
+        runs = _validated_experiment_runs(
+            experiment_runs(start=window_start, end=window_end)
+        )
         run_count = promote_machine_experiment_runs(conn, refresh_id=refresh_id, runs=runs)
         counts["machine_experiment_runs"] = run_count
         exp_reason: str | None
@@ -395,3 +399,59 @@ def _promote_experiments(
             status="error", reason=str(exc), row_count=0,
             window_start=window_start, window_end=window_end,
         )
+
+
+def _validated_experiment_runs(runs: Any) -> list[Any]:
+    from lynchpin.analysis.machine.controlled_benchmarks import (
+        validate_executed_benchmark_manifest,
+    )
+
+    validated = []
+    for run in runs:
+        try:
+            payload = json.loads(run.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            validated.append(
+                replace(
+                    run,
+                    validation_status="invalid",
+                    validation_issues=(f"cannot re-read manifest for validation: {exc}",),
+                    validation_warnings=(),
+                    manifest_validation={
+                        "valid": False,
+                        "issues": [f"cannot re-read manifest for validation: {exc}"],
+                        "warnings": [],
+                    },
+                )
+            )
+            continue
+        if not isinstance(payload, dict):
+            validated.append(
+                replace(
+                    run,
+                    validation_status="invalid",
+                    validation_issues=("manifest root must be an object",),
+                    validation_warnings=(),
+                    manifest_validation={
+                        "valid": False,
+                        "issues": ["manifest root must be an object"],
+                        "warnings": [],
+                    },
+                )
+            )
+            continue
+        validation = validate_executed_benchmark_manifest(
+            payload,
+            manifest_path=run.manifest_path,
+            require_file_refs=False,
+        )
+        validated.append(
+            replace(
+                run,
+                validation_status="valid" if validation.valid else "invalid",
+                validation_issues=tuple(validation.issues),
+                validation_warnings=tuple(validation.warnings),
+                manifest_validation=validation.to_dict(),
+            )
+        )
+    return validated

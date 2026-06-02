@@ -23,12 +23,16 @@ def test_project_day_correlations_returns_dataclass_dict(tmp_path: Path, monkeyp
     cf_file = tmp_path / "commit_facts.json"
     cf_file.write_text(json.dumps({"generated_at_utc": "2026-05-08T00:00:00+00:00", "commits": [make_commit_entry("abc" + "0" * 37)]}))
 
-    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
+    from lynchpin.analysis.active.substrate_promote import (
+        SOURCE_COMMITS,
+        run_substrate_promote,
+    )
 
     run_substrate_promote(
         commit_facts_file=str(cf_file),
         file_changes_file=str(tmp_path / "no_fc.json"),
         symbol_changes_file=str(tmp_path / "no_sym.json"),
+        sources={SOURCE_COMMITS},
         write_evidence_graph=False,
     )
 

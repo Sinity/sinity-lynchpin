@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lynchpin.core.io import save_json
 from lynchpin.substrate.connection import connect, substrate_path
 
 if TYPE_CHECKING:
@@ -91,6 +93,34 @@ def analyze_workflow_mechanics(
             "same command/project within retry_gap_min is treated as one loop; semantic intent is not inferred",
         ),
     )
+
+
+def write_workflow_mechanics_report(
+    out: Path,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    project: str | None = None,
+    refresh_id: str | None = None,
+    path: str | None = None,
+    retry_gap_min: int = 20,
+    limit: int = 100,
+) -> WorkflowMechanicsReport:
+    report = analyze_workflow_mechanics(
+        start=start,
+        end=end,
+        project=project,
+        refresh_id=refresh_id,
+        path=path,
+        retry_gap_min=retry_gap_min,
+        limit=limit,
+    )
+    payload = {
+        "generated_at_utc": datetime.now().astimezone().isoformat(),
+        **report.to_json(),
+    }
+    save_json(out, payload, sort_keys=True)
+    return report
 
 
 def _load_invocations(
@@ -272,4 +302,5 @@ __all__ = [
     "WorkflowMechanicsReport",
     "WorkflowRetryChain",
     "analyze_workflow_mechanics",
+    "write_workflow_mechanics_report",
 ]

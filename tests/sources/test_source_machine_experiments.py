@@ -57,6 +57,9 @@ def test_machine_experiments_source_reads_manifest_root(tmp_path):
     assert rows[0].nix_internal_json_path == "/tmp/run-1/nix-internal-json.ndjson"
     assert rows[0].planned_treatment == {"turbo": "on"}
     assert rows[0].git_dirty is True
+    assert rows[0].validation_status == "unvalidated"
+    assert rows[0].validation_issues == ()
+    assert rows[0].manifest_validation == {}
 
 
 def test_machine_experiments_source_ignores_exported_templates(tmp_path):
@@ -103,3 +106,4 @@ def test_machine_experiments_source_reads_nested_exported_run_manifest(tmp_path)
     assert rows[0].run_group_id == "grp1"
     assert rows[0].nix_internal_json_path == "/tmp/run-1/nix-internal-json.ndjson"
     assert rows[0].manifest_path == run_dir / "manifest.json"
+    assert rows[0].validation_status == "unvalidated"

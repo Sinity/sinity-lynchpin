@@ -57,6 +57,15 @@ def _timestamp_filter(
     return True
 
 
+def _artifact_rows(payload: dict[str, Any] | None, key: str) -> list[dict[str, Any]]:
+    if payload is None:
+        return []
+    rows = payload.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
 @app.tool()
 def machine_status() -> dict[str, Any]:
     """Summarize current machine-analysis readiness, support, claims, and blockers."""
@@ -348,6 +357,184 @@ def machine_below_attributions(
 
 
 @app.tool()
+def machine_telemetry_analysis(section: str = "daily", limit: int = 100) -> dict[str, Any]:
+    """Read the materialized machine telemetry analysis artifact."""
+    payload = _analysis_artifact("machine_telemetry_analysis.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "rows": []}
+    valid_sections = {"daily", "signals", "hardware_regimes", "correlations"}
+    selected = section if section in valid_sections else "daily"
+    rows = _artifact_rows(payload, selected)
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "coverage": payload.get("coverage", {}),
+        "section": selected,
+        "row_count": len(rows),
+        "caveats": payload.get("caveats", []),
+    }
+    return {"summary": summary, "rows": rows[:max(limit, 0)]}
+
+
+@app.tool()
+def machine_below_analysis(section: str = "system", capture_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+    """Read materialized below system/process/cgroup summaries."""
+    payload = _analysis_artifact("machine_below_analysis.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "rows": []}
+    section_map = {"system": "system", "processes": "top_processes", "cgroups": "top_cgroups"}
+    selected = section_map.get(section, "system")
+    rows = _artifact_rows(payload, selected)
+    if capture_id is not None:
+        rows = [row for row in rows if row.get("capture_id") == capture_id]
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "window_count": payload.get("window_count"),
+        "live_store": payload.get("live_store", {}),
+        "section": section,
+        "row_count": len(rows),
+        "top_process_count": payload.get("top_process_count"),
+        "top_cgroup_count": payload.get("top_cgroup_count"),
+        "caveats": payload.get("caveats", []),
+    }
+    return {"summary": summary, "rows": rows[:max(limit, 0)]}
+
+
+@app.tool()
+def machine_work_state_windows(
+    pressure_state: str | None = None,
+    work_state: str | None = None,
+    project: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read segmented machine/work state windows from the materialized artifact."""
+    payload = _analysis_artifact("machine_work_state_windows.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "windows": []}
+    rows = _artifact_rows(payload, "windows")
+    if pressure_state is not None:
+        rows = [row for row in rows if row.get("pressure_state") == pressure_state]
+    if work_state is not None:
+        rows = [row for row in rows if row.get("work_state") == work_state]
+    if project is not None:
+        rows = [
+            row for row in rows
+            if project in (row.get("projects") if isinstance(row.get("projects"), list) else [])
+        ]
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "generated_for": payload.get("generated_for", {}),
+        "window_count": payload.get("window_count", len(rows)),
+        "pressure_state_counts": payload.get("pressure_state_counts", {}),
+        "work_state_counts": payload.get("work_state_counts", {}),
+        "hardware_regime_counts": payload.get("hardware_regime_counts", {}),
+        "repo_state_counts": payload.get("repo_state_counts", {}),
+        "filters": {"pressure_state": pressure_state, "work_state": work_state, "project": project},
+        "filtered_count": len(rows),
+        "caveats": payload.get("caveats", []),
+    }
+    rows.sort(key=lambda row: str(row.get("started_at") or ""))
+    return {"summary": summary, "windows": rows[:max(limit, 0)]}
+
+
+@app.tool()
+def machine_command_performance(
+    tool: str | None = None,
+    project: str | None = None,
+    pressure_only: bool = False,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read command-performance windows joined to machine work states."""
+    payload = _analysis_artifact("command_performance_windows.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "windows": []}
+    rows = _artifact_rows(payload, "windows")
+    if tool is not None:
+        rows = [row for row in rows if row.get("tool") == tool]
+    if project is not None:
+        rows = [row for row in rows if row.get("project") == project]
+    if pressure_only:
+        rows = [row for row in rows if row.get("machine_pressure_state") not in (None, "", "quiet")]
+    rows.sort(key=lambda row: float(row.get("duration_seconds") or 0), reverse=True)
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "generated_for": payload.get("generated_for", {}),
+        "command_count": payload.get("command_count", len(rows)),
+        "tool_count": len(_artifact_rows(payload, "tools")),
+        "filters": {"tool": tool, "project": project, "pressure_only": pressure_only},
+        "filtered_count": len(rows),
+        "tool_summaries": _artifact_rows(payload, "tools"),
+        "caveats": payload.get("caveats", []),
+    }
+    return {"summary": summary, "windows": rows[:max(limit, 0)]}
+
+
+@app.tool()
+def machine_observational_deltas(
+    tool: str | None = None,
+    work_state: str | None = None,
+    pressure_state: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read observational command-duration deltas by work/pressure cohort."""
+    payload = _analysis_artifact("machine_observational_deltas.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "deltas": [], "cohorts": []}
+    deltas = _artifact_rows(payload, "deltas")
+    cohorts = _artifact_rows(payload, "cohorts")
+
+    def keep(row: dict[str, Any]) -> bool:
+        return (
+            (tool is None or row.get("tool") == tool)
+            and (work_state is None or row.get("work_state") == work_state)
+            and (pressure_state is None or row.get("pressure_state") == pressure_state)
+        )
+
+    deltas = [row for row in deltas if keep(row)]
+    cohorts = [row for row in cohorts if keep(row)]
+    deltas.sort(key=lambda row: float(row.get("median_delta_seconds") or 0), reverse=True)
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "generated_for": payload.get("generated_for", {}),
+        "cohort_count": payload.get("cohort_count", len(cohorts)),
+        "delta_count": payload.get("delta_count", len(deltas)),
+        "filters": {"tool": tool, "work_state": work_state, "pressure_state": pressure_state},
+        "filtered_delta_count": len(deltas),
+        "filtered_cohort_count": len(cohorts),
+        "caveats": payload.get("caveats", []),
+    }
+    return {"summary": summary, "deltas": deltas[:max(limit, 0)], "cohorts": cohorts[:max(limit, 0)]}
+
+
+@app.tool()
+def machine_devshell_performance(
+    command_class: str | None = None,
+    pressure_only: bool = False,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read devshell/Nix command performance windows."""
+    payload = _analysis_artifact("devshell_performance.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "windows": []}
+    rows = _artifact_rows(payload, "windows")
+    if command_class is not None:
+        rows = [row for row in rows if row.get("command_class") == command_class]
+    if pressure_only:
+        rows = [row for row in rows if row.get("machine_pressure_state") not in (None, "", "quiet")]
+    rows.sort(key=lambda row: float(row.get("duration_seconds") or 0), reverse=True)
+    summary = {
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "generated_for": payload.get("generated_for", {}),
+        "command_count": payload.get("command_count", len(rows)),
+        "summary_count": len(_artifact_rows(payload, "summaries")),
+        "filters": {"command_class": command_class, "pressure_only": pressure_only},
+        "filtered_count": len(rows),
+        "summaries": _artifact_rows(payload, "summaries"),
+        "caveats": payload.get("caveats", []),
+    }
+    return {"summary": summary, "windows": rows[:max(limit, 0)]}
+
+
+@app.tool()
 def machine_observational_baselines(
     dimension: str | None = None,
     key: str | None = None,
@@ -405,6 +592,7 @@ def machine_experiment_claims(
         "run_count": payload.get("run_count"),
         "controlled_claim_count": payload.get("controlled_claim_count"),
         "observational_claim_count": payload.get("observational_claim_count"),
+        "by_manifest_validation_status": _count_manifest_validation_status(rows),
         "caveats": payload.get("caveats", []),
     }
     return {"summary": summary, "claim_packs": rows[:max(limit, 0)]}
@@ -431,6 +619,7 @@ def machine_benchmark_runs(
             "run_count": payload.get("run_count", len(rows)),
             "controlled_claim_count": payload.get("controlled_claim_count"),
             "observational_claim_count": payload.get("observational_claim_count"),
+            "by_manifest_validation_status": _count_manifest_validation_status(rows),
             "caveats": payload.get("caveats", []),
         },
         "runs": rows[:max(limit, 0)],
@@ -1420,6 +1609,31 @@ def machine_benchmark_execution_queue(limit: int = 10, ready_only: bool = False)
 
 
 @app.tool()
+def machine_below_export_queue(limit: int = 10, kind: str | None = None) -> dict[str, Any]:
+    """Read planned live-below export windows for residual pressure episodes."""
+    payload = _analysis_artifact("machine_below_export_queue.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "items": []}
+    rows = [row for row in payload.get("items", []) if isinstance(row, dict)]
+    failed = [row for row in payload.get("failed_captures", []) if isinstance(row, dict)]
+    if kind:
+        rows = [row for row in rows if row.get("episode_kind") == kind]
+    return {
+        "summary": {
+            "generated_at_utc": payload.get("generated_at_utc"),
+            "generated_for": payload.get("generated_for"),
+            "queue_count": payload.get("queue_count", len(rows)),
+            "failed_capture_count": payload.get("failed_capture_count", len(failed)),
+            "root": payload.get("root"),
+            "live_store": payload.get("live_store"),
+            "caveats": payload.get("caveats", []),
+        },
+        "items": rows[:max(limit, 0)],
+        "failed_captures": failed[:max(limit, 0)],
+    }
+
+
+@app.tool()
 def machine_experiment_manifest_diagnostics(
     limit: int = 100,
     kind: str | None = None,
@@ -1624,6 +1838,29 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _manifest_validation_status(row: dict[str, Any]) -> str | None:
+    payload = row.get("manifest_validation")
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("valid") is True:
+        return "valid"
+    if payload.get("valid") is False:
+        return "invalid"
+    if "valid" in payload:
+        return "unknown"
+    status = payload.get("status") or payload.get("validation_status")
+    return str(status) if status else None
+
+
+def _count_manifest_validation_status(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = _manifest_validation_status(row)
+        if status:
+            counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 @app.tool()
 def machine_mechanism_hypotheses(
     limit: int = 25,
@@ -1679,7 +1916,12 @@ def machine_instrumentation_gaps(
 
 
 @app.tool()
-def machine_attribution_claims(limit: int = 25, support_level: str | None = None) -> dict[str, Any]:
+def machine_attribution_claims(
+    limit: int = 25,
+    support_level: str | None = None,
+    project: str | None = None,
+    metric: str | None = None,
+) -> dict[str, Any]:
     """Read promoted machine attribution claim/refusal ledger rows."""
     payload = _analysis_artifact("machine_attribution_claims.json")
     if payload is None:
@@ -1687,12 +1929,17 @@ def machine_attribution_claims(limit: int = 25, support_level: str | None = None
     rows = [row for row in payload.get("claims", []) if isinstance(row, dict)]
     if support_level:
         rows = [row for row in rows if row.get("support_level") == support_level]
+    if project:
+        rows = [row for row in rows if row.get("project") == project]
+    if metric:
+        rows = [row for row in rows if (row.get("payload") or {}).get("metric") == metric]
     return {
         "summary": {
             "generated_at_utc": payload.get("generated_at_utc"),
             "generated_for": payload.get("generated_for"),
             "claim_count": payload.get("claim_count", len(rows)),
             "by_support_level": payload.get("by_support_level", {}),
+            "filters": {"support_level": support_level, "project": project, "metric": metric},
             "caveats": payload.get("caveats", []),
         },
         "claims": rows[:max(limit, 0)],
@@ -1706,11 +1953,22 @@ def machine_claim_evidence(claim_id: str) -> dict[str, Any]:
     assumptions = _analysis_artifact("machine_assumption_checks.json") or {}
     gaps = _analysis_artifact("machine_instrumentation_gaps.json") or {}
     support = _analysis_artifact("machine_support_assessment.json") or {}
+    matched = _analysis_artifact("machine_matched_designs.json") or {}
+    negative = _analysis_artifact("machine_negative_controls.json") or {}
     claim = next(
         (row for row in claims.get("claims", []) if isinstance(row, dict) and row.get("claim_id") == claim_id),
         None,
     )
     source_ids = set(claim.get("source_ids", [])) if isinstance(claim, dict) else set()
+    matched_designs = [
+        row for row in matched.get("designs", [])
+        if isinstance(row, dict) and row.get("design_id") in source_ids
+    ]
+    matched_design_ids = {
+        str(row.get("design_id"))
+        for row in matched_designs
+        if row.get("design_id")
+    }
     return {
         "summary": {"status": "found" if claim is not None else "not_found", "claim_id": claim_id},
         "claim": claim,
@@ -1724,7 +1982,18 @@ def machine_claim_evidence(claim_id: str) -> dict[str, Any]:
         ],
         "support_assessments": [
             row for row in support.get("assessments", [])
-            if isinstance(row, dict) and row.get("candidate_id") in source_ids
+            if isinstance(row, dict)
+            and (row.get("assessment_id") in source_ids or row.get("candidate_id") in source_ids)
+        ],
+        "matched_designs": matched_designs,
+        "negative_controls": [
+            row for row in negative.get("controls", [])
+            if isinstance(row, dict)
+            and (
+                row.get("control_id") in source_ids
+                or row.get("design_id") in source_ids
+                or row.get("design_id") in matched_design_ids
+            )
         ],
         "source_ids": sorted(str(item) for item in source_ids),
     }

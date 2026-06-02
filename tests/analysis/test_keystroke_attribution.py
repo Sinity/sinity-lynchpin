@@ -27,7 +27,6 @@ def test_keystrokes_daily_emits_every_date_in_range(monkeypatch):
     # Mock the two underlying calls; one returns spans for a single date,
     # the other returns active-seconds for a different date.
     def fake_iter(start, end):
-        from datetime import datetime, time as t, timezone
         # yield one span on 2026-02-10 with 100 keystrokes
         yield (date(2026, 2, 10), "kitty", "", "lyn", "code", 100)
 

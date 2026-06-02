@@ -23,14 +23,6 @@ __pycache__/
 # Local raw datasets (heavy, non-versioned)
 data/raw/
 
-# Legacy/generated local roots; new material belongs under `.lynchpin/`.
-artefacts/
-tmp/
-__mess_to_triage/
-
-# No tracked snapshots; keep repo purely regenerable.
-checkpoints/
-
 # Data/analysis artifacts
 .agent/scratch/
 .claude/settings.local.json
@@ -42,9 +34,6 @@ checkpoints/
 .DS_Store
 .cclsp.json
 .mcp.json
-
-# Playwright-MCP debug artifacts (browser session logs + screenshots)
-.playwright-mcp/
 
 AGENTS.override.md
 lynchpin.egg-info/

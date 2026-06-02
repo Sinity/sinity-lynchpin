@@ -5,9 +5,12 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
 
+from lynchpin.core.io import save_json
 from lynchpin.sources.git_models import GitCommitFact, GitFileChangeFact
 from lynchpin.substrate.claims import AnalysisClaimRow, claim_id
 
@@ -51,6 +54,45 @@ def code_history_claims(
     claims.extend(_rework_claims(start=start, end=end, commits=commits, top_n=top_n))
     claims.sort(key=lambda row: (-row.confidence, -row.score, row.claim_type, row.summary))
     return claims[: max(top_n, 1)]
+
+
+def write_code_history_claims(
+    out: Path,
+    *,
+    start: date,
+    end: date,
+    project: str | None = None,
+    top_n: int = 50,
+    inputs: CodeHistoryInputs | None = None,
+) -> list[AnalysisClaimRow]:
+    claims = code_history_claims(
+        start=start,
+        end=end,
+        project=project,
+        top_n=top_n,
+        inputs=inputs,
+    )
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "project": project,
+        "claim_count": len(claims),
+        "claims": [_claim_payload(row) for row in claims],
+        "caveats": [
+            "code-history claims are observational and git-derived",
+            "hotspots/rework/broad-surface changes do not prove runtime defects or causal impact",
+        ],
+    }
+    save_json(out, payload, sort_keys=True)
+    return claims
+
+
+def _claim_payload(row: AnalysisClaimRow) -> dict[str, Any]:
+    payload = asdict(row)
+    day = payload.get("date")
+    if isinstance(day, date):
+        payload["date"] = day.isoformat()
+    return payload
 
 
 def _hotspot_claims(
@@ -216,4 +258,9 @@ def _is_rework_subject(subject: str) -> bool:
     )
 
 
-__all__ = ["CodeHistoryInputs", "code_history_claims", "load_code_history_inputs"]
+__all__ = [
+    "CodeHistoryInputs",
+    "code_history_claims",
+    "load_code_history_inputs",
+    "write_code_history_claims",
+]

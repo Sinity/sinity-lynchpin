@@ -76,7 +76,10 @@ def analyze_machine_validation_design(
     rows = [row for row in rows if row is not None]
     rows.sort(key=lambda row: (row["started_at"], row["unit_id"]))
     split = _split(rows, unit_type=str(frame.get("unit_type") or "unknown"), split_fraction=split_fraction)
-    boundaries = _git_revision_boundaries(rows, min_rows=min_boundary_rows)
+    boundaries = [
+        *_git_revision_boundaries(rows, min_rows=min_boundary_rows),
+        *_temporal_gap_boundaries(rows, min_rows=min_boundary_rows),
+    ]
     boundaries.sort(key=lambda row: (abs(row.median_delta or 0.0) * -1.0, -row.after_row_count, row.boundary_id))
     if limit > 0:
         boundaries = boundaries[:limit]
@@ -212,6 +215,78 @@ def _git_revision_boundaries(rows: list[dict[str, Any]], *, min_rows: int) -> li
     return result
 
 
+def _temporal_gap_boundaries(
+    rows: list[dict[str, Any]],
+    *,
+    min_rows: int,
+    min_gap_seconds: float = 6 * 3600,
+) -> list[MachineBoundaryCandidate]:
+    grouped: dict[tuple[str | None, str | None], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[(row.get("project"), row.get("stage_name"))].append(row)
+    result: list[MachineBoundaryCandidate] = []
+    for (project, stage_name), items in grouped.items():
+        items.sort(key=lambda row: (row["started_at"], row["unit_id"]))
+        if len(items) < min_rows * 2:
+            continue
+        runs: list[list[dict[str, Any]]] = []
+        for row in items:
+            previous = runs[-1][-1] if runs else None
+            gap = _gap_seconds(previous, row) if previous is not None else None
+            if previous is None or gap is None or gap >= min_gap_seconds:
+                runs.append([row])
+            else:
+                runs[-1].append(row)
+        for idx in range(1, len(runs)):
+            before = runs[idx - 1]
+            after = runs[idx]
+            before_values = _observed_values(before)
+            after_values = _observed_values(after)
+            if len(before_values) < min_rows or len(after_values) < min_rows:
+                continue
+            before_median = statistics.median(before_values)
+            after_median = statistics.median(after_values)
+            boundary_at = after[0]["started_at"]
+            gap_seconds = _gap_seconds(before[-1], after[0])
+            result.append(
+                MachineBoundaryCandidate(
+                    boundary_id=_digest("boundary", "temporal_gap", project, stage_name, before[0]["started_at"], boundary_at),
+                    boundary_type="temporal_run_gap_transition",
+                    boundary_at=boundary_at,
+                    dimensions={
+                        "project": project,
+                        "stage_name": stage_name,
+                        "gap_seconds": round(gap_seconds or 0.0, 6),
+                        "before_window_start": before[0]["started_at"],
+                        "before_window_end": before[-1]["started_at"],
+                        "after_window_start": after[0]["started_at"],
+                        "after_window_end": after[-1]["started_at"],
+                    },
+                    before_row_count=len(before_values),
+                    after_row_count=len(after_values),
+                    before_median=round(before_median, 6),
+                    after_median=round(after_median, 6),
+                    median_delta=round(after_median - before_median, 6),
+                    candidate_controls=("same_project_other_stage", "same_stage_other_project", "pre_boundary_placebo"),
+                    support_ceiling="natural_experiment_candidate",
+                    caveats=(
+                        "boundary is triggered by a long observation gap, not by outcome selection",
+                        "gap transitions can reflect workload/cache/calendar changes and require matched controls",
+                    ),
+                )
+            )
+    return result
+
+
+def _gap_seconds(previous: dict[str, Any] | None, current: dict[str, Any]) -> float | None:
+    if previous is None:
+        return None
+    previous_end = previous.get("ended_at") or previous.get("started_at")
+    if previous_end is None:
+        return None
+    return (current["started_at"] - previous_end).total_seconds()
+
+
 def _observed_values(rows: list[dict[str, Any]]) -> list[float]:
     values = []
     for row in rows:
@@ -227,10 +302,12 @@ def _frame_row(row: dict[str, Any]) -> dict[str, Any] | None:
     started_at = parse_datetime(str(row.get("outcome_window_start") or ""))
     if started_at is None:
         return None
+    ended_at = parse_datetime(str(row.get("outcome_window_end") or "")) or started_at
     covariates = row.get("covariates") if isinstance(row.get("covariates"), dict) else {}
     return {
         "unit_id": str(row.get("unit_id") or ""),
         "started_at": started_at,
+        "ended_at": ended_at,
         "project": row.get("project") or covariates.get("project"),
         "stage_name": covariates.get("stage_name"),
         "git_commit": covariates.get("git_commit"),

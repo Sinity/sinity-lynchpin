@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from lynchpin.analysis.url_crossref import (
     URLMention,

@@ -183,7 +183,9 @@ def load_machine_experiment_runs(
             service_profile, cache_profile, measurement_context, planned_treatment,
             nix_internal_json_path,
             git_root, git_head, git_branch, git_dirty,
-            pre_state, post_state, notes, manifest_path, refresh_id
+            pre_state, post_state, notes,
+            validation_status, validation_issues, validation_warnings,
+            manifest_validation, manifest_path, refresh_id
         FROM machine_experiment_run
         {where}
         ORDER BY started_at, run_id
@@ -462,7 +464,9 @@ _EXPERIMENT_RUN_COLUMNS = (
     "service_profile", "cache_profile", "measurement_context", "planned_treatment",
     "nix_internal_json_path",
     "git_root", "git_head", "git_branch", "git_dirty",
-    "pre_state", "post_state", "notes", "manifest_path",
+    "pre_state", "post_state", "notes",
+    "validation_status", "validation_issues", "validation_warnings",
+    "manifest_validation", "manifest_path",
 )
 
 
@@ -488,7 +492,9 @@ def promote_machine_experiment_runs(
             r.nix_internal_json_path,
             r.git_root, r.git_head, r.git_branch, r.git_dirty,
             json.dumps(r.pre_state), json.dumps(r.post_state),
-            list(r.notes), str(r.manifest_path),
+            list(r.notes),
+            r.validation_status, list(r.validation_issues), list(r.validation_warnings),
+            json.dumps(r.manifest_validation), str(r.manifest_path),
         ),
     )
 

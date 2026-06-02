@@ -6,9 +6,11 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from lynchpin.core.io import save_json
 from lynchpin.sources.bookmarks import BookmarkEvent, iter_bookmarks
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent, iter_events
 from lynchpin.sources.web import domain_breakdown
@@ -72,6 +74,32 @@ def personal_interest_trace(
             "source reinforcement raises priority but does not prove importance or intent",
         ),
     )
+
+
+def write_personal_interest_trace(
+    out: Path,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    top_n: int = 50,
+    google_events: Iterable[GoogleTakeoutEvent] | None = None,
+    bookmark_events: Iterable[BookmarkEvent] | None = None,
+    web_domain_rows: Iterable[tuple[str, int, float]] | None = None,
+) -> PersonalInterestReport:
+    report = personal_interest_trace(
+        start=start,
+        end=end,
+        top_n=top_n,
+        google_events=google_events,
+        bookmark_events=bookmark_events,
+        web_domain_rows=web_domain_rows,
+    )
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        **report.to_json(),
+    }
+    save_json(out, payload, sort_keys=True)
+    return report
 
 
 def _add_google_evidence(
@@ -196,4 +224,9 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-__all__ = ["InterestTopicTrace", "PersonalInterestReport", "personal_interest_trace"]
+__all__ = [
+    "InterestTopicTrace",
+    "PersonalInterestReport",
+    "personal_interest_trace",
+    "write_personal_interest_trace",
+]

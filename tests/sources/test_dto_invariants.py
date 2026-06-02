@@ -23,7 +23,7 @@ def dt(h: int, m: int = 0, s: int = 0) -> datetime:
 # activitywatch_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.activitywatch_models import (
+from lynchpin.sources.activitywatch_models import (  # noqa: E402
     AWDayActivity,
     AWEvent,
     AppSession,
@@ -335,7 +335,7 @@ class TestAWDayActivity:
 # git_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.git_models import (
+from lynchpin.sources.git_models import (  # noqa: E402
     CommitSession,
     GitCommit,
     GitCommitFact,
@@ -530,7 +530,7 @@ class TestTokeiReport:
 # health_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.health_models import (
+from lynchpin.sources.health_models import (  # noqa: E402
     ActivityDaySummary,
     CalorieBurn,
     DailyHeartRateSummary,
@@ -660,7 +660,7 @@ class TestNapSession:
 # polylogue_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.polylogue_models import (
+from lynchpin.sources.polylogue_models import (  # noqa: E402
     DaySessionSummary,
     MessageRecord,
     SessionProfile,
@@ -779,7 +779,7 @@ class TestSessionProfile:
 # web_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.web_models import WebDayActivity
+from lynchpin.sources.web_models import WebDayActivity  # noqa: E402
 
 
 class TestWebDayActivity:
@@ -802,7 +802,7 @@ class TestWebDayActivity:
 # machine_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.machine_models import MachineSourceReadiness
+from lynchpin.sources.machine_models import MachineSourceReadiness  # noqa: E402
 
 
 class TestMachineSourceReadiness:
@@ -824,7 +824,7 @@ class TestMachineSourceReadiness:
 # analysis_artifact_models
 # ---------------------------------------------------------------------------
 
-from lynchpin.sources.analysis_artifact_models import AnalysisArtifact, AnalysisClaim
+from lynchpin.sources.analysis_artifact_models import AnalysisArtifact, AnalysisClaim  # noqa: E402
 
 
 class TestAnalysisArtifact:

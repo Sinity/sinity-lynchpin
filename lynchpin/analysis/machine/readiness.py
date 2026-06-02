@@ -86,11 +86,11 @@ def analyze_machine_analysis_readiness(
     caveats = _caveats(dimensions)
     return MachineAnalysisReadiness(
         generated_for={
-        "start": start.isoformat() if start else None,
-        "end": end.isoformat() if end else None,
-        "bios_boundary": bios_boundary.isoformat(),
-        "pre_post_scope": "selected_window_and_all_data",
-    },
+            "start": start.isoformat() if start else None,
+            "end": end.isoformat() if end else None,
+            "bios_boundary": bios_boundary.isoformat(),
+            "pre_post_scope": "selected_window_and_all_data",
+        },
         tables=tables,
         artifacts=artifacts,
         dimensions=dimensions,
@@ -212,6 +212,7 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
         ("machine_episode_analysis.json", "episode_count"),
         ("machine_below_analysis.json", "window_count"),
         ("machine_below_attribution.json", "attributed_episode_count"),
+        ("machine_below_export_queue.json", "queue_count"),
         ("machine_context_windows.json", "window_count"),
         ("machine_work_observations.json", None),
         ("machine_analysis_feature_frames.json", "frame.row_count"),
@@ -285,6 +286,11 @@ def _dimensions(
     command_artifact = artifact_map["command_performance_windows.json"]
     devshell_artifact = artifact_map["devshell_performance.json"]
     experiment_artifact = artifact_map["machine_experiment_claims.json"]
+    support_artifact = artifact_map["machine_support_assessment.json"]
+    preflight_artifact = artifact_map["machine_benchmark_preflight.json"]
+    matched_artifact = artifact_map["machine_matched_designs.json"]
+    negative_artifact = artifact_map["machine_negative_controls.json"]
+    measurement_artifact = artifact_map["machine_measurement_system.json"]
     return [
         _dimension(
             "continuous_machine_telemetry",
@@ -304,7 +310,7 @@ def _dimensions(
                 f"before={before_after['before']} metric rows",
                 f"after={before_after['after']} metric rows",
             ),
-            _pre_post_caveats(before_after),
+            _pre_post_caveats(before_after, scope="current analysis window"),
         ),
         _dimension(
             "all_data_pre_post_bios_comparison",
@@ -314,7 +320,7 @@ def _dimensions(
                 f"before={all_data_before_after['before']} metric rows",
                 f"after={all_data_before_after['after']} metric rows",
             ),
-            _pre_post_caveats(all_data_before_after),
+            _pre_post_caveats(all_data_before_after, scope="promoted machine substrate"),
         ),
         _dimension(
             "network_telemetry",
@@ -329,23 +335,12 @@ def _dimensions(
             (f"command_count={command_artifact.primary_count or 0}",),
             () if (command_artifact.primary_count or 0) > 0 else ("Atuin command outcome joins are absent",),
         ),
-        _dimension(
-            "devshell_nix_focus",
-            "limited" if (devshell_artifact.primary_count or 0) > 0 else "missing",
-            (f"devshell_command_count={devshell_artifact.primary_count or 0}",),
-            ("command-text classification only; structured Nix logs are needed for phase attribution",),
-        ),
-        _dimension(
-            "controlled_benchmark_claims",
-            "stable" if experiment.row_count and _controlled_claim_count(experiment_artifact) else "missing",
-            (
-                f"manifest_rows={experiment.row_count}",
-                f"controlled_claim_count={_controlled_claim_count(experiment_artifact)}",
-            ),
-            ("benchmark claims require randomized run manifests joined to telemetry by timestamp",)
-            if not _controlled_claim_count(experiment_artifact)
-            else (),
-        ),
+        _devshell_nix_focus_dimension(devshell_artifact, experiment_artifact),
+        _controlled_benchmark_claims_dimension(experiment, experiment_artifact),
+        _benchmark_exportability_dimension(preflight_artifact),
+        _support_gate_dimension(support_artifact),
+        _natural_experiment_dimension(matched_artifact, negative_artifact, support_artifact),
+        _measurement_system_dimension(measurement_artifact),
     ]
 
 
@@ -359,11 +354,258 @@ def _dimension(
 
 
 def _controlled_claim_count(artifact: MachineArtifactCoverage) -> int:
-    payload = load_analysis_artifact(artifact.artifact)
+    payload = _artifact_payload(artifact)
     if payload is None:
         return 0
     value = payload.get("controlled_claim_count")
     return int(value) if isinstance(value, int) else 0
+
+
+def _controlled_benchmark_claims_dimension(
+    experiment: MachineTableCoverage,
+    artifact: MachineArtifactCoverage,
+) -> MachineReadinessDimension:
+    controlled = _controlled_claim_count(artifact)
+    return _dimension(
+        "controlled_benchmark_claims",
+        "stable" if experiment.row_count and controlled else "missing",
+        (
+            f"manifest_rows={experiment.row_count}",
+            f"controlled_claim_count={controlled}",
+        ),
+        ("benchmark claims require randomized run manifests joined to telemetry by timestamp",)
+        if not controlled
+        else (),
+    )
+
+
+def _devshell_nix_focus_dimension(
+    devshell_artifact: MachineArtifactCoverage,
+    experiment_artifact: MachineArtifactCoverage,
+) -> MachineReadinessDimension:
+    payload = _artifact_payload(experiment_artifact) or {}
+    structured_runs = _structured_internal_json_run_count(payload)
+    devshell_count = devshell_artifact.primary_count or 0
+    if structured_runs:
+        status = "stable"
+    elif devshell_count:
+        status = "limited"
+    else:
+        status = "missing"
+    caveats = []
+    if devshell_count:
+        caveats.append("devshell performance summaries are command-text classified")
+    if not structured_runs:
+        caveats.append("no parsed Nix internal-json benchmark phases are available")
+    return _dimension(
+        "devshell_nix_focus",
+        status,
+        (
+            f"devshell_command_count={devshell_count}",
+            f"structured_internal_json_run_count={structured_runs}",
+        ),
+        tuple(caveats),
+    )
+
+
+def _structured_internal_json_run_count(payload: dict[str, Any]) -> int:
+    count = 0
+    packs = payload.get("claim_packs") if isinstance(payload.get("claim_packs"), list) else []
+    for row in packs:
+        if not isinstance(row, dict) or row.get("claim_mode") != "controlled_benchmark":
+            continue
+        internal_json = row.get("internal_json") if isinstance(row.get("internal_json"), dict) else {}
+        if internal_json.get("exists") is True and _int_value(internal_json.get("phase_count")) > 0:
+            count += 1
+    return count
+
+
+def _benchmark_exportability_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
+    payload = _artifact_payload(artifact) or {}
+    run_count = _int_value(payload.get("run_count"))
+    ready_run_count = _int_value(payload.get("ready_run_count"))
+    issue_count = _int_value(payload.get("issue_count"))
+    warning_count = _int_value(payload.get("warning_count"))
+    if run_count == 0:
+        status = "missing"
+    elif issue_count == 0 and ready_run_count == run_count:
+        status = "stable"
+    elif ready_run_count > 0:
+        status = "limited"
+    else:
+        status = "missing"
+    caveats = []
+    if run_count == 0:
+        caveats.append("no controlled benchmark run templates exist")
+    if issue_count:
+        caveats.append("one or more run templates fail benchmark preflight")
+    if warning_count:
+        caveats.append("run templates still carry export-time warnings")
+    return _dimension(
+        "controlled_benchmark_exportability",
+        status,
+        (
+            f"run_templates={ready_run_count}/{run_count} ready",
+            f"preflight_issues={issue_count}",
+            f"preflight_warnings={warning_count}",
+        ),
+        tuple(caveats),
+    )
+
+
+def _support_gate_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
+    payload = _artifact_payload(artifact) or {}
+    assessment_count = _int_value(payload.get("assessment_count"))
+    refusal_count = _int_value(payload.get("refusal_count"))
+    controlled = _int_value(payload.get("controlled_claim_count"))
+    natural = _int_value(payload.get("natural_experiment_support_count"))
+    ready_plans = _int_value(payload.get("ready_plan_count"))
+    supported = controlled + natural
+    if supported:
+        status = "stable"
+    elif assessment_count:
+        status = "limited"
+    else:
+        status = "missing"
+    caveats = []
+    if supported == 0:
+        caveats.append("no candidate currently passes the controlled or natural-experiment support gate")
+    if refusal_count:
+        caveats.append(f"{refusal_count} machine attribution candidates are explicitly refused")
+    return _dimension(
+        "causal_support_gate",
+        status,
+        (
+            f"assessments={assessment_count}",
+            f"controlled_supported={controlled}",
+            f"natural_experiment_supported={natural}",
+            f"refusals={refusal_count}",
+            f"ready_benchmark_plans={ready_plans}",
+        ),
+        tuple(caveats),
+    )
+
+
+def _natural_experiment_dimension(
+    matched_artifact: MachineArtifactCoverage,
+    negative_artifact: MachineArtifactCoverage,
+    support_artifact: MachineArtifactCoverage,
+) -> MachineReadinessDimension:
+    matched_payload = _artifact_payload(matched_artifact) or {}
+    negative_payload = _artifact_payload(negative_artifact) or {}
+    support_payload = _artifact_payload(support_artifact) or {}
+    design_count = _int_value(matched_payload.get("design_count"))
+    control_count = _int_value(negative_payload.get("control_count"))
+    control_status = _status_counts(negative_payload.get("by_status"))
+    failed_controls = control_status.get("failed", 0)
+    passed_controls = control_status.get("passed", 0)
+    selected_designs = _natural_support_design_ids(support_payload)
+    selected_status = _control_status_for_designs(negative_payload, selected_designs)
+    selected_failed = selected_status.get("failed", 0)
+    selected_unavailable = selected_status.get("unavailable", 0)
+    if design_count and control_count and selected_designs and selected_failed == 0:
+        status = "stable"
+    elif design_count or control_count:
+        status = "limited"
+    else:
+        status = "missing"
+    caveats = []
+    if design_count == 0:
+        caveats.append("no matched natural-experiment designs are available")
+    if not selected_designs:
+        caveats.append("no natural-experiment support-selected designs are available")
+    if control_count == 0:
+        caveats.append("no negative controls are available for natural-experiment designs")
+    if selected_failed:
+        caveats.append("one or more support-selected negative controls failed")
+    elif failed_controls:
+        caveats.append("some non-selected negative controls failed")
+    if selected_unavailable:
+        caveats.append("one or more support-selected negative controls are unavailable")
+    return _dimension(
+        "natural_experiment_identification",
+        status,
+        (
+            f"matched_designs={design_count}",
+            f"support_selected_designs={len(selected_designs)}",
+            f"negative_controls={control_count}",
+            f"negative_controls_passed={passed_controls}",
+            f"negative_controls_failed={failed_controls}",
+            f"support_selected_negative_controls_failed={selected_failed}",
+            f"support_selected_negative_controls_unavailable={selected_unavailable}",
+        ),
+        tuple(caveats),
+    )
+
+
+def _natural_support_design_ids(payload: dict[str, Any]) -> set[str]:
+    design_ids: set[str] = set()
+    assessments = payload.get("assessments") if isinstance(payload.get("assessments"), list) else []
+    for row in assessments:
+        if not isinstance(row, dict) or row.get("support_level") != "natural_experiment":
+            continue
+        for source_id in row.get("source_ids", ()) if isinstance(row.get("source_ids"), list) else ():
+            text = str(source_id)
+            if text.startswith("machine-matched-design:"):
+                design_ids.add(text)
+    return design_ids
+
+
+def _control_status_for_designs(payload: dict[str, Any], design_ids: set[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    controls = payload.get("controls") if isinstance(payload.get("controls"), list) else []
+    for row in controls:
+        if not isinstance(row, dict) or str(row.get("design_id") or "") not in design_ids:
+            continue
+        status = str(row.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _measurement_system_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
+    payload = _artifact_payload(artifact) or {}
+    check_count = _int_value(payload.get("check_count"))
+    by_status = _status_counts(payload.get("by_status"))
+    passed = by_status.get("passed", 0)
+    failed = by_status.get("failed", 0)
+    limited = by_status.get("limited", 0)
+    missing = by_status.get("missing", 0)
+    if failed:
+        status = "limited"
+    elif passed >= 3:
+        status = "stable"
+    elif passed or limited:
+        status = "limited"
+    else:
+        status = "missing"
+    caveats = []
+    if failed:
+        caveats.append("one or more measurement-system diagnostics failed")
+    if missing:
+        caveats.append("one or more measurement-system diagnostics are missing")
+    return _dimension(
+        "measurement_system_diagnostics",
+        status,
+        (
+            f"checks={check_count}",
+            f"passed={passed}",
+            f"limited={limited}",
+            f"missing={missing}",
+            f"failed={failed}",
+        ),
+        tuple(caveats),
+    )
+
+
+def _artifact_payload(artifact: MachineArtifactCoverage) -> dict[str, Any] | None:
+    payload = load_analysis_artifact(artifact.artifact)
+    return payload if isinstance(payload, dict) else None
+
+
+def _status_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): _int_value(count) for key, count in value.items()}
 
 
 def _sample_count_status(count: int) -> str:
@@ -387,25 +629,38 @@ def _below_attribution_dimension(artifact: MachineArtifactCoverage) -> MachineRe
     attributed = _int_value(payload_dict.get("attributed_episode_count"))
     workload_attributed = _int_value(payload_dict.get("workload_resource_attributed_pressure_episode_count"))
     pressure = _int_value(payload_dict.get("pressure_episode_count"))
+    captures = _int_value(payload_dict.get("capture_count"))
+    live_store_indexes = _int_value(payload_dict.get("live_store_index_count"))
+    live_first = payload_dict.get("live_store_first_observed_at")
+    live_last = payload_dict.get("live_store_last_observed_at")
     if pressure == 0:
         status = "stable"
-        caveats: tuple[str, ...] = ()
+        caveats_list: list[str] = []
     else:
         ratio = (attributed + workload_attributed) / pressure
         status = "stable" if ratio >= 0.8 else "limited"
-        caveats = () if status == "stable" else (
-            "most pressure episodes lack bounded below or workload resource attribution",
-        )
+        caveats_list = []
+        if status != "stable":
+            caveats_list.append("most pressure episodes lack bounded below or workload resource attribution")
+        if captures == 0:
+            caveats_list.append("no bounded below captures are available for process/cgroup attribution")
+        elif attributed == 0:
+            caveats_list.append("bounded below captures do not overlap current machine pressure episodes")
+    if live_store_indexes and attributed == 0:
+        caveats_list.append("live below store exists but bounded exports or decoder output are missing for pressure episodes")
     return _dimension(
         "below_process_attribution",
         status,
         (
+            f"bounded_below_capture_count={captures}",
+            f"live_below_store_indexes={live_store_indexes}",
+            f"live_below_store_span={live_first or 'none'}..{live_last or 'none'}",
             f"bounded_below_attributed_pressure_episodes={attributed}/{pressure}",
             f"workload_resource_attributed_pressure_episodes={workload_attributed}/{pressure}",
             f"combined_attributed_pressure_episodes={attributed + workload_attributed}/{pressure}",
             f"artifact_primary_count={artifact.primary_count or 0}",
         ),
-        caveats,
+        tuple(caveats_list),
     )
 
 
@@ -421,12 +676,12 @@ def _pre_post_status(counts: dict[str, int]) -> str:
     return "missing"
 
 
-def _pre_post_caveats(counts: dict[str, int]) -> tuple[str, ...]:
+def _pre_post_caveats(counts: dict[str, int], *, scope: str) -> tuple[str, ...]:
     caveats = []
     if counts["before"] == 0:
-        caveats.append("no pre-boundary machine_metric_sample rows in this window")
+        caveats.append(f"no pre-boundary machine_metric_sample rows in {scope}")
     if counts["after"] == 0:
-        caveats.append("no post-boundary machine_metric_sample rows in this window")
+        caveats.append(f"no post-boundary machine_metric_sample rows in {scope}")
     if 0 < counts["before"] < 100 or 0 < counts["after"] < 100:
         caveats.append("one side has fewer than 100 samples; compare only as weak observational context")
     if not caveats:

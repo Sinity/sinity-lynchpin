@@ -23,6 +23,7 @@ class MachineFeatureDatasetAudit:
     censoring_rate: float
     invalid_leakage_count: int
     missing_value_count: int
+    missingness_by_field: dict[str, int]
     top_missingness: tuple[dict[str, Any], ...]
     temporal_span_days: int | None
     temporal_fold_count: int
@@ -36,6 +37,7 @@ class MachineMiningSearchAudit:
     scan_count: int
     comparison_universe_size: int
     emitted_candidate_count: int
+    lagged_exposure_count: int
     candidate_ratio: float | None
     multiplicity_status: str
     dimensions: tuple[str, ...]
@@ -167,6 +169,7 @@ def _feature_audit(frame: dict[str, Any], rows: list[Any], *, min_fold_rows: int
         censoring_rate=round(censored / len(dict_rows), 6) if dict_rows else 0.0,
         invalid_leakage_count=leakage_invalid,
         missing_value_count=sum(missing_counter.values()),
+        missingness_by_field=dict(sorted((field, int(count)) for field, count in missing_counter.items())),
         top_missingness=tuple(
             {"field": field, "missing_count": int(count)}
             for field, count in missing_counter.most_common(10)
@@ -184,6 +187,7 @@ def _mining_audit(payload: dict[str, Any]) -> MachineMiningSearchAudit:
     scans = payload.get("scans") if isinstance(payload.get("scans"), list) else []
     universe = _int(scan.get("comparison_universe_size"))
     emitted = _int(scan.get("emitted_candidate_count") or payload.get("cohort_count"))
+    lagged_exposures = _int(payload.get("lagged_exposure_count"))
     ratio = round(emitted / universe, 6) if universe else None
     policies = [
         str(row.get("multiplicity_policy"))
@@ -202,6 +206,7 @@ def _mining_audit(payload: dict[str, Any]) -> MachineMiningSearchAudit:
         scan_count=int(payload.get("scan_count") or len(scans) or (1 if scan else 0)),
         comparison_universe_size=universe,
         emitted_candidate_count=emitted,
+        lagged_exposure_count=lagged_exposures,
         candidate_ratio=ratio,
         multiplicity_status=status,
         dimensions=tuple(str(item) for item in scan.get("dimensions", ()) if item),
@@ -256,6 +261,28 @@ def _diagnostics(
                 f"{row['field']}={row['missing_count']}" for row in feature_audit.top_missingness
             ) or (f"missing_values={feature_audit.missing_value_count}",),
             next_action="prefer analyses robust to missing covariates; do not impute silently",
+        ))
+    pressure_missing = {
+        field: count
+        for field, count in feature_audit.missingness_by_field.items()
+        if field.startswith("host_") and "pressure" in field
+    }
+    fully_missing_pressure = {
+        field: count
+        for field, count in pressure_missing.items()
+        if count >= feature_audit.row_count and feature_audit.row_count > 0
+    }
+    if mining_audit.lagged_exposure_count == 0 and fully_missing_pressure:
+        rows.append(MachineDatasetDiagnostic(
+            diagnostic_id="machine-dataset:pressure-lag-unavailable",
+            diagnostic_kind="pressure_lag_unavailable",
+            status="blocked_by_missing_pressure_covariates",
+            severity="warning",
+            evidence=tuple(
+                f"{field}={count}/{feature_audit.row_count}"
+                for field, count in sorted(fully_missing_pressure.items())
+            ),
+            next_action="promote machine pressure covariates into feature frames before interpreting lagged pressure exposure",
         ))
     return rows
 

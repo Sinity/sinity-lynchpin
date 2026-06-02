@@ -1,6 +1,6 @@
 """Tests for IRC raw-log source (irc_raw.py)."""
 
-from datetime import date, datetime, timedelta
+from datetime import date
 
 from lynchpin.sources import irc_raw
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
+
+from lynchpin.core.io import load_json_if_exists, save_json
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,35 @@ def calibrate_claims(claims: Iterable[dict[str, Any]]) -> ClaimCalibrationReport
             "observational claims may be useful even when flagged for missing controlled support",
         ),
     )
+
+
+def calibrate_claim_artifacts(paths: Iterable[str | Path]) -> ClaimCalibrationReport:
+    claims: list[dict[str, Any]] = []
+    for path in paths:
+        payload = load_json_if_exists(path)
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("claims")
+        if not isinstance(rows, list):
+            continue
+        claims.extend(row for row in rows if isinstance(row, dict))
+    return calibrate_claims(claims)
+
+
+def write_claim_calibration(
+    out: Path,
+    *,
+    claim_artifacts: Iterable[str | Path],
+) -> ClaimCalibrationReport:
+    paths = tuple(claim_artifacts)
+    report = calibrate_claim_artifacts(paths)
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "artifact_count": len(paths),
+        **report.to_json(),
+    }
+    save_json(out, payload, sort_keys=True)
+    return report
 
 
 def _claim_issues(row: dict[str, Any]) -> list[ClaimCalibrationIssue]:
@@ -124,5 +157,7 @@ def _float(value: Any) -> float | None:
 __all__ = [
     "ClaimCalibrationIssue",
     "ClaimCalibrationReport",
+    "calibrate_claim_artifacts",
     "calibrate_claims",
+    "write_claim_calibration",
 ]

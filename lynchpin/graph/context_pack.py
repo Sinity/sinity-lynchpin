@@ -763,6 +763,17 @@ def _render_machine_analysis_artifacts(
     if artifacts.malformed:
         lines.append("- Malformed machine analysis artifacts: " + ", ".join(artifacts.malformed))
 
+    telemetry = artifacts.payloads.get("machine_telemetry_analysis.json")
+    if telemetry is not None:
+        coverage = telemetry.get("coverage") if isinstance(telemetry.get("coverage"), dict) else {}
+        lines.append(
+            "- Telemetry coverage: "
+            f"samples={coverage.get('sample_count', 0)}; "
+            f"span={coverage.get('first_observed_at', 'unknown')}..{coverage.get('last_observed_at', 'unknown')}; "
+            f"hardware_regimes={len(_artifact_rows(telemetry, 'hardware_regimes'))}; "
+            f"signals={len(_artifact_rows(telemetry, 'signals'))}"
+        )
+
     episodes = _artifact_rows(artifacts.payloads.get("machine_episode_analysis.json"), "episodes")
     matching_episodes = [
         row for row in episodes
@@ -916,6 +927,17 @@ def _render_machine_analysis_artifacts(
             )
 
     attribution = artifacts.payloads.get("machine_below_attribution.json")
+    below_analysis = artifacts.payloads.get("machine_below_analysis.json")
+    below_queue = artifacts.payloads.get("machine_below_export_queue.json")
+    if below_analysis is not None:
+        live_store = below_analysis.get("live_store") if isinstance(below_analysis.get("live_store"), dict) else {}
+        lines.append(
+            "- Below analysis coverage: "
+            f"bounded_windows={below_analysis.get('window_count', 0)}; "
+            f"top_processes={below_analysis.get('top_process_count', 0)}; "
+            f"top_cgroups={below_analysis.get('top_cgroup_count', 0)}; "
+            f"live_store_indexes={live_store.get('index_count', 0)}"
+        )
     if attribution is not None:
         bounded = attribution.get("attributed_episode_count")
         workload = attribution.get("workload_resource_attributed_pressure_episode_count")
@@ -927,6 +949,16 @@ def _render_machine_analysis_artifacts(
                 f"bounded_below={bounded or 0}/{pressure}; "
                 f"workload_resource={workload or 0}/{pressure}; "
                 f"residual_unattributed={residual if residual is not None else attribution.get('unattributed_pressure_episode_count')}"
+            )
+    if below_queue is not None:
+        queue_items = _artifact_rows(below_queue, "items")
+        if queue_items:
+            lines.append(
+                "- Below export queue: "
+                f"{below_queue.get('queue_count', len(queue_items))} planned windows; "
+                f"failed={below_queue.get('failed_capture_count', 0)}; "
+                f"kinds={_top_counts(row.get('episode_kind') for row in queue_items)}; "
+                f"root={below_queue.get('root', 'unknown')}"
             )
 
     baselines = artifacts.payloads.get("machine_observational_baselines.json")
@@ -1049,6 +1081,17 @@ def _render_machine_analysis_artifacts(
             statuses = _top_counts(row.get("status") for row in dimensions)
             lines.append(f"- Machine analysis readiness: {statuses}")
 
+    gaps = artifacts.payloads.get("machine_gap_summary.json")
+    if gaps is not None:
+        counts = _artifact_rows(gaps, "counts")
+        regressions = _artifact_rows(gaps, "regressions")
+        generated_for = gaps.get("generated_for") if isinstance(gaps.get("generated_for"), dict) else {}
+        lines.append(
+            "- Machine capture gaps: "
+            f"counts={len(counts)}; regressions={len(regressions)}; "
+            f"window={generated_for.get('window_start', 'unknown')}..{generated_for.get('window_end', 'unknown')}"
+        )
+
     refresh_report = artifacts.payloads.get("machine_analysis_refresh_report.json")
     if refresh_report is not None:
         by_status = refresh_report.get("by_status")
@@ -1068,6 +1111,8 @@ def _render_machine_analysis_artifacts(
 
 _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_episode_analysis.json",
+    "machine_telemetry_analysis.json",
+    "machine_below_analysis.json",
     "machine_context_windows.json",
     "machine_work_state_windows.json",
     "machine_work_observations.json",
@@ -1088,6 +1133,7 @@ _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_experiment_manifest_diagnostics.json",
     "devshell_performance.json",
     "machine_below_attribution.json",
+    "machine_below_export_queue.json",
     "machine_observational_baselines.json",
     "machine_experiment_claims.json",
     "machine_attribution_claims.json",
@@ -1098,6 +1144,7 @@ _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_calibration_fixtures.json",
     "machine_measurement_system.json",
     "machine_support_assessment.json",
+    "machine_gap_summary.json",
     "machine_analysis_readiness.json",
     "machine_analysis_refresh_report.json",
 )

@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from lynchpin.sources.machine_models import MachineServiceState
 from lynchpin.sources.service_health import (
     CAPTURE_SERVICE_UNITS,
-    ServiceDowntime,
     downtime_intervals,
     service_uptime_summary,
 )

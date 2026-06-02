@@ -1,9 +1,9 @@
 """Tests for core/parse.py."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from lynchpin.core.parse import (
     parse_date, parse_int, parse_float, month_key, in_month_range, iter_dates,
-    in_date_range, parse_datetime, as_local,
+    in_date_range, parse_datetime,
 )
 
 

@@ -8,8 +8,10 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+from lynchpin.core.io import save_json
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent, iter_events
 
 
@@ -131,6 +133,34 @@ def google_takeout_retrospective(
         monthly_patterns=tuple(monthly_patterns),
         cooccurrences=tuple(cooccurrences),
     )
+
+
+def write_google_takeout_retrospective(
+    out: Path,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    session_gap_min: int = 45,
+    top_n: int = 50,
+    source_events: Iterable[GoogleTakeoutEvent] | None = None,
+) -> GoogleTakeoutRetrospective:
+    report = google_takeout_retrospective(
+        start=start,
+        end=end,
+        session_gap_min=session_gap_min,
+        top_n=top_n,
+        source_events=source_events,
+    )
+    payload = {
+        "generated_at_utc": datetime.now().astimezone().isoformat(),
+        **report.to_json(),
+        "caveats": [
+            "retrospective is parser-only over canonical Google Takeout product events",
+            "sessions are temporal clusters; search terms are weak title parses",
+        ],
+    }
+    save_json(out, payload, sort_keys=True)
+    return report
 
 
 def _in_window(
@@ -378,4 +408,5 @@ __all__ = [
     "GoogleTakeoutServiceSummary",
     "GoogleTakeoutSession",
     "google_takeout_retrospective",
+    "write_google_takeout_retrospective",
 ]

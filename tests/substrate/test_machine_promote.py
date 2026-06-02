@@ -91,6 +91,10 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
         pre_state={"cpu": {"governor": "performance"}},
         post_state={"cpu": {"governor": "performance"}},
         notes=("smoke",),
+        validation_status="invalid",
+        validation_issues=("fixture issue",),
+        validation_warnings=("fixture warning",),
+        manifest_validation={"valid": False, "issues": ["fixture issue"]},
         manifest_path=tmp_path / "run-1" / "manifest.json",
     )
     with connect(db) as conn:
@@ -108,6 +112,10 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
     assert loaded[0]["measurement_context"] == '{"host_boot_id": "boot1"}'
     assert loaded[0]["planned_treatment"] == '{"turbo": "on"}'
     assert loaded[0]["nix_internal_json_path"] == "/tmp/run-1/nix-internal-json.ndjson"
+    assert loaded[0]["validation_status"] == "invalid"
+    assert loaded[0]["validation_issues"] == ["fixture issue"]
+    assert loaded[0]["validation_warnings"] == ["fixture warning"]
+    assert loaded[0]["manifest_validation"] == '{"valid": false, "issues": ["fixture issue"]}'
 
 
 def test_promote_machine_gpu_samples_round_trip(tmp_path):

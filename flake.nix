@@ -197,6 +197,7 @@
             ripgrep
             fd
             just
+            py-spy
             ruff
             tokei
             haskellPackages.arbtt
@@ -217,9 +218,7 @@
           export NIX_CONFIG="max-jobs = ''${LYNCHPIN_NIX_MAX_JOBS:-2}
           cores = ''${LYNCHPIN_NIX_CORES:-4}
           fallback = true"
-          export PYTHONBREAKPOINT=ipdb.set_trace
           export PYTHONUSERBASE=$PWD/.pyuser
-          export MY_CONFIG=$PWD/config
           if [ -d /realm/project/polylogue/polylogue ]; then
             export PYTHONPATH=/realm/project/polylogue:$PWD''${PYTHONPATH:+:$PYTHONPATH}
           else
@@ -232,13 +231,15 @@
             name = "sinity-lynchpin-${profileName}";
             inherit packages;
 
-            shellHook = (baseShellHook profileName) + ''
-              export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
-              if [ "''${LYNCHPIN_MOTD_PRINTED:-0}" != "1" ] && [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
-                "$PWD/tool/devshell-motd"
-              fi
-              export LYNCHPIN_MOTD_PRINTED=1
-            '';
+            shellHook =
+              (baseShellHook profileName)
+              + ''
+                export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
+                if [ "''${LYNCHPIN_MOTD_PRINTED:-0}" != "1" ] && [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
+                  "$PWD/tool/devshell-motd"
+                fi
+                export LYNCHPIN_MOTD_PRINTED=1
+              '';
           };
         lynchpinPackage = python.pkgs.buildPythonPackage {
           pname = "lynchpin";

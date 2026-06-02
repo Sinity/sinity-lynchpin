@@ -56,6 +56,58 @@ def test_machine_matched_designs_emit_controls_balance_and_placebo(tmp_path):
     assert same_project.balance["treated_observed_n"] == 8
 
 
+def test_machine_matched_designs_use_temporal_gap_windows(tmp_path):
+    from lynchpin.analysis.machine.matched_designs import analyze_machine_matched_designs
+
+    frames = tmp_path / "machine_analysis_feature_frames.json"
+    validation = tmp_path / "machine_validation_design.json"
+    boundary_at = datetime(2026, 5, 2, 12, tzinfo=timezone.utc)
+    rows = [
+        *(_row(f"treated-before-{idx}", 10 + idx, "sinex", "test", "", -120 + idx) for idx in range(4)),
+        *(_row(f"treated-after-{idx}", 50 + idx, "sinex", "test", "", idx) for idx in range(4)),
+        *(_row(f"control-before-{idx}", 12 + idx, "sinex", "build", "", -120 + idx) for idx in range(4)),
+        *(_row(f"control-after-{idx}", 14 + idx, "sinex", "build", "", idx) for idx in range(4)),
+        _row("outside-window", 999, "sinex", "build", "", -600),
+    ]
+    save_json(
+        frames,
+        {"frame": {"outcome_metric": "stage.duration_s", "rows": rows}},
+        sort_keys=True,
+    )
+    save_json(
+        validation,
+        {
+            "boundaries": [{
+                "boundary_id": "boundary-gap",
+                "boundary_type": "temporal_run_gap_transition",
+                "boundary_at": boundary_at.isoformat(),
+                "dimensions": {
+                    "project": "sinex",
+                    "stage_name": "test",
+                    "before_window_start": (boundary_at - timedelta(minutes=120)).isoformat(),
+                    "before_window_end": (boundary_at - timedelta(minutes=117)).isoformat(),
+                    "after_window_start": boundary_at.isoformat(),
+                    "after_window_end": (boundary_at + timedelta(minutes=3)).isoformat(),
+                },
+            }]
+        },
+        sort_keys=True,
+    )
+
+    analysis = analyze_machine_matched_designs(
+        feature_frames_path=frames,
+        validation_design_path=validation,
+        min_side_rows=3,
+    )
+
+    same_project = next(row for row in analysis.designs if row.control_family == "same_project_other_stage")
+    assert same_project.treated_delta == 40.0
+    assert same_project.control_delta == 2.0
+    assert same_project.control_before_n == 4
+    assert same_project.control_after_n == 4
+    assert same_project.identification_status == "design_ready"
+
+
 def _row(
     unit_id: str,
     outcome: float,

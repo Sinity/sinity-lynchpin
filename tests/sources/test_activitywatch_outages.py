@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from lynchpin.sources.activitywatch_models import AWEvent
 from lynchpin.sources.activitywatch_outages import (
     OUTAGE_THRESHOLD_S,
-    DataOutage,
     detect_data_outages,
 )
 
@@ -39,7 +38,8 @@ def test_no_outage_when_afk_continuous():
     try:
         out = detect_data_outages(start=BASE, end=BASE + timedelta(days=1))
     finally:
-        for c in reversed(ctxs): c.__exit__(None, None, None)
+        for c in reversed(ctxs):
+            c.__exit__(None, None, None)
     assert out == []
 
 
@@ -51,7 +51,8 @@ def test_pattern_a_all_buckets_silent():
     try:
         out = detect_data_outages(start=BASE, end=BASE + timedelta(seconds=36300))
     finally:
-        for c in reversed(ctxs): c.__exit__(None, None, None)
+        for c in reversed(ctxs):
+            c.__exit__(None, None, None)
     assert len(out) == 1
     assert out[0].pattern == "A"
 
@@ -70,7 +71,8 @@ def test_pattern_c_afk_only_down():
     try:
         out = detect_data_outages(start=BASE, end=BASE + timedelta(seconds=36300))
     finally:
-        for c in reversed(ctxs): c.__exit__(None, None, None)
+        for c in reversed(ctxs):
+            c.__exit__(None, None, None)
     assert len(out) == 1
     assert out[0].pattern == "C"
     assert out[0].window_events > 0
@@ -89,7 +91,8 @@ def test_pattern_b_afk_and_window_down():
     try:
         out = detect_data_outages(start=BASE, end=BASE + timedelta(seconds=36300))
     finally:
-        for c in reversed(ctxs): c.__exit__(None, None, None)
+        for c in reversed(ctxs):
+            c.__exit__(None, None, None)
     assert len(out) == 1
     assert out[0].pattern == "B"
 

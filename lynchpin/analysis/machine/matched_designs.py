@@ -19,6 +19,7 @@ from lynchpin.core.parse import parse_datetime
 class MachineBoundaryMatchedDesign:
     design_id: str
     boundary_id: str
+    boundary_type: str
     project: str | None
     stage_name: str | None
     boundary_at: datetime
@@ -150,20 +151,42 @@ def _designs_for_boundary(
     boundary_at = parse_datetime(str(boundary.get("boundary_at") or ""))
     if boundary_at is None:
         return []
-    treated_before = [
-        row for row in rows
-        if row["project"] == project
-        and row["stage_name"] == stage_name
-        and row["git_commit"] == before_commit
-        and row["started_at"] < boundary_at
-    ]
-    treated_after = [
-        row for row in rows
-        if row["project"] == project
-        and row["stage_name"] == stage_name
-        and row["git_commit"] == after_commit
-        and row["started_at"] >= boundary_at
-    ]
+    boundary_type = str(boundary.get("boundary_type") or "")
+    boundary_caveats = tuple(str(item) for item in boundary.get("caveats", ()) if item)
+    before_start = parse_datetime(str(dimensions.get("before_window_start") or ""))
+    before_end = parse_datetime(str(dimensions.get("before_window_end") or ""))
+    after_start = parse_datetime(str(dimensions.get("after_window_start") or ""))
+    after_end = parse_datetime(str(dimensions.get("after_window_end") or ""))
+    if boundary_type == "git_commit_transition":
+        treated_before = [
+            row for row in rows
+            if row["project"] == project
+            and row["stage_name"] == stage_name
+            and row["git_commit"] == before_commit
+            and row["started_at"] < boundary_at
+        ]
+        treated_after = [
+            row for row in rows
+            if row["project"] == project
+            and row["stage_name"] == stage_name
+            and row["git_commit"] == after_commit
+            and row["started_at"] >= boundary_at
+        ]
+    else:
+        treated_before = [
+            row for row in rows
+            if row["project"] == project
+            and row["stage_name"] == stage_name
+            and row["started_at"] < boundary_at
+            and _inside_optional_window(row, start=before_start, end=before_end)
+        ]
+        treated_after = [
+            row for row in rows
+            if row["project"] == project
+            and row["stage_name"] == stage_name
+            and row["started_at"] >= boundary_at
+            and _inside_optional_window(row, start=after_start, end=after_end)
+        ]
     treated_delta = _delta(treated_before, treated_after)
     candidates = (
         ("same_project_other_stage", lambda row: row["project"] == project and row["stage_name"] != stage_name),
@@ -171,8 +194,18 @@ def _designs_for_boundary(
     )
     designs = []
     for family, predicate in candidates:
-        before = [row for row in rows if predicate(row) and row["started_at"] < boundary_at]
-        after = [row for row in rows if predicate(row) and row["started_at"] >= boundary_at]
+        before = [
+            row for row in rows
+            if predicate(row)
+            and row["started_at"] < boundary_at
+            and _inside_optional_window(row, start=before_start, end=before_end)
+        ]
+        after = [
+            row for row in rows
+            if predicate(row)
+            and row["started_at"] >= boundary_at
+            and _inside_optional_window(row, start=after_start, end=after_end)
+        ]
         before = _nearest(before, boundary_at, limit=max(len(treated_before), min_side_rows))
         after = _nearest(after, boundary_at, limit=max(len(treated_after), min_side_rows))
         control_delta = _delta(before, after)
@@ -198,6 +231,7 @@ def _designs_for_boundary(
             MachineBoundaryMatchedDesign(
                 design_id=_digest("matched-design", boundary.get("boundary_id"), family),
                 boundary_id=str(boundary.get("boundary_id") or ""),
+                boundary_type=boundary_type or "git_commit_transition",
                 project=project,
                 stage_name=stage_name,
                 boundary_at=boundary_at,
@@ -215,7 +249,7 @@ def _designs_for_boundary(
                 negative_control_status=_negative_control_status(control_delta, treated_delta),
                 identification_status=status,
                 support_ceiling="natural_experiment_design" if status == "design_ready" else "candidate",
-                caveats=tuple(caveats),
+                caveats=tuple((*caveats, *boundary_caveats)),
             )
         )
     return designs
@@ -265,6 +299,12 @@ def _row(row: dict[str, Any]) -> dict[str, Any] | None:
         "outcome_value": float(value) if isinstance(value, (int, float)) else None,
         "observed": row.get("censoring_status") == "observed",
     }
+
+
+def _inside_optional_window(row: dict[str, Any], *, start: datetime | None, end: datetime | None) -> bool:
+    if start is None or end is None:
+        return True
+    return start <= row["started_at"] <= end
 
 
 def _values(rows: list[dict[str, Any]]) -> list[float]:

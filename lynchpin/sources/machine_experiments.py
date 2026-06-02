@@ -53,6 +53,10 @@ class MachineExperimentRun:
     pre_state: dict[str, Any]
     post_state: dict[str, Any]
     notes: tuple[str, ...]
+    validation_status: str
+    validation_issues: tuple[str, ...]
+    validation_warnings: tuple[str, ...]
+    manifest_validation: dict[str, Any]
     manifest_path: Path
 
 
@@ -158,6 +162,10 @@ def _read_manifest(path: Path) -> MachineExperimentRun | None:
         pre_state=_as_dict(payload.get("pre_state")),
         post_state=_as_dict(payload.get("post_state")),
         notes=_as_tuple(payload.get("notes")),
+        validation_status="unvalidated",
+        validation_issues=(),
+        validation_warnings=(),
+        manifest_validation={},
         manifest_path=path,
     )
 

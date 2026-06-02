@@ -717,8 +717,6 @@ class TestFileOverlapFiltering:
     def test_excludes_lockfiles_and_init_files(self, tmp_path: Path) -> None:
         """Lockfiles (__init__.py, Cargo.lock, etc.) are excluded from overlap intersection."""
         from datetime import datetime as dt
-        from lynchpin.core.evidence_graph import EvidenceGraph
-        from lynchpin.graph.evidence_edges import overlap_edges_via_substrate
         from lynchpin.sources.git import GitCommitFact
         from lynchpin.sources.polylogue import WorkEvent
         from lynchpin.substrate.connection import apply_schema, connect

@@ -698,12 +698,19 @@ def daily_irc_activity(
             for m in msgs
             if normalize_nick(m.speaker).lower() in _OPERATOR_NICKS
         )
-        sessions = list(extract_sessions(start=d, end=d + timedelta(days=1),
-                                         channel=channel, root=root, min_messages=2))
-        conversations = list(extract_conversations(
-            start=d, end=d + timedelta(days=1),
-            channel=channel, root=root, min_speakers=2, min_messages=4,
-        ))
+        session_count = sum(
+            _count_gap_groups(msgs, max_idle_minutes=30, min_messages=2)
+            for msgs in ch_data.values()
+        )
+        conversation_count = sum(
+            _count_gap_groups(
+                msgs,
+                max_idle_minutes=5,
+                min_messages=4,
+                min_speakers=2,
+            )
+            for msgs in ch_data.values()
+        )
         channel_breakdown = tuple(
             (ch, len(msgs)) for ch, msgs in
             sorted(ch_data.items(), key=lambda x: -len(x[1]))
@@ -714,8 +721,41 @@ def daily_irc_activity(
             total_messages=total,
             operator_messages=operator,
             unique_speakers=len(speakers),
-            session_count=len(sessions),
-            conversation_count=len(conversations),
+            session_count=session_count,
+            conversation_count=conversation_count,
             channel_breakdown=channel_breakdown,
         ))
     return result
+
+
+def _count_gap_groups(
+    messages: list[IRCRawMessage],
+    *,
+    max_idle_minutes: int,
+    min_messages: int,
+    min_speakers: int = 1,
+) -> int:
+    """Count session-like groups from already-filtered same-day messages."""
+    if not messages:
+        return 0
+    sorted_messages = sorted(messages, key=lambda msg: msg.timestamp)
+    max_idle = timedelta(minutes=max_idle_minutes)
+    count = 0
+    buf: list[IRCRawMessage] = []
+
+    def flush() -> None:
+        nonlocal count, buf
+        if len(buf) >= min_messages:
+            speakers = {normalize_nick(msg.speaker) for msg in buf}
+            if len(speakers) >= min_speakers:
+                count += 1
+        buf = []
+
+    last_ts: datetime | None = None
+    for msg in sorted_messages:
+        if last_ts is not None and msg.timestamp - last_ts > max_idle:
+            flush()
+        buf.append(msg)
+        last_ts = msg.timestamp
+    flush()
+    return count

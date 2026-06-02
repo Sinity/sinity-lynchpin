@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
-from lynchpin.analysis.google_takeout_mining import google_takeout_retrospective
+from lynchpin.analysis.google_takeout_mining import (
+    google_takeout_retrospective,
+    write_google_takeout_retrospective,
+)
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent
 
 
@@ -51,3 +55,20 @@ def test_google_takeout_retrospective_mines_search_sessions_and_anomalies() -> N
         row["left"] == "Docs" and row["right"] == "Search"
         for row in payload["cooccurrences"]
     )
+
+
+def test_write_google_takeout_retrospective_persists_artifact(tmp_path) -> None:
+    out = tmp_path / "google_takeout_retrospective.json"
+    write_google_takeout_retrospective(
+        out,
+        source_events=[
+            _event(1, 10, "Searched for duckdb wal"),
+            _event(1, 11, "Opened docs", service="Docs"),
+        ],
+    )
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+
+    assert payload["event_count"] == 2
+    assert payload["active_days"] == 1
+    assert payload["caveats"]

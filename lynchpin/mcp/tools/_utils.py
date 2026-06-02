@@ -84,6 +84,11 @@ def best_refresh_id(conn: Any, table: str) -> str | None:
         "work_observation": "work_observations",
         "work_observation_stage": "work_observations",
         "work_observation_test_result": "work_observations",
+        "machine_metric_sample": "machine",
+        "machine_gpu_sample": "machine_gpu_sample",
+        "machine_network_sample": "machine_network_sample",
+        "machine_service_state": "machine_service_state",
+        "machine_experiment_run": "machine_experiments",
     }
     source_name = table_to_source.get(table, table)
 

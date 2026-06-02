@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Any
 
 from ..core.analytics import (
@@ -222,21 +223,18 @@ def default_signal_specs() -> tuple[SignalSpec, ...]:
 
 
 def _load_deep_work(start: date, end: date) -> dict[date, float]:
-    from ..sources.activitywatch import daily_activity
-
-    return {row.date: row.deep_work_min for row in daily_activity(start=start, end=end)}
+    return {row.date: row.deep_work_min for row in _activitywatch_daily_rows(start, end)}
 
 
 def _load_active_hours(start: date, end: date) -> dict[date, float]:
-    from ..sources.activitywatch import daily_activity
-
-    return {row.date: row.active_hours for row in daily_activity(start=start, end=end)}
+    return {row.date: row.active_hours for row in _activitywatch_daily_rows(start, end)}
 
 
 def _load_fragmentation(start: date, end: date) -> dict[date, float]:
-    from ..sources.activitywatch import daily_activity
-
-    return {row.date: row.fragmentation_score for row in daily_activity(start=start, end=end)}
+    return {
+        row.date: row.fragmentation_score
+        for row in _activitywatch_daily_rows(start, end)
+    }
 
 
 def _load_commits(start: date, end: date) -> dict[date, float]:
@@ -251,24 +249,21 @@ def _load_commits(start: date, end: date) -> dict[date, float]:
 
 
 def _load_error_rate(start: date, end: date) -> dict[date, float]:
-    from ..sources.terminal import daily_terminal_activity
-
-    return {row.date: row.error_rate for row in daily_terminal_activity(start=start, end=end)}
+    return {row.date: row.error_rate for row in _terminal_daily_rows(start, end)}
 
 
 def _load_command_count(start: date, end: date) -> dict[date, float]:
-    from ..sources.terminal import daily_terminal_activity
-
-    return {row.date: float(row.command_count) for row in daily_terminal_activity(start=start, end=end)}
+    return {
+        row.date: float(row.command_count)
+        for row in _terminal_daily_rows(start, end)
+    }
 
 
 def _load_ai_sessions(start: date, end: date) -> dict[date, float]:
     from collections import defaultdict
 
-    from ..sources.polylogue import daily_activity
-
     by_day: dict[date, float] = defaultdict(float)
-    for row in daily_activity(start=start, end=end):
+    for row in _polylogue_daily_rows(start, end):
         by_day[row.date] += row.session_count
     return dict(by_day)
 
@@ -276,10 +271,8 @@ def _load_ai_sessions(start: date, end: date) -> dict[date, float]:
 def _load_ai_engaged(start: date, end: date) -> dict[date, float]:
     from collections import defaultdict
 
-    from ..sources.polylogue import daily_activity
-
     by_day: dict[date, float] = defaultdict(float)
-    for row in daily_activity(start=start, end=end):
+    for row in _polylogue_daily_rows(start, end):
         by_day[row.date] += row.engaged_minutes
     return dict(by_day)
 
@@ -356,20 +349,44 @@ def _load_sleep_score(start: date, end: date) -> dict[date, float]:
 
 
 def _load_hrv(start: date, end: date) -> dict[date, float]:
-    from ..sources.health import daily_health_summary
-
     out: dict[date, float] = {}
-    for row in daily_health_summary(start=start, end=end):
+    for row in _health_daily_rows(start, end):
         if row.hrv_rmssd_avg is not None:
             out[row.date] = row.hrv_rmssd_avg
     return out
 
 
 def _load_resting_hr(start: date, end: date) -> dict[date, float]:
-    from ..sources.health import daily_health_summary
-
     out: dict[date, float] = {}
-    for row in daily_health_summary(start=start, end=end):
+    for row in _health_daily_rows(start, end):
         if row.heart_rate_resting is not None:
             out[row.date] = row.heart_rate_resting
     return out
+
+
+@lru_cache(maxsize=16)
+def _activitywatch_daily_rows(start: date, end: date) -> tuple[Any, ...]:
+    from ..sources.activitywatch import daily_activity
+
+    return tuple(daily_activity(start=start, end=end))
+
+
+@lru_cache(maxsize=16)
+def _terminal_daily_rows(start: date, end: date) -> tuple[Any, ...]:
+    from ..sources.terminal import daily_terminal_activity
+
+    return tuple(daily_terminal_activity(start=start, end=end))
+
+
+@lru_cache(maxsize=16)
+def _polylogue_daily_rows(start: date, end: date) -> tuple[Any, ...]:
+    from ..sources.polylogue import daily_activity
+
+    return tuple(daily_activity(start=start, end=end))
+
+
+@lru_cache(maxsize=16)
+def _health_daily_rows(start: date, end: date) -> tuple[Any, ...]:
+    from ..sources.health import daily_health_summary
+
+    return tuple(daily_health_summary(start=start, end=end))

@@ -119,6 +119,59 @@ def test_machine_attribution_candidates_include_matched_designs(tmp_path):
     assert candidate.source_artifacts == ("machine_matched_designs.json",)
     assert candidate.score_components["validation_strength"] == 2.5
     assert candidate.validation_status == "design_ready"
+    assert candidate.suspected_factor == "git_boundary:test"
+
+
+def test_machine_attribution_candidates_label_temporal_gap_boundaries(tmp_path):
+    from lynchpin.analysis.machine.attribution_candidates import (
+        analyze_machine_attribution_candidates,
+    )
+
+    empty_deltas = tmp_path / "machine_observational_deltas.json"
+    empty_work = tmp_path / "machine_work_observations.json"
+    matched = tmp_path / "machine_matched_designs.json"
+    empty_deltas.write_text('{"deltas":[]}', encoding="utf-8")
+    empty_work.write_text('{"stage_summaries":[]}', encoding="utf-8")
+    matched.write_text(
+        """
+        {
+          "design_count": 1,
+          "designs": [
+            {
+              "design_id": "design1",
+              "boundary_id": "boundary1",
+              "boundary_type": "temporal_run_gap_transition",
+              "project": "sinex",
+              "stage_name": "test",
+              "outcome_metric": "stage.duration_s",
+              "treated_before_n": 4,
+              "treated_after_n": 4,
+              "control_before_n": 4,
+              "control_after_n": 4,
+              "difference_in_differences": 12.5,
+              "placebo_delta": 0.5,
+              "identification_status": "design_ready",
+              "negative_control_status": "passed",
+              "support_ceiling": "natural_experiment_design",
+              "caveats": ["not randomized"]
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    analysis = analyze_machine_attribution_candidates(
+        deltas_path=empty_deltas,
+        work_observations_path=empty_work,
+        mining_path=tmp_path / "missing-machine-mining.json",
+        comparisons_path=tmp_path / "missing-machine-comparisons.json",
+        matched_designs_path=matched,
+    )
+
+    candidate = analysis.candidates[0]
+    assert candidate.suspected_factor == "temporal_gap_boundary:test"
+    assert candidate.suggested_benchmark_manifest["controlled_benchmark"]["treatment_label"] == "temporal_gap_boundary:test"
 
 
 def test_machine_attribution_candidates_include_lagged_and_anomaly_mining(tmp_path):

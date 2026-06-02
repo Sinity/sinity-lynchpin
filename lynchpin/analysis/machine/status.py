@@ -15,6 +15,7 @@ MACHINE_STATUS_ARTIFACTS = (
     "machine_instrumentation_gaps.json",
     "machine_benchmark_preflight.json",
     "machine_benchmark_execution_queue.json",
+    "machine_below_export_queue.json",
     "machine_experiment_manifest_diagnostics.json",
     "machine_attribution_claims.json",
     "machine_assumption_checks.json",
@@ -32,6 +33,7 @@ def machine_status_payload(
     gaps = artifacts["machine_instrumentation_gaps.json"]
     preflight = artifacts["machine_benchmark_preflight.json"]
     execution_queue = artifacts["machine_benchmark_execution_queue.json"]
+    below_export_queue = artifacts["machine_below_export_queue.json"]
     manifest_diagnostics = artifacts["machine_experiment_manifest_diagnostics.json"]
     experiments = artifacts["machine_experiment_claims.json"]
     claims = artifacts["machine_attribution_claims.json"]
@@ -49,8 +51,14 @@ def machine_status_payload(
         "support": {
             "candidate_count": _int(support, "candidate_count"),
             "refusal_count": _int(support, "refusal_count"),
-            "controlled_claim_count": _int(support, "controlled_claim_count"),
+            "executed_controlled_claim_count": _int(support, "controlled_claim_count"),
             "natural_experiment_support_count": _int(support, "natural_experiment_support_count"),
+            "assessment_by_support_level": support_levels,
+            "assessment_controlled": support_levels.get("controlled", 0),
+            "assessment_natural_experiment": support_levels.get("natural_experiment", 0),
+            "assessment_insufficient": support_levels.get("insufficient", 0),
+            # Backward-compatible aliases for existing MCP/CLI consumers.
+            "controlled_claim_count": _int(support, "controlled_claim_count"),
             "controlled": support_levels.get("controlled", 0),
             "natural_experiment": support_levels.get("natural_experiment", 0),
             "insufficient": support_levels.get("insufficient", 0),
@@ -68,6 +76,12 @@ def machine_status_payload(
             "blocked_group_count": _int(execution_queue, "blocked_group_count"),
             "run_template_count": _int(execution_queue, "run_template_count"),
             "ready_run_count": _int(execution_queue, "ready_run_count"),
+        },
+        "below_export_queue": {
+            "queue_count": _int(below_export_queue, "queue_count"),
+            "failed_capture_count": _int(below_export_queue, "failed_capture_count"),
+            "root": below_export_queue.get("root") if isinstance(below_export_queue, dict) else None,
+            "live_store": below_export_queue.get("live_store") if isinstance(below_export_queue, dict) else None,
         },
         "experiment_manifests": {
             "manifest_count": _int(manifest_diagnostics, "manifest_count"),
@@ -88,16 +102,22 @@ def machine_status_payload(
             "run_count": _int(experiments, "run_count"),
             "controlled": _int(experiments, "controlled_claim_count"),
             "observational": _int(experiments, "observational_claim_count"),
+            "by_manifest_validation_status": _manifest_validation_statuses(experiments),
         },
         "claims": {
             "claim_count": _int(claims, "claim_count"),
             "by_support_level": _dict_field(claims, "by_support_level"),
         },
         "dataset": _dataset_status(dataset),
-        "measurement": {"check_count": _int(measurement, "check_count")},
+        "measurement": {
+            "check_count": _int(measurement, "check_count"),
+            "by_status": _dict_field(measurement, "by_status"),
+        },
         "assumptions": {
             "check_count": _int(assumptions, "check_count"),
             "by_status": _dict_field(assumptions, "by_status"),
+            "failed_by_support_level": _failed_assumption_counts(assumptions, "support_level"),
+            "failed_by_scope": _failed_assumption_counts(assumptions, "claim_scope"),
         },
         "readiness": _readiness_status(readiness),
     }
@@ -150,11 +170,44 @@ def _gap_status(payload: dict[str, Any] | None) -> dict[str, Any]:
 def _readiness_status(payload: dict[str, Any] | None) -> dict[str, Any]:
     dimensions = _list_field(payload, "dimensions")
     by_status: dict[str, int] = {}
+    unstable: list[dict[str, Any]] = []
     for row in dimensions:
         if isinstance(row, dict):
             status = str(row.get("status") or "unknown")
             by_status[status] = by_status.get(status, 0) + 1
-    return {"dimension_count": len(dimensions), "by_status": dict(sorted(by_status.items()))}
+            if status != "stable":
+                unstable.append({
+                    "dimension": row.get("dimension"),
+                    "status": status,
+                    "caveats": row.get("caveats", []),
+                })
+    return {
+        "dimension_count": len(dimensions),
+        "by_status": dict(sorted(by_status.items())),
+        "unstable_dimensions": unstable,
+    }
+
+
+def _failed_assumption_counts(payload: dict[str, Any] | None, field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in _list_field(payload, "checks"):
+        if not isinstance(row, dict) or row.get("check_status") != "failed":
+            continue
+        key = str(row.get(field) or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _manifest_validation_statuses(payload: dict[str, Any] | None) -> dict[str, int]:
+    by_status: dict[str, int] = {}
+    for row in _list_field(payload, "claim_packs"):
+        if not isinstance(row, dict):
+            continue
+        validation = row.get("manifest_validation")
+        valid = validation.get("valid") if isinstance(validation, dict) else None
+        status = "valid" if valid is True else "invalid" if valid is False else "unknown"
+        by_status[status] = by_status.get(status, 0) + 1
+    return dict(sorted(by_status.items()))
 
 
 def _blockers(payload: dict[str, Any]) -> list[str]:
@@ -170,6 +223,9 @@ def _blockers(payload: dict[str, Any]) -> list[str]:
         blockers.append(f"{manifests.get('promotion_issue_count')} experiment manifests are not source-loadable")
     if int(manifests.get("controlled_run_invalid_count") or 0) > 0:
         blockers.append(f"{manifests.get('controlled_run_invalid_count')} executed benchmark manifests are invalid")
+    preflight = payload["benchmark_preflight"] if isinstance(payload["benchmark_preflight"], dict) else {}
+    if int(preflight.get("issue_count") or 0) > 0:
+        blockers.append(f"{preflight.get('issue_count')} benchmark run templates fail preflight")
     support = payload["support"] if isinstance(payload["support"], dict) else {}
     if int(support.get("insufficient") or 0) > 0:
         blockers.append(f"{support.get('insufficient')} support assessments remain explicit refusals")
@@ -178,6 +234,26 @@ def _blockers(payload: dict[str, Any]) -> list[str]:
         blockers.append(f"dataset feature audit is {dataset.get('feature_status')}")
     if dataset.get("multiplicity_status") not in {None, "registered"}:
         blockers.append(f"dataset multiplicity audit is {dataset.get('multiplicity_status')}")
+    measurement = payload["measurement"] if isinstance(payload["measurement"], dict) else {}
+    measurement_status = measurement.get("by_status") if isinstance(measurement.get("by_status"), dict) else {}
+    if int(measurement_status.get("failed") or 0) > 0:
+        blockers.append(f"{measurement_status.get('failed')} measurement-system diagnostics failed")
+    assumptions = payload["assumptions"] if isinstance(payload["assumptions"], dict) else {}
+    assumption_status = assumptions.get("by_status") if isinstance(assumptions.get("by_status"), dict) else {}
+    failed_assumptions = int(assumption_status.get("failed") or 0)
+    if failed_assumptions > 0:
+        failed_levels = assumptions.get("failed_by_support_level") if isinstance(assumptions.get("failed_by_support_level"), dict) else {}
+        supported_failures = sum(int(failed_levels.get(level) or 0) for level in ("controlled", "natural_experiment"))
+        if supported_failures:
+            blockers.append(f"{supported_failures} supported attribution assumption checks failed")
+        refused_failures = int(failed_levels.get("insufficient") or 0)
+        unclassified_failures = failed_assumptions - supported_failures - refused_failures
+        if unclassified_failures:
+            blockers.append(f"{unclassified_failures} unclassified attribution assumption checks failed")
+    readiness = payload["readiness"] if isinstance(payload["readiness"], dict) else {}
+    for row in readiness.get("unstable_dimensions", []):
+        if isinstance(row, dict):
+            blockers.append(f"readiness dimension {row.get('dimension') or 'unnamed'} is {row.get('status')}")
     return blockers
 
 

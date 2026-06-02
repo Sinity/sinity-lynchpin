@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Sequence
 from ..core.evidence import CostClass
+from ..core.evidence import EvidenceCaveat
+from ..core.evidence import dedupe_caveats
 from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 from . import evidence_analysis, evidence_edges, evidence_sources
 from .evidence_projects import selected_projects
@@ -50,9 +52,9 @@ def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str]
     now = datetime.now().astimezone()
     mode: CostClass = 'network' if include_github_frontier else 'materialized'
     log.info('evidence_graph: loading base sources start=%s end=%s github_frontier=%s', start, end, include_github_frontier)
-    evidence_sources.add_base_source_nodes(nodes, edges, start=start, end=end, selected=selected, mode=mode, include_spotify=True)
+    source_caveats = evidence_sources.add_base_source_nodes(nodes, edges, start=start, end=end, selected=selected, mode=mode, include_spotify=True)
     log.info('evidence_graph: loaded base sources nodes=%d edges=%d', len(nodes), len(edges))
-    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, source_caveats=source_caveats, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
 
 def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, include_github_frontier: bool=False, exclude_analysis_artifacts: Sequence[str]=(), refresh_context: RefreshContext | None=None, promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
@@ -67,13 +69,14 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
         base = refresh_context.base_graph(start=start, end=end, projects=projects, include_github_frontier=include_github_frontier)
         nodes = list(base.nodes)
         edges = list(base.edges)
+        source_caveats = tuple(base.caveats)
         mode = base.mode
     else:
         nodes = []
         edges = []
         mode = 'network' if include_github_frontier else 'materialized'
         log.info('evidence_graph: loading base sources start=%s end=%s github_frontier=%s', start, end, include_github_frontier)
-        evidence_sources.add_base_source_nodes(nodes, edges, start=start, end=end, selected=selected, mode=mode, include_spotify=False)
+        source_caveats = evidence_sources.add_base_source_nodes(nodes, edges, start=start, end=end, selected=selected, mode=mode, include_spotify=False)
     log.info('evidence_graph: base graph nodes=%d edges=%d', len(nodes), len(edges))
     now = datetime.now().astimezone()
     log.info('evidence_graph: adding analysis artifacts')
@@ -83,9 +86,9 @@ def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | No
     log.info('evidence_graph: adding machine analysis nodes')
     add_machine_analysis_nodes(nodes, edges, start=start, end=end, selected=selected, exclude_names=frozenset(exclude_analysis_artifacts))
     log.info('evidence_graph: after machine analysis nodes=%d edges=%d', len(nodes), len(edges))
-    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
+    return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, source_caveats=source_caveats, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
 
-def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime, promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:
+def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], start: date, end: date, mode: CostClass, generated_at: datetime, source_caveats: tuple[EvidenceCaveat, ...]=(), promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     if len(nodes) > 100000:
         log.warning('evidence_graph: large graph build nodes=%d; relation builders run in bounded source groups', len(nodes))
@@ -114,7 +117,7 @@ def _finalize_graph(*, nodes: list[EvidenceNode], edges: list[EvidenceEdge], sta
     log.info('evidence_graph: added %d mentions-project edges', len(mentions_edges))
     log.info('evidence_graph: checking source readiness')
     readiness = source_readiness(start=start, end=end, include_polylogue_product_counts=True, include_github_frontier=mode == 'network', include_analysis_inventory=True)
-    caveats = tuple(readiness.caveats)
+    caveats = dedupe_caveats(tuple(readiness.caveats) + tuple(source_caveats))
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple((edge for edge in _dedupe_edges(edges) if edge.source_id in node_ids and edge.target_id in node_ids))

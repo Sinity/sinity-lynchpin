@@ -67,6 +67,53 @@ def test_machine_sqlite_window_filter_uses_half_open_text_range() -> None:
     assert params == ["2026-05-01", "2026-05-04"]
 
 
+def test_machine_experiment_promotion_enriches_manifest_validation(tmp_path: Path) -> None:
+    from lynchpin.analysis.active.substrate_promote_machine import (
+        _validated_experiment_runs,
+    )
+    from lynchpin.sources.machine_experiments import experiment_runs
+
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({
+        "run_id": "run-1",
+        "run_group_id": "grp1",
+        "host": "sinnix-prime",
+        "workload": "sinex.xtask",
+        "command": ["xtask", "test"],
+        "started_at": "2026-05-12T12:00:00+00:00",
+        "ended_at": "2026-05-12T12:01:00+00:00",
+        "monotonic_started_ns": 1,
+        "monotonic_ended_ns": 60_000_000_000,
+        "exit_status": 0,
+        "execution_outcome": {"status": "success"},
+        "measurement_context": {"host_boot_id": "boot1"},
+        "planned_treatment": {"selected_run": {"run_id": "run-1"}},
+        "nix_internal_json_path": "/tmp/run-1/nix-internal-json.ndjson",
+        "git": {
+            "root": "/realm/project/sinex",
+            "head": "abc123",
+            "branch": "master",
+            "dirty": False,
+        },
+        "pre_state": {},
+        "post_state": {},
+    }))
+
+    source_rows = list(experiment_runs(root=tmp_path))
+    validated = _validated_experiment_runs(source_rows)
+
+    assert source_rows[0].validation_status == "unvalidated"
+    assert validated[0].validation_status == "invalid"
+    assert validated[0].manifest_validation["valid"] is False
+    assert "missing internal-json path" not in validated[0].validation_warnings
+    assert "measurement_context.system_generation missing" in validated[0].validation_issues
+    assert (
+        "planned_treatment not controlled-ready: missing fixed derivation set"
+        in validated[0].validation_warnings
+    )
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 

@@ -190,6 +190,10 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     monkeypatch.setattr("lynchpin.graph.context_pack.build_evidence_graph", lambda **kwargs: pack.evidence_graph)
     analysis_root = tmp_path / "analysis"
     analysis_root.mkdir()
+    (analysis_root / "machine_telemetry_analysis.json").write_text(
+        '{"coverage":{"sample_count":10,"first_observed_at":"2026-05-01T00:00:00+00:00","last_observed_at":"2026-05-02T00:00:00+00:00"},"hardware_regimes":[{}],"signals":[{},{}]}',
+        encoding="utf-8",
+    )
     (analysis_root / "machine_episode_analysis.json").write_text(
         '{"episodes":[{"kind":"load_pressure","started_at":"2026-05-01T12:00:00+00:00","ended_at":"2026-05-01T12:01:00+00:00"}]}',
         encoding="utf-8",
@@ -200,6 +204,14 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     )
     (analysis_root / "machine_below_attribution.json").write_text(
         '{"pressure_episode_count":3,"attributed_episode_count":0,"workload_resource_attributed_pressure_episode_count":1,"residual_unattributed_pressure_episode_count":2}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_below_analysis.json").write_text(
+        '{"window_count":4,"top_process_count":5,"top_cgroup_count":6,"live_store":{"index_count":7}}',
+        encoding="utf-8",
+    )
+    (analysis_root / "machine_below_export_queue.json").write_text(
+        '{"queue_count":2,"failed_capture_count":1,"root":"/realm/data/captures/stability-lab","items":[{"episode_kind":"io_pressure"},{"episode_kind":"load_pressure"}]}',
         encoding="utf-8",
     )
     (analysis_root / "machine_work_state_windows.json").write_text(
@@ -318,6 +330,10 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         '{"dimensions":[{"dimension":"continuous_machine_telemetry","status":"stable"},{"dimension":"controlled_benchmark_claims","status":"missing"}]}',
         encoding="utf-8",
     )
+    (analysis_root / "machine_gap_summary.json").write_text(
+        '{"generated_for":{"window_start":"2026-05-01T00:00:00+00:00","window_end":"2026-05-02T00:00:00+00:00"},"counts":[{}],"regressions":[{},{}]}',
+        encoding="utf-8",
+    )
     (analysis_root / "machine_analysis_refresh_report.json").write_text(
         '{"step_count":31,"by_status":{"success":31},"steps":[]}',
         encoding="utf-8",
@@ -330,11 +346,14 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     rendered = render_context_pack(context_pack(start=start, end=end, projects=("sinity-lynchpin",)))
 
     assert "## Machine Analysis" in rendered
+    assert "Telemetry coverage: samples=10; span=2026-05-01T00:00:00+00:00..2026-05-02T00:00:00+00:00; hardware_regimes=1; signals=2" in rendered
     assert "Episodes in window: 1" in rendered
     assert "Work windows with machine episodes: 1/1" in rendered
     assert "Work-state segmentation: 2 windows" in rendered
     assert "Work observations: 1 daily groups" in rendered
     assert "Process attribution: bounded_below=0/3; workload_resource=1/3; residual_unattributed=2" in rendered
+    assert "Below analysis coverage: bounded_windows=4; top_processes=5; top_cgroups=6; live_store_indexes=7" in rendered
+    assert "Below export queue: 2 planned windows; failed=1; kinds=io_pressure×1, load_pressure×1; root=/realm/data/captures/stability-lab" in rendered
     assert "Command performance: 3 commands" in rendered
     assert "Observational command deltas: 1 matched cohorts" in rendered
     assert "Attribution candidates: 1 non-causal candidates; frontier=1; validation=design_ready×1; families=stage_regression_or_workload_mix×1; top=command.pytest.duration_seconds" in rendered
@@ -352,6 +371,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Measurement system: 5 checks; passed×3, untestable×2" in rendered
     assert "Causal support gate: 13/25 refused; support=insufficient×1, natural_experiment×1; top_refusal=missing controlled benchmark run×1; next=execute the approved manifest and promote run logs/telemetry×1; ready_plans=10; run_templates=120; controlled_claims=0" in rendered
     assert "Machine analysis readiness: missing×1, stable×1" in rendered
+    assert "Machine capture gaps: counts=1; regressions=2; window=2026-05-01T00:00:00+00:00..2026-05-02T00:00:00+00:00" in rendered
     assert "Machine refresh report: 31 steps; success×31" in rendered
 
 

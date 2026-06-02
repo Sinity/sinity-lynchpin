@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
 from lynchpin.core.io import save_json
-from lynchpin.analysis.machine.below import DEFAULT_STABILITY_ROOT, BelowAnalysis, BelowEntitySummary, analyze_below_exports
+from lynchpin.analysis.machine.below import (
+    DEFAULT_LIVE_BELOW_STORE,
+    DEFAULT_STABILITY_ROOT,
+    BelowAnalysis,
+    BelowEntitySummary,
+    BelowWindowExport,
+    analyze_below_exports,
+    export_live_below_window,
+    failed_below_exports,
+)
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.core.parse import as_local
@@ -82,6 +91,26 @@ class WorkloadResourceAttribution:
 
 
 @dataclass(frozen=True)
+class BelowPressureWindowPlan:
+    episode_kind: str
+    host: str
+    episode_started_at: datetime
+    episode_ended_at: datetime
+    severity: float
+    confidence: float
+    begin: datetime
+    end: datetime
+    capture_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class BelowPressureWindowExport:
+    plan: BelowPressureWindowPlan
+    export: BelowWindowExport | None
+
+
+@dataclass(frozen=True)
 class BelowAttributionAnalysis:
     episode_count: int
     attributed_episode_count: int
@@ -90,6 +119,9 @@ class BelowAttributionAnalysis:
     workload_resource_attributed_pressure_episode_count: int
     residual_unattributed_pressure_episode_count: int
     capture_count: int
+    live_store_index_count: int
+    live_store_first_observed_at: datetime | None
+    live_store_last_observed_at: datetime | None
     attributions: list[BelowEpisodeAttribution]
     workload_resource_attributions: list[WorkloadResourceAttribution]
     caveats: list[str]
@@ -120,6 +152,7 @@ def analyze_below_attribution(
     end: date | None = None,
     path: Path | None = None,
     root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
     top_n: int = 5,
     max_attributions: int = 500,
 ) -> BelowAttributionAnalysis:
@@ -130,7 +163,7 @@ def analyze_below_attribution(
     evidence and does not treat below summaries as proof of root cause.
     """
     episode_analysis = analyze_machine_episodes(start=start, end=end, path=path)
-    below = analyze_below_exports(root=root, top_n=max(top_n, 1))
+    below = analyze_below_exports(root=root, live_store=live_store, top_n=max(top_n, 1))
     captures = [capture for capture in below.system if capture.first_observed_at and capture.last_observed_at]
     workload_rows = tuple(
         _WorkloadBounds(
@@ -216,6 +249,25 @@ def analyze_below_attribution(
         caveats.append(
             "workload resource attribution uses promoted work-observation telemetry; it is narrower than below process/cgroup capture"
         )
+    if (
+        pressure_episode_rows
+        and not attributions
+        and below.live_store.index_count
+        and below.live_store.first_observed_at
+        and below.live_store.last_observed_at
+    ):
+        first_pressure = min(row.started_at for row in pressure_episode_rows)
+        last_pressure = max(row.ended_at for row in pressure_episode_rows)
+        live_overlap = _overlap_seconds(
+            first_pressure,
+            last_pressure,
+            below.live_store.first_observed_at,
+            below.live_store.last_observed_at,
+        )
+        if live_overlap > 0:
+            caveats.append(
+                "live below store overlaps pressure episodes; bounded CSV export or store decoder is the missing attribution step"
+            )
     if residual_unattributed_pressure:
         caveats.append(
             f"{len(residual_unattributed_pressure)} pressure episodes lack both bounded below and workload resource attribution"
@@ -229,6 +281,9 @@ def analyze_below_attribution(
         workload_resource_attributed_pressure_episode_count=len(workload_attributed_keys),
         residual_unattributed_pressure_episode_count=len(residual_unattributed_pressure),
         capture_count=len(captures),
+        live_store_index_count=below.live_store.index_count,
+        live_store_first_observed_at=below.live_store.first_observed_at,
+        live_store_last_observed_at=below.live_store.last_observed_at,
         attributions=attributions,
         workload_resource_attributions=workload_attributions,
         caveats=sorted(dict.fromkeys(caveats)),
@@ -242,6 +297,7 @@ def write_below_attribution_analysis(
     end: date | None = None,
     path: Path | None = None,
     root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
     top_n: int = 5,
     max_attributions: int = 500,
 ) -> BelowAttributionAnalysis:
@@ -250,6 +306,7 @@ def write_below_attribution_analysis(
         end=end,
         path=path,
         root=root,
+        live_store=live_store,
         top_n=top_n,
         max_attributions=max_attributions,
     )
@@ -257,6 +314,114 @@ def write_below_attribution_analysis(
     payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **analysis.to_dict()}
     save_json(out, json.loads(json.dumps(payload, default=str)), sort_keys=True)
     return analysis
+
+
+def plan_below_windows_for_pressure_episodes(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+    root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
+    limit: int = 10,
+    padding_seconds: int = 60,
+    min_duration_seconds: int = 120,
+    include_existing_captures: bool = False,
+    retry_failed_exports: bool = False,
+) -> list[BelowPressureWindowPlan]:
+    episode_analysis = analyze_machine_episodes(start=start, end=end, path=path)
+    below = analyze_below_exports(root=root, live_store=live_store, top_n=1)
+    captures = [capture for capture in below.system if capture.first_observed_at and capture.last_observed_at]
+    failed_capture_ids = set() if retry_failed_exports else {row.capture_id for row in failed_below_exports(root=root)}
+    pressure = sorted(
+        (episode for episode in episode_analysis.episodes if episode.kind in PRESSURE_EPISODE_KINDS),
+        key=lambda episode: (-episode.severity, episode.started_at, episode.kind),
+    )
+    plans: list[BelowPressureWindowPlan] = []
+    planned_windows: list[tuple[datetime, datetime]] = []
+    for episode in pressure:
+        if not include_existing_captures and any(
+            _overlap_seconds(episode.started_at, episode.ended_at, capture.first_observed_at, capture.last_observed_at) > 0
+            for capture in captures
+        ):
+            continue
+        begin, window_end = _below_export_bounds(
+            episode.started_at,
+            episode.ended_at,
+            padding_seconds=padding_seconds,
+            min_duration_seconds=min_duration_seconds,
+        )
+        capture_id = _pressure_capture_id(episode, begin, window_end)
+        if capture_id in failed_capture_ids:
+            continue
+        if (
+            below.live_store.first_observed_at
+            and below.live_store.last_observed_at
+            and _overlap_seconds(begin, window_end, below.live_store.first_observed_at, below.live_store.last_observed_at)
+            <= 0
+        ):
+            continue
+        if any(_overlap_seconds(begin, window_end, planned_begin, planned_end) > 0 for planned_begin, planned_end in planned_windows):
+            continue
+        plans.append(
+            BelowPressureWindowPlan(
+                episode_kind=episode.kind,
+                host=episode.host,
+                episode_started_at=episode.started_at,
+                episode_ended_at=episode.ended_at,
+                severity=episode.severity,
+                confidence=episode.confidence,
+                begin=begin,
+                end=window_end,
+                capture_id=capture_id,
+                reason="pressure episode lacks bounded below attribution",
+            )
+        )
+        planned_windows.append((begin, window_end))
+        if len(plans) >= limit:
+            break
+    return plans
+
+
+def export_below_windows_for_pressure_episodes(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+    root: Path = DEFAULT_STABILITY_ROOT,
+    live_store: Path = DEFAULT_LIVE_BELOW_STORE,
+    limit: int = 10,
+    padding_seconds: int = 60,
+    min_duration_seconds: int = 120,
+    top_n: int = 20,
+    timeout_s: int = 60,
+    dry_run: bool = True,
+) -> list[BelowPressureWindowExport]:
+    plans = plan_below_windows_for_pressure_episodes(
+        start=start,
+        end=end,
+        path=path,
+        root=root,
+        live_store=live_store,
+        limit=limit,
+        padding_seconds=padding_seconds,
+        min_duration_seconds=min_duration_seconds,
+    )
+    exports: list[BelowPressureWindowExport] = []
+    for plan in plans:
+        export = None
+        if not dry_run:
+            export = export_live_below_window(
+                root=root,
+                begin=plan.begin,
+                end=plan.end,
+                duration=None,
+                capture_id=plan.capture_id,
+                top_n=top_n,
+                timeout_s=timeout_s,
+            )
+        exports.append(BelowPressureWindowExport(plan=plan, export=export))
+    return exports
 
 
 def _attribution_row(
@@ -488,3 +653,28 @@ def _float_or_none(value: Any) -> float | None:
 
 def _int_or_none(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+
+def _below_export_bounds(
+    started_at: datetime,
+    ended_at: datetime,
+    *,
+    padding_seconds: int,
+    min_duration_seconds: int,
+) -> tuple[datetime, datetime]:
+    begin = as_local(started_at) - timedelta(seconds=padding_seconds)
+    end = as_local(ended_at) + timedelta(seconds=padding_seconds)
+    duration = (end - begin).total_seconds()
+    if duration < min_duration_seconds:
+        extra = (min_duration_seconds - duration) / 2
+        begin -= timedelta(seconds=extra)
+        end += timedelta(seconds=extra)
+    return begin, end
+
+
+def _pressure_capture_id(episode: MachineEpisode, begin: datetime, end: datetime) -> str:
+    return (
+        f"pressure-{episode.kind}-"
+        f"{begin.strftime('%Y%m%dT%H%M%S')}-"
+        f"{end.strftime('%Y%m%dT%H%M%S')}"
+    )

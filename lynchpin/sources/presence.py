@@ -53,8 +53,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
-from ..core.config import get_config
-
 KEYLOG_DIR = Path("/realm/data/captures/keylog/logs")
 
 
@@ -118,8 +116,9 @@ def _classify(presses: int, window_events: int, nonafk_sec: float,
 def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
     """Yield one HourPresence per UTC hour in the inclusive [start, end] range.
 
-    Streams the canonical AW NDJSON once and the relevant keylog files;
-    O(events_in_window) memory and IO.
+    Uses the indexed ActivityWatch raw reader and the relevant keylog files.
+    The AW reader keeps a process-level bucket cache, so callers that already
+    touched focus spans do not pay a second full NDJSON scan.
     """
     win_start = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
     win_end   = datetime.combine(end + timedelta(days=1), datetime.min.time()).replace(
@@ -128,59 +127,47 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
     # Buckets
     nonafk: dict[datetime, float] = defaultdict(float)
     afk: dict[datetime, float] = defaultdict(float)
-    afk_events: dict[datetime, int] = defaultdict(int)
+    afk_event_counts: dict[datetime, int] = defaultdict(int)
     win_events: dict[datetime, int] = defaultdict(int)
     presses: dict[datetime, int] = defaultdict(int)
     aw_data_hours: set[datetime] = set()
     kl_data_dates: set[date] = set()
 
-    cfg = get_config()
-    aw_ndjson = cfg.captures_root / "activitywatch/events.ndjson"
-    if not aw_ndjson.exists():
-        return
-
     def _hr(dt: datetime) -> datetime:
         return dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
-    with aw_ndjson.open() as f:
-        for line in f:
-            try:
-                p = json.loads(line)
-            except Exception:
-                continue
-            bucket = p.get("bucket", "")
-            start_iso = p.get("start", "")
-            end_iso = p.get("end", "")
-            try:
-                s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
-                e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
-            except Exception:
-                continue
-            if e < win_start or s > win_end:
-                continue
+    try:
+        from .activitywatch_raw import afk_events, window_events
 
+        for event in afk_events(start=win_start, end=win_end):
+            s = event.start
+            e = event.end
             aw_data_hours.add(_hr(s))
+            status = (event.data or {}).get("status") or ""
+            status = str(status).strip().lower()
+            if e <= s:
+                afk_event_counts[_hr(s)] += 1
+                continue
+            cur = s
+            while cur < e:
+                next_hr = cur.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                chunk_end = min(e, next_hr)
+                dur = (chunk_end - cur).total_seconds()
+                k = _hr(cur)
+                aw_data_hours.add(k)
+                afk_event_counts[k] += 1
+                if status in {"afk", "away"}:
+                    afk[k] += dur
+                elif status in {"not-afk", "active", "present"}:
+                    nonafk[k] += dur
+                cur = chunk_end
 
-            if bucket.startswith("aw-watcher-afk_"):
-                status = (p.get("data") or {}).get("status") or ""
-                status = status.strip().lower()
-                if e <= s:
-                    afk_events[_hr(s)] += 1
-                    continue
-                cur = s
-                while cur < e:
-                    next_hr = cur.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-                    chunk_end = min(e, next_hr)
-                    dur = (chunk_end - cur).total_seconds()
-                    k = _hr(cur)
-                    afk_events[k] += 1
-                    if status in {"afk", "away"}:
-                        afk[k] += dur
-                    elif status in {"not-afk", "active", "present"}:
-                        nonafk[k] += dur
-                    cur = chunk_end
-            elif bucket.startswith("aw-watcher-window_"):
-                win_events[_hr(s)] += 1
+        for event in window_events(start=win_start, end=win_end):
+            hour = _hr(event.start)
+            aw_data_hours.add(hour)
+            win_events[hour] += 1
+    except FileNotFoundError:
+        pass
 
     # Keylog
     for kl_file in sorted(KEYLOG_DIR.glob("*.jsonl")) if KEYLOG_DIR.exists() else []:
@@ -210,7 +197,7 @@ def hourly_presence(start: date, end: date) -> Iterator[HourPresence]:
     # Emit per-hour
     h = win_start
     while h < win_end:
-        ev = afk_events.get(h, 0)
+        ev = afk_event_counts.get(h, 0)
         flapping = ev > _FLAPPING_AFK_EVENTS
         kl_data = h.date() in kl_data_dates
         aw_data = h in aw_data_hours

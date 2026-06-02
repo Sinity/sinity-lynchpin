@@ -1,9 +1,7 @@
 """Tests for health.py MCP tools."""
 
-from datetime import date
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 class TestCleanupPeriodDetect:

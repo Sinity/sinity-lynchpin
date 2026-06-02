@@ -2,17 +2,14 @@
 
 import json
 from datetime import date, datetime, timezone
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from lynchpin.sources.raindrop_live import (
-    RaindropBookmarkLive,
     RaindropPollCursor,
     _parse_raindrop_item,
     raindrop_api_token,
     iter_live_bookmarks,
-    iter_merged_bookmarks,
     daily_raindrop_live_activity,
 )
 
