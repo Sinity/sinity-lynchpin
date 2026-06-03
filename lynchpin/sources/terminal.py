@@ -24,10 +24,12 @@ __all__ = [
     "AtuinCommand",
     "ShellSession",
     "TerminalRecording",
+    "DownloadEvent",
     "DailyTerminalActivity",
     "commands",
     "shell_sessions",
     "recordings",
+    "download_provenance",
     "daily_terminal_activity",
     "daily_activity",
 ]
@@ -66,6 +68,27 @@ class TerminalRecording:
     duration_s: Optional[float]
     title: Optional[str]
     shell: Optional[str]
+
+
+@dataclass(frozen=True)
+class DownloadEvent:
+    """A media-acquisition record reconstructed from an asciinema recording.
+
+    The operator downloads media with a clipboard watcher that runs
+    ``yt-dlp "$url"`` for each copied URL. yt-dlp prints ``Extracting URL:
+    <url>`` and ``Destination: <title> [<code>].<ext>`` to the terminal, both
+    captured in the .cast. The bracket ``code`` (yt-dlp's ``%(id)s``) appears
+    in both the filename and the URL, giving a ground-truth URL↔filename pair —
+    the canonical provenance for a downloaded file even after it is moved.
+    """
+    url: str
+    filename: str          # basename as written by yt-dlp (paths drift; basename is stable)
+    code: str              # yt-dlp %(id)s, the bracketed token shared by url and filename
+    host: str
+    ext: Optional[str]
+    recorded_at: Optional[datetime]
+    session_id: str
+    cast_path: str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -264,6 +287,107 @@ def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
         title=header.get("title") or env.get("TITLE"),
         shell=env.get("SHELL") or header.get("command"),
     )
+
+
+# ── Download provenance: yt-dlp URL↔filename from recording content ───────────
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_DL_URL_RE = re.compile(r"Extracting URL:\s*(\S+)")
+_DL_DEST_RE = re.compile(r"Destination:\s*(.+)")
+_DL_ALREADY_RE = re.compile(r"\[download\]\s*(.+?)\s+has already been downloaded")
+_DL_MERGE_RE = re.compile(r'Merging formats into\s*"([^"]+)"')
+_DL_CODE_RE = re.compile(r"\[([A-Za-z0-9_-]{3,20})\]\.[A-Za-z0-9]+$")
+
+
+def download_provenance(
+    *,
+    start: Optional[Union[date, datetime]] = None,
+    end: Optional[Union[date, datetime]] = None,
+) -> Iterator[DownloadEvent]:
+    """Reconstruct ground-truth download URL↔filename pairs from asciinema casts.
+
+    Streams each recording's ``o`` (output) events, pairing every yt-dlp
+    ``Destination:`` filename with the ``Extracting URL:`` whose URL contains
+    the filename's bracket ``code``. Pairing is by shared code, so it is robust
+    to interleaved progress output. Yields one :class:`DownloadEvent` per
+    (filename, url) pair, de-duplicated within a recording.
+
+    ``start`` / ``end`` filter on each recording's header timestamp, so casts
+    outside the window are skipped without reading their (potentially large)
+    body. See :class:`DownloadEvent` for why this is canonical provenance.
+    """
+    from ..core.parse import local_tz
+
+    cfg = get_config()
+    root = cfg.asciinema_root
+    if not root.exists():
+        return
+
+    tz = local_tz()
+    if isinstance(start, date) and not isinstance(start, datetime):
+        start = datetime.combine(start, time.min, tzinfo=tz)
+    if isinstance(end, date) and not isinstance(end, datetime):
+        end = datetime.combine(end, time.min, tzinfo=tz)
+
+    for cast_path in sorted(root.rglob("*.cast")):
+        rec = _parse_cast_file(cast_path)
+        if rec is None:
+            continue
+        if start and rec.created_at and rec.created_at < start:
+            continue
+        if end and rec.created_at and rec.created_at >= end:
+            continue
+        yield from _download_events_from_cast(cast_path, rec)
+
+
+def _download_events_from_cast(path: Path, rec: TerminalRecording) -> Iterator[DownloadEvent]:
+    urls: list[str] = []
+    dests: list[str] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as fh:
+            fh.readline()  # skip header
+            for line in fh:
+                if ("Extracting URL" not in line and "Destination" not in line
+                        and "already been downloaded" not in line
+                        and "Merging formats" not in line):
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if len(ev) < 3 or ev[1] != "o":
+                    continue
+                txt = _ANSI_RE.sub("", ev[2]).replace("\r", "\n")
+                urls.extend(m.group(1).strip() for m in _DL_URL_RE.finditer(txt))
+                for rx in (_DL_DEST_RE, _DL_ALREADY_RE, _DL_MERGE_RE):
+                    dests.extend(m.group(1).strip() for m in rx.finditer(txt))
+    except OSError:
+        return
+
+    emitted: set[tuple[str, str]] = set()
+    for fn in dests:
+        fn = fn.strip().strip('"')
+        cm = _DL_CODE_RE.search(fn)
+        if not cm:
+            continue
+        code = cm.group(1)
+        url = next((u for u in urls if code in u), None)
+        if not url:
+            continue
+        base = fn.rsplit("/", 1)[-1]
+        key = (base, url)
+        if key in emitted:
+            continue
+        emitted.add(key)
+        hm = re.search(r"https?://([^/]+)/", url)
+        host = hm.group(1).lower() if hm else ""
+        if host.startswith("www."):
+            host = host[4:]
+        ext = base.rsplit(".", 1)[-1] if "." in base else None
+        yield DownloadEvent(
+            url=url, filename=base, code=code, host=host, ext=ext,
+            recorded_at=rec.created_at, session_id=rec.session_id, cast_path=str(path),
+        )
 
 
 # ── Atuin timestamp helpers ───────────────────────────────────────────────────
