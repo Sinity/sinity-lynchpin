@@ -25,7 +25,7 @@ from lynchpin.core.parse import as_local
 from lynchpin.substrate.connection import connect, substrate_path
 
 
-PRESSURE_EPISODE_KINDS = frozenset({"load_pressure", "cpu_saturation", "memory_pressure", "io_pressure", "blocked_task_pressure"})
+PRESSURE_EPISODE_KINDS = frozenset({"load_pressure", "cpu_saturation", "memory_pressure", "swap_pressure", "io_pressure", "system_stall", "blocked_task_pressure"})
 
 
 @dataclass(frozen=True)

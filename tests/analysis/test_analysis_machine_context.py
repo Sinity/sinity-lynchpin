@@ -17,11 +17,13 @@ def test_machine_context_joins_partial_episode_overlap(tmp_path):
                 load_1m, mem_avail_mb, gap_codes, refresh_id
             ) VALUES
                 (?, 'host', 'machine.telemetry', 2, 30, 1000, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, 1000, [], 'r1')
+                (?, 'host', 'machine.telemetry', 2, 31, 1000, [], 'r1'),
+                (?, 'host', 'machine.telemetry', 2, 32, 1000, [], 'r1')
             """,
             [
                 datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 12, 2, tzinfo=timezone.utc),
+                datetime(2026, 5, 1, 12, 3, tzinfo=timezone.utc),
             ],
         )
 
@@ -44,12 +46,12 @@ def test_machine_context_joins_partial_episode_overlap(tmp_path):
     assert analysis.window_count == 1
     assert analysis.windows_with_machine_episodes == 1
     assert analysis.source_counts == {"polylogue_session": 1}
-    assert analysis.episode_kind_counts == {"load_pressure": 1, "memory_pressure": 1}
+    assert analysis.episode_kind_counts == {"load_pressure": 1}
     window = analysis.windows[0]
     assert window.duration_seconds == 60.0
     assert window.overlap_seconds == 30.0
-    assert window.interpretation == "observed overlap with load_pressure, memory_pressure"
-    assert {episode.kind for episode in window.episodes} == {"load_pressure", "memory_pressure"}
+    assert window.interpretation == "observed overlap with load_pressure"
+    assert {episode.kind for episode in window.episodes} == {"load_pressure"}
     assert "episode overlap is observational" in window.caveats[0]
     assert "pressure episode is unattributed" in window.caveats[1]
 

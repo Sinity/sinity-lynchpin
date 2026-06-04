@@ -57,15 +57,24 @@ def promote_work_sources(
         start_dt, end_dt = _work_window_bounds(window_start, window_end)
         rows = list(iter_all_invocations(start=start_dt, end=end_dt)) if has_xtask else []
         polylogue_rows = list(iter_polylogue_invocations(start=start_dt, end=end_dt)) if has_polylogue_devtools else []
+        # xtask invocations and Polylogue devtool observations share the
+        # work_observation table under one refresh_id. promote_rows deletes by
+        # refresh_id alone (not by source), so two source-scoped delete+insert
+        # calls would have the second clobber the first. Delete once here, then
+        # append both sources so they coexist (and idempotence holds even when
+        # one source is empty for the window).
+        conn.execute("DELETE FROM work_observation WHERE refresh_id = ?", [refresh_id])
         counts["xtask_work_observations"] = promote_work_observations(
             conn,
             refresh_id=refresh_id,
             rows=rows,
+            delete_existing=False,
         ) if rows else 0
         counts["polylogue_devtools_work_observations"] = promote_polylogue_devtools_observations(
             conn,
             refresh_id=refresh_id,
             rows=polylogue_rows,
+            delete_existing=False,
         ) if polylogue_rows else 0
         counts["work_observations"] = (
             counts["xtask_work_observations"]
@@ -88,12 +97,45 @@ def promote_work_sources(
             source_bits.append("xtask")
         if has_polylogue_devtools:
             source_bits.append("polylogue_devtools")
+        breakdown = (
+            f"xtask_invocations={counts['xtask_work_observations']}, "
+            f"xtask_stages={counts['work_observation_stages']}, "
+            f"xtask_tests={counts['work_observation_test_results']}, "
+            f"polylogue_devtools={counts['polylogue_devtools_work_observations']}"
+        )
+        # Surface the silent-starvation case: xtask DBs were present and their
+        # stage/test ledgers promoted rows, yet zero invocations landed. That
+        # state previously recorded a healthy "ok" while starving the workload
+        # resource attribution arm, so make it explicitly visible.
+        xtask_invocations_missing = (
+            has_xtask
+            and counts["xtask_work_observations"] == 0
+            and (counts["work_observation_stages"] or counts["work_observation_test_results"])
+        )
+        if xtask_invocations_missing:
+            log.warning(
+                "substrate_promote: xtask stage/test ledgers promoted rows but zero "
+                "invocations landed in window %s..%s (%s); workload resource "
+                "attribution will be starved",
+                window_start,
+                window_end,
+                breakdown,
+            )
+        if not counts["work_observations"]:
+            status = "empty"
+            reason = f"no work observations in window from {', '.join(source_bits)} ({breakdown})"
+        elif xtask_invocations_missing:
+            status = "degraded"
+            reason = f"xtask invocations missing while stage/test ledgers present ({breakdown})"
+        else:
+            status = "ok"
+            reason = breakdown
         record_source_status(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_WORK_OBSERVATIONS,
-            status="ok" if counts["work_observations"] else "empty",
-            reason=None if counts["work_observations"] else f"no work observations in window from {', '.join(source_bits)}",
+            status=status,
+            reason=reason,
             row_count=(
                 counts["work_observations"]
                 + counts["work_observation_stages"]

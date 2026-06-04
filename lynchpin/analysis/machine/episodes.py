@@ -69,6 +69,7 @@ class MachineEpisodeAnalysis:
     episode_count: int
     episodes: list[MachineEpisode]
     caveats: list[str]
+    suppressed_transient_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,19 +99,44 @@ class _Point:
     payload: dict[str, Any] | None = None
 
 
+# Episode kinds are split by PSI semantic. "some" PSI (>=1 task stalled) is
+# routine under load and drives the per-resource *_pressure kinds; "full" PSI
+# (every non-idle task stalled at once — the real "machine unusable" freeze)
+# drives system_stall. Swap use is its own kind so swap-thrash is visible
+# distinctly from reclaim PSI. mem_avail_mb is intentionally NOT a trigger:
+# Linux spends free memory on cache, so low available memory is normal, not
+# stall. blocked_task_pressure (D-state) needs a real backlog, not 1-2 tasks
+# (which is normal on any busy host), so its floor is 10, not 1.
 _METRIC_RULES: tuple[_Rule, ...] = (
     _Rule("load_pressure", "load_1m", "high", 20.0),
     _Rule("cpu_saturation", "cpu_psi_some", "high", 10.0),
-    _Rule("memory_pressure", "mem_avail_mb", "low", 4096.0),
-    _Rule("memory_pressure", "swap_used_mb", "high", 1024.0),
     _Rule("memory_pressure", "memory_psi_some", "high", 10.0),
-    _Rule("memory_pressure", "memory_psi_full", "high", 1.0),
+    _Rule("swap_pressure", "swap_used_mb", "high", 1024.0),
     _Rule("io_pressure", "io_psi_some", "high", 10.0),
-    _Rule("io_pressure", "io_psi_full", "high", 1.0),
+    _Rule("system_stall", "io_psi_full", "high", 5.0),
+    _Rule("system_stall", "memory_psi_full", "high", 2.0),
     _Rule("scheduler_latency", "latency_oversleep_ms", "high", 50.0),
-    _Rule("blocked_task_pressure", "dstate_task_count", "high", 1.0),
-    _Rule("gpu_power_or_thermal", "gpu_temp_c", "high", 83.0),
+    _Rule("blocked_task_pressure", "dstate_task_count", "high", 10.0),
+    _Rule("gpu_thermal", "gpu_temp_c", "high", 83.0),
 )
+
+# Kinds representing a discrete event or hardware state, where a single
+# observation is already meaningful — exempt from the sustained-duration gate.
+# Everything else is a pressure/stall condition that must persist to count as an
+# episode rather than a one-sample threshold blip.
+# network_degraded is included because the network probe cadence is ~300s: a
+# single degraded probe is meaningful, and a 3-sample floor would wrongly
+# demand ~15 minutes of sustained degradation before reporting anything.
+_EVENT_KINDS: frozenset[str] = frozenset(
+    {"service_instability", "gpu_link_regime", "scheduler_latency", "network_degraded"}
+)
+
+# A pressure/stall episode must appear in at least this many samples to be
+# emitted. At the ~10s telemetry cadence this is a ~20-30s floor, which removes
+# the single-sample threshold blips that previously made up ~a quarter of all
+# "episodes" (and which a downstream reader cannot distinguish from a real,
+# sustained episode).
+_MIN_SUSTAINED_SAMPLES = 3
 
 _NETWORK_RULES: tuple[_Rule, ...] = (
     _Rule("network_degraded", "dns_ms", "high", 200.0),
@@ -136,16 +162,30 @@ EPISODE_KIND_DEFINITIONS: tuple[MachineEpisodeKindDefinition, ...] = (
     MachineEpisodeKindDefinition(
         kind="memory_pressure",
         label="Memory Pressure",
-        definition="Available memory or memory PSI indicates reclaim/availability pressure.",
-        trigger_contract="Emitted from low mem_avail_mb, material swap use, or high memory PSI some/full averages.",
-        interpretation_boundary="This does not identify the responsible process without a joined below/process window.",
+        definition="Memory PSI 'some' indicates tasks are stalling on memory reclaim.",
+        trigger_contract="Emitted from memory PSI some-averages when they cross the configured high threshold.",
+        interpretation_boundary="This is reclaim stall, not low free memory: low mem_avail_mb is normal because Linux caches aggressively. Full-stall memory waits surface as system_stall, not here.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="swap_pressure",
+        label="Swap Pressure",
+        definition="Material swap usage indicates the working set has overflowed RAM onto backing store.",
+        trigger_contract="Emitted from swap_used_mb when it crosses the configured high threshold.",
+        interpretation_boundary="Swap presence is not by itself a stall; pair with io_pressure/system_stall to tell swap-thrash from quiescent swap.",
     ),
     MachineEpisodeKindDefinition(
         kind="io_pressure",
         label="I/O Pressure",
-        definition="I/O PSI indicates tasks are stalled on storage or filesystem I/O.",
-        trigger_contract="Emitted from I/O PSI some/full averages when they cross configured high thresholds.",
-        interpretation_boundary="This does not identify the device, file path, or process without joined below or workload evidence.",
+        definition="I/O PSI 'some' indicates at least one task is stalled on storage or filesystem I/O.",
+        trigger_contract="Emitted from I/O PSI some-averages when they cross the configured high threshold.",
+        interpretation_boundary="'some' pressure is routine under load; the everything-stalled case surfaces as system_stall. This does not identify the device, file, or process without joined below/workload evidence.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="system_stall",
+        label="System Stall",
+        definition="PSI 'full' on I/O or memory: every non-idle task was stalled at once — the host was effectively unusable.",
+        trigger_contract="Emitted from io_psi_full or memory_psi_full averages when they cross the configured high threshold.",
+        interpretation_boundary="This is the user-visible freeze signal, distinct from per-resource 'some' pressure. It names the resource family but not the responsible process without joined below/workload evidence.",
     ),
     MachineEpisodeKindDefinition(
         kind="scheduler_latency",
@@ -162,11 +202,18 @@ EPISODE_KIND_DEFINITIONS: tuple[MachineEpisodeKindDefinition, ...] = (
         interpretation_boundary="This is not scheduler latency by itself; it usually requires I/O, device, or process attribution.",
     ),
     MachineEpisodeKindDefinition(
-        kind="gpu_power_or_thermal",
-        label="GPU Thermal Pressure",
+        kind="gpu_thermal",
+        label="GPU Thermal",
         definition="GPU temperature crosses the thermal threshold used as a risk signal.",
         trigger_contract="Emitted from gpu_temp_c when it crosses the configured high threshold.",
-        interpretation_boundary="High GPU utilization alone is workload context, not a power/thermal problem.",
+        interpretation_boundary="This is temperature only, not throttling: a high temperature is a risk signal, not proof that clocks were reduced. High GPU utilization alone is workload context, not a thermal problem.",
+    ),
+    MachineEpisodeKindDefinition(
+        kind="gpu_power_capped",
+        label="GPU Power Capped",
+        definition="GPU power draw is within 5% of its enforced power limit, so the limit is plausibly bounding clocks.",
+        trigger_contract="Emitted from machine_gpu_sample when gpu_power_w reaches >=95% of gpu_power_limit_w.",
+        interpretation_boundary="Power near the limit indicates a power-bound regime, not a confirmed throttle event; confirm with a clock drop under sustained utilization before attributing lost performance.",
     ),
     MachineEpisodeKindDefinition(
         kind="gpu_link_regime",
@@ -198,6 +245,7 @@ def analyze_machine_episodes(
     end: date | None = None,
     path: Path | None = None,
     max_gap: timedelta = timedelta(minutes=3),
+    min_sustained_samples: int = _MIN_SUSTAINED_SAMPLES,
 ) -> MachineEpisodeAnalysis:
     """Detect machine-state episodes from promoted telemetry rows.
 
@@ -217,17 +265,26 @@ def analyze_machine_episodes(
     points: list[_Point] = []
     points.extend(_metric_points(metric_rows, thresholds=metric_thresholds))
     points.extend(_gpu_link_points(metric_link_rows, gpu_rows))
+    points.extend(_gpu_power_points(gpu_rows))
     points.extend(_network_points(network_rows))
     points.extend(_service_points(service_rows))
 
-    episodes = _merge_points(points, max_gap=max_gap)
+    episodes, suppressed = _merge_points(
+        points, max_gap=max_gap, min_sustained_samples=min_sustained_samples
+    )
     caveats = _analysis_caveats(coverage, episodes)
+    if suppressed:
+        caveats.append(
+            f"{suppressed} transient pressure/stall point group(s) suppressed for "
+            f"spanning fewer than {min_sustained_samples} samples"
+        )
     return MachineEpisodeAnalysis(
         coverage=coverage,
         kind_definitions=EPISODE_KIND_DEFINITIONS,
         episode_count=len(episodes),
         episodes=episodes,
         caveats=caveats,
+        suppressed_transient_count=suppressed,
     )
 
 
@@ -588,6 +645,40 @@ def _gpu_link_points(metric_rows: list[dict[str, Any]], gpu_rows: list[dict[str,
     return points
 
 
+def _gpu_power_points(gpu_rows: list[dict[str, Any]]) -> list[_Point]:
+    # Power-bound regime: GPU power draw within 5% of its enforced limit, which
+    # plausibly bounds clocks. Read from machine_gpu_sample because the per-10s
+    # metric stream does not carry gpu_power_limit_w.
+    points: list[_Point] = []
+    for row in gpu_rows:
+        power = _float(row.get("gpu_power_w"))
+        limit = _float(row.get("gpu_power_limit_w"))
+        if power is None or limit is None or limit <= 0.0:
+            continue
+        ratio = power / limit
+        if ratio < 0.95:
+            continue
+        threshold = round(0.95 * limit, 4)
+        points.append(_Point(
+            kind="gpu_power_capped",
+            host=str(row["host"]),
+            observed_at=row["observed_at"],
+            severity=_clamp((ratio - 0.95) / 0.05),
+            confidence=0.85,
+            evidence=MachineEpisodeEvidence(
+                source_table="machine_gpu_sample",
+                metric="gpu_power_w",
+                direction="high",
+                value=round(power, 4),
+                threshold=threshold,
+                reason="GPU power within 5% of its enforced power limit",
+            ),
+            source="machine_gpu_sample",
+            payload={"gpu_power_w": round(power, 4), "gpu_power_limit_w": round(limit, 4)},
+        ))
+    return points
+
+
 def _network_points(rows: list[dict[str, Any]]) -> list[_Point]:
     enriched: list[dict[str, Any]] = []
     for row in rows:
@@ -655,25 +746,40 @@ def _service_points(rows: list[dict[str, Any]]) -> list[_Point]:
     return points
 
 
-def _merge_points(points: list[_Point], *, max_gap: timedelta) -> list[MachineEpisode]:
+def _merge_points(
+    points: list[_Point],
+    *,
+    max_gap: timedelta,
+    min_sustained_samples: int = _MIN_SUSTAINED_SAMPLES,
+) -> tuple[list[MachineEpisode], int]:
     grouped: dict[tuple[str, str, str | None], list[_Point]] = {}
     for point in points:
         grouped.setdefault((point.host, point.kind, point.subject), []).append(point)
 
     episodes: list[MachineEpisode] = []
+    suppressed = 0
     for (host, kind, subject), group in grouped.items():
         group.sort(key=lambda point: point.observed_at)
         group_gap = _merge_gap(kind, max_gap)
+        runs: list[list[_Point]] = []
         current: list[_Point] = []
         for point in group:
             if current and point.observed_at - current[-1].observed_at > group_gap:
-                episodes.append(_episode_from_points(host, kind, subject, current))
+                runs.append(current)
                 current = []
             current.append(point)
         if current:
-            episodes.append(_episode_from_points(host, kind, subject, current))
+            runs.append(current)
+        for run in runs:
+            # Event/state kinds are meaningful from a single observation; a
+            # pressure/stall condition must persist to be a real episode rather
+            # than a single-sample threshold blip.
+            if kind not in _EVENT_KINDS and len(run) < min_sustained_samples:
+                suppressed += 1
+                continue
+            episodes.append(_episode_from_points(host, kind, subject, run))
     episodes.sort(key=lambda episode: (episode.started_at, episode.host, episode.kind, episode.subject or ""))
-    return episodes
+    return episodes, suppressed
 
 
 def _merge_gap(kind: str, default: timedelta) -> timedelta:

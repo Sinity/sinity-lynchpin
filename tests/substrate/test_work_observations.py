@@ -167,3 +167,98 @@ def test_promote_polylogue_devtools_observations_round_trip(tmp_path):
     assert loaded[0]["work_kind"] == "polylogue_log_run"
     assert loaded[0]["project"] == "polylogue"
     assert resource == (20.0, 4.0)
+
+
+def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
+    """Regression: xtask + polylogue devtools share the work_observation table
+    under one refresh_id. promote_rows deletes by refresh_id alone, so the
+    second writer must NOT delete the first's rows. The refresh deletes once
+    and appends both sources with delete_existing=False."""
+    from lynchpin.sources.polylogue_devtools import PolylogueDevtoolsInvocation
+    from lynchpin.sources.xtask_history import XtaskInvocation
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.work_observations import (
+        load_work_observations,
+        promote_polylogue_devtools_observations,
+        promote_work_observations,
+    )
+
+    def _none_resource() -> dict:
+        return dict.fromkeys(
+            (
+                "cpu_usage_avg", "memory_usage_max_mb",
+                "process_memory_usage_max_mb",
+                "root_process_cpu_usage_avg", "root_process_memory_usage_max_mb",
+                "shared_nix_daemon_cpu_usage_avg", "shared_nix_daemon_memory_usage_max_mb",
+                "shared_nix_build_slice_cpu_usage_avg", "shared_nix_build_slice_memory_usage_max_mb",
+                "shared_background_slice_cpu_usage_avg", "shared_background_slice_memory_usage_max_mb",
+                "host_cpu_pressure_some_avg10_max", "host_io_pressure_some_avg10_max",
+                "host_io_pressure_full_avg10_max", "host_memory_pressure_some_avg10_max",
+                "host_memory_pressure_full_avg10_max", "shm_free_min_mb", "shm_used_max_mb",
+            ),
+            None,
+        )
+
+    xtask = XtaskInvocation(
+        source_id="xtask:live:1",
+        command=("test",),
+        cwd="/realm/project/sinex",
+        started_at=datetime(2026, 5, 31, 19, 47, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 5, 31, 19, 48, tzinfo=timezone.utc),
+        duration_s=60.0,
+        status="success",
+        exit_code=0,
+        host="sinnix-prime",
+        project="sinex",
+        git_commit="abc123",
+        git_dirty=True,
+        live_stage="test",
+        args_json="[]",
+        process_cpu_usage_avg=3.5,
+        process_count_max=11,
+        resource_sample_count=6,
+        **_none_resource(),
+    )
+    polylogue = PolylogueDevtoolsInvocation(
+        source="polylogue_devtools",
+        source_id="polylogue:log:run",
+        work_kind="polylogue_log_run",
+        command=("run-all",),
+        cwd="/realm/project/polylogue",
+        started_at=datetime(2026, 4, 12, 0, 42, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 4, 12, 0, 45, tzinfo=timezone.utc),
+        duration_s=180.0,
+        status="unknown",
+        exit_code=None,
+        host="sinnix-prime",
+        project="polylogue",
+        git_commit="abc123",
+        git_dirty=False,
+        live_stage="run-all",
+        args_json="{}",
+        process_cpu_usage_avg=20.0,
+        process_count_max=4,
+        resource_sample_count=2,
+        **_none_resource(),
+    )
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        # Mirror the refresh: one delete, then both sources append.
+        conn.execute("DELETE FROM work_observation WHERE refresh_id = ?", ["r1"])
+        assert promote_work_observations(
+            conn, refresh_id="r1", rows=[xtask], delete_existing=False
+        ) == 1
+        assert promote_polylogue_devtools_observations(
+            conn, refresh_id="r1", rows=[polylogue], delete_existing=False
+        ) == 1
+        loaded = load_work_observations(conn, refresh_id="r1")
+        # The xtask telemetry survived the second writer — the bug was that it did not.
+        telemetry = conn.execute(
+            "SELECT process_cpu_usage_avg FROM work_observation WHERE source = 'xtask_history'"
+        ).fetchall()
+
+    sources = {row["source"] for row in loaded}
+    assert sources == {"xtask_history", "polylogue_devtools"}
+    assert telemetry == [(3.5,)]

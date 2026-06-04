@@ -47,6 +47,7 @@ def promote_work_observations(
     *,
     refresh_id: str,
     rows: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     return _promote_work_observation_rows(
         conn,
@@ -54,6 +55,7 @@ def promote_work_observations(
         rows=rows,
         source="xtask_history",
         work_kind="xtask_invocation",
+        delete_existing=delete_existing,
     )
 
 
@@ -62,6 +64,7 @@ def promote_polylogue_devtools_observations(
     *,
     refresh_id: str,
     rows: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     return _promote_work_observation_rows(
         conn,
@@ -69,6 +72,7 @@ def promote_polylogue_devtools_observations(
         rows=rows,
         source=None,
         work_kind=None,
+        delete_existing=delete_existing,
     )
 
 
@@ -79,6 +83,7 @@ def _promote_work_observation_rows(
     rows: Iterable[Any],
     source: str | None,
     work_kind: str | None,
+    delete_existing: bool = True,
 ) -> int:
     return promote_rows(
         conn,
@@ -86,6 +91,7 @@ def _promote_work_observation_rows(
         columns=_WORK_OBSERVATION_COLUMNS,
         refresh_id=refresh_id,
         rows=rows,
+        delete_existing=delete_existing,
         extractor=lambda r: (
             source or r.source, r.source_id, work_kind or r.work_kind, r.project,
             list(r.command), r.cwd, r.started_at, r.ended_at, r.duration_s,
