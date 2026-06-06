@@ -14,13 +14,13 @@ from .source_readiness import source_readiness
 log = logging.getLogger(__name__)
 
 @dataclass
-class RefreshContext:
-    """Per-refresh memoization for graph construction.
+class EvidenceGraphBuildContext:
+    """Per-build memoization for graph construction.
 
     Holds a cache of base evidence graphs keyed by ``(start, end,
     projects)`` so that ``project_velocity_windows`` and
     ``current_state_context`` can share work without going through a
-    global cache. Opt-in: callers must thread the same ``RefreshContext``
+    global cache. Opt-in: callers must thread the same ``EvidenceGraphBuildContext``
     through both consumers; otherwise behavior is identical to the
     pre-7E path.
     """
@@ -56,17 +56,17 @@ def build_base_evidence_graph(*, start: date, end: date, projects: Sequence[str]
     log.info('evidence_graph: loaded base sources nodes=%d edges=%d', len(nodes), len(edges))
     return _finalize_graph(nodes=nodes, edges=edges, start=start, end=end, mode=mode, generated_at=now, source_caveats=source_caveats, promote=promote, promote_refresh_id=promote_refresh_id, promote_projects=promote_projects)
 
-def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, include_github_frontier: bool=False, exclude_analysis_artifacts: Sequence[str]=(), refresh_context: RefreshContext | None=None, promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:
+def build_evidence_graph(*, start: date, end: date, projects: Sequence[str] | None=None, include_github_frontier: bool=False, exclude_analysis_artifacts: Sequence[str]=(), build_context: EvidenceGraphBuildContext | None=None, promote: bool=False, promote_refresh_id: str | None=None, promote_projects: Sequence[str]=()) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
 
-    If ``refresh_context`` is supplied, the base layer is reused from the
+    If ``build_context`` is supplied, the base layer is reused from the
     context's cache; otherwise the base is built fresh.
     """
     selected = selected_projects(projects)
     mode: CostClass
-    if refresh_context is not None:
-        log.info('evidence_graph: loading base graph from refresh context start=%s end=%s github_frontier=%s', start, end, include_github_frontier)
-        base = refresh_context.base_graph(start=start, end=end, projects=projects, include_github_frontier=include_github_frontier)
+    if build_context is not None:
+        log.info('evidence_graph: loading base graph from build context start=%s end=%s github_frontier=%s', start, end, include_github_frontier)
+        base = build_context.base_graph(start=start, end=end, projects=projects, include_github_frontier=include_github_frontier)
         nodes = list(base.nodes)
         edges = list(base.edges)
         source_caveats = tuple(base.caveats)

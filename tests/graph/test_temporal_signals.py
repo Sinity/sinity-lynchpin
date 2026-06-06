@@ -159,6 +159,79 @@ def test_default_activitywatch_signal_loaders_read_derived_products(
     ]
 
 
+def test_commit_loader_uses_materialized_counts_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.graph.temporal_signals as ts
+
+    monkeypatch.setattr(
+        ts,
+        "_load_commit_counts_from_substrate",
+        lambda start, end: {start: 2.0},
+    )
+
+    def fail_live_git(**_kwargs):
+        raise AssertionError("live git should not be scanned when substrate covers the window")
+
+    monkeypatch.setattr("lynchpin.sources.git.daily_activity", fail_live_git)
+
+    assert ts._load_commits(date(2026, 5, 1), date(2026, 5, 3)) == {
+        date(2026, 5, 1): 2.0
+    }
+
+
+def test_commit_loader_falls_back_to_live_git_without_materialized_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.graph.temporal_signals as ts
+
+    monkeypatch.setattr(ts, "_load_commit_counts_from_substrate", lambda start, end: None)
+    monkeypatch.setattr(
+        "lynchpin.sources.git.daily_activity",
+        lambda *, start, end: (
+            SimpleNamespace(date=start, commit_count=1),
+            SimpleNamespace(date=start, commit_count=3),
+        ),
+    )
+
+    assert ts._load_commits(date(2026, 5, 1), date(2026, 5, 3)) == {
+        date(2026, 5, 1): 4.0
+    }
+
+
+def test_commit_source_status_requires_half_open_window_coverage() -> None:
+    import lynchpin.graph.temporal_signals as ts
+
+    class Conn:
+        def __init__(self, row):
+            self.row = row
+
+        def execute(self, _sql, _params):
+            return self
+
+        def fetchone(self):
+            return self.row
+
+    assert ts._commit_source_status_covers(
+        Conn((date(2026, 5, 1), date(2026, 5, 4))),
+        refresh_id="r1",
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+    )
+    assert not ts._commit_source_status_covers(
+        Conn((date(2026, 5, 1), date(2026, 5, 3))),
+        refresh_id="r1",
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+    )
+    assert not ts._commit_source_status_covers(
+        Conn(None),
+        refresh_id="r1",
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+    )
+
+
 def test_evidence_graph_includes_temporal_product_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Smoke test that add_temporal_signals reads the converged product."""
     from lynchpin.graph import evidence_graph as eg

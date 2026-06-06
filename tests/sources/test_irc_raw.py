@@ -1,6 +1,6 @@
 """Tests for IRC raw-log source (irc_raw.py)."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 
 from lynchpin.sources import irc_raw
@@ -141,6 +141,51 @@ def test_extract_sessions_respects_min_messages(tmp_path):
     assert len(sessions) == 0
 
 
+def test_extract_sessions_uses_bounded_message_iterator(monkeypatch) -> None:
+    calls = []
+    messages = [
+        irc_raw.IRCRawMessage(
+            timestamp=datetime(2026, 4, 21, 10, 0, tzinfo=timezone.utc),
+            speaker="alice",
+            text="hello",
+            channel="#test",
+            source_file="fixture",
+            line_no=1,
+        ),
+        irc_raw.IRCRawMessage(
+            timestamp=datetime(2026, 4, 21, 10, 5, tzinfo=timezone.utc),
+            speaker="bob",
+            text="hi",
+            channel="#test",
+            source_file="fixture",
+            line_no=2,
+        ),
+    ]
+
+    def fake_in_range(*, start, end, channel=None, root=None, ensure=True):
+        calls.append((start, end, channel, root, ensure))
+        yield from messages
+
+    monkeypatch.setattr(irc_raw, "iter_messages_in_range", fake_in_range)
+    monkeypatch.setattr(
+        irc_raw,
+        "iter_messages",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded iterator should not run")),
+    )
+
+    sessions = list(
+        irc_raw.extract_sessions(
+            start=date(2026, 4, 21),
+            end=date(2026, 4, 21),
+            channel="#test",
+            ensure=False,
+        )
+    )
+
+    assert calls == [(date(2026, 4, 21), date(2026, 4, 21), "#test", None, False)]
+    assert len(sessions) == 1
+
+
 def test_speaker_stats_computes_reply_patterns(tmp_path):
     _write_weechat_log(tmp_path, "#test", "2026-04-21.log", _WEE_CHAT_SAMPLE)
 
@@ -153,6 +198,52 @@ def test_speaker_stats_computes_reply_patterns(tmp_path):
     # alice replied to carol (line: "carol, awesome, thanks")
     reply_targets = dict(alice.reply_to)
     assert "carol" in reply_targets
+
+
+def test_speaker_stats_uses_bounded_message_iterator(monkeypatch) -> None:
+    calls = []
+    messages = [
+        irc_raw.IRCRawMessage(
+            timestamp=datetime(2026, 4, 21, 10, 0, tzinfo=timezone.utc),
+            speaker="alice",
+            text="hello bob",
+            channel="#test",
+            source_file="fixture",
+            line_no=1,
+        ),
+        irc_raw.IRCRawMessage(
+            timestamp=datetime(2026, 4, 21, 10, 5, tzinfo=timezone.utc),
+            speaker="bob",
+            text="alice: hi",
+            channel="#test",
+            source_file="fixture",
+            line_no=2,
+        ),
+    ]
+
+    def fake_in_range(*, start, end, channel=None, root=None, ensure=True):
+        calls.append((start, end, channel, root, ensure))
+        yield from messages
+
+    monkeypatch.setattr(irc_raw, "iter_messages_in_range", fake_in_range)
+    monkeypatch.setattr(
+        irc_raw,
+        "iter_messages",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded iterator should not run")),
+    )
+
+    stats = irc_raw.speaker_stats(
+        start=date(2026, 4, 21),
+        end=date(2026, 4, 21),
+        channel="#test",
+        ensure=False,
+    )
+
+    assert calls == [
+        (date(2026, 4, 21), date(2026, 4, 21), "#test", None, False),
+        (date(2026, 4, 21), date(2026, 4, 21), "#test", None, False),
+    ]
+    assert {row.speaker for row in stats} == {"alice", "bob"}
 
 
 def test_extract_conversations_requires_multiple_speakers(tmp_path):

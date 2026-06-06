@@ -345,8 +345,11 @@ def _extract_relay_target(messages: list[IRCRawMessage]) -> str | None:
 
 def speaker_identities(
     *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
     channel: Optional[str] = None,
     root: Optional[Path] = None,
+    ensure: bool = True,
 ) -> list[IRCSpeakerIdentity]:
     """Yield speaker identity records with classification and normalization.
 
@@ -355,7 +358,17 @@ def speaker_identities(
     """
     # Collect messages per raw speaker
     by_speaker: dict[str, list[IRCRawMessage]] = defaultdict(list)
-    for msg in iter_messages(channel=channel, root=root):
+    if start is not None and end is not None:
+        message_iter = iter_messages_in_range(
+            start=start,
+            end=end,
+            channel=channel,
+            root=root,
+            ensure=ensure,
+        )
+    else:
+        message_iter = iter_messages(channel=channel, root=root, ensure=ensure)
+    for msg in message_iter:
         if msg.is_meta:
             continue
         by_speaker[msg.speaker].append(msg)
@@ -538,13 +551,24 @@ def extract_sessions(
     messages. Meta/status lines (speaker == "--") do not reset the idle
     clock — only human messages count.
     """
-    messages = list(iter_messages(channel=channel, root=root, ensure=ensure))
-    if start is not None:
-        start_dt = as_local(datetime.combine(start, datetime.min.time()))
-        messages = [m for m in messages if m.timestamp >= start_dt]
-    if end is not None:
-        end_dt = as_local(datetime.combine(end + timedelta(days=1), datetime.min.time()))
-        messages = [m for m in messages if m.timestamp < end_dt]
+    if start is not None and end is not None:
+        messages = list(
+            iter_messages_in_range(
+                start=start,
+                end=end,
+                channel=channel,
+                root=root,
+                ensure=ensure,
+            )
+        )
+    else:
+        messages = list(iter_messages(channel=channel, root=root, ensure=ensure))
+        if start is not None:
+            start_dt = as_local(datetime.combine(start, datetime.min.time()))
+            messages = [m for m in messages if m.timestamp >= start_dt]
+        if end is not None:
+            end_dt = as_local(datetime.combine(end + timedelta(days=1), datetime.min.time()))
+            messages = [m for m in messages if m.timestamp < end_dt]
 
     if not messages:
         return
@@ -594,6 +618,7 @@ def speaker_stats(
     channel: Optional[str] = None,
     root: Optional[Path] = None,
     use_normalized: bool = True,
+    ensure: bool = True,
 ) -> list[IRCSpeakerStats]:
     """Compute per-speaker statistics including reply-to patterns.
 
@@ -605,20 +630,40 @@ def speaker_stats(
     (case-insensitive prefix match or ``nick:`` / ``nick,`` pattern),
     it counts as a reply to that speaker.
     """
-    messages = list(iter_messages(channel=channel, root=root))
-    if start is not None:
-        start_dt = as_local(datetime.combine(start, datetime.min.time()))
-        messages = [m for m in messages if m.timestamp >= start_dt]
-    if end is not None:
-        end_dt = as_local(datetime.combine(end + timedelta(days=1), datetime.min.time()))
-        messages = [m for m in messages if m.timestamp < end_dt]
+    if start is not None and end is not None:
+        messages = list(
+            iter_messages_in_range(
+                start=start,
+                end=end,
+                channel=channel,
+                root=root,
+                ensure=ensure,
+            )
+        )
+    else:
+        messages = list(iter_messages(channel=channel, root=root, ensure=ensure))
+        if start is not None:
+            start_dt = as_local(datetime.combine(start, datetime.min.time()))
+            messages = [m for m in messages if m.timestamp >= start_dt]
+        if end is not None:
+            end_dt = as_local(datetime.combine(end + timedelta(days=1), datetime.min.time()))
+            messages = [m for m in messages if m.timestamp < end_dt]
 
     human = [m for m in messages if not m.is_meta]
     if not human:
         return []
 
     # Build identity map for classification context
-    identities = {si.raw_nick.lower(): si for si in speaker_identities(channel=channel, root=root)}
+    identities = {
+        si.raw_nick.lower(): si
+        for si in speaker_identities(
+            start=start,
+            end=end,
+            channel=channel,
+            root=root,
+            ensure=ensure,
+        )
+    }
 
     # Build nick set for reply detection (both raw and normalized)
     all_raw_nicks = {m.speaker.lower() for m in human}

@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 
 def _stub_score(text):
@@ -54,3 +55,71 @@ def test_score_texts_raises_when_backend_unavailable(monkeypatch):
 
     with pytest.raises(SourceUnavailableError):
         ts.score_texts(["needs a model"])
+
+
+def test_messenger_corpus_uses_bounded_full_text_reader(monkeypatch):
+    import lynchpin.analysis.text_sentiment as ts
+
+    calls = []
+
+    def fake_messages(*, start=None, end=None, ensure=True):
+        calls.append((start, end, ensure))
+        yield SimpleNamespace(
+            timestamp=datetime(2026, 5, 2, 12, tzinfo=timezone.utc),
+            sender="Sinity",
+            text="full text message",
+        )
+
+    monkeypatch.setattr("lynchpin.sources.exports_messenger.iter_fbmessenger_messages", fake_messages)
+
+    rows = list(ts._messenger_corpus(date(2026, 5, 1), date(2026, 5, 2)))
+
+    assert calls == [(date(2026, 5, 1), date(2026, 5, 3), True)]
+    assert rows == [(date(2026, 5, 2), "full text message")]
+
+
+def test_sms_corpus_uses_bounded_message_reader(monkeypatch):
+    import lynchpin.analysis.text_sentiment as ts
+
+    calls = []
+
+    def fake_messages(*, start=None, end=None, root=None):
+        calls.append((start, end, root))
+        yield SimpleNamespace(
+            date=datetime(2026, 5, 2, 12, tzinfo=timezone.utc),
+            is_sent=True,
+            body="sent text message",
+        )
+
+    monkeypatch.setattr("lynchpin.sources.sms.iter_messages", fake_messages)
+
+    rows = list(ts._sms_corpus(date(2026, 5, 2), date(2026, 5, 2)))
+
+    assert calls == [
+        (
+            datetime(2026, 5, 2, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 5, 2, 23, 59, 59, 999999, tzinfo=timezone.utc),
+            None,
+        )
+    ]
+    assert rows == [(date(2026, 5, 2), "sent text message")]
+
+
+def test_reddit_corpus_uses_bounded_comment_reader(monkeypatch):
+    import lynchpin.analysis.text_sentiment as ts
+
+    calls = []
+
+    def fake_comments(*, start=None, end=None, ensure=True):
+        calls.append((start, end, ensure))
+        yield SimpleNamespace(
+            created=datetime(2026, 5, 2, 12, tzinfo=timezone.utc),
+            split_quoted=lambda: ("own reddit text", ()),
+        )
+
+    monkeypatch.setattr("lynchpin.sources.reddit.iter_comments", fake_comments)
+
+    rows = list(ts._reddit_corpus(date(2026, 5, 1), date(2026, 5, 2)))
+
+    assert calls == [(date(2026, 5, 1), date(2026, 5, 3), True)]
+    assert rows == [(date(2026, 5, 2), "own reddit text")]

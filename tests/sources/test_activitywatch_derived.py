@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from lynchpin.sources import activitywatch_derived
 from lynchpin.sources.activitywatch_derived import (
+    iter_derived_daily_activity,
     iter_derived_focus_spans,
     iter_derived_project_focus_days,
 )
@@ -47,6 +48,27 @@ def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
         + "\n",
         encoding="utf-8",
     )
+    daily_path = tmp_path / "daily_activity.ndjson"
+    daily_path.write_text(
+        json.dumps(
+            {
+                "date": "2026-06-06",
+                "active_hours": 2.0,
+                "deep_work_min": 45.0,
+                "fragmentation_score": 0.25,
+                "project_count": 1,
+                "dominant_mode": "coding",
+                "dominant_project": "lynchpin",
+                "hourly_active": [0.0] * 8 + [60.0, 60.0] + [0.0] * 14,
+                "outage_hours": 0.5,
+                "presence_active_hours": 2.0,
+                "presence_typing_hours": 1.0,
+                "presence_data_gap_hours": 0.25,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     spans = list(
         iter_derived_focus_spans(
@@ -63,6 +85,13 @@ def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
             path=project_path,
         )
     )
+    daily = list(
+        iter_derived_daily_activity(
+            start=date(2026, 6, 6),
+            end=date(2026, 6, 6),
+            path=daily_path,
+        )
+    )
 
     assert len(spans) == 1
     assert spans[0].duration_s == 3600.0
@@ -70,6 +99,10 @@ def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
     assert len(days) == 1
     assert days[0].date == date(2026, 6, 6)
     assert days[0].duration_s == 3600.0
+    assert len(daily) == 1
+    assert daily[0].deep_work_min == 45.0
+    assert daily[0].hourly_active[8] == 60.0
+    assert daily[0].presence_typing_hours == 1.0
 
 
 def test_activitywatch_derived_default_reader_materializes(monkeypatch, tmp_path):

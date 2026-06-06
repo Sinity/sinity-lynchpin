@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Iterator, Optional, Sequence
 
 from ..core.errors import SourceUnavailableError
@@ -278,7 +278,7 @@ def _reddit_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
     """Own text from reddit comments (strips quoted blockquotes)."""
     from ..sources.reddit import iter_comments
 
-    for comment in iter_comments():
+    for comment in iter_comments(start=start, end=end + timedelta(days=1)):
         if comment.created is None:
             continue
         d = logical_date(comment.created)
@@ -298,7 +298,7 @@ def _wykop_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
         iter_wykop_link_comments,
     )
 
-    for item in iter_wykop_link_comments():
+    for item in iter_wykop_link_comments(start=start, end=end + timedelta(days=1)):
         if item.created_at is None:
             continue
         d = logical_date(item.created_at)
@@ -307,7 +307,7 @@ def _wykop_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
         if item.content and item.content.strip():
             yield d, item.content.strip()
 
-    for we in iter_wykop_entries():
+    for we in iter_wykop_entries(start=start, end=end + timedelta(days=1)):
         if we.created_at is None:
             continue
         d = logical_date(we.created_at)
@@ -316,7 +316,7 @@ def _wykop_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
         if we.content and we.content.strip():
             yield d, we.content.strip()
 
-    for wec in iter_wykop_entry_comments():
+    for wec in iter_wykop_entry_comments(start=start, end=end + timedelta(days=1)):
         if wec.created_at is None:
             continue
         d = logical_date(wec.created_at)
@@ -330,7 +330,7 @@ def _messenger_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
     """Sent messages from Facebook Messenger (sender='Sinity' filter)."""
     from ..sources.exports_messenger import iter_fbmessenger_messages
 
-    for msg in iter_fbmessenger_messages():
+    for msg in iter_fbmessenger_messages(start=start, end=end + timedelta(days=1)):
         if msg.timestamp is None:
             continue
         # Only operator's own outgoing messages; filter by sender heuristic.
@@ -350,7 +350,9 @@ def _sms_corpus(start: date, end: date) -> Iterator[tuple[date, str]]:
     """Sent SMS messages (msg_type == 'sent')."""
     from ..sources.sms import iter_messages
 
-    for msg in iter_messages():
+    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc)
+    for msg in iter_messages(start=start_dt, end=end_dt):
         if not msg.is_sent:
             continue
         d = logical_date(msg.date)

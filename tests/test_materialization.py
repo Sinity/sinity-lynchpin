@@ -3112,6 +3112,127 @@ def test_ensure_materialized_continuous_window_gap_runs_local_materializer(monke
     assert result.coverage["fully_covers_requested_window"] is True
 
 
+def test_ensure_materialized_substrate_blocks_out_of_window_snapshot(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    def builder(_cfg):
+        return MaterializedDataset(
+            name="evidence_graph_substrate",
+            status="ready",
+            authority="DuckDB fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 5, 1),
+            last_date=date(2026, 5, 31),
+            covered_dates=tuple(date(2026, 5, day) for day in range(1, 32)),
+            materialization_hint="build snapshot",
+            reason="snapshot ready",
+        )
+
+    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"evidence_graph_substrate": builder})
+    monkeypatch.setattr(materialization, "_materializers", lambda: {})
+
+    result = ensure_materialized(
+        "evidence_graph_substrate",
+        window=(date(2026, 6, 1), date(2026, 6, 2)),
+        cfg=SimpleNamespace(),
+    )
+
+    assert result.status == "blocked"
+    assert result.changed is False
+    assert result.coverage["fully_covers_requested_window"] is False
+    assert "no local materializer" in result.reason
+
+
+def test_ensure_materialized_derived_without_bounds_runs_materializer(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    calls = {"audit": 0, "materialize": 0}
+
+    def builder(_cfg):
+        calls["audit"] += 1
+        if calls["audit"] == 1:
+            return MaterializedDataset(
+                name="personal_daily_signals",
+                status="ready",
+                authority="fixture",
+                query_surface="fixture",
+                materialized_paths=(),
+                raw_roots=(),
+                row_count=1,
+                first_date=None,
+                last_date=None,
+                materialization_hint="materialize",
+                reason="old manifest has no bounds",
+            )
+        return MaterializedDataset(
+            name="personal_daily_signals",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 6, 1),
+            last_date=date(2026, 6, 1),
+            covered_dates=(date(2026, 6, 1),),
+            materialization_hint="materialize",
+            reason="ready",
+        )
+
+    def materializer(*, start: date, end: date):
+        calls["materialize"] += 1
+        assert (start, end) == (date(2026, 6, 1), date(2026, 6, 2))
+        return {"row_count": 1}
+
+    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"personal_daily_signals": builder})
+    monkeypatch.setattr(materialization, "_materializers", lambda: {"personal_daily_signals": materializer})
+
+    result = ensure_materialized(
+        "personal_daily_signals",
+        window=(date(2026, 6, 1), date(2026, 6, 2)),
+        cfg=SimpleNamespace(),
+    )
+
+    assert result.status == "updated"
+    assert result.coverage["fully_covers_requested_window"] is True
+    assert calls == {"audit": 2, "materialize": 1}
+
+
+def test_ensure_materialized_substrate_without_bounds_blocks_windowed_read(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    def builder(_cfg):
+        return MaterializedDataset(
+            name="evidence_graph_substrate",
+            status="ready",
+            authority="DuckDB fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=None,
+            last_date=None,
+            materialization_hint="build snapshot",
+            reason="snapshot ready but unbounded",
+        )
+
+    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"evidence_graph_substrate": builder})
+    monkeypatch.setattr(materialization, "_materializers", lambda: {})
+
+    result = ensure_materialized(
+        "evidence_graph_substrate",
+        window=(date(2026, 6, 1), date(2026, 6, 2)),
+        cfg=SimpleNamespace(),
+    )
+
+    assert result.status == "blocked"
+    assert result.coverage["relation"] == "undated"
+    assert "no local materializer" in result.reason
+
+
 def test_ensure_materialized_forwards_window_to_window_aware_materializer(monkeypatch) -> None:
     from lynchpin import materialization
 
@@ -3625,6 +3746,9 @@ def test_substrate_dataset_uses_current_status_manifest(tmp_path, monkeypatch) -
                 "status": "ready",
                 "reason": "manifest proves current substrate",
                 "row_count": 42,
+                "first_date": "2026-05-01",
+                "last_date": "2026-05-03",
+                "covered_dates": ["2026-05-01", "2026-05-02", "2026-05-03"],
             }
         ),
         encoding="utf-8",
@@ -3643,8 +3767,75 @@ def test_substrate_dataset_uses_current_status_manifest(tmp_path, monkeypatch) -
 
     assert row.status == "ready"
     assert row.row_count == 42
+    assert row.first_date == date(2026, 5, 1)
+    assert row.last_date == date(2026, 5, 3)
+    assert row.covered_dates == (
+        date(2026, 5, 1),
+        date(2026, 5, 2),
+        date(2026, 5, 3),
+    )
     assert row.reason == "manifest proves current substrate"
     assert row.materialized_paths == (path, manifest_path)
+
+
+def test_substrate_status_manifest_records_latest_graph_bounds(tmp_path, monkeypatch) -> None:
+    import duckdb
+
+    from lynchpin.substrate.status_manifest import write_substrate_status_manifest
+
+    path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE evidence_graph_build (
+                refresh_id VARCHAR,
+                start_date DATE,
+                end_date DATE,
+                node_count INTEGER,
+                edge_count INTEGER,
+                generated_at TIMESTAMP,
+                materialized_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build VALUES
+              (
+                'rid-older',
+                DATE '2026-04-01',
+                DATE '2026-04-03',
+                1,
+                1,
+                TIMESTAMP '2026-04-03 00:00:00',
+                TIMESTAMP '2026-04-03 00:00:00'
+              ),
+              (
+                'rid-latest',
+                DATE '2026-05-01',
+                DATE '2026-05-04',
+                7,
+                2,
+                TIMESTAMP '2026-05-04 00:00:00',
+                TIMESTAMP '2026-05-04 00:00:00'
+              )
+            """
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: path)
+
+    manifest = write_substrate_status_manifest(path)
+
+    assert manifest is not None
+    assert manifest["status"] == "ready"
+    assert manifest["latest_node_count"] == 7
+    assert manifest["latest_edge_count"] == 2
+    assert manifest["first_date"] == "2026-05-01"
+    assert manifest["last_date"] == "2026-05-03"
+    assert manifest["covered_dates"] == ["2026-05-01", "2026-05-02", "2026-05-03"]
 
 
 def test_substrate_dataset_falls_back_when_status_manifest_is_stale(tmp_path, monkeypatch) -> None:

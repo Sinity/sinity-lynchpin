@@ -17,7 +17,7 @@ import csv
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -105,19 +105,29 @@ def _parse_sms_csv(root: Optional[Path] = None) -> Iterator[dict[str, object]]:
                     continue
 
 
-def iter_messages(root: Optional[Path] = None) -> Iterator[SMSMessage]:
-    """Iterate all SMS messages in chronological order."""
+def iter_messages(
+    root: Optional[Path] = None,
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+) -> Iterator[SMSMessage]:
+    """Iterate SMS messages in chronological order, optionally bounded by time."""
     messages = []
     for raw in _parse_sms_csv(root):
         try:
             ts = int(str(raw.get("date", 0))) / 1000
+            msg_date = datetime.fromtimestamp(ts, tz=timezone.utc)
+            if start is not None and msg_date < start:
+                continue
+            if end is not None and msg_date > end:
+                continue
             msg_type = str(raw.get("type", "1"))
             messages.append(
                 SMSMessage(
                     msg_id=int(str(raw.get("_id", 0))),
                     thread_id=int(str(raw.get("thread_id", 0))),
                     address=str(raw.get("address", "")),
-                    date=datetime.fromtimestamp(ts, tz=timezone.utc),
+                    date=msg_date,
                     body=str(raw.get("body", "")),
                     msg_type=_TYPE_LABELS.get(msg_type, f"unknown({msg_type})"),
                     read=raw.get("read", "1") == "1",
@@ -130,10 +140,16 @@ def iter_messages(root: Optional[Path] = None) -> Iterator[SMSMessage]:
     yield from sorted(messages, key=lambda m: m.date)
 
 
-def thread_summaries(root: Optional[Path] = None) -> list[SMSThread]:
+def thread_summaries(
+    root: Optional[Path] = None,
+    *,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> list[SMSThread]:
     """Aggregate messages into per-thread summaries, ranked by message count."""
+    start_dt, end_dt = _date_string_bounds(start, end)
     threads: dict[int, list[SMSMessage]] = defaultdict(list)
-    for msg in iter_messages(root):
+    for msg in iter_messages(root, start=start_dt, end=end_dt):
         threads[msg.thread_id].append(msg)
 
     result = []
@@ -163,6 +179,7 @@ def daily_activity(
     root: Optional[Path] = None,
 ) -> list[SMSDayActivity]:
     """Per-day SMS activity summary."""
+    start_dt, end_dt = _date_string_bounds(start, end)
     buckets: dict = defaultdict(  # type: ignore[type-arg]
         lambda: {
             "sent_count": 0,
@@ -173,12 +190,8 @@ def daily_activity(
         }
     )
 
-    for msg in iter_messages(root):
+    for msg in iter_messages(root, start=start_dt, end=end_dt):
         day = msg.date.strftime("%Y-%m-%d")
-        if start and day < start:
-            continue
-        if end and day > end:
-            continue
         b = buckets[day]
         b["counterparts"].add(msg.address)
         if msg.is_sent:
@@ -204,6 +217,23 @@ def daily_activity(
     return result
 
 
+def _date_string_bounds(
+    start: Optional[str],
+    end: Optional[str],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    start_dt = (
+        datetime.combine(date.fromisoformat(start), time.min, tzinfo=timezone.utc)
+        if start
+        else None
+    )
+    end_dt = (
+        datetime.combine(date.fromisoformat(end), time.max, tzinfo=timezone.utc)
+        if end
+        else None
+    )
+    return start_dt, end_dt
+
+
 def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
     """Oldest and newest message dates."""
     messages = list(iter_messages(root))
@@ -212,10 +242,16 @@ def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
     return messages[0].date, messages[-1].date
 
 
-def counterpart_stats(root: Optional[Path] = None) -> list[tuple[str, int]]:
+def counterpart_stats(
+    root: Optional[Path] = None,
+    *,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> list[tuple[str, int]]:
     """Message count per counterpart (address)."""
+    start_dt, end_dt = _date_string_bounds(start, end)
     counts: dict[str, int] = defaultdict(int)
-    for msg in iter_messages(root):
+    for msg in iter_messages(root, start=start_dt, end=end_dt):
         counts[msg.address] += 1
     return sorted(counts.items(), key=lambda kv: -kv[1])
 

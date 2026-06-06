@@ -24,7 +24,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Optional
@@ -107,7 +107,12 @@ def _parse_wykop_datetime(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
 
 
-def iter_comments(root: Optional[Path] = None) -> Iterator[WykopComment]:
+def iter_comments(
+    root: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> Iterator[WykopComment]:
     """Iterate all operator comments (links + entries).
 
     Yields in file order (roughly reverse-chronological within each file).
@@ -129,10 +134,13 @@ def iter_comments(root: Optional[Path] = None) -> Iterator[WykopComment]:
                 if parent_created:
                     parent_created = _parse_wykop_datetime(parent_created)
 
+                created_at = _parse_wykop_datetime(row["comment_created_at"])
+                if not _date_in_range(created_at.date(), start=start, end=end):
+                    continue
                 yield WykopComment(
                     kind="link_comment",
                     comment_id=int(row["comment_id"]),
-                    created_at=_parse_wykop_datetime(row["comment_created_at"]),
+                    created_at=created_at,
                     content=row.get("comment_content", ""),
                     rating=int(row.get("comment_rating", 0)),
                     url=row.get("comment_url", ""),
@@ -149,10 +157,13 @@ def iter_comments(root: Optional[Path] = None) -> Iterator[WykopComment]:
         with open(entries_path) as f:
             for line in f:
                 row = json.loads(line)
+                created_at = _parse_wykop_datetime(row["comment_created_at"])
+                if not _date_in_range(created_at.date(), start=start, end=end):
+                    continue
                 yield WykopComment(
                     kind="entry_comment",
                     comment_id=int(row.get("comment_id", 0)),
-                    created_at=_parse_wykop_datetime(row["comment_created_at"]),
+                    created_at=created_at,
                     content=row.get("comment_content", ""),
                     rating=int(row.get("comment_rating", 0)),
                     url=row.get("comment_url", ""),
@@ -163,7 +174,12 @@ def iter_comments(root: Optional[Path] = None) -> Iterator[WykopComment]:
                 )
 
 
-def iter_actions(root: Optional[Path] = None) -> Iterator[WykopAction]:
+def iter_actions(
+    root: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> Iterator[WykopAction]:
     """Iterate operator actions (votes/saves)."""
     base = root or WYKOP_ROOT
     actions_path = base / "wykop_actions.jsonl"
@@ -178,9 +194,12 @@ def iter_actions(root: Optional[Path] = None) -> Iterator[WykopAction]:
             created = row.get("created_at") or row.get("action_created_at")
             if not created:
                 continue
+            created_at = _parse_wykop_datetime(created)
+            if not _date_in_range(created_at.date(), start=start, end=end):
+                continue
             yield WykopAction(
                 kind=action_type,
-                created_at=_parse_wykop_datetime(created),
+                created_at=created_at,
                 target_id=int(row.get("link_id", row.get("entry_id", 0))),
                 target_title=row.get("link_title", row.get("entry_preview", ""))[:200],
                 target_url=row.get("link_url", row.get("entry_url", "")),
@@ -209,24 +228,19 @@ def daily_activity(
         }
     )
 
-    for c in iter_comments(root=root):
+    start_d = date.fromisoformat(start) if start else None
+    end_d = date.fromisoformat(end) if end else None
+
+    for c in iter_comments(root=root, start=start_d, end=end_d):
         day = c.created_at.strftime("%Y-%m-%d")
-        if start and day < start:
-            continue
-        if end and day > end:
-            continue
         b = buckets[day]
         b["comments"] += 1
         b["own_chars"] += c.own_length
         b["total_chars"] += len(c.content)
         b["comment_ids"].append(c.comment_id)
 
-    for a in iter_actions(root=root):
+    for a in iter_actions(root=root, start=start_d, end=end_d):
         day = a.created_at.strftime("%Y-%m-%d")
-        if start and day < start:
-            continue
-        if end and day > end:
-            continue
         b = buckets[day]
         if a.kind in ("upvote", "plus"):
             b["upvotes"] += 1
@@ -251,13 +265,23 @@ def daily_activity(
     return result
 
 
+def _date_in_range(day: date, *, start: date | None, end: date | None) -> bool:
+    if start is not None and day < start:
+        return False
+    if end is not None and day > end:
+        return False
+    return True
+
+
 def topic_distribution(
     top_n: int = 30,
     root: Optional[Path] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
 ) -> list[tuple[str, int]]:
     """Top link tags the operator comments on."""
     counts: dict[str, int] = defaultdict(int)
-    for c in iter_comments(root=root):
+    for c in iter_comments(root=root, start=start, end=end):
         if c.kind == "link_comment":
             for tag in c.parent_tags:
                 counts[tag] += 1

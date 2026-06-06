@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Optional, TypeVar
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
 from ..core.parse import in_month_range, month_key, parse_datetime, safe_int
+from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 
 TextTokenizer = Callable[[str], Iterable[str]]
@@ -92,8 +93,9 @@ def summarize_wykop_activity(
     entry_tokens: dict[str, Counter[str]] = defaultdict(Counter)
     entry_comment_counts: dict[str, int] = defaultdict(int)
     entry_comment_tokens: dict[str, Counter[str]] = defaultdict(Counter)
+    start, end = _month_window(start_month, end_month)
 
-    for comment in iter_wykop_link_comments(username=username, path=link_comments_path):
+    for comment in iter_wykop_link_comments(username=username, path=link_comments_path, start=start, end=end):
         if comment.created_at is None:
             continue
         month = month_key(comment.created_at)
@@ -106,7 +108,7 @@ def summarize_wykop_activity(
             for token in tokenize_text(comment.content):
                 link_comment_tokens[month][token] += 1
 
-    for entry in iter_wykop_entries(username=username, path=entries_path):
+    for entry in iter_wykop_entries(username=username, path=entries_path, start=start, end=end):
         if entry.created_at is None:
             continue
         month = month_key(entry.created_at)
@@ -119,7 +121,7 @@ def summarize_wykop_activity(
             for token in tokenize_text(entry.content):
                 entry_tokens[month][token] += 1
 
-    for entry_comment in iter_wykop_entry_comments(username=username, path=entry_comments_path):
+    for entry_comment in iter_wykop_entry_comments(username=username, path=entry_comments_path, start=start, end=end):
         if entry_comment.created_at is None:
             continue
         month = month_key(entry_comment.created_at)
@@ -142,34 +144,74 @@ def summarize_wykop_activity(
     )
 
 
+def _month_window(start_month: str, end_month: str) -> tuple[date, date]:
+    start_year, start_month_num = (int(part) for part in start_month.split("-", 1))
+    end_year, end_month_num = (int(part) for part in end_month.split("-", 1))
+    start = date(start_year, start_month_num, 1)
+    end = (
+        date(end_year + 1, 1, 1)
+        if end_month_num == 12
+        else date(end_year, end_month_num + 1, 1)
+    )
+    if end <= start:
+        raise ValueError("end_month must be after or equal to start_month")
+    return start, end
+
+
 def iter_wykop_link_comments(
     username: Optional[str] = None,
     path: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> Iterator[WykopLinkComment]:
     path = path or _profile_file("wykop_links_commented.jsonl", username)
     if not path:
         return iter(())
-    return iter(_load_link_comments(path))
+    return _bounded_rows(_load_link_comments(path), start=start, end=end)
 
 
 def iter_wykop_entries(
     username: Optional[str] = None,
     path: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> Iterator[WykopEntry]:
     path = path or _profile_file("wykop_entries_added.jsonl", username)
     if not path:
         return iter(())
-    return iter(_load_entries(path))
+    return _bounded_rows(_load_entries(path), start=start, end=end)
 
 
 def iter_wykop_entry_comments(
     username: Optional[str] = None,
     path: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> Iterator[WykopEntryComment]:
     path = path or _profile_file("wykop_entry_comments.jsonl", username)
     if not path:
         return iter(())
-    return iter(_load_entry_comments(path))
+    return _bounded_rows(_load_entry_comments(path), start=start, end=end)
+
+
+def _bounded_rows(
+    rows: Iterable[T],
+    *,
+    start: date | None,
+    end: date | None,
+) -> Iterator[T]:
+    for row in rows:
+        created_at = getattr(row, "created_at", None)
+        if created_at is not None and (start is not None or end is not None):
+            d = logical_date(created_at)
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
+        yield row
 
 
 def _file_signature(path: Path) -> object:

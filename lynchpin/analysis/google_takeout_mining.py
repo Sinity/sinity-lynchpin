@@ -104,7 +104,11 @@ def google_takeout_retrospective(
     """
     events = [
         event
-        for event in (source_events if source_events is not None else iter_events())
+        for event in (
+            source_events
+            if source_events is not None
+            else iter_events(start=start, end=end)
+        )
         if _in_window(event, start=start, end=end)
     ]
     events.sort(key=lambda event: event.timestamp)

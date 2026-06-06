@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 from lynchpin.analysis import keystroke_attribution as ka
 
@@ -11,14 +12,57 @@ def test_keystrokes_by_rejects_unknown_dimension():
         ka.keystrokes_by(dimension="bogus", start=date(2026, 1, 1), end=date(2026, 1, 2))
 
 
-def test_keystrokes_by_accepts_known_dimensions():
+def test_keystrokes_by_accepts_known_dimensions(monkeypatch):
     # No data → empty rollup, but no exception for any registered dimension.
+    monkeypatch.setattr(ka, "_iter_keyed_spans", lambda start, end: iter(()))
+    monkeypatch.setattr(ka, "_build_title_classification_map", lambda start, end: {})
     for dim in ("app", "project", "mode", "activity", "content_type",
                 "attention_level", "topic_category", "platform"):
         r = ka.keystrokes_by(dimension=dim, start=date(1990, 1, 1), end=date(1990, 1, 2))
         assert r.dimension == dim
         assert r.total_keystrokes == 0
         assert r.buckets == {}
+
+
+def test_keystrokes_by_bounds_title_classification_reader(monkeypatch):
+    calls: list[tuple[date | None, date | None]] = []
+
+    def fake_iter_activity_title_usage(*, start=None, end=None, **_kwargs):
+        calls.append((start, end))
+        yield SimpleNamespace(
+            app="kitty",
+            normalized_title="work",
+            activity="coding",
+            content_type="code",
+            attention_level="deep",
+            topic_category="infra",
+            platform="terminal",
+        )
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activity_content.iter_activity_title_usage",
+        fake_iter_activity_title_usage,
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.title_metadata.normalize_title",
+        lambda app, title: title.lower(),
+    )
+    monkeypatch.setattr(
+        ka,
+        "_iter_keyed_spans",
+        lambda start, end: iter(
+            [(date(2026, 6, 2), "kitty", "Work", "lynchpin", "code", 5)]
+        ),
+    )
+
+    row = ka.keystrokes_by(
+        dimension="content_type",
+        start=date(2026, 6, 1),
+        end=date(2026, 6, 3),
+    )
+
+    assert calls == [(date(2026, 6, 1), date(2026, 6, 3))]
+    assert row.buckets == {"code": 5}
 
 
 def test_keystrokes_daily_emits_every_date_in_range(monkeypatch):
@@ -36,6 +80,7 @@ def test_keystrokes_daily_emits_every_date_in_range(monkeypatch):
     monkeypatch.setattr(ka, "_iter_keyed_spans", fake_iter)
     import lynchpin.sources.activitywatch as aw_mod
     monkeypatch.setattr(aw_mod, "active_seconds_by_date", fake_active)
+    monkeypatch.setattr(aw_mod, "focus_spans", lambda *, start, end: iter(()))
 
     rows = ka.keystrokes_daily(start=date(2026, 2, 10), end=date(2026, 2, 14))
     assert [r["date"] for r in rows] == [
@@ -64,6 +109,7 @@ def test_keystrokes_daily_offline_threshold_is_configurable(monkeypatch):
     monkeypatch.setattr(ka, "_iter_keyed_spans", fake_iter)
     import lynchpin.sources.activitywatch as aw_mod
     monkeypatch.setattr(aw_mod, "active_seconds_by_date", fake_active)
+    monkeypatch.setattr(aw_mod, "focus_spans", lambda *, start, end: iter(()))
 
     # Default 2h threshold: 1h day is offline.
     rows_default = ka.keystrokes_daily(start=date(2026, 2, 10), end=date(2026, 2, 11))

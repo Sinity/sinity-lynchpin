@@ -179,7 +179,7 @@ def daily_audio_features(
     matched_n: dict[date, int] = defaultdict(int)
     total_n: dict[date, int] = defaultdict(int)
 
-    for stream in iter_streams():
+    for stream in iter_streams(start=start, end=end):
         if stream.end_time is None or not stream.artist:
             continue
         day = logical_date(stream.end_time)

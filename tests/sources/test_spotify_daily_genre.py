@@ -18,7 +18,18 @@ def test_daily_genre_minutes_attributes_minutes_to_each_genre(monkeypatch):
         _s(2, 12, "Halou", 60_000),        # 1 min
         _s(3, 12, "Aphex Twin", 60_000),   # exclusive end
     ]
-    monkeypatch.setattr(sp, "iter_streams", lambda root=None: iter(streams))
+    def fake_streams(root=None, *, start=None, end=None, ensure=True):
+        for stream in streams:
+            if stream.end_time is None:
+                continue
+            day = stream.end_time.date()
+            if start is not None and day < start:
+                continue
+            if end is not None and day >= end:
+                continue
+            yield stream
+
+    monkeypatch.setattr(sp, "iter_streams", fake_streams)
     monkeypatch.setattr(
         "lynchpin.sources.spotify_genres.artist_genres_by_name",
         lambda names, cache_path=None: {"Halou": ["trip hop"], "Aphex Twin": ["idm", "ambient"]},

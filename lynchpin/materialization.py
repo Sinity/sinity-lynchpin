@@ -689,9 +689,9 @@ def _materialized_enough_for_window(
     if window is None:
         return True
     contract = source_contract(row.name)
-    if contract.collection_model == "derived":
+    if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
         if not row.covered_dates and (row.first_date is None or row.last_date is None):
-            return True
+            return False
     elif contract.collection_model != "continuous":
         return True
     coverage = materialized_dataset_coverage(row, start=window[0], end=window[1])
@@ -1750,8 +1750,9 @@ def _git_substrate_dataset_from_manifest(
         materialized_paths=(path, substrate_status_manifest_path(path)),
         raw_roots=(cfg.baseline_dir, cfg.repo_root.parent),
         row_count=int(row_count) if isinstance(row_count, int) else None,
-        first_date=None,
-        last_date=None,
+        first_date=_date_from_iso(manifest.get("first_date")),
+        last_date=_date_from_iso(manifest.get("last_date")),
+        covered_dates=_dates_from_iso_list(manifest.get("covered_dates")),
         materialization_hint="python -m lynchpin.cli.substrate_snapshot --start 2013-01-01 --end $(date +%F)",
         reason=str(reason) if reason else "substrate status manifest is current",
     )
@@ -2735,6 +2736,17 @@ def _date_from_iso(value: object) -> date | None:
             return date.fromisoformat(raw[:10])
         except ValueError:
             return None
+
+
+def _dates_from_iso_list(value: object) -> tuple[date, ...]:
+    if not isinstance(value, list):
+        return ()
+    dates: list[date] = []
+    for item in value:
+        parsed = _date_from_iso(item)
+        if parsed is not None:
+            dates.append(parsed)
+    return tuple(dates)
 
 
 def _datetime_from_iso(value: object) -> datetime | None:

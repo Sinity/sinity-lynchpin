@@ -15,6 +15,7 @@ from ..core.primitives import logical_date
 from ..sources.activitywatch import (
     attention,
     circadian,
+    daily_activity,
     deep_work,
     focus_spans,
     fragmentation,
@@ -32,7 +33,7 @@ from .activitywatch_event_index_materialize import activitywatch_event_index_inp
 from .manifest_windows import merge_manifest_covered_dates
 
 
-ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 1
+ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
 
 
 def materialize_activitywatch_derived(
@@ -59,6 +60,7 @@ def materialize_activitywatch_derived(
             _project_focus_day_row(row)
             for row in project_focus_days(start=start_dt, end=end_dt)
         ],
+        "daily_activity": [_daily_activity_row(row) for row in daily_activity(start=start, end=end_inclusive)],
         "deep_work": [_deep_work_row(row) for row in deep_work(start=start_dt, end=end_dt)],
         "circadian": [_circadian_row(row) for row in circadian(start=start, end=end_inclusive)],
         "loops": [_loop_row(row) for row in loops(start=start_dt, end=end_dt)],
@@ -215,6 +217,23 @@ def _project_focus_day_row(row: Any) -> dict[str, object]:
         "date": row.date.isoformat(),
         "project": row.project,
         "duration_s": round(float(row.duration_s), 3),
+    }
+
+
+def _daily_activity_row(row: Any) -> dict[str, object]:
+    return {
+        "date": row.date.isoformat(),
+        "active_hours": round(float(row.active_hours), 3),
+        "deep_work_min": round(float(row.deep_work_min), 3),
+        "fragmentation_score": round(float(row.fragmentation_score), 6),
+        "project_count": int(row.project_count),
+        "dominant_mode": row.dominant_mode,
+        "dominant_project": row.dominant_project,
+        "hourly_active": [round(float(value), 3) for value in row.hourly_active],
+        "outage_hours": round(float(row.outage_hours), 3),
+        "presence_active_hours": round(float(row.presence_active_hours), 3),
+        "presence_typing_hours": round(float(row.presence_typing_hours), 3),
+        "presence_data_gap_hours": round(float(row.presence_data_gap_hours), 3),
     }
 
 

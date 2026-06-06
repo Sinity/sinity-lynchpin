@@ -303,10 +303,80 @@ def _load_commits(start: date, end: date) -> dict[date, float]:
 
     from ..sources.git import daily_activity
 
+    materialized = _load_commit_counts_from_substrate(start, end)
+    if materialized is not None:
+        return materialized
+
     by_day: dict[date, float] = defaultdict(float)
     for row in daily_activity(start=start, end=end):
         by_day[row.date] += row.commit_count
     return dict(by_day)
+
+
+def _load_commit_counts_from_substrate(start: date, end: date) -> dict[date, float] | None:
+    from collections import defaultdict
+
+    from ..core.primitives import logical_date
+    from ..substrate.connection import connect, substrate_path
+    from ..substrate.snapshots import best_materialized_refresh_id
+
+    try:
+        with connect(substrate_path(), read_only=True) as conn:
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "commit_fact",
+                caller="temporal_signals.commits_per_day",
+            )
+            if refresh_id is None:
+                return None
+            if not _commit_source_status_covers(conn, refresh_id=refresh_id, start=start, end=end):
+                return None
+            rows = conn.execute(
+                """
+                SELECT authored_at
+                FROM commit_fact
+                WHERE refresh_id = ?
+                  AND authored_at::DATE >= ?
+                  AND authored_at::DATE <= ?
+                """,
+                [refresh_id, start, end + timedelta(days=1)],
+            ).fetchall()
+    except Exception:
+        return None
+
+    by_day: dict[date, float] = defaultdict(float)
+    for (authored_at,) in rows:
+        day = logical_date(authored_at)
+        if start <= day <= end:
+            by_day[day] += 1.0
+    return dict(by_day)
+
+
+def _commit_source_status_covers(
+    conn: Any,
+    *,
+    refresh_id: str,
+    start: date,
+    end: date,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT window_start, window_end
+        FROM substrate_source_status
+        WHERE refresh_id = ?
+          AND source = 'commits'
+          AND status = 'ok'
+        ORDER BY recorded_at DESC
+        LIMIT 1
+        """,
+        [refresh_id],
+    ).fetchone()
+    if not row:
+        return False
+    window_start, window_end = row
+    if window_start is None or window_end is None:
+        return False
+    return window_start <= start and window_end >= end + timedelta(days=1)
 
 
 def _load_error_rate(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
@@ -383,13 +453,11 @@ def _load_youtube_activity(start: date, end: date, *, ensure: bool = True) -> di
 
         ensure_materialized("google_takeout", window=(start, end))
     by_day: dict[date, float] = defaultdict(float)
-    for row in iter_events(product="my_activity", ensure=False):
+    for row in iter_events(product="my_activity", start=start, end=end, ensure=False):
         service = (row.service or "").lower()
         if "youtube" not in service:
             continue
-        day = row.timestamp.date()
-        if start <= day < end:
-            by_day[day] += 1
+        by_day[row.timestamp.date()] += 1
     return dict(by_day)
 
 

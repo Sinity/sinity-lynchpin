@@ -31,6 +31,105 @@ def test_no_overlap_treats_requested_end_as_exclusive() -> None:
     assert od._no_overlap(date(2022, 1, 21), date(2022, 1, 22), data_start, data_end)
 
 
+def test_fill_aw_reads_preconverged_activitywatch_derived() -> None:
+    ctx = _ctx()
+    ensure_calls = []
+    calls = []
+    daily = [
+        SimpleNamespace(
+            date=date(2026, 6, 3),
+            active_hours=4.0,
+            deep_work_min=90.0,
+            fragmentation_score=0.25,
+            project_count=2,
+            dominant_mode="coding",
+            dominant_project="lynchpin",
+            outage_hours=0.5,
+            presence_active_hours=4.5,
+            presence_typing_hours=2.0,
+            presence_data_gap_hours=0.25,
+        ),
+        SimpleNamespace(
+            date=date(2026, 6, 5),
+            active_hours=9.0,
+            deep_work_min=300.0,
+            fragmentation_score=0.1,
+            project_count=1,
+            dominant_mode="ignored",
+            dominant_project="ignored",
+            outage_hours=0.0,
+            presence_active_hours=9.0,
+            presence_typing_hours=9.0,
+            presence_data_gap_hours=0.0,
+        ),
+    ]
+
+    def fake_iter_derived_daily_activity(**kwargs):
+        calls.append(kwargs)
+        return iter(daily)
+
+    with (
+        patch(
+            "lynchpin.materialization.ensure_materialized",
+            lambda name, *, window: ensure_calls.append((name, window)),
+        ),
+        patch(
+            "lynchpin.sources.activitywatch_derived.iter_derived_daily_activity",
+            fake_iter_derived_daily_activity,
+        ),
+    ):
+        od._fill_aw(ctx)
+
+    assert ensure_calls == [("activitywatch_derived", (date(2026, 6, 3), date(2026, 6, 5)))]
+    assert calls == [{"start": date(2026, 6, 3), "end": date(2026, 6, 4), "ensure": False}]
+    assert ctx.rows[date(2026, 6, 3)].aw_active_hours == 4.0
+    assert ctx.rows[date(2026, 6, 3)].aw_deep_work_min == 90.0
+    assert ctx.rows[date(2026, 6, 3)].aw_fragmentation == 0.25
+    assert ctx.rows[date(2026, 6, 3)].aw_dominant_project == "lynchpin"
+    assert ctx.rows[date(2026, 6, 3)].aw_outage_hours == 0.5
+    assert ctx.rows[date(2026, 6, 3)].aw_presence_typing_hours == 2.0
+    assert date(2026, 6, 5) not in ctx.rows
+
+
+def test_fill_svn_reads_requested_window() -> None:
+    ctx = od._FillContext(
+        rows={
+            date(2022, 9, 21): od.OperatorDay(date(2022, 9, 21)),
+            date(2022, 9, 22): od.OperatorDay(date(2022, 9, 22)),
+        },
+        present={date(2022, 9, 21): set(), date(2022, 9, 22): set()},
+        bounds={},
+        start=date(2022, 9, 21),
+        end=date(2022, 9, 22),
+        source="test",
+    )
+    calls = []
+    daily = [
+        SimpleNamespace(
+            date=datetime(2022, 9, 21, tzinfo=timezone.utc),
+            commit_count=2,
+            files_changed=7,
+        ),
+        SimpleNamespace(
+            date=datetime(2022, 9, 23, tzinfo=timezone.utc),
+            commit_count=9,
+            files_changed=99,
+        ),
+    ]
+
+    def fake_daily_activity(**kwargs):
+        calls.append(kwargs)
+        return daily
+
+    with patch("lynchpin.sources.svn.daily_activity", fake_daily_activity):
+        od._fill_svn(ctx)
+
+    assert calls == [{"start": date(2022, 9, 21), "end": date(2022, 9, 22)}]
+    assert ctx.rows[date(2022, 9, 21)].svn_commits == 2
+    assert ctx.rows[date(2022, 9, 21)].svn_files_changed == 7
+    assert date(2022, 9, 23) not in ctx.rows
+
+
 def test_fill_irc_converges_product_daily_rollup() -> None:
     ctx = _ctx()
     ensure_calls = []
@@ -65,27 +164,40 @@ def test_fill_samsung_binning_uses_logical_day_before_boundary() -> None:
     stamp = datetime(2026, 6, 4, 3, 30, tzinfo=timezone.utc)
     end_day_stamp = datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)
     exclusive_end_stamp = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+    calls = []
+
+    def fake_iter_stress_bins(*, start=None, end=None):
+        calls.append(("stress", start, end))
+        return [
+            SimpleNamespace(ts=stamp),
+            SimpleNamespace(ts=end_day_stamp),
+            SimpleNamespace(ts=exclusive_end_stamp),
+        ]
+
+    def fake_iter_hrv_bins(*, start=None, end=None):
+        calls.append(("hrv", start, end))
+        return [
+            SimpleNamespace(ts=stamp),
+            SimpleNamespace(ts=end_day_stamp),
+            SimpleNamespace(ts=exclusive_end_stamp),
+        ]
 
     with (
         patch(
             "lynchpin.sources.samsung_binning.iter_stress_bins",
-            return_value=[
-                SimpleNamespace(ts=stamp),
-                SimpleNamespace(ts=end_day_stamp),
-                SimpleNamespace(ts=exclusive_end_stamp),
-            ],
+            fake_iter_stress_bins,
         ),
         patch(
             "lynchpin.sources.samsung_binning.iter_hrv_bins",
-            return_value=[
-                SimpleNamespace(ts=stamp),
-                SimpleNamespace(ts=end_day_stamp),
-                SimpleNamespace(ts=exclusive_end_stamp),
-            ],
+            fake_iter_hrv_bins,
         ),
     ):
         od._fill_samsung_binning(ctx)
 
+    assert calls == [
+        ("stress", datetime(2026, 6, 3, 6, 0), datetime(2026, 6, 5, 6, 0)),
+        ("hrv", datetime(2026, 6, 3, 6, 0), datetime(2026, 6, 5, 6, 0)),
+    ]
     assert ctx.rows[date(2026, 6, 3)].samsung_stress_bins == 1
     assert ctx.rows[date(2026, 6, 3)].samsung_hrv_bins == 1
     assert ctx.rows[date(2026, 6, 4)].samsung_stress_bins == 1
@@ -229,6 +341,30 @@ def test_fill_web_converges_webhistory_product() -> None:
     assert ctx.rows[date(2026, 6, 4)].web_visits == 42
     assert ctx.rows[date(2026, 6, 4)].web_unique_domains == 7
     assert date(2026, 6, 5) not in ctx.rows
+
+
+def test_fill_web_category_reads_preconverged_webhistory() -> None:
+    ctx = _ctx()
+    calls = []
+
+    def fake_daily_web_categories(**kwargs):
+        calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                date=date(2026, 6, 3),
+                nsfw_visit_share=0.25,
+                distraction_ratio=0.5,
+                minutes_by_category={"dev": 10.0},
+            )
+        ]
+
+    with patch("lynchpin.analysis.web_category_daily.daily_web_categories", fake_daily_web_categories):
+        od._fill_web_category(ctx)
+
+    assert calls == [{"start": date(2026, 6, 3), "end": date(2026, 6, 4), "ensure": False}]
+    assert ctx.rows[date(2026, 6, 3)].web_nsfw_share == 0.25
+    assert ctx.rows[date(2026, 6, 3)].web_distraction_ratio == 0.5
+    assert ctx.rows[date(2026, 6, 3)].web_top_category == "dev"
 
 
 def test_fill_spotify_queries_product_half_open_end_for_public_inclusive_window() -> None:

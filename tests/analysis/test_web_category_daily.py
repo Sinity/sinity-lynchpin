@@ -25,7 +25,7 @@ def _visit(ts: datetime, url: str) -> WebHistoryVisit:
 
 def _patch(monkeypatch, visits, classes):
     monkeypatch.setattr(
-        wcd, "_iter_all_visits", lambda *, start, end: iter(visits)
+        wcd, "_iter_all_visits", lambda *, start, end, ensure=True: iter(visits)
     )
     monkeypatch.setattr(
         wcd,
@@ -42,6 +42,24 @@ def test_empty_history_yields_no_rows(monkeypatch):
     _patch(monkeypatch, [], {})
     out = daily_web_categories(start=date(2026, 1, 1), end=date(2026, 1, 31))
     assert out == []
+
+
+def test_daily_web_categories_can_read_preconverged_history(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        wcd,
+        "_iter_all_visits",
+        lambda *, start, end, ensure=True: calls.append((start, end, ensure)) or iter(()),
+    )
+
+    out = daily_web_categories(
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 31),
+        ensure=False,
+    )
+
+    assert out == []
+    assert calls == [(date(2026, 1, 1), date(2026, 1, 31), False)]
 
 
 def test_missing_is_not_zero(monkeypatch):

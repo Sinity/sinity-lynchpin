@@ -89,6 +89,41 @@ def test_iter_session_profiles_reloads_when_polylogue_db_changes(
     polylogue._cached_profiles_signature = None
 
 
+def test_iter_session_profiles_uses_bounded_facade(monkeypatch):
+    calls = []
+    expected = [
+        polylogue.SessionProfile(
+            conversation_id="bounded",
+            provider="codex",
+            title="Bounded",
+            message_count=1,
+            word_count=2,
+            first_message_at=None,
+            last_message_at=None,
+            engaged_duration_ms=0,
+            wall_duration_ms=0,
+            work_event_kind=None,
+            work_event_projects=(),
+            total_cost_usd=0.0,
+            canonical_session_date=date(2026, 5, 5),
+            tool_use_count=0,
+            thinking_count=0,
+            auto_tags=(),
+        )
+    ]
+
+    def fake_for_date(*, start, end):
+        calls.append((start, end))
+        return expected
+
+    monkeypatch.setattr(polylogue, "session_profiles_for_date", fake_for_date)
+
+    rows = list(polylogue.iter_session_profiles(start=date(2026, 5, 5), end=date(2026, 5, 6)))
+
+    assert rows == expected
+    assert calls == [(date(2026, 5, 5), date(2026, 5, 6))]
+
+
 def test_session_profiles_for_date_reads_direct_sqlite_products(
     tmp_path, monkeypatch
 ) -> None:
@@ -329,7 +364,7 @@ def test_daily_activity_uses_day_summaries_without_profile_query(monkeypatch):
             )
         ]
 
-    def fail_profiles():
+    def fail_profiles(*, start=None, end=None):
         raise AssertionError("daily_activity should prefer day summaries")
 
     monkeypatch.setattr(polylogue, "day_session_summaries", fake_summaries)
@@ -349,7 +384,9 @@ def test_daily_activity_includes_codex_sessions_with_null_timestamps(monkeypatch
     This ensures daily_activity includes codex sessions even when first/last_message_at
     are NULL.
     """
-    def fake_profiles():
+    def fake_profiles(*, start=None, end=None):
+        assert start == date(2026, 5, 20)
+        assert end == date(2026, 5, 20)
         return [
             polylogue.SessionProfile(
                 conversation_id="conv-codex-1",
@@ -668,7 +705,9 @@ def test_daily_activity_gracefully_degrades_on_missing_products(monkeypatch, cap
         # Return empty to trigger fallback to profiles
         return []
 
-    def fail_profiles():
+    def fail_profiles(*, start=None, end=None):
+        assert start == date(2026, 4, 22)
+        assert end == date(2026, 4, 22)
         raise polylogue.PolylogueMaterializationError(
             "Polylogue insight products are not materialized: missing or empty products"
         )

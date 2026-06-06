@@ -138,12 +138,26 @@ def _read_canonical_streams(path: Path) -> list[SpotifyStream]:
     return rows
 
 
-def iter_streams(root: Optional[Path] = None, *, ensure: bool = True) -> Iterator[SpotifyStream]:
+def iter_streams(
+    root: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[SpotifyStream]:
+    """Iterate Spotify streams, optionally bounded by half-open logical dates."""
     if ensure and root is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("spotify")
-    yield from _load_streams(root)
+        ensure_materialized("spotify", window=(start, end) if start and end else None)
+    for stream in _load_streams(root):
+        if stream.end_time is not None and (start is not None or end is not None):
+            d = logical_date(stream.end_time)
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
+        yield stream
 
 
 def summarize_streaming(
@@ -155,8 +169,9 @@ def summarize_streaming(
     hours: dict[str, float] = defaultdict(float)
     per_month_artists: dict[str, Counter[str]] = defaultdict(Counter)
     per_month_tracks: dict[str, Counter[str]] = defaultdict(Counter)
+    start, end = _month_window(start_month, end_month)
 
-    for stream in iter_streams(root=root):
+    for stream in iter_streams(root=root, start=start, end=end):
         if stream.end_time is None:
             continue
         month = f"{stream.end_time.year:04d}-{stream.end_time.month:02d}"
@@ -173,6 +188,19 @@ def summarize_streaming(
         artists=dict(per_month_artists),
         tracks=dict(per_month_tracks),
     )
+
+
+def _month_window(start_month: str, end_month: str) -> tuple[date, date]:
+    start_year, start_month_num = (int(part) for part in start_month.split("-", 1))
+    end_year, end_month_num = (int(part) for part in end_month.split("-", 1))
+    start = date(start_year, start_month_num, 1)
+    if end_month_num == 12:
+        end = date(end_year + 1, 1, 1)
+    else:
+        end = date(end_year, end_month_num + 1, 1)
+    if end <= start:
+        raise ValueError("end_month must be after or equal to start_month")
+    return start, end
 
 
 def top_names(per_month_counts: dict[str, Counter[str]], month: str, *, limit: int = 3) -> list[str]:
@@ -254,12 +282,19 @@ class DailyListening:
     unique_tracks: int
 
 
-def listening_sessions(*, gap_minutes: float = 30, root: Optional[Path] = None) -> list[ListeningSession]:
+def listening_sessions(
+    *,
+    gap_minutes: float = 30,
+    root: Optional[Path] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    ensure: bool = True,
+) -> list[ListeningSession]:
     """Group streams into listening sessions by silence gaps."""
     from ..core.primitives import group_by_gap, TopN
 
     streams = sorted(
-        (s for s in iter_streams(root=root) if s.end_time is not None),
+        (s for s in iter_streams(root=root, start=start, end=end, ensure=ensure) if s.end_time is not None),
         key=_stream_end_time,
     )
     result: list[ListeningSession] = []
@@ -307,14 +342,10 @@ def daily_listening(
         return ts.astimezone(timezone.utc)
 
     by_day: dict[date, list[SpotifyStream]] = defaultdict(list)
-    for s in iter_streams(root=root, ensure=False):
+    for s in iter_streams(root=root, start=start, end=end, ensure=False):
         if s.end_time is None:
             continue
         d = logical_date(s.end_time)
-        if start and d < start:
-            continue
-        if end and d >= end:
-            continue
         by_day[d].append(s)
 
     result: list[DailyListening] = []
@@ -381,10 +412,9 @@ def daily_genre_minutes(
 
     streams = [
         s
-        for s in iter_streams()
+        for s in iter_streams(start=start, end=end)
         if s.end_time is not None
         and s.artist
-        and start <= logical_date(s.end_time) < end
     ]
     names = {s.artist for s in streams}
     genres_by_name = artist_genres_by_name(names, cache_path=cache_path)

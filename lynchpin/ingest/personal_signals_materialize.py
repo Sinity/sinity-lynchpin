@@ -108,7 +108,7 @@ def materialize_spotify_daily(
         raise ValueError("Spotify daily materialization end must be after start")
     input_files = spotify_daily_input_files()
     by_day: dict[date, list[Any]] = defaultdict(list)
-    for stream in iter_streams():
+    for stream in iter_streams(start=start, end=end):
         end_time = getattr(stream, "end_time", None)
         if end_time is None:
             continue

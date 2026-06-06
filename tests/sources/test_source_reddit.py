@@ -22,7 +22,17 @@ def test_reddit_reads_comments_and_daily_activity(tmp_path, monkeypatch):
     )
 
     rows = list(reddit.iter_comments(paths=(comments,)))
-    monkeypatch.setattr(reddit, "iter_comments", lambda paths=None, **kwargs: iter(rows))
+    def fake_comments(paths=None, **kwargs):
+        start = kwargs.get("start")
+        end = kwargs.get("end")
+        for row in rows:
+            if row.created is not None and start is not None and row.created.date() < start:
+                continue
+            if row.created is not None and end is not None and row.created.date() >= end:
+                continue
+            yield row
+
+    monkeypatch.setattr(reddit, "iter_comments", fake_comments)
     monkeypatch.setattr(reddit, "iter_posts", lambda paths=None, **kwargs: iter(()))
 
     days = reddit.daily_activity(start=date(2026, 5, 5), end=date(2026, 5, 6))
@@ -80,14 +90,18 @@ def test_reddit_daily_uses_single_windowed_materialization(monkeypatch):
     def fake_ensure(name, *, window=None):
         calls.append((name, window))
 
-    def fake_comments(*, ensure=True, paths=None):
+    def fake_comments(*, ensure=True, paths=None, start=None, end=None):
         assert ensure is False
         assert paths is None
+        assert start == date(2026, 5, 5)
+        assert end == date(2026, 5, 6)
         yield comment
 
-    def fake_posts(*, ensure=True, paths=None):
+    def fake_posts(*, ensure=True, paths=None, start=None, end=None):
         assert ensure is False
         assert paths is None
+        assert start == date(2026, 5, 5)
+        assert end == date(2026, 5, 6)
         yield from ()
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
@@ -98,6 +112,46 @@ def test_reddit_daily_uses_single_windowed_materialization(monkeypatch):
 
     assert calls == [("reddit", (date(2026, 5, 5), date(2026, 5, 6)))]
     assert rows[0].comment_count == 1
+
+
+def test_reddit_iterators_filter_half_open_logical_date_window(monkeypatch):
+    comments = [
+        reddit.RedditComment(
+            id="old",
+            created=datetime(2026, 5, 4, 12, tzinfo=timezone.utc),
+            subreddit="python",
+            body="old",
+            permalink="",
+            parent="",
+            gildings=None,
+            source="fixture",
+        ),
+        reddit.RedditComment(
+            id="kept",
+            created=datetime(2026, 5, 5, 12, tzinfo=timezone.utc),
+            subreddit="python",
+            body="kept",
+            permalink="",
+            parent="",
+            gildings=None,
+            source="fixture",
+        ),
+        reddit.RedditComment(
+            id="future",
+            created=datetime(2026, 5, 6, 12, tzinfo=timezone.utc),
+            subreddit="python",
+            body="future",
+            permalink="",
+            parent="",
+            gildings=None,
+            source="fixture",
+        ),
+    ]
+    monkeypatch.setattr(reddit, "_load_comments", lambda paths=None: comments)
+
+    rows = list(reddit.iter_comments(start=date(2026, 5, 5), end=date(2026, 5, 6), ensure=False))
+
+    assert [row.id for row in rows] == ["kept"]
 
 
 def test_split_quoted_text_extracts_blockquotes():

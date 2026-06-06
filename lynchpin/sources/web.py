@@ -177,12 +177,29 @@ def iter_entries(
     root: Optional[Path] = None,
     ndjson: Optional[Path] = None,
 ) -> Iterator[dict[str, object]]:
+    if root is None and ndjson is None:
+        start = _date_type.fromisoformat(start_date) if start_date else None
+        end = _date_type.fromisoformat(end_date) if end_date else None
+        for visit in _iter_all_visits(start=start, end=end):
+            yield _visit_to_record(visit)
+        return
+
     for entry in _load_entries(root, ndjson):
         if start_date and entry.date < start_date:
             continue
         if end_date and entry.date > end_date:
             continue
         yield entry.to_record()
+
+
+def _visit_to_record(visit: WebHistoryVisit) -> dict[str, object]:
+    return {
+        "url": visit.url,
+        "title": visit.title,
+        "iso_time": visit.timestamp.isoformat(),
+        "source": Path(visit.source).name,
+        "_source_file": visit.source,
+    }
 
 
 # ---------------------------------------------------------------------------

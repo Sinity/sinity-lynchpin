@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 
@@ -70,14 +70,12 @@ def _bump(
 
 
 def _collect_irc(bucket: dict[date, dict[str, dict[str, int]]], start: date, end: date) -> None:
-    from ..sources.irc_raw import iter_messages, normalize_nick, _OPERATOR_NICKS
+    from ..sources.irc_raw import iter_messages_in_range, normalize_nick, _OPERATOR_NICKS
 
-    for m in iter_messages():
+    for m in iter_messages_in_range(start=start, end=end):
         if not m.timestamp or m.is_meta:
             continue
         d = m.timestamp.date()
-        if d < start or d > end:
-            continue
         if normalize_nick(m.speaker).lower() not in _OPERATOR_NICKS:
             continue
         _bump(bucket, d, f"irc:{m.channel}", len(m.text or ""))
@@ -86,21 +84,17 @@ def _collect_irc(bucket: dict[date, dict[str, dict[str, int]]], start: date, end
 def _collect_reddit(bucket: dict[date, dict[str, dict[str, int]]], start: date, end: date) -> None:
     from ..sources.reddit import iter_comments, iter_posts, split_quoted_text
 
-    for c in iter_comments():
+    for c in iter_comments(start=start, end=end + timedelta(days=1)):
         if not c.created:
             continue
         d = c.created.date()
-        if d < start or d > end:
-            continue
         own, _quotes = split_quoted_text(c.body or "")
         _bump(bucket, d, f"reddit:{c.subreddit or 'unknown'}", len(own))
 
-    for p in iter_posts():
+    for p in iter_posts(start=start, end=end + timedelta(days=1)):
         if not p.created:
             continue
         d = p.created.date()
-        if d < start or d > end:
-            continue
         # Posts have title + body; both are operator-authored.
         chars = len(p.title or "") + len(p.body or "")
         _bump(bucket, d, f"reddit-post:{p.subreddit or 'unknown'}", chars)
@@ -113,17 +107,17 @@ def _collect_wykop(bucket: dict[date, dict[str, dict[str, int]]], start: date, e
         iter_wykop_link_comments,
     )
 
-    for e in iter_wykop_entries():
+    for e in iter_wykop_entries(start=start, end=end + timedelta(days=1)):
         if e.created_at:
             d = e.created_at.date()
             if start <= d <= end:
                 _bump(bucket, d, "wykop:entries", len(e.content or ""))
-    for ec in iter_wykop_entry_comments():
+    for ec in iter_wykop_entry_comments(start=start, end=end + timedelta(days=1)):
         if ec.created_at:
             d = ec.created_at.date()
             if start <= d <= end:
                 _bump(bucket, d, "wykop:entry_comments", len(ec.content or ""))
-    for lc in iter_wykop_link_comments():
+    for lc in iter_wykop_link_comments(start=start, end=end + timedelta(days=1)):
         if lc.created_at:
             d = lc.created_at.date()
             if start <= d <= end:
@@ -133,7 +127,7 @@ def _collect_wykop(bucket: dict[date, dict[str, dict[str, int]]], start: date, e
 def _collect_messenger(bucket: dict[date, dict[str, dict[str, int]]], start: date, end: date) -> None:
     from ..sources.communications import iter_communication_events
 
-    for e in iter_communication_events():
+    for e in iter_communication_events(start=start, end=end + timedelta(days=1)):
         if e.direction != "outbound" or not e.timestamp:
             continue
         d = e.timestamp.date()
@@ -146,7 +140,7 @@ def _collect_messenger(bucket: dict[date, dict[str, dict[str, int]]], start: dat
 def _collect_gmail(bucket: dict[date, dict[str, dict[str, int]]], start: date, end: date) -> None:
     from ..sources.gmail_takeout import iter_materialized_gmail_messages, _looks_outbound
 
-    for m in iter_materialized_gmail_messages():
+    for m in iter_materialized_gmail_messages(start=start, end=end + timedelta(days=1)):
         if not m.timestamp or not _looks_outbound(m.sender):
             continue
         d = m.timestamp.date()

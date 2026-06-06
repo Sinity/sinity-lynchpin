@@ -112,8 +112,8 @@ def test_iter_materialized_gmail_messages_converges_google_takeout(monkeypatch, 
     )
     calls = []
 
-    def fake_ensure_materialized(name):
-        calls.append(name)
+    def fake_ensure_materialized(name, *, window=None):
+        calls.append((name, window))
 
     monkeypatch.setattr(gmail_takeout, "gmail_events_path", lambda: product)
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
@@ -125,7 +125,7 @@ def test_iter_materialized_gmail_messages_converges_google_takeout(monkeypatch, 
 
     rows = list(gmail_takeout.iter_materialized_gmail_messages())
 
-    assert calls == ["google_takeout"]
+    assert calls == [("google_takeout", None)]
     assert rows[0].message_id == "<1@example.com>"
     assert rows[0].timestamp is not None
 
@@ -151,8 +151,10 @@ def test_daily_gmail_activity_uses_single_windowed_materialization(monkeypatch):
     def fake_ensure(name, *, window=None):
         calls.append((name, window))
 
-    def fake_messages(*, path=None, ensure=True):
+    def fake_messages(*, path=None, start=None, end=None, ensure=True):
         assert path is None
+        assert start == date(2026, 5, 5)
+        assert end == date(2026, 5, 6)
         assert ensure is False
         yield message
 
@@ -165,6 +167,104 @@ def test_daily_gmail_activity_uses_single_windowed_materialization(monkeypatch):
 
     assert calls == [("google_takeout", (date(2026, 5, 5), date(2026, 5, 6)))]
     assert rows[0].message_count == 1
+
+
+def test_daily_gmail_activity_root_branch_filters_requested_window(monkeypatch, tmp_path):
+    from lynchpin.sources import gmail_takeout
+
+    messages = [
+        GmailMessage(
+            message_id="<old@example.com>",
+            thread_id="thread-old",
+            sender="alice@example.com",
+            recipients=("bob@example.com",),
+            cc=(),
+            timestamp=datetime(2026, 5, 4, 12, tzinfo=timezone.utc),
+            subject="old",
+            body_preview="body",
+            label="Mail",
+            archive_source="fixture",
+            size_bytes=10,
+        ),
+        GmailMessage(
+            message_id="<kept@example.com>",
+            thread_id="thread-kept",
+            sender="alice@example.com",
+            recipients=("bob@example.com",),
+            cc=(),
+            timestamp=datetime(2026, 5, 5, 12, tzinfo=timezone.utc),
+            subject="kept",
+            body_preview="body",
+            label="Mail",
+            archive_source="fixture",
+            size_bytes=10,
+        ),
+        GmailMessage(
+            message_id="<future@example.com>",
+            thread_id="thread-future",
+            sender="alice@example.com",
+            recipients=("bob@example.com",),
+            cc=(),
+            timestamp=datetime(2026, 5, 6, 12, tzinfo=timezone.utc),
+            subject="future",
+            body_preview="body",
+            label="Mail",
+            archive_source="fixture",
+            size_bytes=10,
+        ),
+    ]
+    calls = []
+
+    def fake_messages(*, root=None, start=None, end=None):
+        calls.append((root, start, end))
+        for msg in messages:
+            if msg.timestamp is None:
+                continue
+            d = msg.timestamp.date()
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
+            yield msg
+
+    monkeypatch.setattr(gmail_takeout, "iter_gmail_messages_deduped", fake_messages)
+
+    rows = gmail_takeout.daily_gmail_activity(
+        start=date(2026, 5, 5),
+        end=date(2026, 5, 6),
+        root=tmp_path,
+    )
+
+    assert calls == [(tmp_path, date(2026, 5, 5), date(2026, 5, 6))]
+    assert [(row.date, row.message_count, row.thread_count) for row in rows] == [
+        (date(2026, 5, 5), 1, 1)
+    ]
+
+
+def test_iter_materialized_gmail_messages_filters_half_open_date_window(monkeypatch, tmp_path):
+    from lynchpin.sources import gmail_takeout
+
+    product = tmp_path / "events.ndjson"
+    product.write_text(
+        "\n".join(
+            [
+                '{"message_id":"old","timestamp":"2026-05-04T12:00:00+00:00","sender":"a@example.com"}',
+                '{"message_id":"kept","timestamp":"2026-05-05T12:00:00+00:00","sender":"a@example.com"}',
+                '{"message_id":"future","timestamp":"2026-05-06T12:00:00+00:00","sender":"a@example.com"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gmail_takeout, "gmail_events_path", lambda: product)
+
+    rows = list(
+        gmail_takeout.iter_materialized_gmail_messages(
+            start=date(2026, 5, 5), end=date(2026, 5, 6), ensure=False
+        )
+    )
+
+    assert [row.message_id for row in rows] == ["kept"]
 
 
 # ── Integration tests (require actual Takeout archives) ────────────────────────

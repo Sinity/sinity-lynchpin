@@ -71,7 +71,7 @@ def detect_fork_chains(
         # empty profile set rather than crashing fork-chain detection.
         from ..sources.polylogue import PolylogueMaterializationError
         try:
-            profiles = tuple(iter_session_profiles())
+            profiles = tuple(iter_session_profiles(start=start, end=end))
         except PolylogueMaterializationError:
             profiles = ()
     else:

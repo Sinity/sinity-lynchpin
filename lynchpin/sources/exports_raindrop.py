@@ -77,15 +77,20 @@ def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
 
 
 def iter_raindrop_bookmarks(
-    csv_path: Optional[Path] = None, *, ensure: bool = True
+    csv_path: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
 ) -> Iterator[RaindropBookmark]:
+    """Iterate Raindrop bookmarks, optionally bounded by half-open logical dates."""
     cfg = get_config()
     canonical = cfg.exports_root / "raindrop/processed/bookmarks.csv"
     if csv_path is None:
         if ensure:
             from ..materialization import ensure_materialized
 
-            ensure_materialized("raindrop")
+            ensure_materialized("raindrop", window=(start, end) if start and end else None)
         target = canonical
     else:
         target = Path(csv_path)
@@ -101,6 +106,12 @@ def iter_raindrop_bookmarks(
             for row in reader:
                 tags = _parse_tags(row.get("tags"))
                 created = parse_datetime(row.get("created"))
+                if created is not None and (start is not None or end is not None):
+                    d = logical_date(created)
+                    if start is not None and d < start:
+                        continue
+                    if end is not None and d >= end:
+                        continue
                 favorite = str(row.get("favorite") or "").strip().lower() in {"1", "true", "yes"}
                 try:
                     bookmark_id = int(row.get("id") or 0)
@@ -163,15 +174,10 @@ def daily_raindrop_activity(*, start: date, end: date, ensure: bool = True) -> l
         ensure_materialized("raindrop", window=(start, end))
 
     by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
-    for bookmark in iter_raindrop_bookmarks(ensure=False):
+    for bookmark in iter_raindrop_bookmarks(start=start, end=end, ensure=False):
         if bookmark.created is None:
             continue
         d = logical_date(bookmark.created)
-        # NOTE: original predicate was exclusive on end (d >= end → skip).
-        # Semantics differ from in_date_range (inclusive both ends) so the
-        # hand-rolled check is preserved as-is to avoid a behaviour change.
-        if d < start or d >= end:
-            continue
         count, tags = by_date[d]
         tags.update(bookmark.tags)
         by_date[d] = (count + 1, tags)

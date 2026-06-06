@@ -187,6 +187,8 @@ def iter_live_bookmarks(
 
 def iter_merged_bookmarks(
     *,
+    start: date | None = None,
+    end: date | None = None,
     token: str | None = None,
 ) -> Iterator[RaindropBookmark]:
     """Yield export + live bookmarks, deduplicated by URL.
@@ -196,15 +198,26 @@ def iter_merged_bookmarks(
     live version (which may have updated tags/notes).
     """
     seen_urls: set[str] = set()
+    since = (
+        datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        if start is not None
+        else None
+    )
 
     # Live first (takes precedence on collision)
-    for live in iter_live_bookmarks(token=token):
+    for live in iter_live_bookmarks(since=since, token=token):
+        if live.created is not None:
+            d = live.created.date()
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
         seen_urls.add(live.url)
         yield live.to_legacy()
 
     # Export data for historical coverage
     try:
-        for bm in iter_raindrop_bookmarks():
+        for bm in iter_raindrop_bookmarks(start=start, end=end):
             if bm.url not in seen_urls:
                 yield bm
     except FileNotFoundError:
@@ -224,7 +237,7 @@ def daily_raindrop_live_activity(
     Merges live + export data.
     """
     by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
-    for bm in iter_merged_bookmarks(token=token):
+    for bm in iter_merged_bookmarks(start=start, end=end, token=token):
         if bm.created is None:
             continue
         d = bm.created.date()

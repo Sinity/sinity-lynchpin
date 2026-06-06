@@ -236,12 +236,26 @@ def _load_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditComment
     return comments
 
 
-def iter_comments(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditComment]:
+def iter_comments(
+    paths: Optional[Sequence[Path]] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[RedditComment]:
+    """Iterate Reddit comments, optionally bounded by half-open logical dates."""
     if ensure and paths is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("reddit")
-    yield from _load_comments(paths=paths)
+        ensure_materialized("reddit", window=(start, end) if start and end else None)
+    for comment in _load_comments(paths=paths):
+        if comment.created is not None and (start is not None or end is not None):
+            d = logical_date(comment.created)
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
+        yield comment
 
 
 def _posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
@@ -272,12 +286,26 @@ def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
     return posts
 
 
-def iter_posts(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditPost]:
+def iter_posts(
+    paths: Optional[Sequence[Path]] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[RedditPost]:
+    """Iterate Reddit posts, optionally bounded by half-open logical dates."""
     if ensure and paths is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("reddit")
-    yield from _load_posts(paths=paths)
+        ensure_materialized("reddit", window=(start, end) if start and end else None)
+    for post in _load_posts(paths=paths):
+        if post.created is not None and (start is not None or end is not None):
+            d = logical_date(post.created)
+            if start is not None and d < start:
+                continue
+            if end is not None and d >= end:
+                continue
+        yield post
 
 
 def _saved_posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
@@ -507,22 +535,18 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[Reddi
         ensure_materialized("reddit", window=(start, end))
 
     by_day: defaultdict[date, _RedditDayBucket] = defaultdict(_RedditDayBucket)
-    for comment in iter_comments(ensure=False):
+    for comment in iter_comments(start=start, end=end, ensure=False):
         if comment.created is None:
             continue
         d = logical_date(comment.created)
-        if d < start or d >= end:
-            continue
         bucket = by_day[d]
         bucket.comments += 1
         bucket.subs.add(comment.subreddit or "unknown", 1)
         bucket.words += len(comment.body.split()) if comment.body else 0
-    for post in iter_posts(ensure=False):
+    for post in iter_posts(start=start, end=end, ensure=False):
         if post.created is None:
             continue
         d = logical_date(post.created)
-        if d < start or d >= end:
-            continue
         by_day[d].posts += 1
 
     return [
@@ -542,11 +566,8 @@ def subreddit_distribution(*, start: date, end: date) -> list[tuple[str, int, fl
     ensure_materialized("reddit", window=(start, end))
 
     subs: Counter[str] = Counter()
-    for comment in iter_comments(ensure=False):
+    for comment in iter_comments(start=start, end=end, ensure=False):
         if comment.created is None:
-            continue
-        d = logical_date(comment.created)
-        if d < start or d >= end:
             continue
         subs[comment.subreddit or "unknown"] += 1
     total = sum(subs.values())

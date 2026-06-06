@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Iterator, Literal, Optional
 from urllib.parse import urlparse
 
@@ -145,7 +145,7 @@ def _iter_reddit_mentions(start: date, end: date) -> Iterator[URLMention]:
         d = dt.date()
         return start <= d <= end
 
-    for comment in iter_comments():
+    for comment in iter_comments(start=start, end=end + timedelta(days=1)):
         if not _in_range(comment.created):
             continue
         body = comment.body or ""
@@ -184,7 +184,7 @@ def _iter_reddit_mentions(start: date, end: date) -> Iterator[URLMention]:
                     ref_id=comment.permalink or comment.id,
                 )
 
-    for post in iter_posts():
+    for post in iter_posts(start=start, end=end + timedelta(days=1)):
         if not _in_range(post.created):
             continue
         # The post.url field is the link the post points to (link-share posts).
@@ -220,9 +220,9 @@ def _iter_reddit_mentions(start: date, end: date) -> Iterator[URLMention]:
 
 
 def _iter_irc_mentions(start: date, end: date) -> Iterator[URLMention]:
-    from ..sources.irc_raw import iter_messages, normalize_nick, _OPERATOR_NICKS
+    from ..sources.irc_raw import iter_messages_in_range, normalize_nick, _OPERATOR_NICKS
 
-    for msg in iter_messages():
+    for msg in iter_messages_in_range(start=start, end=end):
         if not msg.timestamp:
             continue
         # Skip server / meta lines: weechat captures the libera channel as
@@ -232,9 +232,6 @@ def _iter_irc_mentions(start: date, end: date) -> Iterator[URLMention]:
         # nor real human mentions and would otherwise inflate URL counts.
         # In a quick audit: 6.2% of URL-bearing rows are meta lines.
         if msg.is_meta:
-            continue
-        d = msg.timestamp.date()
-        if d < start or d > end:
             continue
         text = msg.text or ""
         if "http" not in text:
@@ -273,7 +270,7 @@ def _iter_wykop_mentions(start: date, end: date) -> Iterator[URLMention]:
         d = dt.date()
         return start <= d <= end
 
-    for lc in iter_wykop_link_comments():
+    for lc in iter_wykop_link_comments(start=start, end=end + timedelta(days=1)):
         if not _in_range(lc.created_at):
             continue
         # the link itself — what the thread is about (extrinsic link, but
@@ -306,7 +303,7 @@ def _iter_wykop_mentions(start: date, end: date) -> Iterator[URLMention]:
                 ref_id=f"wykop:lc:{lc.id}",
             )
 
-    for entry in iter_wykop_entries():
+    for entry in iter_wykop_entries(start=start, end=end + timedelta(days=1)):
         if not _in_range(entry.created_at):
             continue
         for raw in extract_urls(entry.content or ""):
@@ -324,7 +321,7 @@ def _iter_wykop_mentions(start: date, end: date) -> Iterator[URLMention]:
                 ref_id=f"wykop:entry:{entry.id}",
             )
 
-    for ec in iter_wykop_entry_comments():
+    for ec in iter_wykop_entry_comments(start=start, end=end + timedelta(days=1)):
         if not _in_range(ec.created_at):
             continue
         for raw in extract_urls(ec.content or ""):
@@ -349,7 +346,7 @@ def _iter_raindrop_mentions(start: date, end: date) -> Iterator[URLMention]:
     # across every raw export and is not what we want here.
     from ..sources.exports import iter_raindrop_bookmarks
 
-    for b in iter_raindrop_bookmarks():
+    for b in iter_raindrop_bookmarks(start=start, end=end + timedelta(days=1)):
         if not b.created:
             continue
         d = b.created.date()
@@ -375,7 +372,7 @@ def _iter_raindrop_mentions(start: date, end: date) -> Iterator[URLMention]:
 def _iter_web_visits(start: date, end: date) -> Iterator[URLMention]:
     from ..sources.web import iter_entries
 
-    for entry in iter_entries():
+    for entry in iter_entries(start_date=start.isoformat(), end_date=end.isoformat()):
         url = entry.get("url") if isinstance(entry, dict) else getattr(entry, "url", None)
         iso = entry.get("iso_time") if isinstance(entry, dict) else getattr(entry, "iso_time", None)
         title = entry.get("title") if isinstance(entry, dict) else getattr(entry, "title", None)

@@ -137,7 +137,7 @@ class _TrainingRow:
 
 
 def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
-    from ..sources.activitywatch import daily_activity
+    from ..sources.activitywatch_derived import iter_derived_daily_activity
     from ..sources.health import daily_health_summary
     from ..sources.sleep import sleep_productivity
 
@@ -151,7 +151,7 @@ def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
         for row in daily_health_summary(start=start, end=end)
     }
 
-    aw_by_date = {row.date: row for row in daily_activity(start=start, end=end)}
+    aw_by_date = {row.date: row for row in iter_derived_daily_activity(start=start, end=end)}
 
     rows: list[_TrainingRow] = []
     for sleep_date, sp_row in sorted(sp_by_date.items()):
@@ -190,7 +190,7 @@ def _features_for_target(target_date: date) -> dict[str, float] | None:
     ``target_date - 1``). ``prior_focus`` and ``prior_deep_work`` are from
     that same prior day.
     """
-    from ..sources.activitywatch import daily_activity
+    from ..sources.activitywatch_derived import iter_derived_daily_activity
     from ..sources.health import daily_health_summary
     from ..sources.sleep import sleep_for_date
 
@@ -205,7 +205,7 @@ def _features_for_target(target_date: date) -> dict[str, float] | None:
     if health is None or health.hrv_rmssd_avg is None or health.heart_rate_resting is None:
         return None
     prior_day = next(
-        (r for r in daily_activity(start=sleep_date, end=sleep_date)),
+        (r for r in iter_derived_daily_activity(start=sleep_date, end=sleep_date)),
         None,
     )
     if prior_day is None:

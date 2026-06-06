@@ -109,7 +109,7 @@ def _add_google_evidence(
     start: date | None,
     end: date | None,
 ) -> None:
-    rows = events if events is not None else iter_events()
+    rows = events if events is not None else iter_events(start=start, end=end)
     for event in rows:
         day = event.timestamp.date()
         if not _in_window(day, start=start, end=end):
@@ -126,7 +126,7 @@ def _add_bookmark_evidence(
     end: date | None,
 ) -> None:
     try:
-        rows = events if events is not None else iter_bookmarks()
+        rows = events if events is not None else iter_bookmarks(start=start, end=end)
         for event in rows:
             if event.added_at is None:
                 continue

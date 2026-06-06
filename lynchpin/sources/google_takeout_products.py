@@ -136,7 +136,13 @@ def iter_calendar(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
                 continue
 
 
-def iter_events(product: str | None = None, *, ensure: bool = True) -> Iterator[GoogleTakeoutEvent]:
+def iter_events(
+    product: str | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[GoogleTakeoutEvent]:
     """Yield timestamped event-like Google Takeout product rows.
 
     Asset inventories and contacts are intentionally excluded: they are useful
@@ -166,6 +172,11 @@ def iter_events(product: str | None = None, *, ensure: bool = True) -> Iterator[
             stamp = _event_timestamp(product_name, payload)
             if stamp is None:
                 continue
+            day = stamp.date()
+            if start is not None and day < start:
+                continue
+            if end is not None and day >= end:
+                continue
             yield GoogleTakeoutEvent(
                 product=product_name,
                 timestamp=stamp,
@@ -188,12 +199,8 @@ def iter_daily_activity(
         ensure_materialized("google_takeout", window=(start, end))
 
     counts: dict[tuple[date, str, str | None], int] = {}
-    for event in iter_events(ensure=False):
+    for event in iter_events(start=start, end=end, ensure=False):
         day = event.timestamp.date()
-        if start and day < start:
-            continue
-        if end and day >= end:
-            continue
         key = (day, event.product, event.service)
         counts[key] = counts.get(key, 0) + 1
     for day, product, service in sorted(counts, key=lambda key: (key[0], key[1], key[2] or "")):

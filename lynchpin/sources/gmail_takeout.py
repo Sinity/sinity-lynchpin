@@ -179,7 +179,11 @@ def gmail_manifest_path() -> Path:
 
 
 def iter_materialized_gmail_messages(
-    *, path: Optional[Path] = None, ensure: bool = True
+    *,
+    path: Optional[Path] = None,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
 ) -> Iterator[GmailMessage]:
     """Yield gmail messages from the canonical NDJSON product.
 
@@ -191,7 +195,7 @@ def iter_materialized_gmail_messages(
     if ensure and path is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("google_takeout")
+        ensure_materialized("google_takeout", window=(start, end) if start and end else None)
     if not target.exists():
         raise FileNotFoundError(f"canonical Gmail Takeout product is missing: {target}")
     with target.open(encoding="utf-8") as handle:
@@ -202,6 +206,12 @@ def iter_materialized_gmail_messages(
             payload = json.loads(line)
             ts_raw = payload.get("timestamp")
             ts = datetime.fromisoformat(ts_raw) if ts_raw else None
+            if ts is not None and (start is not None or end is not None):
+                d = ts.date()
+                if start is not None and d < start:
+                    continue
+                if end is not None and d >= end:
+                    continue
             yield GmailMessage(
                 message_id=str(payload.get("message_id") or ""),
                 thread_id=payload.get("thread_id"),
@@ -220,6 +230,8 @@ def iter_materialized_gmail_messages(
 def iter_gmail_messages(
     *,
     root: Optional[Path] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
 ) -> Iterator[GmailMessage]:
     """Yield Gmail messages from all discovered Takeout archives.
 
@@ -236,20 +248,29 @@ def iter_gmail_messages(
         products={"Mail"},
         suffixes={".mbox"},
     ):
-        yield from _parse_mbox_bytes(
+        for msg in _parse_mbox_bytes(
             payload,
             label=member.product,
             archive_source=str(member.archive),
-        )
+        ):
+            if msg.timestamp is not None and (start is not None or end is not None):
+                d = msg.timestamp.date()
+                if start is not None and d < start:
+                    continue
+                if end is not None and d >= end:
+                    continue
+            yield msg
 
 
 def iter_gmail_messages_deduped(
     *,
     root: Optional[Path] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
 ) -> Iterator[GmailMessage]:
     """Yield deduplicated Gmail messages (by Message-ID, first-wins)."""
     seen: set[str] = set()
-    for msg in iter_gmail_messages(root=root):
+    for msg in iter_gmail_messages(root=root, start=start, end=end):
         if msg.message_id in seen:
             continue
         seen.add(msg.message_id)
@@ -281,16 +302,14 @@ def daily_gmail_activity(
         from ..materialization import ensure_materialized
 
         ensure_materialized("google_takeout", window=(start, end))
-        iter_msgs = iter_materialized_gmail_messages(ensure=False)
+        iter_msgs = iter_materialized_gmail_messages(start=start, end=end, ensure=False)
     else:
-        iter_msgs = iter_gmail_messages_deduped(root=root)
+        iter_msgs = iter_gmail_messages_deduped(root=root, start=start, end=end)
 
     for msg in iter_msgs:
         if msg.timestamp is None:
             continue
         d = msg.timestamp.date()
-        if d < start or d >= end:
-            continue
         bucket = by_date[d]
         bucket["count"] += 1
         if msg.thread_id:

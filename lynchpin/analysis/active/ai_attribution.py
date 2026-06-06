@@ -55,7 +55,9 @@ def build_active_ai_attribution(
     from ...sources.polylogue import PolylogueMaterializationError
     try:
         profile_iter = (
-            session_profiles if session_profiles is not None else iter_session_profiles()
+            session_profiles
+            if session_profiles is not None
+            else iter_session_profiles(start=start, end=end)
         )
         sessions_by_project_day, session_windows = _index_sessions(
             profile_iter,

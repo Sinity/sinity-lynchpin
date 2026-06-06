@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -303,6 +304,56 @@ def test_terminal_daily_materializes_atuin_for_requested_window(monkeypatch: pyt
     assert rows == [{"date": "2026-05-01", "command_count": 3}]
 
 
+def test_terminal_sessions_reuses_preconverged_atuin_product(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "atuin", "status": "ready", "changed": False}
+
+    def fake_ensure_materialized(name, *, window=None):
+        calls.append((name, window))
+        return Result()
+
+    @dataclass
+    class Row:
+        start: datetime
+        end: datetime
+        command_count: int
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    read_calls = []
+
+    def fake_shell_sessions(*, start, end, ensure=True):
+        read_calls.append({"start": start, "end": end, "ensure": ensure})
+        return [Row(start=start, end=end, command_count=3)]
+
+    monkeypatch.setattr(
+        "lynchpin.sources.terminal.shell_sessions",
+        fake_shell_sessions,
+    )
+
+    from lynchpin.mcp.tools.personal import terminal_sessions
+
+    rows = terminal_sessions(start="2026-05-01", end="2026-05-03")
+
+    assert calls == [("atuin", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert read_calls == [
+        {
+            "start": datetime(2026, 5, 1, 6, 0),
+            "end": datetime(2026, 5, 4, 6, 0),
+            "ensure": False,
+        }
+    ]
+    assert rows == [
+        {
+            "start": "2026-05-01T06:00:00",
+            "end": "2026-05-04T06:00:00",
+            "command_count": 3,
+        }
+    ]
+
+
 def test_keylog_daily_materializes_keylog_for_requested_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -327,9 +378,11 @@ def test_keylog_daily_materializes_keylog_for_requested_window(
         last_ts: datetime | None
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
-    monkeypatch.setattr(
-        "lynchpin.sources.keylog.daily_activity",
-        lambda *, start, end: [
+    read_calls = []
+
+    def fake_daily_activity(*, start, end, ensure=True):
+        read_calls.append({"start": start, "end": end, "ensure": ensure})
+        return [
             Row(
                 date=start,
                 event_count=4,
@@ -339,7 +392,11 @@ def test_keylog_daily_materializes_keylog_for_requested_window(
                 first_ts=datetime(2026, 5, 1, 8, tzinfo=UTC),
                 last_ts=datetime(2026, 5, 1, 9, tzinfo=UTC),
             )
-        ],
+        ]
+
+    monkeypatch.setattr(
+        "lynchpin.sources.keylog.daily_activity",
+        fake_daily_activity,
     )
 
     from lynchpin.mcp.tools.personal import keylog_daily
@@ -347,6 +404,7 @@ def test_keylog_daily_materializes_keylog_for_requested_window(
     rows = keylog_daily(start="2026-05-01", end="2026-05-03")
 
     assert calls == [("keylog", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert read_calls == [{"start": date(2026, 5, 1), "end": date(2026, 5, 3), "ensure": False}]
     assert rows == [
         {
             "date": "2026-05-01",
@@ -903,6 +961,57 @@ def test_keylog_text_content_reuses_exact_window_artifact(
     assert result["top_terms"] == [{"term": "lynchpin", "count": 4}]
 
 
+def test_title_metadata_audit_reuses_preconverged_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "title_metadata", "status": "ready", "changed": False}
+
+    def fake_ensure_materialized(name, *, window=None):
+        calls.append((name, window))
+        return Result()
+
+    read_calls = []
+
+    def fake_iter_title_classifications(*, ensure=True):
+        read_calls.append(ensure)
+        return iter(
+            (
+                SimpleNamespace(
+                    classification_source="rules",
+                    model_version="v1",
+                    activity="coding",
+                    confidence=0.9,
+                ),
+                SimpleNamespace(
+                    classification_source="gpt",
+                    model_version="v2",
+                    activity="research",
+                    confidence=None,
+                ),
+            )
+        )
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.sources.title_metadata.iter_title_classifications",
+        fake_iter_title_classifications,
+    )
+
+    from lynchpin.mcp.tools.personal import title_metadata_audit
+
+    result = title_metadata_audit(limit=10)
+
+    assert calls == [("title_metadata", None)]
+    assert read_calls == [False]
+    assert result["row_count"] == 2
+    assert result["classification_sources"] == {"rules": 1, "gpt": 1}
+    assert result["confidence_bands"] == {"high": 1, "missing": 1}
+
+
 def test_activity_content_daily_materializes_content_and_title_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -977,9 +1086,13 @@ def test_google_takeout_events_include_end_date(monkeypatch: pytest.MonkeyPatch)
         source_member: str
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
-    monkeypatch.setattr(
-        "lynchpin.sources.google_takeout_products.iter_events",
-        lambda *, product=None, ensure=True: iter([
+    read_calls = []
+
+    def fake_iter_events(*, product=None, start=None, end=None, ensure=True):
+        read_calls.append(
+            {"product": product, "start": start, "end": end, "ensure": ensure}
+        )
+        return iter([
             Row(
                 timestamp=datetime(2026, 5, 3, 12, 0),
                 product="chrome",
@@ -987,7 +1100,11 @@ def test_google_takeout_events_include_end_date(monkeypatch: pytest.MonkeyPatch)
                 title="Boundary event",
                 source_member="fixture",
             )
-        ]),
+        ])
+
+    monkeypatch.setattr(
+        "lynchpin.sources.google_takeout_products.iter_events",
+        fake_iter_events,
     )
 
     from lynchpin.mcp.tools.personal import google_takeout_events
@@ -995,6 +1112,14 @@ def test_google_takeout_events_include_end_date(monkeypatch: pytest.MonkeyPatch)
     rows = google_takeout_events(start="2026-05-03", end="2026-05-03")
 
     assert calls == [("google_takeout", (date(2026, 5, 3), date(2026, 5, 4)))]
+    assert read_calls == [
+        {
+            "product": None,
+            "start": date(2026, 5, 3),
+            "end": date(2026, 5, 4),
+            "ensure": False,
+        }
+    ]
     assert len(rows) == 1
     assert rows[0]["title"] == "Boundary event"
 
@@ -1022,8 +1147,8 @@ def test_communication_events_include_end_date(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
     read_calls = []
 
-    def fake_iter_communication_events(*, ensure=True):
-        read_calls.append(ensure)
+    def fake_iter_communication_events(*, start=None, end=None, ensure=True):
+        read_calls.append({"start": start, "end": end, "ensure": ensure})
         return iter([
             Row(timestamp=datetime(2026, 5, 3, 9, 0), source="messenger", thread="fixture")
         ])
@@ -1038,7 +1163,7 @@ def test_communication_events_include_end_date(monkeypatch: pytest.MonkeyPatch) 
     rows = communication_events(start="2026-05-03", end="2026-05-03")
 
     assert calls == [("communications", (date(2026, 5, 3), date(2026, 5, 4)))]
-    assert read_calls == [False]
+    assert read_calls == [{"start": date(2026, 5, 3), "end": date(2026, 5, 4), "ensure": False}]
     assert len(rows) == 1
     assert rows[0]["thread"] == "fixture"
 
@@ -1093,9 +1218,13 @@ def test_daily_personal_source_preconditions_use_half_open_windows(
         "lynchpin.sources.communications.daily_communication_activity",
         fake_daily_communication_activity,
     )
+    def fake_iter_derived_daily_activity(*, start, end, ensure=True):
+        read_calls.append(("activitywatch_derived", ensure))
+        return [DailyRow(date=start)]
+
     monkeypatch.setattr(
-        "lynchpin.sources.activitywatch.daily_activity",
-        lambda *, start, end: [DailyRow(date=start)],
+        "lynchpin.sources.activitywatch_derived.iter_derived_daily_activity",
+        fake_iter_derived_daily_activity,
     )
     def fake_daily_arbtt_activity(*, start, end, ensure=True):
         read_calls.append(("arbtt", ensure))
@@ -1124,13 +1253,14 @@ def test_daily_personal_source_preconditions_use_half_open_windows(
         ("google_takeout", (date(2026, 5, 1), date(2026, 5, 4))),
         ("browser_bookmarks", (date(2026, 5, 1), date(2026, 5, 4))),
         ("communications", (date(2026, 5, 1), date(2026, 5, 4))),
-        ("activitywatch", (date(2026, 5, 1), date(2026, 5, 4))),
+        ("activitywatch_derived", (date(2026, 5, 1), date(2026, 5, 4))),
         ("arbtt", (date(2026, 5, 1), date(2026, 5, 4))),
         ("arbtt", (date(2026, 5, 1), date(2026, 5, 4))),
     ]
     assert read_calls == [
         ("browser_bookmarks", False),
         ("communications", False),
+        ("activitywatch_derived", False),
         ("arbtt", False),
         ("arbtt", False),
     ]

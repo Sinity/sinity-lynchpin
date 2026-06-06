@@ -11,6 +11,7 @@ from ..core.config import get_config
 from ..core.primitives import logical_date
 from .activitywatch_models import (
     AttentionMetrics,
+    AWDayActivity,
     CircadianProfile,
     DeepWorkBlock,
     FocusLoop,
@@ -25,6 +26,7 @@ __all__ = [
     "activitywatch_derived_path",
     "iter_derived_attention",
     "iter_derived_circadian",
+    "iter_derived_daily_activity",
     "iter_derived_deep_work",
     "iter_derived_focus_spans",
     "iter_derived_fragmentation",
@@ -34,6 +36,7 @@ __all__ = [
 
 PRODUCT_KINDS = (
     "focus_spans",
+    "daily_activity",
     "project_focus_days",
     "deep_work",
     "circadian",
@@ -95,6 +98,28 @@ def iter_derived_project_focus_days(
             date=_date(row["date"]),
             project=str(row["project"]),
             duration_s=float(row.get("duration_s") or 0.0),
+        )
+
+
+def iter_derived_daily_activity(
+    *, start: date, end: date, path: Path | None = None, ensure: bool = True
+) -> Iterator[AWDayActivity]:
+    _ensure_default_product(path, start=start, end=end, ensure=ensure)
+    for row in _dated_rows(path or activitywatch_derived_path("daily_activity"), start=start, end=end):
+        hourly = row.get("hourly_active") or ()
+        yield AWDayActivity(
+            date=_date(row["date"]),
+            active_hours=float(row.get("active_hours") or 0.0),
+            deep_work_min=float(row.get("deep_work_min") or 0.0),
+            fragmentation_score=float(row.get("fragmentation_score") or 0.0),
+            project_count=int(row.get("project_count") or 0),
+            dominant_mode=_str_or_none(row.get("dominant_mode")),
+            dominant_project=_str_or_none(row.get("dominant_project")),
+            hourly_active=tuple(float(item or 0.0) for item in hourly),
+            outage_hours=float(row.get("outage_hours") or 0.0),
+            presence_active_hours=float(row.get("presence_active_hours") or 0.0),
+            presence_typing_hours=float(row.get("presence_typing_hours") or 0.0),
+            presence_data_gap_hours=float(row.get("presence_data_gap_hours") or 0.0),
         )
 
 

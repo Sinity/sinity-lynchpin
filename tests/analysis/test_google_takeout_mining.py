@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 
+import pytest
+
 from lynchpin.analysis.google_takeout_mining import (
     google_takeout_retrospective,
     write_google_takeout_retrospective,
@@ -72,3 +74,23 @@ def test_write_google_takeout_retrospective_persists_artifact(tmp_path) -> None:
     assert payload["event_count"] == 2
     assert payload["active_days"] == 1
     assert payload["caveats"]
+
+
+def test_google_takeout_retrospective_bounds_event_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    import lynchpin.analysis.google_takeout_mining as mining
+
+    calls = []
+
+    def fake_iter_events(*, start=None, end=None, ensure=True):
+        calls.append({"start": start, "end": end, "ensure": ensure})
+        return iter(())
+
+    monkeypatch.setattr(mining, "iter_events", fake_iter_events)
+
+    google_takeout_retrospective(start=date(2026, 5, 1), end=date(2026, 5, 4))
+
+    assert calls == [{"start": date(2026, 5, 1), "end": date(2026, 5, 4), "ensure": True}]

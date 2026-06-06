@@ -246,12 +246,7 @@ def google_takeout_events(
     )
     needle = query.lower().strip()
     rows: list[dict[str, Any]] = []
-    for row in iter_events(product=product, ensure=False):
-        day = row.timestamp.date()
-        if start_d and day < start_d:
-            continue
-        if end_d and day > end_d:
-            continue
+    for row in iter_events(product=product, start=start_d, end=_exclusive_end(end_d), ensure=False):
         haystack = " ".join(
             part
             for part in (
@@ -361,7 +356,7 @@ def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, 
     end_d = date.fromisoformat(end)
     _ensure_source_materialized_for_read("atuin", start=start_d, end=_exclusive_end(end_d))
     start_dt, end_dt = date_to_dt_range(start_d, end_d)
-    rows = shell_sessions(start=start_dt, end=end_dt)
+    rows = shell_sessions(start=start_dt, end=end_dt, ensure=False)
     rows.sort(key=lambda row: row.start)
     capped = rows[: min(max(limit, 1), 1000)]
     return [_json_safe(asdict(row)) for row in capped]
@@ -377,7 +372,10 @@ def keylog_daily(start: str, end: str) -> list[dict[str, Any]]:
     start_d = date.fromisoformat(start)
     end_d = date.fromisoformat(end)
     _ensure_source_materialized_for_read("keylog", start=start_d, end=_exclusive_end(end_d))
-    return [_json_safe(row.__dict__) for row in daily_activity(start=start_d, end=end_d)]
+    return [
+        _json_safe(row.__dict__)
+        for row in daily_activity(start=start_d, end=end_d, ensure=False)
+    ]
 
 
 @app.tool()
@@ -761,13 +759,11 @@ def communication_events(start: str | None = None, end: str | None = None, limit
     from lynchpin.sources.communications import iter_communication_events
 
     rows: list[dict[str, Any]] = []
-    for row in iter_communication_events(ensure=False):
-        if row.timestamp is not None:
-            day = row.timestamp.date()
-            if start_date and day < start_date:
-                continue
-            if end_date and day > end_date:
-                continue
+    for row in iter_communication_events(
+        start=start_date,
+        end=_exclusive_end(end_date),
+        ensure=False,
+    ):
         rows.append(_json_safe(asdict(row)))
         if len(rows) >= limit:
             break
@@ -807,16 +803,16 @@ def focus_daily(start: str, end: str) -> list[dict[str, Any]]:
     """
     from datetime import date
 
-    from lynchpin.sources.activitywatch import daily_activity
+    from lynchpin.sources.activitywatch_derived import iter_derived_daily_activity
     from lynchpin.sources.arbtt import daily_arbtt_activity
 
     start_d = date.fromisoformat(start)
     end_d = date.fromisoformat(end)
     materialization_end = _exclusive_end(end_d)
-    _ensure_source_materialized_for_read("activitywatch", start=start_d, end=materialization_end)
+    _ensure_source_materialized_for_read("activitywatch_derived", start=start_d, end=materialization_end)
     _ensure_source_materialized_for_read("arbtt", start=start_d, end=materialization_end)
     rows: list[dict[str, Any]] = []
-    for row in daily_activity(start=start_d, end=end_d):
+    for row in iter_derived_daily_activity(start=start_d, end=end_d, ensure=False):
         rows.append({**_json_safe(row.__dict__), "source": "activitywatch"})
     for row in daily_arbtt_activity(start=start_d, end=end_d, ensure=False):
         rows.append({**_json_safe(row.__dict__), "source": "arbtt"})
@@ -948,7 +944,7 @@ def title_metadata_audit(limit: int = 20) -> dict[str, Any]:
     confidence_bands: Counter[str] = Counter()
     total = 0
     missing_confidence = 0
-    for row in iter_title_classifications():
+    for row in iter_title_classifications(ensure=False):
         total += 1
         source_counts[row.classification_source or "(missing)"] += 1
         model_counts[row.model_version or "(missing)"] += 1

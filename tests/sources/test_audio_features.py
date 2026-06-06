@@ -81,9 +81,16 @@ def test_daily_audio_features_weighted_mean_and_missing_not_zero(tmp_path, monke
         _s(1, 17, "Unknown Track", 300_000),  # unmatched → excluded (missing != zero)
         _s(2, 12, "Song A", 60_000),
     ]
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda root=None: iter(streams))
+    seen_bounds = []
+
+    def iter_streams(root=None, *, start=None, end=None, ensure=True):
+        seen_bounds.append((root, start, end, ensure))
+        return iter(streams)
+
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", iter_streams)
 
     by_day = {d.date: d for d in af.daily_audio_features(date(2026, 5, 1), date(2026, 5, 2), path=ds)}
+    assert seen_bounds == [(None, date(2026, 5, 1), date(2026, 5, 2), True)]
     d1 = by_day[date(2026, 5, 1)]
     assert set(by_day) == {date(2026, 5, 1)}
     assert round(d1.means["energy"], 3) == 0.533

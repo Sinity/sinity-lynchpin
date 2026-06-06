@@ -81,6 +81,39 @@ def test_keylog_counts_press_metadata_separately_from_snapshot_text(tmp_path, mo
     assert snapshots[0].text == "hello text content"
 
 
+def test_keylog_low_level_readers_can_skip_nested_materialization(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "2026-03-15.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "ts": "2026-03-15T10:00:00Z",
+                "event": "press",
+            }),
+            json.dumps({
+                "ts": "2026-03-15T10:00:01Z",
+                "event": "snapshot",
+                "buffer": "hello",
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("caller already converged keylog materialization")
+        ),
+    )
+
+    start = datetime(2026, 3, 15, 9, 59, tzinfo=timezone.utc)
+    end = datetime(2026, 3, 15, 10, 2, tzinfo=timezone.utc)
+
+    assert keylog.keypress_count(start=start, end=end, ensure=False) == 1
+    assert [row.text for row in keylog.text_snapshots(start=start, end=end, ensure=False)] == ["hello"]
+    assert keylog.has_coverage(start=start, end=end, ensure=False)
+
+
 def test_keylog_events_parse_modifier_state_metadata(tmp_path, monkeypatch):
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -134,7 +167,7 @@ def test_keylog_daily_activity_summarizes_sessions(tmp_path, monkeypatch):
 def test_keylog_daily_activity_scans_multi_day_window_once(monkeypatch):
     calls = []
 
-    def fake_events(*, start, end, kinds=None):
+    def fake_events(*, start, end, kinds=None, ensure=True):
         calls.append((start, end, kinds))
         yield keylog.KeylogEvent(
             ts=datetime(2026, 3, 15, 10, tzinfo=timezone.utc),

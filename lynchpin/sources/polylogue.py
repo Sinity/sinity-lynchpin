@@ -536,8 +536,13 @@ def _profile_cache_signature() -> tuple[int, int] | None:
     return stat.st_mtime_ns, stat.st_size
 
 
-def iter_session_profiles() -> Iterator[SessionProfile]:
-    """Yield all session profiles from polylogue archive."""
+def iter_session_profiles(
+    *, start: Optional[date] = None, end: Optional[date] = None
+) -> Iterator[SessionProfile]:
+    """Yield session profiles from polylogue archive, optionally date-bounded."""
+    if start is not None and end is not None:
+        yield from session_profiles_for_date(start=start, end=end)
+        return
     yield from _load_profiles()
 
 
@@ -1205,7 +1210,7 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
     by_key: dict[tuple[date, str], list[SessionProfile]] = defaultdict(list)
 
     try:
-        profiles = iter_session_profiles()
+        profiles = iter_session_profiles(start=start, end=end)
     except PolylogueMaterializationError as exc:
         logger.warning("polylogue daily activity profiles unavailable: %s", exc)
         return []
@@ -1424,7 +1429,7 @@ def cost_summary(*, start: date, end: date) -> list[CostSummary]:
         return summary_result
 
     by_key: dict[tuple[date, str], list[SessionProfile]] = defaultdict(list)
-    for p in iter_session_profiles():
+    for p in iter_session_profiles(start=start, end=end):
         d = p.canonical_session_date
         if d is None:
             continue
@@ -1472,7 +1477,7 @@ def work_pattern(*, start: date, end: date) -> list[WorkPattern]:
             for kind, b in sorted(by_kind.items(), key=lambda x: -x[1].sessions)
         ]
 
-    for p in iter_session_profiles():
+    for p in iter_session_profiles(start=start, end=end):
         d = p.canonical_session_date
         if d is None:
             continue

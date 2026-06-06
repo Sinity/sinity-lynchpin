@@ -82,6 +82,28 @@ def test_materialize_google_takeout_products_ignores_calendar_export(monkeypatch
 
     events = list(source.iter_events())
     assert {event.product for event in events} == {"keep_notes", "my_activity", "tasks"}
+    my_activity_path = source.google_takeout_products_dir() / "my_activity.ndjson"
+    with my_activity_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "product": "my_activity",
+                    "service": "Search",
+                    "title": "Searched for outside window",
+                    "timestamp": "2026-01-02T13:00:00+00:00",
+                }
+            )
+            + "\n"
+        )
+    filtered_events = list(
+        source.iter_events(
+            product="my_activity",
+            start=date(2026, 1, 1),
+            end=date(2026, 1, 2),
+            ensure=False,
+        )
+    )
+    assert [event.title for event in filtered_events] == ["Searched for lynchpin"]
     daily = list(source.iter_daily_activity())
     assert any(row.product == "my_activity" and row.event_count == 1 for row in daily)
     assert calls
@@ -148,8 +170,10 @@ def test_iter_daily_activity_uses_single_windowed_materialization(monkeypatch):
     def fake_ensure(name, *, window=None):
         calls.append((name, window))
 
-    def fake_events(product=None, *, ensure=True):
+    def fake_events(product=None, *, start=None, end=None, ensure=True):
         assert product is None
+        assert start == date(2026, 5, 5)
+        assert end == date(2026, 5, 6)
         assert ensure is False
         yield event
 

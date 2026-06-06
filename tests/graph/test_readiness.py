@@ -87,7 +87,7 @@ def _install_synthetic_history(
         lambda **kwargs: health_rows,
     )
     monkeypatch.setattr(
-        "lynchpin.sources.activitywatch.daily_activity",
+        "lynchpin.sources.activitywatch_derived.iter_derived_daily_activity",
         lambda **kwargs: aw_rows,
     )
 
@@ -144,7 +144,7 @@ def test_weak_fit_returns_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("lynchpin.sources.sleep.sleep_productivity", lambda **kwargs: sp_rows)
     monkeypatch.setattr("lynchpin.sources.health.daily_health_summary", lambda **kwargs: health_rows)
-    monkeypatch.setattr("lynchpin.sources.activitywatch.daily_activity", lambda **kwargs: aw_rows)
+    monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_daily_activity", lambda **kwargs: aw_rows)
 
     result = build_readiness_forecast(target_date=target, window_days=60)
     assert isinstance(result, ReadinessUnavailable)

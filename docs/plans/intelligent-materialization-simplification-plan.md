@@ -1020,6 +1020,15 @@ Keep these capabilities, but simplify their surface:
 - The canonical web visit iterator now accepts an `ensure` handoff and passes a
   half-open materialization window when it does self-converge. MCP `web_daily`
   preconverges webhistory once, then reads visits with `ensure=False`.
+- Web category aggregation now accepts the same handoff. Operator daily
+  converges webhistory in the web fill and then reads categorized visits with
+  `ensure=False`.
+- The DuckDB substrate status manifest now records the latest evidence-graph
+  build's date bounds and covered dates, and the `evidence_graph_substrate`
+  materialization audit hydrates those bounds. Windowed substrate reads can
+  therefore reason about actual coverage instead of accepting an unbounded
+  substrate product. Window checks now enforce bounds for derived, stage, and
+  substrate contracts.
 
 ## Test Plan
 

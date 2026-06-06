@@ -75,7 +75,12 @@ def _parse_ms(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
-def iter_stress_bins(root: Optional[Path] = None) -> Iterator[StressBin]:
+def iter_stress_bins(
+    root: Optional[Path] = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[StressBin]:
     """Yield per-minute stress bins from Stress Internal Data CSVs.
 
     Coverage: 2022-08-30 → 2026-03-29 (varies by export).
@@ -100,9 +105,14 @@ def iter_stress_bins(root: Optional[Path] = None) -> Iterator[StressBin]:
                     sc = b.get("score")
                     if st is None or sc is None:
                         continue
+                    ts = _parse_ms(st)
+                    if start is not None and ts < start:
+                        continue
+                    if end is not None and ts >= end:
+                        continue
                     duration = int((et - st) / 1000) if et else 60
                     yield StressBin(
-                        ts=_parse_ms(st),
+                        ts=ts,
                         duration_s=duration,
                         score=float(sc),
                         score_min=float(b.get("score_min", sc)),
@@ -112,7 +122,12 @@ def iter_stress_bins(root: Optional[Path] = None) -> Iterator[StressBin]:
                     )
 
 
-def iter_hrv_bins(root: Optional[Path] = None) -> Iterator[HRVBin]:
+def iter_hrv_bins(
+    root: Optional[Path] = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[HRVBin]:
     """Yield per-window HRV bins (~5min rolling, 30s step).
 
     Coverage: 2025-05-21 onwards (post Galaxy Watch firmware update that
@@ -138,15 +153,25 @@ def iter_hrv_bins(root: Optional[Path] = None) -> Iterator[HRVBin]:
                     rm = b.get("rmssd")
                     if None in (s, e, sd, rm):
                         continue
+                    ts = _parse_ms(s)
+                    if start is not None and ts < start:
+                        continue
+                    if end is not None and ts >= end:
+                        continue
                     yield HRVBin(
-                        ts=_parse_ms(s),
+                        ts=ts,
                         end_ts=_parse_ms(e),
                         sdnn=float(sd),
                         rmssd=float(rm),
                     )
 
 
-def iter_hr_bins(root: Optional[Path] = None) -> Iterator[HRBin]:
+def iter_hr_bins(
+    root: Optional[Path] = None,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[HRBin]:
     """Yield per-window heart-rate bins.
 
     Coverage: 2022-08 onwards. Rich binning_data with min/max appears
@@ -170,8 +195,13 @@ def iter_hr_bins(root: Optional[Path] = None) -> Iterator[HRBin]:
                     st = b.get("start_time") or b.get("end_time")
                     if hr is None or st is None:
                         continue
+                    ts = _parse_ms(st)
+                    if start is not None and ts < start:
+                        continue
+                    if end is not None and ts >= end:
+                        continue
                     yield HRBin(
-                        ts=_parse_ms(st),
+                        ts=ts,
                         heart_rate=float(hr),
                         heart_rate_min=float(b["heart_rate_min"]) if b.get("heart_rate_min") is not None else None,
                         heart_rate_max=float(b["heart_rate_max"]) if b.get("heart_rate_max") is not None else None,

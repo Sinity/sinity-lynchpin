@@ -174,8 +174,12 @@ def hash_title(app: str, normalized_title: str) -> str:
     return hashlib.md5(f"{normalize_app(app)}\0{normalized_title}".encode()).hexdigest()
 
 
-def iter_title_classifications(path: Path | None = None) -> Iterator[TitleClassification]:
-    if path is None:
+def iter_title_classifications(
+    path: Path | None = None,
+    *,
+    ensure: bool = True,
+) -> Iterator[TitleClassification]:
+    if path is None and ensure:
         from ..materialization import ensure_materialized
 
         ensure_materialized("title_metadata")

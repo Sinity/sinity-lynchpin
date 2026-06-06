@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import date
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from lynchpin.analysis.url_crossref import (
     URLMention,
     aggregate_by_url,
     cross_referenced_urls,
     extract_urls,
+    iter_url_mentions,
 )
 
 
@@ -116,3 +119,98 @@ def test_aggregate_handles_naive_timestamps():
     # last_seen should be the naive one coerced to UTC
     assert agg.last_seen is not None
     assert agg.last_seen.month == 6
+
+
+def test_irc_mentions_use_bounded_reader(monkeypatch):
+    calls: list[tuple[date, date]] = []
+
+    def fake_iter_messages_in_range(*, start: date, end: date, **_kwargs):
+        calls.append((start, end))
+        yield SimpleNamespace(
+            timestamp=datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc),
+            is_meta=False,
+            speaker="sinity",
+            text="see https://example.com/path",
+            channel="#x",
+            line_no=9,
+        )
+
+    monkeypatch.setattr("lynchpin.sources.irc_raw.iter_messages_in_range", fake_iter_messages_in_range)
+
+    mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"irc"}))
+
+    assert calls == [(date(2026, 6, 1), date(2026, 6, 3))]
+    assert [m.url for m in mentions] == ["https://example.com/path"]
+
+
+def test_reddit_mentions_use_half_open_bounded_readers(monkeypatch):
+    comment_calls: list[tuple[date | None, date | None]] = []
+    post_calls: list[tuple[date | None, date | None]] = []
+
+    def fake_comments(*, start: date | None = None, end: date | None = None, **_kwargs):
+        comment_calls.append((start, end))
+        yield SimpleNamespace(
+            created=datetime(2026, 6, 2, 12, tzinfo=timezone.utc),
+            body="see https://example.com/comment",
+            permalink="/r/demo/comment",
+            id="c1",
+        )
+
+    def fake_posts(*, start: date | None = None, end: date | None = None, **_kwargs):
+        post_calls.append((start, end))
+        yield SimpleNamespace(
+            created=datetime(2026, 6, 2, 13, tzinfo=timezone.utc),
+            url="https://example.com/post",
+            title="",
+            body="",
+            permalink="/r/demo/post",
+            id="p1",
+        )
+
+    monkeypatch.setattr("lynchpin.sources.reddit.iter_comments", fake_comments)
+    monkeypatch.setattr("lynchpin.sources.reddit.iter_posts", fake_posts)
+
+    mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"reddit"}))
+
+    assert comment_calls == [(date(2026, 6, 1), date(2026, 6, 4))]
+    assert post_calls == [(date(2026, 6, 1), date(2026, 6, 4))]
+    assert {m.url for m in mentions} == {"https://example.com/comment", "https://example.com/post"}
+
+
+def test_web_mentions_use_source_date_filter(monkeypatch):
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_iter_entries(start_date: str | None = None, end_date: str | None = None, **_kwargs):
+        calls.append((start_date, end_date))
+        yield {
+            "url": "https://example.com/visited",
+            "iso_time": "2026-06-02T12:00:00+00:00",
+            "title": "Visited",
+        }
+
+    monkeypatch.setattr("lynchpin.sources.web.iter_entries", fake_iter_entries)
+
+    mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"web"}))
+
+    assert calls == [("2026-06-01", "2026-06-03")]
+    assert [m.url for m in mentions] == ["https://example.com/visited"]
+
+
+def test_raindrop_mentions_use_half_open_bounded_reader(monkeypatch):
+    calls: list[tuple[date | None, date | None]] = []
+
+    def fake_bookmarks(*, start: date | None = None, end: date | None = None, **_kwargs):
+        calls.append((start, end))
+        yield SimpleNamespace(
+            id=1,
+            title="Bookmark",
+            created=datetime(2026, 6, 2, 12, tzinfo=timezone.utc),
+            url="https://example.com/bookmark",
+        )
+
+    monkeypatch.setattr("lynchpin.sources.exports.iter_raindrop_bookmarks", fake_bookmarks)
+
+    mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"raindrop"}))
+
+    assert calls == [(date(2026, 6, 1), date(2026, 6, 4))]
+    assert [m.url for m in mentions] == ["https://example.com/bookmark"]

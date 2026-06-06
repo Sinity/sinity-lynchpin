@@ -52,12 +52,18 @@ def arbtt_manifest_path(root: Path | None = None) -> Path:
     return arbtt_events_path(root).with_suffix(".manifest.json")
 
 
-def iter_arbtt_events(path: Path | None = None, *, ensure: bool = True) -> Iterator[ArbttFocusEvent]:
+def iter_arbtt_events(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[ArbttFocusEvent]:
     target = path or arbtt_events_path()
     if path is None and ensure:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("arbtt")
+        ensure_materialized("arbtt", window=(start, end) if start is not None and end is not None else None)
     if not target.exists():
         raise FileNotFoundError(
             f"canonical ARBTT materialization is missing: {target}. "
@@ -68,9 +74,15 @@ def iter_arbtt_events(path: Path | None = None, *, ensure: bool = True) -> Itera
             if not line.strip():
                 continue
             payload = json.loads(line)
+            timestamp = datetime.fromisoformat(str(payload["timestamp"]))
+            day = timestamp.date()
+            if start is not None and day < start:
+                continue
+            if end is not None and day >= end:
+                continue
             yield ArbttFocusEvent(
                 event_id=str(payload.get("event_id") or ""),
-                timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+                timestamp=timestamp,
                 duration_s=float(payload.get("duration_s") or 0),
                 program=str(payload.get("program") or ""),
                 title=str(payload.get("title") or ""),
@@ -84,10 +96,9 @@ def iter_arbtt_events(path: Path | None = None, *, ensure: bool = True) -> Itera
 
 def daily_arbtt_activity(*, start: date, end: date, ensure: bool = True) -> list[ArbttDayActivity]:
     by_day: dict[date, list[ArbttFocusEvent]] = defaultdict(list)
-    for row in iter_arbtt_events(ensure=ensure):
+    for row in iter_arbtt_events(start=start, end=end, ensure=ensure):
         day = row.timestamp.date()
-        if start <= day < end:
-            by_day[day].append(row)
+        by_day[day].append(row)
     return sorted(
         [
             ArbttDayActivity(

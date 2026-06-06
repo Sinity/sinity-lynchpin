@@ -168,7 +168,13 @@ def test_materialize_spotify_daily_product(monkeypatch, tmp_path):
             ms_played=120_000,
         ),
     ]
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda: iter(streams))
+    calls = []
+
+    def iter_streams(*, start=None, end=None):
+        calls.append((start, end))
+        return iter(streams)
+
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", iter_streams)
     spotify_streams = tmp_path / "streaming_history.ndjson"
     spotify_streams.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -180,6 +186,7 @@ def test_materialize_spotify_daily_product(monkeypatch, tmp_path):
     manifest = materialize_spotify_daily(output=output)
     rows = list(iter_spotify_daily_signals(output))
 
+    assert calls == [(None, None)]
     assert manifest["row_count"] == 1
     assert manifest["schema_version"] == SPOTIFY_DAILY_SCHEMA_VERSION
     assert manifest["input_file_count"] == 1
@@ -200,7 +207,13 @@ def test_materialize_spotify_daily_merges_requested_window(monkeypatch, tmp_path
             ms_played=180_000,
         ),
     ]
-    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda: iter(streams))
+    calls = []
+
+    def iter_streams(*, start=None, end=None):
+        calls.append((start, end))
+        return iter(streams)
+
+    monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", iter_streams)
     spotify_streams = tmp_path / "streaming_history.ndjson"
     spotify_streams.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -270,6 +283,7 @@ def test_materialize_spotify_daily_merges_requested_window(monkeypatch, tmp_path
     )
     rows = list(iter_spotify_daily_signals(output))
 
+    assert calls == [(date(2026, 5, 2), date(2026, 5, 3))]
     assert [row.date for row in rows] == [date(2026, 5, 1), date(2026, 5, 2), date(2026, 5, 3)]
     assert [row.track_count for row in rows] == [1, 1, 1]
     assert rows[1].top_artists == ("B",)

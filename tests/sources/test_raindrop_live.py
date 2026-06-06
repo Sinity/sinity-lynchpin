@@ -10,6 +10,7 @@ from lynchpin.sources.raindrop_live import (
     _parse_raindrop_item,
     raindrop_api_token,
     iter_live_bookmarks,
+    iter_merged_bookmarks,
     daily_raindrop_live_activity,
 )
 
@@ -133,6 +134,39 @@ def test_daily_raindrop_live_activity_no_token(monkeypatch):
     )
     # Should not crash; returns whatever export data is available
     assert isinstance(result, list)
+
+
+def test_iter_merged_bookmarks_passes_bounds_to_live_and_export(monkeypatch):
+    calls = {"live": [], "export": []}
+    live = _parse_raindrop_item(_FAKE_API_ITEM)
+
+    def fake_live_bookmarks(*, since=None, token=None, **_kwargs):
+        calls["live"].append((since, token))
+        return iter([live])
+
+    def fake_export_bookmarks(*, start=None, end=None, **_kwargs):
+        calls["export"].append((start, end))
+        return iter([])
+
+    monkeypatch.setattr("lynchpin.sources.raindrop_live.iter_live_bookmarks", fake_live_bookmarks)
+    monkeypatch.setattr(
+        "lynchpin.sources.raindrop_live.iter_raindrop_bookmarks",
+        fake_export_bookmarks,
+    )
+
+    rows = list(
+        iter_merged_bookmarks(
+            start=date(2026, 4, 1),
+            end=date(2026, 5, 1),
+            token="token",
+        )
+    )
+
+    assert [row.url for row in rows] == ["https://example.com/article"]
+    assert calls == {
+        "live": [(datetime(2026, 4, 1, tzinfo=timezone.utc), "token")],
+        "export": [(date(2026, 4, 1), date(2026, 5, 1))],
+    }
 
 
 def test_raindrop_poll_cursor_is_serializable():

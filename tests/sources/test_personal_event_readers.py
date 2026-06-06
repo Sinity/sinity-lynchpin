@@ -160,6 +160,11 @@ def test_arbtt_reader_converges_default_materialization(tmp_path, monkeypatch) -
         path,
         [
             {
+                "event_id": "old",
+                "timestamp": "2026-04-30T12:00:00+00:00",
+                "duration_s": 60,
+            },
+            {
                 "event_id": "focus",
                 "timestamp": "2026-05-01T12:00:00+00:00",
                 "duration_s": 60,
@@ -174,9 +179,16 @@ def test_arbtt_reader_converges_default_materialization(tmp_path, monkeypatch) -
     monkeypatch.setattr(arbtt, "arbtt_events_path", lambda root=None: path)
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
 
-    assert [row.event_id for row in arbtt.iter_arbtt_events()] == ["focus"]
+    assert [row.event_id for row in arbtt.iter_arbtt_events()] == ["old", "focus"]
     assert calls == [("arbtt", None)]
 
     calls.clear()
-    assert [row.event_id for row in arbtt.iter_arbtt_events(path)] == ["focus"]
+    assert [
+        row.event_id
+        for row in arbtt.iter_arbtt_events(start=date(2026, 5, 1), end=date(2026, 5, 2))
+    ] == ["focus"]
+    assert calls == [("arbtt", (date(2026, 5, 1), date(2026, 5, 2)))]
+
+    calls.clear()
+    assert [row.event_id for row in arbtt.iter_arbtt_events(path)] == ["old", "focus"]
     assert calls == []

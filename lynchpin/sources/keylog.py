@@ -103,8 +103,14 @@ def _log_dir_signature(root: Path) -> tuple[int, int] | None:
     return stat.st_mtime_ns, sum(1 for _ in root.glob("*.jsonl"))
 
 
-def log_files(*, start: Optional[date] = None, end: Optional[date] = None) -> list[Path]:
-    _ensure_keylog_materialized(start=start, end=end)
+def log_files(
+    *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    ensure: bool = True,
+) -> list[Path]:
+    if ensure:
+        _ensure_keylog_materialized(start=start, end=end)
     root = _logs_root()
     files = []
     for d, path in _indexed_log_files(str(root), _log_dir_signature(root)):
@@ -116,17 +122,21 @@ def log_files(*, start: Optional[date] = None, end: Optional[date] = None) -> li
     return sorted(files)
 
 
-def _candidate_files(start: datetime, end: datetime) -> list[Path]:
+def _candidate_files(start: datetime, end: datetime, *, ensure: bool = True) -> list[Path]:
     # Files are named by the UTC log date, while callers usually pass local
     # datetimes. Pad by one day so midnight-adjacent local intervals still see
     # the corresponding UTC file.
     s = as_local(start).date() - timedelta(days=1)
     e = as_local(end).date() + timedelta(days=1)
-    return log_files(start=s, end=e)
+    return log_files(start=s, end=e, ensure=ensure)
 
 
 def events(
-    *, start: datetime, end: datetime, kinds: Optional[set[str]] = None,
+    *,
+    start: datetime,
+    end: datetime,
+    kinds: Optional[set[str]] = None,
+    ensure: bool = True,
 ) -> Iterator[KeylogEvent]:
     start_local = as_local(start)
     end_local = as_local(end)
@@ -150,12 +160,12 @@ def events(
             modifiers=_modifier_state(rec),
         )
 
-    for path in _candidate_files(start_local, end_local):
+    for path in _candidate_files(start_local, end_local, ensure=ensure):
         yield from read_jsonl_with(path, _hydrate, source_name="keylog")
 
 
-def keypresses(*, start: datetime, end: datetime) -> list[KeylogEvent]:
-    return list(events(start=start, end=end, kinds={"press"}))
+def keypresses(*, start: datetime, end: datetime, ensure: bool = True) -> list[KeylogEvent]:
+    return list(events(start=start, end=end, kinds={"press"}, ensure=ensure))
 
 
 def _modifier_state(rec: dict[str, Any]) -> tuple[str, ...]:
@@ -209,7 +219,12 @@ def _normalize_modifier_token(token: str) -> str | None:
     return aliases.get(value)
 
 
-def text_snapshots(*, start: datetime, end: datetime) -> Iterator[KeylogTextSnapshot]:
+def text_snapshots(
+    *,
+    start: datetime,
+    end: datetime,
+    ensure: bool = True,
+) -> Iterator[KeylogTextSnapshot]:
     start_local = as_local(start)
     end_local = as_local(end)
 
@@ -231,7 +246,7 @@ def text_snapshots(*, start: datetime, end: datetime) -> Iterator[KeylogTextSnap
             text=text,
         )
 
-    for path in _candidate_files(start_local, end_local):
+    for path in _candidate_files(start_local, end_local, ensure=ensure):
         yield from read_jsonl_with(path, _hydrate, source_name="keylog")
 
 
@@ -243,11 +258,11 @@ def _text_payload(rec: dict[str, Any]) -> str | None:
     return None
 
 
-def keypress_count(*, start: datetime, end: datetime) -> int:
+def keypress_count(*, start: datetime, end: datetime, ensure: bool = True) -> int:
     start_local = as_local(start)
     end_local = as_local(end)
     total = 0
-    for path in _candidate_files(start_local, end_local):
+    for path in _candidate_files(start_local, end_local, ensure=ensure):
         try:
             stat = path.stat()
         except OSError:
@@ -271,11 +286,16 @@ def _press_timestamps(path: str, mtime_ns: int, size: int) -> tuple[datetime, ..
     return tuple(read_jsonl_with(Path(path), _press_ts, source_name="keylog"))
 
 
-def has_coverage(*, start: datetime, end: datetime) -> bool:
-    return bool(_candidate_files(start, end))
+def has_coverage(*, start: datetime, end: datetime, ensure: bool = True) -> bool:
+    return bool(_candidate_files(start, end, ensure=ensure))
 
 
-def daily_activity(*, start: date, end: date) -> list[KeylogDayActivity]:
+def daily_activity(
+    *,
+    start: date,
+    end: date,
+    ensure: bool = True,
+) -> list[KeylogDayActivity]:
     days = list(iter_dates(start, end))
     event_counts = {d: 0 for d in days}
     keypress_counts = {d: 0 for d in days}
@@ -284,7 +304,7 @@ def daily_activity(*, start: date, end: date) -> list[KeylogDayActivity]:
     timestamps: dict[date, list[datetime]] = {d: [] for d in days}
     start_dt, end_dt = date_to_dt_range(start, end)
 
-    for ev in events(start=start_dt, end=end_dt):
+    for ev in events(start=start_dt, end=end_dt, ensure=ensure):
         d = logical_date(ev.ts)
         if d not in event_counts:
             continue

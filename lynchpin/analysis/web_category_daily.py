@@ -82,7 +82,7 @@ class _DayBucket:
 
 
 def daily_web_categories(
-    *, start: _date_type, end: _date_type
+    *, start: _date_type, end: _date_type, ensure: bool = True
 ) -> list[WebCategoryDay]:
     """Aggregate categorized browsing per logical day over ``[start, end]``.
 
@@ -93,7 +93,7 @@ def daily_web_categories(
     # Collect visits with their normalized domain, sorted for dwell estimation.
     rows: list[tuple[object, str]] = []  # (visit, domain)
     domains: set[str] = set()
-    for v in _iter_all_visits(start=start, end=end):
+    for v in _iter_all_visits(start=start, end=end, ensure=ensure):
         domain = _normalize_domain(urlparse(v.url or "").netloc)
         if not domain:
             continue

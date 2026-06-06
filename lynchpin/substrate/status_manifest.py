@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +68,7 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
         conn = duckdb.connect(str(path), read_only=True)
         try:
             builds = _scalar_count(conn, "evidence_graph_build")
-            latest_build_counts = _latest_graph_build_counts(conn)
+            latest_build = _latest_graph_build(conn)
             latest_status = _latest_source_status(conn, "evidence_graph")
             promotion_count = _successful_promotion_count(conn)
         finally:
@@ -85,13 +85,25 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
             "reason": "could not inspect substrate status",
             "row_count": None,
         }
-    latest_node_count = latest_build_counts[0] if latest_build_counts else None
-    latest_edge_count = latest_build_counts[1] if latest_build_counts else None
+    latest_node_count = latest_build["node_count"] if latest_build else None
+    latest_edge_count = latest_build["edge_count"] if latest_build else None
     status, reason = _status_reason(builds, latest_node_count, latest_status, promotion_count)
+    first_date = latest_build["start_date"] if latest_build else None
+    end_date = latest_build["end_date"] if latest_build else None
+    if first_date is not None and end_date is not None and end_date > first_date:
+        last_date = end_date - timedelta(days=1)
+    else:
+        last_date = first_date
     return {
         "builds": builds,
         "latest_node_count": latest_node_count,
         "latest_edge_count": latest_edge_count,
+        "first_date": first_date.isoformat() if first_date is not None else None,
+        "last_date": last_date.isoformat() if last_date is not None else None,
+        "covered_dates": [
+            day.isoformat()
+            for day in _iter_dates(first_date, end_date)
+        ],
         "latest_source_status": latest_status[0] if latest_status else None,
         "latest_source_reason": latest_status[1] if latest_status else None,
         "promotion_count": promotion_count,
@@ -161,11 +173,11 @@ def _successful_promotion_count(conn: Any) -> int | None:
     return int(row[0]) if row else None
 
 
-def _latest_graph_build_counts(conn: Any) -> tuple[int, int] | None:
+def _latest_graph_build(conn: Any) -> dict[str, Any] | None:
     try:
         row = conn.execute(
             """
-            SELECT node_count, edge_count
+            SELECT start_date, end_date, node_count, edge_count
             FROM evidence_graph_build
             ORDER BY materialized_at DESC, generated_at DESC
             LIMIT 1
@@ -175,7 +187,23 @@ def _latest_graph_build_counts(conn: Any) -> tuple[int, int] | None:
         return None
     if not row:
         return None
-    return int(row[0]), int(row[1])
+    return {
+        "start_date": row[0],
+        "end_date": row[1],
+        "node_count": int(row[2]),
+        "edge_count": int(row[3]),
+    }
+
+
+def _iter_dates(start: date | None, end: date | None) -> tuple[date, ...]:
+    if start is None or end is None or end <= start:
+        return ()
+    days: list[date] = []
+    current = start
+    while current < end:
+        days.append(current)
+        current += timedelta(days=1)
+    return tuple(days)
 
 
 def _file_stat(path: Path) -> dict[str, int] | None:

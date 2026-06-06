@@ -199,13 +199,13 @@ class AiSessionEfficiencyReport:
 _profile_source: Optional[Callable[[], Iterator[SessionProfile]]] = None
 
 
-def _iter_profiles() -> Iterator[SessionProfile]:
+def _iter_profiles(*, start: date | None = None, end: date | None = None) -> Iterator[SessionProfile]:
     if _profile_source is not None:
         yield from _profile_source()
     else:
         from ..sources.polylogue import iter_session_profiles
 
-        yield from iter_session_profiles()
+        yield from iter_session_profiles(start=start, end=end)
 
 
 # ── Core computation ─────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ def analyze(*, start: date, end: date) -> AiSessionEfficiencyReport:
     """
     # ── Load profiles in the date range ──────────────────────────────────────
     in_window: list[SessionProfile] = []
-    for p in _iter_profiles():
+    for p in _iter_profiles(start=start, end=end):
         d = _profile_date(p)
         if d is None:
             continue

@@ -72,6 +72,24 @@ def _patch(monkeypatch, profiles: list[SessionProfile]) -> None:
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
 
+def test_default_profile_source_uses_requested_window(monkeypatch):
+    calls: list[tuple[date | None, date | None]] = []
+    start = date(2026, 5, 1)
+    end = date(2026, 5, 2)
+
+    def fake_iter_session_profiles(*, start=None, end=None):
+        calls.append((start, end))
+        yield _profile(d=start, engaged_ms=1000, wall_ms=2000)
+
+    monkeypatch.setattr(ae, "_profile_source", None)
+    monkeypatch.setattr("lynchpin.sources.polylogue.iter_session_profiles", fake_iter_session_profiles)
+
+    report = analyze(start=start, end=end)
+
+    assert calls == [(start, end)]
+    assert report.total_sessions == 1
+
+
 class TestEfficiencyMath:
     """Efficiency ratio is correct and carries numerator+denominator."""
 

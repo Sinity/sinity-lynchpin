@@ -40,6 +40,26 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
             SimpleNamespace(date=date(2026, 6, 6), project="lynchpin", duration_s=3600.0),
         ),
     )
+    monkeypatch.setattr(
+        mod,
+        "daily_activity",
+        lambda **kwargs: (
+            SimpleNamespace(
+                date=date(2026, 6, 6),
+                active_hours=1.0,
+                deep_work_min=30.0,
+                fragmentation_score=0.2,
+                project_count=1,
+                dominant_mode="coding",
+                dominant_project="lynchpin",
+                hourly_active=tuple([0.0] * 8 + [60.0] + [0.0] * 15),
+                outage_hours=0.0,
+                presence_active_hours=1.0,
+                presence_typing_hours=0.5,
+                presence_data_gap_hours=0.0,
+            ),
+        ),
+    )
     monkeypatch.setattr(mod, "deep_work", lambda **kwargs: ())
     monkeypatch.setattr(mod, "circadian", lambda **kwargs: ())
     monkeypatch.setattr(mod, "loops", lambda **kwargs: ())
@@ -56,7 +76,8 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
     assert manifest["schema_version"] == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     assert manifest["row_counts"]["focus_spans"] == 1
     assert manifest["row_counts"]["project_focus_days"] == 1
-    assert manifest["row_count"] == 2
+    assert manifest["row_counts"]["daily_activity"] == 1
+    assert manifest["row_count"] == 3
     assert manifest["window_semantics"] == "start inclusive, end exclusive"
     assert manifest["covered_dates"] == ["2026-06-06"]
     assert manifest["covered_date_count"] == 1
@@ -92,6 +113,7 @@ def test_materialize_activitywatch_derived_replaces_only_requested_window(monkey
             SimpleNamespace(date=date(2026, 6, 6), project="new", duration_s=444.0),
         ),
     )
+    monkeypatch.setattr(mod, "daily_activity", lambda **kwargs: ())
     monkeypatch.setattr(mod, "deep_work", lambda **kwargs: ())
     monkeypatch.setattr(mod, "circadian", lambda **kwargs: ())
     monkeypatch.setattr(mod, "loops", lambda **kwargs: ())
@@ -130,6 +152,7 @@ def test_materialize_activitywatch_derived_preserves_sparse_covered_dates(monkey
     monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (canonical,))
     monkeypatch.setattr(mod, "focus_spans", lambda **kwargs: ())
     monkeypatch.setattr(mod, "project_focus_days", lambda **kwargs: ())
+    monkeypatch.setattr(mod, "daily_activity", lambda **kwargs: ())
     monkeypatch.setattr(mod, "deep_work", lambda **kwargs: ())
     monkeypatch.setattr(mod, "circadian", lambda **kwargs: ())
     monkeypatch.setattr(mod, "loops", lambda **kwargs: ())
