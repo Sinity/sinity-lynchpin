@@ -48,17 +48,35 @@ def test_promote_work_observations_round_trip(tmp_path):
         shm_used_max_mb=2048.0,
         process_count_max=11,
         resource_sample_count=6,
+        host_block_read_mib_delta=12.5,
+        host_block_write_mib_delta=3.25,
+        host_block_read_iops_avg=100.0,
+        host_block_write_iops_avg=25.0,
+        host_block_busiest_device="nvme0n1",
+        host_block_busiest_device_total_mib_delta=15.75,
+        host_block_busiest_device_read_iops_avg=90.0,
+        host_block_busiest_device_write_iops_avg=20.0,
+        host_block_busiest_device_weighted_io_ms_per_s=250.0,
     )
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
         assert promote_work_observations(conn, refresh_id="r1", rows=[row]) == 1
         loaded = load_work_observations(conn, refresh_id="r1")
+        block_io = conn.execute(
+            """
+            SELECT host_block_busiest_device,
+                   host_block_read_mib_delta,
+                   host_block_busiest_device_weighted_io_ms_per_s
+            FROM work_observation
+            """
+        ).fetchone()
 
     assert loaded[0]["source_id"] == "xtask:1"
     assert loaded[0]["project"] == "sinex"
     assert loaded[0]["command"] == ["check", "clippy"]
     assert loaded[0]["status"] == "success"
+    assert block_io == ("nvme0n1", 12.5, 250.0)
 
 
 def test_promote_work_observation_stage_and_test_children(tmp_path):
@@ -95,7 +113,10 @@ def test_promote_work_observation_stage_and_test_children(tmp_path):
     with connect(db) as conn:
         apply_schema(conn)
         assert promote_work_observation_stages(conn, refresh_id="r1", rows=[stage]) == 1
-        assert promote_work_observation_test_results(conn, refresh_id="r1", rows=[test]) == 1
+        assert (
+            promote_work_observation_test_results(conn, refresh_id="r1", rows=[test])
+            == 1
+        )
         stages = conn.execute(
             "SELECT source_id, invocation_source_id, stage_name, success FROM work_observation_stage"
         ).fetchall()
@@ -157,7 +178,10 @@ def test_promote_polylogue_devtools_observations_round_trip(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        assert promote_polylogue_devtools_observations(conn, refresh_id="r1", rows=[row]) == 1
+        assert (
+            promote_polylogue_devtools_observations(conn, refresh_id="r1", rows=[row])
+            == 1
+        )
         loaded = load_work_observations(conn, refresh_id="r1")
         resource = conn.execute(
             "SELECT process_cpu_usage_avg, process_memory_usage_max_mb FROM work_observation"
@@ -172,8 +196,8 @@ def test_promote_polylogue_devtools_observations_round_trip(tmp_path):
 def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
     """Regression: xtask + polylogue devtools share the work_observation table
     under one refresh_id. promote_rows deletes by refresh_id alone, so the
-    second writer must NOT delete the first's rows. The refresh deletes once
-    and appends both sources with delete_existing=False."""
+    second writer must NOT delete the first's rows. The materialization deletes
+    once and appends both sources with delete_existing=False."""
     from lynchpin.sources.polylogue_devtools import PolylogueDevtoolsInvocation
     from lynchpin.sources.xtask_history import XtaskInvocation
     from lynchpin.substrate.connection import apply_schema, connect
@@ -186,15 +210,24 @@ def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
     def _none_resource() -> dict:
         return dict.fromkeys(
             (
-                "cpu_usage_avg", "memory_usage_max_mb",
+                "cpu_usage_avg",
+                "memory_usage_max_mb",
                 "process_memory_usage_max_mb",
-                "root_process_cpu_usage_avg", "root_process_memory_usage_max_mb",
-                "shared_nix_daemon_cpu_usage_avg", "shared_nix_daemon_memory_usage_max_mb",
-                "shared_nix_build_slice_cpu_usage_avg", "shared_nix_build_slice_memory_usage_max_mb",
-                "shared_background_slice_cpu_usage_avg", "shared_background_slice_memory_usage_max_mb",
-                "host_cpu_pressure_some_avg10_max", "host_io_pressure_some_avg10_max",
-                "host_io_pressure_full_avg10_max", "host_memory_pressure_some_avg10_max",
-                "host_memory_pressure_full_avg10_max", "shm_free_min_mb", "shm_used_max_mb",
+                "root_process_cpu_usage_avg",
+                "root_process_memory_usage_max_mb",
+                "shared_nix_daemon_cpu_usage_avg",
+                "shared_nix_daemon_memory_usage_max_mb",
+                "shared_nix_build_slice_cpu_usage_avg",
+                "shared_nix_build_slice_memory_usage_max_mb",
+                "shared_background_slice_cpu_usage_avg",
+                "shared_background_slice_memory_usage_max_mb",
+                "host_cpu_pressure_some_avg10_max",
+                "host_io_pressure_some_avg10_max",
+                "host_io_pressure_full_avg10_max",
+                "host_memory_pressure_some_avg10_max",
+                "host_memory_pressure_full_avg10_max",
+                "shm_free_min_mb",
+                "shm_used_max_mb",
             ),
             None,
         )
@@ -245,14 +278,20 @@ def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        # Mirror the refresh: one delete, then both sources append.
+        # Mirror the materialization: one delete, then both sources append.
         conn.execute("DELETE FROM work_observation WHERE refresh_id = ?", ["r1"])
-        assert promote_work_observations(
-            conn, refresh_id="r1", rows=[xtask], delete_existing=False
-        ) == 1
-        assert promote_polylogue_devtools_observations(
-            conn, refresh_id="r1", rows=[polylogue], delete_existing=False
-        ) == 1
+        assert (
+            promote_work_observations(
+                conn, refresh_id="r1", rows=[xtask], delete_existing=False
+            )
+            == 1
+        )
+        assert (
+            promote_polylogue_devtools_observations(
+                conn, refresh_id="r1", rows=[polylogue], delete_existing=False
+            )
+            == 1
+        )
         loaded = load_work_observations(conn, refresh_id="r1")
         # The xtask telemetry survived the second writer — the bug was that it did not.
         telemetry = conn.execute(

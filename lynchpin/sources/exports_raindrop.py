@@ -76,10 +76,19 @@ def list_raindrop_exports(root: Optional[Path] = None) -> list[RaindropExport]:
     return exports
 
 
-def iter_raindrop_bookmarks(csv_path: Optional[Path] = None) -> Iterator[RaindropBookmark]:
+def iter_raindrop_bookmarks(
+    csv_path: Optional[Path] = None, *, ensure: bool = True
+) -> Iterator[RaindropBookmark]:
     cfg = get_config()
     canonical = cfg.exports_root / "raindrop/processed/bookmarks.csv"
-    target = Path(csv_path) if csv_path else canonical
+    if csv_path is None:
+        if ensure:
+            from ..materialization import ensure_materialized
+
+            ensure_materialized("raindrop")
+        target = canonical
+    else:
+        target = Path(csv_path)
     if not target or not target.exists():
         raise FileNotFoundError(
             f"canonical Raindrop materialization is missing: {target}. "
@@ -145,10 +154,16 @@ def summarize_raindrop_bookmarks(
     return dict(counts)
 
 
-def daily_raindrop_activity(*, start: date, end: date) -> list[RaindropDayActivity]:
+def daily_raindrop_activity(*, start: date, end: date, ensure: bool = True) -> list[RaindropDayActivity]:
     """Daily bookmark additions."""
+
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("raindrop", window=(start, end))
+
     by_date: dict[date, tuple[int, set[str]]] = defaultdict(lambda: (0, set()))
-    for bookmark in iter_raindrop_bookmarks():
+    for bookmark in iter_raindrop_bookmarks(ensure=False):
         if bookmark.created is None:
             continue
         d = logical_date(bookmark.created)

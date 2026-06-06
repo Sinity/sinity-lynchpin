@@ -92,6 +92,37 @@ def test_promote_personal_daily_signal_round_trip(tmp_path: Path) -> None:
     assert '"domain_count": 7' in row[4]
 
 
+def test_load_personal_daily_signals_includes_end_date(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import (
+        load_personal_daily_signals,
+        promote_personal_daily_signals,
+    )
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_personal_daily_signals(
+            conn,
+            refresh_id="r1",
+            rows=[
+                ("webhistory", date(2026, 5, 22), "visit_count", 21.0, {}),
+                ("webhistory", date(2026, 5, 23), "visit_count", 42.0, {}),
+                ("webhistory", date(2026, 5, 24), "visit_count", 84.0, {}),
+            ],
+        )
+        rows = load_personal_daily_signals(
+            conn,
+            refresh_id="r1",
+            start=date(2026, 5, 23),
+            end=date(2026, 5, 23),
+        )
+
+    assert [(row[1], row[3]) for row in rows] == [(date(2026, 5, 23), 42.0)]
+
+
 def test_promote_personal_daily_signal_keeps_dimension_variants(tmp_path: Path) -> None:
     from datetime import date
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
+from lynchpin.core.io import load_json_if_exists, materialize_analysis_artifacts, resolve_analysis_path
 
 MACHINE_STATUS_ARTIFACTS = (
     "machine_dataset_diagnostics.json",
@@ -14,8 +14,9 @@ MACHINE_STATUS_ARTIFACTS = (
     "machine_support_assessment.json",
     "machine_instrumentation_gaps.json",
     "machine_benchmark_preflight.json",
-    "machine_benchmark_execution_queue.json",
-    "machine_below_export_queue.json",
+    "machine_benchmark_execution_handoff.json",
+    "machine_below_attribution.json",
+    "machine_below_export_handoff.json",
     "machine_experiment_manifest_diagnostics.json",
     "machine_attribution_claims.json",
     "machine_assumption_checks.json",
@@ -27,13 +28,15 @@ def machine_status_payload(
     *,
     resolver: Callable[[str], str | Path] | None = None,
 ) -> dict[str, Any]:
+    materialization = None if resolver is not None else _ensure_analysis_artifacts()
     resolver = resolver or resolve_analysis_path
     artifacts = {name: _artifact(name, resolver=resolver) for name in MACHINE_STATUS_ARTIFACTS}
     support = artifacts["machine_support_assessment.json"]
     gaps = artifacts["machine_instrumentation_gaps.json"]
     preflight = artifacts["machine_benchmark_preflight.json"]
-    execution_queue = artifacts["machine_benchmark_execution_queue.json"]
-    below_export_queue = artifacts["machine_below_export_queue.json"]
+    execution_handoff = artifacts["machine_benchmark_execution_handoff.json"]
+    below_attribution = artifacts["machine_below_attribution.json"]
+    below_export_handoff = artifacts["machine_below_export_handoff.json"]
     manifest_diagnostics = artifacts["machine_experiment_manifest_diagnostics.json"]
     experiments = artifacts["machine_experiment_claims.json"]
     claims = artifacts["machine_attribution_claims.json"]
@@ -47,6 +50,7 @@ def machine_status_payload(
             "expected": len(MACHINE_STATUS_ARTIFACTS),
             "available": sum(1 for row in artifacts.values() if row is not None),
             "missing": [name for name, row in artifacts.items() if row is None],
+            "materialization": materialization,
         },
         "support": {
             "candidate_count": _int(support, "candidate_count"),
@@ -57,9 +61,8 @@ def machine_status_payload(
             "assessment_controlled": support_levels.get("controlled", 0),
             "assessment_natural_experiment": support_levels.get("natural_experiment", 0),
             "assessment_insufficient": support_levels.get("insufficient", 0),
-            # Backward-compatible aliases for existing MCP/CLI consumers.
             "controlled_claim_count": _int(support, "controlled_claim_count"),
-            "controlled": support_levels.get("controlled", 0),
+            "controlled": _int(support, "controlled_claim_count"),
             "natural_experiment": support_levels.get("natural_experiment", 0),
             "insufficient": support_levels.get("insufficient", 0),
         },
@@ -70,18 +73,36 @@ def machine_status_payload(
             "issue_count": _int(preflight, "issue_count"),
             "warning_count": _int(preflight, "warning_count"),
         },
-        "benchmark_execution_queue": {
-            "queue_count": _int(execution_queue, "queue_count"),
-            "ready_group_count": _int(execution_queue, "ready_group_count"),
-            "blocked_group_count": _int(execution_queue, "blocked_group_count"),
-            "run_template_count": _int(execution_queue, "run_template_count"),
-            "ready_run_count": _int(execution_queue, "ready_run_count"),
+        "benchmark_execution_handoff": {
+            "handoff_count": _int(execution_handoff, "handoff_count"),
+            "ready_group_count": _int(execution_handoff, "ready_group_count"),
+            "blocked_group_count": _int(execution_handoff, "blocked_group_count"),
+            "run_template_count": _int(execution_handoff, "run_template_count"),
+            "ready_run_count": _int(execution_handoff, "ready_run_count"),
         },
-        "below_export_queue": {
-            "queue_count": _int(below_export_queue, "queue_count"),
-            "failed_capture_count": _int(below_export_queue, "failed_capture_count"),
-            "root": below_export_queue.get("root") if isinstance(below_export_queue, dict) else None,
-            "live_store": below_export_queue.get("live_store") if isinstance(below_export_queue, dict) else None,
+        "below_attribution": {
+            "episode_count": _int(below_attribution, "episode_count"),
+            "pressure_episode_count": _int(below_attribution, "pressure_episode_count"),
+            "bounded_below_attributed_pressure_episode_count": _int(
+                below_attribution,
+                "attributed_episode_count",
+            ),
+            "workload_resource_attributed_pressure_episode_count": _int(
+                below_attribution,
+                "workload_resource_attributed_pressure_episode_count",
+            ),
+            "residual_unattributed_pressure_episode_count": _int(
+                below_attribution,
+                "residual_unattributed_pressure_episode_count",
+            ),
+            "capture_count": _int(below_attribution, "capture_count"),
+            "live_store_index_count": _int(below_attribution, "live_store_index_count"),
+        },
+        "below_export_handoff": {
+            "planned_window_count": _int(below_export_handoff, "planned_window_count"),
+            "failed_capture_count": _int(below_export_handoff, "failed_capture_count"),
+            "root": below_export_handoff.get("root") if isinstance(below_export_handoff, dict) else None,
+            "live_store": below_export_handoff.get("live_store") if isinstance(below_export_handoff, dict) else None,
         },
         "experiment_manifests": {
             "manifest_count": _int(manifest_diagnostics, "manifest_count"),
@@ -128,6 +149,10 @@ def machine_status_payload(
 def _artifact(name: str, *, resolver: Callable[[str], str | Path]) -> dict[str, Any] | None:
     payload = load_json_if_exists(Path(resolver(name)))
     return payload if isinstance(payload, dict) else None
+
+
+def _ensure_analysis_artifacts() -> dict[str, Any]:
+    return materialize_analysis_artifacts()
 
 
 def _support_levels(payload: dict[str, Any] | None) -> dict[str, int]:
@@ -226,6 +251,14 @@ def _blockers(payload: dict[str, Any]) -> list[str]:
     preflight = payload["benchmark_preflight"] if isinstance(payload["benchmark_preflight"], dict) else {}
     if int(preflight.get("issue_count") or 0) > 0:
         blockers.append(f"{preflight.get('issue_count')} benchmark run templates fail preflight")
+    below_attribution = payload["below_attribution"] if isinstance(payload["below_attribution"], dict) else {}
+    residual_pressure = int(below_attribution.get("residual_unattributed_pressure_episode_count") or 0)
+    if residual_pressure > 0:
+        blockers.append(f"{residual_pressure} pressure episodes still lack below/workload attribution")
+    below_export_handoff = payload["below_export_handoff"] if isinstance(payload["below_export_handoff"], dict) else {}
+    planned_below_exports = int(below_export_handoff.get("planned_window_count") or 0)
+    if planned_below_exports > 0:
+        blockers.append(f"{planned_below_exports} bounded below export windows are planned")
     support = payload["support"] if isinstance(payload["support"], dict) else {}
     if int(support.get("insufficient") or 0) > 0:
         blockers.append(f"{support.get('insufficient')} support assessments remain explicit refusals")

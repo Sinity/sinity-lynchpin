@@ -186,6 +186,39 @@ def test_promote_machine_service_states_round_trip(tmp_path):
     assert loaded[0].memory_current_bytes == 1234
 
 
+def test_machine_service_state_summary_reports_counter_deltas(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_service_state_summary
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO machine_service_state (
+                observed_at, host, unit, scope, active_state, sub_state,
+                memory_current_bytes, cpu_usage_nsec, io_read_bytes,
+                io_write_bytes, refresh_id
+            ) VALUES
+                (?, 'host', 'below.service', 'system', 'active', 'running', 100, 1000, 50, 10, 'r1'),
+                (?, 'host', 'below.service', 'system', 'active', 'running', 200, 1750, 90, 25, 'r1')
+            """,
+            [
+                datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+                datetime(2026, 5, 12, 12, 1, tzinfo=timezone.utc),
+            ],
+        )
+        rows = load_machine_service_state_summary(conn, refresh_id="r1")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[5] == 200
+    assert row[6] == 750
+    assert row[7] == 40
+    assert row[8] == 15
+    assert row[11] == 1750
+
+
 def test_promote_machine_network_samples_round_trip(tmp_path):
     from lynchpin.sources.machine import MachineNetworkSample
     from lynchpin.substrate.connection import apply_schema, connect
@@ -218,3 +251,35 @@ def test_promote_machine_network_samples_round_trip(tmp_path):
     assert len(loaded) == 1
     assert loaded[0].interface == "enp6s0"
     assert loaded[0].pmtu_1492 is True
+
+
+def test_load_bufferbloat_daily_filters_refresh_id(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_bufferbloat_daily
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        for refresh_id, avg_ms in (("old-rid", 100.0), ("new-rid", 10.0)):
+            conn.execute(
+                """
+                INSERT INTO machine_network_sample (
+                    observed_at, host, boot_id, source_schema_version,
+                    interface, gateway_ip, ping, bloat, iface, nic, tcp,
+                    dns_ms, pmtu_1492, conntrack, gap_codes, refresh_id
+                ) VALUES (?, 'sinnix-prime', 'boot-a', 1,
+                    'enp6s0', '192.168.1.1', '{}', ?, '{}', '{}', '{}',
+                    NULL, NULL, '{}', [], ?)
+                """,
+                [
+                    datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+                    {"avg_ms": avg_ms, "loss": 0.0},
+                    refresh_id,
+                ],
+            )
+
+        rows = load_bufferbloat_daily(conn, refresh_id="new-rid")
+
+    assert len(rows) == 1
+    assert rows[0][2] == 1
+    assert rows[0][3] == 10.0

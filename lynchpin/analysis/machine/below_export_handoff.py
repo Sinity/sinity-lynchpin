@@ -1,4 +1,4 @@
-"""Durable queue of live ``below`` windows to export for pressure attribution."""
+"""Dry-run handoff of live ``below`` windows for pressure attribution export."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from lynchpin.core.io import save_json
 
 
 @dataclass(frozen=True)
-class BelowExportQueue:
-    queue_count: int
+class BelowExportHandoff:
+    planned_window_count: int
     failed_capture_count: int
     root: str
     live_store: str
@@ -28,7 +28,7 @@ class BelowExportQueue:
         return asdict(self)
 
 
-def analyze_below_export_queue(
+def analyze_below_export_handoff(
     *,
     start: date | None = None,
     end: date | None = None,
@@ -38,7 +38,7 @@ def analyze_below_export_queue(
     limit: int = 25,
     padding_seconds: int = 60,
     min_duration_seconds: int = 120,
-) -> BelowExportQueue:
+) -> BelowExportHandoff:
     failed = failed_below_exports(root=root)
     plans = plan_below_windows_for_pressure_episodes(
         start=start,
@@ -51,14 +51,14 @@ def analyze_below_export_queue(
         min_duration_seconds=min_duration_seconds,
     )
     caveats = [
-        "queue is dry-run planning only; use machine-below-export-pressure-windows --write to materialize bounded CSV windows",
+        "handoff is dry-run planning only; use machine-below-export-pressure-windows --write to materialize bounded CSV windows",
     ]
     if failed:
         caveats.append("failed/header-only bounded below exports are skipped by default; delete or repair failed report directories to retry")
     if not plans:
         caveats.append("no residual pressure windows currently need live below export")
-    return BelowExportQueue(
-        queue_count=len(plans),
+    return BelowExportHandoff(
+        planned_window_count=len(plans),
         failed_capture_count=len(failed),
         root=str(root),
         live_store=str(live_store),
@@ -83,7 +83,7 @@ def analyze_below_export_queue(
     )
 
 
-def write_below_export_queue(
+def write_below_export_handoff(
     out: Path,
     *,
     start: date | None = None,
@@ -94,8 +94,8 @@ def write_below_export_queue(
     limit: int = 25,
     padding_seconds: int = 60,
     min_duration_seconds: int = 120,
-) -> BelowExportQueue:
-    queue = analyze_below_export_queue(
+) -> BelowExportHandoff:
+    handoff = analyze_below_export_handoff(
         start=start,
         end=end,
         path=path,
@@ -106,9 +106,9 @@ def write_below_export_queue(
         min_duration_seconds=min_duration_seconds,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **queue.to_dict()}
+    payload = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), **handoff.to_dict()}
     save_json(out, json.loads(json.dumps(payload, default=str)), sort_keys=True)
-    return queue
+    return handoff
 
 
-__all__ = ["BelowExportQueue", "analyze_below_export_queue", "write_below_export_queue"]
+__all__ = ["BelowExportHandoff", "analyze_below_export_handoff", "write_below_export_handoff"]

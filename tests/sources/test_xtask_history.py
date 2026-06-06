@@ -18,6 +18,8 @@ def test_xtask_history_reads_invocation_rows(tmp_path: Path) -> None:
     assert row.project == "sinex"
     assert row.git_dirty is True
     assert row.process_count_max == 11
+    assert row.host_block_busiest_device == "nvme0n1"
+    assert row.host_block_read_mib_delta == 12.5
 
 
 def test_xtask_history_all_invocations_labels_archive_and_live(
@@ -98,6 +100,7 @@ def test_xtask_history_reads_recovered_schema_by_column_name(tmp_path: Path) -> 
     assert row.live_stage == "test"
     assert row.process_count_max == 33
     assert row.resource_sample_count == 44
+    assert row.host_block_busiest_device is None
 
 
 def test_xtask_history_reads_stage_timings_and_test_results(tmp_path: Path) -> None:
@@ -182,6 +185,15 @@ def _write_xtask_db(db: Path, *, row_id: int) -> Path:
                 host_io_pressure_full_avg10_max REAL,
                 host_memory_pressure_some_avg10_max REAL,
                 host_memory_pressure_full_avg10_max REAL,
+                host_block_read_mib_delta REAL,
+                host_block_write_mib_delta REAL,
+                host_block_read_iops_avg REAL,
+                host_block_write_iops_avg REAL,
+                host_block_busiest_device TEXT,
+                host_block_busiest_device_total_mib_delta REAL,
+                host_block_busiest_device_read_iops_avg REAL,
+                host_block_busiest_device_write_iops_avg REAL,
+                host_block_busiest_device_weighted_io_ms_per_s REAL,
                 shm_free_min_mb REAL, shm_used_max_mb REAL,
                 process_count_max INTEGER, resource_sample_count INTEGER
             )
@@ -193,12 +205,19 @@ def _write_xtask_db(db: Path, *, row_id: int) -> Path:
             (id, command, subcommand, profile, args_json, git_commit, git_dirty,
              started_at, finished_at, duration_secs, exit_code, status, host, cwd,
              live_stage, cpu_usage_avg, memory_usage_max_mb, process_count_max,
-             resource_sample_count)
+             resource_sample_count, host_block_read_mib_delta,
+             host_block_write_mib_delta, host_block_read_iops_avg,
+             host_block_write_iops_avg, host_block_busiest_device,
+             host_block_busiest_device_total_mib_delta,
+             host_block_busiest_device_read_iops_avg,
+             host_block_busiest_device_write_iops_avg,
+             host_block_busiest_device_weighted_io_ms_per_s)
             VALUES
             (?, 'check', 'clippy', NULL, '["--all"]', 'abc123', 1,
              '2026-05-31T19:47:18Z', '2026-05-31T19:48:18Z', 60.0, 0,
              'success', 'sinnix-prime', '/realm/project/sinex', 'clippy',
-             42.0, 512.0, 11, 6)
+             42.0, 512.0, 11, 6, 12.5, 3.25, 100.0, 25.0, 'nvme0n1',
+             15.75, 90.0, 20.0, 250.0)
             """,
             [row_id],
         )

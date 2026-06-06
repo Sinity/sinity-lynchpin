@@ -10,7 +10,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from lynchpin.core.io import load_json_if_exists, load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_materialized_analysis_artifact, load_json_if_exists, load_json_object, resolve_analysis_path, save_json
 
 from .causal_model import assess_causal_model
 from .controlled_benchmarks import benchmark_readiness, benchmark_run_manifest
@@ -72,7 +72,7 @@ def analyze_machine_benchmark_plans(
     inventory = (
         load_json_if_exists(derivation_inventory_path)
         if derivation_inventory_path is not None
-        else load_json_if_exists(resolve_analysis_path("machine_derivation_inventory.json"))
+        else _load_default_artifact("machine_derivation_inventory.json")
         if candidates_path is None
         else None
     )
@@ -103,6 +103,11 @@ def analyze_machine_benchmark_plans(
             "ready plans still require operator review before manifest capture",
         ],
     )
+
+
+def _load_default_artifact(name: str) -> dict[str, Any] | None:
+    payload, _materialization = load_materialized_analysis_artifact(name)
+    return payload if isinstance(payload, dict) else None
 
 
 def write_machine_benchmark_plans(

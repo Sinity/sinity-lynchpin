@@ -19,11 +19,11 @@ check:
 
 # --- Analysis -----------------------------------------------------------------------
 
-analysis-refresh spec="lynchpin/analysis/analysis_spec.json":
-    python -m lynchpin.analysis refresh --spec "{{spec}}"
+analysis-materialize spec="lynchpin/analysis/analysis_spec.json":
+    python -m lynchpin.analysis materialize --spec "{{spec}}"
 
-analysis-dry-run spec="lynchpin/analysis/analysis_spec.json":
-    python -m lynchpin.analysis refresh --spec "{{spec}}" --dry-run
+analysis-materialize-dry-run spec="lynchpin/analysis/analysis_spec.json":
+    python -m lynchpin.analysis materialize --spec "{{spec}}" --dry-run
 
 ecosystem-dashboard spec="lynchpin/analysis/analysis_spec.json":
     python -m lynchpin.analysis ecosystem-dashboard --spec "{{spec}}"
@@ -48,7 +48,7 @@ chisel projects="" output_root="" max_workers="4":
 tool-inventory:
     @echo "=== CLI Entry Points ==="
     @echo "  python -m lynchpin.cli.current_state"
-    @echo "  python -m lynchpin.analysis refresh"
+    @echo "  python -m lynchpin.analysis materialize"
     @echo "  python -m lynchpin.cli.process_health"
     @echo "  python -m lynchpin.analysis.projects velocity"
     @echo "  python -m lynchpin.analysis.projects chisel"

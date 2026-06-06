@@ -1,6 +1,7 @@
 """Tests for Gmail Takeout source (gmail_takeout.py)."""
 
-from datetime import date
+from datetime import date, datetime, timezone
+import json
 
 import pytest
 
@@ -84,6 +85,86 @@ def test_gmail_message_date_none_for_missing_timestamp():
         size_bytes=100,
     )
     assert msg.date is None
+
+
+def test_iter_materialized_gmail_messages_converges_google_takeout(monkeypatch, tmp_path):
+    from lynchpin.sources import gmail_takeout
+
+    product = tmp_path / "events.ndjson"
+    product.write_text(
+        json.dumps(
+            {
+                "message_id": "<1@example.com>",
+                "thread_id": "thread-1",
+                "sender": "alice@example.com",
+                "recipients": ["bob@example.com"],
+                "cc": [],
+                "timestamp": "2026-01-01T12:00:00+00:00",
+                "subject": "hello",
+                "body_preview": "body",
+                "label": "Mail",
+                "archive_source": "fixture",
+                "size_bytes": 10,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_ensure_materialized(name):
+        calls.append(name)
+
+    monkeypatch.setattr(gmail_takeout, "gmail_events_path", lambda: product)
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        gmail_takeout,
+        "iter_gmail_messages_deduped",
+        lambda: (_ for _ in ()).throw(AssertionError("raw Gmail fallback should not run")),
+    )
+
+    rows = list(gmail_takeout.iter_materialized_gmail_messages())
+
+    assert calls == ["google_takeout"]
+    assert rows[0].message_id == "<1@example.com>"
+    assert rows[0].timestamp is not None
+
+
+def test_daily_gmail_activity_uses_single_windowed_materialization(monkeypatch):
+    from lynchpin.sources import gmail_takeout
+
+    calls = []
+    message = GmailMessage(
+        message_id="<1@example.com>",
+        thread_id="thread-1",
+        sender="alice@example.com",
+        recipients=("ezo.dev@gmail.com",),
+        cc=(),
+        timestamp=datetime(2026, 5, 5, 12, tzinfo=timezone.utc),
+        subject="hello",
+        body_preview="body",
+        label="Mail",
+        archive_source="fixture",
+        size_bytes=10,
+    )
+
+    def fake_ensure(name, *, window=None):
+        calls.append((name, window))
+
+    def fake_messages(*, path=None, ensure=True):
+        assert path is None
+        assert ensure is False
+        yield message
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+    monkeypatch.setattr(gmail_takeout, "iter_materialized_gmail_messages", fake_messages)
+
+    rows = gmail_takeout.daily_gmail_activity(
+        start=date(2026, 5, 5), end=date(2026, 5, 6)
+    )
+
+    assert calls == [("google_takeout", (date(2026, 5, 5), date(2026, 5, 6)))]
+    assert rows[0].message_count == 1
 
 
 # ── Integration tests (require actual Takeout archives) ────────────────────────

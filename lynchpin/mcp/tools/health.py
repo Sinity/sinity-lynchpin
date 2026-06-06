@@ -1,7 +1,7 @@
 """Health, audit, and anomaly MCP tools."""
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id as _best_refresh_id, json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, latest_materialized_refresh_id
 
 @app.tool()
 def substrate_gap_draft() -> dict[str, Any]:
@@ -22,8 +22,9 @@ def substrate_gap_draft() -> dict[str, Any]:
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_source_gap_rows
+    ensure_substrate_materialized_for_read(caller='substrate_gap_draft')
     with connect(substrate_path(), read_only=True) as conn:
-        refresh_id = _latest_refresh_id(conn)
+        refresh_id = latest_materialized_refresh_id(conn, caller='substrate_gap_draft')
         if refresh_id is None:
             return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
         gaps = load_source_gap_rows(conn, refresh_id=refresh_id)
@@ -70,6 +71,8 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_evidence_node_by_source, load_source_status_map
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='substrate_confidence_matrix')
     return {'refresh_id': refresh_id, 'dimensions': dimensions, 'summary': {'total_nodes': total_nodes, 'source_count': len(dimensions), 'healthy_source_count': healthy, 'confidence_pct': round(confidence, 1)}}
 
 @app.tool()
@@ -101,9 +104,11 @@ def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_ai_work_event_count, load_ai_work_event_disagreements, load_ai_work_event_per_kind_confidence, load_ai_work_event_source_distribution, load_ai_work_event_tier_distribution
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='kind_audit')
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = best_materialized_refresh_id(conn, 'ai_work_event', caller='kind_audit')
             if refresh_id is None:
                 return {'error': 'no promote runs'}
         total = load_ai_work_event_count(conn, refresh_id=refresh_id)
@@ -127,7 +132,7 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
     project + date to compute per-day survival rates.
 
     Parameters:
-        refresh_id:  snapshot (default: latest).
+        refresh_id:  snapshot (default: best symbol_change coverage).
         min_symbols: minimum symbol count per project-day to include.
 
     Returns:
@@ -144,9 +149,11 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_symbol_change_count, load_symbol_survival_by_project_day
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='work_package_durability')
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = best_materialized_refresh_id(conn, 'symbol_change', caller='work_package_durability')
             if refresh_id is None:
                 return {'error': 'no promote runs'}
         total = load_symbol_change_count(conn, refresh_id=refresh_id)
@@ -160,9 +167,11 @@ def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_evidence_node_source_caveats
     RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low'}
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='evidence_confidence')
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, 'evidence_node')
+            refresh_id = best_materialized_refresh_id(conn, 'evidence_node', caller='evidence_confidence')
             if refresh_id is None:
                 return []
         rows = load_evidence_node_source_caveats(conn, refresh_id=refresh_id)
@@ -201,9 +210,11 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_project_day_anomaly_rows
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='source_anomalies')
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
+            refresh_id = best_materialized_refresh_id(conn, 'project_day_correlation', caller='source_anomalies')
             if refresh_id is None:
                 return []
         rows = load_project_day_anomaly_rows(conn, refresh_id=refresh_id)
@@ -270,7 +281,7 @@ def promote_analysis_product(title: str, path: str, refresh_id: str | None=None,
     with connect(substrate_path(), read_only=False) as conn:
         apply_schema(conn)
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = latest_materialized_refresh_id(conn, caller='adversarial_review')
             if refresh_id is None:
                 return {'promoted': False, 'node_id': node_id, 'error': 'no promote runs'}
         conn.execute('DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?', [refresh_id, node_id])
@@ -295,6 +306,8 @@ def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_ordered_refresh_ids, load_source_status_by_refresh
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='health_trend')
     with connect(substrate_path(), read_only=True) as conn:
         refresh_ids = load_ordered_refresh_ids(conn)
     if len(refresh_ids) < 2:
@@ -342,6 +355,7 @@ def cleanup_period_detect(start: str, end: str, project: str | None=None) -> lis
     from lynchpin.substrate.readers_health import load_commits_by_month, load_ai_messages_by_month
     start_d = _date_cls.fromisoformat(start)
     end_d = _date_cls.fromisoformat(end)
+    ensure_substrate_materialized_for_read(caller='cleanup_period_detect', window=half_open_date_window(start_d, end_d))
     with connect(substrate_path(), read_only=True) as conn:
         commits_by_month: dict[str, int] = {}
         for row in load_commits_by_month(conn, start=start_d, end=end_d, project=project):

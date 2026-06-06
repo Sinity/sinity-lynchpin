@@ -22,6 +22,9 @@ def test_observability_catalog_identifies_canonical_machine_input():
     assert "psi" in machine.state_dimensions
     assert "gpu_high_frequency" in machine.state_dimensions
     assert "network_link_quality" in machine.state_dimensions
+    assert "block_device_io" in machine.state_dimensions
+    assert "service_cgroup_io" in machine.state_dimensions
+    assert "directly from the live SQLite" in machine.next_action
 
 
 def test_observability_catalog_keeps_operational_views_out_of_canonical_data():

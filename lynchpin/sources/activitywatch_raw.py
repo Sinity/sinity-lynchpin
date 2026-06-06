@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from bisect import bisect_left
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Sequence
 
 import functools
 
 from ..core.cache import file_signature
 from ..core.config import get_config
 from .activitywatch_models import AWEvent
+from .activitywatch_event_index import iter_indexed_activitywatch_events
 
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -54,6 +55,18 @@ def events(
     db_path: Optional[Path] = None,
 ) -> Iterator[AWEvent]:
     if db_path is None:
+        from ..materialization import ensure_materialized
+
+        window = _datetime_window(start, end)
+        ensure_materialized("activitywatch", window=window)
+        index_result = ensure_materialized("activitywatch_event_index", window=window)
+        if index_result.status in {"ready", "updated"}:
+            yield from iter_indexed_activitywatch_events(
+                bucket_prefix=bucket_prefix,
+                start=start,
+                end=end,
+            )
+            return
         path = canonical_activitywatch_events_path()
         if not path.exists():
             raise FileNotFoundError(
@@ -66,17 +79,21 @@ def events(
 
 
 def events_from_activitywatch_dbs(
-    bucket_prefix: str,
+    bucket_prefix: str | Sequence[str],
     *,
     start: datetime | None = None,
     end: datetime | None = None,
     db_path: Optional[Path] = None,
 ) -> Iterator[AWEvent]:
+    prefixes = (bucket_prefix,) if isinstance(bucket_prefix, str) else tuple(bucket_prefix)
+    if not prefixes:
+        return
+    prefix_clause = " OR ".join("b.name LIKE ?" for _prefix in prefixes)
     query = (
         "SELECT b.name, e.starttime, e.endtime, e.data "
-        "FROM events e JOIN buckets b ON b.id = e.bucketrow WHERE b.name LIKE ?"
+        f"FROM events e JOIN buckets b ON b.id = e.bucketrow WHERE ({prefix_clause})"
     )
-    params: list[object] = [f"{bucket_prefix}%"]
+    params: list[object] = [f"{prefix}%" for prefix in prefixes]
     if end is not None:
         until_ns = int(end.timestamp() * 1_000_000_000)
         query += " AND e.starttime < ?"
@@ -89,6 +106,8 @@ def events_from_activitywatch_dbs(
     seen: set[tuple[str, int, int, str]] = set()
     rows: list[AWEvent] = []
     for candidate in _candidate_dbs(db_path):
+        if not _candidate_may_overlap(candidate, prefixes=prefixes, start=start, end=end):
+            continue
         # `with conn:` only manages the transaction, not the handle; closing()
         # guarantees the sqlite connection is released per archive DB so we do
         # not leak file handles across the (potentially many) candidate DBs.
@@ -120,6 +139,63 @@ def events_from_activitywatch_dbs(
                 e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
                 rows.append(AWEvent(bucket=bucket, start=s, end=e, data=data))
     yield from sorted(rows, key=lambda event: event.start)
+
+
+def _candidate_may_overlap(
+    path: Path,
+    *,
+    prefixes: tuple[str, ...],
+    start: datetime | None,
+    end: datetime | None,
+) -> bool:
+    if start is None and end is None:
+        return True
+    bounds = _db_event_bounds(path, file_signature(path), prefixes)
+    if bounds is False:
+        return False
+    if bounds is None:
+        return True
+    first_ns, last_ns = bounds
+    if end is not None and first_ns >= int(end.timestamp() * 1_000_000_000):
+        return False
+    if start is not None and last_ns <= int(start.timestamp() * 1_000_000_000):
+        return False
+    return True
+
+
+@functools.lru_cache(maxsize=64)
+def _db_event_bounds(
+    path: Path,
+    signature: object,
+    prefixes: tuple[str, ...],
+) -> tuple[int, int] | bool | None:
+    del signature
+    if not prefixes:
+        return None
+    try:
+        with closing(_connect(path)) as conn:
+            bucket_ids = _matching_bucket_ids(conn, prefixes)
+            if not bucket_ids:
+                return False
+            placeholders = ",".join("?" for _bucket_id in bucket_ids)
+            row = conn.execute(
+                f"SELECT MIN(starttime), MAX(endtime) FROM events WHERE bucketrow IN ({placeholders})",
+                list(bucket_ids),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None or row[1] is None:
+        return False
+    return int(row[0]), int(row[1])
+
+
+def _matching_bucket_ids(conn: sqlite3.Connection, prefixes: tuple[str, ...]) -> tuple[int, ...]:
+    clauses = " OR ".join("name LIKE ?" for _prefix in prefixes)
+    rows = conn.execute(
+        f"SELECT id FROM buckets WHERE {clauses}",
+        [f"{prefix}%" for prefix in prefixes],
+    ).fetchall()
+    return tuple(int(row[0]) for row in rows)
 
 
 def _events_from_ndjson(
@@ -290,3 +366,10 @@ def web_events(**kw: Any) -> Iterator[AWEvent]:
     hyphen prefix to catch all per-browser variants.
     """
     return events("aw-watcher-web-", **kw)
+
+
+def _datetime_window(start: datetime, end: datetime) -> tuple[date, date]:
+    end_date = end.date()
+    if (end.hour, end.minute, end.second, end.microsecond) != (0, 0, 0, 0):
+        end_date += timedelta(days=1)
+    return (start.date(), end_date)

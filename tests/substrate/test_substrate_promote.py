@@ -1,4 +1,4 @@
-"""Tests for the refresh-DAG substrate promotion step (Arc 2.6).
+"""Tests for the materialization-DAG substrate promotion step (Arc 2.6).
 
 Covers:
 - missing JSON files: run returns {} without raising
@@ -7,7 +7,7 @@ Covers:
 - symbol changes JSON: promoted to substrate
 - idempotence: same refresh_id produces same row count, not 2x
 - partition isolation: two refresh_ids both present
-- run_substrate_promote swallows errors (DAG stays green)
+- run_substrate_promote records errors before re-raising
 """
 
 from __future__ import annotations
@@ -268,7 +268,7 @@ def test_substrate_promote_handles_missing_files(
 def test_substrate_promote_raises_infrastructure_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A broken substrate path must raise so refresh cannot look successful."""
+    """A broken substrate path must raise so materialization cannot look successful."""
     import lynchpin.substrate.connection as duck_conn
 
     # Point substrate to an unwriteable path.
@@ -313,6 +313,13 @@ def test_substrate_promote_uses_derived_personal_products(
         "lynchpin.analysis.operator_daily.operator_daily_matrix",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("targeted promote must not build operator_day")),
     )
+    ensure_calls = []
+
+    def fake_ensure_materialized(name: str, *, window=None):
+        ensure_calls.append((name, window))
+        return SimpleNamespace(status="ready", reason="ready")
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
     from lynchpin.analysis.active.substrate_promote_status import (
@@ -333,6 +340,10 @@ def test_substrate_promote_uses_derived_personal_products(
     )
 
     assert result.status == "ok"
+    assert ensure_calls == [
+        ("spotify_daily", (date(2026, 5, 1), date(2026, 5, 2))),
+        ("personal_daily_signals", (date(2026, 5, 1), date(2026, 5, 2))),
+    ]
     assert result.counts["personal_daily_signal"] == 1
     assert result.counts["spotify_daily"] == 1
     with connect(substrate_path(), read_only=True) as conn:
@@ -379,6 +390,107 @@ def test_substrate_promote_loads_commit_facts(
         apply_schema(conn)
         total = conn.execute("SELECT COUNT(*) FROM commit_fact").fetchone()[0]
     assert total == 3
+
+
+def test_substrate_promote_records_stage_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal promote records durable stage progress rows with row deltas."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    sha = "stg" + "0" * 37
+    cf_file = tmp_path / "commit_facts.json"
+    cf_file.write_text(json.dumps(_make_commit_facts_payload([
+        _make_commit_entry(sha),
+    ])))
+    fc_file = tmp_path / "fc.json"
+    fc_file.write_text(json.dumps(_make_file_change_payload([])))
+    sym_file = tmp_path / "sym.json"
+    sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
+
+    from lynchpin.analysis.active.substrate_promote import (
+        SOURCE_COMMITS,
+        run_substrate_promote,
+    )
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+
+    refresh_id = "dag:test-stage-steps"
+    run_substrate_promote(
+        commit_facts_file=str(cf_file),
+        file_changes_file=str(fc_file),
+        symbol_changes_file=str(sym_file),
+        refresh_id=refresh_id,
+        sources={SOURCE_COMMITS},
+        write_evidence_graph=False,
+    )
+
+    with connect(substrate_path()) as conn:
+        apply_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT step, status, message, row_count, started_at, finished_at
+            FROM substrate_run_step
+            WHERE refresh_id = ? AND step = 'promote_artifacts'
+            ORDER BY rowid
+            """,
+            [refresh_id],
+        ).fetchall()
+
+    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+        ("promote_artifacts", "running", "started", None),
+        ("promote_artifacts", "success", "finished", 1),
+    ]
+    assert rows[0][4] is not None
+    assert rows[0][5] is None
+    assert rows[1][4] is not None
+    assert rows[1][5] is not None
+
+
+def test_substrate_promote_records_stage_error_before_reraising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing stage leaves a run-step error row for post-mortem inspection."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+
+    from lynchpin.analysis.active import substrate_promote
+    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+
+    def fail_promote_artifacts(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(substrate_promote, "promote_artifact_sources", fail_promote_artifacts)
+    refresh_id = "dag:test-stage-error"
+
+    with pytest.raises(RuntimeError, match="stage exploded"):
+        substrate_promote.run_substrate_promote(
+            commit_facts_file=str(tmp_path / "commit_facts.json"),
+            file_changes_file=str(tmp_path / "fc.json"),
+            symbol_changes_file=str(tmp_path / "sym.json"),
+            refresh_id=refresh_id,
+            sources={substrate_promote.SOURCE_COMMITS},
+            write_evidence_graph=False,
+        )
+
+    with connect(substrate_path()) as conn:
+        apply_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT step, status, message, row_count, finished_at
+            FROM substrate_run_step
+            WHERE refresh_id = ? AND step = 'promote_artifacts'
+            ORDER BY rowid
+            """,
+            [refresh_id],
+        ).fetchall()
+
+    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+        ("promote_artifacts", "running", "started", None),
+        ("promote_artifacts", "error", "RuntimeError: stage exploded", 0),
+    ]
+    assert rows[0][4] is None
+    assert rows[1][4] is not None
 
 
 def test_substrate_promote_merges_active_ai_attribution(
@@ -1002,6 +1114,104 @@ def test_substrate_promote_rejects_unknown_source_selection(
         assert "unknown substrate promote source(s): machine_gpu" in str(exc)
     else:
         raise AssertionError("expected unknown source selection to fail")
+
+
+def test_work_source_promotion_streams_source_iterables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Work promotion must not materialize high-volume source rows as lists."""
+    from lynchpin.analysis.active import substrate_promote_work as work_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_WORK_OBSERVATIONS,
+        SourceSelection,
+    )
+
+    class Conn:
+        def __init__(self) -> None:
+            self.deletes = 0
+
+        def execute(self, sql: str, params: list[object]) -> None:
+            assert sql == "DELETE FROM work_observation WHERE refresh_id = ?"
+            assert params == ["rid"]
+            self.deletes += 1
+
+    def source_rows(label: str):
+        yield label
+
+    seen: dict[str, str] = {}
+
+    def consume(name: str, rows: object, **_kwargs: object) -> int:
+        assert not isinstance(rows, list), f"{name} rows were eagerly listed"
+        seen[name] = next(iter(rows))  # type: ignore[arg-type]
+        return 1
+
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.xtask_history_paths",
+        lambda: (("live", tmp_path / "xtask.db"),),
+    )
+    (tmp_path / "xtask.db").write_text("", encoding="utf-8")
+    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda: True)
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.iter_all_invocations",
+        lambda **kwargs: source_rows("xtask"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.polylogue_devtools.iter_invocations",
+        lambda **kwargs: source_rows("polylogue"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.iter_all_stage_timings",
+        lambda **kwargs: source_rows("stage"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.iter_all_test_results",
+        lambda **kwargs: source_rows("test"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_work_observations",
+        lambda conn, refresh_id, rows, delete_existing=True: consume("xtask", rows),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_polylogue_devtools_observations",
+        lambda conn, refresh_id, rows, delete_existing=True: consume("polylogue", rows),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_work_observation_stages",
+        lambda conn, refresh_id, rows: consume("stage", rows),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_work_observation_test_results",
+        lambda conn, refresh_id, rows: consume("test", rows),
+    )
+    statuses = []
+    monkeypatch.setattr(
+        work_promote,
+        "record_source_status",
+        lambda *args, **kwargs: statuses.append(kwargs),
+    )
+
+    counts: dict[str, int] = {}
+    conn = Conn()
+    work_promote.promote_work_sources(
+        conn,
+        refresh_id="rid",
+        window_start=date(2026, 5, 1),
+        window_end=date(2026, 5, 2),
+        counts=counts,
+        selection=SourceSelection.from_collection({SOURCE_WORK_OBSERVATIONS}),
+    )
+
+    assert conn.deletes == 1
+    assert seen == {
+        "xtask": "xtask",
+        "polylogue": "polylogue",
+        "stage": "stage",
+        "test": "test",
+    }
+    assert counts["work_observations"] == 2
+    assert counts["work_observation_test_results"] == 1
+    assert statuses[0]["status"] == "ok"
+    assert statuses[0]["row_count"] == 4
 
 
 def test_pr_review_promotion_when_payload_present(

@@ -56,7 +56,7 @@ def render_current_state(
     persist_weak_tags: bool = False,
     json_output: bool = False,
     timeline_output: Path | None = None,
-    refresh_substrate: bool = False,
+    materialize_substrate: bool = False,
     progress: str = "plain",
 ) -> str:
     start_dt = as_local(datetime.combine(start, time.min))
@@ -69,7 +69,7 @@ def render_current_state(
         weak_tags=weak_tags,
         persist_weak_tags=persist_weak_tags,
         prefer_substrate=True,
-        refresh_substrate=refresh_substrate,
+        materialize_substrate=materialize_substrate,
     )
     if timeline_output is not None:
         timeline = build_current_state_timeline(pack.graph, start=start, end=end)
@@ -109,10 +109,10 @@ def _current_state_command(
             " Sibling artifact of the context pack, citation-rich."
         ),
     ),
-    refresh_substrate: bool = typer.Option(
+    materialize_substrate: bool = typer.Option(
         False,
-        "--refresh-substrate/",
-        help="Rebuild live and replace the deterministic DuckDB graph for this range.",
+        "--materialize-substrate/",
+        help="Materialize and replace the deterministic DuckDB graph for this range.",
     ),
     progress: str = typer.Option(
         "plain",
@@ -136,7 +136,7 @@ def _current_state_command(
         persist_weak_tags=persist_weak_tags,
         json_output=json_output,
         timeline_output=timeline_output,
-        refresh_substrate=refresh_substrate,
+        materialize_substrate=materialize_substrate,
         progress=progress,
     )
     if output:

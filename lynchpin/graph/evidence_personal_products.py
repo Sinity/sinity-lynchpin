@@ -6,6 +6,40 @@ from datetime import date, timedelta
 
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
+from ..materialization import ensure_materialized
+
+
+def ensure_personal_daily_signals(start: date, end: date) -> None:
+    ensure_materialized("personal_daily_signals", window=(start, end + timedelta(days=1)))
+
+
+def add_personal_daily_signals(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
+    from ..sources.personal_signals import iter_personal_daily_signals
+
+    ensure_personal_daily_signals(start, end)
+    for row in iter_personal_daily_signals(start=start, end=end + timedelta(days=1), ensure=False):
+        dimensions = dict(row.dimensions)
+        nodes.append(
+            EvidenceNode(
+                id=(
+                    f"personal_daily_signal:{row.source}:{row.date.isoformat()}:"
+                    f"{row.metric}:{_dimension_key(dimensions)}"
+                ),
+                kind="personal_daily_signal",
+                source=row.source,
+                date=row.date,
+                project=None,
+                summary=f"{row.source} {row.metric}={row.value:g}",
+                payload={
+                    "source": row.source,
+                    "metric": row.metric,
+                    "value": row.value,
+                    "dimensions": dimensions,
+                },
+                provenance=EvidenceProvenance("personal_daily_signals", "materialized"),
+                caveats=(),
+            )
+        )
 
 
 def add_personal_products(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
@@ -18,14 +52,11 @@ def add_personal_products(nodes: list[EvidenceNode], *, start: date, end: date) 
 
 
 def _add_activity_content(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("activity_content", start=start, end=end):
-        return
+    _ensure_source("activity_content", start=start, end=end)
 
     from ..sources.activity_content import iter_activity_content_days
 
-    for row in iter_activity_content_days():
-        if row.date < start or row.date > end:
-            continue
+    for row in iter_activity_content_days(start=start, end=end + timedelta(days=1), ensure=False):
         top_activity = _top_bucket(row.activity_seconds)
         top_topic = _top_bucket(row.topic_seconds)
         nodes.append(
@@ -57,12 +88,11 @@ def _add_activity_content(nodes: list[EvidenceNode], *, start: date, end: date) 
 
 
 def _add_google_takeout(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("google_takeout", start=start, end=end):
-        return
+    _ensure_source("google_takeout", start=start, end=end)
 
     from ..sources.google_takeout_products import iter_daily_activity
 
-    for row in iter_daily_activity(start=start, end=end + timedelta(days=1)):
+    for row in iter_daily_activity(start=start, end=end + timedelta(days=1), ensure=False):
         label = row.product if row.service is None else f"{row.product}/{row.service}"
         nodes.append(
             EvidenceNode(
@@ -84,12 +114,11 @@ def _add_google_takeout(nodes: list[EvidenceNode], *, start: date, end: date) ->
 
 
 def _add_bookmarks(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("browser_bookmarks", start=start, end=end):
-        return
+    _ensure_source("browser_bookmarks", start=start, end=end)
 
     from ..sources.bookmarks import daily_bookmark_activity
 
-    rows = daily_bookmark_activity(start=start, end=end)
+    rows = daily_bookmark_activity(start=start, end=end, ensure=False)
     for row in rows:
         nodes.append(
             EvidenceNode(
@@ -111,12 +140,11 @@ def _add_bookmarks(nodes: list[EvidenceNode], *, start: date, end: date) -> None
 
 
 def _add_communications(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("communications", start=start, end=end):
-        return
+    _ensure_source("communications", start=start, end=end)
 
     from ..sources.communications import daily_communication_activity
 
-    rows = daily_communication_activity(start=start, end=end)
+    rows = daily_communication_activity(start=start, end=end, ensure=False)
     for row in rows:
         nodes.append(
             EvidenceNode(
@@ -139,12 +167,11 @@ def _add_communications(nodes: list[EvidenceNode], *, start: date, end: date) ->
 
 
 def _add_arbtt(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("arbtt", start=start, end=end):
-        return
+    _ensure_source("arbtt", start=start, end=end)
 
     from ..sources.arbtt import daily_arbtt_activity
 
-    rows = daily_arbtt_activity(start=start, end=end)
+    rows = daily_arbtt_activity(start=start, end=end, ensure=False)
     for row in rows:
         nodes.append(
             EvidenceNode(
@@ -166,12 +193,11 @@ def _add_arbtt(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
 
 
 def _add_irc(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
-    if not _source_overlaps("irc", start=start, end=end):
-        return
+    _ensure_source("irc", start=start, end=end)
 
     from ..sources.irc_raw import daily_irc_activity
 
-    rows = daily_irc_activity(start=start, end=end)
+    rows = daily_irc_activity(start=start, end=end, ensure=False)
     for row in rows:
         nodes.append(
             EvidenceNode(
@@ -216,10 +242,10 @@ def _add_irc(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
         )
 
 
-def _source_overlaps(source: str, *, start: date, end: date) -> bool:
-    from ..materialization import materialized_window_overlaps
+def _ensure_source(source: str, *, start: date, end: date) -> None:
+    from ..materialization import ensure_materialized
 
-    return materialized_window_overlaps(source, start=start, end=end)
+    ensure_materialized(source, window=(start, end + timedelta(days=1)))
 
 
 def _top_bucket(values: dict[str, float]) -> tuple[str, float] | None:
@@ -229,4 +255,10 @@ def _top_bucket(values: dict[str, float]) -> tuple[str, float] | None:
     return label, seconds
 
 
-__all__ = ["add_personal_products"]
+def _dimension_key(dimensions: dict[str, object]) -> str:
+    if not dimensions:
+        return "none"
+    return "|".join(f"{key}={dimensions[key]}" for key in sorted(dimensions))
+
+
+__all__ = ["add_personal_daily_signals", "add_personal_products"]

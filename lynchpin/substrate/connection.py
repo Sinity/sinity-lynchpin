@@ -4,7 +4,7 @@ The substrate file lives at ``.lynchpin/duck/substrate.duckdb`` (under
 ``LynchpinConfig.generated_root`` so it sits alongside the JSON artifact dir,
 not in the cachew cache).
 
-Concurrency: single writer (refresh DAG); many readers via DuckDB's MVCC.
+Concurrency: single writer (materialization DAG); many readers via DuckDB's MVCC.
 We never run concurrent writers today; the assumption is documented here so
 future MCP-server work knows the constraint.
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     import duckdb
-SUBSTRATE_VERSION = 28
+SUBSTRATE_VERSION = 30
 'Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote.'
 
 def substrate_path() -> Path:
@@ -32,7 +32,7 @@ def substrate_path() -> Path:
 def substrate_read_snapshot_path() -> Path:
     return substrate_path().with_suffix('.read-snapshot.duckdb')
 
-def refresh_read_snapshot(path: Path | None=None) -> Path | None:
+def update_read_snapshot(path: Path | None=None) -> Path | None:
     """Copy the current canonical substrate to its read-snapshot location.
 
     Idempotent: overwrites any prior snapshot. Returns the snapshot path
@@ -60,15 +60,15 @@ def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback:
     """Yield a DuckDB connection to the substrate.
 
     When ``read_only=True`` and the canonical substrate is held under an
-    exclusive write lock (refresh DAG in flight), this falls back to the
+    exclusive write lock (materialization DAG in flight), this falls back to the
     read-snapshot copy if one exists. Returns a slightly-stale but live
-    connection instead of erroring. Set ``snapshot_fallback=False`` to
-    preserve the strict lock-error behavior for callers that need to
-    distinguish freshness from data-availability.
+    connection instead of erroring. Set ``snapshot_fallback=False`` to preserve
+    the strict lock-error behavior for callers that need to distinguish current
+    canonical availability from snapshot availability.
 
     Caller responsibility: do not run concurrent writers. Reads against
     the canonical are MVCC-safe; reads against the snapshot are
-    point-in-time and may be up to one promote cycle stale.
+    point-in-time and may trail the canonical by one promote cycle.
     """
     import duckdb
     target = path if path is not None else substrate_path()

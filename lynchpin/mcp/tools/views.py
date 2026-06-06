@@ -7,7 +7,7 @@ cause ``issubclass('str', Context)`` → TypeError.
 """
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id, dataclass_to_json_dict, json_safe as _json_safe
+from lynchpin.mcp.tools._utils import best_materialized_refresh_id, dataclass_to_json_dict, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, pinned_materialization_for_read
 
 @app.tool()
 def project_day_correlations(refresh_id: str | None=None, start: str | None=None, end: str | None=None, projects: list[str] | None=None, min_source_count: int | None=None) -> list[dict[str, Any]]:
@@ -17,10 +17,12 @@ def project_day_correlations(refresh_id: str | None=None, start: str | None=None
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='project_day_correlations', window=half_open_date_window(start_d, end_d))
     path = substrate_path()
     with connect(path) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'project_day_correlation')
+            refresh_id = best_materialized_refresh_id(conn, 'project_day_correlation', caller='project_day_correlations')
         rows = load_project_day_correlations(conn, refresh_id=refresh_id, start=start_d, end=end_d, projects=projs, min_source_count=min_source_count)
     return [dataclass_to_json_dict(row) for row in rows]
 
@@ -40,10 +42,12 @@ def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, m
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.derived import load_issue_closure_chain_walks
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='closure_chain_walks')
     path = substrate_path()
     with connect(path) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'issue_closure_chain_walk')
+            refresh_id = best_materialized_refresh_id(conn, 'issue_closure_chain_walk', caller='closure_chain_walks')
         rows = load_issue_closure_chain_walks(conn, refresh_id=refresh_id, project=project, min_chain_depth=min_chain_depth)
     return [dataclass_to_json_dict(row) for row in rows]
 
@@ -63,6 +67,8 @@ def file_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str | 
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_file_overlap_edges
+    if we_refresh_id is None or commit_refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='file_overlap_edges')
     path = substrate_path()
     with connect(path) as conn:
         edges = compute_file_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
@@ -84,6 +90,8 @@ def symbol_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str 
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_symbol_overlap_edges
+    if we_refresh_id is None or commit_refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='symbol_overlap_edges')
     path = substrate_path()
     with connect(path) as conn:
         edges = compute_symbol_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
@@ -111,8 +119,9 @@ def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) ->
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.snapshots import ordered_materialized_refresh_ids
     with connect(substrate_path(), read_only=True) as conn:
-        refresh_ids = [r[0] for r in conn.execute('SELECT DISTINCT refresh_id FROM substrate_source_status ORDER BY recorded_at').fetchall()]
+        refresh_ids = ordered_materialized_refresh_ids(conn, caller='context_pack_diff')
     if len(refresh_ids) < 1:
         return {'error': 'no refresh snapshots found'}
     if refresh_b is None:
@@ -170,11 +179,12 @@ def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
+    materialization = ensure_substrate_materialized_for_read(caller='frontier_slo') if refresh_id is None else pinned_materialization_for_read(caller='frontier_slo', refresh_id=refresh_id)
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'pr_review_row')
+            refresh_id = best_materialized_refresh_id(conn, 'pr_review_row', caller='review_friction_summary')
             if refresh_id is None:
-                return {'error': 'no promote runs'}
+                return {'error': 'no promote runs', 'materialization': materialization}
         proj_filter = ''
         params: list[Any] = [refresh_id]
         if projects:
@@ -186,17 +196,19 @@ def frontier_slo(projects: list[str] | None=None, refresh_id: str | None=None) -
         friction = conn.execute(f'\n            SELECT project, signal, COUNT(*) AS cnt\n            FROM (\n                SELECT project, UNNEST(friction_signals) AS signal\n                FROM pr_review_row\n                WHERE refresh_id = ? AND len(friction_signals) > 0 {proj_filter}\n            ) f\n            GROUP BY project, signal\n            ORDER BY cnt DESC LIMIT 15\n        ', params).fetchall()
         total_prs = sum((r[1] for r in per_project))
         total_merged = sum((r[2] for r in per_project))
-    return {'refresh_id': refresh_id, 'total_prs': total_prs, 'merged': total_merged, 'per_project': [{'project': r[0], 'prs': r[1], 'merged': r[2], 'p50_merge_m': r[3], 'p75_merge_m': r[4], 'avg_rounds': r[5], 'friction_pct': r[6]} for r in per_project], 'overall': {'p50_merge_m': overall[0] if overall else None, 'p75_merge_m': overall[1] if overall else None, 'p95_merge_m': overall[2] if overall else None, 'avg_rounds': overall[3] if overall else None}, 'friction_breakdown': [{'project': r[0], 'signal': r[1], 'count': r[2]} for r in friction]}
+    return {'refresh_id': refresh_id, 'materialization': materialization, 'total_prs': total_prs, 'merged': total_merged, 'per_project': [{'project': r[0], 'prs': r[1], 'merged': r[2], 'p50_merge_m': r[3], 'p75_merge_m': r[4], 'avg_rounds': r[5], 'friction_pct': r[6]} for r in per_project], 'overall': {'p50_merge_m': overall[0] if overall else None, 'p75_merge_m': overall[1] if overall else None, 'p95_merge_m': overall[2] if overall else None, 'avg_rounds': overall[3] if overall else None}, 'friction_breakdown': [{'project': r[0], 'signal': r[1], 'count': r[2]} for r in friction]}
 
 @app.tool()
 def project_pair_signals(project_a: str | None=None, project_b: str | None=None, refresh_id: str | None=None, limit: int=50) -> list[dict[str, Any]]:
     from lynchpin.graph.project_relationships import build_project_relationships
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import load_evidence_graph
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='project_pair_signals')
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'evidence_node')
+            refresh_id = best_materialized_refresh_id(conn, 'evidence_node', caller='project_pair_signals')
             if refresh_id is None:
                 return []
         graph = load_evidence_graph(conn, refresh_id=refresh_id)
@@ -244,17 +256,18 @@ def walk_evidence(start_id: str, edge_kinds: list[str] | None=None, max_depth: i
     from lynchpin.graph.walk import walk_evidence as _walk
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import load_evidence_graph
+    materialization = ensure_substrate_materialized_for_read(caller='walk_evidence') if refresh_id is None else pinned_materialization_for_read(caller='walk_evidence', refresh_id=refresh_id)
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, 'evidence_node')
+            refresh_id = best_materialized_refresh_id(conn, 'evidence_node', caller='walk_evidence')
             if refresh_id is None:
-                return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'reason': 'no evidence_graph build available', 'nodes': [], 'edges': []}
+                return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'materialization': materialization, 'reason': 'no evidence_graph build available', 'nodes': [], 'edges': []}
         graph = load_evidence_graph(conn, refresh_id=refresh_id)
     if graph is None:
-        return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'reason': f'evidence_graph build {refresh_id!r} not found', 'nodes': [], 'edges': []}
+        return {'start_id': start_id, 'direction': direction, 'edge_kinds': edge_kinds, 'max_depth': max_depth, 'max_nodes': max_nodes, 'truncated': False, 'materialization': materialization, 'reason': f'evidence_graph build {refresh_id!r} not found', 'nodes': [], 'edges': []}
     result = _walk(graph, start_id, edge_kinds=edge_kinds, max_depth=int(max_depth), max_nodes=int(max_nodes), direction=direction)
-    return {'start_id': result.start_id, 'direction': result.direction, 'edge_kinds': list(result.edge_kinds) if result.edge_kinds else None, 'max_depth': result.max_depth, 'max_nodes': result.max_nodes, 'truncated': result.truncated, 'reason': result.reason, 'nodes': [{'id': step.node.id, 'kind': step.node.kind, 'source': step.node.source, 'date': _json_safe(step.node.date), 'project': step.node.project, 'summary': step.node.summary, 'depth': step.depth, 'parent_edge_source': step.parent_edge.source_id if step.parent_edge else None, 'parent_edge_target': step.parent_edge.target_id if step.parent_edge else None, 'parent_edge_relation': step.parent_edge.relation if step.parent_edge else None, 'direction_followed': step.direction_followed} for step in result.steps], 'edges': [{'source_id': edge.source_id, 'target_id': edge.target_id, 'relation': edge.relation, 'evidence': edge.evidence, 'weight': edge.weight} for edge in result.edges]}
+    return {'start_id': result.start_id, 'direction': result.direction, 'edge_kinds': list(result.edge_kinds) if result.edge_kinds else None, 'max_depth': result.max_depth, 'max_nodes': result.max_nodes, 'truncated': result.truncated, 'materialization': materialization, 'reason': result.reason, 'nodes': [{'id': step.node.id, 'kind': step.node.kind, 'source': step.node.source, 'date': _json_safe(step.node.date), 'project': step.node.project, 'summary': step.node.summary, 'depth': step.depth, 'parent_edge_source': step.parent_edge.source_id if step.parent_edge else None, 'parent_edge_target': step.parent_edge.target_id if step.parent_edge else None, 'parent_edge_relation': step.parent_edge.relation if step.parent_edge else None, 'direction_followed': step.direction_followed} for step in result.steps], 'edges': [{'source_id': edge.source_id, 'target_id': edge.target_id, 'relation': edge.relation, 'evidence': edge.evidence, 'weight': edge.weight} for edge in result.edges]}
 
 @app.tool()
 def url_crossref(start: str, end: str, min_sources: int=2, sources: str='reddit,irc,wykop,raindrop', limit: int=100) -> list[dict[str, Any]]:

@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from lynchpin.sources.polylogue_devtools import source_readiness
+
 
 def test_polylogue_devtools_reads_xtask_jsonl(tmp_path: Path) -> None:
     from lynchpin.sources.polylogue_devtools import iter_xtask_invocations
@@ -76,3 +78,43 @@ def test_polylogue_devtools_reads_log_meta_metrics(tmp_path: Path) -> None:
     assert rows[0].process_memory_usage_max_mb == 4.0
     assert rows[0].process_count_max == 4
     assert rows[0].resource_sample_count == 2
+
+
+def test_source_readiness_invalidates_when_xtask_changes(tmp_path: Path) -> None:
+    xtask = tmp_path / "tasks.jsonl"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    xtask.write_text(
+        json.dumps({"timestamp": "2026-01-01T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+
+    first = source_readiness(xtask_path=xtask, logs_dir=logs)
+    xtask.write_text(
+        xtask.read_text(encoding="utf-8")
+        + json.dumps({"timestamp": "2026-01-02T00:00:00+00:00"})
+        + "\n",
+        encoding="utf-8",
+    )
+    second = source_readiness(xtask_path=xtask, logs_dir=logs)
+
+    assert first.xtask_rows == 1
+    assert second.xtask_rows == 2
+    assert second.last_seen is not None
+    assert second.last_seen.date().isoformat() == "2026-01-02"
+
+
+def test_source_readiness_invalidates_when_meta_file_added(tmp_path: Path) -> None:
+    xtask = tmp_path / "tasks.jsonl"
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    xtask.write_text("", encoding="utf-8")
+
+    first = source_readiness(xtask_path=xtask, logs_dir=logs)
+    (logs / "run.meta").write_text("started_at=2026-01-03T00:00:00+00:00\n", encoding="utf-8")
+    second = source_readiness(xtask_path=xtask, logs_dir=logs)
+
+    assert first.meta_files == 0
+    assert second.meta_files == 1
+    assert second.first_seen is not None
+    assert second.first_seen.date().isoformat() == "2026-01-03"

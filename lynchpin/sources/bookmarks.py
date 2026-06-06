@@ -54,8 +54,18 @@ def bookmarks_manifest_path(root: Path | None = None) -> Path:
     return bookmarks_path(root).with_suffix(".manifest.json")
 
 
-def iter_bookmarks(path: Path | None = None) -> Iterator[BookmarkEvent]:
+def iter_bookmarks(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[BookmarkEvent]:
     target = path or bookmarks_path()
+    if path is None and ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("browser_bookmarks", window=(start, end) if start is not None and end is not None else None)
     if not target.exists():
         raise FileNotFoundError(
             f"canonical bookmark materialization is missing: {target}. "
@@ -68,6 +78,14 @@ def iter_bookmarks(path: Path | None = None) -> Iterator[BookmarkEvent]:
             payload = json.loads(line)
             added_raw = payload.get("added_at")
             added_at = datetime.fromisoformat(added_raw) if isinstance(added_raw, str) and added_raw else None
+            if start is not None or end is not None:
+                if added_at is None:
+                    continue
+                day = added_at.date()
+                if start is not None and day < start:
+                    continue
+                if end is not None and day >= end:
+                    continue
             yield BookmarkEvent(
                 bookmark_id=str(payload.get("bookmark_id") or ""),
                 source=str(payload.get("source") or ""),
@@ -84,14 +102,13 @@ def iter_bookmarks(path: Path | None = None) -> Iterator[BookmarkEvent]:
             )
 
 
-def daily_bookmark_activity(*, start: date, end: date) -> list[BookmarkDayActivity]:
+def daily_bookmark_activity(*, start: date, end: date, ensure: bool = True) -> list[BookmarkDayActivity]:
     by_day: dict[date, list[BookmarkEvent]] = defaultdict(list)
-    for row in iter_bookmarks():
+    for row in iter_bookmarks(start=start, end=end, ensure=ensure):
         if row.added_at is None:
             continue
         day = row.added_at.date()
-        if start <= day < end:
-            by_day[day].append(row)
+        by_day[day].append(row)
     out: list[BookmarkDayActivity] = []
     for day, rows in by_day.items():
         counts = Counter(row.domain for row in rows if row.domain)

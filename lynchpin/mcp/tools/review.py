@@ -8,7 +8,11 @@ string annotations for tool parameters.
 from typing import Any
 
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id, dataclass_to_json_dict
+from lynchpin.mcp.tools._utils import (
+    best_materialized_refresh_id,
+    dataclass_to_json_dict,
+    ensure_substrate_materialized_for_read,
+)
 
 
 @app.tool()
@@ -26,10 +30,16 @@ def pr_review_rows(
     from lynchpin.substrate.review import load_pr_review_rows
 
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
-    sts: tuple[str, ...] | None = tuple(states) if states else None
+    sts: tuple[str, ...] | None = tuple(state.lower() for state in states) if states else None
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="pr_review_rows")
     path = substrate_path()
     with connect(path) as conn:
+        if refresh_id is None:
+            refresh_id = best_materialized_refresh_id(conn, "pr_review_row", caller="pr_review_rows")
+            if refresh_id is None:
+                return []
         rows = load_pr_review_rows(
             conn,
             projects=projs,
@@ -50,9 +60,11 @@ def review_bottlenecks(
     """Code review bottleneck detection."""
     from lynchpin.substrate.connection import connect, substrate_path
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="review_bottlenecks")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "pr_review_row")
+            refresh_id = best_materialized_refresh_id(conn, "pr_review_row", caller="review_bottlenecks")
             if refresh_id is None:
                 return []
 

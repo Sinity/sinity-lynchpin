@@ -1,4 +1,4 @@
-"""AI work-event promotion for the refresh DAG substrate step."""
+"""AI work-event promotion for the materialization DAG substrate step."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def promote_ai_sources(
             )
             return
 
-        # Distinguish genuinely empty archives from stale products.
+        # Distinguish genuinely empty archives from unavailable insight products.
         from lynchpin.sources.polylogue import archive_readiness
 
         readiness = archive_readiness()
@@ -128,7 +128,7 @@ def promote_ai_sources(
             status = "unavailable"
             reason = (
                 "polylogue archive_readiness=ready but work_events() "
-                "returned [] — likely stale insight rows; run "
+                "returned [] — likely missing or outdated insight rows; run "
                 "`polylogue doctor --repair --target session_insights`"
             )
         log.warning(

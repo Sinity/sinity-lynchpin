@@ -40,6 +40,58 @@ def test_workflow_mechanics_detects_retry_chain(tmp_path) -> None:
     assert summary["retry_chain_count"] == 1
 
 
+def test_workflow_mechanics_includes_end_date(tmp_path) -> None:
+    db = tmp_path / "sub.duckdb"
+    base = datetime(2026, 5, 31, 12, tzinfo=UTC)
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_work_observations(conn, refresh_id="r1", rows=[
+            _invocation("i1", base, status="success", exit_code=0),
+        ])
+
+    report = analyze_workflow_mechanics(
+        path=str(db),
+        refresh_id="r1",
+        start=base.date(),
+        end=base.date(),
+    )
+
+    assert report.invocation_count == 1
+
+
+def test_workflow_mechanics_default_snapshot_prefers_broad_materialization(tmp_path) -> None:
+    db = tmp_path / "sub.duckdb"
+    base = datetime(2026, 5, 31, 12, tzinfo=UTC)
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_work_observations(conn, refresh_id="broad", rows=[
+            _invocation("b1", base, status="success", exit_code=0),
+            _invocation("b2", base + timedelta(minutes=1), status="success", exit_code=0),
+        ])
+        promote_work_observations(conn, refresh_id="narrow", rows=[
+            _invocation("n1", base + timedelta(minutes=2), status="success", exit_code=0),
+        ])
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status (
+                refresh_id, source, kind, status, reason, row_count, recorded_at
+            )
+            VALUES
+              ('broad', 'work_observations', 'source', 'ok', 'ok', 2, ?),
+              ('narrow', 'work_observations', 'source', 'ok', 'ok', 1, ?)
+            """,
+            [
+                base,
+                base + timedelta(minutes=10),
+            ],
+        )
+
+    report = analyze_workflow_mechanics(path=str(db))
+
+    assert report.invocation_count == 2
+    assert {row.command_key for row in report.command_summaries} == {"xtask test"}
+
+
 def test_write_workflow_mechanics_report_persists_artifact(tmp_path) -> None:
     db = tmp_path / "sub.duckdb"
     out = tmp_path / "workflow_mechanics.json"

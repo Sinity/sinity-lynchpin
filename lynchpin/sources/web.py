@@ -17,12 +17,12 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from datetime import date as _date_type, datetime, timezone
+from datetime import date as _date_type, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, TextIO
 from urllib.parse import urlparse
 
-from ..core.cache import file_digest, files_digest, persistent_cache
+from ..core.cache import file_digest, file_signature, files_digest, persistent_cache, write_text_if_changed
 from ..core.config import get_config
 from ..core.parse import in_date_range
 from ..core.primitives import logical_date
@@ -65,6 +65,7 @@ __all__ = [
     "daily_browsing",
     "daily_activity",
     "domain_breakdown",
+    "webhistory_daily_index",
 ]
 
 try:
@@ -92,11 +93,17 @@ except OverflowError:
 
 
 def _history_files(
-    root: Optional[Path] = None, ndjson: Optional[Path] = None
+    root: Optional[Path] = None,
+    ndjson: Optional[Path] = None,
+    *,
+    ensure: bool = True,
 ) -> list[Path]:
     cfg = get_config()
     canonical = ndjson or cfg.webhistory_ndjson
     if root is None:
+        if ensure:
+            if ndjson is None:
+                _ensure_webhistory()
         if canonical is None:
             raise FileNotFoundError(
                 "canonical webhistory NDJSON is not configured; run python -m lynchpin.ingest.webhistory"
@@ -121,7 +128,7 @@ def _history_files(
     return []
 
 
-def _history_files_signature(*args, **kwargs) -> object:
+def _history_files_signature(*args: object, **kwargs: object) -> object:
     # Cachew's composite_hash invokes depends_on with whatever positional /
     # keyword args were passed to the wrapped function. Older shape was
     # ``def _history_files_signature(root=None, ndjson=None)`` which broke when
@@ -136,15 +143,17 @@ def _history_files_signature(*args, **kwargs) -> object:
             root = args[0] if root is None else root
         if len(args) > 1:
             ndjson = args[1] if ndjson is None else ndjson
-    return files_digest(_history_files(root=root, ndjson=ndjson))
+    root_path = root if isinstance(root, Path) or root is None else Path(str(root))
+    ndjson_path = ndjson if isinstance(ndjson, Path) or ndjson is None else Path(str(ndjson))
+    return files_digest(_history_files(root=root_path, ndjson=ndjson_path))
 
 
-@persistent_cache("webhistory_entries", depends_on=_history_files_signature)
+@persistent_cache("webhistory_entries", depends_on=_history_files_signature)  # type: ignore[arg-type]
 def _load_entries(
     root: Optional[Path] = None, ndjson: Optional[Path] = None
 ) -> list[WebHistoryEntry]:
     entries: list[WebHistoryEntry] = []
-    for file in _history_files(root, ndjson):
+    for file in _history_files(root, ndjson, ensure=False):
         for visit in _iter_file_visits(file):
             record = {
                 "url": visit.url,
@@ -718,19 +727,11 @@ def _tokenize_topic(text: str) -> list[str]:
 def _iter_all_visits(
     start: Optional[_date_type] = None,
     end: Optional[_date_type] = None,
+    ensure: bool = True,
 ) -> Iterator[WebHistoryVisit]:
     """Yield WebHistoryVisit from canonical NDJSON, filtered by date range."""
-    cfg = get_config()
-    if cfg.webhistory_ndjson is None:
-        raise FileNotFoundError(
-            "canonical webhistory NDJSON is not configured; run python -m lynchpin.ingest.webhistory"
-        )
-    if not cfg.webhistory_ndjson.exists():
-        raise FileNotFoundError(
-            f"canonical webhistory NDJSON is missing: {cfg.webhistory_ndjson}. "
-            "Run python -m lynchpin.ingest.webhistory to materialize it."
-        )
-    source = iter_ndjson_events(cfg.webhistory_ndjson)
+    window = (start, end + timedelta(days=1)) if start is not None and end is not None else None
+    source = iter_ndjson_events(_canonical_history_path(window=window, ensure=ensure))
     for v in source:
         if v.timestamp is None:
             continue
@@ -744,23 +745,84 @@ def _iter_all_visits(
         yield v
 
 
-def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity]:
-    """Daily web browsing aggregation: visits, domains, top sites."""
+def _canonical_history_path(
+    window: tuple[_date_type, _date_type] | None = None,
+    *,
+    ensure: bool = True,
+) -> Path:
+    if ensure:
+        _ensure_webhistory(window=window)
+    cfg = get_config()
+    if cfg.webhistory_ndjson is None:
+        raise FileNotFoundError(
+            "canonical webhistory NDJSON is not configured; run python -m lynchpin.ingest.webhistory"
+        )
+    if not cfg.webhistory_ndjson.exists():
+        raise FileNotFoundError(
+            f"canonical webhistory NDJSON is missing: {cfg.webhistory_ndjson}. "
+            "Run python -m lynchpin.ingest.webhistory to materialize it."
+        )
+    return cfg.webhistory_ndjson
+
+
+def _ensure_webhistory(window: tuple[_date_type, _date_type] | None = None) -> None:
+    from ..materialization import ensure_materialized
+
+    ensure_materialized("webhistory", window=window)
+
+
+def _full_history_manifest_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.manifest.json")
+
+
+def _canonical_history_signature(path: Path) -> object:
+    manifest = _full_history_manifest_path(path)
+    return (file_signature(path), file_signature(manifest))
+
+
+def _daily_index_cache_path(history_path: Path) -> Path:
+    cache_dir = getattr(get_config(), "cache_dir", history_path.parent)
+    return Path(cache_dir) / "webhistory_daily_index.json"
+
+
+def _load_daily_index(
+    window: tuple[_date_type, _date_type] | None = None,
+    *,
+    ensure: bool = True,
+) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]]:
+    path = _canonical_history_path(window=window, ensure=ensure)
+    signature = _canonical_history_signature(path)
+    cache_path = _daily_index_cache_path(path)
+    cached = _read_daily_index_cache(cache_path, signature)
+    if cached is not None:
+        return cached
+    days, domains_by_day = _build_daily_index(path)
+    _write_daily_index_cache(cache_path, signature, days, domains_by_day)
+    return days, domains_by_day
+
+
+def _build_daily_index(
+    path: Path,
+) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]]:
     by_day: defaultdict[_date_type, _WebDayBucket] = defaultdict(_WebDayBucket)
-    for v in _iter_all_visits(start=start, end=end):
+    domains_by_day: defaultdict[_date_type, Counter[str]] = defaultdict(Counter)
+    for v in iter_ndjson_events(path):
+        if v.timestamp is None:
+            continue
         d = logical_date(v.timestamp)
         bucket = by_day[d]
         bucket.count += 1
         domain = _normalize_domain(urlparse(v.url or "").netloc)
         if domain:
             bucket.domains.add(domain)
+            domains_by_day[d][domain] += 1
         if v.title:
             bucket.titles.add(v.title[:80])
 
-    result: list[WebDayActivity] = []
+    days: list[WebDayActivity] = []
     for d in sorted(by_day):
         bucket = by_day[d]
-        result.append(
+        days.append(
             WebDayActivity(
                 date=d,
                 visit_count=bucket.count,
@@ -769,7 +831,105 @@ def daily_browsing(*, start: _date_type, end: _date_type) -> list[WebDayActivity
                 top_titles=tuple(t for t, _ in bucket.titles.items),
             )
         )
-    return result
+    return days, {day: dict(domains) for day, domains in domains_by_day.items()}
+
+
+def _read_daily_index_cache(
+    path: Path,
+    signature: object,
+) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if payload.get("signature") != _jsonable_signature(signature):
+        return None
+    raw_days = payload.get("days")
+    raw_domains = payload.get("domains_by_day")
+    if not isinstance(raw_days, list) or not isinstance(raw_domains, dict):
+        return None
+    days: list[WebDayActivity] = []
+    for row in raw_days:
+        if not isinstance(row, dict):
+            return None
+        try:
+            day = WebDayActivity(
+                date=_date_type.fromisoformat(str(row["date"])),
+                visit_count=int(row["visit_count"]),
+                unique_domains=int(row["unique_domains"]),
+                top_domains=tuple(
+                    (str(domain), float(count))
+                    for domain, count in row.get("top_domains", [])
+                ),
+                top_titles=tuple(str(title) for title in row.get("top_titles", [])),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        days.append(day)
+    domains_by_day: dict[_date_type, dict[str, int]] = {}
+    for raw_day, raw_counts in raw_domains.items():
+        if not isinstance(raw_counts, dict):
+            return None
+        try:
+            domains_by_day[_date_type.fromisoformat(str(raw_day))] = {
+                str(domain): int(count) for domain, count in raw_counts.items()
+            }
+        except ValueError:
+            return None
+    return days, domains_by_day
+
+
+def _write_daily_index_cache(
+    path: Path,
+    signature: object,
+    days: list[WebDayActivity],
+    domains_by_day: dict[_date_type, dict[str, int]],
+) -> None:
+    payload = {
+        "signature": _jsonable_signature(signature),
+        "days": [
+            {
+                "date": day.date.isoformat(),
+                "visit_count": day.visit_count,
+                "unique_domains": day.unique_domains,
+                "top_domains": list(day.top_domains),
+                "top_titles": list(day.top_titles),
+            }
+            for day in days
+        ],
+        "domains_by_day": {
+            day.isoformat(): counts for day, counts in sorted(domains_by_day.items())
+        },
+    }
+    write_text_if_changed(
+        path,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+
+
+def _jsonable_signature(value: object) -> object:
+    return json.loads(json.dumps(value, default=str))
+
+
+def webhistory_daily_index(
+    *,
+    start: _date_type | None = None,
+    end: _date_type | None = None,
+    ensure: bool = True,
+) -> list[WebDayActivity]:
+    """Cached daily/domain index over canonical browser history."""
+    window = (start, end + timedelta(days=1)) if start is not None and end is not None else None
+    days, _domains = _load_daily_index(window=window, ensure=ensure)
+    return days
+
+
+def daily_browsing(*, start: _date_type, end: _date_type, ensure: bool = True) -> list[WebDayActivity]:
+    """Daily web browsing aggregation: visits, domains, top sites."""
+    return [
+        day
+        for day in webhistory_daily_index(start=start, end=end, ensure=ensure)
+        if in_date_range(day.date, start, end)
+    ]
 
 
 daily_activity = daily_browsing
@@ -780,15 +940,19 @@ def domain_breakdown(
     start: _date_type,
     end: _date_type,
     top_n: int = 20,
+    ensure: bool = True,
 ) -> list[tuple[str, int, float]]:
     """Top domains by visit count over a date range: (domain, count, pct)."""
+    _days, domains_by_day = _load_daily_index(
+        window=(start, end + timedelta(days=1)),
+        ensure=ensure,
+    )
     domains: Counter[str] = Counter()
-    total = 0
-    for v in _iter_all_visits(start=start, end=end):
-        domain = _normalize_domain(urlparse(v.url or "").netloc)
-        if domain:
-            domains[domain] += 1
-            total += 1
+    for day, day_domains in domains_by_day.items():
+        if not in_date_range(day, start, end):
+            continue
+        domains.update(day_domains)
+    total = sum(domains.values())
     return [
         (domain, count, round(count / total, 4) if total else 0)
         for domain, count in domains.most_common(top_n)

@@ -212,7 +212,7 @@ class SourceCoverageStatus:
     contribution under ``out_of_range`` is missing data.
     """
     source: str
-    status: str          # "available" | "partial" | "out_of_range" | "missing"
+    status: str          # "available" | "partial" | "out_of_range" | "missing" | "untracked"
     last_date: object    # date | None
     reason: str
 
@@ -244,10 +244,10 @@ def coverage_summary(*, start: date, end: date) -> list[SourceCoverageStatus]:
     out: list[SourceCoverageStatus] = []
     for channel, src_name in relevant.items():
         if src_name is None or src_name not in by_source:
-            # Source not represented in coverage_report; treat as
-            # available-but-unverified to avoid scaring the caller.
+            # Source not represented in coverage_report; do not report
+            # zero-contribution days as proven silence.
             out.append(SourceCoverageStatus(
-                source=channel, status="available",
+                source=channel, status="untracked",
                 last_date=None,
                 reason="not represented in coverage_report",
             ))

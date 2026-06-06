@@ -76,8 +76,18 @@ def spotify_daily_manifest_path(root: Path | None = None) -> Path:
     return spotify_daily_path(root).with_suffix(".manifest.json")
 
 
-def iter_personal_daily_signals(path: Path | None = None) -> Iterator[PersonalDailySignal]:
+def iter_personal_daily_signals(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[PersonalDailySignal]:
     target = path or personal_daily_signals_path()
+    if path is None and ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("personal_daily_signals", window=(start, end) if start is not None and end is not None else None)
     if not target.exists():
         raise FileNotFoundError(
             f"canonical personal daily-signal materialization is missing: {target}. "
@@ -90,18 +100,33 @@ def iter_personal_daily_signals(path: Path | None = None) -> Iterator[PersonalDa
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 continue
+            row_date = date.fromisoformat(str(payload["date"]))
+            if start is not None and row_date < start:
+                continue
+            if end is not None and row_date >= end:
+                continue
             dimensions = payload.get("dimensions")
             yield PersonalDailySignal(
                 source=str(payload.get("source") or ""),
-                date=date.fromisoformat(str(payload["date"])),
+                date=row_date,
                 metric=str(payload.get("metric") or ""),
                 value=float(payload.get("value") or 0.0),
                 dimensions=dimensions if isinstance(dimensions, dict) else {},
             )
 
 
-def iter_spotify_daily_signals(path: Path | None = None) -> Iterator[SpotifyDailySignal]:
+def iter_spotify_daily_signals(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[SpotifyDailySignal]:
     target = path or spotify_daily_path()
+    if path is None and ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("spotify_daily", window=(start, end) if start is not None and end is not None else None)
     if not target.exists():
         raise FileNotFoundError(
             f"canonical Spotify daily materialization is missing: {target}. "
@@ -114,8 +139,13 @@ def iter_spotify_daily_signals(path: Path | None = None) -> Iterator[SpotifyDail
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 continue
+            row_date = date.fromisoformat(str(payload["date"]))
+            if start is not None and row_date < start:
+                continue
+            if end is not None and row_date >= end:
+                continue
             yield SpotifyDailySignal(
-                date=date.fromisoformat(str(payload["date"])),
+                date=row_date,
                 track_count=int(payload.get("track_count") or 0),
                 minutes_played=float(payload.get("minutes_played") or 0.0),
                 unique_artists=int(payload.get("unique_artists") or 0),

@@ -3,11 +3,13 @@ from __future__ import annotations
 from lynchpin.analysis.core.dag import StepResult, StepStatus
 
 
-def test_refresh_report_extracts_counts_source_statuses_and_reasons() -> None:
-    from lynchpin.analysis.core.refresh_report import refresh_report_payload
+def test_materialization_report_extracts_counts_source_statuses_and_reasons() -> None:
+    from lynchpin.analysis.core.materialization_report import (
+        materialization_report_payload,
+    )
 
-    payload = refresh_report_payload(
-        dag_name="machine-analysis-refresh",
+    payload = materialization_report_payload(
+        dag_name="machine-analysis-materialization",
         up_to="machine_analysis_readiness",
         results=[
             StepResult(
@@ -42,7 +44,7 @@ def test_refresh_report_extracts_counts_source_statuses_and_reasons() -> None:
         ],
     )
 
-    assert payload["dag_name"] == "machine-analysis-refresh"
+    assert payload["dag_name"] == "machine-analysis-materialization"
     assert payload["by_status"] == {"skipped": 1, "success": 1}
     assert payload["steps"][0]["row_counts"] == {"machine_metric_sample": 10}
     assert payload["steps"][0]["degraded_reasons"] == ["excluded"]

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import json
+from types import SimpleNamespace
 
 import pytest
 
+from lynchpin.analysis.frontier import pr_review_topology
 from lynchpin.analysis.frontier.pr_review_topology import (
     build_active_pr_review_topology,
 )
@@ -15,6 +18,7 @@ from lynchpin.sources.github import (
     GitHubReview,
     GitHubReviewComment,
 )
+from lynchpin.sources.github_context import GitHubContextRow
 
 UTC = timezone.utc
 
@@ -99,6 +103,42 @@ def test_basic_pr_with_one_review_summary():
     assert row["time_to_merge_minutes"] == 240.0
     assert row["final_decision"] == "merged"
     assert row["friction_signals"] == []
+
+
+def test_default_review_topology_reads_github_context_product(monkeypatch, tmp_path):
+    pr = _pr(
+        number=11,
+        state="closed",
+        merged=datetime(2026, 5, 2, 10, tzinfo=UTC),
+        reviews=[_review(login="bob", state="APPROVED")],
+        review_comments=[_review_comment()],
+    )
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps({"projects": [{"project": "demo", "path": str(tmp_path)}]}),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        pr_review_topology,
+        "ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)) or SimpleNamespace(status="ready"),
+    )
+    monkeypatch.setattr(
+        pr_review_topology,
+        "iter_github_context",
+        lambda projects=None, **_kwargs: iter((GitHubContextRow(project="demo", item=pr),)),
+    )
+
+    payload = build_active_pr_review_topology(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 7),
+        snapshot_file=snapshot,
+    )
+
+    assert calls == [("github_context", (date(2026, 5, 1), date(2026, 5, 7)))]
+    assert payload["summary"]["pr_count"] == 1
+    assert payload["prs"][0]["review_comment_count"] == 1
 
 
 def test_changes_requested_then_merged_is_friction_signal():

@@ -45,7 +45,7 @@ class Step:
 
 
 class DAG:
-    """Dependency-aware pipeline runner for analysis refresh flows."""
+    """Dependency-aware pipeline runner for analysis materialization flows."""
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -135,6 +135,76 @@ class DAG:
 
             if dry_run:
                 result = StepResult(name=name, status=StepStatus.PENDING)
+                results.append(result)
+                if on_step:
+                    on_step(result)
+                continue
+
+            t0 = time.monotonic()
+            try:
+                value = step.fn()
+                elapsed = time.monotonic() - t0
+                result = StepResult(
+                    name=name,
+                    status=StepStatus.SUCCESS,
+                    elapsed_seconds=round(elapsed, 3),
+                    result=value,
+                )
+            except Exception as exc:
+                elapsed = time.monotonic() - t0
+                result = StepResult(
+                    name=name,
+                    status=StepStatus.FAILED,
+                    elapsed_seconds=round(elapsed, 3),
+                    error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                )
+                failed.add(name)
+
+            results.append(result)
+            if on_step:
+                on_step(result)
+
+        return results
+
+    def run_selected(
+        self,
+        selected: set[str],
+        *,
+        up_to: str | None = None,
+        on_step: Optional[Callable[[StepResult], None]] = None,
+    ) -> list[StepResult]:
+        """Run only selected steps while preserving dependency failure semantics."""
+
+        order = self._selected_order(up_to)
+        results: list[StepResult] = []
+        failed: set[str] = set()
+
+        for name in order:
+            step = self._steps[name]
+            if name not in selected:
+                result = StepResult(
+                    name=name,
+                    status=StepStatus.SKIPPED,
+                    result={
+                        "materialization": {
+                            "status": "ready",
+                            "reason": "materialization plan skipped step",
+                        }
+                    },
+                )
+                results.append(result)
+                if on_step:
+                    on_step(result)
+                continue
+
+            blocked_by = [dep for dep in step.depends_on if dep in failed]
+            if blocked_by:
+                result = StepResult(
+                    name=name,
+                    status=StepStatus.SKIPPED,
+                    error=f"Skipped due to failed dependency: {', '.join(blocked_by)}",
+                )
+                failed.add(name)
                 results.append(result)
                 if on_step:
                     on_step(result)

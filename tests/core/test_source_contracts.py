@@ -35,17 +35,51 @@ def test_source_contracts_carry_capability_and_coverage_policy() -> None:
     assert contracts["webhistory"].collection_model == "continuous"
     assert "web_daily" in contracts["webhistory"].mcp_tools
     assert contracts["reddit"].collection_model == "event_export"
+    assert contracts["reddit"].materialization_mode == "local"
+    assert contracts["reddit"].materialization_executor.ref == "reddit"
     assert "personal_daily_signal" in contracts["reddit"].substrate_tables
     assert contracts["title_metadata"].collection_model == "metadata"
     assert "title_metadata_audit" in contracts["title_metadata"].mcp_tools
     assert contracts["atuin"].collection_model == "continuous"
     assert "terminal_daily" in contracts["atuin"].mcp_tools
+    assert contracts["activitywatch"].collection_model == "continuous"
+    assert contracts["activitywatch"].materialization_executor.ref == "activitywatch"
     assert contracts["analysis_artifacts"].collection_model == "derived"
+    assert contracts["analysis_artifacts"].materialization_mode == "derived"
+    assert contracts["analysis_artifacts"].materialization_target == "artifact:analysis_artifacts"
     assert "analysis_artifact_inventory" in contracts["analysis_artifacts"].mcp_tools
     assert "read_analysis_artifact" in contracts["analysis_artifacts"].mcp_tools
     assert contracts["clipboard"].graph_node_kinds == ("clipboard_entry",)
     assert contracts["raw_log"].graph_node_kinds == ("raw_log",)
     assert contracts["wykop"].substrate_daily_signal is True
+    assert contracts["keylog"].substrate_daily_signal is True
+    assert contracts["webhistory"].materialization_mode == "local"
+    assert contracts["webhistory"].materialization_executor.kind == "materializer"
+    assert contracts["webhistory"].default_max_age_seconds == 300
+    assert contracts["keylog"].materialization_mode == "live"
+    assert contracts["health"].materialization_mode == "coverage_bound"
+    assert contracts["spotify"].materialization_mode == "local"
+    assert contracts["facebook_messenger"].materialization_mode == "local"
+    assert contracts["raindrop"].materialization_mode == "local"
+    assert contracts["activitywatch_derived"].materialization_mode == "derived"
+    assert contracts["activitywatch_derived"].materialization_target == "artifact:activitywatch_derived"
+    assert contracts["spotify_daily"].materialization_mode == "derived"
+    assert contracts["personal_daily_signals"].materialization_mode == "derived"
+    assert contracts["temporal_signals"].materialization_mode == "derived"
+    assert contracts["sleep_productivity"].materialization_mode == "derived"
+    assert contracts["sleep_productivity"].materialization_executor.ref == "sleep_productivity"
+
+
+def test_every_source_contract_has_materialization_stance() -> None:
+    for contract in SOURCE_CONTRACTS:
+        assert contract.materialization_mode in {"live", "local", "derived", "coverage_bound", "manual"}
+        assert contract.materialization_target
+        assert contract.materialization_executor.kind in {"none", "materializer"}
+        assert "argv" not in contract.materialization_executor.to_json()
+        if contract.materialization_mode in {"local", "derived"}:
+            assert contract.default_max_age_seconds is not None
+        if contract.materialization_mode == "live":
+            assert contract.materialization_executor.kind == "none"
 
 
 def test_available_source_keys_are_contracted_or_aliased() -> None:

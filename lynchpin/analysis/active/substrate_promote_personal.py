@@ -1,9 +1,9 @@
-"""Personal-source promotion for the refresh DAG substrate step."""
+"""Personal-source promotion for the materialization DAG substrate step."""
 
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from .substrate_promote_status import (
@@ -49,6 +49,16 @@ def promote_personal_sources(
         promote_spotify_daily_rows,
         promote_title_classifications_from_path,
     )
+
+    def ensure_input_product(name: str) -> None:
+        from lynchpin.materialization import ensure_materialized
+
+        result = ensure_materialized(name, window=(window_start, window_end))
+        if result.status not in {"ready", "updated"}:
+            raise RuntimeError(
+                f"{name} materialization unavailable for promotion: "
+                f"{result.status}: {result.reason}"
+            )
 
     # ── sinnix_generation: best-effort promotion from activation JSONL ───
     if selection.includes(SOURCE_SINNIX_GENERATION):
@@ -171,7 +181,7 @@ def promote_personal_sources(
 
             operator_rows = [
                 r
-                for r in operator_daily_matrix(window_start, window_end)
+                for r in operator_daily_matrix(window_start, window_end - timedelta(days=1))
                 if window_start <= r.date < window_end
             ]
             if operator_rows:
@@ -186,12 +196,12 @@ def promote_personal_sources(
     # ── spotify_daily: best-effort promotion from streaming history ──────
     if selection.includes(SOURCE_SPOTIFY_DAILY):
         try:
+            ensure_input_product("spotify_daily")
             from lynchpin.sources.personal_signals import iter_spotify_daily_signals
 
             spotify_rows = [
                 row
-                for row in iter_spotify_daily_signals()
-                if window_start <= row.date < window_end
+                for row in iter_spotify_daily_signals(start=window_start, end=window_end, ensure=False)
             ]
             if spotify_rows:
                 counts["spotify_daily"] = promote_spotify_daily_rows(
@@ -238,6 +248,7 @@ def promote_personal_sources(
     # ── personal_daily_signal: normalized daily metrics for canonical products
     if selection.includes(SOURCE_TITLE_CLASSIFICATION):
         try:
+            ensure_input_product("title_metadata")
             from lynchpin.sources.title_metadata import title_metadata_path
 
             counts["title_classification"] = promote_title_classifications_from_path(
@@ -270,18 +281,13 @@ def promote_personal_sources(
 
     if selection.includes(SOURCE_ACTIVITY_CONTENT):
         try:
+            ensure_input_product("activity_content")
             from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
 
-            # Promote ALL NDJSON rows, not just the current window.
-            # Window-filtering caused coverage gaps between DAG runs —
-            # dates present in the NDJSON but falling outside the
-            # incremental window were silently dropped. Full promotion
-            # is cheap (511 rows) and the dedup step in the promoter
-            # removes stale refresh_ids for the same dates.
-            content_rows = list(iter_activity_content_days())
+            content_rows = list(iter_activity_content_days(start=window_start, end=window_end, ensure=False))
             usage_rows = [
                 row
-                for row in iter_activity_title_usage()
+                for row in iter_activity_title_usage(start=window_start, end=window_end, ensure=False)
                 if row.last_date is not None
                 and row.first_date is not None
             ]
@@ -327,12 +333,12 @@ def promote_personal_sources(
     # ── personal_daily_signal: normalized daily metrics for canonical products
     if selection.includes(SOURCE_PERSONAL_DAILY_SIGNAL):
         try:
+            ensure_input_product("personal_daily_signals")
             from lynchpin.sources.personal_signals import iter_personal_daily_signals
 
             signal_rows = [
                 (row.source, row.date, row.metric, row.value, row.dimensions)
-                for row in iter_personal_daily_signals()
-                if window_start <= row.date < window_end
+                for row in iter_personal_daily_signals(start=window_start, end=window_end, ensure=False)
             ]
             counts["personal_daily_signal"] = promote_personal_daily_signals(
                 conn,

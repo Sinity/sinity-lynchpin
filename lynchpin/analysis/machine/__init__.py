@@ -5,7 +5,7 @@ from .attribution import analyze_below_attribution
 from .attribution_claims import analyze_machine_attribution_claims
 from .baselines import analyze_machine_observational_baselines
 from .benchmark_manifest_bundle import analyze_machine_benchmark_manifest_bundle
-from .benchmark_execution_queue import analyze_machine_benchmark_execution_queue
+from .benchmark_execution_handoff import analyze_machine_benchmark_execution_handoff
 from .benchmark_plans import analyze_machine_benchmark_plans
 from .benchmark_preflight import analyze_machine_benchmark_preflight
 from .calibration import analyze_machine_calibration
@@ -40,7 +40,7 @@ __all__ = [
     "analyze_machine_attribution_claims",
     "analyze_command_performance",
     "analyze_machine_benchmark_manifest_bundle",
-    "analyze_machine_benchmark_execution_queue",
+    "analyze_machine_benchmark_execution_handoff",
     "analyze_machine_benchmark_preflight",
     "analyze_machine_comparisons",
     "analyze_devshell_performance",

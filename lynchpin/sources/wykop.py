@@ -25,6 +25,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -263,18 +264,55 @@ def topic_distribution(
     return sorted(counts.items(), key=lambda kv: -kv[1])[:top_n]
 
 
+def _comment_files(root: Optional[Path] = None) -> tuple[Path, ...]:
+    base = root or WYKOP_ROOT
+    return (
+        base / "wykop_links_commented.jsonl",
+        base / "wykop_entry_comments.jsonl",
+    )
+
+
 def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
     """Oldest and newest comment dates."""
+    base = root or WYKOP_ROOT
+    return _date_range_cached(str(base), _comment_files_signature(base))
+
+
+@lru_cache(maxsize=64)
+def _date_range_cached(
+    root: str,
+    signature: tuple[tuple[str, int, int], ...],
+) -> tuple[datetime, datetime]:
     oldest = None
     newest = None
-    for c in iter_comments(root=root):
-        if oldest is None or c.created_at < oldest:
-            oldest = c.created_at
-        if newest is None or c.created_at > newest:
-            newest = c.created_at
+    for path in _comment_files(Path(root)):
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                created_raw = row.get("comment_created_at")
+                if not created_raw:
+                    continue
+                created = _parse_wykop_datetime(created_raw)
+                if oldest is None or created < oldest:
+                    oldest = created
+                if newest is None or created > newest:
+                    newest = created
     if oldest is None or newest is None:
         raise SourceUnavailableError("wykop", reason="No comments found")
     return oldest, newest
+
+
+def _comment_files_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    signature = []
+    for path in _comment_files(root):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        signature.append((str(path), stat.st_size, stat.st_mtime_ns))
+    return tuple(signature)
 
 
 __all__ = [

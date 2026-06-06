@@ -53,44 +53,44 @@ def google_takeout_products_dir() -> Path:
     return get_config().exports_root / "google/processed/takeout-products"
 
 
-def iter_contacts() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("contacts.ndjson")
+def iter_contacts(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("contacts.ndjson", ensure=ensure)
 
 
-def iter_keep_notes() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("keep_notes.ndjson")
+def iter_keep_notes(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("keep_notes.ndjson", ensure=ensure)
 
 
-def iter_my_activity() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("my_activity.ndjson")
+def iter_my_activity(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("my_activity.ndjson", ensure=ensure)
 
 
-def iter_play_store() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("play_store.ndjson")
+def iter_play_store(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("play_store.ndjson", ensure=ensure)
 
 
-def iter_purchases() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("purchases.ndjson")
+def iter_purchases(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("purchases.ndjson", ensure=ensure)
 
 
-def iter_tasks() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("tasks.ndjson")
+def iter_tasks(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("tasks.ndjson", ensure=ensure)
 
 
-def iter_youtube() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("youtube.ndjson")
+def iter_youtube(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("youtube.ndjson", ensure=ensure)
 
 
-def iter_gmail() -> Iterator[dict[str, Any]]:
+def iter_gmail(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
     """Yield Gmail messages as dict rows from Takeout .mbox archives.
 
-    Delegates to ``gmail_takeout.iter_gmail_messages_deduped`` and
-    serialises each ``GmailMessage`` to a dict for compatibility with
-    the existing ``iter_events`` pattern.
+    Delegates to the canonical Gmail product and serialises each
+    ``GmailMessage`` to a dict for compatibility with the existing
+    ``iter_events`` pattern.
     """
-    from .gmail_takeout import iter_gmail_messages_deduped
+    from .gmail_takeout import iter_materialized_gmail_messages
 
-    for msg in iter_gmail_messages_deduped():
+    for msg in iter_materialized_gmail_messages(ensure=ensure):
         if msg.timestamp is None:
             continue
         yield {
@@ -109,11 +109,11 @@ def iter_gmail() -> Iterator[dict[str, Any]]:
         }
 
 
-def iter_assets() -> Iterator[dict[str, Any]]:
-    yield from _iter_rows("assets.ndjson")
+def iter_assets(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    yield from _iter_rows("assets.ndjson", ensure=ensure)
 
 
-def iter_calendar() -> Iterator[dict[str, Any]]:
+def iter_calendar(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
     """Yield Google Calendar events from the processed extract.
 
     Lives one directory up from the per-product NDJSONs (calendar.jsonl
@@ -121,6 +121,7 @@ def iter_calendar() -> Iterator[dict[str, Any]]:
     separately. Tolerates absence — empty iterator when no calendar
     archive has been ingested yet.
     """
+    del ensure
     path = get_config().exports_root / "google/processed/calendar.jsonl"
     if not path.exists():
         return
@@ -135,12 +136,17 @@ def iter_calendar() -> Iterator[dict[str, Any]]:
                 continue
 
 
-def iter_events(product: str | None = None) -> Iterator[GoogleTakeoutEvent]:
+def iter_events(product: str | None = None, *, ensure: bool = True) -> Iterator[GoogleTakeoutEvent]:
     """Yield timestamped event-like Google Takeout product rows.
 
     Asset inventories and contacts are intentionally excluded: they are useful
     as provenance/file records but not personal activity events.
     """
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout")
+
     # NOTE: youtube.ndjson holds video metadata (title, id, category) without
     # watch timestamps, so iter_youtube has no time signal. Subscribed-to
     # videos and watch history would need a separate timed extractor that
@@ -156,7 +162,7 @@ def iter_events(product: str | None = None) -> Iterator[GoogleTakeoutEvent]:
     for product_name, iterator in product_iterators.items():
         if product is not None and product_name != product:
             continue
-        for payload in iterator():
+        for payload in iterator(ensure=False):
             stamp = _event_timestamp(product_name, payload)
             if stamp is None:
                 continue
@@ -173,9 +179,16 @@ def iter_events(product: str | None = None) -> Iterator[GoogleTakeoutEvent]:
 def iter_daily_activity(
     start: date | None = None,
     end: date | None = None,
+    *,
+    ensure: bool = True,
 ) -> Iterator[GoogleTakeoutDay]:
+    if ensure and start is not None and end is not None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout", window=(start, end))
+
     counts: dict[tuple[date, str, str | None], int] = {}
-    for event in iter_events():
+    for event in iter_events(ensure=False):
         day = event.timestamp.date()
         if start and day < start:
             continue
@@ -192,7 +205,11 @@ def iter_daily_activity(
         )
 
 
-def _iter_rows(name: str) -> Iterator[dict[str, Any]]:
+def _iter_rows(name: str, *, ensure: bool = True) -> Iterator[dict[str, Any]]:
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout")
     path = google_takeout_products_dir() / name
     if not path.exists():
         raise FileNotFoundError(

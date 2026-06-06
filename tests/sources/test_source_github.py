@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from lynchpin.sources.github import (
+    GITHUB_CACHE_TTL_SECONDS,
     classify_lifecycle,
     extract_commit_refs,
     extract_issue_refs,
@@ -107,6 +108,53 @@ def test_fetch_issues_uses_cache_for_real_gh_calls(monkeypatch, tmp_path: Path):
     assert first.status == "ok"
     assert second.status == "ok"
     assert len(calls) == 1
+
+
+def test_fetch_pr_refreshes_cache_after_48h(monkeypatch, tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    cache_dir = tmp_path / "cache"
+    old_payload = {
+        "number": 5,
+        "title": "old title",
+        "state": "OPEN",
+        "url": "https://github.com/Sinity/lynchpin/pull/5",
+        "body": "",
+        "labels": [],
+        "author": {"login": "Sinity"},
+        "comments": [],
+        "createdAt": "2026-05-01T00:00:00Z",
+        "updatedAt": "2026-05-01T00:00:00Z",
+    }
+    new_payload = {
+        **old_payload,
+        "title": "new title",
+        "state": "MERGED",
+        "mergedAt": "2026-05-03T00:00:00Z",
+    }
+    calls = []
+    clock = {"now": 1_000_000.0}
+    Config = type("Config", (), {"cache_dir": cache_dir})
+
+    def fake_run(args, cwd=None):
+        if args[:4] == ["git", "remote", "get-url", "origin"]:
+            return _completed(args, cwd, stdout="git@github.com:Sinity/lynchpin.git\n")
+        calls.append(tuple(args))
+        payload = old_payload if len(calls) == 1 else new_payload
+        return _completed(args, cwd, stdout=json.dumps(payload))
+
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: Config())
+    monkeypatch.setattr("lynchpin.sources.github.shutil.which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr("lynchpin.sources.github.time.time", lambda: clock["now"])
+    monkeypatch.setattr("lynchpin.sources.github._run", fake_run)
+
+    first = fetch_pr(tmp_path, 5)
+    clock["now"] += GITHUB_CACHE_TTL_SECONDS + 1
+    second = fetch_pr(tmp_path, 5)
+
+    assert first is not None and first.title == "old title"
+    assert second is not None and second.title == "new title"
+    assert second.state == "merged"
+    assert len(calls) == 2
 
 
 def test_fetch_pr_parses_reviews_and_inline_review_comments(tmp_path: Path):

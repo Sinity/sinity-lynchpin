@@ -322,3 +322,51 @@ def test_machine_attribution_claim_analysis_promotes_controlled_estimates(tmp_pa
     assert "p=0.125" in row["summary"]
     assert row["payload"]["estimate"]["p_value"] == 0.125
     assert row["payload"]["estimate"]["p_value_method"] == "exact_label_permutation_two_sided"
+
+
+def test_machine_attribution_claim_analysis_demotes_fatal_controlled_caveats(tmp_path) -> None:
+    from lynchpin.analysis.machine.attribution_claims import analyze_machine_attribution_claims
+    from lynchpin.core.io import save_json
+
+    support = tmp_path / "machine_support_assessment.json"
+    experiments = tmp_path / "machine_experiment_claims.json"
+    save_json(support, {"assessments": []}, sort_keys=True)
+    save_json(
+        experiments,
+        {
+            "effect_estimates": [{
+                "run_group_id": "grp1",
+                "metric": "duration_seconds",
+                "control_label": "baseline",
+                "treatment_label": "turbo",
+                "control_n": 3,
+                "treatment_n": 3,
+                "control_mean": 10.0,
+                "treatment_mean": 8.0,
+                "delta": -2.0,
+                "ci_low": -3.0,
+                "ci_high": -1.0,
+            }],
+            "claim_packs": [{
+                "run_id": "run1",
+                "run_group_id": "grp1",
+                "git_root": "/realm/project/sinex",
+                "started_at": "2026-05-01T12:00:00+00:00",
+                "caveats": ["internal-json has no complete timed phase"],
+            }],
+        },
+        sort_keys=True,
+    )
+
+    analysis = analyze_machine_attribution_claims(
+        support_assessment_path=support,
+        experiment_claims_path=experiments,
+    )
+
+    assert analysis.by_support_level == {"insufficient": 1}
+    row = analysis.claims[0]
+    assert row["support_level"] == "insufficient"
+    assert row["payload"]["estimate"]["refusal_reasons"] == [
+        "controlled benchmark has fatal measurement caveats",
+        "internal-json has no complete timed phase",
+    ]

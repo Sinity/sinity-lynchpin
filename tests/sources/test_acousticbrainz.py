@@ -297,7 +297,7 @@ class TestDailyAudioFeaturesAb:
         monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda root=None: iter(streams))
 
         days = ab.daily_audio_features_ab(
-            date(2026, 5, 1), date(2026, 5, 1),
+            date(2026, 5, 1), date(2026, 5, 2),
             mbid_cache_path=tmp_path / "m.json",
             features_cache_path=tmp_path / "f.json",
             sleep_fn=_NO_SLEEP,
@@ -341,7 +341,7 @@ class TestDailyAudioFeaturesAb:
         monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda root=None: iter(streams))
 
         days = ab.daily_audio_features_ab(
-            date(2026, 5, 1), date(2026, 5, 1),
+            date(2026, 5, 1), date(2026, 5, 2),
             mbid_cache_path=tmp_path / "m.json",
             features_cache_path=tmp_path / "f.json",
             sleep_fn=_NO_SLEEP,
@@ -364,7 +364,7 @@ class TestDailyAudioFeaturesAb:
         monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda root=None: iter(streams))
 
         days = ab.daily_audio_features_ab(
-            date(2026, 5, 1), date(2026, 5, 1),
+            date(2026, 5, 1), date(2026, 5, 2),
             mbid_cache_path=tmp_path / "m.json",
             features_cache_path=tmp_path / "f.json",
             sleep_fn=_NO_SLEEP,
@@ -383,6 +383,7 @@ class TestDailyAudioFeaturesAb:
 
         streams = [
             self._make_stream(1, 10, "X", "Y", 60_000),  # May 1 — in range
+            self._make_stream(2, 10, "X", "Y", 60_000),  # May 2 — exclusive end
             self._make_stream(5, 10, "X", "Y", 60_000),  # May 5 — out of range
         ]
         monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda root=None: iter(streams))

@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from ..core.config import get_config
-from .google_takeout_materialize import google_takeout_inventory_dir, materialize_google_takeout_inventory
+from ..core.io import latest_mtime_iso
+from .google_takeout_materialize import google_takeout_input_files, google_takeout_inventory_dir, materialize_google_takeout_inventory
 from ..sources.google_takeout import TakeoutMember, discover_takeout_archives, iter_member_bytes
+
+GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION = 1
 
 _STRUCTURED_PRODUCTS = {
     "Contacts",
@@ -60,6 +63,7 @@ def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str
     """Write canonical typed Google Takeout rows for supported non-empty products."""
     output_dir = google_takeout_products_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
+    input_files = google_takeout_input_files(root)
     paths = {
         "contacts": output_dir / "contacts.ndjson",
         "keep_notes": output_dir / "keep_notes.ndjson",
@@ -72,26 +76,36 @@ def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str
     }
     counts: Counter[str] = Counter()
     seen: dict[str, set[str]] = {name: set() for name in paths}
+    bounds: dict[str, tuple[str | None, str | None]] = {name: (None, None) for name in paths}
     errors: Counter[str] = Counter()
 
     handles = {name: path.open("w", encoding="utf-8") for name, path in paths.items()}
     try:
         for item in _iter_structured_rows(root=root):
-            _write_row(handles[item.product], seen[item.product], counts, item.product, item.row)
+            _write_row(handles[item.product], seen[item.product], counts, bounds, item.product, item.row)
         for row in _iter_asset_rows(root=root):
-            _write_row(handles["assets"], seen["assets"], counts, "assets", row)
+            _write_row(handles["assets"], seen["assets"], counts, bounds, "assets", row)
     finally:
         for handle in handles.values():
             handle.close()
 
+    first_date, last_date = _merge_bounds(bounds.values())
     manifest = {
         "dataset": "google.takeout.products",
+        "schema_version": GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "archive_count": len(discover_takeout_archives(root)),
+        "first_date": first_date,
+        "input_files": [str(path) for path in input_files],
+        "input_file_count": len(input_files),
+        "input_latest_mtime": latest_mtime_iso(input_files),
+        "last_date": last_date,
         "supported_products": sorted(_STRUCTURED_PRODUCTS | _ASSET_PRODUCTS),
         "skipped_products": _SKIPPED_PRODUCTS,
         "products": {
             name: {
+                "first_date": bounds[name][0],
+                "last_date": bounds[name][1],
                 "path": str(path),
                 "row_count": counts[name],
             }
@@ -403,6 +417,7 @@ def _write_row(
     handle: Any,
     seen: set[str],
     counts: Counter[str],
+    bounds: dict[str, tuple[str | None, str | None]],
     product: str,
     row: dict[str, Any],
 ) -> None:
@@ -411,7 +426,63 @@ def _write_row(
         return
     seen.add(row_id)
     counts[product] += 1
+    bounds[product] = _extend_bounds(bounds[product], _row_date(row))
     handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _row_date(row: dict[str, Any]) -> str | None:
+    for key in (
+        "timestamp",
+        "created_at",
+        "edited_at",
+        "updated_at",
+        "completed_at",
+        "due_at",
+        "archive_date",
+        "date_hint",
+    ):
+        value = row.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        parsed = _date_iso(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _date_iso(value: str) -> str | None:
+    raw = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(raw).date().isoformat()
+    except ValueError:
+        if len(raw) >= 10:
+            try:
+                return datetime.strptime(raw[:10], "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return None
+    return None
+
+
+def _extend_bounds(bounds: tuple[str | None, str | None], value: str | None) -> tuple[str | None, str | None]:
+    if value is None:
+        return bounds
+    first, last = bounds
+    if first is None or value < first:
+        first = value
+    if last is None or value > last:
+        last = value
+    return first, last
+
+
+def _merge_bounds(values: Iterable[tuple[str | None, str | None]]) -> tuple[str | None, str | None]:
+    first: str | None = None
+    last: str | None = None
+    for candidate_first, candidate_last in values:
+        if candidate_first is not None and (first is None or candidate_first < first):
+            first = candidate_first
+        if candidate_last is not None and (last is None or candidate_last > last):
+            last = candidate_last
+    return first, last
 
 
 def _json(raw: bytes) -> Any:

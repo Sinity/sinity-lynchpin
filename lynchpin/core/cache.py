@@ -52,12 +52,26 @@ def persistent_cache(
             kwargs["depends_on"] = depends_on
         if chunk_by is not None:
             kwargs["chunk_by"] = chunk_by
-        if logger is not None:
-            kwargs["logger"] = logger
+        kwargs["logger"] = logger if logger is not None else _quiet_cache_logger(name)
 
         return cast(Callable[P, T], _cachew(**kwargs)(func))
 
     return decorator
+
+
+def _quiet_cache_logger(name: str) -> logging.Logger:
+    """Default cachew logger for source/status caches.
+
+    Cache hits and writes are implementation details for ordinary source reads
+    and status payloads. Keep them available when an explicit logger is passed,
+    but do not let cachew configure a noisy default handler.
+    """
+
+    logger = logging.getLogger(f"lynchpin.cachew.{name}")
+    logger.addHandler(logging.NullHandler())
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    return logger
 
 
 def file_signature(path: Path) -> Tuple[str, int | None, int | None]:

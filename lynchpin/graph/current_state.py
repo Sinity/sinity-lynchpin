@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -19,7 +19,8 @@ from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import ALL_PROJECTS
 from ..core.projects import canonical_project_name
 from ..core.projects import project_path
-from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, fetch_issues, fetch_prs, repo_slug
+from ..sources.github import GitHubItem, GitHubLifecycleClassification, classify_lifecycle, repo_slug
+from ..sources.github_context import iter_github_context
 from .evidence_graph import build_evidence_graph
 from .evidence_views import render_evidence_graph_summary
 from .movement import MovementSummary, movement_summary, render_movement_summary
@@ -150,36 +151,64 @@ def project_github_frontier(
     open_limit: int = 100,
     closed_limit: int = 40,
     closed_pr_limit: int = 40,
+    start: date | None = None,
+    end: date | None = None,
 ) -> tuple[ProjectGitHubFrontier, ...]:
-    """Fetch open/recently closed GitHub work frontier for inventory items."""
+    """Read open/recent GitHub work frontier from the canonical context product."""
+    from ..materialization import ensure_materialized
+
+    project_names = {
+        item.name
+        for item in inventory
+        if item.exists and item.is_git_repo and item.github_slug is not None
+    }
+    if not project_names:
+        return ()
+    result = ensure_materialized("github_context", window=(start, end) if start is not None and end is not None else None)
+    product_rows = (
+        tuple(iter_github_context(projects=project_names, ensure=False))
+        if result.status in {"ready", "updated"}
+        else ()
+    )
+    rows_by_project: dict[str, list[GitHubItem]] = {name: [] for name in project_names}
+    for row in product_rows:
+        rows_by_project.setdefault(row.project, []).append(row.item)
+
     frontiers: list[ProjectGitHubFrontier] = []
     for item in inventory:
         if not item.exists or not item.is_git_repo or item.github_slug is None:
             continue
-        collected: list[GitHubItem] = []
-        statuses: list[str] = []
-        reasons: list[str] = []
-        for result in (
-            fetch_issues(item.path, state="open", limit=open_limit),
-            fetch_issues(item.path, state="closed", limit=closed_limit),
-            fetch_prs(item.path, state="open", limit=open_limit),
-            fetch_prs(item.path, state="closed", limit=closed_pr_limit),
-        ):
-            statuses.append(result.status)
-            if result.reason:
-                reasons.append(result.reason)
-            collected.extend(result.items)
-        status = "ok" if statuses and all(status == "ok" for status in statuses) else "degraded"
+        collected = _frontier_subset(
+            rows_by_project.get(item.name, ()),
+            open_limit=open_limit,
+            closed_limit=closed_limit,
+            closed_pr_limit=closed_pr_limit,
+        )
+        status = "ok" if result.status in {"ready", "updated"} else "degraded"
         frontiers.append(
             ProjectGitHubFrontier(
                 project=item.name,
                 slug=item.github_slug,
                 status=status,
-                reason="; ".join(reasons) if reasons else None,
+                reason=None if status == "ok" else result.reason,
                 items=tuple(_frontier_item(item.name, gh_item) for gh_item in collected),
             )
         )
     return tuple(frontiers)
+
+
+def _frontier_subset(
+    items: Sequence[GitHubItem],
+    *,
+    open_limit: int,
+    closed_limit: int,
+    closed_pr_limit: int,
+) -> tuple[GitHubItem, ...]:
+    open_issues = [item for item in items if item.kind == "issue" and item.state == "open"][:open_limit]
+    closed_issues = [item for item in items if item.kind == "issue" and item.state != "open"][:closed_limit]
+    open_prs = [item for item in items if item.kind == "pr" and item.state == "open"][:open_limit]
+    closed_prs = [item for item in items if item.kind == "pr" and item.state != "open"][:closed_pr_limit]
+    return tuple(open_issues + closed_issues + open_prs + closed_prs)
 
 
 def current_state_evidence_pack(
@@ -232,7 +261,11 @@ def current_state_evidence_pack(
             rows=correlations,
             include_github_context=include_github,
         ),
-        github_frontiers=project_github_frontier(inventory) if include_github else (),
+        github_frontiers=project_github_frontier(
+            inventory,
+            start=start_date,
+            end=end_date + timedelta(days=1),
+        ) if include_github else (),
     )
 
 

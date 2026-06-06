@@ -16,10 +16,12 @@ from typing import Any, Iterator
 
 from ..core.classify import resolve_project
 from ..core.config import get_config
+from ..core.io import latest_mtime_iso
 from ..sources.arbtt import ArbttFocusEvent, arbtt_events_path, arbtt_manifest_path
 
 _HEADER_RE = re.compile(r"^(?P<stamp>\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)")
 _WINDOW_RE = re.compile(r"^\s*\((?P<active>\*| )\)\s+(?P<program>.*?):\s*(?P<title>.*)$")
+ARBTT_EVENTS_SCHEMA_VERSION = 1
 
 
 def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = None) -> dict[str, Any]:
@@ -35,14 +37,18 @@ def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = 
             payload["tags"] = list(row.tags)
             payload["caveats"] = list(row.caveats)
             handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    input_files = _capture_logs(root)
     manifest = {
         "dataset": "focus.arbtt.events",
+        "schema_version": ARBTT_EVENTS_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": len(rows),
         "first_date": rows[0].timestamp.date().isoformat() if rows else None,
         "last_date": rows[-1].timestamp.date().isoformat() if rows else None,
-        "input_files": [str(path) for path in _capture_logs(root)],
+        "input_files": [str(path) for path in input_files],
+        "input_file_count": len(input_files),
+        "input_latest_mtime": latest_mtime_iso(input_files),
         "arbtt_dump_available": shutil.which("arbtt-dump") is not None,
     }
     arbtt_manifest_path(root).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")

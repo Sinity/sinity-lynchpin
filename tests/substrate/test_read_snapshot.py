@@ -1,7 +1,7 @@
 """Tests for the substrate read-snapshot fallback.
 
 Pin the behavior that read tools stay usable while the canonical
-substrate is under an exclusive write lock — refreshes can hold the
+substrate is under an exclusive write lock — materializations can hold the
 lock for 30-60+ minutes; MCP needs a path to read regardless.
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ import pytest
 
 from lynchpin.substrate.connection import (
     connect,
-    refresh_read_snapshot,
     substrate_read_snapshot_path,
+    update_read_snapshot,
 )
 
 
@@ -29,7 +29,7 @@ def isolated_substrate(monkeypatch, tmp_path: Path) -> Path:
     return target
 
 
-def test_refresh_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
+def test_update_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
     """A canonical with data → snapshot file appears alongside it with
     the same data accessible read-only."""
     canonical = isolated_substrate
@@ -37,7 +37,7 @@ def test_refresh_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
         conn.execute("CREATE TABLE x (v INTEGER)")
         conn.execute("INSERT INTO x VALUES (42)")
 
-    snapshot_path = refresh_read_snapshot()
+    snapshot_path = update_read_snapshot()
     assert snapshot_path is not None
     assert snapshot_path.exists()
     assert snapshot_path == substrate_read_snapshot_path()
@@ -46,11 +46,11 @@ def test_refresh_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
         assert conn.execute("SELECT v FROM x").fetchone() == (42,)
 
 
-def test_refresh_read_snapshot_skips_missing_canonical(
+def test_update_read_snapshot_skips_missing_canonical(
     isolated_substrate: Path,
 ) -> None:
     """No canonical → no snapshot, no error."""
-    assert refresh_read_snapshot() is None
+    assert update_read_snapshot() is None
 
 
 def test_connect_falls_back_to_snapshot_on_lock(isolated_substrate: Path) -> None:
@@ -62,7 +62,7 @@ def test_connect_falls_back_to_snapshot_on_lock(isolated_substrate: Path) -> Non
         conn.execute("CREATE TABLE x (v INTEGER)")
         conn.execute("INSERT INTO x VALUES (7)")
     # Snapshot the data
-    refresh_read_snapshot()
+    update_read_snapshot()
     # Modify canonical to a different value (without snapshotting)
     with duckdb.connect(str(canonical)) as conn:
         conn.execute("UPDATE x SET v = 99")
@@ -80,11 +80,11 @@ def test_connect_falls_back_to_snapshot_on_lock(isolated_substrate: Path) -> Non
 
 def test_connect_strict_mode_raises_on_lock(isolated_substrate: Path) -> None:
     """``snapshot_fallback=False`` preserves the historical strict behavior
-    for callers that must distinguish freshness from availability."""
+    for callers that must distinguish canonical availability from snapshot availability."""
     canonical = isolated_substrate
     with duckdb.connect(str(canonical)) as conn:
         conn.execute("CREATE TABLE x (v INTEGER)")
-    refresh_read_snapshot()
+    update_read_snapshot()
     writer = duckdb.connect(str(canonical))
     try:
         # Same-process: ConnectionException. Cross-process: IOException.
@@ -100,7 +100,7 @@ def test_connect_raises_when_no_snapshot_and_locked(
     isolated_substrate: Path,
 ) -> None:
     """No snapshot exists at all → connect should raise the original
-    lock error rather than silently returning a stale path."""
+    lock error rather than silently returning an absent snapshot path."""
     canonical = isolated_substrate
     with duckdb.connect(str(canonical)) as conn:
         conn.execute("CREATE TABLE x (v INTEGER)")

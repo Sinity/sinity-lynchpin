@@ -5,12 +5,21 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from lynchpin.core.io import load_analysis_artifact
+from lynchpin.core.io import load_materialized_analysis_artifact, materialize_analysis_artifacts
 
 
 def current_state_payload() -> dict[str, Any]:
-    cp_dict: dict[str, Any] = load_analysis_artifact("current_state_context_pack.json") or {}
-    n_dict: dict[str, Any] = load_analysis_artifact("current_state_narrative.json") or {}
+    materialization = materialize_analysis_artifacts()
+    cp_payload, cp_materialization = load_materialized_analysis_artifact(
+        "current_state_context_pack.json",
+        materialization=materialization,
+    )
+    n_payload, n_materialization = load_materialized_analysis_artifact(
+        "current_state_narrative.json",
+        materialization=materialization,
+    )
+    cp_dict: dict[str, Any] = cp_payload if isinstance(cp_payload, dict) else {}
+    n_dict: dict[str, Any] = n_payload if isinstance(n_payload, dict) else {}
     available = bool(cp_dict)
     projects = cp_dict.get("projects", [])
     claims = cp_dict.get("claims", [])
@@ -20,6 +29,10 @@ def current_state_payload() -> dict[str, Any]:
     readiness = cp_dict.get("readiness_forecast")
     return {
         "available": available,
+        "materialization": {
+            "context_pack": _compact_materialization(cp_materialization),
+            "narrative": _compact_materialization(n_materialization),
+        },
         "project_count": len(projects) if isinstance(projects, list) else 0,
         "claim_count": len(claims) if isinstance(claims, list) else 0,
         "projects": [
@@ -88,13 +101,22 @@ def current_state_payload() -> dict[str, Any]:
     }
 
 
+def _compact_materialization(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": result.get("status"),
+        "changed": result.get("changed"),
+        "reason": result.get("reason"),
+        "elapsed_ms": result.get("elapsed_ms"),
+    }
+
+
 def current_state_html(current_state: dict[str, Any]) -> str:
     if not current_state.get("available"):
         return (
             "<div class='panel'>"
             "<h2>Current State — Not Available</h2>"
             "<p>Context pack and narrative not yet generated. "
-            "Run <code>python -m lynchpin.analysis refresh-current-state "
+            "Run <code>python -m lynchpin.analysis materialize-current-state "
             "--start YYYY-MM-DD --end YYYY-MM-DD</code> to produce them.</p>"
             "</div>"
         )

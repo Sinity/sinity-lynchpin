@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from lynchpin.core.io import save_json
 from lynchpin.substrate.connection import connect, substrate_path
+from lynchpin.substrate.snapshots import best_materialized_refresh_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -138,17 +139,19 @@ def _load_invocations(
         clauses.append("refresh_id = ?")
         params.append(refresh_id)
     else:
-        latest = conn.execute(
-            "SELECT refresh_id FROM work_observation ORDER BY materialized_at DESC LIMIT 1"
-        ).fetchone()
-        if latest:
+        latest = best_materialized_refresh_id(
+            conn,
+            "work_observation",
+            caller="workflow_mechanics",
+        )
+        if latest is not None:
             clauses.append("refresh_id = ?")
-            params.append(latest[0])
+            params.append(latest)
     if start is not None:
         clauses.append("CAST(started_at AS DATE) >= ?")
         params.append(start)
     if end is not None:
-        clauses.append("CAST(started_at AS DATE) < ?")
+        clauses.append("CAST(started_at AS DATE) <= ?")
         params.append(end)
     if project is not None:
         clauses.append("project = ?")

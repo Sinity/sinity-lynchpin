@@ -3,8 +3,24 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from lynchpin.analysis.machine.readiness import analyze_machine_analysis_readiness
 from lynchpin.substrate.connection import apply_schema, connect
+
+
+@pytest.fixture(autouse=True)
+def _isolate_freshness_ledger(monkeypatch, tmp_path):
+    config = type("Config", (), {"local_root": tmp_path / "local"})()
+    monkeypatch.setattr("lynchpin.core.freshness.get_config", lambda: config)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, cfg: type(
+            "Result",
+            (),
+            {"to_json": lambda self: {"status": "ready", "changed": False, "reason": "ok"}},
+        )(),
+    )
 
 
 def test_machine_readiness_reports_source_and_claim_coverage(monkeypatch, tmp_path):
@@ -115,6 +131,10 @@ def test_machine_readiness_reports_source_and_claim_coverage(monkeypatch, tmp_pa
     assert "some non-selected negative controls failed" in dimensions["natural_experiment_identification"].caveats
     assert dimensions["measurement_system_diagnostics"].status == "stable"
     assert any(row.table == "machine_metric_sample" and row.row_count == 120 for row in analysis.tables)
+    metric_table = next(row for row in analysis.tables if row.table == "machine_metric_sample")
+    assert metric_table.materialized_snapshot_count == 1
+    assert metric_table.latest_materialized_refresh_id == "r1"
+    assert "1 materialized snapshots" in dimensions["continuous_machine_telemetry"].evidence
     assert any(row.artifact == "devshell_performance.json" and row.primary_count == 1 for row in analysis.artifacts)
 
 
@@ -168,6 +188,33 @@ def test_machine_readiness_limits_sparse_below_attribution(monkeypatch, tmp_path
     assert "combined_attributed_pressure_episodes=1/10" in below.evidence
     assert "most pressure episodes lack bounded below or workload resource attribution" in below.caveats
     assert "no bounded below captures are available for process/cgroup attribution" in below.caveats
+
+
+def test_machine_readiness_counts_workload_resource_attribution(monkeypatch, tmp_path):
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+
+    artifact_root = tmp_path / "analysis"
+    artifact_root.mkdir()
+    (artifact_root / "machine_below_attribution.json").write_text(
+        json.dumps({
+            "attributed_episode_count": 0,
+            "pressure_episode_count": 10,
+            "workload_resource_attributed_pressure_episode_count": 8,
+            "residual_unattributed_pressure_episode_count": 2,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("lynchpin.core.io.resolve_analysis_path", lambda name: artifact_root / name)
+
+    analysis = analyze_machine_analysis_readiness(path=db)
+
+    below = {row.dimension: row for row in analysis.dimensions}["below_process_attribution"]
+    assert below.status == "stable"
+    assert "bounded_below_attributed_pressure_episodes=0/10" in below.evidence
+    assert "workload_resource_attributed_pressure_episodes=8/10" in below.evidence
+    assert "combined_attributed_pressure_episodes=8/10" in below.evidence
 
 
 def test_machine_readiness_explains_nonoverlapping_below_capture(monkeypatch, tmp_path):

@@ -129,7 +129,7 @@ def test_render_current_state_can_render_json(monkeypatch):
     assert json.loads(rendered) == {"date": "2026-05-01"}
 
 
-def test_render_current_state_can_refresh_substrate(monkeypatch):
+def test_render_current_state_can_materialize_substrate(monkeypatch):
     calls = {}
     monkeypatch.setattr(current_state, "context_pack", lambda **kwargs: calls.update(kwargs) or object())
     monkeypatch.setattr(current_state, "render_context_pack", lambda pack: "context")
@@ -137,11 +137,11 @@ def test_render_current_state_can_refresh_substrate(monkeypatch):
     rendered = current_state.render_current_state(
         start=date(2026, 5, 1),
         end=date(2026, 5, 5),
-        refresh_substrate=True,
+        materialize_substrate=True,
     )
 
     assert rendered == "context"
-    assert calls["refresh_substrate"] is True
+    assert calls["materialize_substrate"] is True
 
 
 def test_current_state_script_reports_required_substrate_miss(monkeypatch, capsys):

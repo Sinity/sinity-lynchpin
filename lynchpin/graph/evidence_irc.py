@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import timedelta
 from typing import Any
 
 from ..core.evidence import EvidenceProvenance
@@ -13,7 +14,7 @@ from .evidence_projects import include_project
 
 
 def conversations_in_range(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.irc import conversations_in_range as impl
+    from ..sources.irc_raw import extract_conversations as impl
 
     return impl(*args, **kwargs)
 
@@ -27,7 +28,10 @@ def add_irc(
     text.  Conversations with no project mention and an unrestricted selection
     are emitted without a project so they remain visible in the timeline.
     """
-    for conv in conversations_in_range(start=start, end=end):
+    from ..materialization import ensure_materialized
+
+    ensure_materialized("irc", window=(start, end + timedelta(days=1)))
+    for conv in conversations_in_range(start=start, end=end, ensure=False):
         full_text = " ".join(msg.text for msg in conv.messages)
         # Also scan channel name for project mentions.
         combined_text = f"{conv.channel} {full_text}"
@@ -46,7 +50,15 @@ def add_irc(
             node_id = (
                 f"irc:{conv.conversation_id}:{conv.channel}:{proj_tag}"
             )
-            snippet = full_text[:200] if full_text else f"[{conv.channel}] {conv.total_lines} lines"
+            message_count = int(getattr(conv, "message_count", getattr(conv, "total_lines", 0)))
+            source_files = sorted(
+                {
+                    str(getattr(msg, "source_file", ""))
+                    for msg in getattr(conv, "messages", ())
+                    if getattr(msg, "source_file", "")
+                }
+            )
+            snippet = full_text[:200] if full_text else f"[{conv.channel}] {message_count} messages"
             nodes.append(
                 EvidenceNode(
                     id=node_id,
@@ -60,13 +72,16 @@ def add_irc(
                     payload={
                         "conversation_id": conv.conversation_id,
                         "channel": conv.channel,
-                        "total_lines": conv.total_lines,
-                        "sinity_lines": conv.sinity_lines,
-                        "mention_lines": conv.mention_lines,
-                        "source_path": conv.source_path,
+                        "total_lines": message_count,
+                        "message_count": message_count,
+                        "unique_speakers": getattr(conv, "unique_speakers", None),
+                        "speakers": list(getattr(conv, "speakers", ())),
+                        "source_files": source_files,
                     },
                     provenance=EvidenceProvenance(
-                        "irc", "materialized", path=conv.source_path
+                        "irc",
+                        "materialized",
+                        path=source_files[0] if len(source_files) == 1 else None,
                     ),
                 )
             )

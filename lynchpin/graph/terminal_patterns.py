@@ -40,6 +40,7 @@ def detect_patterns(
     start: date,
     end: date,
     projects: Sequence[str] | None = None,
+    sessions: Sequence[ShellSession] | None = None,
 ) -> tuple[TerminalPattern, ...]:
     """Detect terminal patterns from shell sessions in a date range.
 
@@ -51,12 +52,12 @@ def detect_patterns(
     from ..sources.terminal import commands, shell_sessions
 
     start_dt, end_dt = date_to_dt_range(start, end)
-    sessions = shell_sessions(start=start_dt, end=end_dt)
-    if not sessions:
+    session_rows = tuple(sessions) if sessions is not None else tuple(shell_sessions(start=start_dt, end=end_dt))
+    if not session_rows:
         return ()
 
     chosen = set(projects or ())
-    selected = [session for session in sessions if not chosen or session.project in chosen]
+    selected = [session for session in session_rows if not chosen or session.project in chosen]
     if not selected:
         return ()
 

@@ -59,8 +59,18 @@ def communication_manifest_path(root: Path | None = None) -> Path:
     return communication_events_path(root).with_suffix(".manifest.json")
 
 
-def iter_communication_events(path: Path | None = None) -> Iterator[CommunicationEvent]:
+def iter_communication_events(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[CommunicationEvent]:
     target = path or communication_events_path()
+    if path is None and ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("communications", window=(start, end) if start is not None and end is not None else None)
     if not target.exists():
         raise FileNotFoundError(
             f"canonical communication event materialization is missing: {target}. "
@@ -73,6 +83,14 @@ def iter_communication_events(path: Path | None = None) -> Iterator[Communicatio
             payload = json.loads(line)
             timestamp_raw = payload.get("timestamp")
             timestamp = datetime.fromisoformat(timestamp_raw) if isinstance(timestamp_raw, str) and timestamp_raw else None
+            if start is not None or end is not None:
+                if timestamp is None:
+                    continue
+                day = timestamp.date()
+                if start is not None and day < start:
+                    continue
+                if end is not None and day >= end:
+                    continue
             yield CommunicationEvent(
                 event_id=str(payload.get("event_id") or ""),
                 source=str(payload.get("source") or ""),
@@ -93,14 +111,13 @@ def iter_communication_events(path: Path | None = None) -> Iterator[Communicatio
             )
 
 
-def daily_communication_activity(*, start: date, end: date) -> list[CommunicationDayActivity]:
+def daily_communication_activity(*, start: date, end: date, ensure: bool = True) -> list[CommunicationDayActivity]:
     by_day: dict[date, list[CommunicationEvent]] = defaultdict(list)
-    for event in iter_communication_events():
+    for event in iter_communication_events(start=start, end=end, ensure=ensure):
         if event.timestamp is None:
             continue
         day = event.timestamp.date()
-        if start <= day < end:
-            by_day[day].append(event)
+        by_day[day].append(event)
     out: list[CommunicationDayActivity] = []
     for day, rows in by_day.items():
         out.append(

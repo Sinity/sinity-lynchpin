@@ -2,31 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
-from ..core.evidence import CostClass, EvidenceProvenance
+from ..core.evidence import EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
 from ..core.primitives import date_to_dt_range, logical_date
 from .evidence_projects import include_project, normalize_project
 
+def ensure_activitywatch_derived(*, start: date, end: date) -> None:
+    from ..materialization import ensure_materialized
+
+    ensure_materialized("activitywatch_derived", window=(start, end + timedelta(days=1)))
+
 
 def attention(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import attention as impl
+    from ..sources.activitywatch_derived import iter_derived_attention
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_attention(*args, **kwargs))
 
 
 def circadian(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import circadian as impl
+    from ..sources.activitywatch_derived import iter_derived_circadian
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_circadian(*args, **kwargs))
 
 
 def deep_work(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import deep_work as impl
+    from ..sources.activitywatch_derived import iter_derived_deep_work
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_deep_work(*args, **kwargs))
 
 
 def focus_timeline(*args: Any, **kwargs: Any) -> Any:
@@ -35,22 +40,30 @@ def focus_timeline(*args: Any, **kwargs: Any) -> Any:
     return impl(*args, **kwargs)
 
 
-def fragmentation(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import fragmentation as impl
+def focus_spans(*args: Any, **kwargs: Any) -> Any:
+    product_kwargs = dict(kwargs)
+    product_kwargs.pop("enrich_polylogue", None)
+    from ..sources.activitywatch_derived import iter_derived_focus_spans
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_focus_spans(*args, **product_kwargs))
+
+
+def fragmentation(*args: Any, **kwargs: Any) -> Any:
+    from ..sources.activitywatch_derived import iter_derived_fragmentation
+
+    return tuple(iter_derived_fragmentation(*args, **kwargs))
 
 
 def loops(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import loops as impl
+    from ..sources.activitywatch_derived import iter_derived_loops
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_loops(*args, **kwargs))
 
 
 def project_focus_days(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.activitywatch import project_focus_days as impl
+    from ..sources.activitywatch_derived import iter_derived_project_focus_days
 
-    return impl(*args, **kwargs)
+    return tuple(iter_derived_project_focus_days(*args, **kwargs))
 
 
 def add_focus(
@@ -59,11 +72,18 @@ def add_focus(
     start: date,
     end: date,
     selected: set[str],
-    mode: CostClass,
 ) -> None:
+    ensure_activitywatch_derived(start=start, end=end)
+
     start_dt, end_dt = date_to_dt_range(start, end)
     for idx, span in enumerate(
-        focus_timeline(start=start_dt, end=end_dt, min_duration_s=60.0)
+        focus_spans(
+            start=start_dt,
+            end=end_dt,
+            min_duration_s=60.0,
+            enrich_polylogue=False,
+            ensure=False,
+        )
     ):
         project = normalize_project(span.project)
         if span.kind != "focused" or not include_project(project, selected):
@@ -90,7 +110,7 @@ def add_focus(
                     "app": span.app,
                     "title": span.title,
                     "mode": span.mode,
-                    "span_source": span.source,
+                    "span_source": getattr(span, "source", "aw_trimmed"),
                     "keypress_count": span.keypress_count,
                     "keylog_state": span.keylog_state,
                 },
@@ -98,7 +118,7 @@ def add_focus(
             )
         )
 
-    for idx, block in enumerate(deep_work(start=start_dt, end=end_dt)):
+    for idx, block in enumerate(deep_work(start=start_dt, end=end_dt, ensure=False)):
         project = normalize_project(block.project)
         if block.focus_ratio < 0.5 or not include_project(project, selected):
             continue
@@ -122,7 +142,7 @@ def add_focus(
             )
         )
 
-    for profile in circadian(start=start, end=end):
+    for profile in circadian(start=start, end=end, ensure=False):
             project = normalize_project(profile.dominant_project)
             if not include_project(project, selected):
                 continue
@@ -143,7 +163,7 @@ def add_focus(
                 )
             )
 
-    for idx, loop in enumerate(loops(start=start_dt, end=end_dt)):
+    for idx, loop in enumerate(loops(start=start_dt, end=end_dt, ensure=False)):
             project = normalize_project(loop.dominant_project)
             if loop.span_count < 2 or not include_project(project, selected):
                 continue
@@ -166,7 +186,7 @@ def add_focus(
                 )
             )
 
-    for frag in fragmentation(start=start, end=end):
+    for frag in fragmentation(start=start, end=end, ensure=False):
             nodes.append(
                 EvidenceNode(
                     id=f"aw-frag:{frag.date.isoformat()}",
@@ -185,7 +205,7 @@ def add_focus(
                 )
             )
 
-    for attn in attention(start=start, end=end):
+    for attn in attention(start=start, end=end, ensure=False):
             project = normalize_project(attn.top_project)
             if not include_project(project, selected):
                 continue
@@ -206,19 +226,28 @@ def add_focus(
                     provenance=EvidenceProvenance("activitywatch", "materialized"),
                 )
             )
-    for focus in project_focus_days(start=start_dt, end=end_dt):
-        project = normalize_project(focus.project)
-        if not include_project(project, selected):
-            continue
-        nodes.append(
-            EvidenceNode(
-                id=f"aw-focus:{focus.date}:{project}",
-                kind="focus_day",
-                source="activitywatch",
-                date=focus.date,
-                project=project,
-                summary=f"{project} focus {focus.duration_s / 3600:.2f}h",
-                payload={"duration_s": focus.duration_s},
-                provenance=EvidenceProvenance("activitywatch", "materialized"),
-            )
+    for focus in project_focus_days(start=start_dt, end=end_dt, ensure=False):
+        _append_project_focus_day(nodes, focus=focus, selected=selected)
+
+
+def _append_project_focus_day(
+    nodes: list[EvidenceNode],
+    *,
+    focus: Any,
+    selected: set[str],
+) -> None:
+    project = normalize_project(focus.project)
+    if not include_project(project, selected):
+        return
+    nodes.append(
+        EvidenceNode(
+            id=f"aw-focus:{focus.date}:{project}",
+            kind="focus_day",
+            source="activitywatch",
+            date=focus.date,
+            project=project,
+            summary=f"{project} focus {focus.duration_s / 3600:.2f}h",
+            payload={"duration_s": focus.duration_s},
+            provenance=EvidenceProvenance("activitywatch", "materialized"),
         )
+    )

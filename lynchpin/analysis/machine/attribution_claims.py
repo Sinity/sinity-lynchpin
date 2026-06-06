@@ -341,13 +341,27 @@ def _controlled_estimate_claims(payload: dict[str, Any] | None) -> tuple[Machine
         metric = str(estimate.get("metric") or "duration_seconds")
         control = str(estimate.get("control_label") or "control")
         treatment = str(estimate.get("treatment_label") or "treatment")
+        caveats = tuple(
+            str(caveat)
+            for row in group_packs
+            for caveat in row.get("caveats", ())
+            if caveat
+        )
+        fatal_caveats = _fatal_measurement_caveats(caveats)
+        support_level: SupportLevel = "insufficient" if fatal_caveats else "controlled"
+        claim_estimate = dict(estimate)
+        if fatal_caveats:
+            claim_estimate["refusal_reasons"] = [
+                "controlled benchmark has fatal measurement caveats",
+                *fatal_caveats,
+            ]
         claims.append(MachineAttributionClaim(
             claim_type="machine_attribution",
             project=_project_from_pack(first),
             date=started.date() if started else None,
             metric=metric,
             effect_kind=f"controlled_benchmark:{group}",
-            support_level="controlled",
+            support_level=support_level,
             confidence=_controlled_confidence(estimate),
             summary=_controlled_summary(
                 group=group,
@@ -358,16 +372,27 @@ def _controlled_estimate_claims(payload: dict[str, Any] | None) -> tuple[Machine
             ),
             baseline={"label": control, "n": estimate.get("control_n"), "mean": estimate.get("control_mean")},
             comparison={"label": treatment, "n": estimate.get("treatment_n"), "mean": estimate.get("treatment_mean")},
-            estimate=dict(estimate),
+            estimate=claim_estimate,
             source_ids=tuple(str(row.get("run_id")) for row in group_packs if row.get("run_id")),
-            caveats=tuple(
-                str(caveat)
-                for row in group_packs
-                for caveat in row.get("caveats", ())
-                if caveat
-            ),
+            caveats=caveats,
         ))
     return tuple(claims)
+
+
+def _fatal_measurement_caveats(caveats: tuple[str, ...]) -> list[str]:
+    fatal_needles = (
+        "observational manifest only",
+        "no machine telemetry samples",
+        "no complete timed phase",
+        "internal-json has no complete timed phase",
+        "internal-json capture has no parseable timestamps",
+        "run exited nonzero",
+    )
+    return [
+        caveat
+        for caveat in caveats
+        if any(needle in caveat for needle in fatal_needles)
+    ]
 
 
 def _claim_row(claim: MachineAttributionClaim) -> AnalysisClaimRow | None:

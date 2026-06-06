@@ -56,7 +56,12 @@ class CoverageReport:
         return {source.source: source for source in self.sources}
 
 
-def coverage_report(*, start: date, end: date) -> CoverageReport:
+def coverage_report(
+    *,
+    start: date,
+    end: date,
+    repair_materializations: bool = True,
+) -> CoverageReport:
     cfg = get_config()
     from ..materialization import audit_materialization
     from ..core.source_contracts import source_contract
@@ -66,13 +71,13 @@ def coverage_report(*, start: date, end: date) -> CoverageReport:
     # can't fix it locally. Everything else is derived from the materialized
     # dataset itself — path is the first materialized output, basis falls
     # back to "canonical-ndjson", repair hint defaults to the contract's
-    # refresh_command.
+    # materialization_hint.
     _OVERRIDES: dict[str, dict[str, str]] = {
         "atuin": {"display": "terminal"},
         "health": {
-            "repair_hint": "Run python -m lynchpin.cli.process_health if raw export is newer; otherwise refresh Samsung Health export",
+            "repair_hint": "Run python -m lynchpin.cli.process_health if raw export is newer; otherwise replace Samsung Health export",
         },
-        "sleep": {"repair_hint": "Refresh Samsung Health/Sleep-as-Android export"},
+        "sleep": {"repair_hint": "Replace Samsung Health/Sleep-as-Android export"},
         "spotify": {"repair_hint": "Request a fresh Spotify GDPR export"},
         "reddit": {"repair_hint": "Request a fresh Reddit GDPR export"},
         "facebook_messenger": {"display": "messenger", "repair_hint": "Request a fresh Facebook Messenger export"},
@@ -85,8 +90,12 @@ def coverage_report(*, start: date, end: date) -> CoverageReport:
         },
     }
 
+    audited = list(audit_materialization(cfg=cfg))
+    if repair_materializations and _ensure_coverage_materializations(audited, start=start, end=end, cfg=cfg):
+        audited = list(audit_materialization(cfg=cfg))
+
     rows = []
-    for dataset in audit_materialization(cfg=cfg):
+    for dataset in audited:
         try:
             contract = source_contract(dataset.name)
         except KeyError:
@@ -102,7 +111,7 @@ def coverage_report(*, start: date, end: date) -> CoverageReport:
         override = _OVERRIDES.get(dataset.name, {})
         display = override.get("display", dataset.name)
         path = dataset.materialized_paths[0] if dataset.materialized_paths else None
-        default_hint = f"Refresh: {contract.refresh_command}" if contract else None
+        default_hint = f"Materialize: {contract.materialization_hint}" if contract else None
         repair_hint = override.get("repair_hint", default_hint)
         rows.append(
             _from_materialized_dataset(
@@ -121,6 +130,34 @@ def coverage_report(*, start: date, end: date) -> CoverageReport:
         generated_at=datetime.now(timezone.utc),
         sources=tuple(sorted(rows, key=lambda item: item.source)),
     )
+
+
+def _ensure_coverage_materializations(
+    datasets: list[object],
+    *,
+    start: date,
+    end: date,
+    cfg: object,
+) -> bool:
+    from ..core.source_contracts import source_contract
+    from ..materialization import ensure_materialized
+
+    changed = False
+    for dataset in datasets:
+        name = getattr(dataset, "name", None)
+        if not isinstance(name, str):
+            continue
+        try:
+            contract = source_contract(name)
+        except KeyError:
+            continue
+        if contract.collection_model in {"metadata", "stage"}:
+            continue
+        if contract.materialization_mode != "local":
+            continue
+        result = ensure_materialized(name, window=(start, end), budget="inline", cfg=cfg)
+        changed = changed or result.changed
+    return changed
 
 
 def render_coverage_report(report: CoverageReport) -> str:

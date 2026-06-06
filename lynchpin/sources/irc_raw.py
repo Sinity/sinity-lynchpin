@@ -16,6 +16,7 @@ Graduated API layers:
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from typing import Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import as_local
+from ..core.primitives import logical_date
 
 __all__ = [
     "IRCRawMessage",
@@ -40,6 +42,7 @@ __all__ = [
     "irc_events_path",
     "irc_manifest_path",
     "iter_messages",
+    "iter_raw_messages",
     "iter_messages_in_range",
     "extract_sessions",
     "normalize_nick",
@@ -63,7 +66,7 @@ class IRCRawMessage:
 
     @property
     def date(self) -> date:
-        return self.timestamp.date()
+        return logical_date(self.timestamp)
 
     @property
     def is_meta(self) -> bool:
@@ -188,6 +191,17 @@ def irc_events_path(root: Optional[Path] = None) -> Path:
 
 def irc_manifest_path(root: Optional[Path] = None) -> Path:
     return irc_events_path(root).with_suffix(".manifest.json")
+
+
+def _ensure_irc_materialized(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> None:
+    from ..materialization import ensure_materialized
+
+    window = (start, end) if start is not None and end is not None else None
+    ensure_materialized("irc", window=window)
 
 # ── Nickname normalization ────────────────────────────────────────────────────
 
@@ -393,14 +407,33 @@ def iter_messages(
     *,
     channel: Optional[str] = None,
     root: Optional[Path] = None,
+    ensure: bool = True,
 ) -> Iterator[IRCRawMessage]:
-    """Yield all parsed IRC messages from raw WeeChat log files.
+    """Yield all canonical IRC messages.
 
     Args:
         channel: filter to a specific channel directory (e.g. "libera" or "#lesswrong").
                  If None, yields from all channels.
-        root: override the raw-log root directory.
+        root: override the raw-log root directory. Passing a root explicitly
+              selects raw parsing for materializers/tests; ordinary reads use
+              the canonical events product when present.
     """
+    if root is None:
+        if ensure:
+            _ensure_irc_materialized()
+        product = irc_events_path()
+        if product.exists():
+            yield from _iter_materialized_messages(product, channel=channel)
+            return
+    yield from iter_raw_messages(channel=channel, root=root)
+
+
+def iter_raw_messages(
+    *,
+    channel: Optional[str] = None,
+    root: Optional[Path] = None,
+) -> Iterator[IRCRawMessage]:
+    """Yield parsed IRC messages directly from raw WeeChat log files."""
     base = root or irc_raw_root()
     if not base.exists():
         return
@@ -414,6 +447,35 @@ def iter_messages(
             if not log_file.suffix == ".log" and not log_file.name.endswith(".log"):
                 continue
             yield from _parse_weechat_file(log_file, channel=ch)
+
+
+def _iter_materialized_messages(
+    path: Path,
+    *,
+    channel: Optional[str] = None,
+) -> Iterator[IRCRawMessage]:
+    with path.open("r", encoding="utf-8") as handle:
+        for fallback_line_no, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                continue
+            msg_channel = str(payload.get("channel") or "")
+            if channel is not None and msg_channel != channel:
+                continue
+            yield IRCRawMessage(
+                timestamp=as_local(
+                    datetime.fromisoformat(
+                        str(payload["timestamp"]).replace("Z", "+00:00")
+                    )
+                ),
+                speaker=str(payload.get("speaker_raw") or payload.get("speaker") or ""),
+                text=str(payload.get("text") or ""),
+                channel=msg_channel,
+                source_file=str(payload.get("source_file") or path),
+                line_no=int(payload.get("line_no") or fallback_line_no),
+            )
 
 
 def _parse_weechat_file(path: Path, *, channel: str) -> Iterator[IRCRawMessage]:
@@ -445,14 +507,15 @@ def iter_messages_in_range(
     end: date,
     channel: Optional[str] = None,
     root: Optional[Path] = None,
+    ensure: bool = True,
 ) -> Iterator[IRCRawMessage]:
     """Yield messages within [start, end] inclusive."""
-    start_dt = as_local(datetime.combine(start, datetime.min.time()))
-    end_dt = as_local(datetime.combine(end + timedelta(days=1), datetime.min.time()))
-    for msg in iter_messages(channel=channel, root=root):
-        if msg.timestamp >= end_dt:
+    if ensure and root is None:
+        _ensure_irc_materialized(start=start, end=end + timedelta(days=1))
+    for msg in iter_messages(channel=channel, root=root, ensure=False):
+        if msg.date > end:
             continue
-        if msg.timestamp < start_dt:
+        if msg.date < start:
             continue
         yield msg
 
@@ -467,6 +530,7 @@ def extract_sessions(
     root: Optional[Path] = None,
     max_idle_minutes: int = 30,
     min_messages: int = 2,
+    ensure: bool = True,
 ) -> Iterator[IRCRawSession]:
     """Group messages into sessions by idle-gap detection.
 
@@ -474,7 +538,7 @@ def extract_sessions(
     messages. Meta/status lines (speaker == "--") do not reset the idle
     clock — only human messages count.
     """
-    messages = list(iter_messages(channel=channel, root=root))
+    messages = list(iter_messages(channel=channel, root=root, ensure=ensure))
     if start is not None:
         start_dt = as_local(datetime.combine(start, datetime.min.time()))
         messages = [m for m in messages if m.timestamp >= start_dt]
@@ -636,6 +700,7 @@ def extract_conversations(
     max_idle_minutes: int = 5,
     min_speakers: int = 2,
     min_messages: int = 4,
+    ensure: bool = True,
 ) -> Iterator[IRCConversation]:
     """Extract dense interaction clusters from sessions.
 
@@ -647,6 +712,7 @@ def extract_conversations(
     sessions = list(extract_sessions(
         start=start, end=end, channel=channel, root=root,
         max_idle_minutes=max_idle_minutes, min_messages=min_messages,
+        ensure=ensure,
     ))
     _conv_counter = 0
     for session in sessions:
@@ -674,9 +740,18 @@ def daily_irc_activity(
     end: date,
     channel: Optional[str] = None,
     root: Optional[Path] = None,
+    ensure: bool = True,
 ) -> list[IRCDayActivity]:
     """Daily IRC activity rollup for cross-source correlation."""
-    messages = list(iter_messages_in_range(start=start, end=end, channel=channel, root=root))
+    messages = list(
+        iter_messages_in_range(
+            start=start,
+            end=end,
+            channel=channel,
+            root=root,
+            ensure=ensure,
+        )
+    )
     human = [m for m in messages if not m.is_meta]
 
     by_date: dict[date, dict[str, list[IRCRawMessage]]] = defaultdict(

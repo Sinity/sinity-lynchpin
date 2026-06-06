@@ -1,4 +1,4 @@
-"""Work-observation promotion for the refresh DAG substrate step."""
+"""Work-observation promotion for the materialization DAG substrate step."""
 
 from __future__ import annotations
 
@@ -55,8 +55,8 @@ def promote_work_sources(
             return
 
         start_dt, end_dt = _work_window_bounds(window_start, window_end)
-        rows = list(iter_all_invocations(start=start_dt, end=end_dt)) if has_xtask else []
-        polylogue_rows = list(iter_polylogue_invocations(start=start_dt, end=end_dt)) if has_polylogue_devtools else []
+        rows = iter_all_invocations(start=start_dt, end=end_dt) if has_xtask else ()
+        polylogue_rows = iter_polylogue_invocations(start=start_dt, end=end_dt) if has_polylogue_devtools else ()
         # xtask invocations and Polylogue devtool observations share the
         # work_observation table under one refresh_id. promote_rows deletes by
         # refresh_id alone (not by source), so two source-scoped delete+insert
@@ -69,29 +69,29 @@ def promote_work_sources(
             refresh_id=refresh_id,
             rows=rows,
             delete_existing=False,
-        ) if rows else 0
+        ) if has_xtask else 0
         counts["polylogue_devtools_work_observations"] = promote_polylogue_devtools_observations(
             conn,
             refresh_id=refresh_id,
             rows=polylogue_rows,
             delete_existing=False,
-        ) if polylogue_rows else 0
+        ) if has_polylogue_devtools else 0
         counts["work_observations"] = (
             counts["xtask_work_observations"]
             + counts["polylogue_devtools_work_observations"]
         )
-        stages = list(iter_all_stage_timings(start=start_dt, end=end_dt)) if has_xtask else []
+        stages = iter_all_stage_timings(start=start_dt, end=end_dt) if has_xtask else ()
         counts["work_observation_stages"] = promote_work_observation_stages(
             conn,
             refresh_id=refresh_id,
             rows=stages,
-        ) if stages else 0
-        tests = list(iter_all_test_results(start=start_dt, end=end_dt)) if has_xtask else []
+        ) if has_xtask else 0
+        tests = iter_all_test_results(start=start_dt, end=end_dt) if has_xtask else ()
         counts["work_observation_test_results"] = promote_work_observation_test_results(
             conn,
             refresh_id=refresh_id,
             rows=tests,
-        ) if tests else 0
+        ) if has_xtask else 0
         source_bits = []
         if has_xtask:
             source_bits.append("xtask")
@@ -166,11 +166,11 @@ def _work_window_bounds(
 ) -> tuple[datetime, datetime]:
     """Return UTC bounds for live work observations.
 
-    Refresh windows are day-granularity half-open intervals. The default
-    substrate refresh ends at ``date.today()``, which is correct for complete
-    daily summaries but would exclude all live xtask invocations from the
-    current day. Work observations are point-in-time operational events, so a
-    refresh ending today includes today's live tail.
+    Materialization windows are day-granularity half-open intervals. The
+    default substrate materialization ends at ``date.today()``, which is correct
+    for complete daily summaries but would exclude all live xtask invocations
+    from the current day. Work observations are point-in-time operational
+    events, so a materialization ending today includes today's live tail.
     """
     effective_today = today or date.today()
     effective_end = window_end

@@ -19,17 +19,12 @@ from ..sources.github import (
     classify_lifecycle,
     extract_commit_refs,
 )
+from ..sources.github_context import iter_github_context
 from .evidence_projects import include_project, normalize_project
 
 
 def commit_facts(*args: Any, **kwargs: Any) -> Any:
     from ..sources.git import commit_facts as impl
-
-    return impl(*args, **kwargs)
-
-
-def github_context_for_commits(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.git import github_context_for_commits as impl
 
     return impl(*args, **kwargs)
 
@@ -97,15 +92,29 @@ def add_git(
                     )
                 )
 
-    if mode != "network":
-        return
-    context = github_context_for_commits(selected_facts)
-    raw_items = context.get("items", ()) if isinstance(context, dict) else ()
-    for item in _dict_items(raw_items):
-        gh_item = _github_item_from_dict(item)
-        if gh_item is None:
+    wanted_refs: set[tuple[str, str, int]] = set()
+    for fact in selected_facts:
+        project = normalize_project(fact.repo)
+        if project is None:
             continue
-        nodes.append(_github_item_node(gh_item))
+        refs = extract_commit_refs(fact.subject)
+        wanted_refs.update((project, "pr", number) for number in refs["prs"])
+        wanted_refs.update((project, "issue", number) for number in refs["issues"] - refs["prs"])
+    if not wanted_refs:
+        return
+    try:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("github_context", window=(start, end + timedelta(days=1)))
+        for row in iter_github_context(
+            projects={project for project, _kind, _number in wanted_refs},
+            ensure=False,
+        ):
+            key = (row.project, row.item.kind, row.item.number)
+            if key in wanted_refs:
+                nodes.append(_github_item_node(row.item, cost=mode))
+    except Exception:
+        return
 
 
 def _github_ref_node(
@@ -130,7 +139,7 @@ def _github_ref_node(
     )
 
 
-def _github_item_node(item: GitHubItem) -> EvidenceNode:
+def _github_item_node(item: GitHubItem, *, cost: CostClass) -> EvidenceNode:
     project = normalize_project(
         item.repo or (item.slug.rsplit("/", 1)[-1] if item.slug else None)
     )
@@ -155,11 +164,13 @@ def _github_item_node(item: GitHubItem) -> EvidenceNode:
             "lifecycle_confidence": lifecycle.confidence,
             "comment_count": len(item.comments),
         },
-        provenance=EvidenceProvenance("github", "network", path=item.slug),
+        provenance=EvidenceProvenance("github", cost, path=item.slug),
     )
 
 
 def _github_item_from_dict(item: dict[str, object]) -> GitHubItem | None:
+    if item.get("status") not in {None, "ok"}:
+        return None
     number = _int(item.get("number"))
     if number == 0:
         return None

@@ -18,8 +18,8 @@ from lynchpin.analysis.machine.controlled_benchmarks import (
 from lynchpin.analysis.machine.episodes import MachineEpisode, analyze_machine_episodes
 from lynchpin.analysis.machine.nix_internal_json import summarize_internal_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
-from lynchpin.mcp.tools._utils import best_refresh_id
 from lynchpin.substrate.connection import connect, substrate_path
+from lynchpin.substrate.snapshots import best_materialized_refresh_id
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,11 @@ def analyze_machine_experiment_claims(
 ) -> MachineExperimentClaims:
     with connect(path or substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "machine_experiment_run")
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "machine_experiment_run",
+                caller="machine_experiment_claims",
+            )
         runs = _runs(conn, start=start, end=end, refresh_id=refresh_id)
         episodes = _episodes_for_runs(runs, path=path) if include_episodes else []
         packs = [_claim_pack(conn, run, episodes=episodes) for run in runs]

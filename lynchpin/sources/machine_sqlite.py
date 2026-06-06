@@ -9,10 +9,13 @@ from pathlib import Path
 
 from .machine_models import MachineTelemetrySchemaError
 from .machine_schema import (
+    validate_block_device_schema,
     validate_gpu_schema,
     validate_metric_schema,
     validate_network_schema,
     validate_service_state_schema,
+    validate_service_cgroup_io_schema,
+    validate_service_cgroup_pressure_schema,
 )
 
 
@@ -38,7 +41,11 @@ def default_route_interface() -> str | None:
     try:
         for line in route.read_text().splitlines()[1:]:
             fields = line.split()
-            if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 0x2:
+            if (
+                len(fields) >= 4
+                and fields[1] == "00000000"
+                and int(fields[3], 16) & 0x2
+            ):
                 return fields[0]
     except (OSError, ValueError):
         return None
@@ -58,6 +65,12 @@ def count_sqlite_rows(path: Path, table: str) -> int:
                 validate_network_schema(conn)
             elif table == "gpu_sample":
                 validate_gpu_schema(conn)
+            elif table == "block_device_sample":
+                validate_block_device_schema(conn)
+            elif table == "service_cgroup_io_sample":
+                validate_service_cgroup_io_schema(conn)
+            elif table == "service_cgroup_pressure_sample":
+                validate_service_cgroup_pressure_schema(conn)
             if table == "network_sample":
                 default_interface = default_route_interface()
                 if default_interface:

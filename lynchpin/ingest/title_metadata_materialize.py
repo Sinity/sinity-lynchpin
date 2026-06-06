@@ -12,7 +12,11 @@ from typing import Any
 
 from ..core.config import get_config
 from ..core.errors import SchemaVersionError
+from ..core.io import latest_mtime_iso
 from ..sources.title_metadata import title_metadata_path
+
+
+TITLE_METADATA_SCHEMA_VERSION = 1
 
 
 def materialize_title_metadata(
@@ -56,11 +60,15 @@ def materialize_title_metadata(
 
     manifest = {
         "dataset": "lynchpin.title_metadata",
+        "schema_version": TITLE_METADATA_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "source_db": str(db),
         "source_db_size_bytes": db.stat().st_size,
         "source_db_mtime": datetime.fromtimestamp(db.stat().st_mtime, timezone.utc).astimezone().isoformat(),
+        "input_files": [str(db)],
+        "input_file_count": 1,
+        "input_latest_mtime": latest_mtime_iso((db,)),
         "source_table": table,
         "row_count": row_count,
         "source_counts": dict(sorted(source_counts.items())),

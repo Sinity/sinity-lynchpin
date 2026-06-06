@@ -12,8 +12,8 @@ from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)
-class MachineBenchmarkExecutionQueueItem:
-    queue_id: str
+class MachineBenchmarkExecutionHandoffItem:
+    handoff_id: str
     candidate_id: str
     run_group_id: str
     plan_id: str
@@ -36,21 +36,21 @@ class MachineBenchmarkExecutionQueueItem:
 
 
 @dataclass(frozen=True)
-class MachineBenchmarkExecutionQueue:
+class MachineBenchmarkExecutionHandoff:
     generated_for: dict[str, Any]
-    queue_count: int
+    handoff_count: int
     ready_group_count: int
     blocked_group_count: int
     run_template_count: int
     ready_run_count: int
-    items: list[MachineBenchmarkExecutionQueueItem]
+    items: list[MachineBenchmarkExecutionHandoffItem]
     caveats: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def analyze_machine_benchmark_execution_queue(
+def analyze_machine_benchmark_execution_handoff(
     *,
     start: date | None = None,
     end: date | None = None,
@@ -59,7 +59,7 @@ def analyze_machine_benchmark_execution_queue(
     preflight_path: Path | None = None,
     support_path: Path | None = None,
     limit: int = 10,
-) -> MachineBenchmarkExecutionQueue:
+) -> MachineBenchmarkExecutionHandoff:
     candidates = load_json_object(
         candidates_path or resolve_analysis_path("machine_attribution_candidates.json"),
         label="machine attribution candidates",
@@ -96,7 +96,7 @@ def analyze_machine_benchmark_execution_queue(
         for group in bundle.get("groups", [])
         if isinstance(group, dict)
         for item in (
-            _queue_item(
+            _handoff_item(
                 group,
                 candidate=candidate_by_id.get(str(group.get("candidate_id") or "")),
                 support=support_by_candidate.get(str(group.get("candidate_id") or "")),
@@ -108,7 +108,7 @@ def analyze_machine_benchmark_execution_queue(
     items.sort(key=lambda row: (not row.ready_to_export, not row.pareto_frontier, -row.priority_score, row.run_group_id))
     if limit > 0:
         items = items[:limit]
-    return MachineBenchmarkExecutionQueue(
+    return MachineBenchmarkExecutionHandoff(
         generated_for={
             "start": start.isoformat() if start else None,
             "end": end.isoformat() if end else None,
@@ -120,20 +120,20 @@ def analyze_machine_benchmark_execution_queue(
             ],
             "limit": limit,
         },
-        queue_count=len(items),
+        handoff_count=len(items),
         ready_group_count=sum(1 for row in items if row.ready_to_export),
         blocked_group_count=sum(1 for row in items if not row.ready_to_export),
         run_template_count=sum(row.run_count for row in items),
         ready_run_count=sum(row.ready_run_count for row in items),
         items=items,
         caveats=[
-            "execution queue is a ranked handoff only; it does not run benchmarks",
+            "execution handoff is a ranked handoff only; it does not run benchmarks",
             "ready_to_export means template/preflight readiness, not causal support",
         ],
     )
 
 
-def write_machine_benchmark_execution_queue(
+def write_machine_benchmark_execution_handoff(
     out: Path,
     *,
     start: date | None = None,
@@ -143,8 +143,8 @@ def write_machine_benchmark_execution_queue(
     preflight_path: Path | None = None,
     support_path: Path | None = None,
     limit: int = 10,
-) -> MachineBenchmarkExecutionQueue:
-    analysis = analyze_machine_benchmark_execution_queue(
+) -> MachineBenchmarkExecutionHandoff:
+    analysis = analyze_machine_benchmark_execution_handoff(
         start=start,
         end=end,
         candidates_path=candidates_path,
@@ -159,13 +159,13 @@ def write_machine_benchmark_execution_queue(
     return analysis
 
 
-def _queue_item(
+def _handoff_item(
     group: dict[str, Any],
     *,
     candidate: dict[str, Any] | None,
     support: dict[str, Any] | None,
     preflight: dict[str, Any] | None,
-) -> MachineBenchmarkExecutionQueueItem | None:
+) -> MachineBenchmarkExecutionHandoffItem | None:
     run_group_id = str(group.get("run_group_id") or "")
     candidate_id = str(group.get("candidate_id") or "")
     if not run_group_id or not candidate_id:
@@ -186,8 +186,8 @@ def _queue_item(
     support = support or {}
     next_action = _next_action(support)
     ready = run_count > 0 and ready_run_count == run_count and issue_count == 0
-    return MachineBenchmarkExecutionQueueItem(
-        queue_id=f"machine-benchmark-execution:{run_group_id}",
+    return MachineBenchmarkExecutionHandoffItem(
+        handoff_id=f"machine-benchmark-handoff:{run_group_id}",
         candidate_id=candidate_id,
         run_group_id=run_group_id,
         plan_id=str(group.get("plan_id") or ""),
@@ -216,12 +216,12 @@ def _next_action(support: dict[str, Any]) -> str:
             return str(gap["next_action"])
     if support.get("support_level") == "insufficient":
         return "execute the approved manifest and promote run logs/telemetry"
-    return "export manifest templates, execute runs, then refresh machine analysis"
+    return "export manifest templates, execute runs, then materialize machine analysis"
 
 
 __all__ = [
-    "MachineBenchmarkExecutionQueue",
-    "MachineBenchmarkExecutionQueueItem",
-    "analyze_machine_benchmark_execution_queue",
-    "write_machine_benchmark_execution_queue",
+    "MachineBenchmarkExecutionHandoff",
+    "MachineBenchmarkExecutionHandoffItem",
+    "analyze_machine_benchmark_execution_handoff",
+    "write_machine_benchmark_execution_handoff",
 ]

@@ -10,6 +10,7 @@ from typing import Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import as_local
+from ..core.primitives import logical_date
 
 __all__ = [
     "IRCMessage",
@@ -49,7 +50,7 @@ class IRCConversation:
 
     @property
     def date(self) -> date:
-        return self.start.date()
+        return logical_date(self.start)
 
 
 @dataclass(frozen=True)
@@ -87,11 +88,24 @@ def conversations(*, root: Optional[Path] = None) -> Iterator[IRCConversation]:
         yield from _parse_file(path)
 
 
-def conversations_in_range(*, start: date, end: date, root: Optional[Path] = None) -> list[IRCConversation]:
+def conversations_in_range(
+    *,
+    start: date,
+    end: date,
+    root: Optional[Path] = None,
+    end_exclusive: bool = False,
+) -> list[IRCConversation]:
+    def overlaps(conv: IRCConversation) -> bool:
+        conv_start = logical_date(conv.start)
+        conv_end = logical_date(conv.end)
+        if end_exclusive:
+            return conv_start < end and conv_end >= start
+        return conv_start <= end and conv_end >= start
+
     return [
         conv
         for conv in conversations(root=root)
-        if conv.start.date() <= end and conv.end.date() >= start
+        if overlaps(conv)
     ]
 
 

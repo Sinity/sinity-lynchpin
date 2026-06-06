@@ -632,8 +632,9 @@ def load_machine_service_state_summary(
     """Return aggregated service state rows.
 
     Returns (host, unit, scope, samples, active_samples,
-    max_memory_current_bytes, max_cpu_usage_nsec, max_io_read_bytes,
-    max_io_write_bytes, first_observed_at, last_observed_at) tuples.
+    max_memory_current_bytes, cpu_usage_delta_nsec, io_read_delta_bytes,
+    io_write_delta_bytes, first_observed_at, last_observed_at,
+    last_cpu_usage_nsec, last_io_read_bytes, last_io_write_bytes) tuples.
     """
     sql = """
         SELECT
@@ -643,11 +644,23 @@ def load_machine_service_state_summary(
             COUNT(*) AS samples,
             SUM(CASE WHEN active_state = 'active' THEN 1 ELSE 0 END) AS active_samples,
             MAX(memory_current_bytes) AS max_memory_current_bytes,
-            MAX(cpu_usage_nsec) AS max_cpu_usage_nsec,
-            MAX(io_read_bytes) AS max_io_read_bytes,
-            MAX(io_write_bytes) AS max_io_write_bytes,
+            CASE
+                WHEN MIN(cpu_usage_nsec) IS NULL OR MAX(cpu_usage_nsec) IS NULL THEN NULL
+                ELSE GREATEST(MAX(cpu_usage_nsec) - MIN(cpu_usage_nsec), 0)
+            END AS cpu_usage_delta_nsec,
+            CASE
+                WHEN MIN(io_read_bytes) IS NULL OR MAX(io_read_bytes) IS NULL THEN NULL
+                ELSE GREATEST(MAX(io_read_bytes) - MIN(io_read_bytes), 0)
+            END AS io_read_delta_bytes,
+            CASE
+                WHEN MIN(io_write_bytes) IS NULL OR MAX(io_write_bytes) IS NULL THEN NULL
+                ELSE GREATEST(MAX(io_write_bytes) - MIN(io_write_bytes), 0)
+            END AS io_write_delta_bytes,
             MIN(observed_at) AS first_observed_at,
-            MAX(observed_at) AS last_observed_at
+            MAX(observed_at) AS last_observed_at,
+            MAX(cpu_usage_nsec) AS last_cpu_usage_nsec,
+            MAX(io_read_bytes) AS last_io_read_bytes,
+            MAX(io_write_bytes) AS last_io_write_bytes
         FROM machine_service_state
         WHERE refresh_id = ?
     """
@@ -748,6 +761,7 @@ def load_sinnix_generation_rows(
 def load_bufferbloat_daily(
     conn: "duckdb.DuckDBPyConnection",
     *,
+    refresh_id: str,
     start: date | None = None,
     end: date | None = None,
     interface: str | None = None,
@@ -758,10 +772,11 @@ def load_bufferbloat_daily(
     avg_ms_max, loss_p50, loss_p95, loss_max) tuples.
     """
     where_clauses: list[str] = [
+        "refresh_id = ?",
         "bloat IS NOT NULL",
         "json_extract_string(bloat, '$.avg_ms') IS NOT NULL",
     ]
-    params: list[Any] = []
+    params: list[Any] = [refresh_id]
     if start:
         where_clauses.append("CAST(observed_at AS DATE) >= ?")
         params.append(start)

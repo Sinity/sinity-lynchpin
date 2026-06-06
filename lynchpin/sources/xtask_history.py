@@ -58,6 +58,15 @@ class XtaskInvocation:
     shm_used_max_mb: float | None
     process_count_max: int | None
     resource_sample_count: int | None
+    host_block_read_mib_delta: float | None = None
+    host_block_write_mib_delta: float | None = None
+    host_block_read_iops_avg: float | None = None
+    host_block_write_iops_avg: float | None = None
+    host_block_busiest_device: str | None = None
+    host_block_busiest_device_total_mib_delta: float | None = None
+    host_block_busiest_device_read_iops_avg: float | None = None
+    host_block_busiest_device_write_iops_avg: float | None = None
+    host_block_busiest_device_weighted_io_ms_per_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -281,7 +290,11 @@ def _row_to_invocation(row: sqlite3.Row, *, source_prefix: str) -> XtaskInvocati
         for part in (row["command"], row["subcommand"], row["profile"])
         if part is not None and str(part)
     )
-    args_json = row["args_json"] if isinstance(row["args_json"], str) and row["args_json"].strip() else "[]"
+    args_json = (
+        row["args_json"]
+        if isinstance(row["args_json"], str) and row["args_json"].strip()
+        else "[]"
+    )
     try:
         json.loads(args_json)
     except json.JSONDecodeError:
@@ -307,22 +320,59 @@ def _row_to_invocation(row: sqlite3.Row, *, source_prefix: str) -> XtaskInvocati
         process_cpu_usage_avg=_float(row["process_cpu_usage_avg"]),
         process_memory_usage_max_mb=_float(row["process_memory_usage_max_mb"]),
         root_process_cpu_usage_avg=_float(row["root_process_cpu_usage_avg"]),
-        root_process_memory_usage_max_mb=_float(row["root_process_memory_usage_max_mb"]),
+        root_process_memory_usage_max_mb=_float(
+            row["root_process_memory_usage_max_mb"]
+        ),
         shared_nix_daemon_cpu_usage_avg=_float(row["shared_nix_daemon_cpu_usage_avg"]),
-        shared_nix_daemon_memory_usage_max_mb=_float(row["shared_nix_daemon_memory_usage_max_mb"]),
-        shared_nix_build_slice_cpu_usage_avg=_float(row["shared_nix_build_slice_cpu_usage_avg"]),
-        shared_nix_build_slice_memory_usage_max_mb=_float(row["shared_nix_build_slice_memory_usage_max_mb"]),
-        shared_background_slice_cpu_usage_avg=_float(row["shared_background_slice_cpu_usage_avg"]),
-        shared_background_slice_memory_usage_max_mb=_float(row["shared_background_slice_memory_usage_max_mb"]),
-        host_cpu_pressure_some_avg10_max=_float(row["host_cpu_pressure_some_avg10_max"]),
+        shared_nix_daemon_memory_usage_max_mb=_float(
+            row["shared_nix_daemon_memory_usage_max_mb"]
+        ),
+        shared_nix_build_slice_cpu_usage_avg=_float(
+            row["shared_nix_build_slice_cpu_usage_avg"]
+        ),
+        shared_nix_build_slice_memory_usage_max_mb=_float(
+            row["shared_nix_build_slice_memory_usage_max_mb"]
+        ),
+        shared_background_slice_cpu_usage_avg=_float(
+            row["shared_background_slice_cpu_usage_avg"]
+        ),
+        shared_background_slice_memory_usage_max_mb=_float(
+            row["shared_background_slice_memory_usage_max_mb"]
+        ),
+        host_cpu_pressure_some_avg10_max=_float(
+            row["host_cpu_pressure_some_avg10_max"]
+        ),
         host_io_pressure_some_avg10_max=_float(row["host_io_pressure_some_avg10_max"]),
         host_io_pressure_full_avg10_max=_float(row["host_io_pressure_full_avg10_max"]),
-        host_memory_pressure_some_avg10_max=_float(row["host_memory_pressure_some_avg10_max"]),
-        host_memory_pressure_full_avg10_max=_float(row["host_memory_pressure_full_avg10_max"]),
+        host_memory_pressure_some_avg10_max=_float(
+            row["host_memory_pressure_some_avg10_max"]
+        ),
+        host_memory_pressure_full_avg10_max=_float(
+            row["host_memory_pressure_full_avg10_max"]
+        ),
         shm_free_min_mb=_float(row["shm_free_min_mb"]),
         shm_used_max_mb=_float(row["shm_used_max_mb"]),
         process_count_max=_int(row["process_count_max"]),
         resource_sample_count=_int(row["resource_sample_count"]),
+        host_block_read_mib_delta=_float(row["host_block_read_mib_delta"]),
+        host_block_write_mib_delta=_float(row["host_block_write_mib_delta"]),
+        host_block_read_iops_avg=_float(row["host_block_read_iops_avg"]),
+        host_block_write_iops_avg=_float(row["host_block_write_iops_avg"]),
+        host_block_busiest_device=str(row["host_block_busiest_device"])
+        if row["host_block_busiest_device"]
+        else None,
+        host_block_busiest_device_total_mib_delta=_float(
+            row["host_block_busiest_device_total_mib_delta"]
+        ),
+        host_block_busiest_device_read_iops_avg=_float(
+            row["host_block_busiest_device_read_iops_avg"]
+        ),
+        host_block_busiest_device_write_iops_avg=_float(
+            row["host_block_busiest_device_write_iops_avg"]
+        ),
+        host_block_busiest_device_weighted_io_ms_per_s=_float(
+            row["host_block_busiest_device_weighted_io_ms_per_s"]
+        ),
     )
 
 
@@ -356,40 +406,87 @@ def _row_to_test_result(row: sqlite3.Row, *, source_prefix: str) -> XtaskTestRes
 
 
 _INVOCATION_COLUMNS = (
-    "id", "command", "subcommand", "profile", "args_json", "git_commit",
-    "git_dirty", "started_at", "finished_at", "duration_secs", "exit_code",
-    "status", "host", "cwd", "live_stage", "cpu_usage_avg",
-    "memory_usage_max_mb", "process_cpu_usage_avg",
-    "process_memory_usage_max_mb", "root_process_cpu_usage_avg",
-    "root_process_memory_usage_max_mb", "shared_nix_daemon_cpu_usage_avg",
+    "id",
+    "command",
+    "subcommand",
+    "profile",
+    "args_json",
+    "git_commit",
+    "git_dirty",
+    "started_at",
+    "finished_at",
+    "duration_secs",
+    "exit_code",
+    "status",
+    "host",
+    "cwd",
+    "live_stage",
+    "cpu_usage_avg",
+    "memory_usage_max_mb",
+    "process_cpu_usage_avg",
+    "process_memory_usage_max_mb",
+    "root_process_cpu_usage_avg",
+    "root_process_memory_usage_max_mb",
+    "shared_nix_daemon_cpu_usage_avg",
     "shared_nix_daemon_memory_usage_max_mb",
     "shared_nix_build_slice_cpu_usage_avg",
     "shared_nix_build_slice_memory_usage_max_mb",
     "shared_background_slice_cpu_usage_avg",
     "shared_background_slice_memory_usage_max_mb",
-    "host_cpu_pressure_some_avg10_max", "host_io_pressure_some_avg10_max",
-    "host_io_pressure_full_avg10_max", "host_memory_pressure_some_avg10_max",
-    "host_memory_pressure_full_avg10_max", "shm_free_min_mb", "shm_used_max_mb",
-    "process_count_max", "resource_sample_count",
+    "host_cpu_pressure_some_avg10_max",
+    "host_io_pressure_some_avg10_max",
+    "host_io_pressure_full_avg10_max",
+    "host_memory_pressure_some_avg10_max",
+    "host_memory_pressure_full_avg10_max",
+    "shm_free_min_mb",
+    "shm_used_max_mb",
+    "process_count_max",
+    "resource_sample_count",
+    "host_block_read_mib_delta",
+    "host_block_write_mib_delta",
+    "host_block_read_iops_avg",
+    "host_block_write_iops_avg",
+    "host_block_busiest_device",
+    "host_block_busiest_device_total_mib_delta",
+    "host_block_busiest_device_read_iops_avg",
+    "host_block_busiest_device_write_iops_avg",
+    "host_block_busiest_device_weighted_io_ms_per_s",
 )
 
 _STAGE_COLUMNS = (
-    "id", "invocation_id", "stage_name", "started_at", "duration_secs",
+    "id",
+    "invocation_id",
+    "stage_name",
+    "started_at",
+    "duration_secs",
     "success",
 )
 
 _TEST_RESULT_COLUMNS = (
-    "id", "invocation_id", "test_name", "package", "status", "duration_secs",
-    "attempt", "slot_name", "slot_wait_ms", "cleanup_ms", "failure_type",
-    "test_mode", "nats_context",
+    "id",
+    "invocation_id",
+    "test_name",
+    "package",
+    "status",
+    "duration_secs",
+    "attempt",
+    "slot_name",
+    "slot_wait_ms",
+    "cleanup_ms",
+    "failure_type",
+    "test_mode",
+    "nats_context",
 )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
-        [table],
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+            [table],
+        ).fetchone()
+        is not None
+    )
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

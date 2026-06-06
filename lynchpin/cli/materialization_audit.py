@@ -20,7 +20,7 @@ def main(
     ensure_supported: bool = typer.Option(
         False,
         "--ensure-supported/",
-        help="Rebuild materialized products that Lynchpin can refresh locally without credentials.",
+        help="Rebuild materialized products that Lynchpin can materialize locally without credentials.",
     ),
     require_ready: bool = typer.Option(
         False,

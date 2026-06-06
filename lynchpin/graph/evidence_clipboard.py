@@ -19,7 +19,11 @@ def entries_in_range(*args: Any, **kwargs: Any) -> Any:
 
 
 def add_clipboard(
-    nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]
+    nodes: list[EvidenceNode],
+    *,
+    start: date,
+    end: date,
+    selected: set[str],
 ) -> None:
     """Emit one EvidenceNode per clipboard entry that mentions a selected project.
 

@@ -236,7 +236,7 @@
               + ''
                 export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
                 if [ "''${LYNCHPIN_MOTD_PRINTED:-0}" != "1" ] && [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
-                  "$PWD/tool/devshell-motd"
+                  "$PWD/tool/devshell-motd" >&2
                 fi
                 export LYNCHPIN_MOTD_PRINTED=1
               '';

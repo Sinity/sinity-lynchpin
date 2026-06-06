@@ -17,11 +17,27 @@ def _analysis_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+def _stub_materialization(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake_ensure_materialized(name: str, *, cfg):
+        calls.append(name)
+        return type(
+            "Result",
+            (),
+            {"to_json": lambda self: {"name": name, "status": "ready", "changed": False, "reason": "ok"}},
+        )()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    return calls
+
+
 def test_analysis_artifact_inventory_discovers_generated_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _analysis_root(tmp_path, monkeypatch)
+    calls = _stub_materialization(monkeypatch)
     (root / "code_history_claims.json").write_text(
         json.dumps(
             {
@@ -36,7 +52,9 @@ def test_analysis_artifact_inventory_discovers_generated_json(
 
     result = analysis_artifact_inventory(project="sinity-lynchpin", kind="json")
 
+    assert calls == ["analysis_artifacts"]
     assert result["summary"]["artifact_count"] == 1
+    assert result["summary"]["materialization"]["status"] == "ready"
     row = result["artifacts"][0]
     assert row["name"] == "code_history_claims.json"
     assert row["status"] == "available"
@@ -49,6 +67,7 @@ def test_read_analysis_artifact_accepts_unique_stem_and_parses_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _analysis_root(tmp_path, monkeypatch)
+    calls = _stub_materialization(monkeypatch)
     (root / "workflow_mechanics.json").write_text(
         json.dumps(
             {
@@ -63,10 +82,13 @@ def test_read_analysis_artifact_accepts_unique_stem_and_parses_json(
 
     result = read_analysis_artifact("workflow_mechanics")
 
+    assert calls == ["analysis_artifacts"]
     assert result["status"] == "available"
     assert result["name"] == "workflow_mechanics.json"
     assert result["payload"]["invocation_count"] == 2
     assert result["truncated"] is False
+    assert result["materialization"]["name"] == "analysis_artifacts"
+    assert result["materialization"]["status"] == "ready"
 
 
 def test_read_analysis_artifact_reports_missing_explicitly(
@@ -74,13 +96,18 @@ def test_read_analysis_artifact_reports_missing_explicitly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _analysis_root(tmp_path, monkeypatch)
+    calls = _stub_materialization(monkeypatch)
 
     from lynchpin.mcp.tools.artifacts import read_analysis_artifact
 
     result = read_analysis_artifact("../nope")
 
+    assert calls == ["analysis_artifacts"]
     assert result["status"] == "missing"
     assert "No generated analysis artifact" in result["reason"]
+    assert result["materialization"]["name"] == "analysis_artifacts"
+    assert result["materialization"]["status"] == "missing"
+    assert result["materialization"]["requested_artifact_name"] == "../nope"
 
 
 def test_read_analysis_artifact_bounds_oversized_payload(
@@ -88,13 +115,17 @@ def test_read_analysis_artifact_bounds_oversized_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _analysis_root(tmp_path, monkeypatch)
+    calls = _stub_materialization(monkeypatch)
     (root / "huge.md").write_text("abcdef")
 
     from lynchpin.mcp.tools.artifacts import read_analysis_artifact
 
     result = read_analysis_artifact("huge", max_bytes=3)
 
+    assert calls == ["analysis_artifacts"]
     assert result["status"] == "available"
     assert result["truncated"] is True
     assert result["text"] == "abc"
     assert "bounded text excerpt" in result["reason"]
+    assert result["materialization"]["name"] == "analysis_artifacts"
+    assert result["materialization"]["status"] == "ready"

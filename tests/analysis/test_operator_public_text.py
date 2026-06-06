@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import datetime
+from datetime import timezone
 
 from lynchpin.analysis.operator_public_text import (
     OperatorPublicTextDay,
+    coverage_summary,
     monthly_rollup,
     operator_public_text_daily,
 )
+from lynchpin.graph.coverage import CoverageReport
+from lynchpin.graph.coverage import SourceCoverage
 
 
 def test_operator_public_text_empty_range_returns_empty():
@@ -51,3 +56,38 @@ def test_source_filter_excludes_unselected_collectors(monkeypatch):
         start=date(1990, 1, 1), end=date(1990, 12, 31), sources={"irc"}
     )
     assert rows == []
+
+
+def test_coverage_summary_marks_untracked_sources(monkeypatch):
+    def fake_coverage_report(
+        *,
+        start: date,
+        end: date,
+        repair_materializations: bool = True,
+    ) -> CoverageReport:
+        return CoverageReport(
+            start=start,
+            end=end,
+            generated_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            sources=(
+                SourceCoverage(
+                    source="irc",
+                    status="available",
+                    reason="",
+                    requested_start=start,
+                    requested_end=end,
+                    first_date=start,
+                    last_date=end,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("lynchpin.graph.coverage.coverage_report", fake_coverage_report)
+
+    rows = coverage_summary(start=date(2026, 6, 1), end=date(2026, 6, 4))
+    by_source = {row.source: row for row in rows}
+
+    assert by_source["irc"].status == "available"
+    assert by_source["wykop"].status == "untracked"
+    assert by_source["gmail"].status == "untracked"
+    assert by_source["wykop"].reason == "not represented in coverage_report"

@@ -251,14 +251,10 @@ def load_project_day_anomaly_rows(
 def load_ordered_refresh_ids(
     conn: "duckdb.DuckDBPyConnection",
 ) -> list[str]:
-    """Return all refresh_ids from substrate_source_status ordered by recorded_at."""
-    return [
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT refresh_id FROM substrate_source_status "
-            "ORDER BY recorded_at"
-        ).fetchall()
-    ]
+    """Return materialized substrate refresh_ids ordered oldest to newest."""
+    from lynchpin.substrate.snapshots import ordered_materialized_refresh_ids
+
+    return ordered_materialized_refresh_ids(conn, caller="load_ordered_refresh_ids")
 
 
 def load_source_status_by_refresh(

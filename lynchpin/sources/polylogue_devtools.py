@@ -16,10 +16,12 @@ import json
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
 from lynchpin.core.classify import resolve_project
+from lynchpin.core.cache import files_signature
 from lynchpin.core.config import get_config
 
 
@@ -94,6 +96,25 @@ def source_readiness(
 ) -> PolylogueDevtoolsReadiness:
     xtask = polylogue_devtools_xtask_path(xtask_path)
     logs = polylogue_devtools_logs_dir(logs_dir)
+    meta_paths = tuple(sorted(logs.glob("*.meta"))) if logs.exists() else ()
+    return _source_readiness_cached(
+        str(xtask),
+        str(logs),
+        tuple(str(path) for path in meta_paths),
+        files_signature((xtask, *meta_paths)),
+    )
+
+
+@lru_cache(maxsize=32)
+def _source_readiness_cached(
+    xtask_name: str,
+    logs_name: str,
+    meta_path_names: tuple[str, ...],
+    _signature: tuple[tuple[str, int | None, int | None], ...],
+) -> PolylogueDevtoolsReadiness:
+    xtask = Path(xtask_name)
+    logs = Path(logs_name)
+    meta_paths = tuple(Path(path) for path in meta_path_names)
     xtask_rows = 0
     first_seen: datetime | None = None
     last_seen: datetime | None = None
@@ -106,14 +127,13 @@ def source_readiness(
             first_seen = _min_dt(first_seen, ts)
             last_seen = _max_dt(last_seen, ts)
     meta_files = 0
-    if logs.exists():
-        for meta_path in sorted(logs.glob("*.meta")):
-            meta_files += 1
-            meta = _read_meta(meta_path)
-            ts = _meta_started_at(meta, meta_path)
-            if ts is not None:
-                first_seen = _min_dt(first_seen, ts)
-                last_seen = _max_dt(last_seen, ts)
+    for meta_path in meta_paths:
+        meta_files += 1
+        meta = _read_meta(meta_path)
+        ts = _meta_started_at(meta, meta_path)
+        if ts is not None:
+            first_seen = _min_dt(first_seen, ts)
+            last_seen = _max_dt(last_seen, ts)
     return PolylogueDevtoolsReadiness(
         xtask_path=xtask,
         logs_dir=logs,

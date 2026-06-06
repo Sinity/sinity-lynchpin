@@ -9,8 +9,13 @@ cause ``issubclass('str', Context)`` → TypeError.
 from typing import Any
 
 from lynchpin.mcp.server import app
+from lynchpin.mcp.tools._utils import (
+    ensure_substrate_materialized_for_read,
+    half_open_date_window,
+    pinned_materialization_for_read,
+)
 from lynchpin.mcp.tools._utils import json_safe as _json_safe
-from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
 
 # ---------------------------------------------------------------------------
 # JSON serialisation helpers
@@ -66,6 +71,31 @@ def _is_select_only(sql: str) -> bool:
     # Token scan: split on non-alphanumeric chars, check each word
     tokens = {t.lower() for t in re.split(r"\W+", stripped) if t}
     return not tokens.intersection(_DISALLOWED_TOKENS)
+
+
+def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
+    row = conn.execute(
+        """
+        WITH commit_counts AS (
+            SELECT refresh_id, COUNT(*) AS commit_count
+            FROM commit_fact
+            GROUP BY refresh_id
+        ),
+        ai_counts AS (
+            SELECT refresh_id, COUNT(*) AS ai_count
+            FROM ai_work_event
+            GROUP BY refresh_id
+        )
+        SELECT c.refresh_id
+        FROM commit_counts c
+        JOIN ai_counts a USING (refresh_id)
+        ORDER BY LEAST(c.commit_count, a.ai_count) DESC,
+                 c.commit_count + a.ai_count DESC,
+                 c.refresh_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return str(row[0]) if row else None
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -177,16 +207,16 @@ def list_substrate_tables() -> list[dict[str, Any]]:
 
 @app.tool()
 def substrate_readiness_report() -> dict[str, Any]:
-    """Aggregate per-source readiness across the latest promote run (Arc E.1).
+    """Aggregate per-source readiness across the latest materialized substrate snapshot.
 
-    One stop: schema version, latest refresh_id, per-source status with
+    One stop: schema version, latest materialized snapshot ID, per-source status with
     age-since-last-success, evidence-graph caveats, and the high-level signal
     "is the substrate trustworthy for analysis right now."
 
     Returns:
         {
             "substrate_version": int,
-            "latest_refresh_id": str | None,
+            "latest_materialized_refresh_id": str | None,
             "latest_recorded_at": "ISO datetime" | None,
             "sources": [
                 {
@@ -215,9 +245,11 @@ def substrate_readiness_report() -> dict[str, Any]:
             }
         }
 
-    Returns {"substrate_version": ..., "latest_refresh_id": null, "sources": [],
-    "summary": {...all-zero}} when the substrate has no promote history yet.
+    Returns {"substrate_version": ..., "latest_materialized_refresh_id": null,
+    "sources": [], "summary": {...all-zero}} when the substrate has no promote
+    history yet.
     """
+    from lynchpin.materialization import substrate_materialization_snapshot
     from lynchpin.substrate.connection import connect, substrate_path
 
     path = substrate_path()
@@ -228,16 +260,16 @@ def substrate_readiness_report() -> dict[str, Any]:
         ).fetchone()
         substrate_version = int(version_row[0]) if version_row else None
 
-        # ── latest refresh_id ──────────────────────────────────────────────
-        latest_row = conn.execute(
-            "SELECT refresh_id, recorded_at FROM substrate_source_status "
-            "ORDER BY recorded_at DESC LIMIT 1"
-        ).fetchone()
+        # ── latest materialized snapshot ID ────────────────────────────────
+        from lynchpin.substrate.snapshots import latest_materialized_snapshot
+
+        latest_row = latest_materialized_snapshot(conn, caller="substrate_readiness_report")
 
         if latest_row is None:
+            materialization = substrate_materialization_snapshot(path).to_json()
             return {
                 "substrate_version": substrate_version,
-                "latest_refresh_id": None,
+                "latest_materialized_refresh_id": None,
                 "latest_recorded_at": None,
                 "sources": [],
                 "evidence_graph": None,
@@ -245,9 +277,15 @@ def substrate_readiness_report() -> dict[str, Any]:
                     "ok": 0, "empty": 0, "unavailable": 0, "error": 0,
                     "trustworthy": False,
                 },
+                "materialization": materialization,
             }
 
         latest_refresh_id, latest_recorded_at = latest_row
+        materialization = substrate_materialization_snapshot(
+            path,
+            latest_materialized_refresh_id=str(latest_refresh_id),
+            latest_recorded_at=latest_recorded_at,
+        ).to_json()
 
         # ── per-source status for that refresh ─────────────────────────────
         rows = conn.execute(
@@ -318,11 +356,12 @@ def substrate_readiness_report() -> dict[str, Any]:
 
     return {
         "substrate_version": substrate_version,
-        "latest_refresh_id": latest_refresh_id,
+        "latest_materialized_refresh_id": latest_refresh_id,
         "latest_recorded_at": _json_safe(latest_recorded_at),
         "sources": sources,
         "evidence_graph": evidence_graph,
         "summary": summary,
+        "materialization": materialization,
     }
 
 
@@ -356,7 +395,7 @@ def substrate_source_status(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = latest_materialized_refresh_id(conn, caller="substrate_source_status")
             if refresh_id is None:
                 return []
 
@@ -394,31 +433,44 @@ def contract_coverage(
 ) -> list[dict[str, Any]]:
     """Canonical dataset coverage and gaps for an optional date window."""
     from datetime import date as _date
+    from datetime import timedelta
 
-    from lynchpin.materialization import audit_materialization, materialized_dataset_coverage
+    from lynchpin.materialization import audit_materialization, ensure_materialized, materialized_dataset_coverage
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
+    end_exclusive = end_d + timedelta(days=1) if end_d is not None else None
+    window = (start_d, end_exclusive) if start_d is not None and end_exclusive is not None else None
     rows = []
     for row in audit_materialization():
         if source and row.name != source:
             continue
-        coverage = materialized_dataset_coverage(row, start=start_d, end=end_d)
-        rows.append(
-            {
-                "source": row.name,
-                "status": row.status,
-                "substrate_status": row.to_json()["substrate_status"],
-                "collection_model": row.to_json()["collection_model"],
-                "row_count": row.row_count,
-                "first_date": _json_safe(row.first_date),
-                "last_date": _json_safe(row.last_date),
-                "coverage": coverage,
-                "overlaps_requested_window": coverage["overlaps_requested_window"],
-                "reason": row.reason,
-                "refresh_command": row.refresh_command,
-            }
-        )
+        materialization = None
+        if source is not None:
+            materialization = ensure_materialized(row.name, window=window).to_json()
+            if materialization.get("changed") is True:
+                row = next(
+                    audited
+                    for audited in audit_materialization()
+                    if audited.name == row.name
+                )
+        coverage = materialized_dataset_coverage(row, start=start_d, end=end_exclusive)
+        payload = {
+            "source": row.name,
+            "status": row.status,
+            "substrate_status": row.to_json()["substrate_status"],
+            "collection_model": row.to_json()["collection_model"],
+            "row_count": row.row_count,
+            "first_date": _json_safe(row.first_date),
+            "last_date": _json_safe(row.last_date),
+            "coverage": coverage,
+            "overlaps_requested_window": coverage["overlaps_requested_window"],
+            "reason": row.reason,
+            "materialization_hint": row.materialization_hint,
+        }
+        if materialization is not None:
+            payload["materialization"] = materialization
+        rows.append(payload)
     return rows
 
 
@@ -574,15 +626,26 @@ def analysis_claims(
     """Persisted analysis claims with confidence, caveats, and evidence IDs."""
     from datetime import date as _date
 
-    from lynchpin.mcp.tools._utils import require_best_refresh_id
+    from lynchpin.mcp.tools._utils import require_best_materialized_refresh_id
     from lynchpin.substrate.claims import load_analysis_claims
     from lynchpin.substrate.connection import connect, substrate_path
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(
+            caller="analysis_claims",
+            window=half_open_date_window(start_d, end_d),
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = require_best_refresh_id(conn, "analysis_claim", tool="analysis_claims")
+            refresh_id = require_best_materialized_refresh_id(
+                conn,
+                "analysis_claim",
+                caller="analysis_claims",
+                tool="analysis_claims",
+            )
         return [
             _json_safe(row)
             for row in load_analysis_claims(
@@ -606,6 +669,9 @@ def claim_evidence(
     """Return one claim plus any persisted backing evidence rows."""
     from lynchpin.substrate.claims import load_claim_evidence
     from lynchpin.substrate.connection import connect, substrate_path
+
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="claim_evidence")
 
     with connect(substrate_path(), read_only=True) as conn:
         row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
@@ -711,13 +777,25 @@ def load_evidence_graph_summary(
 
     start_d: _date | None = _date.fromisoformat(start) if start else None
     end_d: _date | None = _date.fromisoformat(end) if end else None
+    window = half_open_date_window(start_d, end_d)
+    materialization = (
+        ensure_substrate_materialized_for_read(
+            caller="load_evidence_graph_summary",
+            window=window,
+        )
+        if refresh_id is None
+        else pinned_materialization_for_read(caller="load_evidence_graph_summary", refresh_id=refresh_id)
+    )
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         graph = _load_graph(conn, refresh_id=refresh_id, start=start_d, end=end_d)
 
     if graph is None:
-        return {"error": "no matching build"}
+        return {
+            "error": "no matching build",
+            "materialization": materialization,
+        }
 
     node_kind_counts: dict[str, int] = {}
     for node in graph.nodes:
@@ -750,6 +828,7 @@ def load_evidence_graph_summary(
     ]
 
     return {
+        "materialization": materialization,
         "build": {
             "refresh_id": graph.refresh_id if hasattr(graph, "refresh_id") else refresh_id,
             "start_date": _json_safe(graph.start),
@@ -814,7 +893,7 @@ def ai_attribution_backfill(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = _best_commit_ai_join_refresh_id(conn)
             if refresh_id is None:
                 return {"error": "no promote runs"}
 
@@ -1012,13 +1091,13 @@ def substrate_consistency_audit() -> dict[str, Any]:
     a promote-then-effect-disappears sequence occurs (e.g., a transaction
     rolled back silently after status was recorded, or another process
     touched the table). This tool walks every status row with status='ok',
-    looks up the actual ``COUNT(*)`` for the same (table, refresh_id), and
-    reports discrepancies.
+    looks up the actual ``COUNT(*)`` for the same backing table set and
+    refresh_id, and reports discrepancies.
 
     Returns:
         {
             "discrepancies": [
-                {"source": str, "table": str, "refresh_id": str,
+                {"source": str, "table": str, "tables": list[str], "refresh_id": str,
                  "claimed_rows": int, "actual_rows": int,
                  "diff": int},  # negative when actual < claimed (missing data)
                 ...
@@ -1028,24 +1107,22 @@ def substrate_consistency_audit() -> dict[str, Any]:
         }
 
     Notes:
-    - Sources whose status maps to multiple tables (e.g. evidence_graph_substrate)
-      are skipped here; their integrity is covered by other reports.
+    - Sources whose status maps to multiple simple tables are checked by
+      summing the rows across all mapped tables.
+    - Graph products are skipped here; their integrity is covered by other reports.
     - A row_count mismatch isn't necessarily corruption — a later refresh
       could legitimately have promoted/replaced rows. But the status table
       should still match observable state, so any drift is worth surfacing.
     """
     from lynchpin.substrate.connection import connect, substrate_path
 
-    # source name → table name (where they differ from the source name).
-    source_to_table: dict[str, str] = {
-        "commits": "commit_fact",
-        "file_changes": "file_change_fact",
-        "symbols": "symbol_change",
-        "ai_attribution": "ai_work_event",
-        "pr_review": "pr_review_row",
-        "personal_daily_signals": "personal_daily_signal",
-    }
-    # Skip sources without a single backing table.
+    from lynchpin.core.substrate_sources import SUBSTRATE_TABLE_SOURCE
+
+    source_to_tables: dict[str, list[str]] = {}
+    for table, source in SUBSTRATE_TABLE_SOURCE.items():
+        source_to_tables.setdefault(source, []).append(table)
+    # Skip graph products whose status row covers a logical product, not one
+    # simple source-owned table set.
     skip_sources = {
         "evidence_graph",
         "evidence_graph_substrate",
@@ -1064,21 +1141,29 @@ def substrate_consistency_audit() -> dict[str, Any]:
         for source, refresh_id, claimed in rows:
             if source in skip_sources:
                 continue
-            table = source_to_table.get(source, source)
-            exists = conn.execute(
-                "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
-                [table],
-            ).fetchone()
-            if not exists:
+            tables = source_to_tables.get(source, [source])
+            existing_tables: list[str] = []
+            for table in tables:
+                exists = conn.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+                    [table],
+                ).fetchone()
+                if exists:
+                    existing_tables.append(table)
+            if not existing_tables:
                 continue
-            actual = conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE refresh_id=?", [refresh_id],
-            ).fetchone()[0]
+            actual = sum(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE refresh_id=?", [refresh_id],
+                ).fetchone()[0]
+                for table in existing_tables
+            )
             checked += 1
             if actual != claimed:
                 discrepancies.append({
                     "source": source,
-                    "table": table,
+                    "table": ",".join(existing_tables),
+                    "tables": existing_tables,
                     "refresh_id": refresh_id,
                     "claimed_rows": claimed,
                     "actual_rows": actual,

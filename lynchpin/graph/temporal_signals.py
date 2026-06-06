@@ -16,8 +16,9 @@ exposed by lynchpin. No LLM, no external services.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -56,6 +57,7 @@ def detect_temporal_signals(
     start: date,
     end: date,
     specs: Sequence[SignalSpec] | None = None,
+    ensure_inputs: bool = True,
 ) -> tuple[TemporalEvent, ...]:
     """Run all detectors over each signal and return typed events.
 
@@ -64,7 +66,7 @@ def detect_temporal_signals(
     Change-point and trend run within ``[start, end]`` only — they describe
     the analyzed window, not history.
     """
-    specs = tuple(specs) if specs else default_signal_specs()
+    specs = tuple(specs) if specs else default_signal_specs(ensure_inputs=ensure_inputs)
     events: list[TemporalEvent] = []
 
     history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
@@ -198,23 +200,67 @@ def _detect_for_signal(
     return events
 
 
-def default_signal_specs() -> tuple[SignalSpec, ...]:
+def default_signal_specs(*, ensure_inputs: bool = True) -> tuple[SignalSpec, ...]:
     """Built-in signal loaders. Each returns a date→float series."""
     return (
-        SignalSpec("deep_work_min", "ActivityWatch deep work minutes per day", _load_deep_work),
-        SignalSpec("active_hours", "ActivityWatch active hours per day", _load_active_hours),
-        SignalSpec("fragmentation_score", "AW fragmentation score per day", _load_fragmentation),
+        SignalSpec(
+            "deep_work_min",
+            "ActivityWatch deep work minutes per day",
+            lambda start, end: _load_deep_work(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "active_hours",
+            "ActivityWatch active hours per day",
+            lambda start, end: _load_active_hours(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "fragmentation_score",
+            "AW fragmentation score per day",
+            lambda start, end: _load_fragmentation(start, end, ensure=ensure_inputs),
+        ),
         SignalSpec("commits_per_day", "Git commits across active repos", _load_commits),
-        SignalSpec("terminal_error_rate", "Shell error rate per day", _load_error_rate),
-        SignalSpec("terminal_command_count", "Shell command volume per day", _load_command_count),
+        SignalSpec(
+            "terminal_error_rate",
+            "Shell error rate per day",
+            lambda start, end: _load_error_rate(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "terminal_command_count",
+            "Shell command volume per day",
+            lambda start, end: _load_command_count(start, end, ensure=ensure_inputs),
+        ),
         SignalSpec("ai_session_count", "Polylogue AI sessions per day", _load_ai_sessions),
         SignalSpec("ai_engaged_minutes", "Polylogue engaged minutes per day", _load_ai_engaged),
-        SignalSpec("web_visit_count", "Canonical browser history visits per day", _load_web_visits),
-        SignalSpec("bookmark_added_count", "Browser bookmarks added per day", _load_bookmarks),
-        SignalSpec("communication_event_count", "Communication events per day", _load_communications),
-        SignalSpec("arbtt_active_minutes", "ARBTT active minutes per day", _load_arbtt_minutes),
-        SignalSpec("google_activity_count", "Timestamped Google Takeout activity rows per day", _load_google_activity),
-        SignalSpec("youtube_activity_count", "Google Takeout My Activity rows from YouTube services per day", _load_youtube_activity),
+        SignalSpec(
+            "web_visit_count",
+            "Canonical browser history visits per day",
+            lambda start, end: _load_web_visits(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "bookmark_added_count",
+            "Browser bookmarks added per day",
+            lambda start, end: _load_bookmarks(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "communication_event_count",
+            "Communication events per day",
+            lambda start, end: _load_communications(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "arbtt_active_minutes",
+            "ARBTT active minutes per day",
+            lambda start, end: _load_arbtt_minutes(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "google_activity_count",
+            "Timestamped Google Takeout activity rows per day",
+            lambda start, end: _load_google_activity(start, end, ensure=ensure_inputs),
+        ),
+        SignalSpec(
+            "youtube_activity_count",
+            "Google Takeout My Activity rows from YouTube services per day",
+            lambda start, end: _load_youtube_activity(start, end, ensure=ensure_inputs),
+        ),
         SignalSpec("sleep_hours", "Wearable sleep duration per day", _load_sleep_hours),
         SignalSpec("sleep_score", "Wearable sleep score per day", _load_sleep_score),
         SignalSpec("hrv_rmssd", "HRV RMSSD per day", _load_hrv),
@@ -222,18 +268,33 @@ def default_signal_specs() -> tuple[SignalSpec, ...]:
     )
 
 
-def _load_deep_work(start: date, end: date) -> dict[date, float]:
-    return {row.date: row.deep_work_min for row in _activitywatch_daily_rows(start, end)}
+def _load_deep_work(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
+    from ..core.primitives import logical_date
+    from ..sources.activitywatch_derived import iter_derived_deep_work
+
+    by_day: dict[date, float] = defaultdict(float)
+    for row in iter_derived_deep_work(start=_start_dt(start), end=_end_dt(end), ensure=ensure):
+        day = logical_date(row.start)
+        if start <= day <= end:
+            by_day[day] += row.duration_min
+    return dict(by_day)
 
 
-def _load_active_hours(start: date, end: date) -> dict[date, float]:
-    return {row.date: row.active_hours for row in _activitywatch_daily_rows(start, end)}
+def _load_active_hours(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
+    from ..sources.activitywatch_derived import iter_derived_circadian
+
+    by_day: dict[date, float] = defaultdict(float)
+    for row in iter_derived_circadian(start=start, end=end, ensure=ensure):
+        by_day[row.date] += row.active_min / 60.0
+    return dict(by_day)
 
 
-def _load_fragmentation(start: date, end: date) -> dict[date, float]:
+def _load_fragmentation(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
+    from ..sources.activitywatch_derived import iter_derived_fragmentation
+
     return {
-        row.date: row.fragmentation_score
-        for row in _activitywatch_daily_rows(start, end)
+        row.date: row.fragmentation
+        for row in iter_derived_fragmentation(start=start, end=end, ensure=ensure)
     }
 
 
@@ -248,14 +309,14 @@ def _load_commits(start: date, end: date) -> dict[date, float]:
     return dict(by_day)
 
 
-def _load_error_rate(start: date, end: date) -> dict[date, float]:
-    return {row.date: row.error_rate for row in _terminal_daily_rows(start, end)}
+def _load_error_rate(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
+    return {row.date: row.error_rate for row in _terminal_daily_rows(start, end, ensure=ensure)}
 
 
-def _load_command_count(start: date, end: date) -> dict[date, float]:
+def _load_command_count(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     return {
         row.date: float(row.command_count)
-        for row in _terminal_daily_rows(start, end)
+        for row in _terminal_daily_rows(start, end, ensure=ensure)
     }
 
 
@@ -277,48 +338,52 @@ def _load_ai_engaged(start: date, end: date) -> dict[date, float]:
     return dict(by_day)
 
 
-def _load_web_visits(start: date, end: date) -> dict[date, float]:
+def _load_web_visits(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.web import daily_browsing
 
-    return {row.date: float(row.visit_count) for row in daily_browsing(start=start, end=end)}
+    return {row.date: float(row.visit_count) for row in daily_browsing(start=start, end=end, ensure=ensure)}
 
 
-def _load_bookmarks(start: date, end: date) -> dict[date, float]:
+def _load_bookmarks(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.bookmarks import daily_bookmark_activity
 
-    return {row.date: float(row.bookmark_count) for row in daily_bookmark_activity(start=start, end=end)}
+    return {row.date: float(row.bookmark_count) for row in daily_bookmark_activity(start=start, end=end, ensure=ensure)}
 
 
-def _load_communications(start: date, end: date) -> dict[date, float]:
+def _load_communications(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.communications import daily_communication_activity
 
-    return {row.date: float(row.event_count) for row in daily_communication_activity(start=start, end=end)}
+    return {row.date: float(row.event_count) for row in daily_communication_activity(start=start, end=end, ensure=ensure)}
 
 
-def _load_arbtt_minutes(start: date, end: date) -> dict[date, float]:
+def _load_arbtt_minutes(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.arbtt import daily_arbtt_activity
 
-    return {row.date: row.active_minutes for row in daily_arbtt_activity(start=start, end=end)}
+    return {row.date: row.active_minutes for row in daily_arbtt_activity(start=start, end=end, ensure=ensure)}
 
 
-def _load_google_activity(start: date, end: date) -> dict[date, float]:
-    from collections import defaultdict
-
+def _load_google_activity(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.google_takeout_products import iter_daily_activity
 
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout", window=(start, end))
     by_day: dict[date, float] = defaultdict(float)
-    for row in iter_daily_activity(start=start, end=end):
+    for row in iter_daily_activity(start=start, end=end, ensure=False):
         by_day[row.date] += row.event_count
     return dict(by_day)
 
 
-def _load_youtube_activity(start: date, end: date) -> dict[date, float]:
-    from collections import defaultdict
-
+def _load_youtube_activity(start: date, end: date, *, ensure: bool = True) -> dict[date, float]:
     from ..sources.google_takeout_products import iter_events
 
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout", window=(start, end))
     by_day: dict[date, float] = defaultdict(float)
-    for row in iter_events(product="my_activity"):
+    for row in iter_events(product="my_activity", ensure=False):
         service = (row.service or "").lower()
         if "youtube" not in service:
             continue
@@ -365,17 +430,10 @@ def _load_resting_hr(start: date, end: date) -> dict[date, float]:
 
 
 @lru_cache(maxsize=16)
-def _activitywatch_daily_rows(start: date, end: date) -> tuple[Any, ...]:
-    from ..sources.activitywatch import daily_activity
-
-    return tuple(daily_activity(start=start, end=end))
-
-
-@lru_cache(maxsize=16)
-def _terminal_daily_rows(start: date, end: date) -> tuple[Any, ...]:
+def _terminal_daily_rows(start: date, end: date, ensure: bool = True) -> tuple[Any, ...]:
     from ..sources.terminal import daily_terminal_activity
 
-    return tuple(daily_terminal_activity(start=start, end=end))
+    return tuple(daily_terminal_activity(start=start, end=end, ensure=ensure))
 
 
 @lru_cache(maxsize=16)
@@ -390,3 +448,15 @@ def _health_daily_rows(start: date, end: date) -> tuple[Any, ...]:
     from ..sources.health import daily_health_summary
 
     return tuple(daily_health_summary(start=start, end=end))
+
+
+def _start_dt(day: date) -> datetime:
+    from ..core.primitives import date_to_dt_range
+
+    return date_to_dt_range(day, day)[0]
+
+
+def _end_dt(day: date) -> datetime:
+    from ..core.primitives import date_to_dt_range
+
+    return date_to_dt_range(day, day)[1]

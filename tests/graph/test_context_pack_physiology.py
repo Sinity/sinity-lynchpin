@@ -29,13 +29,52 @@ def _sleep(d, *, minutes, score=None):
 
 
 def _patch(monkeypatch, health, sleep):
+    rows = []
+    for item in health:
+        for metric, attr in (
+            ("stress_avg", "stress_avg"),
+            ("hrv_rmssd", "hrv_rmssd_avg"),
+            ("resting_heart_rate", "heart_rate_resting"),
+            ("steps", "steps"),
+        ):
+            value = getattr(item, attr, None)
+            if value is not None:
+                rows.append(
+                    SimpleNamespace(
+                        source="health",
+                        date=item.date,
+                        metric=metric,
+                        value=float(value),
+                        dimensions={},
+                    )
+                )
+    for item in sleep:
+        rows.append(
+            SimpleNamespace(
+                source="sleep",
+                date=item.date,
+                metric="sleep_minutes",
+                value=float(item.total_minutes),
+                dimensions={},
+            )
+        )
+        if item.avg_score is not None:
+            rows.append(
+                SimpleNamespace(
+                    source="sleep",
+                    date=item.date,
+                    metric="sleep_score",
+                    value=float(item.avg_score),
+                    dimensions={},
+                )
+            )
     monkeypatch.setattr(
-        "lynchpin.sources.health_daily.daily_health_summary",
-        lambda *, start, end: health,
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window: None,
     )
     monkeypatch.setattr(
-        "lynchpin.sources.sleep.entries_in_range",
-        lambda *, start, end, canonical=True: sleep,
+        "lynchpin.sources.personal_signals.iter_personal_daily_signals",
+        lambda *, start, end, ensure=True: iter(rows),
     )
 
 

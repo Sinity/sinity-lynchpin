@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..core.evidence import EvidenceProvenance
@@ -18,12 +18,19 @@ def shell_sessions(*args: Any, **kwargs: Any) -> Any:
 
 
 def add_terminal(
-    nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]
+    nodes: list[EvidenceNode],
+    *,
+    start: date,
+    end: date,
+    selected: set[str],
 ) -> None:
-    from .terminal_patterns import detect_patterns
+    from ..materialization import ensure_materialized
+
+    ensure_materialized("atuin", window=(start, end + timedelta(days=1)))
 
     start_dt, end_dt = date_to_dt_range(start, end)
-    for idx, session in enumerate(shell_sessions(start=start_dt, end=end_dt)):
+    sessions = tuple(shell_sessions(start=start_dt, end=end_dt, ensure=False))
+    for idx, session in enumerate(sessions):
         project = normalize_project(session.project)
         if not include_project(project, selected):
             continue
@@ -49,9 +56,14 @@ def add_terminal(
             )
         )
 
+    from .terminal_patterns import detect_patterns
+
     for idx, pattern in enumerate(
         detect_patterns(
-            start=start, end=end, projects=tuple(selected) if selected else None
+            start=start,
+            end=end,
+            projects=tuple(selected) if selected else None,
+            sessions=sessions,
         )
     ):
         nodes.append(

@@ -179,18 +179,21 @@ def gmail_manifest_path() -> Path:
 
 
 def iter_materialized_gmail_messages(
-    *, path: Optional[Path] = None
+    *, path: Optional[Path] = None, ensure: bool = True
 ) -> Iterator[GmailMessage]:
     """Yield gmail messages from the canonical NDJSON product.
 
-    Falls back to ``iter_gmail_messages_deduped`` if the materialized file
-    does not exist yet (the source is usable without first running the
-    materializer, just slower).
+    When reading the configured canonical path, first converge the shared
+    Google Takeout materialization bundle so ordinary reads do not silently
+    reparse raw mbox archives.
     """
     target = path or gmail_events_path()
+    if ensure and path is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout")
     if not target.exists():
-        yield from iter_gmail_messages_deduped()
-        return
+        raise FileNotFoundError(f"canonical Gmail Takeout product is missing: {target}")
     with target.open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -272,11 +275,13 @@ def daily_gmail_activity(
         "inbound": 0,
     })
 
-    # Use the materialized NDJSON when present (orders-of-magnitude faster
-    # than reparsing .mbox bytes for every call); falls back to live parsing
-    # so the source still works before the materializer runs.
+    # Use the materialized NDJSON for configured reads; explicit root overrides
+    # remain raw/source-level access for tests and one-off import diagnostics.
     if root is None:
-        iter_msgs = iter_materialized_gmail_messages()
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("google_takeout", window=(start, end))
+        iter_msgs = iter_materialized_gmail_messages(ensure=False)
     else:
         iter_msgs = iter_gmail_messages_deduped(root=root)
 

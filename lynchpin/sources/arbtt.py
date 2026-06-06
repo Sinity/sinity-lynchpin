@@ -52,8 +52,12 @@ def arbtt_manifest_path(root: Path | None = None) -> Path:
     return arbtt_events_path(root).with_suffix(".manifest.json")
 
 
-def iter_arbtt_events(path: Path | None = None) -> Iterator[ArbttFocusEvent]:
+def iter_arbtt_events(path: Path | None = None, *, ensure: bool = True) -> Iterator[ArbttFocusEvent]:
     target = path or arbtt_events_path()
+    if path is None and ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("arbtt")
     if not target.exists():
         raise FileNotFoundError(
             f"canonical ARBTT materialization is missing: {target}. "
@@ -78,9 +82,9 @@ def iter_arbtt_events(path: Path | None = None) -> Iterator[ArbttFocusEvent]:
             )
 
 
-def daily_arbtt_activity(*, start: date, end: date) -> list[ArbttDayActivity]:
+def daily_arbtt_activity(*, start: date, end: date, ensure: bool = True) -> list[ArbttDayActivity]:
     by_day: dict[date, list[ArbttFocusEvent]] = defaultdict(list)
-    for row in iter_arbtt_events():
+    for row in iter_arbtt_events(ensure=ensure):
         day = row.timestamp.date()
         if start <= day < end:
             by_day[day].append(row)

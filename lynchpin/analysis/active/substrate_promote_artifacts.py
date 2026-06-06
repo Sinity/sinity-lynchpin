@@ -1,4 +1,4 @@
-"""JSON artifact promotion for the refresh DAG substrate step."""
+"""JSON artifact promotion for the materialization DAG substrate step."""
 
 from __future__ import annotations
 

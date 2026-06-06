@@ -85,6 +85,7 @@ def test_daily_audio_features_weighted_mean_and_missing_not_zero(tmp_path, monke
 
     by_day = {d.date: d for d in af.daily_audio_features(date(2026, 5, 1), date(2026, 5, 2), path=ds)}
     d1 = by_day[date(2026, 5, 1)]
+    assert set(by_day) == {date(2026, 5, 1)}
     assert round(d1.means["energy"], 3) == 0.533
     assert round(d1.matched_minutes, 1) == 3.0   # unmatched 5 min excluded
     assert round(d1.total_minutes, 1) == 8.0

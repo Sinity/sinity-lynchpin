@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import html.parser
 import json
+import os
 import sqlite3
 import sys
 from dataclasses import asdict
@@ -15,6 +16,7 @@ from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from ..core.config import get_config
+from ..core.io import latest_mtime_iso
 from ..sources.bookmarks import BookmarkEvent, bookmarks_manifest_path, bookmarks_path
 from ..sources.web import normalize_url
 
@@ -27,6 +29,7 @@ _BOOKMARK_SQL = """
     WHERE b.type = 1
     ORDER BY b.dateAdded
 """
+BOOKMARK_EVENTS_SCHEMA_VERSION = 1
 
 
 def materialize_bookmarks(*, root: Path | None = None, output: Path | None = None) -> dict[str, Any]:
@@ -46,15 +49,19 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
 
     first = next((row.added_at for row in rows if row.added_at), None)
     last = next((row.added_at for row in reversed(rows) if row.added_at), None)
+    input_files = _discover_bookmark_files(raw_roots)
     manifest = {
         "dataset": "browser.bookmarks",
+        "schema_version": BOOKMARK_EVENTS_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "raw_roots": [str(path) for path in raw_roots],
         "row_count": len(rows),
         "first_date": first.date().isoformat() if first else None,
         "last_date": last.date().isoformat() if last else None,
-        "input_files": [str(path) for path in _discover_bookmark_files(raw_roots)],
+        "input_files": [str(path) for path in input_files],
+        "input_file_count": len(input_files),
+        "input_latest_mtime": latest_mtime_iso(input_files),
     }
     bookmarks_manifest_path(root).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
@@ -65,15 +72,35 @@ def _bookmark_roots(root: Path) -> tuple[Path, ...]:
 
 
 def _discover_bookmark_files(roots: tuple[Path, ...]) -> list[Path]:
-    files: list[Path] = []
+    files: set[Path] = set()
     for root in roots:
-        files.extend(root.rglob("*_bookmarks.json"))
-        files.extend(root.rglob("Bookmarks"))
-        files.extend(root.rglob("*Bookmarks.bak"))
-        files.extend(root.rglob("places.sqlite"))
-        files.extend(root.rglob("bookmarks.html"))
-        files.extend(root.rglob("bookmarks-*.jsonlz4"))
-    return sorted({path for path in files if path.is_file()})
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                            elif entry.is_file(follow_symlinks=False) and _is_bookmark_file(entry.name):
+                                files.add(Path(entry.path))
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    return sorted(files)
+
+
+def _is_bookmark_file(name: str) -> bool:
+    return (
+        name.endswith("_bookmarks.json")
+        or name == "Bookmarks"
+        or name.endswith("Bookmarks.bak")
+        or name == "places.sqlite"
+        or name == "bookmarks.html"
+        or (name.startswith("bookmarks-") and name.endswith(".jsonlz4"))
+    )
 
 
 def _iter_all_bookmarks(roots: tuple[Path, ...]) -> Iterator[BookmarkEvent]:

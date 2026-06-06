@@ -6,6 +6,7 @@ string annotations for tool parameters.
 """
 
 import json
+from pathlib import Path
 from typing import Any
 
 from lynchpin.mcp.server import app
@@ -64,6 +65,37 @@ def _resolve_artifact(name: str) -> dict[str, Any] | None:
     return None
 
 
+def _materialization_for_analysis_artifacts() -> dict[str, Any]:
+    from lynchpin.core.io import materialize_analysis_artifacts
+
+    return materialize_analysis_artifacts()
+
+
+def _selector_materialization(
+    name: str,
+    reason: str,
+    *,
+    base: dict[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    materialization = dict(base)
+    materialization.update({
+        "status": status,
+        "changed": False,
+        "reason": reason,
+        "requested_artifact_name": name,
+    })
+    coverage = materialization.get("coverage")
+    if not isinstance(coverage, dict):
+        coverage = {}
+    coverage.update({
+        "relation": "unavailable",
+        "interpretation": f"artifact {name!r} is not currently materialized",
+    })
+    materialization["coverage"] = coverage
+    return materialization
+
+
 @app.tool()
 def analysis_artifact_inventory(
     project: str | None = None,
@@ -78,6 +110,7 @@ def analysis_artifact_inventory(
     state, or read raw external data.
     """
     effective_limit = min(max(limit, 1), 1000)
+    materialization = _materialization_for_analysis_artifacts()
     rows = _artifact_rows(project=project, kind=kind, status=status)
     return {
         "summary": {
@@ -87,6 +120,7 @@ def analysis_artifact_inventory(
             "project": project,
             "kind": kind,
             "status": status,
+            "materialization": materialization,
         },
         "artifacts": rows[:effective_limit],
     }
@@ -104,25 +138,44 @@ def read_analysis_artifact(
     so agents can discover the artifact without accidentally pulling megabytes
     through MCP.
     """
+    materialization = _materialization_for_analysis_artifacts()
     row = _resolve_artifact(name)
     if row is None:
+        reason = "No generated analysis artifact matched that name or unique stem."
         return {
             "status": "missing",
             "name": name,
-            "reason": "No generated analysis artifact matched that name or unique stem.",
+            "reason": reason,
+            "materialization": _selector_materialization(
+                name,
+                reason,
+                base=materialization,
+                status="missing",
+            ),
         }
     if row.get("status") == "ambiguous":
+        row["materialization"] = _selector_materialization(
+            name,
+            "Analysis artifact name matched multiple generated artifacts.",
+            base=materialization,
+            status="blocked",
+        )
         return row
 
     path_text = row.get("path")
     if not isinstance(path_text, str):
+        reason = "Resolved artifact row has no path."
         return {
             "status": "partial",
             "name": name,
-            "reason": "Resolved artifact row has no path.",
+            "reason": reason,
+            "materialization": _selector_materialization(
+                name,
+                reason,
+                base=materialization,
+                status="blocked",
+            ),
         }
-
-    from pathlib import Path
 
     path = Path(path_text)
     cap = min(max(max_bytes, 1), _MAX_ARTIFACT_BYTES)
@@ -141,6 +194,7 @@ def read_analysis_artifact(
             "name": row["name"],
             "metadata": row,
             "reason": f"{type(exc).__name__}: {exc}",
+            "materialization": materialization,
         }
 
     truncated = size > cap
@@ -151,6 +205,7 @@ def read_analysis_artifact(
         "bytes": size,
         "returned_bytes": len(raw),
         "truncated": truncated,
+        "materialization": materialization,
     }
     if not truncated and row.get("kind") == "json":
         try:

@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
+from lynchpin.core.io import load_materialized_analysis_artifact
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceEdge, EvidenceNode
 from ..core.parse import parse_datetime
@@ -36,7 +36,7 @@ def add_machine_analysis_nodes(
         "benchmark_plans": "machine_benchmark_plans.json",
         "benchmark_manifest_bundle": "machine_benchmark_manifest_bundle.json",
         "benchmark_preflight": "machine_benchmark_preflight.json",
-        "benchmark_execution_queue": "machine_benchmark_execution_queue.json",
+        "benchmark_execution_handoff": "machine_benchmark_execution_handoff.json",
         "manifest_diagnostics": "machine_experiment_manifest_diagnostics.json",
         "support_assessment": "machine_support_assessment.json",
         "mechanisms": "machine_mechanism_hypotheses.json",
@@ -47,12 +47,12 @@ def add_machine_analysis_nodes(
         "attribution_claims": "machine_attribution_claims.json",
         "assumption_checks": "machine_assumption_checks.json",
         "below": "machine_below_attribution.json",
-        "below_export_queue": "machine_below_export_queue.json",
+        "below_export_handoff": "machine_below_export_handoff.json",
         "baselines": "machine_observational_baselines.json",
         "claims": "machine_experiment_claims.json",
     }
     payloads = {
-        key: load_json_if_exists(resolve_analysis_path(name))
+        key: _load_machine_graph_artifact(name)
         for key, name in artifacts.items()
         if name not in exclude_names
     }
@@ -273,22 +273,22 @@ def add_machine_analysis_nodes(
         start=start,
         artifact_name=artifacts["benchmark_preflight"],
     )
-    _add_machine_benchmark_execution_queue_nodes(
+    _add_machine_benchmark_execution_handoff_nodes(
         nodes,
         edges,
-        payloads.get("benchmark_execution_queue"),
+        payloads.get("benchmark_execution_handoff"),
         start=start,
-        artifact_name=artifacts["benchmark_execution_queue"],
+        artifact_name=artifacts["benchmark_execution_handoff"],
     )
-    _add_machine_below_export_queue_nodes(
+    _add_machine_below_export_handoff_nodes(
         nodes,
         edges,
-        payloads.get("below_export_queue"),
+        payloads.get("below_export_handoff"),
         start=start,
         end=end,
         episode_ids=episode_ids,
         episode_bound_ids=episode_bound_ids,
-        artifact_name=artifacts["below_export_queue"],
+        artifact_name=artifacts["below_export_handoff"],
     )
     _add_machine_manifest_diagnostic_nodes(nodes, payloads.get("manifest_diagnostics"), start=start, artifact_name=artifacts["manifest_diagnostics"])
     _add_machine_support_assessment_nodes(nodes, edges, payloads.get("support_assessment"), start=start, selected=selected, artifact_name=artifacts["support_assessment"])
@@ -1036,7 +1036,7 @@ def _add_machine_benchmark_preflight_nodes(
             )
 
 
-def _add_machine_benchmark_execution_queue_nodes(
+def _add_machine_benchmark_execution_handoff_nodes(
     nodes: list[EvidenceNode],
     edges: list[EvidenceEdge],
     payload: object,
@@ -1045,34 +1045,34 @@ def _add_machine_benchmark_execution_queue_nodes(
     artifact_name: str,
 ) -> None:
     for item in _machine_rows(payload, "items"):
-        queue_id = str(item.get("queue_id") or "")
+        handoff_id = str(item.get("handoff_id") or "")
         run_group_id = str(item.get("run_group_id") or "")
         candidate_id = str(item.get("candidate_id") or "")
-        if not queue_id or not run_group_id:
+        if not handoff_id or not run_group_id:
             continue
         nodes.append(
             EvidenceNode(
-                id=queue_id,
-                kind="machine_benchmark_execution_queue_item",
+                id=handoff_id,
+                kind="machine_benchmark_execution_handoff_item",
                 source="machine",
                 date=start,
                 project=canonical_project_name(str(item.get("project"))) if item.get("project") else None,
                 summary=(
-                    f"benchmark execution queue {run_group_id}: "
+                    f"benchmark execution handoff {run_group_id}: "
                     f"{item.get('ready_run_count', 0)}/{item.get('run_count', 0)} runs ready"
                 ),
                 payload=item,
                 provenance=EvidenceProvenance("machine", "materialized", path=artifact_name),
                 caveats=(
-                    EvidenceCaveat("machine", "partial", "execution queue is a non-executing benchmark handoff"),
+                    EvidenceCaveat("machine", "partial", "execution handoff is a non-executing benchmark handoff"),
                 ),
             )
         )
         edges.append(
             EvidenceEdge(
-                queue_id,
+                handoff_id,
                 f"machine-benchmark-manifest-group:{run_group_id}",
-                "execution_queue_prioritizes_manifest_group",
+                "execution_handoff_prioritizes_manifest_group",
                 "ranked execution handoff points at an exportable manifest group",
                 1.0,
             )
@@ -1080,16 +1080,16 @@ def _add_machine_benchmark_execution_queue_nodes(
         if candidate_id:
             edges.append(
                 EvidenceEdge(
-                    queue_id,
+                    handoff_id,
                     candidate_id,
-                    "execution_queue_for_candidate",
+                    "execution_handoff_for_candidate",
                     "ranked execution handoff was generated for candidate",
                     1.0,
                 )
             )
 
 
-def _add_machine_below_export_queue_nodes(
+def _add_machine_below_export_handoff_nodes(
     nodes: list[EvidenceNode],
     edges: list[EvidenceEdge],
     payload: object,
@@ -1107,17 +1107,17 @@ def _add_machine_below_export_queue_nodes(
             continue
         capture_id = str(item.get("capture_id") or begin.isoformat())
         episode_kind = str(item.get("episode_kind") or "pressure")
-        node_id = f"machine-below-export-queue:{capture_id}"
+        node_id = f"machine-below-export-handoff:{capture_id}"
         nodes.append(
             EvidenceNode(
                 id=node_id,
-                kind="machine_below_export_queue_item",
+                kind="machine_below_export_handoff_item",
                 source="below",
                 date=logical_date(begin),
                 project=None,
                 start=begin,
                 end=export_end,
-                summary=f"below export queue: {episode_kind} in {capture_id}",
+                summary=f"below export handoff: {episode_kind} in {capture_id}",
                 payload={
                     "capture_id": capture_id,
                     "episode_kind": item.get("episode_kind"),
@@ -1132,7 +1132,7 @@ def _add_machine_below_export_queue_nodes(
                 },
                 provenance=EvidenceProvenance("below", "materialized", path=artifact_name),
                 caveats=(
-                    EvidenceCaveat("below", "partial", "queue item is a non-executing live below export handoff"),
+                    EvidenceCaveat("below", "partial", "handoff item is a non-executing live below export handoff"),
                 ),
             )
         )
@@ -1142,8 +1142,8 @@ def _add_machine_below_export_queue_nodes(
                 EvidenceEdge(
                     node_id,
                     target_id,
-                    "below_export_queue_targets_episode",
-                    "queued live below export targets a residual machine pressure episode",
+                    "below_export_handoff_targets_episode",
+                    "live below export handoff targets a residual machine pressure episode",
                     _bounded_weight(item.get("severity"), None),
                 )
             )
@@ -1540,6 +1540,11 @@ def _machine_claim_date(row: dict[str, Any]) -> date | None:
         return date.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _load_machine_graph_artifact(name: str) -> dict[str, Any] | None:
+    payload, _materialization = load_materialized_analysis_artifact(name)
+    return payload if isinstance(payload, dict) else None
 
 
 def _machine_rows(payload: object, key: str) -> list[dict[str, Any]]:

@@ -1,14 +1,14 @@
-"""Refresh-DAG step: promote source data + evidence graph to DuckDB substrate.
+"""Materialization DAG step: promote source data + evidence graph to DuckDB substrate.
 
-Writes to the substrate as a side effect of refresh; does not change any
-existing read path. Read-side cutover comes in Arc 3.
+Writes to the derived substrate as a materialization step; raw sources remain
+authoritative.
 
-Arc 2.6 cutover: substrate becomes populated by default on every refresh run,
-ready for Arc 4 (MCP server) to read from.
+Arc 2.6 cutover: substrate becomes populated by default on every materialization
+run, ready for Arc 4 (MCP server) to read from.
 
 Per-source readiness (Arc 2.7): every source's outcome is recorded in
 ``substrate_source_status`` (status: ok | empty | unavailable | error). This
-fixes the prior silent-failure mode where a stale polylogue archive →
+fixes the prior silent-failure mode where an unavailable polylogue archive →
 ``ai_work_event=0`` looked indistinguishable from a successful promote with
 no events in the window.
 """
@@ -16,15 +16,17 @@ no events in the window.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from typing import Any
 
 from .substrate_promote_ai import promote_ai_sources
 from .substrate_promote_artifacts import promote_artifact_sources
 from .substrate_promote_graph import promote_graph_source
 from .substrate_promote_machine import promote_machine_tables
 from .substrate_promote_personal import promote_personal_sources
+from .substrate_promote_polylogue_timeline import promote_polylogue_timeline_source
 from .substrate_promote_review import promote_review_source
 from .substrate_promote_work import promote_work_sources
 from .substrate_promote_status import (
@@ -43,10 +45,12 @@ from .substrate_promote_status import (
     SOURCE_WORK_OBSERVATIONS,
     SOURCE_PR_REVIEW,
     SOURCE_PERSONAL_DAILY_SIGNAL,
+    SOURCE_POLYLOGUE_TIMELINE,
     SOURCE_SPOTIFY_DAILY,
     SOURCE_SYMBOLS,
     SourceSelection,
 )
+from lynchpin.substrate.run_steps import record_run_step
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +97,7 @@ def run_substrate_promote(
     window_start: date | None = None,
     window_end: date | None = None,
 ) -> PromotionRunResult:
-    """Promote refresh outputs and live source families to the substrate.
+    """Promote materialized artifacts and live source families to the substrate.
 
     JSON artifacts, AI work events, evidence graph, PR review rows, personal
     exports, and machine telemetry each preserve their own source-status row.
@@ -162,77 +166,127 @@ def _do_promote(
     with connect(substrate_path()) as conn:
         apply_schema(conn)
 
-        log.info("promote: artifacts (commits + files + symbols)…")
-        promote_artifact_sources(
+        _run_stage(
             conn,
-            refresh_id=refresh_id,
-            commit_facts_file=commit_facts_file,
-            file_changes_file=file_changes_file,
-            symbol_changes_file=symbol_changes_file,
-            ai_attribution_file=ai_attribution_file,
+            refresh_id=refresh_id or "",
+            step="promote_artifacts",
             counts=counts,
-            selection=selection,
+            fn=lambda: promote_artifact_sources(
+                conn,
+                refresh_id=refresh_id,
+                commit_facts_file=commit_facts_file,
+                file_changes_file=file_changes_file,
+                symbol_changes_file=symbol_changes_file,
+                ai_attribution_file=ai_attribution_file,
+                counts=counts,
+                selection=selection,
+            ),
         )
 
-        log.info("promote: AI work events…")
-        promote_ai_sources(
+        _run_stage(
             conn,
-            refresh_id=refresh_id,
-            window_start=window_start,
-            window_end=window_end,
+            refresh_id=refresh_id or "",
+            step="promote_ai_work_events",
             counts=counts,
-            selection=selection,
-        )
-
-        log.info("promote: evidence graph…")
-        promote_graph_source(
-            conn,
-            refresh_id=refresh_id,
-            window_start=window_start,
-            window_end=window_end,
-            counts=counts,
-            selection=selection,
-            write_evidence_graph=write_evidence_graph,
-        )
-
-        log.info("promote: PR review rows…")
-        promote_review_source(
-            conn,
-            refresh_id=refresh_id,
-            pr_review_file=pr_review_file,
-            counts=counts,
-            selection=selection,
-        )
-
-        log.info("promote: work observations…")
-        promote_work_sources(
-            conn,
-            refresh_id=refresh_id,
-            window_start=window_start,
-            window_end=window_end,
-            counts=counts,
-            selection=selection,
-        )
-
-        log.info("promote: personal sources…")
-        promote_personal_sources(
-            conn,
-            refresh_id=refresh_id,
-            window_start=window_start,
-            window_end=window_end,
-            counts=counts,
-            selection=selection,
-        )
-
-        if selection.includes(*MACHINE_SOURCE_IDS):
-            log.info("promote: machine telemetry…")
-            promote_machine_tables(
+            fn=lambda: promote_ai_sources(
                 conn,
                 refresh_id=refresh_id,
                 window_start=window_start,
                 window_end=window_end,
                 counts=counts,
                 selection=selection,
+            ),
+        )
+
+        _run_stage(
+            conn,
+            refresh_id=refresh_id or "",
+            step="promote_polylogue_timeline",
+            counts=counts,
+            fn=lambda: promote_polylogue_timeline_source(
+                conn,
+                refresh_id=refresh_id,
+                window_start=window_start,
+                window_end=window_end,
+                counts=counts,
+                selection=selection,
+            ),
+        )
+
+        _run_stage(
+            conn,
+            refresh_id=refresh_id or "",
+            step="promote_evidence_graph",
+            counts=counts,
+            fn=lambda: promote_graph_source(
+                conn,
+                refresh_id=refresh_id,
+                window_start=window_start,
+                window_end=window_end,
+                counts=counts,
+                selection=selection,
+                write_evidence_graph=write_evidence_graph,
+            ),
+        )
+
+        _run_stage(
+            conn,
+            refresh_id=refresh_id or "",
+            step="promote_pr_review",
+            counts=counts,
+            fn=lambda: promote_review_source(
+                conn,
+                refresh_id=refresh_id,
+                pr_review_file=pr_review_file,
+                counts=counts,
+                selection=selection,
+            ),
+        )
+
+        _run_stage(
+            conn,
+            refresh_id=refresh_id or "",
+            step="promote_work_observations",
+            counts=counts,
+            fn=lambda: promote_work_sources(
+                conn,
+                refresh_id=refresh_id,
+                window_start=window_start,
+                window_end=window_end,
+                counts=counts,
+                selection=selection,
+            ),
+        )
+
+        _run_stage(
+            conn,
+            refresh_id=refresh_id or "",
+            step="promote_personal_sources",
+            counts=counts,
+            fn=lambda: promote_personal_sources(
+                conn,
+                refresh_id=refresh_id,
+                window_start=window_start,
+                window_end=window_end,
+                counts=counts,
+                selection=selection,
+            ),
+        )
+
+        if selection.includes(*MACHINE_SOURCE_IDS):
+            _run_stage(
+                conn,
+                refresh_id=refresh_id or "",
+                step="promote_machine_tables",
+                counts=counts,
+                fn=lambda: promote_machine_tables(
+                    conn,
+                    refresh_id=refresh_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                    counts=counts,
+                    selection=selection,
+                ),
             )
 
         source_statuses = _source_statuses(conn, refresh_id)
@@ -260,17 +314,24 @@ def _do_promote(
         counts,
     )
 
-    # Refresh the read snapshot so MCP read tools have a usable copy
-    # during the NEXT promote's write window. The exclusive lock is
-    # released when the ``connect`` context manager exits above, so we
-    # can copy the canonical file here. Failure is non-fatal — readers
-    # will fall back to the prior snapshot or hit the lock error.
+    # Update the read snapshot so MCP read tools have a usable copy during the
+    # NEXT promote's write window. The exclusive lock is released when the
+    # ``connect`` context manager exits above, so we can copy the canonical file
+    # here. Failure is non-fatal: readers will fall back to the prior snapshot
+    # or hit the lock error.
     try:
-        from lynchpin.substrate.connection import refresh_read_snapshot
+        from lynchpin.substrate.connection import update_read_snapshot
 
-        refresh_read_snapshot()
+        update_read_snapshot()
     except Exception as exc:  # pragma: no cover — best-effort
-        log.warning("read-snapshot refresh failed (non-fatal): %s", exc)
+        log.warning("read-snapshot update failed (non-fatal): %s", exc)
+
+    try:
+        from lynchpin.substrate.status_manifest import write_substrate_status_manifest
+
+        write_substrate_status_manifest()
+    except Exception as exc:  # pragma: no cover — best-effort
+        log.warning("substrate status manifest update failed (non-fatal): %s", exc)
 
     return PromotionRunResult(
         refresh_id=refresh_id or "",
@@ -281,6 +342,57 @@ def _do_promote(
         started_at=started_at,
         finished_at=finished_at,
     )
+
+
+def _run_stage(
+    conn: Any,
+    *,
+    refresh_id: str,
+    step: str,
+    counts: dict[str, int],
+    fn: Callable[[], None],
+) -> None:
+    started_at = datetime.now(timezone.utc)
+    before = dict(counts)
+    log.info("promote: %s…", step)
+    record_run_step(
+        conn,
+        refresh_id=refresh_id,
+        step=step,
+        status="running",
+        message="started",
+        started_at=started_at,
+    )
+    try:
+        fn()
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        record_run_step(
+            conn,
+            refresh_id=refresh_id,
+            step=step,
+            status="error",
+            message=f"{type(exc).__name__}: {exc}",
+            row_count=_count_delta(before, counts),
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        raise
+    finished_at = datetime.now(timezone.utc)
+    record_run_step(
+        conn,
+        refresh_id=refresh_id,
+        step=step,
+        status="success",
+        message="finished",
+        row_count=_count_delta(before, counts),
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+
+
+def _count_delta(before: dict[str, int], after: dict[str, int]) -> int:
+    return sum(max(0, int(value) - int(before.get(key, 0))) for key, value in after.items())
 
 
 def _source_statuses(conn: object, refresh_id: str) -> tuple[PromotionSourceStatus, ...]:
@@ -374,6 +486,7 @@ __all__ = [
     "SOURCE_FILE_CHANGES",
     "SOURCE_SYMBOLS",
     "SOURCE_AI_WORK_EVENTS",
+    "SOURCE_POLYLOGUE_TIMELINE",
     "SOURCE_EVIDENCE_GRAPH",
     "SOURCE_PR_REVIEW",
     "SOURCE_SPOTIFY_DAILY",

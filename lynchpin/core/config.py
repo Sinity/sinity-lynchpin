@@ -449,6 +449,10 @@ def _resolve_xtask_history_db(env_value: str | None) -> Path:
     state_dir = os.environ.get("SINEX_STATE_DIR")
     if state_dir:
         return Path(state_dir).expanduser() / "xtask-history.db"
+    checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/project/sinex")).expanduser()
+    checkout_db = checkout_root / ".sinex/state/xtask-history.db"
+    if checkout_db.exists():
+        return checkout_db
     root = Path("/var/cache/sinex/sinity")
     candidates = sorted(
         root.glob("*/dev-state/state/xtask-history.db") if root.exists() else (),

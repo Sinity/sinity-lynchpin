@@ -77,7 +77,7 @@ class TestParseShortstat:
         assert result["lines_deleted"] == 0
 
 
-def test_github_context_for_commits_uses_typed_github_source(monkeypatch):
+def test_github_context_for_commits_reads_materialized_context(monkeypatch):
     fact = GitCommitFact(
         repo="polylogue",
         commit="abc123",
@@ -110,15 +110,54 @@ def test_github_context_for_commits_uses_typed_github_source(monkeypatch):
         merge_commit="deadbeef",
     )
 
-    monkeypatch.setattr("lynchpin.sources.git.shutil.which", lambda name: "/usr/bin/gh")
-    monkeypatch.setattr("lynchpin.sources.git.repo_slug", lambda path: "Sinity/polylogue")
-    monkeypatch.setattr("lynchpin.sources.git.fetch_pr", lambda path, number: item)
+    calls = []
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window))
+        or type("Result", (), {"status": "ready", "reason": "ready"})(),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.github_context.iter_github_context",
+        lambda *, projects=None, **_kwargs: iter((type("Row", (), {"project": "polylogue", "item": item})(),)),
+    )
 
     result = github_context_for_commits([fact])
 
+    assert calls == [("github_context", (date(2026, 5, 5), date(2026, 5, 6)))]
     assert result["status"] == "ok"
+    assert result["materialization_status"] == "ready"
     assert result["items"][0]["number"] == 846
     assert result["items"][0]["state"] == "merged"
+
+
+def test_github_context_for_commits_reports_missing_product(monkeypatch):
+    fact = GitCommitFact(
+        repo="polylogue",
+        commit="abc123",
+        authored_at=datetime(2026, 5, 6, 1, 0),
+        author="Sinity",
+        subject="fix(cli): handle dispatch (#846)",
+        lines_added=1,
+        lines_deleted=0,
+        lines_changed=1,
+        files_changed=1,
+        paths=("polylogue/cli.py",),
+        path_roots=("polylogue",),
+    )
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: type("Result", (), {"status": "failed", "reason": "network_down"})(),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.github_context.iter_github_context",
+        lambda *, projects=None, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("missing context")),
+    )
+
+    result = github_context_for_commits([fact])
+
+    assert result["status"] == "unavailable"
+    assert result["materialization_status"] == "missing"
+    assert result["items"][0]["status"] == "unavailable"
 
 
 def test_commit_facts_defaults_to_current_history_ref(tmp_path):

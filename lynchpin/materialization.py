@@ -14,27 +14,41 @@ available while still not being fully materialized for near-instant analysis.
 from __future__ import annotations
 
 import csv
+import inspect
 import json
+import os
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
+from .core.cache import files_signature
 from .core.config import LynchpinConfig, get_config
 from .core.errors import MaterializationError
+from .core.parse import iter_dates
 from .core.source_contracts import (
     DatasetStatus,
+    GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS,
     SOURCE_CONTRACT_NAMES,
     dataset_status_to_substrate_status,
     source_contract,
 )
 from .ingest.webhistory import (
+    WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
     build_full_history,
     full_history_manifest_path,
 )
 from .ingest.exports_materialize import (
+    MESSENGER_CANONICAL_SCHEMA_VERSION,
+    RAINDROP_BOOKMARKS_SCHEMA_VERSION,
+    REDDIT_CANONICAL_SCHEMA_VERSION,
+    SPOTIFY_STREAMS_SCHEMA_VERSION,
+    _export_roots,
+    _messenger_thread_files,
+    _spotify_roots,
     materialize_messenger,
     materialize_raindrop,
     materialize_reddit,
@@ -44,34 +58,88 @@ from .ingest.exports_materialize import (
     reddit_canonical_dir,
     spotify_streams_path,
 )
-from .ingest.activitywatch_materialize import materialize_activitywatch_events
-from .ingest.activity_content_materialize import materialize_activity_content
-from .ingest.terminal_materialize import materialize_atuin_history
-from .ingest.title_metadata_materialize import materialize_title_metadata
-from .ingest.machine_materialize import materialize_machine_telemetry
+from .ingest.activitywatch_materialize import (
+    ACTIVITYWATCH_EVENTS_SCHEMA_VERSION,
+    activitywatch_input_files,
+    materialize_activitywatch_events,
+)
+from .ingest.activitywatch_event_index_materialize import (
+    activitywatch_event_index_input_files,
+    materialize_activitywatch_event_index,
+)
+from .ingest.activity_content_materialize import (
+    ACTIVITY_CONTENT_SCHEMA_VERSION,
+    activity_content_input_files,
+    materialize_activity_content,
+)
+from .ingest.activitywatch_derived_materialize import (
+    ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
+    activitywatch_derived_input_files,
+    materialize_activitywatch_derived,
+)
+from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files, materialize_atuin_history
+from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION, materialize_title_metadata
+from .ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION, machine_input_files, materialize_machine_telemetry
 from .ingest.personal_signals_materialize import (
+    PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
+    SPOTIFY_DAILY_SCHEMA_VERSION,
     materialize_personal_daily_signals,
     materialize_spotify_daily,
+    spotify_daily_input_files,
+)
+from .ingest.temporal_signals_materialize import (
+    TEMPORAL_SIGNALS_SCHEMA_VERSION,
+    materialize_temporal_signals,
+)
+from .ingest.sleep_productivity_materialize import (
+    SLEEP_PRODUCTIVITY_SCHEMA_VERSION,
+    materialize_sleep_productivity,
 )
 from .ingest.google_takeout_materialize import (
+    GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION,
     google_takeout_inventory_dir,
     materialize_google_takeout_inventory,
 )
 from .ingest.google_takeout_products import (
+    GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION,
     google_takeout_products_dir,
     materialize_google_takeout_products,
 )
-from .ingest.bookmarks_materialize import materialize_bookmarks
-from .ingest.communications_materialize import materialize_communication_events
-from .ingest.arbtt_materialize import materialize_arbtt_events
-from .ingest.irc_materialize import materialize_irc_events
+from .ingest.gmail_takeout_materialize import GMAIL_EVENTS_SCHEMA_VERSION, materialize_gmail_events
+from .ingest.github_context_materialize import materialize_github_context
+from .analysis.keylog import write_keylog_analysis
+from .ingest.bookmarks_materialize import (
+    BOOKMARK_EVENTS_SCHEMA_VERSION,
+    _bookmark_roots,
+    _discover_bookmark_files,
+    materialize_bookmarks,
+)
+from .ingest.communications_materialize import (
+    COMMUNICATION_EVENTS_SCHEMA_VERSION,
+    communication_input_files,
+    materialize_communication_events,
+)
+from .ingest.arbtt_materialize import ARBTT_EVENTS_SCHEMA_VERSION, _capture_logs, materialize_arbtt_events
+from .ingest.irc_materialize import IRC_EVENTS_SCHEMA_VERSION, irc_input_files, materialize_irc_events
 from .sources.activitywatch_raw import canonical_activitywatch_events_path
+from .sources.activitywatch_event_index import (
+    ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+    activitywatch_event_index_manifest_path,
+    activitywatch_event_index_path,
+)
 from .sources.activity_content import activity_content_daily_path, activity_content_manifest_path, activity_title_usage_path
+from .sources.activitywatch_derived import (
+    PRODUCT_KINDS as ACTIVITYWATCH_DERIVED_PRODUCT_KINDS,
+    activitywatch_derived_manifest_path,
+    activitywatch_derived_path,
+)
 from .sources.machine import canonical_machine_table_path
 from .sources.terminal import canonical_atuin_history_path
 from .sources.title_metadata import title_metadata_manifest_path, title_metadata_path
 from .sources.google_takeout import discover_takeout_archives
+from .sources.gmail_takeout import gmail_events_path, gmail_manifest_path
 from .sources.polylogue import archive_readiness, iter_session_profiles
+from .sources.exports_raindrop import list_raindrop_exports
 from .sources.bookmarks import bookmarks_manifest_path, bookmarks_path
 from .sources.communications import communication_events_path, communication_manifest_path
 from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
@@ -82,9 +150,14 @@ from .sources.personal_signals import (
     spotify_daily_manifest_path,
     spotify_daily_path,
 )
+from .sources.temporal_signals import temporal_signals_manifest_path, temporal_signals_path
+from .sources.sleep_productivity import sleep_productivity_manifest_path, sleep_productivity_path
+from .sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION, github_context_manifest_path, github_context_path
 
 
 Status = DatasetStatus
+MaterializationStatus = Literal["ready", "updated", "blocked", "failed", "coverage_bound", "manual"]
+MaterializationBudget = Literal["inline", "background", "manual"]
 
 
 @dataclass(frozen=True)
@@ -98,8 +171,9 @@ class MaterializedDataset:
     row_count: int | None
     first_date: date | None
     last_date: date | None
-    refresh_command: str
+    materialization_hint: str
     reason: str
+    covered_dates: tuple[date, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
@@ -124,8 +198,9 @@ class MaterializedDataset:
             "row_count": self.row_count,
             "first_date": self.first_date.isoformat() if self.first_date else None,
             "last_date": self.last_date.isoformat() if self.last_date else None,
+            "covered_dates": [day.isoformat() for day in self.covered_dates],
             "coverage": coverage,
-            "refresh_command": self.refresh_command,
+            "materialization_hint": self.materialization_hint,
             "reason": self.reason,
         }
 
@@ -135,7 +210,7 @@ class MaterializationPlanStep:
     name: str
     before: MaterializedDataset
     action: str
-    refresh_command: str
+    materialization_hint: str
     reason: str
 
     def to_json(self) -> dict[str, Any]:
@@ -143,8 +218,41 @@ class MaterializationPlanStep:
             "name": self.name,
             "status": self.before.status,
             "action": self.action,
-            "refresh_command": self.refresh_command,
+            "materialization_hint": self.materialization_hint,
             "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class MaterializationResult:
+    """Result of ensuring one product/source is ready for a read path.
+
+    This is the materialization-first replacement boundary for read-side
+    readiness decisions. It deliberately reports product status without writing
+    diagnostic ledger history.
+    """
+
+    name: str
+    status: MaterializationStatus
+    changed: bool
+    reason: str
+    elapsed_ms: int
+    product_paths: tuple[Path, ...]
+    source_high_water: dict[str, str | int | float | None]
+    coverage: dict[str, Any]
+    diagnostics: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "changed": self.changed,
+            "reason": self.reason,
+            "elapsed_ms": self.elapsed_ms,
+            "product_paths": [str(path) for path in self.product_paths],
+            "source_high_water": dict(self.source_high_water),
+            "coverage": self.coverage,
+            "diagnostics": list(self.diagnostics),
         }
 
 
@@ -170,16 +278,20 @@ def _dataset_builders() -> dict[str, Any]:
         "codex": _codex_dataset,
         "polylogue_devtools": _polylogue_devtools_dataset,
         "activitywatch": _activitywatch_dataset,
+        "activitywatch_event_index": _activitywatch_event_index_dataset,
+        "activitywatch_derived": _activitywatch_derived_dataset,
         "clipboard": _clipboard_dataset,
         "title_metadata": _title_metadata_dataset,
         "activity_content": _activity_content_dataset,
         "atuin": _atuin_dataset,
         "dendron": _dendron_dataset,
         "evidence_graph_substrate": _git_substrate_dataset,
+        "github_context": _github_context_dataset,
         "analysis_artifacts": _analysis_artifacts_dataset,
         "health": _health_dataset,
         "goodreads": _goodreads_dataset,
         "keylog": _keylog_dataset,
+        "keylog_analysis": _keylog_analysis_dataset,
         "raw_log": _raw_log_dataset,
         "sleep": _sleep_dataset,
         "substance": _substance_dataset,
@@ -196,16 +308,20 @@ def _dataset_builders() -> dict[str, Any]:
         "xtask_history": _xtask_history_dataset,
         "spotify_daily": _spotify_daily_dataset,
         "personal_daily_signals": _personal_daily_signals_dataset,
+        "temporal_signals": _temporal_signals_dataset,
+        "sleep_productivity": _sleep_productivity_dataset,
         "irc": _irc_dataset,
         "wykop": _wykop_dataset,
     }
 
 
-def _materializers() -> dict[str, Callable[[], Any]]:
+def _materializers() -> dict[str, Callable[..., Any]]:
     return {
         "webhistory": _materialize_webhistory,
         "google_takeout": _materialize_google_takeout,
         "activitywatch": materialize_activitywatch_events,
+        "activitywatch_event_index": materialize_activitywatch_event_index,
+        "activitywatch_derived": materialize_activitywatch_derived,
         "title_metadata": materialize_title_metadata,
         "activity_content": materialize_activity_content,
         "atuin": materialize_atuin_history,
@@ -217,25 +333,53 @@ def _materializers() -> dict[str, Callable[[], Any]]:
         "browser_bookmarks": materialize_bookmarks,
         "arbtt": materialize_arbtt_events,
         "machine": materialize_machine_telemetry,
+        "github_context": materialize_github_context,
+        "keylog_analysis": _materialize_keylog_analysis,
         "spotify_daily": materialize_spotify_daily,
         "personal_daily_signals": materialize_personal_daily_signals,
+        "temporal_signals": materialize_temporal_signals,
+        "sleep_productivity": materialize_sleep_productivity,
         "irc": materialize_irc_events,
     }
 
 
-def _materialize_webhistory() -> None:
+def _materialize_webhistory(*, start: date | None = None, end: date | None = None) -> None:
     cfg = get_config()
     if cfg.webhistory_ndjson is None:
         raise MaterializationError(
             "webhistory",
             reason="canonical webhistory output path is not configured",
         )
-    build_full_history(data_dir=cfg.webhistory_dir, output=cfg.webhistory_ndjson)
+    build_full_history(data_dir=cfg.webhistory_dir, output=cfg.webhistory_ndjson, start=start, end=end)
 
 
 def _materialize_google_takeout() -> None:
     materialize_google_takeout_inventory()
     materialize_google_takeout_products()
+    materialize_gmail_events()
+
+
+def _materialize_keylog_analysis(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> dict[str, Any]:
+    from .analysis.keylog import DEFAULT_HYPRLAND_BINDINGS
+    from .core.io import resolve_analysis_path
+
+    if start is None or end is None:
+        end = date.today()
+        start = end - timedelta(days=13)
+    inclusive_end = end - timedelta(days=1)
+    if inclusive_end < start:
+        inclusive_end = start
+    analysis = write_keylog_analysis(
+        Path(resolve_analysis_path("keylog_analysis.json")),
+        start=start,
+        end=inclusive_end,
+        bindings_path=DEFAULT_HYPRLAND_BINDINGS,
+    )
+    return {"row_count": analysis.source_event_count}
 
 
 def plan_materializations(
@@ -264,7 +408,7 @@ def plan_materializations(
                     name=row.name,
                     before=row,
                     action=action,
-                    refresh_command=contract.refresh_command,
+                    materialization_hint=contract.materialization_hint,
                     reason=reason,
                 )
             )
@@ -315,6 +459,378 @@ def run_materialization_plan(
         )
         ran.append(step)
     return ran
+
+
+def run_materializer_by_name(name: str) -> dict[str, Any]:
+    """Run one registered local materializer by source/product name."""
+
+    materializers = _materializers()
+    if name not in materializers:
+        raise MaterializationError(
+            name,
+            reason="no local materializer is defined for this contract",
+        )
+    report = _run_materializer(materializers[name], window=None)
+    return report if isinstance(report, dict) else {"result": report}
+
+
+def _run_materializer(
+    materializer: Callable[..., Any],
+    *,
+    window: tuple[date, date] | None,
+) -> Any:
+    if window is None:
+        return materializer()
+    signature = inspect.signature(materializer)
+    if "start" not in signature.parameters or "end" not in signature.parameters:
+        return materializer()
+    return materializer(start=window[0], end=window[1])
+
+
+def ensure_materialized(
+    name: str,
+    *,
+    window: tuple[date, date] | None = None,
+    budget: MaterializationBudget = "inline",
+    force: bool = False,
+    cfg: LynchpinConfig | None = None,
+) -> MaterializationResult:
+    """Ensure one source/product is materialized enough for a read path.
+
+    This function is intentionally not a queueing API. It either proves the
+    current product is usable, runs a local materializer directly when the
+    source contract says that is valid, or reports why Lynchpin cannot advance
+    the product locally.
+    """
+
+    started = datetime.now(timezone.utc)
+    cfg = cfg or get_config()
+    contract = source_contract(name)
+    materializers = _materializers()
+    before = _audit_one(name, cfg=cfg)
+
+    if not force and before.status == "ready" and _materialized_enough_for_window(before, window):
+        return _materialization_result(
+            before,
+            status="ready",
+            changed=False,
+            reason=before.reason,
+            started=started,
+            window=window,
+        )
+
+    if contract.materialization_mode == "coverage_bound":
+        return _materialization_result(
+            before,
+            status="coverage_bound",
+            changed=False,
+            reason="source coverage is bounded by external exports; Lynchpin cannot extend it locally",
+            started=started,
+            window=window,
+        )
+
+    if contract.materialization_mode == "manual":
+        return _materialization_result(
+            before,
+            status="manual",
+            changed=False,
+            reason=contract.materialization_hint,
+            started=started,
+            window=window,
+        )
+
+    if contract.materialization_mode == "live" and name not in materializers:
+        status: MaterializationStatus = "ready" if before.status == "ready" else "blocked"
+        return _materialization_result(
+            before,
+            status=status,
+            changed=False,
+            reason=before.reason,
+            started=started,
+            window=window,
+        )
+
+    if name not in materializers:
+        return _materialization_result(
+            before,
+            status="blocked",
+            changed=False,
+            reason="no local materializer is defined for this contract",
+            started=started,
+            window=window,
+        )
+
+    if budget == "manual":
+        return _materialization_result(
+            before,
+            status="blocked",
+            changed=False,
+            reason="materialization requires local work but budget is manual",
+            started=started,
+            window=window,
+        )
+
+    try:
+        _run_materializer(materializers[name], window=window)
+    except Exception as exc:
+        if _can_read_stale_github_context(before, window):
+            return _materialization_result(
+                before,
+                status="blocked",
+                changed=False,
+                reason=f"GitHub network refresh failed; existing canonical context product is stale: {exc}",
+                started=started,
+                window=window,
+                diagnostics=(type(exc).__name__, "stale_github_context"),
+            )
+        return _materialization_result(
+            before,
+            status="failed",
+            changed=False,
+            reason=str(exc),
+            started=started,
+            window=window,
+            diagnostics=(type(exc).__name__,),
+        )
+
+    after = _audit_one(name, cfg=cfg)
+    enough_for_window = _materialized_enough_for_window(after, window)
+    status = "updated" if after.status == "ready" and enough_for_window else "failed"
+    if after.status != "ready":
+        reason = f"materializer ran but product is still {after.status}: {after.reason}"
+    elif not enough_for_window:
+        reason = "materializer ran but continuous product still does not cover the requested window"
+    else:
+        reason = after.reason
+    return _materialization_result(
+        after,
+        status=status,
+        changed=status == "updated",
+        reason=reason,
+        started=started,
+        window=window,
+    )
+
+
+def substrate_materialization_snapshot(
+    path: Path,
+    *,
+    latest_materialized_refresh_id: str | None = None,
+    latest_recorded_at: Any | None = None,
+) -> MaterializationResult:
+    """Cheap materialization status for the derived DuckDB substrate."""
+
+    status: MaterializationStatus = "ready" if path.exists() and latest_materialized_refresh_id else "blocked"
+    reason = (
+        "substrate has a recorded promotion snapshot"
+        if status == "ready"
+        else "substrate has no recorded promotion snapshot"
+    )
+    return MaterializationResult(
+        name="evidence_graph_substrate",
+        status=status,
+        changed=False,
+        reason=reason,
+        elapsed_ms=0,
+        product_paths=(path,),
+        source_high_water={
+            "latest_materialized_refresh_id": latest_materialized_refresh_id,
+            "latest_recorded_at": str(latest_recorded_at) if latest_recorded_at is not None else None,
+        },
+        coverage={
+            "relation": "dated" if status == "ready" else "unavailable",
+            "interpretation": reason,
+        },
+    )
+
+
+def _audit_one(name: str, *, cfg: LynchpinConfig) -> MaterializedDataset:
+    builders = _dataset_builders()
+    canonical = source_contract(name).name
+    if canonical not in builders:
+        raise MaterializationError(
+            canonical,
+            reason="no materialization audit builder is defined for this contract",
+        )
+    return builders[canonical](cfg)
+
+
+def _materialization_result(
+    row: MaterializedDataset,
+    *,
+    status: MaterializationStatus,
+    changed: bool,
+    reason: str,
+    started: datetime,
+    window: tuple[date, date] | None,
+    diagnostics: tuple[str, ...] = (),
+) -> MaterializationResult:
+    return MaterializationResult(
+        name=row.name,
+        status=status,
+        changed=changed,
+        reason=reason,
+        elapsed_ms=_elapsed_ms(started),
+        product_paths=row.materialized_paths,
+        source_high_water=_source_high_water(row),
+        coverage=materialized_dataset_coverage(
+            row,
+            start=window[0] if window else None,
+            end=window[1] if window else None,
+        ),
+        diagnostics=diagnostics,
+    )
+
+
+def _materialized_enough_for_window(
+    row: MaterializedDataset,
+    window: tuple[date, date] | None,
+) -> bool:
+    if window is None:
+        return True
+    contract = source_contract(row.name)
+    if contract.collection_model == "derived":
+        if not row.covered_dates and (row.first_date is None or row.last_date is None):
+            return True
+    elif contract.collection_model != "continuous":
+        return True
+    coverage = materialized_dataset_coverage(row, start=window[0], end=window[1])
+    return coverage["fully_covers_requested_window"] is True
+
+
+def _can_read_stale_github_context(row: MaterializedDataset, window: tuple[date, date] | None) -> bool:
+    if row.name != "github_context":
+        return False
+    manifest = _first_manifest(row.materialized_paths)
+    if manifest.get("schema_version") != GITHUB_CONTEXT_SCHEMA_VERSION:
+        return False
+    product_paths = [path for path in row.materialized_paths if path.suffix != ".json"]
+    if not product_paths or not all(path.exists() for path in product_paths):
+        return False
+    if window is None:
+        return True
+    start, end = window
+    if row.covered_dates:
+        requested = _requested_dates(start, end)
+        covered = set(row.covered_dates)
+        return all(day in covered for day in requested)
+    if row.first_date is None or row.last_date is None:
+        return True
+    return _covered_day_count(row.first_date, row.last_date, start=start, end=end) >= (_requested_day_count(start, end) or 0)
+
+
+def _source_high_water(row: MaterializedDataset) -> dict[str, str | int | float | None]:
+    latest_raw = max((_path_mtime_float(path) for path in row.raw_roots if path.exists()), default=None)
+    latest_product = max((_path_mtime_float(path) for path in row.materialized_paths if path.exists()), default=None)
+    high_water: dict[str, str | int | float | None] = {
+        "row_count": row.row_count,
+        "first_date": row.first_date.isoformat() if row.first_date else None,
+        "last_date": row.last_date.isoformat() if row.last_date else None,
+        "covered_date_count": len(row.covered_dates) if row.covered_dates else None,
+        "latest_raw_mtime": latest_raw,
+        "latest_product_mtime": latest_product,
+    }
+    manifest = _first_manifest(row.materialized_paths)
+    if manifest:
+        high_water["input_file_count"] = _int_or_none(manifest.get("input_file_count"))
+        input_latest = manifest.get("input_latest_mtime")
+        high_water["input_latest_mtime"] = str(input_latest) if input_latest else None
+    return high_water
+
+
+def _first_manifest(paths: Iterable[Path]) -> dict[str, Any]:
+    for path in paths:
+        if path.suffix == ".json" and path.exists():
+            payload = _load_json(path)
+            if payload:
+                return payload
+    return {}
+
+
+def _spotify_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
+    root = cfg.exports_root / "spotify/processed"
+    return tuple(
+        path
+        for export_root in _spotify_roots(root)
+        for path in sorted(export_root.rglob("Streaming*.json"))
+        if path.is_file()
+    )
+
+
+def _reddit_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
+    root = cfg.exports_root / "reddit/processed"
+    return tuple(
+        path
+        for export_root in _export_roots(root)
+        for path in sorted(export_root.rglob("*.csv"))
+        if path.is_file()
+    )
+
+
+def _raindrop_input_files() -> tuple[Path, ...]:
+    return tuple(export.path for export in list_raindrop_exports())
+
+
+def _manifest_inputs_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
+    expected_count = _int_or_none(manifest.get("input_file_count"))
+    expected_latest = manifest.get("input_latest_mtime")
+    if expected_count is None and not expected_latest:
+        return True
+    current_count, current_latest = _path_high_water(paths)
+    if expected_count is not None and expected_count != current_count:
+        return False
+    if expected_latest and str(expected_latest) != current_latest:
+        return False
+    return True
+
+
+def _source_db_mtime_current(manifest: dict[str, Any], path: Path) -> bool:
+    expected = manifest.get("source_db_mtime")
+    if not expected:
+        return True
+    if not path.exists():
+        return False
+    current = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).astimezone().isoformat()
+    return str(expected) == current
+
+
+def _manifest_declared_input_files(manifest: dict[str, Any]) -> tuple[Path, ...]:
+    paths = manifest.get("input_files")
+    if not isinstance(paths, list):
+        return ()
+    return tuple(Path(str(path)) for path in paths)
+
+
+def _manifest_covered_dates(manifest: dict[str, Any]) -> tuple[date, ...]:
+    raw_dates = manifest.get("covered_dates")
+    if not isinstance(raw_dates, list):
+        return ()
+    dates: list[date] = []
+    for raw in raw_dates:
+        try:
+            dates.append(date.fromisoformat(str(raw)))
+        except ValueError:
+            continue
+    return tuple(sorted(set(dates)))
+
+
+def _path_high_water(paths: Iterable[Path]) -> tuple[int, str | None]:
+    existing = tuple(path for path in paths if path.exists())
+    latest = max((path.stat().st_mtime for path in existing), default=None)
+    if latest is None:
+        return len(existing), None
+    return len(existing), datetime.fromtimestamp(latest, timezone.utc).astimezone().isoformat()
+
+
+def _path_mtime_float(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _elapsed_ms(started: datetime) -> int:
+    return int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
 
 
 def _record_materialization_step(
@@ -404,6 +920,11 @@ def materialized_dataset_coverage(
     except KeyError:
         collection_model = "event_export"
     product_dated = row.first_date is not None and row.last_date is not None
+    precise_dates = tuple(
+        day
+        for day in row.covered_dates
+        if row.first_date is None or (row.first_date <= day <= (row.last_date or day))
+    )
     requested_days = _requested_day_count(start, end)
     if row.status != "ready":
         relation = "unavailable"
@@ -417,11 +938,16 @@ def materialized_dataset_coverage(
         fully_covers = None
     elif start is None or end is None:
         relation = "dated"
-        covered_days = None
+        covered_days = len(precise_dates) if precise_dates else None
         overlaps = None
         fully_covers = None
     else:
-        covered_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
+        if precise_dates:
+            requested = _requested_dates(start, end)
+            covered_set = set(precise_dates)
+            covered_days = sum(1 for day in requested if day in covered_set)
+        else:
+            covered_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
         overlaps = covered_days > 0
         fully_covers = covered_days >= (requested_days or 0) if requested_days is not None else False
         if fully_covers:
@@ -438,6 +964,7 @@ def materialized_dataset_coverage(
     return {
         "collection_model": collection_model,
         "product_has_date_bounds": product_dated,
+        "precise_covered_dates": bool(precise_dates),
         "requested_days": requested_days,
         "covered_days": covered_days,
         "coverage_ratio": ratio,
@@ -453,15 +980,24 @@ def _date_bounds_overlap(first: date, last: date, *, start: date, end: date) -> 
 
 
 def _requested_day_count(start: date | None, end: date | None) -> int | None:
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return None
+    if end <= start:
+        return 0
     return (end - start).days
+
+
+def _requested_dates(start: date, end: date) -> tuple[date, ...]:
+    if end <= start:
+        return ()
+    return tuple(start + timedelta(days=offset) for offset in range((end - start).days))
 
 
 def _covered_day_count(first: date, last: date, *, start: date, end: date) -> int:
     # Dataset bounds are inclusive by day; requested windows are [start, end).
+    requested_last = end - timedelta(days=1)
     left = max(first, start)
-    right = min(last, end)
+    right = min(last, requested_last)
     if right < left:
         return 0
     return (right - left).days + 1
@@ -522,7 +1058,7 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
             "webhistory",
             contract.authority,
             contract.query_surface,
-            contract.refresh_command,
+            contract.materialization_hint,
             "canonical full_history.ndjson is not configured",
             raw_roots=(cfg.webhistory_raw_dir, cfg.webhistory_dir),
         )
@@ -531,7 +1067,7 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
             "webhistory",
             contract.authority,
             contract.query_surface,
-            contract.refresh_command,
+            contract.materialization_hint,
             f"canonical NDJSON is missing: {output}",
             materialized_paths=(output,),
             raw_roots=(cfg.webhistory_raw_dir, cfg.webhistory_dir),
@@ -540,12 +1076,28 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest_valid = bool(manifest and _manifest_valid(manifest))
     meta = _load_json(manifest) if manifest_valid else {}
     row_count = _int_or_none(meta.get("row_count"))
-    first = _date_from_iso(meta.get("first_visit_at"))
-    last = _date_from_iso(meta.get("last_visit_at"))
-    if row_count is None or first is None or last is None:
-        row_count, first, last = _scan_webhistory_ndjson(output)
-    status = "ready" if manifest_valid else "degraded"
-    reason = "canonical merged NDJSON and manifest are present" if status == "ready" else "canonical merged NDJSON exists but manifest is missing or malformed"
+    first = _date_from_iso(meta.get("first_date"))
+    last = _date_from_iso(meta.get("last_date"))
+    covered_dates = _manifest_covered_dates(meta)
+    cheap_bounds_complete = row_count is not None and first is not None and last is not None
+    input_files = _manifest_declared_input_files(meta)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION
+    if manifest_valid and not schema_current:
+        status: Status = "partial"
+        reason = "canonical merged webhistory schema is older than the current reader contract"
+    elif manifest_valid and not cheap_bounds_complete:
+        status = "partial"
+        reason = "canonical merged webhistory manifest is missing cheap row or coverage bounds"
+    elif manifest_valid and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical merged NDJSON was built from older webhistory segment files"
+    elif manifest_valid:
+        status = "ready"
+        reason = "canonical merged NDJSON and manifest are present"
+    else:
+        status = "degraded"
+        reason = "canonical merged NDJSON exists but manifest is missing or malformed"
     return MaterializedDataset(
         name="webhistory",
         status=status,
@@ -556,7 +1108,8 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        refresh_command=contract.refresh_command,
+        covered_dates=covered_dates,
+        materialization_hint=contract.materialization_hint,
         reason=reason,
     )
 
@@ -573,6 +1126,16 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     products_manifest = products_dir / "manifest.json"
     product_meta = _load_json(products_manifest)
     products_manifest_valid = _manifest_valid(products_manifest)
+    gmail_path = gmail_events_path()
+    gmail_manifest = gmail_manifest_path()
+    gmail_meta = _load_json(gmail_manifest)
+    gmail_manifest_valid = _manifest_valid(gmail_manifest)
+    inventory_schema_current = meta.get("schema_version") == GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION
+    products_schema_current = product_meta.get("schema_version") == GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION
+    gmail_schema_current = gmail_meta.get("schema_version") == GMAIL_EVENTS_SCHEMA_VERSION
+    inventory_inputs_current = _manifest_inputs_current(meta, _manifest_declared_input_files(meta))
+    products_inputs_current = _manifest_inputs_current(product_meta, _manifest_declared_input_files(product_meta))
+    gmail_inputs_current = _manifest_inputs_current(gmail_meta, _manifest_declared_input_files(gmail_meta))
     raw_product_counts = product_meta.get("products")
     product_counts = raw_product_counts if isinstance(raw_product_counts, dict) else {}
     typed_rows = sum(
@@ -580,23 +1143,46 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         for row in product_counts.values()
         if isinstance(row, dict)
     )
-    _, first, last = _jsonl_date_bounds(
-        (
-            products_dir / "my_activity.ndjson",
-            products_dir / "youtube.ndjson",
-            products_dir / "purchases.ndjson",
-            products_dir / "tasks.ndjson",
-            products_dir / "play_store.ndjson",
+    first = _date_from_iso(product_meta.get("first_date"))
+    last = _date_from_iso(product_meta.get("last_date"))
+    gmail_first = _date_from_iso(gmail_meta.get("first_date"))
+    gmail_last = _date_from_iso(gmail_meta.get("last_date"))
+    first = _min_date(first, gmail_first)
+    last = _max_date(last, gmail_last)
+    if first is None and last is None:
+        _, first, last = _jsonl_date_bounds(
+            (
+                products_dir / "my_activity.ndjson",
+                products_dir / "youtube.ndjson",
+                products_dir / "purchases.ndjson",
+                products_dir / "tasks.ndjson",
+                products_dir / "play_store.ndjson",
+            )
         )
-    )
     if not archives:
         status = "missing"
         reason = "no raw Takeout archives found"
+    elif products_manifest_valid and not inventory_schema_current:
+        status = "partial"
+        reason = "Google Takeout inventory manifest schema is older than the current reader contract"
+    elif products_manifest_valid and not products_schema_current:
+        status = "partial"
+        reason = "Google Takeout typed product manifest schema is older than the current reader contract"
+    elif products_manifest_valid and not gmail_manifest_valid:
+        status = "partial"
+        reason = "Google Takeout Gmail event product is missing"
+    elif products_manifest_valid and not gmail_schema_current:
+        status = "partial"
+        reason = "Google Takeout Gmail event manifest schema is older than the current reader contract"
+    elif products_manifest_valid and not (inventory_inputs_current and products_inputs_current and gmail_inputs_current):
+        status = "partial"
+        reason = f"{len(archives)} raw Takeout archives changed since typed product materialization"
     elif products_manifest_valid:
         status = "ready"
         reason = (
             f"{len(archives)} raw Takeout archives inventoried; Chrome history plus "
-            f"{typed_rows} non-Chrome typed product rows are materialized"
+            f"{typed_rows} non-Chrome typed product rows and "
+            f"{_manifest_row_count(gmail_meta, gmail_path) or 0} Gmail rows are materialized"
         )
     else:
         status = "partial"
@@ -606,12 +1192,12 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         status=status,
         authority="raw Google Takeout archives",
         query_surface="lynchpin.sources.google_takeout plus lynchpin.sources.google_takeout_products",
-        materialized_paths=(archive_rows, members, manifest, products_manifest),
+        materialized_paths=(archive_rows, members, manifest, products_manifest, gmail_path, gmail_manifest),
         raw_roots=(raw_root,),
-        row_count=(_int_or_none(meta.get("member_count")) or len(archives)) + typed_rows,
+        row_count=(_int_or_none(meta.get("member_count")) or len(archives)) + typed_rows + (_manifest_row_count(gmail_meta, gmail_path) or 0),
         first_date=first,
         last_date=last,
-        refresh_command="python -m lynchpin.ingest.google_takeout_materialize && python -m lynchpin.ingest.google_takeout_products",
+        materialization_hint="python -m lynchpin.ingest.google_takeout_materialize && python -m lynchpin.ingest.google_takeout_products",
         reason=reason,
     )
 
@@ -629,7 +1215,7 @@ def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=readiness.session_profile_count,
         first_date=first,
         last_date=last,
-        refresh_command="polylogue doctor --repair --target session_insights",
+        materialization_hint="polylogue doctor --repair --target session_insights",
         reason=readiness.reason,
     )
 
@@ -638,11 +1224,21 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = canonical_activitywatch_events_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
+    input_files = activitywatch_input_files(cfg)
     archives = _count_files(cfg.activitywatch_archive_db_dir, suffixes=(".sqlite", ".db"))
-    if _product_with_manifest_exists(path, manifest):
+    product_ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENTS_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status = "partial"
+        reason = "canonical ActivityWatch event schema is older than the current reader contract"
+    elif product_ready and not inputs_current:
+        status = "partial"
+        reason = "canonical ActivityWatch event NDJSON was built from older local input databases"
+    elif product_ready:
         status = "ready"
         reason = "canonical ActivityWatch event NDJSON is present"
-    elif cfg.activitywatch_db.exists():
+    elif input_files:
         status = "partial"
         reason = "canonical ActivityWatch event product is missing"
     else:
@@ -658,8 +1254,94 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=_int_or_none(meta.get("row_count")) or archives,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.activitywatch_materialize",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
         reason=reason,
+    )
+
+
+def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("activitywatch_event_index")
+    manifest = activitywatch_event_index_manifest_path()
+    meta = _load_json(manifest)
+    input_files = activitywatch_event_index_input_files()
+    covered_dates = _manifest_covered_dates(meta)
+    product_paths = tuple(activitywatch_event_index_path(day) for day in covered_dates)
+    products_ready = (
+        _manifest_valid(manifest)
+        and bool(covered_dates)
+        and all(path.exists() for path in product_paths)
+    )
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+    if products_ready and not schema_current:
+        status: Status = "partial"
+        reason = "ActivityWatch event index schema is older than the current reader contract"
+    elif products_ready and not inputs_current:
+        status = "partial"
+        reason = "ActivityWatch event index was built from an older canonical event product"
+    elif products_ready:
+        status = "ready"
+        reason = "ActivityWatch logical-day event index is present"
+    elif input_files:
+        status = "partial"
+        reason = "ActivityWatch logical-day event index is missing"
+    else:
+        status = "missing"
+        reason = "canonical ActivityWatch event product is missing"
+    return MaterializedDataset(
+        name="activitywatch_event_index",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(*product_paths, manifest),
+        raw_roots=(cfg.captures_root / "activitywatch",),
+        row_count=_int_or_none(meta.get("row_count")),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+        covered_dates=covered_dates,
+    )
+
+
+def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("activitywatch_derived")
+    manifest = activitywatch_derived_manifest_path()
+    meta = _load_json(manifest)
+    paths = tuple(activitywatch_derived_path(kind) for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS)
+    input_files = activitywatch_derived_input_files()
+    products_ready = manifest.exists() and all(path.exists() for path in paths)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    if products_ready and not schema_current:
+        status: Status = "partial"
+        reason = "ActivityWatch derived graph product schema is older than the current reader contract"
+    elif products_ready and not inputs_current:
+        status: Status = "partial"
+        reason = "ActivityWatch derived graph products were built from an older canonical event product"
+    elif products_ready:
+        status = "ready"
+        reason = "ActivityWatch derived graph products are present"
+    elif input_files:
+        status = "partial"
+        reason = "ActivityWatch derived graph products are missing"
+    else:
+        status = "missing"
+        reason = "canonical ActivityWatch event product is missing"
+    return MaterializedDataset(
+        name="activitywatch_derived",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(*paths, manifest),
+        raw_roots=(cfg.captures_root / "activitywatch",),
+        row_count=_int_or_none(meta.get("row_count")),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+        covered_dates=_manifest_covered_dates(meta),
     )
 
 
@@ -670,11 +1352,26 @@ def _title_metadata_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     meta = _load_json(manifest)
     source_db = Path(str(meta.get("source_db"))) if meta.get("source_db") else cfg.local_root / "enrich/semantic_classifications.duckdb"
     ready = _product_with_manifest_exists(path, manifest)
-    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    row_count = _manifest_row_count(meta, path)
+    source_files = (source_db,) if source_db.exists() else ()
     raw_roots = tuple(root for root in (source_db, cfg.local_root / "enrich") if root.exists())
+    inputs_current = _manifest_inputs_current(meta, source_files) and _source_db_mtime_current(meta, source_db)
+    schema_current = meta.get("schema_version") == TITLE_METADATA_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical title metadata product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical title metadata NDJSON was built from an older source database"
+    elif ready:
+        status = "ready"
+        reason = "canonical title metadata NDJSON is present"
+    else:
+        status = "partial" if raw_roots else "missing"
+        reason = "canonical title metadata product is missing"
     return MaterializedDataset(
         name="title_metadata",
-        status="ready" if ready else "partial" if raw_roots else "missing",
+        status=status,
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, manifest),
@@ -682,8 +1379,8 @@ def _title_metadata_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=None,
         last_date=None,
-        refresh_command=contract.refresh_command,
-        reason="canonical title metadata NDJSON is present" if ready else "canonical title metadata product is missing",
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 
@@ -693,20 +1390,35 @@ def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     usage = activity_title_usage_path()
     manifest = activity_content_manifest_path()
     meta = _load_json(manifest)
+    input_files = activity_content_input_files()
     ready = _product_with_manifest_exists(path, manifest) and usage.exists()
-    has_inputs = canonical_activitywatch_events_path().exists() and title_metadata_path().exists()
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == ACTIVITY_CONTENT_SCHEMA_VERSION
+    has_inputs = len(input_files) == 2
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical ActivityWatch content daily product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical ActivityWatch content daily product was built from older upstream products"
+    elif ready:
+        status = "ready"
+        reason = "canonical ActivityWatch content daily product is present"
+    else:
+        status = "partial" if has_inputs else "missing"
+        reason = "canonical ActivityWatch content daily product is missing"
     return MaterializedDataset(
         name="activity_content",
-        status="ready" if ready else "partial" if has_inputs else "missing",
+        status=status,
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, usage, manifest),
         raw_roots=(cfg.derived_root / "title_metadata", cfg.captures_root / "activitywatch"),
-        row_count=_int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None),
+        row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command=contract.refresh_command,
-        reason="canonical ActivityWatch content daily product is present" if ready else "canonical ActivityWatch content daily product is missing",
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 
@@ -714,18 +1426,35 @@ def _atuin_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = canonical_atuin_history_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
+    input_files = atuin_input_files(cfg)
+    ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == ATUIN_HISTORY_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Atuin command history schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical Atuin command history was built from an older local database"
+    elif ready:
+        status = "ready"
+        reason = "canonical Atuin command history NDJSON is present"
+    else:
+        status = "partial" if input_files else "missing"
+        reason = "canonical Atuin command history product or manifest is missing/malformed"
     return MaterializedDataset(
         name="atuin",
-        status="ready" if _product_with_manifest_exists(path, manifest) else "partial" if cfg.atuin_db.exists() else "missing",
+        status=status,
         authority="Atuin live SQLite",
         query_surface="lynchpin.sources.terminal",
         materialized_paths=(path, manifest),
         raw_roots=(cfg.atuin_db,),
-        row_count=_int_or_none(meta.get("row_count")) or _line_count(path) if path.exists() else None,
+        row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.terminal_materialize",
-        reason="canonical Atuin command history NDJSON is present" if _product_with_manifest_exists(path, manifest) else "canonical Atuin command history product or manifest is missing/malformed",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint="python -m lynchpin.ingest.terminal_materialize",
+        reason=reason,
     )
 
 
@@ -736,7 +1465,7 @@ def _raw_source_dataset(
     raw_roots: tuple[Path, ...],
     authority: str,
     query_surface: str,
-    refresh_command: str,
+    materialization_hint: str,
     row_count: int | None = None,
     materialized_paths: tuple[Path, ...] = (),
 ) -> MaterializedDataset:
@@ -753,7 +1482,7 @@ def _raw_source_dataset(
         row_count=row_count,
         first_date=None,
         last_date=observed,
-        refresh_command=refresh_command,
+        materialization_hint=materialization_hint,
         reason=(
             "raw source authority is present"
             if existing
@@ -769,7 +1498,7 @@ def _asciinema_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.asciinema_root,),
         authority="asciinema terminal recording captures",
         query_surface="lynchpin.sources.terminal.recordings",
-        refresh_command="asciinema recording capture writes under /realm/data/captures/asciinema",
+        materialization_hint="asciinema recording capture writes under /realm/data/captures/asciinema",
         row_count=_count_files(cfg.asciinema_root, suffixes=(".cast",)),
     )
 
@@ -781,7 +1510,7 @@ def _codex_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.codex_sessions_root,),
         authority="Codex session JSONL archive",
         query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
-        refresh_command="polylogued tails Codex session logs into the Polylogue archive",
+        materialization_hint="polylogued tails Codex session logs into the Polylogue archive",
         row_count=_count_files(cfg.codex_sessions_root, suffixes=(".jsonl",)),
     )
 
@@ -794,7 +1523,7 @@ def _clipboard_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=raw_roots,
         authority="Clipse live clipboard history plus exported clipboard snapshots",
         query_surface="lynchpin.sources.clipboard",
-        refresh_command="clipse records live; export snapshots are read from configured raw files",
+        materialization_hint="clipse records live; export snapshots are read from configured raw files",
         row_count=sum(1 for path in raw_roots if path.exists()),
     )
 
@@ -806,7 +1535,7 @@ def _dendron_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.dendron_root,),
         authority="knowledgebase/Dendron markdown notes",
         query_surface="lynchpin.sources.exports_dendron",
-        refresh_command="edit knowledgebase notes; Lynchpin reads the note tree directly",
+        materialization_hint="edit knowledgebase notes; Lynchpin reads the note tree directly",
         row_count=_count_files(cfg.dendron_root, suffixes=(".md",)),
     )
 
@@ -818,21 +1547,74 @@ def _goodreads_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.goodreads_library,),
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        refresh_command="replace /realm/data/exports/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/data/exports/goodreads/raw/library_export.csv",
         row_count=_csv_count(cfg.goodreads_library),
     )
 
 
 def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     logs_root = cfg.keylog_root / "logs"
-    return _raw_source_dataset(
+    row = _raw_source_dataset(
         cfg,
         name="keylog",
         raw_roots=(logs_root,),
         authority="scribe-tap keylog captures",
         query_surface="lynchpin.sources.keylog",
-        refresh_command="scribe-tap records live keylog captures",
+        materialization_hint="scribe-tap records live keylog captures",
         row_count=_count_files(logs_root),
+    )
+    log_dates = sorted(
+        date.fromisoformat(path.stem)
+        for path in logs_root.glob("*.jsonl")
+        if _date_from_iso(path.stem) is not None
+    ) if logs_root.exists() else []
+    if not log_dates:
+        return row
+    return replace(
+        row,
+        first_date=log_dates[0],
+        last_date=log_dates[-1],
+        reason="scribe-tap keylog log files are present",
+    )
+
+
+def _keylog_analysis_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .core.io import resolve_analysis_path
+
+    contract = source_contract("keylog_analysis")
+    path = Path(resolve_analysis_path("keylog_analysis.json"))
+    payload = _load_json(path)
+    input_files = _manifest_declared_input_files(payload)
+    ready = path.exists() and bool(payload)
+    inputs_current = _manifest_inputs_current(payload, input_files)
+    first = _date_from_iso(payload.get("start"))
+    last = _date_from_iso(payload.get("end"))
+    if ready and not inputs_current:
+        status: Status = "partial"
+        reason = "keylog analysis artifact was built from older keylog or binding inputs"
+    elif ready:
+        status = "ready"
+        reason = "keylog analysis artifact is present"
+    elif cfg.keylog_root.exists():
+        status = "partial"
+        reason = "keylog analysis artifact is missing"
+    else:
+        status = "missing"
+        reason = "scribe-tap keylog root is missing"
+    covered_dates = tuple(iter_dates(first, last)) if first is not None and last is not None else ()
+    return MaterializedDataset(
+        name="keylog_analysis",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path,),
+        raw_roots=(cfg.keylog_root, Path("/realm/project/sinnix/modules/features/desktop/hyprland")),
+        row_count=_int_or_none(payload.get("source_event_count")),
+        first_date=first,
+        last_date=last,
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+        covered_dates=covered_dates,
     )
 
 
@@ -843,7 +1625,7 @@ def _raw_log_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.raw_log_file,),
         authority="operator raw-log file",
         query_surface="lynchpin.sources.raw_log",
-        refresh_command="append operator raw-log entries",
+        materialization_hint="append operator raw-log entries",
         row_count=_line_count(cfg.raw_log_file) if cfg.raw_log_file.exists() else None,
     )
 
@@ -855,7 +1637,7 @@ def _samsung_gdpr_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.samsung_gdpr_cloud_dir,),
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        refresh_command="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
         row_count=_count_files(cfg.samsung_gdpr_cloud_dir),
     )
 
@@ -867,30 +1649,53 @@ def _sinnix_runtime_inventory_dataset(cfg: LynchpinConfig) -> MaterializedDatase
         raw_roots=(cfg.sinnix_runtime_inventory_json,),
         authority="Sinnix runtime inventory JSON",
         query_surface="lynchpin.sources.sinnix_runtime_inventory",
-        refresh_command="refresh Sinnix runtime inventory from the Sinnix capture pipeline",
+        materialization_hint="update Sinnix runtime inventory from the Sinnix capture pipeline",
         row_count=1 if cfg.sinnix_runtime_inventory_json.exists() else None,
     )
 
 
 def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    return _raw_source_dataset(
+    root = _wykop_operator_root(cfg.wykop_root)
+    row = _raw_source_dataset(
         cfg,
         name="wykop",
-        raw_roots=(cfg.wykop_root,),
+        raw_roots=(root,),
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        refresh_command="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
-        row_count=_count_files(cfg.wykop_root, suffixes=(".csv", ".json", ".jsonl")),
+        materialization_hint="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
+        row_count=_count_files(root, suffixes=(".csv", ".json", ".jsonl")),
     )
+    try:
+        from lynchpin.sources.wykop import date_range
+
+        first, last = date_range(root=root)
+    except Exception:
+        return row
+    return replace(
+        row,
+        first_date=first.date(),
+        last_date=last.date(),
+        reason="Wykop export is present with dated operator comments",
+    )
+
+
+def _wykop_operator_root(root: Path) -> Path:
+    account_root = root / "Sinity"
+    return account_root if account_root.exists() else root
 
 
 def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     from .substrate.connection import substrate_path
+    from .substrate.status_manifest import load_current_substrate_status_manifest, substrate_status_manifest_path
 
-    path = substrate_path()
-    builds = _sqlite_duck_count(path, "evidence_graph_build")
-    latest_build_counts = _duck_latest_graph_build_counts(path)
-    latest_status = _duck_latest_source_status(path, "evidence_graph")
+    path = Path(substrate_path())
+    manifest = load_current_substrate_status_manifest(path)
+    if manifest is not None:
+        row = _git_substrate_dataset_from_manifest(cfg, path, manifest)
+        if row is not None:
+            return row
+
+    builds, latest_build_counts, latest_status, promotion_count = _duck_substrate_status(path)
     latest_node_count = latest_build_counts[0] if latest_build_counts else None
     if builds and builds > 0 and latest_node_count and latest_node_count > 0:
         status: Status = "ready"
@@ -904,6 +1709,9 @@ def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     elif latest_status and latest_status[0] == "error":
         status = "degraded"
         reason = latest_status[1] or "latest evidence graph promotion errored"
+    elif promotion_count and promotion_count > 0:
+        status = "ready"
+        reason = "DuckDB substrate promotion runs are present"
     else:
         status = "partial"
         reason = "no materialized evidence graph build recorded"
@@ -912,13 +1720,40 @@ def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         status=status,
         authority="source modules promoted into DuckDB",
         query_surface="lynchpin.graph.context_pack",
-        materialized_paths=(path,),
+        materialized_paths=tuple(p for p in (path, substrate_status_manifest_path(path)) if p.exists()),
         raw_roots=(cfg.baseline_dir, cfg.repo_root.parent),
-        row_count=builds,
+        row_count=latest_node_count or builds or promotion_count,
         first_date=None,
         last_date=None,
-        refresh_command="python -m lynchpin.cli.current_state --refresh-substrate --start 2013-01-01 --end $(date +%F)",
+        materialization_hint="python -m lynchpin.cli.substrate_snapshot --start 2013-01-01 --end $(date +%F)",
         reason=reason,
+    )
+
+
+def _git_substrate_dataset_from_manifest(
+    cfg: LynchpinConfig,
+    path: Path,
+    manifest: dict[str, Any],
+) -> MaterializedDataset | None:
+    from .substrate.status_manifest import substrate_status_manifest_path
+
+    status = manifest.get("status")
+    if status not in {"ready", "empty", "missing", "partial", "degraded", "error"}:
+        return None
+    reason = manifest.get("reason")
+    row_count = manifest.get("row_count")
+    return MaterializedDataset(
+        name="evidence_graph_substrate",
+        status=status,
+        authority="source modules promoted into DuckDB",
+        query_surface="lynchpin.graph.context_pack",
+        materialized_paths=(path, substrate_status_manifest_path(path)),
+        raw_roots=(cfg.baseline_dir, cfg.repo_root.parent),
+        row_count=int(row_count) if isinstance(row_count, int) else None,
+        first_date=None,
+        last_date=None,
+        materialization_hint="python -m lynchpin.cli.substrate_snapshot --start 2013-01-01 --end $(date +%F)",
+        reason=str(reason) if reason else "substrate status manifest is current",
     )
 
 
@@ -938,7 +1773,7 @@ def _analysis_artifacts_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=count if root.exists() else None,
         first_date=None,
         last_date=None,
-        refresh_command="python -m lynchpin.analysis refresh",
+        materialization_hint="python -m lynchpin.analysis materialize",
         reason=(
             f"{count} generated analysis artifacts are visible"
             if count
@@ -949,12 +1784,53 @@ def _analysis_artifacts_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+def _github_context_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("github_context")
+    path = github_context_path()
+    manifest = github_context_manifest_path()
+    meta = _load_json(manifest)
+    ready = _product_with_manifest_exists(path, manifest)
+    schema_current = meta.get("schema_version") == GITHUB_CONTEXT_SCHEMA_VERSION
+    max_age = _int_or_none(meta.get("ttl_seconds")) or contract.default_max_age_seconds or GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS
+    max_age_hours = max_age // 3600 if max_age % 3600 == 0 else round(max_age / 3600, 1)
+    materialized_at = _datetime_from_iso(meta.get("materialized_at"))
+    age_current = (
+        materialized_at is not None
+        and (datetime.now(timezone.utc) - materialized_at.astimezone(timezone.utc)).total_seconds() <= max_age
+    )
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical GitHub context product schema is older than the current reader contract"
+    elif ready and not age_current:
+        status: Status = "partial"
+        reason = f"canonical GitHub context product is older than the {max_age_hours}h network refresh contract"
+    elif ready:
+        status = "ready"
+        reason = f"canonical GitHub context product is present and within the {max_age_hours}h network refresh contract"
+    else:
+        status = "partial"
+        reason = "canonical GitHub context product or manifest is missing/malformed"
+    return MaterializedDataset(
+        name="github_context",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path, manifest),
+        raw_roots=(cfg.derived_root,),
+        row_count=_manifest_row_count(meta, path),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
 def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     root = cfg.exports_root / "health/processed"
     files = tuple(root.glob("health_*.jsonl")) if root.exists() else ()
     status = "ready" if files else "missing"
-    row_count = sum(_line_count(path) for path in files)
-    _, first, last = _jsonl_date_bounds(files)
+    row_count, first, last = _jsonl_date_bounds(files)
     return MaterializedDataset(
         name="health",
         status=status,
@@ -965,7 +1841,7 @@ def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count if files else None,
         first_date=first,
         last_date=last,
-        refresh_command="python -m lynchpin.cli.process_health",
+        materialization_hint="python -m lynchpin.cli.process_health",
         reason="processed health JSONL products are present" if files else "processed health JSONL products are missing",
     )
 
@@ -982,7 +1858,7 @@ def _sleep_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        refresh_command="python -m lynchpin.cli.process_health",
+        materialization_hint="python -m lynchpin.cli.process_health",
         reason="processed sleep JSONL is present" if cfg.sleep_jsonl.exists() else "processed sleep JSONL is missing",
     )
 
@@ -1000,7 +1876,7 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        refresh_command="edit /realm/data/exports/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/data/exports/health/processed/substance_log_unified.csv",
         reason="processed substance CSV is present" if path.exists() else "processed substance CSV is missing",
     )
 
@@ -1009,20 +1885,37 @@ def _spotify_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = spotify_streams_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
-    raw_files = tuple(cfg.spotify_root.rglob("Streaming*.json")) if cfg.spotify_root.exists() else ()
-    row_count = _int_or_none(meta.get("row_count"))
+    raw_files = _spotify_input_files(cfg)
+    product_ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == SPOTIFY_STREAMS_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Spotify stream schema is older than the current reader contract"
+    elif product_ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical all-export Spotify stream NDJSON is present"
+    elif product_ready:
+        status = "partial"
+        reason = "canonical Spotify stream product was built from older local export inputs"
+    elif raw_files:
+        status = "partial"
+        reason = "canonical Spotify stream product or manifest is missing/malformed"
+    else:
+        status = "missing"
+        reason = "canonical Spotify stream product or manifest is missing/malformed"
     return MaterializedDataset(
         name="spotify",
-        status="ready" if _product_with_manifest_exists(path, manifest) else "partial" if raw_files else "missing",
+        status=status,
         authority="Spotify GDPR export directories",
         query_surface="lynchpin.sources.spotify",
         materialized_paths=(path, manifest),
         raw_roots=(cfg.spotify_root,),
-        row_count=row_count if row_count is not None else _line_count(path) if path.exists() else None,
+        row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.exports_materialize spotify",
-        reason="canonical all-export Spotify stream NDJSON is present" if _product_with_manifest_exists(path, manifest) else "canonical Spotify stream product or manifest is missing/malformed",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize spotify",
+        reason=reason,
     )
 
 
@@ -1031,19 +1924,45 @@ def _reddit_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest = root / "manifest.json"
     files = tuple(root.glob("*.csv")) if root.exists() else ()
     meta = _load_json(manifest)
-    csv_count, first, last = _csv_date_bounds(files)
+    raw_files = _reddit_input_files(cfg)
+    csv_count: int | None = None
+    first = _date_from_iso(meta.get("first_date"))
+    last = _date_from_iso(meta.get("last_date"))
+    if first is None and last is None:
+        csv_count, first, last = _csv_date_bounds(files)
+    row_count = _int_or_none(meta.get("row_count"))
+    if row_count is None and files:
+        row_count = csv_count
+    product_ready = bool(files and _manifest_valid(manifest))
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == REDDIT_CANONICAL_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Reddit product schema is older than the current reader contract"
+    elif product_ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical coalesced Reddit CSV products are present"
+    elif product_ready:
+        status = "partial"
+        reason = "canonical Reddit products were built from older local export inputs"
+    elif cfg.reddit_export_dir:
+        status = "partial"
+        reason = "canonical Reddit CSV products or manifest are missing/malformed"
+    else:
+        status = "missing"
+        reason = "canonical Reddit CSV products or manifest are missing/malformed"
     return MaterializedDataset(
         name="reddit",
-        status="ready" if files and _manifest_valid(manifest) else "partial" if cfg.reddit_export_dir else "missing",
+        status=status,
         authority="Reddit GDPR export directories",
         query_surface="lynchpin.sources.reddit",
         materialized_paths=(root, manifest),
         raw_roots=(cfg.exports_root / "reddit/processed", cfg.exports_root / "reddit/raw"),
-        row_count=_int_or_none(meta.get("row_count")) or csv_count if files else None,
+        row_count=row_count,
         first_date=first,
         last_date=last,
-        refresh_command="python -m lynchpin.ingest.exports_materialize reddit",
-        reason="canonical coalesced Reddit CSV products are present" if files and _manifest_valid(manifest) else "canonical Reddit CSV products or manifest are missing/malformed",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize reddit",
+        reason=reason,
     )
 
 
@@ -1054,9 +1973,28 @@ def _messenger_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     threads = root / "threads.ndjson"
     meta = _load_json(manifest)
     raw_paths = tuple(path for path in (cfg.fbmessenger_gdpr_root, cfg.fbmessenger_db) if path.exists())
+    raw_files = tuple(_messenger_thread_files(cfg.fbmessenger_gdpr_root))
+    product_ready = messages.exists() and threads.exists() and _manifest_valid(manifest)
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == MESSENGER_CANONICAL_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Messenger product schema is older than the current reader contract"
+    elif product_ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical Messenger message/thread NDJSON products are present"
+    elif product_ready:
+        status = "partial"
+        reason = "canonical Messenger products were built from older local export inputs"
+    elif raw_paths:
+        status = "partial"
+        reason = "canonical Messenger products or manifest are missing/malformed"
+    else:
+        status = "missing"
+        reason = "canonical Messenger products or manifest are missing/malformed"
     return MaterializedDataset(
         name="facebook_messenger",
-        status="ready" if messages.exists() and threads.exists() and _manifest_valid(manifest) else "partial" if raw_paths else "missing",
+        status=status,
         authority="Facebook Messenger GDPR export",
         query_surface="lynchpin.sources.exports",
         materialized_paths=(messages, threads, manifest),
@@ -1064,8 +2002,8 @@ def _messenger_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.exports_materialize facebook-messenger",
-        reason="canonical Messenger message/thread NDJSON products are present" if messages.exists() and threads.exists() and _manifest_valid(manifest) else "canonical Messenger products or manifest are missing/malformed",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize facebook-messenger",
+        reason=reason,
     )
 
 
@@ -1073,18 +2011,37 @@ def _raindrop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = raindrop_bookmarks_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
+    raw_files = _raindrop_input_files()
+    product_ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == RAINDROP_BOOKMARKS_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Raindrop bookmark schema is older than the current reader contract"
+    elif product_ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical coalesced Raindrop bookmark CSV is present"
+    elif product_ready:
+        status = "partial"
+        reason = "canonical Raindrop bookmark product was built from older local export inputs"
+    elif cfg.raindrop_csv and cfg.raindrop_csv.exists():
+        status = "partial"
+        reason = "canonical Raindrop bookmark product or manifest is missing/malformed"
+    else:
+        status = "missing"
+        reason = "canonical Raindrop bookmark product or manifest is missing/malformed"
     return MaterializedDataset(
         name="raindrop",
-        status="ready" if _product_with_manifest_exists(path, manifest) else "partial" if cfg.raindrop_csv and cfg.raindrop_csv.exists() else "missing",
+        status=status,
         authority="Raindrop export CSVs",
         query_surface="lynchpin.sources.exports",
         materialized_paths=(path, manifest),
         raw_roots=(cfg.raindrop_dir,),
-        row_count=_int_or_none(meta.get("row_count")) or max(_line_count(path) - 1, 0) if path.exists() else None,
+        row_count=_manifest_row_count(meta, path, header_rows=1),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.exports_materialize raindrop",
-        reason="canonical coalesced Raindrop bookmark CSV is present" if _product_with_manifest_exists(path, manifest) else "canonical Raindrop bookmark product or manifest is missing/malformed",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize raindrop",
+        reason=reason,
     )
 
 
@@ -1092,12 +2049,26 @@ def _communications_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = communication_events_path()
     manifest = communication_manifest_path()
     meta = _load_json(manifest)
-    raw_paths = tuple(path for path in (cfg.fbmessenger_gdpr_root, cfg.exports_root / "comms/outlook") if path.exists())
+    input_files = communication_input_files(cfg)
     ready = _product_with_manifest_exists(path, manifest)
-    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    row_count = _manifest_row_count(meta, path)
+    schema_current = meta.get("schema_version") == COMMUNICATION_EVENTS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical unified communication event schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical unified communication events were built from older local input files"
+    elif ready:
+        status = "ready"
+        reason = "canonical unified communication events are present"
+    else:
+        status = "partial" if input_files else "missing"
+        reason = "canonical communication event product is missing"
     return MaterializedDataset(
         name="communications",
-        status="ready" if ready else "partial" if raw_paths else "missing",
+        status=status,
         authority="canonical Messenger plus parseable Outlook communication exports",
         query_surface="lynchpin.sources.communications",
         materialized_paths=(path, manifest),
@@ -1105,8 +2076,8 @@ def _communications_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.communications_materialize",
-        reason="canonical unified communication events are present" if ready else "canonical communication event product is missing",
+        materialization_hint="python -m lynchpin.ingest.communications_materialize",
+        reason=reason,
     )
 
 
@@ -1114,12 +2085,29 @@ def _bookmarks_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = bookmarks_path()
     manifest = bookmarks_manifest_path()
     meta = _load_json(manifest)
-    raw_files = tuple(cfg.browser_bookmarks_root.rglob("*")) if cfg.browser_bookmarks_root.exists() else ()
+    raw_files = tuple(_discover_bookmark_files(_bookmark_roots(cfg.browser_bookmarks_root)))
     ready = _product_with_manifest_exists(path, manifest)
-    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == BOOKMARK_EVENTS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical bookmark schema is older than the current reader contract"
+    elif ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical bookmark NDJSON is present"
+    elif ready:
+        status = "partial"
+        reason = "canonical bookmark product was built from older local input files"
+    elif raw_files:
+        status = "partial"
+        reason = "canonical bookmark product is missing"
+    else:
+        status = "missing"
+        reason = "canonical bookmark product is missing"
+    row_count = _manifest_row_count(meta, path)
     return MaterializedDataset(
         name="browser_bookmarks",
-        status="ready" if ready else "partial" if raw_files else "missing",
+        status=status,
         authority="browser bookmark exports and Firefox/Vivaldi profile data",
         query_surface="lynchpin.sources.bookmarks",
         materialized_paths=(path, manifest),
@@ -1127,8 +2115,8 @@ def _bookmarks_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.bookmarks_materialize",
-        reason="canonical bookmark NDJSON is present" if ready else "canonical bookmark product is missing",
+        materialization_hint="python -m lynchpin.ingest.bookmarks_materialize",
+        reason=reason,
     )
 
 
@@ -1136,12 +2124,29 @@ def _arbtt_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = arbtt_events_path()
     manifest = arbtt_manifest_path()
     meta = _load_json(manifest)
-    raw_files = tuple(cfg.arbtt_root.rglob("capture.log")) if cfg.arbtt_root.exists() else ()
-    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    raw_files = tuple(_capture_logs(cfg.arbtt_root))
+    row_count = _manifest_row_count(meta, path)
     ready = _product_with_manifest_exists(path, manifest) and (row_count or 0) > 0
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == ARBTT_EVENTS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical ARBTT focus event schema is older than the current reader contract"
+    elif ready and inputs_current:
+        status: Status = "ready"
+        reason = "canonical ARBTT focus events are present"
+    elif ready:
+        status = "partial"
+        reason = "canonical ARBTT focus events were built from older local input files"
+    elif raw_files:
+        status = "partial"
+        reason = "canonical ARBTT product is missing or empty; ensure arbtt-dump is available"
+    else:
+        status = "missing"
+        reason = "canonical ARBTT product is missing or empty; ensure arbtt-dump is available"
     return MaterializedDataset(
         name="arbtt",
-        status="ready" if ready else "partial" if raw_files else "missing",
+        status=status,
         authority="ARBTT capture.log files",
         query_surface="lynchpin.sources.arbtt",
         materialized_paths=(path, manifest),
@@ -1149,8 +2154,8 @@ def _arbtt_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.arbtt_materialize",
-        reason="canonical ARBTT focus events are present" if ready else "canonical ARBTT product is missing or empty; ensure arbtt-dump is available",
+        materialization_hint="python -m lynchpin.ingest.arbtt_materialize",
+        reason=reason,
     )
 
 
@@ -1159,12 +2164,29 @@ def _irc_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest = irc_manifest_path()
     meta = _load_json(manifest)
     raw_root = irc_raw_root()
-    raw_files = tuple(raw_root.rglob("*.log")) if raw_root.exists() else ()
-    row_count = _int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None)
+    raw_files = irc_input_files(raw_root)
+    row_count = _manifest_row_count(meta, path)
     ready = _product_with_manifest_exists(path, manifest) and (row_count or 0) > 0
+    inputs_current = _manifest_inputs_current(meta, raw_files)
+    schema_current = meta.get("schema_version") == IRC_EVENTS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical IRC event schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical IRC events were built from older local input files"
+    elif ready:
+        status = "ready"
+        reason = "canonical IRC events ndjson is present"
+    elif raw_files:
+        status = "partial"
+        reason = "raw WeeChat logs need materialization"
+    else:
+        status = "missing"
+        reason = "no raw IRC log files found"
     return MaterializedDataset(
         name="irc",
-        status="ready" if ready else "partial" if raw_files else "missing",
+        status=status,
         authority="raw WeeChat IRC log files",
         query_surface="lynchpin.sources.irc_raw",
         materialized_paths=(path, manifest),
@@ -1172,23 +2194,48 @@ def _irc_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command="python -m lynchpin.ingest.irc_materialize",
-        reason="canonical IRC events ndjson is present" if ready else "raw WeeChat logs need materialization" if raw_files else "no raw IRC log files found",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint="python -m lynchpin.ingest.irc_materialize",
+        reason=reason,
     )
 
 
 def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest = canonical_machine_table_path("manifest").with_suffix(".json")
     meta = _load_json(manifest)
+    input_files = machine_input_files(cfg)
     tables = meta.get("tables") if isinstance(meta.get("tables"), dict) else {}
     paths = tuple(
         canonical_machine_table_path(name)
-        for name in ("metric_sample", "gpu_sample", "network_sample", "service_state")
+        for name in (
+            "metric_sample",
+            "gpu_sample",
+            "network_sample",
+            "service_state",
+            "block_device_sample",
+            "service_cgroup_io_sample",
+            "service_cgroup_pressure_sample",
+            "process_io_delta_sample",
+        )
     )
     ready = _manifest_valid(manifest) and all(path.exists() for path in paths)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == MACHINE_TELEMETRY_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical machine telemetry schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical machine telemetry products were built from an older local database"
+    elif ready:
+        status = "ready"
+        reason = "canonical machine telemetry NDJSON tables are present"
+    else:
+        status = "partial" if input_files else "missing"
+        reason = "canonical machine telemetry products are missing"
     return MaterializedDataset(
         name="machine",
-        status="ready" if ready else "partial" if cfg.machine_telemetry_db.exists() else "missing",
+        status=status,
         authority="machine telemetry SQLite/JSONL captures",
         query_surface="lynchpin.sources.machine plus analysis machine artifacts",
         materialized_paths=(*paths, manifest),
@@ -1196,8 +2243,9 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(_first_table_date(tables)),
         last_date=_date_from_iso(_last_table_date(tables)),
-        refresh_command="python -m lynchpin.ingest.machine_materialize",
-        reason="canonical machine telemetry NDJSON tables are present" if ready else "canonical machine telemetry products are missing",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint="python -m lynchpin.ingest.machine_materialize",
+        reason=reason,
     )
 
 
@@ -1206,19 +2254,35 @@ def _spotify_daily_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = spotify_daily_path()
     manifest = spotify_daily_manifest_path()
     meta = _load_json(manifest)
+    input_files = spotify_daily_input_files()
     ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == SPOTIFY_DAILY_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Spotify daily product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical Spotify daily product was built from an older stream product"
+    elif ready:
+        status = "ready"
+        reason = "canonical Spotify daily product is present"
+    else:
+        status = "partial" if input_files else "missing"
+        reason = "canonical Spotify daily product or manifest is missing/malformed"
     return MaterializedDataset(
         name="spotify_daily",
-        status="ready" if ready else "partial" if spotify_streams_path().exists() else "missing",
+        status=status,
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, manifest),
         raw_roots=(cfg.exports_root / "spotify/processed",),
-        row_count=_int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None),
+        row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command=contract.refresh_command,
-        reason="canonical Spotify daily product is present" if ready else "canonical Spotify daily product or manifest is missing/malformed",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 
@@ -1255,7 +2319,7 @@ def _xtask_history_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        refresh_command=contract.refresh_command,
+        materialization_hint=contract.materialization_hint,
         reason="live xtask history SQLite is readable" if ready else f"xtask history SQLite is missing or unreadable at {path}",
     )
 
@@ -1280,7 +2344,7 @@ def _polylogue_devtools_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count if present else None,
         first_date=ready.first_seen.date() if ready.first_seen else None,
         last_date=ready.last_seen.date() if ready.last_seen else None,
-        refresh_command=contract.refresh_command,
+        materialization_hint=contract.materialization_hint,
         reason=(
             f"Polylogue devtools ledgers readable: {ready.xtask_rows} xtask rows, {ready.meta_files} meta files"
             if present
@@ -1295,18 +2359,108 @@ def _personal_daily_signals_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     manifest = personal_daily_signals_manifest_path()
     meta = _load_json(manifest)
     ready = _product_with_manifest_exists(path, manifest)
+    input_files = _manifest_declared_input_files(meta)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical personal daily-signal product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical personal daily-signal product was built from older upstream products"
+    elif ready:
+        status = "ready"
+        reason = "canonical personal daily-signal product is present"
+    else:
+        status = "partial"
+        reason = "canonical personal daily-signal product or manifest is missing/malformed"
     return MaterializedDataset(
         name="personal_daily_signals",
-        status="ready" if ready else "partial",
+        status=status,
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, manifest),
         raw_roots=(cfg.derived_root,),
-        row_count=_int_or_none(meta.get("row_count")) or (_line_count(path) if path.exists() else None),
+        row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
-        refresh_command=contract.refresh_command,
-        reason="canonical personal daily-signal product is present" if ready else "canonical personal daily-signal product or manifest is missing/malformed",
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
+def _temporal_signals_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("temporal_signals")
+    path = temporal_signals_path()
+    manifest = temporal_signals_manifest_path()
+    meta = _load_json(manifest)
+    ready = _product_with_manifest_exists(path, manifest)
+    input_files = _manifest_declared_input_files(meta)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == TEMPORAL_SIGNALS_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical temporal signal product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical temporal signal product was built from older upstream products"
+    elif ready:
+        status = "ready"
+        reason = "canonical temporal signal product is present"
+    else:
+        status = "partial"
+        reason = "canonical temporal signal product or manifest is missing/malformed"
+    return MaterializedDataset(
+        name="temporal_signals",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path, manifest),
+        raw_roots=(cfg.derived_root,),
+        row_count=_manifest_row_count(meta, path),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
+def _sleep_productivity_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("sleep_productivity")
+    path = sleep_productivity_path()
+    manifest = sleep_productivity_manifest_path()
+    meta = _load_json(manifest)
+    ready = _product_with_manifest_exists(path, manifest)
+    input_files = _manifest_declared_input_files(meta)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == SLEEP_PRODUCTIVITY_SCHEMA_VERSION
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical sleep-productivity product schema is older than the current reader contract"
+    elif ready and not inputs_current:
+        status: Status = "partial"
+        reason = "canonical sleep-productivity product was built from older upstream products"
+    elif ready:
+        status = "ready"
+        reason = "canonical sleep-productivity product is present"
+    else:
+        status = "partial"
+        reason = "canonical sleep-productivity product or manifest is missing/malformed"
+    return MaterializedDataset(
+        name="sleep_productivity",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path, manifest),
+        raw_roots=(cfg.derived_root,),
+        row_count=_manifest_row_count(meta, path),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 
@@ -1336,7 +2490,7 @@ def _missing_dataset(
     name: str,
     authority: str,
     query_surface: str,
-    refresh_command: str,
+    materialization_hint: str,
     reason: str,
     *,
     materialized_paths: tuple[Path, ...] = (),
@@ -1352,7 +2506,7 @@ def _missing_dataset(
         row_count=None,
         first_date=None,
         last_date=None,
-        refresh_command=refresh_command,
+        materialization_hint=materialization_hint,
         reason=reason,
     )
 
@@ -1386,6 +2540,63 @@ def _jsonl_file_bounds(path: Path) -> tuple[int | None, date | None, date | None
 
 
 def _jsonl_date_bounds(paths: Iterable[Path]) -> tuple[int, date | None, date | None]:
+    count = 0
+    first: date | None = None
+    last: date | None = None
+    for path in paths:
+        if not path.exists():
+            continue
+        manifest_bounds = _jsonl_single_file_manifest_bounds(path)
+        if manifest_bounds is None:
+            manifest_bounds = _jsonl_date_bounds_cached(
+                (str(path),),
+                files_signature((path,)),
+            )
+        row_count, row_first, row_last = manifest_bounds
+        count += row_count
+        first = _min_date(first, row_first)
+        last = _max_date(last, row_last)
+    return count, first, last
+
+
+def _jsonl_single_file_manifest_bounds(path: Path) -> tuple[int, date | None, date | None] | None:
+    manifest = path.with_suffix(".manifest.json")
+    if not _manifest_valid(manifest):
+        return None
+    try:
+        if manifest.stat().st_mtime_ns < path.stat().st_mtime_ns:
+            return None
+    except OSError:
+        return None
+    meta = _load_json(manifest)
+    row_count = _int_or_none(meta.get("row_count"))
+    if row_count is None:
+        return None
+    return row_count, _date_from_iso(meta.get("first_date")), _date_from_iso(meta.get("last_date"))
+
+
+def _min_date(left: date | None, right: date | None) -> date | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if left <= right else right
+
+
+def _max_date(left: date | None, right: date | None) -> date | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if left >= right else right
+
+
+@lru_cache(maxsize=128)
+def _jsonl_date_bounds_cached(
+    path_names: tuple[str, ...],
+    _signature: tuple[tuple[str, int | None, int | None], ...],
+) -> tuple[int, date | None, date | None]:
+    paths = tuple(Path(path) for path in path_names)
     count = 0
     first: date | None = None
     last: date | None = None
@@ -1428,6 +2639,19 @@ def _date_from_payload(payload: dict[str, Any]) -> date | None:
 
 
 def _csv_date_bounds(paths: Iterable[Path]) -> tuple[int | None, date | None, date | None]:
+    ordered = tuple(paths)
+    return _csv_date_bounds_cached(
+        tuple(str(path) for path in ordered),
+        files_signature(ordered),
+    )
+
+
+@lru_cache(maxsize=128)
+def _csv_date_bounds_cached(
+    path_names: tuple[str, ...],
+    _signature: tuple[tuple[str, int | None, int | None], ...],
+) -> tuple[int | None, date | None, date | None]:
+    paths = tuple(Path(path) for path in path_names)
     count = 0
     first: date | None = None
     last: date | None = None
@@ -1449,15 +2673,18 @@ def _csv_date_bounds(paths: Iterable[Path]) -> tuple[int | None, date | None, da
 
 
 def _polylogue_date_bounds() -> tuple[date | None, date | None]:
-    """Best-effort scan over session_profile rows for first/last date.
+    """Best-effort read of session-profile first/last dates.
 
-    Tolerates ``PolylogueMaterializationError`` mid-iteration — when the
-    archive is rematerializing or insight tables are incomplete the
-    iterator may raise. The materialization snapshot is a status surface;
-    it must NOT become an all-or-nothing fail-stop just because polylogue
-    is briefly in transition. Caller will surface ``readiness`` separately.
+    Prefer direct product-table bounds so status reads do not hydrate thousands
+    of session profiles. Fall back to profile iteration for older Polylogue
+    products that do not expose the current SQLite table.
     """
     from .sources.polylogue import PolylogueMaterializationError
+    from .sources.polylogue_client import _default_polylogue_db_path
+
+    direct = _polylogue_date_bounds_from_sqlite(_default_polylogue_db_path())
+    if direct != (None, None):
+        return direct
 
     first: date | None = None
     last: date | None = None
@@ -1477,6 +2704,26 @@ def _polylogue_date_bounds() -> tuple[date | None, date | None]:
     return first, last
 
 
+def _polylogue_date_bounds_from_sqlite(path: Path) -> tuple[date | None, date | None]:
+    if not path.exists():
+        return None, None
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute(
+                """
+                SELECT MIN(canonical_session_date), MAX(canonical_session_date)
+                FROM session_profiles
+                WHERE canonical_session_date IS NOT NULL
+                  AND canonical_session_date != ''
+                """
+            ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if not row:
+        return None, None
+    return _date_from_iso(row[0]), _date_from_iso(row[1])
+
+
 def _date_from_iso(value: object) -> date | None:
     if not isinstance(value, str) or not value:
         return None
@@ -1488,6 +2735,19 @@ def _date_from_iso(value: object) -> date | None:
             return date.fromisoformat(raw[:10])
         except ValueError:
             return None
+
+
+def _datetime_from_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    raw = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _coverage_label(first: date | None, last: date | None) -> str:
@@ -1523,6 +2783,14 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
+def _manifest_row_count(meta: dict[str, Any], path: Path, *, header_rows: int = 0) -> int | None:
+    _ = (path, header_rows)
+    row_count = _int_or_none(meta.get("row_count"))
+    if row_count is not None:
+        return row_count
+    return None
+
+
 def _line_count(path: Path) -> int:
     if not path.exists():
         return 0
@@ -1533,11 +2801,26 @@ def _line_count(path: Path) -> int:
 def _count_files(root: Path, *, suffixes: tuple[str, ...] | None = None) -> int:
     if not root.exists():
         return 0
-    return sum(
-        1
-        for path in root.rglob("*")
-        if path.is_file() and (suffixes is None or path.suffix.lower() in suffixes)
-    )
+    wanted = tuple(suffix.lower() for suffix in suffixes) if suffixes is not None else None
+    count = 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False) and (
+                            wanted is None or Path(entry.name).suffix.lower() in wanted
+                        ):
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return count
 
 
 def _path_mtime_date(path: Path) -> date | None:
@@ -1578,42 +2861,54 @@ def _sqlite_count(path: Path, table: str) -> int | None:
     return int(row[0]) if row else None
 
 
-def _sqlite_duck_count(path: Path, table: str) -> int | None:
+def _duck_substrate_status(
+    path: Path,
+) -> tuple[int | None, tuple[int, int] | None, tuple[str, str | None] | None, int | None]:
     if not path.exists():
-        return None
+        return None, None, None, None
     try:
         import duckdb
 
         conn = duckdb.connect(str(path), read_only=True)
         try:
-            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            builds = _duck_scalar_count(conn, "evidence_graph_build")
+            latest_build_counts = _duck_latest_graph_build_counts(conn)
+            latest_status = _duck_latest_source_status(conn, "evidence_graph")
+            promotion_count = _duck_successful_promotion_count(conn)
         finally:
             conn.close()
+    except Exception:
+        return None, None, None, None
+    return builds, latest_build_counts, latest_status, promotion_count
+
+
+def _duck_evidence_graph_status(
+    path: Path,
+) -> tuple[int | None, tuple[int, int] | None, tuple[str, str | None] | None]:
+    builds, latest_build_counts, latest_status, _promotion_count = _duck_substrate_status(path)
+    return builds, latest_build_counts, latest_status
+
+
+def _duck_scalar_count(conn: Any, table: str) -> int | None:
+    try:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
     except Exception:
         return None
     return int(row[0]) if row else None
 
 
-def _duck_latest_source_status(path: Path, source: str) -> tuple[str, str | None] | None:
-    if not path.exists():
-        return None
+def _duck_latest_source_status(conn: Any, source: str) -> tuple[str, str | None] | None:
     try:
-        import duckdb
-
-        conn = duckdb.connect(str(path), read_only=True)
-        try:
-            row = conn.execute(
-                """
-                SELECT status, reason
-                FROM substrate_source_status
-                WHERE source = ?
-                ORDER BY recorded_at DESC
-                LIMIT 1
-                """,
-                [source],
-            ).fetchone()
-        finally:
-            conn.close()
+        row = conn.execute(
+            """
+            SELECT status, reason
+            FROM substrate_source_status
+            WHERE source = ?
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            """,
+            [source],
+        ).fetchone()
     except Exception:
         return None
     if not row:
@@ -1621,24 +2916,30 @@ def _duck_latest_source_status(path: Path, source: str) -> tuple[str, str | None
     return str(row[0]), row[1]
 
 
-def _duck_latest_graph_build_counts(path: Path) -> tuple[int, int] | None:
-    if not path.exists():
-        return None
+def _duck_successful_promotion_count(conn: Any) -> int | None:
     try:
-        import duckdb
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM substrate_promotion_run
+            WHERE status = 'ok'
+            """
+        ).fetchone()
+    except Exception:
+        return None
+    return int(row[0]) if row else None
 
-        conn = duckdb.connect(str(path), read_only=True)
-        try:
-            row = conn.execute(
-                """
-                SELECT node_count, edge_count
-                FROM evidence_graph_build
-                ORDER BY materialized_at DESC, generated_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        finally:
-            conn.close()
+
+def _duck_latest_graph_build_counts(conn: Any) -> tuple[int, int] | None:
+    try:
+        row = conn.execute(
+            """
+            SELECT node_count, edge_count
+            FROM evidence_graph_build
+            ORDER BY materialized_at DESC, generated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
     except Exception:
         return None
     if not row:

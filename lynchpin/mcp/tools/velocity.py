@@ -1,7 +1,7 @@
 """Velocity MCP tools: time-series, narratives, symbol churn, temporal rhythm."""
 from typing import Any
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id as _best_refresh_id, json_safe as _json_safe, latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, pinned_materialization_for_read
 
 @app.tool()
 def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None, window_days: int=7) -> list[dict[str, Any]]:
@@ -12,7 +12,7 @@ def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None
 
     Parameters:
         projects:     filter to specific projects; None = all.
-        refresh_id:   snapshot to query; default = most recent promote.
+        refresh_id:   materialized substrate snapshot to query; default = best current snapshot.
         window_days:  rolling-average window size (default 7).
 
     Returns:
@@ -22,10 +22,12 @@ def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_velocity_series
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='velocity_series')
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
+            refresh_id = best_materialized_refresh_id(conn, 'project_day_correlation', caller='velocity_series')
             if refresh_id is None:
                 return []
         rows = load_velocity_series(conn, refresh_id=refresh_id, window_days=window_days, projects=projs)
@@ -34,7 +36,7 @@ def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None
 
 @app.tool()
 def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
-    """Auto-summary of project velocity over the latest refresh window (Arc M.6).
+    """Auto-summary of project velocity over the latest materialized window (Arc M.6).
 
     Aggregates project_day_correlation into a narrative summary: total
     commits, active days, peak day, per-project breakdown, and the
@@ -43,7 +45,7 @@ def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=N
 
     Parameters:
         projects:   filter to specific projects; None = top 8 by commits.
-        refresh_id: snapshot (default: latest).
+        refresh_id: materialized substrate snapshot (default: best current snapshot).
 
     Returns:
         {
@@ -58,12 +60,13 @@ def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=N
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_velocity_window, load_velocity_project_summary, load_velocity_peak
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    materialization = ensure_substrate_materialized_for_read(caller='velocity_narrative') if refresh_id is None else pinned_materialization_for_read(caller='velocity_narrative', refresh_id=refresh_id)
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _best_refresh_id(conn, 'project_day_correlation')
+            refresh_id = best_materialized_refresh_id(conn, 'project_day_correlation', caller='velocity_narrative')
             if refresh_id is None:
-                return {'error': 'no promote runs'}
+                return {'error': 'no materialized substrate snapshot', 'materialization': materialization}
         win = load_velocity_window(conn, refresh_id=refresh_id)
         proj_rows = load_velocity_project_summary(conn, refresh_id=refresh_id, projects=projs)
         peak = load_velocity_peak(conn, refresh_id=refresh_id, projects=projs)
@@ -83,7 +86,7 @@ def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=N
             summary = '\n'.join(lines)
         else:
             summary = 'No project activity in this window.'
-    return {'window': {'start': _json_safe(win[0]), 'end': _json_safe(win[1])}, 'total_commits': total_commits, 'total_active_days': total_days, 'peak': {'project': peak[0], 'date': _json_safe(peak[1]), 'commits': peak[2]} if peak else None, 'projects': projects_list, 'summary_text': summary}
+    return {'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'window': {'start': _json_safe(win[0]), 'end': _json_safe(win[1])}, 'total_commits': total_commits, 'total_active_days': total_days, 'peak': {'project': peak[0], 'date': _json_safe(peak[1]), 'commits': peak[2]} if peak else None, 'projects': projects_list, 'summary_text': summary}
 
 @app.tool()
 def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
@@ -95,7 +98,7 @@ def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None
 
     Parameters:
         projects:   filter to specific projects; None = all.
-        refresh_id: snapshot (default: latest).
+        refresh_id: materialized substrate snapshot (default: best symbol_change coverage).
 
     Returns:
         [{"project": str, "date": str, "commit_count": int,
@@ -105,13 +108,15 @@ def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_symbol_velocity_rows
     projs: tuple[str, ...] | None = tuple(projects) if projects else None
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller='symbol_velocity')
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = best_materialized_refresh_id(conn, 'symbol_change', caller='symbol_velocity')
             if refresh_id is None:
                 return []
         rows = load_symbol_velocity_rows(conn, refresh_id=refresh_id, projects=projs)
-    return [{'project': r[0], 'date': _json_safe(r[1]), 'commit_count': r[2], 'symbols_added': r[3], 'symbols_modified': r[4], 'symbols_renamed': r[5], 'symbols_total': r[6]} for r in rows]
+    return [{'project': r[0], 'date': _json_safe(r[1]), 'materialized_refresh_id': refresh_id, 'commit_count': r[2], 'symbols_added': r[3], 'symbols_modified': r[4], 'symbols_renamed': r[5], 'symbols_total': r[6]} for r in rows]
 
 @app.tool()
 def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> dict[str, Any]:
@@ -122,7 +127,7 @@ def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> di
 
     Parameters:
         project:    filter to one project; None = all.
-        refresh_id: snapshot (default: latest).
+        refresh_id: materialized substrate snapshot (default: best current snapshot).
 
     Returns:
         {
@@ -133,17 +138,18 @@ def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> di
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_commit_hourly_distribution, load_commit_weekday_distribution
+    materialization = ensure_substrate_materialized_for_read(caller='temporal_rhythm') if refresh_id is None else pinned_materialization_for_read(caller='temporal_rhythm', refresh_id=refresh_id)
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = _latest_refresh_id(conn)
+            refresh_id = best_materialized_refresh_id(conn, 'commit_fact', caller='temporal_rhythm')
             if refresh_id is None:
-                return {'hourly': [], 'weekday': [], 'peak_hour': None, 'peak_weekday': None}
+                return {'materialized_refresh_id': None, 'refresh_id': None, 'materialization': materialization, 'hourly': [], 'weekday': [], 'peak_hour': None, 'peak_weekday': None}
         hourly = load_commit_hourly_distribution(conn, refresh_id=refresh_id, project=project)
         weekday = load_commit_weekday_distribution(conn, refresh_id=refresh_id, project=project)
     weekday_names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
     peak_hour = max(hourly, key=lambda r: r[1])[0] if hourly else None
     peak_dow = max(weekday, key=lambda r: r[1]) if weekday else None
-    return {'hourly': [{'hour': r[0], 'count': r[1]} for r in hourly], 'weekday': [{'weekday': r[0], 'name': weekday_names[r[0]], 'count': r[1]} for r in weekday], 'peak_hour': peak_hour, 'peak_weekday': weekday_names[peak_dow[0]] if peak_dow else None}
+    return {'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'hourly': [{'hour': r[0], 'count': r[1]} for r in hourly], 'weekday': [{'weekday': r[0], 'name': weekday_names[r[0]], 'count': r[1]} for r in weekday], 'peak_hour': peak_hour, 'peak_weekday': weekday_names[peak_dow[0]] if peak_dow else None}
 _NON_CODE_PATH_PATTERNS = ('Cargo.lock', 'flake.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'uv.lock', 'poetry.lock', 'Pipfile.lock', '.snap', '/fixtures/', '/__snapshots__/', '/generated/', '/.lynchpin/generated/', 'ai_activity.json', 'focus_timeline.json', 'narrative_window.json', '.min.js', '.min.css')
 
 def _classify_path(project: str, path: str) -> str:
@@ -264,7 +270,7 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
                      all projects is the existing velocity_series).
         start, end:  ISO dates; default = full window of the snapshot.
         granularity: "day" | "week" | "month". Aggregation period.
-        refresh_id:  substrate snapshot. Defaults to latest commit_fact build.
+        refresh_id:  materialized substrate snapshot. Defaults to best current commit_fact build.
         grouping:    "raw" (per-commit, default) or "pr" (group commits
                      by PR number extracted from subject, falling back to
                      sha for commits without ``(#N)``).  "pr" normalises
@@ -278,6 +284,7 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
         {
             "project": str,
             "granularity": str,
+            "materialized_refresh_id": str | None,
             "refresh_id": str | None,
             "degraded": bool,
             "reason": str | None,
@@ -299,26 +306,28 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_velocity import load_best_coverage_refresh_id, load_commit_fact_project_count, load_commit_fact_window_bounds, load_commit_throughput_by_period, load_file_change_by_period, load_symbol_change_by_period
     if granularity not in ('day', 'week', 'month'):
-        return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported granularity {granularity!r} (use day, week, or month)', 'substrate_window': None, 'periods': []}
+        return {'project': project, 'granularity': granularity, 'materialized_refresh_id': None, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported granularity {granularity!r} (use day, week, or month)', 'substrate_window': None, 'periods': []}
     if grouping not in ('raw', 'pr'):
-        return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported grouping {grouping!r} (use raw or pr)', 'substrate_window': None, 'periods': []}
+        return {'project': project, 'granularity': granularity, 'materialized_refresh_id': None, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported grouping {grouping!r} (use raw or pr)', 'substrate_window': None, 'periods': []}
     if category is not None and category not in ('source', 'test', 'config', 'doc', 'other'):
-        return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported category {category!r} (use source, test, config, doc, or other)', 'substrate_window': None, 'periods': []}
+        return {'project': project, 'granularity': granularity, 'materialized_refresh_id': None, 'refresh_id': None, 'degraded': True, 'reason': f'unsupported category {category!r} (use source, test, config, doc, or other)', 'substrate_window': None, 'periods': []}
     start_d: _d | None = _d.fromisoformat(start) if start else None
     end_d: _d | None = _d.fromisoformat(end) if end else None
+    window = half_open_date_window(start_d, end_d)
+    materialization = ensure_substrate_materialized_for_read(caller='engineering_throughput', window=window) if refresh_id is None else pinned_materialization_for_read(caller='engineering_throughput', refresh_id=refresh_id)
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
             refresh_id = load_best_coverage_refresh_id(conn, project=project)
             if refresh_id is None:
-                refresh_id = _best_refresh_id(conn, 'commit_fact')
+                refresh_id = best_materialized_refresh_id(conn, 'commit_fact', caller='project_file_change_profile')
         if refresh_id is None:
-            return {'project': project, 'granularity': granularity, 'refresh_id': None, 'degraded': True, 'reason': 'no commit_fact promote runs found', 'substrate_window': None, 'periods': []}
+            return {'project': project, 'granularity': granularity, 'materialized_refresh_id': None, 'refresh_id': None, 'materialization': materialization, 'degraded': True, 'reason': 'no commit_fact promote runs found', 'substrate_window': None, 'periods': []}
         bounds = load_commit_fact_window_bounds(conn, refresh_id=refresh_id)
         substrate_window = {'start': _json_safe(bounds[0]), 'end': _json_safe(bounds[1])}
         proj_count = load_commit_fact_project_count(conn, refresh_id=refresh_id, project=project)
         if proj_count == 0:
-            return {'project': project, 'granularity': granularity, 'refresh_id': refresh_id, 'degraded': True, 'reason': f'no commit_fact rows for project {project!r} in this snapshot', 'substrate_window': substrate_window, 'periods': []}
+            return {'project': project, 'granularity': granularity, 'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'degraded': True, 'reason': f'no commit_fact rows for project {project!r} in this snapshot', 'substrate_window': substrate_window, 'periods': []}
         commit_rows = {r[0]: r for r in load_commit_throughput_by_period(conn, refresh_id=refresh_id, project=project, granularity=granularity, grouping=grouping, start=start_d, end=end_d)}
         file_rows: dict[Any, tuple[int, int]] = {}
         agg_cat: dict[Any, dict[str, tuple[int, int]]] = {}
@@ -392,4 +401,4 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
     if not sc_present:
         reasons.append('symbol_change empty for this snapshot — symbol counts all zero')
     degraded = bool(reasons)
-    return {'project': project, 'granularity': granularity, 'grouping': grouping, 'refresh_id': refresh_id, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}
+    return {'project': project, 'granularity': granularity, 'grouping': grouping, 'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}

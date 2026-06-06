@@ -167,7 +167,6 @@ def daily_audio_features(
     match coverage is reported per day."""
     from collections import defaultdict
 
-    from ..core.parse import in_date_range
     from ..core.primitives import logical_date
     from .spotify import iter_streams
 
@@ -184,7 +183,7 @@ def daily_audio_features(
         if stream.end_time is None or not stream.artist:
             continue
         day = logical_date(stream.end_time)
-        if not in_date_range(day, start, end):
+        if day < start or day >= end:
             continue
         total_ms[day] += stream.ms_played
         total_n[day] += 1

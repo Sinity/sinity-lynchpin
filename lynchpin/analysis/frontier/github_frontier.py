@@ -15,14 +15,14 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
+from ...materialization import ensure_materialized
 from ...sources.github import (
     GitHubItem,
     GitHubItemKind,
     GitHubLifecycleClassification,
     classify_lifecycle,
-    fetch_issues,
-    fetch_prs,
 )
+from ...sources.github_context import iter_github_context
 from lynchpin.core.io import load_json_if_exists, resolve_analysis_path, save_json
 
 log = logging.getLogger(__name__)
@@ -75,6 +75,11 @@ def build_active_github_frontier(
     work_payload = _load_payload(work_packages_file or resolve_analysis_path("active_work_packages.json"))
 
     repos = _active_github_repos(snapshot_payload, selected=set(projects or ()))
+    product_rows, context_ready, context_reason = _github_context_by_project(
+        projects=set(repos.values()),
+        start=start,
+        end=end,
+    )
     package_pr_map = _package_pr_map(work_payload)
     # Arc B.4: per-project AI kind mix in the same window. Lazily computed
     # only when there's at least one repo to classify, since
@@ -93,23 +98,25 @@ def build_active_github_frontier(
             })
             continue
 
-        open_issues = _fetch_and_classify(repo_path, "issue", "open", limit=80, project=project_name)
-        open_prs = _fetch_and_classify(repo_path, "pr", "open", limit=40, project=project_name)
-        closed_issues = _fetch_and_classify(
-            repo_path, "issue", "closed", limit=40, project=project_name,
+        context_items = product_rows.get(project_name, ())
+        open_issues = _select_and_classify(context_items, "issue", "open", limit=80, project=project_name)
+        open_prs = _select_and_classify(context_items, "pr", "open", limit=40, project=project_name)
+        closed_issues = _select_and_classify(
+            context_items, "issue", "closed", limit=40, project=project_name,
             since=end - timedelta(days=_RECENT_CLOSED_DAYS),
         )
-        closed_prs = _fetch_and_classify(
-            repo_path, "pr", "closed", limit=40, project=project_name,
+        closed_prs = _select_and_classify(
+            context_items, "pr", "closed", limit=40, project=project_name,
             since=end - timedelta(days=_RECENT_CLOSED_DAYS),
         )
 
         all_items = open_issues + open_prs + closed_issues + closed_prs
         _link_packages(all_items, package_pr_map.get(project_name, {}))
         _annotate_inactivity(all_items, reference=end)
-        if project_kind_mix is None:
+        if all_items and project_kind_mix is None:
             project_kind_mix = _project_kind_mix(start=start, end=end)
-        _annotate_kind_hint(all_items, project_kind_mix.get(project_name))
+        if project_kind_mix is not None:
+            _annotate_kind_hint(all_items, project_kind_mix.get(project_name))
 
         lifecycle_counts: Counter[str] = Counter()
         inactivity_counts: Counter[str] = Counter()
@@ -118,10 +125,13 @@ def build_active_github_frontier(
             if item.state == "open":
                 inactivity_counts[item.inactivity_bucket] += 1
 
+        project_caveats = _frontier_caveats(open_issues, open_prs)
+        if not context_ready and context_reason:
+            project_caveats.append(context_reason)
         project_rows.append({
             "project": project_name,
             "path": repo_path_str,
-            "status": "available",
+            "status": "available" if context_ready else "unavailable",
             "item_count": len(all_items),
             "open_item_count": len(open_issues) + len(open_prs),
             "recently_closed_item_count": len(closed_issues) + len(closed_prs),
@@ -144,7 +154,7 @@ def build_active_github_frontier(
                 lifecycle: [_item_row(item) for item in all_items if item.lifecycle == lifecycle]
                 for lifecycle in sorted(set(item.lifecycle for item in all_items))
             },
-            "caveats": _frontier_caveats(open_issues, open_prs),
+            "caveats": project_caveats,
         })
 
     return {
@@ -208,8 +218,8 @@ def _active_github_repos(
     return repos
 
 
-def _fetch_and_classify(
-    repo_path: Path,
+def _select_and_classify(
+    source_items: Sequence[GitHubItem],
     kind: GitHubItemKind,
     state: str,
     *,
@@ -217,16 +227,14 @@ def _fetch_and_classify(
     project: str,
     since: date | None = None,
 ) -> list[_FrontierItem]:
-    if kind == "issue":
-        result = fetch_issues(repo_path, state=state, limit=limit, use_cache=True)  # type: ignore[arg-type]
-    else:
-        result = fetch_prs(repo_path, state=state, limit=limit, use_cache=True)  # type: ignore[arg-type]
-
-    if result.status != "ok":
-        return []
-
     items: list[_FrontierItem] = []
-    for item in result.items:
+    for item in source_items:
+        if item.kind != kind:
+            continue
+        if state == "open" and item.state != "open":
+            continue
+        if state != "open" and item.state == "open":
+            continue
         if since is not None:
             item_date = item.closed_at or item.updated_at
             if item_date is not None and item_date.date() < since:
@@ -250,7 +258,26 @@ def _fetch_and_classify(
             comment_count=len(item.comments),
             caveats=_item_caveats(item, classification),
         ))
+        if len(items) >= limit:
+            break
     return items
+
+
+def _github_context_by_project(
+    *,
+    projects: set[str],
+    start: date,
+    end: date,
+) -> tuple[dict[str, tuple[GitHubItem, ...]], bool, str | None]:
+    if not projects:
+        return {}, True, None
+    result = ensure_materialized("github_context", window=(start, end))
+    if result.status not in {"ready", "updated"}:
+        return {}, False, f"github_context unavailable: {result.reason}"
+    grouped: dict[str, list[GitHubItem]] = defaultdict(list)
+    for row in iter_github_context(projects=projects, ensure=False):
+        grouped[row.project].append(row.item)
+    return {project: tuple(items) for project, items in grouped.items()}, True, None
 
 
 def _item_caveats(

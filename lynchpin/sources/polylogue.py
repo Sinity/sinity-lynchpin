@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import date, datetime
@@ -128,6 +129,9 @@ def _canonical_projects(values: object) -> tuple[str, ...]:
 def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadiness:
     """Report whether Lynchpin can use the current local Polylogue archive."""
     db = _default_polylogue_db_path()
+    direct = _archive_readiness_from_sqlite(db)
+    if direct is not None:
+        return direct
     try:
         from polylogue.insights.readiness import InsightReadinessQuery
 
@@ -163,6 +167,7 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
     profile_count = _readiness_row_count(profile)
     day_count = _readiness_row_count(day)
     work_event_count = _readiness_row_count(work_event)
+    total_conversations = _readiness_total_conversations(report)
     incomplete_entries = tuple(
         entry
         for entry in (profile, day, work_event)
@@ -183,7 +188,7 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
             status = "degraded"
             reason = f"required Polylogue insight read failed: {probe_error}"
     elif (
-        report.total_conversations > 0
+        total_conversations > 0
         or profile_count > 0
         or day_count > 0
         or work_event_count > 0
@@ -198,7 +203,7 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         db_path=db,
         status=status,
         reason=reason,
-        conversation_count=report.total_conversations,
+        conversation_count=total_conversations,
         message_count=None,
         conversation_stats_count=profile.expected_row_count
         if profile is not None and profile.expected_row_count is not None
@@ -210,6 +215,78 @@ def archive_readiness(*, include_heavy_counts: bool = False) -> PolylogueReadine
         derives_profiles_from_base_tables=False,
         derives_day_summaries_from_profiles=False,
     )
+
+
+def _archive_readiness_from_sqlite(db: Path) -> PolylogueReadiness | None:
+    if not db.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db)) as conn:
+            if not (
+                _sqlite_has_table(conn, "session_profiles")
+                and _sqlite_has_table(conn, "session_work_events")
+            ):
+                return None
+            profile_count = _sqlite_table_count(conn, "session_profiles")
+            work_event_count = _sqlite_table_count(conn, "session_work_events")
+            conversation_count = (
+                _sqlite_table_count(conn, "conversations")
+                if _sqlite_has_table(conn, "conversations")
+                else profile_count
+            )
+            day_count = (
+                _sqlite_table_count(conn, "day_session_summaries")
+                if _sqlite_has_table(conn, "day_session_summaries")
+                else 0
+            )
+    except sqlite3.Error as exc:
+        logger.warning("polylogue direct readiness read failed: %s", exc)
+        return None
+
+    if profile_count > 0 and work_event_count > 0:
+        status = "ready"
+        reason = "direct Polylogue session-profile and work-event products are populated"
+    elif conversation_count > 0 or profile_count > 0 or work_event_count > 0:
+        status = "degraded"
+        missing = []
+        if profile_count == 0:
+            missing.append("session_profiles")
+        if work_event_count == 0:
+            missing.append("session_work_events")
+        reason = "missing or empty products: " + ", ".join(missing)
+    else:
+        status = "unavailable"
+        reason = "polylogue archive tables are empty"
+
+    return PolylogueReadiness(
+        db_path=db,
+        status=status,
+        reason=reason,
+        conversation_count=conversation_count,
+        message_count=None,
+        conversation_stats_count=profile_count,
+        session_profile_count=profile_count,
+        day_summary_count=day_count,
+        work_event_count=work_event_count,
+        provider_event_count=None,
+        derives_profiles_from_base_tables=False,
+        derives_day_summaries_from_profiles=False,
+    )
+
+
+def _sqlite_table_count(conn: sqlite3.Connection, table: str) -> int:
+    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _readiness_total_conversations(report: object) -> int:
+    """Handle Polylogue readiness field drift across archive versions."""
+
+    for field in ("total_conversations", "total_sessions"):
+        value = getattr(report, field, None)
+        if isinstance(value, int):
+            return value
+    return 0
 
 
 def _readiness_row_count(entry: Any | None) -> int:
@@ -296,6 +373,7 @@ def _require_materialized_products() -> None:
 
 
 _cached_profiles: list[SessionProfile] | None = None
+_cached_profiles_signature: tuple[int, int] | None = None
 
 
 def _profiles_from_facade() -> list[SessionProfile]:
@@ -440,11 +518,22 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
 
 def _load_profiles() -> list[SessionProfile]:
     """Load session profiles from the Polylogue facade."""
-    global _cached_profiles
-    if _cached_profiles is not None:
+    global _cached_profiles, _cached_profiles_signature
+    signature = _profile_cache_signature()
+    if _cached_profiles is not None and _cached_profiles_signature == signature:
         return _cached_profiles
     _cached_profiles = _profiles_from_facade()
+    _cached_profiles_signature = signature
     return _cached_profiles
+
+
+def _profile_cache_signature() -> tuple[int, int] | None:
+    path = _default_polylogue_db_path()
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def iter_session_profiles() -> Iterator[SessionProfile]:
@@ -463,6 +552,10 @@ def session_profiles_for_date(*, start: date, end: date) -> list[SessionProfile]
 
 def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProfile]:
     """Read date-bounded session profiles through Polylogue's public facade."""
+    direct = _session_profiles_from_sqlite(start=start, end=end)
+    if direct is not None:
+        return direct
+
     _require_materialized_products()
     try:
         from polylogue.insights.archive import SessionProfileInsightQuery
@@ -480,6 +573,110 @@ def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProf
         ) from exc
 
     return [_session_profile_from_insight(insight) for insight in insights]
+
+
+def _session_profiles_from_sqlite(
+    *, start: date, end: date
+) -> list[SessionProfile] | None:
+    db = _default_polylogue_db_path()
+    if not db.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            if not _sqlite_has_table(conn, "session_profiles"):
+                return None
+            rows = conn.execute(
+                """
+                SELECT
+                    conversation_id, source_name, title, first_message_at,
+                    last_message_at, canonical_session_date, repo_names_json,
+                    repo_paths_json, auto_tags_json, message_count, word_count,
+                    engaged_duration_ms, wall_duration_ms, total_cost_usd,
+                    tool_use_count, thinking_count, substantive_count,
+                    attachment_count, work_event_count, phase_count,
+                    cost_is_estimated, workflow_shape, workflow_shape_confidence,
+                    terminal_state, terminal_state_confidence,
+                    inference_payload_json
+                FROM session_profiles
+                WHERE canonical_session_date >= ? AND canonical_session_date < ?
+                ORDER BY canonical_session_date, first_message_at, conversation_id
+                """,
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("polylogue direct session profile read failed: %s", exc)
+        return None
+    return [_session_profile_from_row(row) for row in rows]
+
+
+def _session_profile_from_row(row: sqlite3.Row) -> SessionProfile:
+    canonical_session_date = None
+    if row["canonical_session_date"]:
+        try:
+            canonical_session_date = date.fromisoformat(row["canonical_session_date"])
+        except ValueError:
+            canonical_session_date = None
+    projects = _canonical_projects(_json_list(row["repo_names_json"]))
+    if not projects:
+        projects = _canonical_projects(_json_list(row["repo_paths_json"]))
+    return SessionProfile(
+        conversation_id=str(row["conversation_id"]),
+        provider=str(row["source_name"] or ""),
+        title=str(row["title"] or ""),
+        message_count=int(row["message_count"] or 0),
+        word_count=int(row["word_count"] or 0),
+        first_message_at=_parse_dt(row["first_message_at"]),
+        last_message_at=_parse_dt(row["last_message_at"]),
+        engaged_duration_ms=int(row["engaged_duration_ms"] or 0),
+        wall_duration_ms=int(row["wall_duration_ms"] or 0),
+        work_event_kind=_work_event_kind_from_inference_json(
+            row["inference_payload_json"]
+        ),
+        work_event_projects=projects,
+        total_cost_usd=float(row["total_cost_usd"] or 0.0),
+        canonical_session_date=canonical_session_date,
+        tool_use_count=int(row["tool_use_count"] or 0),
+        thinking_count=int(row["thinking_count"] or 0),
+        auto_tags=_json_list(row["auto_tags_json"]),
+        substantive_count=int(row["substantive_count"] or 0),
+        attachment_count=int(row["attachment_count"] or 0),
+        work_event_count=int(row["work_event_count"] or 0),
+        phase_count=int(row["phase_count"] or 0),
+        cost_is_estimated=bool(row["cost_is_estimated"]),
+        workflow_shape=str(row["workflow_shape"] or "") or None,
+        workflow_shape_confidence=float(row["workflow_shape_confidence"] or 0.0),
+        terminal_state=str(row["terminal_state"] or "") or None,
+        terminal_state_confidence=float(row["terminal_state_confidence"] or 0.0),
+    )
+
+
+def _work_event_kind_from_inference_json(value: object) -> str | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+    events = payload.get("work_events") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        return None
+    kinds = [
+        str(event["heuristic_label"])
+        for event in events
+        if isinstance(event, dict) and event.get("heuristic_label")
+    ]
+    return Counter(kinds).most_common(1)[0][0] if kinds else None
+
+
+def _sqlite_has_table(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 @lru_cache(maxsize=1)
@@ -754,6 +951,10 @@ def _work_events_from_facade(
     end: Optional[date] = None,
 ) -> list[WorkEvent]:
     """Load Polylogue's durable work-event insights via the typed facade."""
+    direct = _work_events_from_sqlite(start=start, end=end)
+    if direct is not None:
+        return direct
+
     _require_materialized_products()
     from polylogue.insights.archive import SessionWorkEventInsightQuery
 
@@ -810,6 +1011,86 @@ def _work_events_from_facade(
             )
         )
     return events
+
+
+def _work_events_from_sqlite(
+    *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+) -> list[WorkEvent] | None:
+    db = _default_polylogue_db_path()
+    if not db.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            if not _sqlite_has_table(conn, "session_work_events"):
+                return None
+            if start is not None and end is not None:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        event_id, conversation_id, source_name, heuristic_label,
+                        confidence, start_time, end_time, duration_ms,
+                        summary, file_paths_json, tools_used_json
+                    FROM session_work_events
+                    WHERE start_time >= ?
+                      AND start_time < ?
+                    ORDER BY start_time, event_index
+                    """,
+                    (start.isoformat(), end.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        event_id, conversation_id, source_name, heuristic_label,
+                        confidence, start_time, end_time, duration_ms,
+                        summary, file_paths_json, tools_used_json
+                    FROM session_work_events
+                    ORDER BY canonical_session_date, start_time, event_index
+                    """
+                ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("polylogue direct work-event read failed: %s", exc)
+        return None
+
+    profile_context = {
+        profile.conversation_id: profile
+        for profile in (
+            session_profiles_for_date(start=start, end=end)
+            if start is not None and end is not None
+            else _load_profiles()
+        )
+    }
+    return [_work_event_from_row(row, profile_context) for row in rows]
+
+
+def _work_event_from_row(
+    row: sqlite3.Row, profile_context: dict[str, SessionProfile]
+) -> WorkEvent:
+    profile = profile_context.get(str(row["conversation_id"]))
+    return WorkEvent(
+        event_id=str(row["event_id"]),
+        conversation_id=str(row["conversation_id"]),
+        provider=str(row["source_name"] or ""),
+        kind=str(row["heuristic_label"] or "unknown"),
+        confidence=float(row["confidence"] or 0.0),
+        start=_parse_dt(row["start_time"]),
+        end=_parse_dt(row["end_time"]),
+        duration_ms=int(row["duration_ms"] or 0),
+        file_paths=_json_list(row["file_paths_json"]),
+        tools_used=_json_list(row["tools_used_json"]),
+        summary=str(row["summary"] or ""),
+        workflow_shape=profile.workflow_shape if profile else None,
+        workflow_shape_confidence=profile.workflow_shape_confidence
+        if profile
+        else 0.0,
+        terminal_state=profile.terminal_state if profile else None,
+        terminal_state_confidence=profile.terminal_state_confidence
+        if profile
+        else 0.0,
+    )
 
 
 def work_events(
@@ -941,12 +1222,12 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
         by_key[(d, profile.provider)].append(profile)
 
     result: list[ChatDayActivity] = []
-    for (day, provider), profiles in sorted(by_key.items()):
+    for (day, provider), day_profiles in sorted(by_key.items()):
         work_kinds: Counter[str] = Counter()
         projects: set[str] = set()
         total_messages = total_words = 0
         engaged_ms = wall_ms = 0
-        for p in profiles:
+        for p in day_profiles:
             total_messages += p.message_count
             total_words += p.word_count
             engaged_ms += p.engaged_duration_ms
@@ -958,7 +1239,7 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
             ChatDayActivity(
                 date=day,
                 provider=provider,
-                session_count=len(profiles),
+                session_count=len(day_profiles),
                 total_messages=total_messages,
                 total_words=total_words,
                 engaged_minutes=round(engaged_ms / 60_000, 1),

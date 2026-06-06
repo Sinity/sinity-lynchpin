@@ -63,9 +63,9 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
         sort_keys=True,
     )
     save_json(
-        tmp_path / "machine_benchmark_execution_queue.json",
+        tmp_path / "machine_benchmark_execution_handoff.json",
         {
-            "queue_count": 2,
+            "handoff_count": 2,
             "ready_group_count": 2,
             "blocked_group_count": 0,
             "run_template_count": 12,
@@ -74,12 +74,25 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
         sort_keys=True,
     )
     save_json(
-        tmp_path / "machine_below_export_queue.json",
+        tmp_path / "machine_below_export_handoff.json",
         {
-            "queue_count": 4,
+            "planned_window_count": 4,
             "failed_capture_count": 1,
             "root": "/realm/data/captures/stability-lab",
             "live_store": "/realm/data/captures/machine/below/store",
+        },
+        sort_keys=True,
+    )
+    save_json(
+        tmp_path / "machine_below_attribution.json",
+        {
+            "episode_count": 10,
+            "pressure_episode_count": 8,
+            "attributed_episode_count": 2,
+            "workload_resource_attributed_pressure_episode_count": 1,
+            "residual_unattributed_pressure_episode_count": 5,
+            "capture_count": 3,
+            "live_store_index_count": 4,
         },
         sort_keys=True,
     )
@@ -131,12 +144,21 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
         sort_keys=True,
     )
     monkeypatch.setattr(machine_status, "resolve_analysis_path", lambda name: str(tmp_path / name))
+    ensured: list[str] = []
+
+    def fake_ensure_materialized(name: str, *, cfg):
+        ensured.append(name)
+        return type("Result", (), {"to_json": lambda self: {"status": "ready", "changed": False, "reason": "ok"}})()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
 
     result = CliRunner().invoke(cli.build_app(), ["machine-status", "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["artifacts"]["available"] == 12
+    assert ensured == ["analysis_artifacts"]
+    assert payload["artifacts"]["available"] == 13
+    assert payload["artifacts"]["materialization"]["status"] == "ready"
     assert payload["support"]["executed_controlled_claim_count"] == 0
     assert payload["support"]["assessment_natural_experiment"] == 2
     assert payload["support"]["natural_experiment"] == 2
@@ -147,9 +169,13 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
     }
     assert payload["benchmark_preflight"]["ready_run_count"] == 12
     assert payload["benchmark_preflight"]["issue_count"] == 0
-    assert payload["benchmark_execution_queue"]["ready_group_count"] == 2
-    assert payload["below_export_queue"]["queue_count"] == 4
-    assert payload["below_export_queue"]["failed_capture_count"] == 1
+    assert payload["benchmark_execution_handoff"]["ready_group_count"] == 2
+    assert payload["below_export_handoff"]["planned_window_count"] == 4
+    assert payload["below_export_handoff"]["failed_capture_count"] == 1
+    assert payload["below_attribution"]["pressure_episode_count"] == 8
+    assert payload["below_attribution"]["bounded_below_attributed_pressure_episode_count"] == 2
+    assert payload["below_attribution"]["workload_resource_attributed_pressure_episode_count"] == 1
+    assert payload["below_attribution"]["residual_unattributed_pressure_episode_count"] == 5
     assert payload["experiment_manifests"]["source_loadable_count"] == 1
     assert payload["experiment_manifests"]["controlled_run_invalid_count"] == 1
     assert payload["gaps"]["gap_count"] == 2
@@ -168,6 +194,8 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
     assert "experiment manifests exist but no controlled benchmark claim is currently proven" in payload["blockers"]
     assert "1 executed benchmark manifests are invalid" in payload["blockers"]
     assert "1 measurement-system diagnostics failed" in payload["blockers"]
+    assert "5 pressure episodes still lack below/workload attribution" in payload["blockers"]
+    assert "4 bounded below export windows are planned" in payload["blockers"]
     assert "1 supported attribution assumption checks failed" in payload["blockers"]
     assert "1 refused-claim assumption checks failed" not in payload["blockers"]
     assert "readiness dimension support_gate is limited" in payload["blockers"]

@@ -103,6 +103,8 @@ def test_sustained_multisource_pressure_emits_split_kinds(tmp_path):
     assert "gpu_power_or_thermal" not in kinds
     # Everything is sustained, so nothing was suppressed.
     assert analysis.suppressed_transient_count == 0
+    assert analysis.detector_version == "sustained-pressure-v2"
+    assert analysis.min_sustained_samples == 3
 
     io = next(e for e in analysis.episodes if e.kind == "io_pressure")
     assert io.sample_count == 4

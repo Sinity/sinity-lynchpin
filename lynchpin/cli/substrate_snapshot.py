@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         args.start,
         "--end",
         args.end,
-        "--refresh-substrate",
+        "--materialize-substrate",
         "--progress",
         args.progress,
     ]
@@ -198,6 +198,7 @@ def _promote_snapshot_daily_signals(
         SOURCE_PERSONAL_DAILY_SIGNAL,
         record_source_status,
     )
+    from lynchpin.materialization import ensure_materialized
     from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
     from lynchpin.sources.personal_signals import iter_personal_daily_signals
     from lynchpin.sources.title_metadata import title_metadata_path
@@ -211,10 +212,11 @@ def _promote_snapshot_daily_signals(
     )
 
     refresh_id = _snapshot_refresh_id(start=start, end=end, projects=projects)
+    for product in ("title_metadata", "activity_content", "personal_daily_signals"):
+        ensure_materialized(product, window=(start, end))
     rows = [
         (row.source, row.date, row.metric, row.value, row.dimensions)
-        for row in iter_personal_daily_signals()
-        if start <= row.date < end
+        for row in iter_personal_daily_signals(start=start, end=end, ensure=False)
     ]
     with connect(substrate_path()) as conn:
         apply_schema(conn)
@@ -225,11 +227,7 @@ def _promote_snapshot_daily_signals(
                 refresh_id=refresh_id,
                 path=str(title_metadata_path()),
             )
-            content_rows = [
-                row
-                for row in iter_activity_content_days()
-                if start <= row.date < end
-            ]
+            content_rows = list(iter_activity_content_days(start=start, end=end, ensure=False))
             content_count = promote_activity_content_days(
                 conn,
                 refresh_id=refresh_id,
@@ -245,11 +243,8 @@ def _promote_snapshot_daily_signals(
                 refresh_id=refresh_id,
                 rows=(
                     row
-                    for row in iter_activity_title_usage()
-                    if row.last_date is not None
-                    and row.first_date is not None
-                    and row.first_date < end
-                    and row.last_date >= start
+                    for row in iter_activity_title_usage(start=start, end=end, ensure=False)
+                    if row.last_date is not None and row.first_date is not None
                 ),
             )
             count = promote_personal_daily_signals(conn, refresh_id=refresh_id, rows=rows)

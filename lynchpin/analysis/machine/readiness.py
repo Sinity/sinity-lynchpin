@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.core.io import load_analysis_artifact, save_json
+from lynchpin.core.io import load_materialized_analysis_artifact, materialize_analysis_artifacts, save_json
 from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 
@@ -29,8 +29,8 @@ class MachineTableCoverage:
     row_count: int
     first_observed_at: datetime | None
     last_observed_at: datetime | None
-    refresh_count: int
-    latest_refresh_id: str | None
+    materialized_snapshot_count: int
+    latest_materialized_refresh_id: str | None
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,7 @@ def _table_coverage(conn: Any, table: str, *, start: date | None, end: date | No
         """,
         params,
     ).fetchone()
-    latest_refresh = conn.execute(
+    latest_materialized = conn.execute(
         f"""
         SELECT refresh_id
         FROM ({rows_sql})
@@ -164,8 +164,8 @@ def _table_coverage(conn: Any, table: str, *, start: date | None, end: date | No
         row_count=int(row[0]),
         first_observed_at=row[1],
         last_observed_at=row[2],
-        refresh_count=int(row[3]),
-        latest_refresh_id=str(latest_refresh[0]) if latest_refresh else None,
+        materialized_snapshot_count=int(row[3]),
+        latest_materialized_refresh_id=str(latest_materialized[0]) if latest_materialized else None,
     )
 
 
@@ -212,7 +212,7 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
         ("machine_episode_analysis.json", "episode_count"),
         ("machine_below_analysis.json", "window_count"),
         ("machine_below_attribution.json", "attributed_episode_count"),
-        ("machine_below_export_queue.json", "queue_count"),
+        ("machine_below_export_handoff.json", "planned_window_count"),
         ("machine_context_windows.json", "window_count"),
         ("machine_work_observations.json", None),
         ("machine_analysis_feature_frames.json", "frame.row_count"),
@@ -241,11 +241,12 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
         ("devshell_performance.json", "command_count"),
         ("machine_observational_baselines.json", None),
         ("machine_experiment_claims.json", "run_count"),
-        ("machine_analysis_refresh_report.json", "step_count"),
+        ("machine_analysis_materialization_report.json", "step_count"),
     )
+    materialization = materialize_analysis_artifacts()
     result = []
     for artifact, count_path in artifacts:
-        payload_dict = load_analysis_artifact(artifact)
+        payload_dict = _load_machine_artifact(artifact, materialization=materialization)
         result.append(
             MachineArtifactCoverage(
                 artifact=artifact,
@@ -257,6 +258,11 @@ def _artifact_coverages() -> list[MachineArtifactCoverage]:
             )
         )
     return result
+
+
+def _load_machine_artifact(artifact: str, *, materialization: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    payload, _materialization = load_materialized_analysis_artifact(artifact, materialization=materialization)
+    return payload if isinstance(payload, dict) else None
 
 
 def _primary_count(payload: object, count_path: str | None) -> int | None:
@@ -298,7 +304,7 @@ def _dimensions(
             (
                 f"{metric.row_count} metric rows",
                 f"span={_span(metric)}",
-                f"{metric.refresh_count} refresh ids",
+                f"{metric.materialized_snapshot_count} materialized snapshots",
             ),
             () if metric.row_count >= 100 else ("too few metric rows for robust observational analysis",),
         ),
@@ -598,8 +604,7 @@ def _measurement_system_dimension(artifact: MachineArtifactCoverage) -> MachineR
 
 
 def _artifact_payload(artifact: MachineArtifactCoverage) -> dict[str, Any] | None:
-    payload = load_analysis_artifact(artifact.artifact)
-    return payload if isinstance(payload, dict) else None
+    return _load_machine_artifact(artifact.artifact)
 
 
 def _status_counts(value: object) -> dict[str, int]:
@@ -625,7 +630,7 @@ def _network_caveats(row_count: int) -> tuple[str, ...]:
 
 
 def _below_attribution_dimension(artifact: MachineArtifactCoverage) -> MachineReadinessDimension:
-    payload_dict = load_analysis_artifact(artifact.artifact) or {}
+    payload_dict = _load_machine_artifact(artifact.artifact) or {}
     attributed = _int_value(payload_dict.get("attributed_episode_count"))
     workload_attributed = _int_value(payload_dict.get("workload_resource_attributed_pressure_episode_count"))
     pressure = _int_value(payload_dict.get("pressure_episode_count"))

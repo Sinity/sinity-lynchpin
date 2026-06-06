@@ -11,9 +11,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.config import get_config
+from ..core.io import latest_mtime_iso
 from ..sources.exports_messenger import iter_fbmessenger_messages, iter_fbmessenger_threads
 from ..sources.exports_raindrop import iter_raindrop_bookmarks_all
 from ..sources.spotify import iter_streams
+
+
+SPOTIFY_STREAMS_SCHEMA_VERSION = 1
+REDDIT_CANONICAL_SCHEMA_VERSION = 1
+RAINDROP_BOOKMARKS_SCHEMA_VERSION = 1
+MESSENGER_CANONICAL_SCHEMA_VERSION = 1
 
 
 def spotify_streams_path() -> Path:
@@ -70,7 +77,15 @@ def materialize_spotify() -> dict[str, Any]:
 
     ordered = [rows[key] for key in sorted(rows)]
     _write_ndjson(out, ordered)
-    return _write_manifest(out.with_suffix(".manifest.json"), "spotify.streaming_history", ordered, product_path=out)
+    source_files = sorted({Path(str(row["source_file"])) for row in ordered if row.get("source_file")})
+    return _write_manifest(
+        out.with_suffix(".manifest.json"),
+        "spotify.streaming_history",
+        ordered,
+        product_path=out,
+        source_files=source_files,
+        schema_version=SPOTIFY_STREAMS_SCHEMA_VERSION,
+    )
 
 
 def materialize_reddit() -> dict[str, Any]:
@@ -92,14 +107,23 @@ def materialize_reddit() -> dict[str, Any]:
             if path.is_file()
         )
         rows = _coalesce_csv_rows(inputs)
+        first_date, last_date = _row_date_bounds(rows)
         output = out_dir / filename
         _write_csv(output, rows)
         reports[filename] = {
+            "first_date": first_date,
             "input_files": len(inputs),
+            "input_latest_mtime": latest_mtime_iso(inputs),
+            "last_date": last_date,
             "row_count": len(rows),
             "path": str(output),
         }
-    _write_reddit_manifest(out_dir / "manifest.json", reports, product_path=out_dir)
+    _write_reddit_manifest(
+        out_dir / "manifest.json",
+        reports,
+        product_path=out_dir,
+        source_files=[path for root in input_roots for path in root.rglob("*.csv") if path.is_file()],
+    )
     return {"path": str(out_dir), "files": reports}
 
 
@@ -124,7 +148,15 @@ def materialize_raindrop() -> dict[str, Any]:
         }
     ordered = [rows[key] for key in sorted(rows)]
     _write_csv(out, ordered)
-    return _write_manifest(out.with_suffix(".manifest.json"), "raindrop.bookmarks", ordered, product_path=out)
+    source_files = sorted({Path(str(row["source_file"])) for row in ordered if row.get("source_file")})
+    return _write_manifest(
+        out.with_suffix(".manifest.json"),
+        "raindrop.bookmarks",
+        ordered,
+        product_path=out,
+        source_files=source_files,
+        schema_version=RAINDROP_BOOKMARKS_SCHEMA_VERSION,
+    )
 
 
 def materialize_messenger() -> dict[str, Any]:
@@ -170,8 +202,15 @@ def materialize_messenger() -> dict[str, Any]:
     messages_path = out_dir / "messages.ndjson"
     _write_ndjson(threads_path, threads)
     _write_ndjson(messages_path, messages)
-    manifest = _write_manifest(out_dir / "manifest.json", "facebook_messenger.messages", messages, product_path=messages_path)
-    manifest["thread_count"] = len(threads)
+    manifest = _write_manifest(
+        out_dir / "manifest.json",
+        "facebook_messenger.messages",
+        messages,
+        product_path=messages_path,
+        source_files=inputs,
+        schema_version=MESSENGER_CANONICAL_SCHEMA_VERSION,
+        extra={"thread_count": len(threads)},
+    )
     return manifest
 
 
@@ -256,7 +295,11 @@ def _write_manifest(
     rows: list[dict[str, Any]],
     *,
     product_path: Path,
+    source_files: Iterable[Path] = (),
+    schema_version: int,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    source_paths = tuple(source_files)
     dates = [
         parsed.date()
         for row in rows
@@ -265,12 +308,18 @@ def _write_manifest(
     ]
     manifest = {
         "dataset": dataset,
+        "schema_version": schema_version,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(product_path),
         "row_count": len(rows),
         "first_date": min(dates).isoformat() if dates else None,
         "last_date": max(dates).isoformat() if dates else None,
+        "input_files": [str(path) for path in source_paths],
+        "input_file_count": _path_count(source_paths),
+        "input_latest_mtime": latest_mtime_iso(source_paths),
     }
+    if extra:
+        manifest.update(extra)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
 
@@ -280,17 +329,52 @@ def _write_reddit_manifest(
     reports: dict[str, Any],
     *,
     product_path: Path,
+    source_files: Iterable[Path] = (),
 ) -> dict[str, Any]:
+    source_paths = tuple(source_files)
+    first_date, last_date = _report_date_bounds(reports.values())
     manifest = {
         "dataset": "reddit.canonical_csv",
+        "schema_version": REDDIT_CANONICAL_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(product_path),
         "file_count": len(reports),
+        "first_date": first_date,
+        "last_date": last_date,
         "row_count": sum(int(report.get("row_count") or 0) for report in reports.values()),
+        "input_files": [str(path) for path in source_paths],
+        "input_file_count": _path_count(source_paths),
+        "input_latest_mtime": latest_mtime_iso(source_paths),
         "files": reports,
     }
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def _row_date_bounds(rows: Iterable[dict[str, Any]]) -> tuple[str | None, str | None]:
+    dates = [
+        parsed.date()
+        for row in rows
+        for parsed in [_row_datetime(row)]
+        if parsed is not None
+    ]
+    return (
+        min(dates).isoformat() if dates else None,
+        max(dates).isoformat() if dates else None,
+    )
+
+
+def _report_date_bounds(reports: Iterable[dict[str, Any]]) -> tuple[str | None, str | None]:
+    first: str | None = None
+    last: str | None = None
+    for report in reports:
+        report_first = report.get("first_date")
+        report_last = report.get("last_date")
+        if isinstance(report_first, str) and report_first and (first is None or report_first < first):
+            first = report_first
+        if isinstance(report_last, str) and report_last and (last is None or report_last > last):
+            last = report_last
+    return first, last
 
 
 def _row_datetime(row: dict[str, Any]) -> datetime | None:
@@ -301,8 +385,16 @@ def _row_datetime(row: dict[str, Any]) -> datetime | None:
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
+            pass
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
+        except ValueError:
             continue
     return None
+
+
+def _path_count(paths: Iterable[Path]) -> int:
+    return sum(1 for path in paths if path.exists())
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,6 +1,20 @@
 from datetime import date, timedelta
 
 
+def _stub_signal_materialization(monkeypatch):
+    calls = []
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        calls.append(caller)
+        return {"name": "evidence_graph_substrate", "status": "ready", "caller": caller}
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.signals.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    return calls
+
+
 def _seed(db, rows, refresh_id="r1"):
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.personal import promote_operator_day_rows
@@ -36,7 +50,10 @@ def test_operator_day_correlation_planted_signal(tmp_path, monkeypatch):
 
     assert "spotify_hours" in operator_day_metrics()
 
+    calls = _stub_signal_materialization(monkeypatch)
     out = operator_day_correlation("spotify_hours", "aw_deep_work_min", max_lag_days=2)
+    assert calls == ["operator_day_correlation"]
+    assert out["materialization"]["caller"] == "operator_day_correlation"
     assert out["days_materialized"] == 40
     lag0 = next(item for item in out["lags"] if item["lag_days"] == 0)
     assert lag0["r"] > 0.9  # strong planted same-day correlation
@@ -65,6 +82,7 @@ def test_operator_day_correlation_missing_not_zero(tmp_path, monkeypatch):
     ]
     _seed(db, rows)
 
+    _stub_signal_materialization(monkeypatch)
     out = operator_day_correlation("stress_mean", "git_commits")
     assert out["lags"] == []  # stress_mean NULL everywhere → no pairs, not zeros
 

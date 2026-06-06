@@ -21,12 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.io import latest_mtime_iso
+from .google_takeout_materialize import google_takeout_input_files
 from ..sources.gmail_takeout import (
     GmailMessage,
     gmail_events_path,
     gmail_manifest_path,
     iter_gmail_messages_deduped,
 )
+
+GMAIL_EVENTS_SCHEMA_VERSION = 1
 
 
 def materialize_gmail_events(
@@ -36,6 +40,7 @@ def materialize_gmail_events(
     archive_root = root or cfg.exports_root / "google/raw/takeout"
     output = output or gmail_events_path()
     output.parent.mkdir(parents=True, exist_ok=True)
+    input_files = google_takeout_input_files(archive_root)
 
     row_count = 0
     first_ts: datetime | None = None
@@ -62,11 +67,15 @@ def materialize_gmail_events(
 
     manifest = {
         "dataset": "comms.gmail.events",
+        "schema_version": GMAIL_EVENTS_SCHEMA_VERSION,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": row_count,
         "first_date": first_ts.date().isoformat() if first_ts else None,
         "last_date": last_ts.date().isoformat() if last_ts else None,
+        "input_files": [str(path) for path in input_files],
+        "input_file_count": len(input_files),
+        "input_latest_mtime": latest_mtime_iso(input_files),
         "labels": dict(sorted(label_counts.items())),
         "skipped_no_timestamp": skipped_no_timestamp,
         "archive_root": str(archive_root),

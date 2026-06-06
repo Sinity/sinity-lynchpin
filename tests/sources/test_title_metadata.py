@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
+from lynchpin.sources import title_metadata
 from lynchpin.sources.title_metadata import (
     classification_for,
     hash_title,
@@ -72,3 +74,65 @@ def test_title_metadata_reader_and_lookup(tmp_path) -> None:
     assert rows[0].title_hash == key
     assert rows[0].activity == "research"
     assert classification_for("chrome", "Example - Google Chrome", path=path) == rows[0]
+
+
+def test_title_metadata_default_reader_materializes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = []
+    derived = tmp_path / "derived"
+    normalized = normalize_title("chrome", "Example - Google Chrome")
+    key = hash_title("chrome", normalized)
+    path = derived / "title_metadata/classifications.ndjson"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "title_hash": key,
+                "app": "chrome",
+                "raw_title": "Example - Google Chrome",
+                "normalized_title": normalized,
+                "activity": "research",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_ensure(name, *, window=None):
+        calls.append((name, window))
+
+    monkeypatch.setattr(title_metadata, "get_config", lambda: SimpleNamespace(derived_root=derived))
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+
+    rows = list(iter_title_classifications())
+
+    assert calls == [("title_metadata", None)]
+    assert [row.title_hash for row in rows] == [key]
+
+
+def test_title_metadata_explicit_path_does_not_materialize(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "classifications.ndjson"
+    path.write_text(
+        json.dumps(
+            {
+                "title_hash": "abc",
+                "app": "chrome",
+                "raw_title": "Example - Google Chrome",
+                "normalized_title": "Example",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("explicit path reads must not materialize")
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fail_ensure)
+
+    assert [row.title_hash for row in iter_title_classifications(path)] == ["abc"]

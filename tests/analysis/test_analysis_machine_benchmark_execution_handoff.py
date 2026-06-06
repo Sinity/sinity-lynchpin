@@ -3,9 +3,9 @@ from __future__ import annotations
 from lynchpin.core.io import save_json
 
 
-def test_benchmark_execution_queue_joins_candidates_preflight_and_support(tmp_path):
-    from lynchpin.analysis.machine.benchmark_execution_queue import (
-        analyze_machine_benchmark_execution_queue,
+def test_benchmark_execution_handoff_joins_candidates_preflight_and_support(tmp_path):
+    from lynchpin.analysis.machine.benchmark_execution_handoff import (
+        analyze_machine_benchmark_execution_handoff,
     )
 
     candidates = tmp_path / "machine_attribution_candidates.json"
@@ -71,14 +71,14 @@ def test_benchmark_execution_queue_joins_candidates_preflight_and_support(tmp_pa
         sort_keys=True,
     )
 
-    analysis = analyze_machine_benchmark_execution_queue(
+    analysis = analyze_machine_benchmark_execution_handoff(
         candidates_path=candidates,
         manifest_bundle_path=bundle,
         preflight_path=preflight,
         support_path=support,
     )
 
-    assert analysis.queue_count == 1
+    assert analysis.handoff_count == 1
     assert analysis.ready_group_count == 1
     item = analysis.items[0]
     assert item.candidate_id == "cand1"

@@ -60,7 +60,11 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             integration_state="canonical",
             path=cfg.machine_telemetry_db,
             substrate_table="machine_metric_sample; machine_gpu_sample; machine_service_state; machine_network_sample",
-            grain="10s host sample, 1s GPU sample, 60s service-state sample, and 5m network-link sample",
+            grain=(
+                "10s host sample, 1s GPU sample, 60s service-state sample, "
+                "5m network-link sample, plus direct-read block-device and "
+                "service-cgroup attribution samples"
+            ),
             state_dimensions=(
                 "cpu_power",
                 "thermal",
@@ -70,10 +74,18 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
                 "scheduler_latency",
                 "d_state_tasks",
                 "service_state",
+                "block_device_io",
+                "service_cgroup_io",
+                "service_cgroup_pressure",
                 "network_link_quality",
             ),
             retention="canonical raw capture under /realm/data/captures/machine",
-            next_action="promote live metric, service, and network samples on ordinary Lynchpin refresh; join experiment windows by observed_at",
+            next_action=(
+                "promote coarse metric, service, GPU, and network samples for "
+                "snapshot analytics; read high-rate block_device_sample, "
+                "service_cgroup_io_sample, and service_cgroup_pressure_sample "
+                "directly from the live SQLite for exact-window attribution"
+            ),
         ),
         ObservabilityInput(
             id="machine.below",

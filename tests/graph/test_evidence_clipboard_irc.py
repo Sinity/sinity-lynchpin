@@ -39,7 +39,12 @@ def test_add_clipboard_emits_nodes_for_range(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     nodes: list = []
-    add_clipboard(nodes, start=date(2026, 5, 1), end=date(2026, 5, 31), selected=set())
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
 
     assert len(nodes) == 1
     node = nodes[0]
@@ -50,6 +55,28 @@ def test_add_clipboard_emits_nodes_for_range(monkeypatch: pytest.MonkeyPatch) ->
     assert "some text copied" in node.summary
 
 
+def test_add_clipboard_materialized_uses_source_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    clip = _make_clip("materialized copied text", _CLIP_TS)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_clipboard.entries_in_range",
+        lambda **kwargs: calls.append(kwargs) or [clip],
+    )
+
+    nodes: list = []
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
+
+    assert calls == [{"start": date(2026, 5, 1), "end": date(2026, 5, 31)}]
+    assert len(nodes) == 1
+    assert nodes[0].kind == "clipboard_entry"
+    assert "materialized copied text" in nodes[0].summary
+
+
 def test_add_clipboard_node_payload_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     clip = _make_clip("https://example.com", _CLIP_TS, kind="url", pinned=True)
     monkeypatch.setattr(
@@ -58,7 +85,12 @@ def test_add_clipboard_node_payload_fields(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
     nodes: list = []
-    add_clipboard(nodes, start=date(2026, 5, 1), end=date(2026, 5, 31), selected=set())
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
 
     assert len(nodes) == 1
     payload = nodes[0].payload
@@ -76,7 +108,12 @@ def test_add_clipboard_skips_empty_values(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     nodes: list = []
-    add_clipboard(nodes, start=date(2026, 5, 1), end=date(2026, 5, 31), selected=set())
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
 
     assert nodes == []
 
@@ -111,7 +148,12 @@ def test_add_clipboard_no_source_data(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     nodes: list = []
-    add_clipboard(nodes, start=date(2026, 5, 1), end=date(2026, 5, 31), selected=set())
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
 
     assert nodes == []
 
@@ -119,6 +161,12 @@ def test_add_clipboard_no_source_data(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 # IRC tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_irc_materialization(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda name, *, window: None)
+
 
 def _make_conv(
     conversation_id: str,
@@ -137,6 +185,9 @@ def _make_conv(
         end=end,
         source_path="/fake/irc.log",
         total_lines=total_lines,
+        message_count=total_lines,
+        unique_speakers=2,
+        speakers=("alice", "bob"),
         sinity_lines=sinity_lines,
         mention_lines=mention_lines,
         messages=messages,
@@ -183,7 +234,8 @@ def test_add_irc_node_payload_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     assert payload is not None
     assert payload["conversation_id"] == "99"
     assert payload["total_lines"] == 50
-    assert payload["sinity_lines"] == 20
+    assert payload["message_count"] == 50
+    assert payload["unique_speakers"] == 2
     assert payload["channel"] == "#sinity-lynchpin"
 
 

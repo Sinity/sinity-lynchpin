@@ -102,7 +102,7 @@ def _library_signature(*args: object, **kwargs: object) -> object:
     return (str(resolved), file_signature(resolved))
 
 
-@persistent_cache("goodreads_library", depends_on=_library_signature)
+@persistent_cache("goodreads_library", depends_on=_library_signature)  # type: ignore[arg-type]
 def _load_goodreads_books(path: Optional[Path] = None) -> list[GoodreadsBook]:
     resolved = _resolve_library(path)
     if resolved is None:

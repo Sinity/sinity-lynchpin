@@ -274,7 +274,7 @@ def _polylogue_attribution_context(
     same window. When Polylogue insight products are incomplete, repeatedly
     probing ``work_events``/``session_profiles_for_date`` dominates the AW path
     and emits the same warning several times. Cache both successful context and
-    graceful unavailability for the process; source products are refresh-run
+    graceful unavailability for the process; source products are materialization
     inputs, not per-call mutable state.
     """
     try:

@@ -1,6 +1,7 @@
 """Tests for IRC raw-log source (irc_raw.py)."""
 
 from datetime import date
+import json
 
 from lynchpin.sources import irc_raw
 
@@ -50,6 +51,38 @@ def test_iter_messages_filters_by_channel(tmp_path):
     msgs = list(irc_raw.iter_messages(channel="#chan1", root=tmp_path))
     speakers = {m.speaker for m in msgs}
     assert "x" not in speakers
+
+
+def test_iter_messages_prefers_materialized_events(monkeypatch, tmp_path):
+    calls = []
+    product = tmp_path / "irc-events.ndjson"
+    product.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-04-21T10:00:00+00:00",
+                "speaker_raw": "alice",
+                "text": "from product",
+                "channel": "#test",
+                "source_file": "/raw/#test/2026-04-21.log",
+                "line_no": 3,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(irc_raw, "irc_events_path", lambda root=None: product)
+    monkeypatch.setattr(irc_raw, "irc_raw_root", lambda: tmp_path / "missing-raw")
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)),
+    )
+
+    msgs = list(irc_raw.iter_messages())
+
+    assert calls == [("irc", None)]
+    assert len(msgs) == 1
+    assert msgs[0].text == "from product"
+    assert msgs[0].source_file == "/raw/#test/2026-04-21.log"
 
 
 def test_iter_messages_in_range_filters_by_date(tmp_path):
@@ -163,6 +196,100 @@ def test_daily_irc_activity_rolls_up_correctly(tmp_path):
     assert day.total_messages == 7  # 8 total, 1 meta
     assert day.unique_speakers >= 3  # alice, bob, carol, dave
     assert day.operator_messages == 0  # no operator nicks in sample
+
+
+def test_daily_irc_activity_uses_logical_day_for_materialized_events(monkeypatch, tmp_path):
+    calls = []
+    product = tmp_path / "irc-events.ndjson"
+    product.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-06-06T01:00:00+00:00",
+                "speaker_raw": "alice",
+                "text": "late local message",
+                "channel": "#test",
+                "source_file": "/raw/#test/2026-06-06.log",
+                "line_no": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(irc_raw, "irc_events_path", lambda root=None: product)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)),
+    )
+
+    daily = irc_raw.daily_irc_activity(start=date(2026, 6, 5), end=date(2026, 6, 5))
+
+    assert calls == [("irc", (date(2026, 6, 5), date(2026, 6, 6)))]
+    assert len(daily) == 1
+    assert daily[0].date == date(2026, 6, 5)
+    assert daily[0].total_messages == 1
+
+
+def test_daily_irc_activity_can_skip_ensure(monkeypatch, tmp_path):
+    product = tmp_path / "irc-events.ndjson"
+    product.write_text("", encoding="utf-8")
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("pre-ensured reads must not materialize again")
+
+    monkeypatch.setattr(irc_raw, "irc_events_path", lambda root=None: product)
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fail_ensure)
+
+    assert (
+        irc_raw.daily_irc_activity(
+            start=date(2026, 6, 5),
+            end=date(2026, 6, 5),
+            ensure=False,
+        )
+        == []
+    )
+
+
+def test_extract_conversations_can_skip_ensure(monkeypatch, tmp_path):
+    product = tmp_path / "irc-events.ndjson"
+    rows = [
+        ("2026-04-21T10:00:00+00:00", "alice", "hello bob"),
+        ("2026-04-21T10:00:30+00:00", "bob", "hey alice"),
+        ("2026-04-21T10:01:00+00:00", "alice", "working on parser"),
+        ("2026-04-21T10:01:30+00:00", "bob", "sounds good"),
+    ]
+    product.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "timestamp": stamp,
+                    "speaker_raw": speaker,
+                    "text": text,
+                    "channel": "#test",
+                    "source_file": "/raw/#test/2026-04-21.log",
+                    "line_no": line_no,
+                }
+            )
+            for line_no, (stamp, speaker, text) in enumerate(rows, 1)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("pre-ensured reads must not materialize again")
+
+    monkeypatch.setattr(irc_raw, "irc_events_path", lambda root=None: product)
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fail_ensure)
+
+    conversations = list(
+        irc_raw.extract_conversations(
+            start=date(2026, 4, 21),
+            end=date(2026, 4, 21),
+            ensure=False,
+        )
+    )
+
+    assert conversations
 
 
 def test_daily_irc_activity_counts_operator_messages(tmp_path):

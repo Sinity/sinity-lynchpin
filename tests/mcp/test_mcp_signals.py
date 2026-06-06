@@ -8,6 +8,20 @@ import pytest
 from tests.mcp.conftest import dt, setup_substrate
 
 
+def _stub_signal_materialization(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake_ensure_substrate_materialized_for_read(*, caller: str, window=None):
+        calls.append(caller)
+        return {"name": "evidence_graph_substrate", "status": "ready", "caller": caller}
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.signals.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    return calls
+
+
 def test_daily_rhythm_fingerprint_percentages_are_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -36,7 +50,9 @@ def test_daily_rhythm_fingerprint_percentages_are_bounded(
     with connect(substrate_path()) as conn:
         promote_commits(conn, refresh_id="r1", facts=commits)
 
+    calls = _stub_signal_materialization(monkeypatch)
     row = daily_rhythm_fingerprint(refresh_id="r1")[0]
+    assert calls == []
     assert (
         row["morning_pct"]
         + row["afternoon_pct"]
@@ -95,7 +111,9 @@ def test_daily_rhythm_defaults_to_commit_fact_refresh(
             ],
         )
 
+    calls = _stub_signal_materialization(monkeypatch)
     result = daily_rhythm_fingerprint()
+    assert calls == ["daily_rhythm_fingerprint"]
     assert result[0]["project"] == "lynchpin"
     assert result[0]["total_commits"] == 1
 
@@ -217,7 +235,11 @@ def test_cross_source_lag_reports_unavailable_when_attribution_has_no_event_over
             project_resolver=lambda _event: "lynchpin",
         )
 
+    calls = _stub_signal_materialization(monkeypatch)
     result = cross_source_lag(refresh_id="r1")
+    assert calls == []
+    assert result["materialization"]["status"] == "pinned"
+    assert result["materialization"]["caller"] == "cross_source_lag"
     assert result["attributed_commits"] == 1
     assert result["pairs"] == 0
     assert result["caveats"]

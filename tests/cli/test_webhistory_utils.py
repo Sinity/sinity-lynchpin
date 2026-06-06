@@ -24,6 +24,11 @@ from lynchpin.sources.web_timestamps import (
 from lynchpin.sources.takeout_chrome import iter_takeout_chrome_visits
 
 
+@pytest.fixture(autouse=True)
+def _no_webhistory_materialization(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda *_args, **_kwargs: None)
+
+
 # ---------------------------------------------------------------------------
 # _parse_csv_dt (Chrome CSV local-time parsing)
 # ---------------------------------------------------------------------------
@@ -109,6 +114,43 @@ def test_default_history_files_requires_canonical_ndjson(monkeypatch, tmp_path: 
         _history_files()
 
     assert _history_files(root=tmp_path / "data") == [tmp_path / "data" / "segment.ndjson"]
+
+
+def test_default_history_files_materializes_canonical_ndjson(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+    ndjson = tmp_path / "full_history.ndjson"
+    ndjson.write_text(
+        '{"iso_time":"2026-05-01T00:00:00+00:00","url":"https://example.com"}\n',
+        encoding="utf-8",
+    )
+
+    class Config:
+        webhistory_ndjson = ndjson
+        webhistory_dir = tmp_path / "data"
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: Config())
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)),
+    )
+
+    assert _history_files() == [ndjson]
+    assert calls == [("webhistory", None)]
+
+    calls.clear()
+    root = tmp_path / "raw"
+    root.mkdir()
+    segment = root / "segment.ndjson"
+    segment.write_text(
+        '{"iso_time":"2026-05-01T00:00:00+00:00","url":"https://segment.example"}\n',
+        encoding="utf-8",
+    )
+
+    assert _history_files(root=root) == [segment]
+    assert calls == []
+
+    assert _history_files(ndjson=segment) == [segment]
+    assert calls == []
 
 
 def test_takeout_chrome_reads_legacy_browser_history(tmp_path: Path) -> None:
@@ -483,3 +525,104 @@ def test_daily_browsing_normal_daytime_visit_unaffected(tmp_path, monkeypatch):
     result = daily_browsing(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
     assert len(result) == 1
     assert result[0].date == _date(2026, 5, 15)
+
+
+def test_daily_browsing_and_domain_breakdown_share_source_index(tmp_path, monkeypatch):
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing, domain_breakdown
+
+    ndjson = tmp_path / "full_history.ndjson"
+    ndjson.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "url": "https://example.com/a",
+                        "title": "A",
+                        "iso_time": "2026-05-15T10:00:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "url": "https://example.com/b",
+                        "title": "B",
+                        "iso_time": "2026-05-15T10:01:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "url": "https://github.com/org/repo",
+                        "title": "Repo",
+                        "iso_time": "2026-05-15T10:02:00+00:00",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+
+    days = daily_browsing(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
+    assert [(day.date, day.visit_count, day.unique_domains) for day in days] == [
+        (_date(2026, 5, 15), 3, 2)
+    ]
+    assert domain_breakdown(start=_date(2026, 5, 15), end=_date(2026, 5, 15))[:2] == [
+        ("example.com", 2, 0.6667),
+        ("github.com", 1, 0.3333),
+    ]
+
+
+def test_daily_web_aggregates_forward_requested_materialization_window(tmp_path, monkeypatch):
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing, domain_breakdown
+
+    calls = []
+    ndjson = _make_ndjson_with_visits(tmp_path, ["2026-05-15T10:00:00+00:00"])
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)),
+    )
+
+    daily_browsing(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
+    assert calls[-1] == ("webhistory", (_date(2026, 5, 15), _date(2026, 5, 16)))
+
+    domain_breakdown(start=_date(2026, 5, 15), end=_date(2026, 5, 15))
+    assert calls[-1] == ("webhistory", (_date(2026, 5, 15), _date(2026, 5, 16)))
+
+
+def test_daily_web_aggregates_can_skip_ensure(tmp_path, monkeypatch):
+    from datetime import date as _date
+    from lynchpin.sources.web import daily_browsing, domain_breakdown
+
+    ndjson = _make_ndjson_with_visits(tmp_path, ["2026-05-15T10:00:00+00:00"])
+
+    class FakeConfig:
+        webhistory_ndjson = ndjson
+        cache_dir = tmp_path
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("pre-ensured reads must not materialize again")
+
+    monkeypatch.setattr("lynchpin.sources.web.get_config", lambda: FakeConfig())
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fail_ensure)
+
+    assert daily_browsing(
+        start=_date(2026, 5, 15),
+        end=_date(2026, 5, 15),
+        ensure=False,
+    )[0].visit_count == 1
+    assert domain_breakdown(
+        start=_date(2026, 5, 15),
+        end=_date(2026, 5, 15),
+        ensure=False,
+    )[0][0] == "example.com"

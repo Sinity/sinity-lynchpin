@@ -13,6 +13,24 @@ import duckdb
 from lynchpin.mcp.tools.change import commit_kind_attribution
 
 
+def _stub_substrate_materialization(monkeypatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake_ensure_substrate_materialized_for_read(*, caller: str, window=None):
+        calls.append(caller)
+        return {
+            "name": "evidence_graph_substrate",
+            "status": "ready",
+            "caller": caller,
+        }
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.change.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    return calls
+
+
 def test_commit_kind_attribution_degraded_when_no_ai_attribution(
     monkeypatch, tmp_path
 ) -> None:
@@ -49,8 +67,12 @@ def test_commit_kind_attribution_degraded_when_no_ai_attribution(
         "lynchpin.substrate.connection.substrate_path",
         lambda: str(db_path),
     )
+    calls = _stub_substrate_materialization(monkeypatch)
 
     result = commit_kind_attribution(refresh_id=refresh_id)
+    assert calls == []
+    assert result["materialization"]["status"] == "pinned"
+    assert result["materialization"]["caller"] == "mcp.change.commit_kind_attribution"
     assert result["degraded"] is True
     assert "ai_attribution backfill not run" in (result["reason"] or "")
     assert isinstance(result["rows"], list)
@@ -93,8 +115,12 @@ def test_commit_kind_attribution_not_degraded_when_has_ai_attribution(
         "lynchpin.substrate.connection.substrate_path",
         lambda: str(db_path),
     )
+    calls = _stub_substrate_materialization(monkeypatch)
 
     result = commit_kind_attribution(refresh_id=refresh_id)
+    assert calls == []
+    assert result["materialization"]["status"] == "pinned"
+    assert result["materialization"]["caller"] == "mcp.change.commit_kind_attribution"
     assert result["degraded"] is False
     assert result["reason"] is None
     assert len(result["rows"]) == 2

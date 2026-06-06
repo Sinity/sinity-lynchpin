@@ -43,9 +43,13 @@ class SpotifyStreamingSummary:
     tracks: dict[str, Counter[str]]
 
 
-def _stream_files(root: Optional[Path] = None) -> list[Path]:
+def _stream_files(root: Optional[Path] = None, *, ensure: bool = True) -> list[Path]:
     cfg = get_config()
     if root is None:
+        if ensure:
+            from ..materialization import ensure_materialized
+
+            ensure_materialized("spotify")
         canonical = cfg.exports_root / "spotify/processed/streaming_history.ndjson"
         if canonical.exists():
             return [canonical]
@@ -78,13 +82,13 @@ def _stream_files_signature(*args: object, **kwargs: object) -> object:
         root_path = root
     else:
         root_path = Path(str(root))
-    return files_signature(_stream_files(root_path))
+    return files_signature(_stream_files(root_path, ensure=False))
 
 
 @persistent_cache("spotify_streams", depends_on=_stream_files_signature)  # type: ignore[arg-type]
 def _load_streams(root: Optional[Path] = None) -> list[SpotifyStream]:
     rows: list[SpotifyStream] = []
-    for path in _stream_files(root):
+    for path in _stream_files(root, ensure=False):
         if path.suffix == ".ndjson":
             rows.extend(_read_canonical_streams(path))
             continue
@@ -134,7 +138,11 @@ def _read_canonical_streams(path: Path) -> list[SpotifyStream]:
     return rows
 
 
-def iter_streams(root: Optional[Path] = None) -> Iterator[SpotifyStream]:
+def iter_streams(root: Optional[Path] = None, *, ensure: bool = True) -> Iterator[SpotifyStream]:
+    if ensure and root is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("spotify")
     yield from _load_streams(root)
 
 
@@ -278,11 +286,20 @@ def listening_sessions(*, gap_minutes: float = 30, root: Optional[Path] = None) 
     return result
 
 
-def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
-                    root: Optional[Path] = None) -> list[DailyListening]:
+def daily_listening(
+    *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    root: Optional[Path] = None,
+    ensure: bool = True,
+) -> list[DailyListening]:
     """Daily listening aggregation: hours, top artists/tracks, unique counts."""
     from datetime import timedelta, timezone
     from ..core.primitives import TopN, merge_intervals
+    if ensure and root is None and start is not None and end is not None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("spotify", window=(start, end))
 
     def _to_utc(ts: datetime) -> datetime:
         if ts.tzinfo is None:
@@ -290,13 +307,13 @@ def daily_listening(*, start: Optional[date] = None, end: Optional[date] = None,
         return ts.astimezone(timezone.utc)
 
     by_day: dict[date, list[SpotifyStream]] = defaultdict(list)
-    for s in iter_streams(root=root):
+    for s in iter_streams(root=root, ensure=False):
         if s.end_time is None:
             continue
         d = logical_date(s.end_time)
         if start and d < start:
             continue
-        if end and d > end:
+        if end and d >= end:
             continue
         by_day[d].append(s)
 
@@ -360,7 +377,6 @@ def daily_genre_minutes(
     """
     from collections import defaultdict
 
-    from ..core.parse import in_date_range
     from .spotify_genres import artist_genres_by_name
 
     streams = [
@@ -368,7 +384,7 @@ def daily_genre_minutes(
         for s in iter_streams()
         if s.end_time is not None
         and s.artist
-        and in_date_range(logical_date(s.end_time), start, end)
+        and start <= logical_date(s.end_time) < end
     ]
     names = {s.artist for s in streams}
     genres_by_name = artist_genres_by_name(names, cache_path=cache_path)

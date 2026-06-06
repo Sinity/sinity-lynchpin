@@ -7,7 +7,12 @@ annotations while registering @app.tool functions.
 from typing import Any
 
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id, json_safe as _json_safe
+from lynchpin.mcp.tools._utils import (
+    best_materialized_refresh_id,
+    ensure_substrate_materialized_for_read,
+    json_safe as _json_safe,
+    pinned_materialization_for_read,
+)
 
 
 @app.tool()
@@ -25,9 +30,11 @@ def refactor_candidates(
         load_renamed_symbols,
     )
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="mcp.change.refactor_candidates")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "symbol_change")
+            refresh_id = best_materialized_refresh_id(conn, "symbol_change", caller="mcp.change.refactor_candidates")
             if refresh_id is None:
                 return []
 
@@ -86,9 +93,11 @@ def file_hotspots(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_change import load_file_churn_hotspots
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="mcp.change.file_hotspots")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "file_change_fact")
+            refresh_id = best_materialized_refresh_id(conn, "file_change_fact", caller="mcp.change.file_hotspots")
             if refresh_id is None:
                 return []
 
@@ -150,9 +159,11 @@ def conventional_commits(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_change import load_conventional_commit_distribution
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="mcp.change.conventional_commits")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "commit_fact")
+            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="mcp.change.conventional_commits")
             if refresh_id is None:
                 return []
 
@@ -241,9 +252,11 @@ def breaking_changes(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_change import load_breaking_change_commits
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="mcp.change.breaking_changes")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "commit_fact")
+            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="mcp.change.breaking_changes")
             if refresh_id is None:
                 return []
 
@@ -272,11 +285,21 @@ def commit_kind_attribution(
         load_commit_kind_ai_attribution,
     )
 
+    materialization = (
+        ensure_substrate_materialized_for_read(caller="mcp.change.commit_kind_attribution")
+        if refresh_id is None
+        else pinned_materialization_for_read(caller="mcp.change.commit_kind_attribution", refresh_id=refresh_id)
+    )
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "commit_fact")
+            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="mcp.change.commit_kind_attribution")
             if refresh_id is None:
-                return {"degraded": False, "reason": None, "rows": []}
+                return {
+                    "degraded": False,
+                    "reason": None,
+                    "materialization": materialization,
+                    "rows": [],
+                }
 
         # Check if any row has non-NULL ai_attribution
         ai_count = load_ai_attribution_count(conn, refresh_id=refresh_id)
@@ -294,6 +317,7 @@ def commit_kind_attribution(
     return {
         "degraded": degraded,
         "reason": reason,
+        "materialization": materialization,
         "rows": [{"kind": r[0], "total": r[1], "ai_assisted": r[2], "ai_pct": r[3]} for r in rows],
     }
 
@@ -308,9 +332,11 @@ def symbol_churn_hotspots(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_change import load_symbol_churn_hotspots
 
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="mcp.change.symbol_churn_hotspots")
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "symbol_change")
+            refresh_id = best_materialized_refresh_id(conn, "symbol_change", caller="mcp.change.symbol_churn_hotspots")
             if refresh_id is None:
                 return []
 

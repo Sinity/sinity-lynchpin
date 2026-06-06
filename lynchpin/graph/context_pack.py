@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
@@ -22,7 +22,7 @@ SubstrateGraphStatus = Literal[
     "disabled",
     "exact_hit",
     "compatible_hit",
-    "refresh_rebuild",
+    "materialize_rebuild",
     "missing",
     "read_error",
     "required_miss",
@@ -106,7 +106,7 @@ def context_pack(
     persist_weak_tags: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
     prefer_substrate: bool = False,
-    refresh_substrate: bool = False,
+    materialize_substrate: bool = False,
 ) -> ContextPack:
     """Build an LLM-facing context pack with explicit substrate state."""
     graph = None
@@ -121,16 +121,16 @@ def context_pack(
         refresh_id=None,
         message="Substrate graph lookup disabled.",
     )
-    if prefer_substrate and refresh_substrate:
+    if prefer_substrate and materialize_substrate:
         substrate_caveat = EvidenceCaveat(
             "substrate",
             "partial",
-            "Substrate refresh requested; rebuilt and materialized live graph.",
+            "Substrate materialization requested; rebuilt and materialized live graph.",
         )
         substrate_state = ContextPackSubstrateState(
-            status="refresh_rebuild",
+            status="materialize_rebuild",
             refresh_id=refresh_id,
-            message="Substrate refresh requested; rebuilt and materialized live graph.",
+            message="Substrate materialization requested; rebuilt and materialized live graph.",
         )
     elif prefer_substrate:
         graph, substrate_caveat, substrate_state = _load_substrate_graph(
@@ -140,7 +140,7 @@ def context_pack(
             refresh_id=refresh_id,
         )
     if graph is None:
-        if prefer_substrate and not refresh_substrate:
+        if prefer_substrate and not materialize_substrate:
             required_state = ContextPackSubstrateState(
                 status="required_miss",
                 refresh_id=refresh_id,
@@ -156,7 +156,7 @@ def context_pack(
         )
         if substrate_caveat is not None:
             graph = replace(graph, caveats=dedupe_caveats(graph.caveats + (substrate_caveat,)))
-        if refresh_substrate:
+        if materialize_substrate:
             _materialize_context_graph(
                 graph,
                 refresh_id=refresh_id,
@@ -266,36 +266,48 @@ def _mean_present(values: Iterable[float | int | None]) -> tuple[float | None, i
 def _build_physiology(*, start: datetime, end: datetime) -> PhysiologySummary | None:
     """Summarize operator physiology (sleep + health) over the window.
 
-    Sourced directly from the health/sleep source modules (not analysis), with
-    missing-day exclusion and an explicit staleness caveat when the observed
-    health data ends before the requested window. Returns None when neither
-    source has any data in the window — so the section is omitted rather than
-    rendering empty rows.
+    Sourced from the canonical personal daily-signal product, with missing-day
+    exclusion and an explicit coverage caveat when observed physiology data ends
+    before the requested window. Returns None when neither source has any data
+    in the window — so the section is omitted rather than rendering empty rows.
     """
-    from ..sources.health_daily import daily_health_summary
-    from ..sources.sleep import entries_in_range
+    from ..materialization import ensure_materialized
+    from ..sources.personal_signals import iter_personal_daily_signals
 
     s, e = start.date(), end.date()
+    end_exclusive = e + timedelta(days=1)
     try:
-        health = daily_health_summary(start=s, end=e)
+        ensure_materialized("personal_daily_signals", window=(s, end_exclusive))
     except Exception:
-        health = []
+        pass
     try:
-        sleep = entries_in_range(start=s, end=e)
+        signals = tuple(iter_personal_daily_signals(start=s, end=end_exclusive, ensure=False))
     except Exception:
-        sleep = []
+        signals = ()
 
-    if not health and not sleep:
+    health_by_day: dict[date, dict[str, float]] = {}
+    sleep_by_day: dict[date, dict[str, float]] = {}
+    for signal in signals:
+        if signal.source == "health":
+            health_by_day.setdefault(signal.date, {})[signal.metric] = signal.value
+        elif signal.source == "sleep":
+            sleep_by_day.setdefault(signal.date, {})[signal.metric] = signal.value
+
+    if not health_by_day and not sleep_by_day:
         return None
 
-    sleep_hours_mean, sleep_days = _mean_present(en.total_minutes / 60.0 for en in sleep)
-    sleep_score_mean, _ = _mean_present(en.avg_score for en in sleep)
-    stress_mean, stress_days = _mean_present(h.stress_avg for h in health)
-    hrv_mean, hrv_days = _mean_present(h.hrv_rmssd_avg for h in health)
-    resting_hr_mean, resting_hr_days = _mean_present(h.heart_rate_resting for h in health)
-    steps_mean, steps_days = _mean_present(h.steps for h in health)
-    last_health = max((h.date for h in health), default=None)
-    last_sleep = max((en.date for en in sleep), default=None)
+    sleep_hours_mean, sleep_days = _mean_present(
+        row.get("sleep_minutes", row.get("sleep_arch_total_minutes")) / 60.0
+        for row in sleep_by_day.values()
+        if row.get("sleep_minutes", row.get("sleep_arch_total_minutes")) is not None
+    )
+    sleep_score_mean, _ = _mean_present(row.get("sleep_score") for row in sleep_by_day.values())
+    stress_mean, stress_days = _mean_present(row.get("stress_avg") for row in health_by_day.values())
+    hrv_mean, hrv_days = _mean_present(row.get("hrv_rmssd") for row in health_by_day.values())
+    resting_hr_mean, resting_hr_days = _mean_present(row.get("resting_heart_rate") for row in health_by_day.values())
+    steps_mean, steps_days = _mean_present(row.get("steps") for row in health_by_day.values())
+    last_health = max(health_by_day, default=None)
+    last_sleep = max(sleep_by_day, default=None)
 
     caveats: list[EvidenceCaveat] = []
     observed_last = max([d for d in (last_health, last_sleep) if d is not None], default=None)
@@ -547,7 +559,7 @@ def _project_caveats(rows: Sequence[CorrelatedWorkDay]) -> tuple[EvidenceCaveat,
     if any("github" in row.sources for row in rows):
         caveats.append(EvidenceCaveat("github", "partial", "GitHub rows require lifecycle interpretation before workload conclusions."))
     if any("github_ref" in row.sources for row in rows):
-        caveats.append(EvidenceCaveat("github_ref", "partial", "GitHub refs are commit-subject references unless network frontier evidence is enabled."))
+        caveats.append(EvidenceCaveat("github_ref", "partial", "GitHub refs are commit-subject references unless github_context lifecycle evidence is present."))
     if any("polylogue" in row.sources for row in rows):
         caveats.append(EvidenceCaveat("polylogue", "partial", "AI chat rows should be inspected as pointers, not verbatim transcript evidence."))
     return tuple(caveats)
@@ -691,12 +703,11 @@ def _render_project_relationships(graph: EvidenceGraph, *, limit: int = 12) -> s
 
 
 def _render_content_metadata_coverage(*, start: date, end: date) -> str:
-    from ..materialization import materialized_window_overlaps
+    from ..materialization import ensure_materialized
     from ..sources.activity_content import iter_activity_content_days, iter_activity_title_usage
 
-    if not materialized_window_overlaps("activity_content", start=start, end=end):
-        return ""
-    days = [row for row in iter_activity_content_days() if start <= row.date < end]
+    ensure_materialized("activity_content", window=(start, end))
+    days = list(iter_activity_content_days(start=start, end=end, ensure=False))
     if not days:
         return ""
     focused = sum(row.focused_seconds for row in days)
@@ -707,12 +718,10 @@ def _render_content_metadata_coverage(*, start: date, end: date) -> str:
     content = _sum_seconds_buckets(row.content_type_seconds for row in days)
     unmatched = [
         row
-        for row in iter_activity_title_usage()
+        for row in iter_activity_title_usage(start=start, end=end, ensure=False)
         if not row.matched
         and row.first_date is not None
         and row.last_date is not None
-        and row.first_date < end
-        and row.last_date >= start
     ]
     unmatched.sort(key=lambda row: row.focused_seconds, reverse=True)
     lines = [
@@ -765,7 +774,7 @@ def _render_machine_analysis_artifacts(
 
     telemetry = artifacts.payloads.get("machine_telemetry_analysis.json")
     if telemetry is not None:
-        coverage = telemetry.get("coverage") if isinstance(telemetry.get("coverage"), dict) else {}
+        coverage = _artifact_mapping(telemetry, "coverage")
         lines.append(
             "- Telemetry coverage: "
             f"samples={coverage.get('sample_count', 0)}; "
@@ -883,9 +892,9 @@ def _render_machine_analysis_artifacts(
     matched = artifacts.payloads.get("machine_matched_designs.json")
     comparisons = artifacts.payloads.get("machine_comparisons.json")
     if any(payload is not None for payload in (feature_frames, mining, dataset_diagnostics, validation, matched, comparisons)):
-        feature_frame = feature_frames.get("frame") if isinstance(feature_frames, dict) and isinstance(feature_frames.get("frame"), dict) else {}
-        feature_audit = dataset_diagnostics.get("feature_audit") if isinstance(dataset_diagnostics, dict) and isinstance(dataset_diagnostics.get("feature_audit"), dict) else {}
-        mining_audit = dataset_diagnostics.get("mining_audit") if isinstance(dataset_diagnostics, dict) and isinstance(dataset_diagnostics.get("mining_audit"), dict) else {}
+        feature_frame = _artifact_mapping(feature_frames, "frame")
+        feature_audit = _artifact_mapping(dataset_diagnostics, "feature_audit")
+        mining_audit = _artifact_mapping(dataset_diagnostics, "mining_audit")
         lines.append(
             "- Dataset mining infra: "
             f"feature_rows={_payload_count(feature_frame, 'row_count')}; "
@@ -901,7 +910,7 @@ def _render_machine_analysis_artifacts(
     plans = artifacts.payloads.get("machine_benchmark_plans.json")
     bundle = artifacts.payloads.get("machine_benchmark_manifest_bundle.json")
     preflight = artifacts.payloads.get("machine_benchmark_preflight.json")
-    queue = artifacts.payloads.get("machine_benchmark_execution_queue.json")
+    handoff = artifacts.payloads.get("machine_benchmark_execution_handoff.json")
     manifests = artifacts.payloads.get("machine_experiment_manifest_diagnostics.json")
     if derivations is not None or plans is not None or bundle is not None or preflight is not None or manifests is not None:
         lines.append(
@@ -910,7 +919,7 @@ def _render_machine_analysis_artifacts(
             f"ready_plans={_payload_count(plans, 'ready_plan_count')}; "
             f"run_templates={_payload_count(bundle, 'run_template_count')}; "
             f"preflight_ready={_payload_count(preflight, 'ready_run_count')}; "
-            f"queue_ready={_payload_count(queue, 'ready_group_count')}/{_payload_count(queue, 'queue_count')}; "
+            f"handoff_ready={_payload_count(handoff, 'ready_group_count')}/{_payload_count(handoff, 'handoff_count')}; "
             f"executed_valid={_payload_count(manifests, 'controlled_benchmark_valid_count')}; "
             f"legacy_observational={_payload_count(manifests, 'legacy_observational_count')}"
         )
@@ -928,9 +937,9 @@ def _render_machine_analysis_artifacts(
 
     attribution = artifacts.payloads.get("machine_below_attribution.json")
     below_analysis = artifacts.payloads.get("machine_below_analysis.json")
-    below_queue = artifacts.payloads.get("machine_below_export_queue.json")
+    below_handoff = artifacts.payloads.get("machine_below_export_handoff.json")
     if below_analysis is not None:
-        live_store = below_analysis.get("live_store") if isinstance(below_analysis.get("live_store"), dict) else {}
+        live_store = _artifact_mapping(below_analysis, "live_store")
         lines.append(
             "- Below analysis coverage: "
             f"bounded_windows={below_analysis.get('window_count', 0)}; "
@@ -950,15 +959,15 @@ def _render_machine_analysis_artifacts(
                 f"workload_resource={workload or 0}/{pressure}; "
                 f"residual_unattributed={residual if residual is not None else attribution.get('unattributed_pressure_episode_count')}"
             )
-    if below_queue is not None:
-        queue_items = _artifact_rows(below_queue, "items")
-        if queue_items:
+    if below_handoff is not None:
+        handoff_items = _artifact_rows(below_handoff, "items")
+        if handoff_items:
             lines.append(
-                "- Below export queue: "
-                f"{below_queue.get('queue_count', len(queue_items))} planned windows; "
-                f"failed={below_queue.get('failed_capture_count', 0)}; "
-                f"kinds={_top_counts(row.get('episode_kind') for row in queue_items)}; "
-                f"root={below_queue.get('root', 'unknown')}"
+                "- Below export handoff: "
+                f"{below_handoff.get('planned_window_count', len(handoff_items))} planned windows; "
+                f"failed={below_handoff.get('failed_capture_count', 0)}; "
+                f"kinds={_top_counts(row.get('episode_kind') for row in handoff_items)}; "
+                f"root={below_handoff.get('root', 'unknown')}"
             )
 
     baselines = artifacts.payloads.get("machine_observational_baselines.json")
@@ -1085,20 +1094,20 @@ def _render_machine_analysis_artifacts(
     if gaps is not None:
         counts = _artifact_rows(gaps, "counts")
         regressions = _artifact_rows(gaps, "regressions")
-        generated_for = gaps.get("generated_for") if isinstance(gaps.get("generated_for"), dict) else {}
+        generated_for = _artifact_mapping(gaps, "generated_for")
         lines.append(
             "- Machine capture gaps: "
             f"counts={len(counts)}; regressions={len(regressions)}; "
             f"window={generated_for.get('window_start', 'unknown')}..{generated_for.get('window_end', 'unknown')}"
         )
 
-    refresh_report = artifacts.payloads.get("machine_analysis_refresh_report.json")
-    if refresh_report is not None:
-        by_status = refresh_report.get("by_status")
+    materialization_report = artifacts.payloads.get("machine_analysis_materialization_report.json")
+    if materialization_report is not None:
+        by_status = materialization_report.get("by_status")
         status_text = _format_mapping_counts(by_status) if isinstance(by_status, dict) else ""
         lines.append(
-            "- Machine refresh report: "
-            f"{refresh_report.get('step_count', 0)} steps"
+            "- Machine materialization report: "
+            f"{materialization_report.get('step_count', 0)} steps"
             f"{'; ' + status_text if status_text else ''}"
         )
 
@@ -1129,11 +1138,11 @@ _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_benchmark_plans.json",
     "machine_benchmark_manifest_bundle.json",
     "machine_benchmark_preflight.json",
-    "machine_benchmark_execution_queue.json",
+    "machine_benchmark_execution_handoff.json",
     "machine_experiment_manifest_diagnostics.json",
     "devshell_performance.json",
     "machine_below_attribution.json",
-    "machine_below_export_queue.json",
+    "machine_below_export_handoff.json",
     "machine_observational_baselines.json",
     "machine_experiment_claims.json",
     "machine_attribution_claims.json",
@@ -1146,7 +1155,7 @@ _MACHINE_ANALYSIS_ARTIFACTS = (
     "machine_support_assessment.json",
     "machine_gap_summary.json",
     "machine_analysis_readiness.json",
-    "machine_analysis_refresh_report.json",
+    "machine_analysis_materialization_report.json",
 )
 
 
@@ -1160,7 +1169,12 @@ class _MachineAnalysisArtifacts:
 def _load_machine_analysis_artifacts() -> _MachineAnalysisArtifacts:
     from json import JSONDecodeError, loads
 
-    from lynchpin.core.io import resolve_analysis_path
+    from lynchpin.core.io import materialize_analysis_artifacts, resolve_analysis_path
+
+    try:
+        materialize_analysis_artifacts()
+    except Exception:
+        pass
 
     payloads: dict[str, dict[str, object]] = {}
     missing: list[str] = []
@@ -1198,6 +1212,13 @@ def _artifact_rows(payload: object, key: str) -> list[dict[str, object]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _artifact_mapping(payload: object, key: str) -> Mapping[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    value = payload.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def _payload_count(payload: object, key: str) -> int:

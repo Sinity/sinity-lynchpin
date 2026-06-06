@@ -1,9 +1,7 @@
-"""Keylog metadata source.
+"""Keylog source.
 
-This module intentionally exposes only timing/count metadata. Raw snapshot
-buffers can contain typed text, so callers should derive activity evidence from
-event timestamps, keycodes, and session/window metadata instead of reading
-captured content.
+Key events, text-shape metadata, and optional snapshot text are exposed through
+separate APIs so callers can choose the product they actually need.
 """
 
 from __future__ import annotations
@@ -16,13 +14,17 @@ from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
 from ..core.parse import as_local, iter_dates, parse_datetime
+from ..core.primitives import date_to_dt_range
+from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 
 __all__ = [
     "KeylogEvent",
     "KeylogDayActivity",
+    "KeylogTextSnapshot",
     "log_files",
     "events",
+    "text_snapshots",
     "keypresses",
     "keypress_count",
     "has_coverage",
@@ -38,6 +40,7 @@ class KeylogEvent:
     window: str | None
     keycode: str | None
     changed: bool | None
+    modifiers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,8 +54,24 @@ class KeylogDayActivity:
     last_ts: datetime | None
 
 
+@dataclass(frozen=True)
+class KeylogTextSnapshot:
+    ts: datetime
+    event: str
+    session: str | None
+    window: str | None
+    text: str
+
+
 def _logs_root() -> Path:
     return get_config().keylog_root / "logs"
+
+
+def _ensure_keylog_materialized(*, start: date | None = None, end: date | None = None) -> None:
+    from ..materialization import ensure_materialized
+
+    window = (start, end + timedelta(days=1)) if start is not None and end is not None else None
+    ensure_materialized("keylog", cfg=get_config(), window=window)
 
 
 def _date_from_name(path: Path) -> date | None:
@@ -63,7 +82,8 @@ def _date_from_name(path: Path) -> date | None:
 
 
 @lru_cache(maxsize=8)
-def _indexed_log_files(root: str) -> tuple[tuple[date, Path], ...]:
+def _indexed_log_files(root: str, signature: tuple[int, int] | None) -> tuple[tuple[date, Path], ...]:
+    _ = signature
     path = Path(root)
     if not path.exists():
         return ()
@@ -75,10 +95,19 @@ def _indexed_log_files(root: str) -> tuple[tuple[date, Path], ...]:
     return tuple(sorted(rows, key=lambda row: row[0]))
 
 
+def _log_dir_signature(root: Path) -> tuple[int, int] | None:
+    try:
+        stat = root.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, sum(1 for _ in root.glob("*.jsonl"))
+
+
 def log_files(*, start: Optional[date] = None, end: Optional[date] = None) -> list[Path]:
+    _ensure_keylog_materialized(start=start, end=end)
     root = _logs_root()
     files = []
-    for d, path in _indexed_log_files(str(root)):
+    for d, path in _indexed_log_files(str(root), _log_dir_signature(root)):
         if start and d < start:
             continue
         if end and d > end:
@@ -109,7 +138,7 @@ def events(
         if ts is None:
             return None
         ts_local = as_local(ts)
-        if ts_local < start_local or ts_local > end_local:
+        if ts_local < start_local or ts_local >= end_local:
             return None
         return KeylogEvent(
             ts=ts_local,
@@ -118,6 +147,7 @@ def events(
             window=rec.get("window"),
             keycode=rec.get("keycode"),
             changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
+            modifiers=_modifier_state(rec),
         )
 
     for path in _candidate_files(start_local, end_local):
@@ -126,6 +156,91 @@ def events(
 
 def keypresses(*, start: datetime, end: datetime) -> list[KeylogEvent]:
     return list(events(start=start, end=end, kinds={"press"}))
+
+
+def _modifier_state(rec: dict[str, Any]) -> tuple[str, ...]:
+    for key in ("modifiers", "active_modifiers", "pressed_modifiers", "modifier_state", "mods"):
+        raw = rec.get(key)
+        values = _modifier_values(raw)
+        if values:
+            return values
+    return ()
+
+
+def _modifier_values(raw: Any) -> tuple[str, ...]:
+    if raw in (None, "", False):
+        return ()
+    tokens: list[str] = []
+    if isinstance(raw, str):
+        tokens.extend(raw.replace("+", " ").replace(",", " ").split())
+    elif isinstance(raw, dict):
+        tokens.extend(str(key) for key, value in raw.items() if value)
+    elif isinstance(raw, (list, tuple, set)):
+        tokens.extend(str(value) for value in raw)
+    else:
+        return ()
+    modifiers = [_normalize_modifier_token(token) for token in tokens]
+    return tuple(sorted({modifier for modifier in modifiers if modifier is not None}))
+
+
+def _normalize_modifier_token(token: str) -> str | None:
+    value = token.strip().upper()
+    if not value:
+        return None
+    value = value.removeprefix("KEY_")
+    aliases = {
+        "LEFTMETA": "SUPER",
+        "RIGHTMETA": "SUPER",
+        "META": "SUPER",
+        "WIN": "SUPER",
+        "LOGO": "SUPER",
+        "SUPER": "SUPER",
+        "LEFTSHIFT": "SHIFT",
+        "RIGHTSHIFT": "SHIFT",
+        "SHIFT": "SHIFT",
+        "LEFTCTRL": "CTRL",
+        "RIGHTCTRL": "CTRL",
+        "CONTROL": "CTRL",
+        "CTRL": "CTRL",
+        "LEFTALT": "ALT",
+        "RIGHTALT": "ALT",
+        "ALT": "ALT",
+    }
+    return aliases.get(value)
+
+
+def text_snapshots(*, start: datetime, end: datetime) -> Iterator[KeylogTextSnapshot]:
+    start_local = as_local(start)
+    end_local = as_local(end)
+
+    def _hydrate(rec: dict[str, Any]) -> KeylogTextSnapshot | None:
+        text = _text_payload(rec)
+        if text is None:
+            return None
+        ts = parse_datetime(rec.get("ts"))
+        if ts is None:
+            return None
+        ts_local = as_local(ts)
+        if ts_local < start_local or ts_local >= end_local:
+            return None
+        return KeylogTextSnapshot(
+            ts=ts_local,
+            event=str(rec.get("event") or ""),
+            session=rec.get("session"),
+            window=rec.get("window"),
+            text=text,
+        )
+
+    for path in _candidate_files(start_local, end_local):
+        yield from read_jsonl_with(path, _hydrate, source_name="keylog")
+
+
+def _text_payload(rec: dict[str, Any]) -> str | None:
+    for key in ("buffer", "text", "content"):
+        value = rec.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def keypress_count(*, start: datetime, end: datetime) -> int:
@@ -138,7 +253,7 @@ def keypress_count(*, start: datetime, end: datetime) -> int:
         except OSError:
             continue
         for ts in _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size):
-            if start_local <= ts <= end_local:
+            if start_local <= ts < end_local:
                 total += 1
     return total
 
@@ -161,22 +276,36 @@ def has_coverage(*, start: datetime, end: datetime) -> bool:
 
 
 def daily_activity(*, start: date, end: date) -> list[KeylogDayActivity]:
+    days = list(iter_dates(start, end))
+    event_counts = {d: 0 for d in days}
+    keypress_counts = {d: 0 for d in days}
+    changed_keypress_counts = {d: 0 for d in days}
+    sessions: dict[date, set[str]] = {d: set() for d in days}
+    timestamps: dict[date, list[datetime]] = {d: [] for d in days}
+    start_dt, end_dt = date_to_dt_range(start, end)
+
+    for ev in events(start=start_dt, end=end_dt):
+        d = logical_date(ev.ts)
+        if d not in event_counts:
+            continue
+        event_counts[d] += 1
+        timestamps[d].append(ev.ts)
+        if ev.session:
+            sessions[d].add(ev.session)
+        if ev.event == "press":
+            keypress_counts[d] += 1
+            if ev.changed is True:
+                changed_keypress_counts[d] += 1
+
     result = []
-    for d in iter_dates(start, end):
-        s = datetime.combine(d, datetime.min.time())
-        e = datetime.combine(d + timedelta(days=1), datetime.min.time())
-        day_events = list(events(start=s, end=e))
-        keypress_events = [ev for ev in day_events if ev.event == "press"]
-        changed_events = [ev for ev in keypress_events if ev.changed is True]
-        sessions = {ev.session for ev in day_events if ev.session}
-        timestamps = [ev.ts for ev in day_events]
+    for d in days:
         result.append(KeylogDayActivity(
             date=d,
-            event_count=len(day_events),
-            keypress_count=len(keypress_events),
-            changed_keypress_count=len(changed_events),
-            session_count=len(sessions),
-            first_ts=min(timestamps) if timestamps else None,
-            last_ts=max(timestamps) if timestamps else None,
+            event_count=event_counts[d],
+            keypress_count=keypress_counts[d],
+            changed_keypress_count=changed_keypress_counts[d],
+            session_count=len(sessions[d]),
+            first_ts=min(timestamps[d]) if timestamps[d] else None,
+            last_ts=max(timestamps[d]) if timestamps[d] else None,
         ))
     return result

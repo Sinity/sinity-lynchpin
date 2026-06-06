@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Iterable
 
+from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
 if TYPE_CHECKING:
     import duckdb
 
@@ -97,7 +99,7 @@ def load_analysis_claims(
         clauses.append("date >= ?")
         params.append(start)
     if end is not None:
-        clauses.append("date < ?")
+        clauses.append("date <= ?")
         params.append(end)
     if claim_type is not None:
         clauses.append("claim_type = ?")
@@ -131,6 +133,16 @@ def load_claim_evidence(
     params: list[Any] = [claim_id]
     refresh_clause = ""
     if refresh_id is not None:
+        refresh_clause = " AND refresh_id = ?"
+        params.append(refresh_id)
+    else:
+        refresh_id = best_materialized_refresh_id(
+            conn,
+            "analysis_claim",
+            caller="claim_evidence",
+        )
+        if refresh_id is None:
+            return None
         refresh_clause = " AND refresh_id = ?"
         params.append(refresh_id)
     row = conn.execute(

@@ -32,7 +32,10 @@ from ..core.parse import in_date_range, parse_date_from_any
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
 from ..core.projects import ALL_PROJECTS
-from .github import GitHubItem, extract_commit_refs, fetch_issue, fetch_pr, repo_slug
+from .github import (
+    GitHubItem,
+    extract_commit_refs,
+)
 from .git_models import (
     CommitSession,
     GitCommit,
@@ -482,50 +485,95 @@ def recent_commits(repo_name: str, limit: int = 20) -> list[RepoCommitSummary]:
 
 
 def github_context_for_commits(
-    facts: Sequence[GitCommitFact], *, max_refs: int = 24
+    facts: Sequence[GitCommitFact],
+    *,
+    max_refs: int = 24,
+    cache_only: bool = False,
+    max_age_seconds: int | None = None,
 ) -> dict[str, object]:
-    """Fetch GitHub PR/issue context referenced by commit subjects when available.
+    """Read GitHub PR/issue context referenced by commit subjects when available.
 
-    This is intentionally best-effort: local git remains the primary source and
-    GitHub enriches only referenced commits. Missing `gh`, missing auth, private
-    repos, or network failures produce explicit unavailable metadata rather than
-    failing scaffold generation.
+    Network refresh belongs to the canonical ``github_context`` materializer.
+    This helper is intentionally product-backed so callers can enrich commits
+    without making analysis reads perform GitHub API work.
     """
-    if shutil.which("gh") is None:
-        return {"status": "unavailable", "reason": "gh_not_found", "items": []}
-
     refs_by_repo: dict[str, dict[str, set[int]]] = defaultdict(
         lambda: {"prs": set(), "issues": set()}
     )
+    referenced_commit_dates: list[date] = []
     for fact in facts:
         refs = extract_commit_refs(fact.subject)
+        if refs["prs"] or refs["issues"]:
+            referenced_commit_dates.append(logical_date(fact.authored_at))
         refs_by_repo[fact.repo]["prs"].update(refs["prs"])
         refs_by_repo[fact.repo]["issues"].update(refs["issues"])
 
-    items: list[dict[str, object]] = []
+    wanted: set[tuple[str, str, int]] = set()
     attempted = 0
     for repo, refs in sorted(refs_by_repo.items()):
-        repo_path = _repo_path(repo)
-        slug = repo_slug(repo_path)
-        if slug is None:
-            continue
         for number in sorted(refs["prs"]):
             if attempted >= max_refs:
                 break
             attempted += 1
-            item = fetch_pr(repo_path, number)
-            items.append(_github_item(repo, "pr", number, slug, item))
+            wanted.add((repo, "pr", number))
         for number in sorted(refs["issues"] - refs["prs"]):
             if attempted >= max_refs:
                 break
             attempted += 1
-            item = fetch_issue(repo_path, number)
-            items.append(_github_item(repo, "issue", number, slug, item))
+            wanted.add((repo, "issue", number))
 
-    status = "ok" if items else "no_refs"
+    if not wanted:
+        return {"status": "no_refs", "max_refs": max_refs, "reason": None, "items": []}
+
+    materialization_status = "skipped" if cache_only else "unknown"
+    materialization_reason = None
+    if not cache_only:
+        from ..materialization import ensure_materialized
+
+        window = (
+            (min(referenced_commit_dates), max(referenced_commit_dates) + timedelta(days=1))
+            if referenced_commit_dates
+            else None
+        )
+        result = ensure_materialized("github_context", window=window)
+        materialization_status = result.status
+        materialization_reason = result.reason
+
+    from .github_context import iter_github_context
+
+    product_items: dict[tuple[str, str, int], GitHubItem] = {}
+    try:
+        for row in iter_github_context(
+            projects={repo for repo, _kind, _number in wanted},
+            ensure=cache_only,
+            window=window if not cache_only else None,
+        ):
+            key = (row.project, row.item.kind, row.item.number)
+            if key in wanted:
+                product_items[key] = row.item
+    except FileNotFoundError as exc:
+        materialization_status = "missing"
+        materialization_reason = str(exc)
+
+    items: list[dict[str, object]] = []
+    for repo, kind, number in sorted(wanted):
+        item = product_items.get((repo, kind, number))
+        slug = item.slug if item is not None else ""
+        items.append(_github_item(repo, kind, number, slug, item))
+    available = [item for item in items if item.get("status") == "ok"]
+    status = "ok" if available else "cache_miss"
+    if not cache_only and materialization_status not in {"ready", "updated"} and not available:
+        status = "unavailable"
     if attempted >= max_refs:
         status = "truncated"
-    return {"status": status, "max_refs": max_refs, "items": items}
+    return {
+        "status": status,
+        "max_refs": max_refs,
+        "reason": materialization_reason,
+        "materialization_status": materialization_status,
+        "max_age_seconds": max_age_seconds,
+        "items": items,
+    }
 
 
 def repo_tokei(repo_name: str) -> Optional[TokeiReport]:

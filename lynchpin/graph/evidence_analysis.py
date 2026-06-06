@@ -6,7 +6,7 @@ from datetime import date
 
 from ..core.evidence import EvidenceProvenance
 from ..core.evidence_graph import EvidenceEdge, EvidenceNode
-from ..sources.analysis_artifacts import analysis_claims, latest_artifacts
+from ..sources.analysis_artifacts import AnalysisArtifact, analysis_claims, latest_artifacts
 from .evidence_projects import include_project
 
 
@@ -17,7 +17,7 @@ def add_analysis_artifacts(
     end: date,
     selected: set[str],
     exclude_names: frozenset[str],
-) -> None:
+) -> tuple[AnalysisArtifact, ...]:
     projects = selected or None
     artifacts = tuple(
         artifact
@@ -81,6 +81,7 @@ def add_analysis_artifacts(
                             0.8,
                         )
                     )
+    return artifacts
 
 
 def add_analysis_claims(
@@ -90,9 +91,14 @@ def add_analysis_claims(
     end: date,
     selected: set[str],
     exclude_names: frozenset[str],
+    artifacts: tuple[AnalysisArtifact, ...] | None = None,
 ) -> None:
     projects = selected or None
-    for claim in analysis_claims(projects=projects, exclude_names=exclude_names):
+    for claim in analysis_claims(
+        projects=projects,
+        exclude_names=exclude_names,
+        artifacts=artifacts,
+    ):
         if not include_project(claim.project, selected):
             continue
         node_id = f"analysis-claim:{claim.id}"

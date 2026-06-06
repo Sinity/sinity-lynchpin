@@ -11,6 +11,7 @@ import tarfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 HEALTH_RAW = Path("/realm/data/exports/health/raw/samsung-health")
 SAA_RAW = Path("/realm/data/exports/health/raw/sleep-as-android")
@@ -273,8 +274,61 @@ def write_jsonl(records: list[dict], filename: str, label: str, dry_run: bool) -
     with open(out, "w") as f:
         for rec in records:
             f.write(json.dumps(rec) + "\n")
+    _write_product_manifest(out, records, label)
     print(f"{label}: {len(records)} records -> {out}")
     return len(records)
+
+
+def _write_product_manifest(path: Path, records: list[dict[str, Any]], label: str) -> None:
+    first, last = _record_date_bounds(records)
+    manifest = {
+        "dataset": f"health.{path.stem}",
+        "label": label,
+        "path": str(path),
+        "row_count": len(records),
+        "first_date": first,
+        "last_date": last,
+        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
+    }
+    path.with_suffix(".manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _record_date_bounds(records: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+    first: str | None = None
+    last: str | None = None
+    for record in records:
+        stamp = _record_date(record)
+        if stamp is None:
+            continue
+        first = stamp if first is None or stamp < first else first
+        last = stamp if last is None or stamp > last else last
+    return first, last
+
+
+def _record_date(record: dict[str, Any]) -> str | None:
+    for key in (
+        "date",
+        "day",
+        "start_time",
+        "timestamp",
+        "created_at",
+        "time",
+        "start_local",
+        "end_local",
+        "end_time",
+    ):
+        value = record.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        raw = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(raw).date().isoformat()
+        except ValueError:
+            continue
+    return None
 
 
 __all__ = [

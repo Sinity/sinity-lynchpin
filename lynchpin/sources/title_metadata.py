@@ -175,6 +175,10 @@ def hash_title(app: str, normalized_title: str) -> str:
 
 
 def iter_title_classifications(path: Path | None = None) -> Iterator[TitleClassification]:
+    if path is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("title_metadata")
     target = path or title_metadata_path()
     if not target.exists():
         raise FileNotFoundError(

@@ -21,10 +21,16 @@ def test_kind_audit_reports_source_label_disagreements(
                 refresh_id, source, kind, status, reason, row_count,
                 window_start, window_end, recorded_at
             )
-            VALUES ('r1', 'polylogue', 'stage', 'available', NULL, 2,
-                    DATE '2026-05-25', DATE '2026-05-25', ?)
+            VALUES
+                ('r1', 'ai_attribution', 'stage', 'ok', NULL, 2,
+                 DATE '2026-05-25', DATE '2026-05-25', ?),
+                ('machine-analysis:latest', 'machine', 'stage', 'ok', NULL, 1,
+                 DATE '2026-06-01', DATE '2026-06-01', ?)
             """,
-            [datetime(2026, 5, 25, tzinfo=timezone.utc)],
+            [
+                datetime(2026, 5, 25, tzinfo=timezone.utc),
+                datetime(2026, 6, 1, tzinfo=timezone.utc),
+            ],
         )
         conn.execute(
             """

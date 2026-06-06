@@ -1,7 +1,7 @@
 """Machine attribution candidate generation from existing observations.
 
-Candidates are not causal claims. They are a prioritized queue of extant
-observational patterns worth turning into controlled benchmark manifests.
+Candidates are not causal claims. They are a ranked set of extant observational
+patterns worth turning into controlled benchmark manifests.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.core.io import load_json_if_exists, load_json_object, resolve_analysis_path, save_json
+from lynchpin.core.io import load_materialized_analysis_artifact, load_json_if_exists, load_json_object, resolve_analysis_path, save_json
 
 
 @dataclass(frozen=True)
@@ -96,10 +96,10 @@ def analyze_machine_attribution_candidates(
         *_stage_candidates(work_payload),
     ]
     candidates = _mark_pareto_frontier(candidates)
-    candidates = _candidate_queue(candidates, limit=limit)
+    candidates = _candidate_set(candidates, limit=limit)
     frontier_ids = tuple(row.candidate_id for row in candidates if row.pareto_frontier)
     caveats = [
-        "candidate queue only; no causal claim is emitted",
+        "candidate set only; no causal claim is emitted",
         "controlled support requires a future randomized manifest with fixed derivations and telemetry linkage",
         "candidate selection is stratified because raw priority scores are not comparable across mining families",
         "pareto_frontier marks candidates not dominated on effect, recurrence, validation, and controllability components",
@@ -125,7 +125,7 @@ def analyze_machine_attribution_candidates(
     )
 
 
-def _candidate_queue(
+def _candidate_set(
     candidates: list[MachineAttributionCandidate],
     *,
     limit: int,
@@ -780,7 +780,7 @@ def _optional_payload(path: Path | None, *, default_name: str) -> dict[str, Any]
     if path is not None:
         loaded = load_json_if_exists(path)
     else:
-        loaded = load_json_if_exists(resolve_analysis_path(default_name))
+        loaded, _materialization = load_materialized_analysis_artifact(default_name)
     return loaded if isinstance(loaded, dict) else None
 
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from functools import lru_cache
 from pathlib import Path
 
 from ..core.config import get_config
@@ -57,28 +56,7 @@ def source_observations(
     """
     if substrate_dates is not None:
         return _compute_source_observations(today or date.today(), dict(substrate_dates))
-    if today is None:
-        return _cached_source_observations(date.today(), _cache_key())
-    return _compute_source_observations(today, {})
-
-
-@lru_cache(maxsize=8)
-def _cached_source_observations(
-    reference: date,
-    cache_key: tuple[tuple[tuple[str, bool], ...], str, str, str],
-) -> tuple[SourceObservation, ...]:
-    _ = cache_key
-    return _compute_source_observations(reference, {})
-
-
-def _cache_key() -> tuple[tuple[tuple[str, bool], ...], str, str, str]:
-    cfg = get_config()
-    return (
-        tuple(sorted((source, bool(available)) for source, available in cfg.available_sources().items())),
-        str(cfg.local_root),
-        str(cfg.captures_root),
-        str(cfg.exports_root),
-    )
+    return _compute_source_observations(today or date.today(), {})
 
 
 def _compute_source_observations(

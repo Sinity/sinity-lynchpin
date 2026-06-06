@@ -1,10 +1,12 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from lynchpin.graph.context_pack import (
     ContextPackSubstrateRequiredError,
     ContextPackSubstrateState,
+    _render_content_metadata_coverage,
     _render_machine_analysis_artifacts,
     context_pack,
     graph_context_pack,
@@ -19,6 +21,41 @@ from lynchpin.sources.polylogue import PolylogueReadiness
 
 
 UTC = timezone.utc
+
+
+def test_content_metadata_coverage_converges_activity_content(monkeypatch) -> None:
+    ensure_calls = []
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window: ensure_calls.append((name, window)),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.activity_content.iter_activity_content_days",
+        lambda *, start, end, ensure=True: [
+            SimpleNamespace(
+                focused_seconds=3600.0,
+                matched_seconds=2700.0,
+                gpt_matched_seconds=900.0,
+                activity_seconds={"coding": 3000.0, "reading": 600.0},
+                topic_seconds={"lynchpin": 3000.0},
+                content_type_seconds={"code": 3000.0},
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.activity_content.iter_activity_title_usage",
+        lambda *, start, end, ensure=True: (),
+    )
+
+    rendered = _render_content_metadata_coverage(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 3),
+    )
+
+    assert ensure_calls == [
+        ("activity_content", (date(2026, 5, 1), date(2026, 5, 3)))
+    ]
+    assert "Title metadata coverage: 75.0%" in rendered
 
 
 def _row(project="sinity-lynchpin"):
@@ -188,6 +225,13 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("lynchpin.graph.context_pack.current_state_evidence_pack", lambda **kwargs: pack)
     monkeypatch.setattr("lynchpin.graph.context_pack.build_evidence_graph", lambda **kwargs: pack.evidence_graph)
+    ensured: list[str] = []
+
+    def fake_ensure_materialized(name: str, **_kwargs):
+        ensured.append(name)
+        return type("Result", (), {"to_json": lambda self: {"status": "ready"}})()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
     analysis_root = tmp_path / "analysis"
     analysis_root.mkdir()
     (analysis_root / "machine_telemetry_analysis.json").write_text(
@@ -210,8 +254,8 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         '{"window_count":4,"top_process_count":5,"top_cgroup_count":6,"live_store":{"index_count":7}}',
         encoding="utf-8",
     )
-    (analysis_root / "machine_below_export_queue.json").write_text(
-        '{"queue_count":2,"failed_capture_count":1,"root":"/realm/data/captures/stability-lab","items":[{"episode_kind":"io_pressure"},{"episode_kind":"load_pressure"}]}',
+    (analysis_root / "machine_below_export_handoff.json").write_text(
+        '{"planned_window_count":2,"failed_capture_count":1,"root":"/realm/data/captures/stability-lab","items":[{"episode_kind":"io_pressure"},{"episode_kind":"load_pressure"}]}',
         encoding="utf-8",
     )
     (analysis_root / "machine_work_state_windows.json").write_text(
@@ -274,8 +318,8 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         '{"ready_run_count":120,"run_count":120}',
         encoding="utf-8",
     )
-    (analysis_root / "machine_benchmark_execution_queue.json").write_text(
-        '{"queue_count":10,"ready_group_count":10,"blocked_group_count":0,"run_template_count":120,"ready_run_count":120}',
+    (analysis_root / "machine_benchmark_execution_handoff.json").write_text(
+        '{"handoff_count":10,"ready_group_count":10,"blocked_group_count":0,"run_template_count":120,"ready_run_count":120}',
         encoding="utf-8",
     )
     (analysis_root / "machine_experiment_manifest_diagnostics.json").write_text(
@@ -334,7 +378,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         '{"generated_for":{"window_start":"2026-05-01T00:00:00+00:00","window_end":"2026-05-02T00:00:00+00:00"},"counts":[{}],"regressions":[{},{}]}',
         encoding="utf-8",
     )
-    (analysis_root / "machine_analysis_refresh_report.json").write_text(
+    (analysis_root / "machine_analysis_materialization_report.json").write_text(
         '{"step_count":31,"by_status":{"success":31},"steps":[]}',
         encoding="utf-8",
     )
@@ -345,6 +389,9 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
 
     rendered = render_context_pack(context_pack(start=start, end=end, projects=("sinity-lynchpin",)))
 
+    assert ensured.count("personal_daily_signals") == 1
+    assert "activity_content" in ensured
+    assert "analysis_artifacts" in ensured
     assert "## Machine Analysis" in rendered
     assert "Telemetry coverage: samples=10; span=2026-05-01T00:00:00+00:00..2026-05-02T00:00:00+00:00; hardware_regimes=1; signals=2" in rendered
     assert "Episodes in window: 1" in rendered
@@ -353,12 +400,12 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Work observations: 1 daily groups" in rendered
     assert "Process attribution: bounded_below=0/3; workload_resource=1/3; residual_unattributed=2" in rendered
     assert "Below analysis coverage: bounded_windows=4; top_processes=5; top_cgroups=6; live_store_indexes=7" in rendered
-    assert "Below export queue: 2 planned windows; failed=1; kinds=io_pressure×1, load_pressure×1; root=/realm/data/captures/stability-lab" in rendered
+    assert "Below export handoff: 2 planned windows; failed=1; kinds=io_pressure×1, load_pressure×1; root=/realm/data/captures/stability-lab" in rendered
     assert "Command performance: 3 commands" in rendered
     assert "Observational command deltas: 1 matched cohorts" in rendered
     assert "Attribution candidates: 1 non-causal candidates; frontier=1; validation=design_ready×1; families=stage_regression_or_workload_mix×1; top=command.pytest.duration_seconds" in rendered
     assert "Dataset mining infra: feature_rows=3525; feature_status=ready_for_mining; multiplicity=registered; cohorts=48; boundaries=12; matched_designs=9; contrasts=31" in rendered
-    assert "Controlled benchmark infra: derivations=7; ready_plans=10; run_templates=120; preflight_ready=120; queue_ready=10/10; executed_valid=0; legacy_observational=55" in rendered
+    assert "Controlled benchmark infra: derivations=7; ready_plans=10; run_templates=120; preflight_ready=120; handoff_ready=10/10; executed_valid=0; legacy_observational=55" in rendered
     assert "Devshell/Nix performance: 2 commands" in rendered
     assert "0 controlled / 4 observational" in rendered
     assert "estimates=1; top=grp1; estimator=stratified_bootstrap_mean_delta; delta=-2.5; ci95=[-4.0, -1.0]; p=0.125; p_method=exact_stratified_label_permutation_two_sided" in rendered
@@ -372,10 +419,17 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Causal support gate: 13/25 refused; support=insufficient×1, natural_experiment×1; top_refusal=missing controlled benchmark run×1; next=execute the approved manifest and promote run logs/telemetry×1; ready_plans=10; run_templates=120; controlled_claims=0" in rendered
     assert "Machine analysis readiness: missing×1, stable×1" in rendered
     assert "Machine capture gaps: counts=1; regressions=2; window=2026-05-01T00:00:00+00:00..2026-05-02T00:00:00+00:00" in rendered
-    assert "Machine refresh report: 31 steps; success×31" in rendered
+    assert "Machine materialization report: 31 steps; success×31" in rendered
 
 
 def test_context_pack_surfaces_missing_machine_analysis_artifacts(monkeypatch, tmp_path):
+    ensured: list[str] = []
+
+    def fake_ensure_materialized(name: str, *, cfg):
+        ensured.append(name)
+        return type("Result", (), {"to_json": lambda self: {"status": "ready"}})()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
     monkeypatch.setattr(
         "lynchpin.core.io.get_config",
         lambda: type("Cfg", (), {"analysis_output_dir": tmp_path / "analysis"})(),
@@ -387,6 +441,7 @@ def test_context_pack_surfaces_missing_machine_analysis_artifacts(monkeypatch, t
         projects=("sinity-lynchpin",),
     )
 
+    assert ensured == ["analysis_artifacts"]
     assert "Missing machine analysis artifacts:" in rendered
     assert "machine_episode_analysis.json" in rendered
 

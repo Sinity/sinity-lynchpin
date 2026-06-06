@@ -5,7 +5,7 @@ import pytest
 
 from lynchpin.graph.source_readiness import render_source_readiness, source_readiness
 from lynchpin.graph.coverage import CoverageReport, SourceCoverage
-from lynchpin.materialization import MaterializedDataset
+from lynchpin.materialization import MaterializationResult
 from lynchpin.sources.source_observations import SourceObservation
 from lynchpin.sources.polylogue import PolylogueReadiness
 
@@ -16,7 +16,12 @@ def _empty_observation_contract(monkeypatch):
     monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_paths", lambda: ())
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.coverage_report",
-        lambda *, start, end: CoverageReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=()),
+        lambda *, start, end, repair_materializations=True: CoverageReport(
+            start=start,
+            end=end,
+            generated_at=datetime(2026, 5, 1),
+            sources=(),
+        ),
     )
 
 
@@ -84,49 +89,72 @@ def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
     monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", lambda include_polylogue_product_counts=False: readiness)
-    monkeypatch.setattr(
-        "lynchpin.materialization.audit_materialization",
-        lambda: [
-            MaterializedDataset(
-                name="title_metadata",
-                status="missing",
-                authority="fixture",
-                query_surface="fixture",
-                materialized_paths=(),
-                raw_roots=(),
-                row_count=0,
-                first_date=None,
-                last_date=None,
-                refresh_command="refresh",
-                reason="missing",
-            ),
-            MaterializedDataset(
-                name="activity_content",
-                status="missing",
-                authority="fixture",
-                query_surface="fixture",
-                materialized_paths=(),
-                raw_roots=(),
-                row_count=0,
-                first_date=None,
-                last_date=None,
-                refresh_command="refresh",
-                reason="missing",
-            ),
-        ],
-    )
+    coverage_calls = []
+
+    def fake_coverage_report(*, start, end, repair_materializations=True):
+        coverage_calls.append((start, end, repair_materializations))
+        return CoverageReport(start=start, end=end, generated_at=datetime(2026, 5, 1), sources=())
+
+    monkeypatch.setattr("lynchpin.graph.source_readiness.coverage_report", fake_coverage_report)
+    ensure_calls = []
+
+    def fake_ensure_materialized(name, *, window=None, budget="inline", cfg=None, force=False):
+        ensure_calls.append((name, window, budget))
+        return MaterializationResult(
+            name=name,
+            status="blocked",
+            changed=False,
+            reason="missing",
+            elapsed_ms=0,
+            product_paths=(),
+            source_high_water={"row_count": 0, "first_date": None, "last_date": None},
+            coverage={"relation": "unavailable"},
+        )
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
 
     report = source_readiness(start=date(2026, 5, 1), end=date(2026, 5, 6))
     by_source = report.by_source()
 
+    assert report.end == date(2026, 5, 6)
+    assert coverage_calls == [(date(2026, 5, 1), date(2026, 5, 7), True)]
     assert by_source["polylogue"].status == "partial"
     assert any("session-profile products" in caveat for caveat in by_source["polylogue"].caveats)
     assert any("work-event products are unavailable" in caveat for caveat in by_source["polylogue"].caveats)
     assert by_source["raw_log"].count == 1
-    assert by_source["github"].cost == "network"
+    assert by_source["github"].cost == "materialized"
+    assert by_source["github"].reason == "missing"
+    assert by_source["github"].caveats == (
+        "missing",
+        "frontier rows are available in github_context but not rendered by this read",
+    )
+    assert ensure_calls == [
+        ("title_metadata", (date(2026, 5, 1), date(2026, 5, 7)), "inline"),
+        ("activity_content", (date(2026, 5, 1), date(2026, 5, 7)), "inline"),
+        ("github_context", (date(2026, 5, 1), date(2026, 5, 7)), "inline"),
+    ]
     rendered = render_source_readiness(report)
     assert "Source" in rendered
     assert "polylogue" in rendered
+
+    monkeypatch.setattr(
+        "lynchpin.graph.source_readiness.source_observations",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("audit-only readiness should not scan source observations")
+        ),
+    )
+    ensure_calls.clear()
+    source_readiness(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 6),
+        repair_materializations=False,
+    )
+    assert coverage_calls[-1] == (date(2026, 5, 1), date(2026, 5, 7), False)
+    assert ensure_calls == [
+        ("title_metadata", (date(2026, 5, 1), date(2026, 5, 7)), "manual"),
+        ("activity_content", (date(2026, 5, 1), date(2026, 5, 7)), "manual"),
+        ("github_context", (date(2026, 5, 1), date(2026, 5, 7)), "manual"),
+    ]
 
 
 def test_xtask_source_readiness_summarizes_ledgers(monkeypatch, tmp_path):
@@ -222,6 +250,19 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
 
     monkeypatch.setattr("lynchpin.graph.source_readiness.get_config", lambda: Config())
     monkeypatch.setattr("lynchpin.graph.source_readiness.archive_readiness", fake_archive_readiness)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None, budget="inline", cfg=None, force=False: MaterializationResult(
+            name=name,
+            status="ready",
+            changed=False,
+            reason="GitHub lifecycle context product is materialized within the 48h network refresh contract",
+            elapsed_ms=0,
+            product_paths=(tmp_path / "github/context.ndjson",),
+            source_high_water={"row_count": 1, "first_date": "2026-05-01", "last_date": "2026-05-06"},
+            coverage={"relation": "covered"},
+        ),
+    )
 
     report = source_readiness(
         start=date(2026, 5, 1),
@@ -234,6 +275,7 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
     assert report.by_source()["polylogue"].cost == "materialized"
     assert report.by_source()["github"].status == "available"
     assert report.by_source()["github"].caveats == ()
+    assert "frontier rows are enabled" in report.by_source()["github"].reason
 
 
 def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
@@ -392,7 +434,7 @@ def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
     )
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.coverage_report",
-        lambda *, start, end: CoverageReport(
+        lambda *, start, end, repair_materializations=True: CoverageReport(
             start=start,
             end=end,
             generated_at=datetime(2026, 5, 6),

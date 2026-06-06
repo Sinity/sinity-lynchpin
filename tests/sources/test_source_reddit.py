@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 from lynchpin.sources import reddit
 
@@ -13,6 +14,7 @@ def test_reddit_reads_comments_and_daily_activity(tmp_path, monkeypatch):
                 "id,date,subreddit,body,permalink,parent,gildings",
                 "c1,2026-05-05T12:00:00+00:00,python,hello typed world,/r/python/c1,t3_parent,1",
                 "c2,2026-05-05T13:00:00+00:00,python,second comment,/r/python/c2,t3_parent,",
+                "c3,2026-05-06T12:00:00+00:00,rust,exclusive end,/r/rust/c3,t3_parent,",
             ]
         )
         + "\n",
@@ -20,17 +22,82 @@ def test_reddit_reads_comments_and_daily_activity(tmp_path, monkeypatch):
     )
 
     rows = list(reddit.iter_comments(paths=(comments,)))
-    monkeypatch.setattr(reddit, "iter_comments", lambda paths=None: iter(rows))
-    monkeypatch.setattr(reddit, "iter_posts", lambda paths=None: iter(()))
+    monkeypatch.setattr(reddit, "iter_comments", lambda paths=None, **kwargs: iter(rows))
+    monkeypatch.setattr(reddit, "iter_posts", lambda paths=None, **kwargs: iter(()))
 
-    days = reddit.daily_activity(start=date(2026, 5, 5), end=date(2026, 5, 5))
+    days = reddit.daily_activity(start=date(2026, 5, 5), end=date(2026, 5, 6))
+    distribution = reddit.subreddit_distribution(start=date(2026, 5, 5), end=date(2026, 5, 6))
     summary = reddit.summarize_activity("2026-05", "2026-05", comments_paths=(comments,))
 
-    assert [row.id for row in rows] == ["c1", "c2"]
-    assert summary.comment_counts == {"2026-05": 2}
+    assert [row.id for row in rows] == ["c1", "c2", "c3"]
+    assert summary.comment_counts == {"2026-05": 3}
     assert summary.comment_subreddits["2026-05"]["python"] == 2
     assert days[0].comment_count == 2
     assert days[0].top_subreddits == ("python",)
+    assert distribution == [("python", 2, 100.0)]
+
+
+def test_reddit_default_comment_reader_materializes(monkeypatch, tmp_path):
+    calls = []
+    comments = tmp_path / "reddit/processed/canonical/comments.csv"
+    comments.parent.mkdir(parents=True)
+    comments.write_text(
+        "\n".join(
+            [
+                "id,date,subreddit,body,permalink,parent,gildings",
+                "c1,2026-05-05T12:00:00+00:00,python,hello,/r/python/c1,t3_parent,1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(reddit, "get_config", lambda: SimpleNamespace(exports_root=tmp_path))
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: calls.append((name, window)),
+    )
+
+    rows = list(reddit.iter_comments())
+
+    assert calls == [("reddit", None)]
+    assert [row.id for row in rows] == ["c1"]
+
+
+def test_reddit_daily_uses_single_windowed_materialization(monkeypatch):
+    calls = []
+    comment = reddit.RedditComment(
+        id="c1",
+        created=datetime(2026, 5, 5, 12, tzinfo=timezone.utc),
+        subreddit="python",
+        body="hello",
+        permalink="",
+        parent="",
+        gildings=None,
+        source="fixture",
+    )
+
+    def fake_ensure(name, *, window=None):
+        calls.append((name, window))
+
+    def fake_comments(*, ensure=True, paths=None):
+        assert ensure is False
+        assert paths is None
+        yield comment
+
+    def fake_posts(*, ensure=True, paths=None):
+        assert ensure is False
+        assert paths is None
+        yield from ()
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+    monkeypatch.setattr(reddit, "iter_comments", fake_comments)
+    monkeypatch.setattr(reddit, "iter_posts", fake_posts)
+
+    rows = reddit.daily_activity(start=date(2026, 5, 5), end=date(2026, 5, 6))
+
+    assert calls == [("reddit", (date(2026, 5, 5), date(2026, 5, 6)))]
+    assert rows[0].comment_count == 1
 
 
 def test_split_quoted_text_extracts_blockquotes():

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from .config import get_config
 
@@ -83,6 +85,14 @@ def save_text(path: str | PathLike[str], text: str) -> None:
         f.write(text)
 
 
+def latest_mtime_iso(paths: Iterable[Path]) -> str | None:
+    """Return the latest existing path mtime as local ISO text."""
+    latest = max((path.stat().st_mtime for path in paths if path.exists()), default=None)
+    if latest is None:
+        return None
+    return datetime.fromtimestamp(latest, timezone.utc).astimezone().isoformat()
+
+
 def load_analysis_artifact(
     name: str,
     parser: Callable[[dict[str, Any]], T] | None = None,
@@ -106,6 +116,44 @@ def load_analysis_artifact(
     if parser is None:
         return payload
     return parser(payload)
+
+
+def load_materialized_analysis_artifact(
+    name: str,
+    *,
+    parser: Callable[[dict[str, Any]], T] | None = None,
+    materialization: dict[str, Any] | None = None,
+) -> tuple[T | dict[str, Any] | None, dict[str, Any]]:
+    """Load an analysis artifact after ensuring artifact products are usable."""
+
+    materialization_json = dict(materialization or materialize_analysis_artifacts())
+    target = Path(resolve_analysis_path(name))
+    raw = load_json_if_exists(target)
+    artifact_status = "ready" if isinstance(raw, dict) else "missing" if not target.exists() else "malformed"
+    materialization_json.update({
+        "requested_artifact": str(target),
+        "requested_artifact_name": name,
+        "requested_artifact_status": artifact_status,
+    })
+
+    if not isinstance(raw, dict):
+        if materialization_json.get("status") in {"ready", "updated"}:
+            materialization_json.update({
+                "status": artifact_status,
+                "reason": f"requested analysis artifact is {artifact_status}: {target}",
+            })
+        return None, materialization_json
+
+    payload = cast(T | dict[str, Any], raw) if parser is None else parser(raw)
+    return payload, materialization_json
+
+
+def materialize_analysis_artifacts() -> dict[str, Any]:
+    """Ensure the analysis artifact inventory once and return its status JSON."""
+
+    from lynchpin.materialization import ensure_materialized
+
+    return ensure_materialized("analysis_artifacts", cfg=get_config()).to_json()
 
 
 def require_analysis_artifact(name: str) -> dict[str, Any]:

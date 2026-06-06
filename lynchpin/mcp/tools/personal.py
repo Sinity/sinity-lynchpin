@@ -6,14 +6,34 @@ string annotations for tool parameters.
 """
 
 from datetime import date as _date
+from datetime import timedelta as _timedelta
 from typing import Any
 
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
-    best_refresh_id,
+    best_materialized_refresh_id,
+    ensure_substrate_materialized_for_read,
     json_safe as _json_safe,
-    require_best_refresh_id,
+    require_best_materialized_refresh_id,
 )
+
+
+def _ensure_source_materialized_for_read(
+    name: str,
+    *,
+    start: _date | None = None,
+    end: _date | None = None,
+) -> dict[str, Any]:
+    """Ensure one canonical source product before an explicit read."""
+
+    from lynchpin.materialization import ensure_materialized
+
+    window = (start, end) if start is not None and end is not None else None
+    return ensure_materialized(name, window=window).to_json()
+
+
+def _exclusive_end(end: _date | None) -> _date | None:
+    return end + _timedelta(days=1) if end is not None else None
 
 
 @app.tool()
@@ -28,15 +48,34 @@ def spotify_daily(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.personal import load_spotify_daily_rows
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_source_materialized_for_read(
+            "spotify_daily",
+            start=start_d,
+            end=materialization_end,
+        )
+        ensure_substrate_materialized_for_read(
+            caller="spotify_daily",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = require_best_refresh_id(conn, "spotify_daily", tool="spotify_daily")
+            refresh_id = require_best_materialized_refresh_id(
+                conn,
+                "spotify_daily",
+                caller="spotify_daily",
+                tool="spotify_daily",
+            )
 
         rows = load_spotify_daily_rows(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
         )
 
     return [
@@ -73,6 +112,7 @@ def web_daily(start: str | None = None, end: str | None = None) -> list[dict[str
     from datetime import date as _date_type, timedelta
     from urllib.parse import urlparse
 
+    from lynchpin.core.primitives import logical_date
     from lynchpin.sources.web import _iter_all_visits
     from lynchpin.sources.web_urls import _normalize_domain
 
@@ -84,6 +124,12 @@ def web_daily(start: str | None = None, end: str | None = None) -> list[dict[str
         start_d = end_d - timedelta(days=6)
     else:
         start_d = _date_type.fromisoformat(start)
+
+    _ensure_source_materialized_for_read(
+        "webhistory",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
 
     # buckets per day
     per_day_total: Counter[_date_type] = Counter()
@@ -110,8 +156,8 @@ def web_daily(start: str | None = None, end: str | None = None) -> list[dict[str
         "www.bing.com", "bing.com", "search.brave.com", "kagi.com",
     }
 
-    for v in _iter_all_visits(start=start_d, end=end_d):
-        d = v.timestamp.date()
+    for v in _iter_all_visits(start=start_d, end=end_d, ensure=False):
+        d = logical_date(v.timestamp)
         per_day_total[d] += 1
         url = v.url or ""
         parsed = urlparse(url)
@@ -167,7 +213,15 @@ def google_takeout_daily(start: str | None = None, end: str | None = None) -> li
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
-    return [_json_safe(asdict(row)) for row in iter_daily_activity(start=start_d, end=end_d)]
+    _ensure_source_materialized_for_read(
+        "google_takeout",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
+    return [
+        _json_safe(asdict(row))
+        for row in iter_daily_activity(start=start_d, end=end_d, ensure=False)
+    ]
 
 
 @app.tool()
@@ -185,13 +239,18 @@ def google_takeout_events(
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
+    _ensure_source_materialized_for_read(
+        "google_takeout",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
     needle = query.lower().strip()
     rows: list[dict[str, Any]] = []
-    for row in iter_events(product=product):
+    for row in iter_events(product=product, ensure=False):
         day = row.timestamp.date()
         if start_d and day < start_d:
             continue
-        if end_d and day >= end_d:
+        if end_d and day > end_d:
             continue
         haystack = " ".join(
             part
@@ -237,6 +296,11 @@ def google_takeout_retrospective(
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
+    _ensure_source_materialized_for_read(
+        "google_takeout",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
     return _retrospective(
         start=start_d,
         end=end_d,
@@ -273,9 +337,13 @@ def terminal_daily(start: str, end: str) -> list[dict[str, Any]]:
 
     from lynchpin.sources.terminal import daily_terminal_activity
 
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("atuin", start=start_d, end=_exclusive_end(end_d))
     rows = daily_terminal_activity(
-        start=date.fromisoformat(start),
-        end=date.fromisoformat(end),
+        start=start_d,
+        end=end_d,
+        ensure=False,
     )
     return [_json_safe(asdict(row)) for row in rows]
 
@@ -289,11 +357,350 @@ def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, 
     from lynchpin.core.primitives import date_to_dt_range
     from lynchpin.sources.terminal import shell_sessions
 
-    start_dt, end_dt = date_to_dt_range(date.fromisoformat(start), date.fromisoformat(end))
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("atuin", start=start_d, end=_exclusive_end(end_d))
+    start_dt, end_dt = date_to_dt_range(start_d, end_d)
     rows = shell_sessions(start=start_dt, end=end_dt)
     rows.sort(key=lambda row: row.start)
     capped = rows[: min(max(limit, 1), 1000)]
     return [_json_safe(asdict(row)) for row in capped]
+
+
+@app.tool()
+def keylog_daily(start: str, end: str) -> list[dict[str, Any]]:
+    """Daily keylog activity counts from scribe-tap metadata."""
+    from datetime import date
+
+    from lynchpin.sources.keylog import daily_activity
+
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("keylog", start=start_d, end=_exclusive_end(end_d))
+    return [_json_safe(row.__dict__) for row in daily_activity(start=start_d, end=end_d)]
+
+
+@app.tool()
+def keybind_usage(
+    start: str,
+    end: str,
+    family: str | None = None,
+    chord: str | None = None,
+    bindings_path: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Hyprland keybind usage inferred from keylog metadata."""
+    from datetime import date
+    from pathlib import Path
+
+    from lynchpin.analysis.keylog import DEFAULT_HYPRLAND_BINDINGS, analyze_keylog
+
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("keylog_analysis", start=start_d, end=_exclusive_end(end_d))
+    if bindings_path is None:
+        payload = _load_keylog_analysis_artifact(start=start_d, end=end_d, require_exact=False)
+        if payload is not None:
+            return _keybind_usage_from_payload(
+                payload,
+                start=start_d,
+                end=end_d,
+                family=family,
+                chord=chord,
+                limit=limit,
+                source="artifact",
+            )
+    analysis = analyze_keylog(
+        start=start_d,
+        end=end_d,
+        bindings_path=Path(bindings_path) if bindings_path else DEFAULT_HYPRLAND_BINDINGS,
+    )
+    capped_limit = min(max(limit, 1), 1000)
+    usage = [
+        row
+        for row in analysis.keybind_usage
+        if (family is None or row.family == family) and (chord is None or row.chord == chord)
+    ][:capped_limit]
+    summaries = [
+        row
+        for row in analysis.keybind_summaries
+        if (family is None or row.family == family) and (chord is None or row.chord == chord)
+    ][:capped_limit]
+    family_summaries = [
+        row
+        for row in analysis.keybind_family_summaries
+        if family is None or row.family == family
+    ][:capped_limit]
+    temporal_buckets = [
+        row
+        for row in analysis.keybind_temporal_buckets
+        if (family is None or row.family == family) and (chord is None or row.chord == chord)
+    ][:capped_limit]
+    return {
+        "start": analysis.start.isoformat(),
+        "end": analysis.end.isoformat(),
+        "source_event_count": analysis.source_event_count,
+        "keypress_count": analysis.keypress_count,
+        "matched_keybind_count": analysis.matched_keybind_count,
+        "bind_count": len(analysis.keybinds),
+        "filters": {"family": family, "chord": chord},
+        "usage": [row.to_json() for row in usage],
+        "keybind_summaries": [row.to_json() for row in summaries],
+        "keybind_family_summaries": [row.to_json() for row in family_summaries],
+        "keybind_temporal_buckets": [row.to_json() for row in temporal_buckets],
+        "caveats": list(analysis.caveats),
+        "source": "live_analysis",
+    }
+
+
+@app.tool()
+def keylog_text_shape(
+    start: str,
+    end: str,
+    bindings_path: str | None = None,
+) -> dict[str, Any]:
+    """Daily text-shape keylog metadata; text content has a separate tool."""
+    from datetime import date
+    from pathlib import Path
+
+    from lynchpin.analysis.keylog import DEFAULT_HYPRLAND_BINDINGS, analyze_keylog
+
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("keylog_analysis", start=start_d, end=_exclusive_end(end_d))
+    if bindings_path is None:
+        payload = _load_keylog_analysis_artifact(start=start_d, end=end_d, require_exact=False)
+        if payload is not None:
+            return _keylog_text_shape_from_payload(payload, start=start_d, end=end_d)
+    analysis = analyze_keylog(
+        start=start_d,
+        end=end_d,
+        bindings_path=Path(bindings_path) if bindings_path else DEFAULT_HYPRLAND_BINDINGS,
+    )
+    return {
+        "start": analysis.start.isoformat(),
+        "end": analysis.end.isoformat(),
+        "keypress_count": analysis.keypress_count,
+        "changed_keypress_count": sum(row.changed_keypress_count for row in analysis.text_shape_days),
+        "commandish_keypress_count": sum(row.commandish_keypress_count for row in analysis.text_shape_days),
+        "days": [row.to_json() for row in analysis.text_shape_days],
+        "caveats": list(analysis.caveats),
+        "source": "live_analysis",
+    }
+
+
+def _load_keylog_analysis_artifact(
+    *,
+    start: Any,
+    end: Any,
+    require_exact: bool,
+) -> dict[str, Any] | None:
+    from datetime import date
+
+    from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
+
+    payload = load_json_if_exists(resolve_analysis_path("keylog_analysis.json"))
+    if not isinstance(payload, dict):
+        return None
+    try:
+        artifact_start = date.fromisoformat(str(payload.get("start")))
+        artifact_end = date.fromisoformat(str(payload.get("end")))
+    except ValueError:
+        return None
+    if require_exact:
+        return payload if artifact_start == start and artifact_end == end else None
+    return payload if artifact_start <= start and end <= artifact_end else None
+
+
+def _keybind_usage_from_payload(
+    payload: dict[str, Any],
+    *,
+    start: Any,
+    end: Any,
+    family: str | None,
+    chord: str | None,
+    limit: int,
+    source: str,
+) -> dict[str, Any]:
+    capped_limit = min(max(limit, 1), 1000)
+    artifact_start = str(payload.get("start") or "")
+    artifact_end = str(payload.get("end") or "")
+    request_start = start.isoformat()
+    request_end = end.isoformat()
+    exact_window = artifact_start == request_start and artifact_end == request_end
+    bind_by_chord = {
+        str(row.get("chord")): row
+        for row in _dict_rows(payload.get("keybinds"))
+        if row.get("chord")
+    }
+    matching_usage = [
+        row
+        for row in _dict_rows(payload.get("keybind_usage"))
+        if request_start <= str(row.get("date") or "") <= request_end
+        and (family is None or row.get("family") == family)
+        and (chord is None or row.get("chord") == chord)
+    ]
+    usage = matching_usage[:capped_limit]
+    summaries = _summarize_keybind_usage_rows(matching_usage, bind_by_chord)[:capped_limit]
+    family_summaries = _summarize_keybind_family_rows(matching_usage)[:capped_limit]
+    temporal_buckets = [
+        row
+        for row in _dict_rows(payload.get("keybind_temporal_buckets"))
+        if (family is None or row.get("family") == family) and (chord is None or row.get("chord") == chord)
+    ][:capped_limit] if exact_window else []
+    text_shape_days = [
+        row
+        for row in _dict_rows(payload.get("text_shape_days"))
+        if request_start <= str(row.get("date") or "") <= request_end
+    ]
+    keypress_count = sum(int(row.get("keypress_count") or 0) for row in text_shape_days)
+    caveats = list(payload.get("caveats") or ())
+    if not exact_window:
+        caveats.append("temporal buckets omitted because artifact covers a broader window")
+    return {
+        "start": request_start,
+        "end": request_end,
+        "source_event_count": keypress_count if text_shape_days else int(payload.get("source_event_count") or 0),
+        "keypress_count": keypress_count if text_shape_days else int(payload.get("keypress_count") or 0),
+        "matched_keybind_count": sum(int(row.get("count") or 0) for row in matching_usage),
+        "bind_count": len(bind_by_chord),
+        "filters": {"family": family, "chord": chord},
+        "usage": usage,
+        "keybind_summaries": summaries,
+        "keybind_family_summaries": family_summaries,
+        "keybind_temporal_buckets": temporal_buckets,
+        "caveats": caveats,
+        "source": source,
+    }
+
+
+def _summarize_keybind_usage_rows(
+    rows: list[dict[str, Any]],
+    bind_by_chord: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_chord: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        row_chord = row.get("chord")
+        if not row_chord:
+            continue
+        by_chord.setdefault(str(row_chord), []).append(row)
+    summaries = []
+    for row_chord, chord_rows in by_chord.items():
+        dates = sorted({str(row.get("date")) for row in chord_rows if row.get("date")})
+        if not dates:
+            continue
+        bind = bind_by_chord.get(row_chord, {})
+        first = chord_rows[0]
+        summaries.append(
+            {
+                "chord": row_chord,
+                "dispatcher": first.get("dispatcher") or bind.get("dispatcher"),
+                "argument": first.get("argument") or bind.get("argument"),
+                "family": first.get("family") or bind.get("family"),
+                "total_count": sum(int(row.get("count") or 0) for row in chord_rows),
+                "active_days": len(dates),
+                "first_date": dates[0],
+                "last_date": dates[-1],
+            }
+        )
+    return sorted(summaries, key=lambda row: (-int(row["total_count"]), str(row["chord"])))
+
+
+def _summarize_keybind_family_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_family: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        row_family = row.get("family")
+        if not row_family:
+            continue
+        by_family.setdefault(str(row_family), []).append(row)
+    summaries = []
+    for row_family, family_rows in by_family.items():
+        dates = sorted({str(row.get("date")) for row in family_rows if row.get("date")})
+        if not dates:
+            continue
+        summaries.append(
+            {
+                "family": row_family,
+                "total_count": sum(int(row.get("count") or 0) for row in family_rows),
+                "unique_chords": len({str(row.get("chord")) for row in family_rows if row.get("chord")}),
+                "active_days": len(dates),
+                "first_date": dates[0],
+                "last_date": dates[-1],
+            }
+        )
+    return sorted(summaries, key=lambda row: (-int(row["total_count"]), str(row["family"])))
+
+
+def _keylog_text_shape_from_payload(
+    payload: dict[str, Any],
+    *,
+    start: Any,
+    end: Any,
+) -> dict[str, Any]:
+    days = [
+        row
+        for row in _dict_rows(payload.get("text_shape_days"))
+        if start.isoformat() <= str(row.get("date") or "") <= end.isoformat()
+    ]
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "keypress_count": sum(int(row.get("keypress_count") or 0) for row in days),
+        "changed_keypress_count": sum(int(row.get("changed_keypress_count") or 0) for row in days),
+        "commandish_keypress_count": sum(int(row.get("commandish_keypress_count") or 0) for row in days),
+        "days": days,
+        "caveats": list(payload.get("caveats") or ()),
+        "source": "artifact",
+    }
+
+
+def _dict_rows(value: Any) -> list[dict[str, Any]]:
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+@app.tool()
+def keylog_text_content(
+    start: str,
+    end: str,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Text-content metrics from explicit keylog snapshot text records."""
+    from datetime import date
+
+    from lynchpin.analysis.keylog import analyze_keylog_text_content
+
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("keylog_analysis", start=start_d, end=_exclusive_end(end_d))
+    payload = _load_keylog_analysis_artifact(start=start_d, end=end_d, require_exact=True)
+    if payload is not None:
+        content = payload.get("text_content")
+        if isinstance(content, dict):
+            return _keylog_text_content_from_payload(content, limit=limit)
+    analysis = analyze_keylog_text_content(start=start_d, end=end_d, top_n=min(max(limit, 0), 1000))
+    payload = analysis.to_json()
+    payload["source"] = "live_analysis"
+    return payload
+
+
+def _keylog_text_content_from_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    top_terms = _dict_rows(payload.get("top_terms"))[: min(max(limit, 0), 1000)]
+    return {
+        "start": str(payload.get("start") or ""),
+        "end": str(payload.get("end") or ""),
+        "snapshot_count": int(payload.get("snapshot_count") or 0),
+        "char_count": int(payload.get("char_count") or 0),
+        "word_count": int(payload.get("word_count") or 0),
+        "line_count": int(payload.get("line_count") or 0),
+        "days": _dict_rows(payload.get("days")),
+        "top_terms": top_terms,
+        "caveats": list(payload.get("caveats") or ()),
+        "source": "artifact",
+    }
 
 
 @app.tool()
@@ -308,9 +715,10 @@ def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
 
     from lynchpin.sources.bookmarks import iter_bookmarks
 
+    _ensure_source_materialized_for_read("browser_bookmarks")
     terms = [t for t in query.lower().split() if t]
     rows: list[dict[str, Any]] = []
-    for row in iter_bookmarks():
+    for row in iter_bookmarks(ensure=False):
         haystack = " ".join([row.title, row.url, row.domain, row.folder]).lower()
         if terms and not all(t in haystack for t in terms):
             continue
@@ -327,7 +735,14 @@ def bookmark_daily(start: str, end: str) -> list[dict[str, Any]]:
 
     from lynchpin.sources.bookmarks import daily_bookmark_activity
 
-    return [_json_safe(row.__dict__) for row in daily_bookmark_activity(start=date.fromisoformat(start), end=date.fromisoformat(end))]
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read(
+        "browser_bookmarks",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
+    return [_json_safe(row.__dict__) for row in daily_bookmark_activity(start=start_d, end=end_d, ensure=False)]
 
 
 @app.tool()
@@ -338,15 +753,20 @@ def communication_events(start: str | None = None, end: str | None = None, limit
 
     start_date = date.fromisoformat(start) if start else None
     end_date = date.fromisoformat(end) if end else None
+    _ensure_source_materialized_for_read(
+        "communications",
+        start=start_date,
+        end=_exclusive_end(end_date),
+    )
     from lynchpin.sources.communications import iter_communication_events
 
     rows: list[dict[str, Any]] = []
-    for row in iter_communication_events():
+    for row in iter_communication_events(ensure=False):
         if row.timestamp is not None:
             day = row.timestamp.date()
             if start_date and day < start_date:
                 continue
-            if end_date and day >= end_date:
+            if end_date and day > end_date:
                 continue
         rows.append(_json_safe(asdict(row)))
         if len(rows) >= limit:
@@ -361,7 +781,14 @@ def communication_daily(start: str, end: str) -> list[dict[str, Any]]:
 
     from lynchpin.sources.communications import daily_communication_activity
 
-    return [_json_safe(row.__dict__) for row in daily_communication_activity(start=date.fromisoformat(start), end=date.fromisoformat(end))]
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read(
+        "communications",
+        start=start_d,
+        end=_exclusive_end(end_d),
+    )
+    return [_json_safe(row.__dict__) for row in daily_communication_activity(start=start_d, end=end_d, ensure=False)]
 
 
 @app.tool()
@@ -385,10 +812,13 @@ def focus_daily(start: str, end: str) -> list[dict[str, Any]]:
 
     start_d = date.fromisoformat(start)
     end_d = date.fromisoformat(end)
+    materialization_end = _exclusive_end(end_d)
+    _ensure_source_materialized_for_read("activitywatch", start=start_d, end=materialization_end)
+    _ensure_source_materialized_for_read("arbtt", start=start_d, end=materialization_end)
     rows: list[dict[str, Any]] = []
     for row in daily_activity(start=start_d, end=end_d):
         rows.append({**_json_safe(row.__dict__), "source": "activitywatch"})
-    for row in daily_arbtt_activity(start=start_d, end=end_d):
+    for row in daily_arbtt_activity(start=start_d, end=end_d, ensure=False):
         rows.append({**_json_safe(row.__dict__), "source": "arbtt"})
     rows.sort(key=lambda r: r["date"])
     return rows
@@ -405,11 +835,15 @@ def arbtt_focus_daily(start: str, end: str) -> list[dict[str, Any]]:
 
     from lynchpin.sources.arbtt import daily_arbtt_activity
 
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    _ensure_source_materialized_for_read("arbtt", start=start_d, end=_exclusive_end(end_d))
     return [
         _json_safe(row.__dict__)
         for row in daily_arbtt_activity(
-            start=date.fromisoformat(start),
-            end=date.fromisoformat(end),
+            start=start_d,
+            end=end_d,
+            ensure=False,
         )
     ]
 
@@ -429,19 +863,34 @@ def personal_daily_signals(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.personal import load_personal_daily_signals
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_source_materialized_for_read(
+            "personal_daily_signals",
+            start=start_d,
+            end=materialization_end,
+        )
+        ensure_substrate_materialized_for_read(
+            caller="personal_daily_signals",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = require_best_refresh_id(
+            refresh_id = require_best_materialized_refresh_id(
                 conn,
                 "personal_daily_signal",
+                caller="personal_daily_signals",
                 tool="personal_daily_signals",
             )
 
         rows = load_personal_daily_signals(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             source=source,
             metric=metric,
             limit=limit,
@@ -474,6 +923,7 @@ def title_metadata_status() -> dict[str, Any]:
 
     from lynchpin.sources.title_metadata import title_metadata_manifest_path, title_metadata_path
 
+    _ensure_source_materialized_for_read("title_metadata")
     path = title_metadata_path()
     manifest = title_metadata_manifest_path()
     if not path.exists() or not manifest.exists():
@@ -491,6 +941,7 @@ def title_metadata_audit(limit: int = 20) -> dict[str, Any]:
 
     from lynchpin.sources.title_metadata import iter_title_classifications
 
+    _ensure_source_materialized_for_read("title_metadata")
     source_counts: Counter[str] = Counter()
     model_counts: Counter[str] = Counter()
     activity_counts: Counter[str] = Counter()
@@ -532,12 +983,11 @@ def activity_content_daily(start: str | None = None, end: str | None = None, lim
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
+    end_exclusive = end_d + date.resolution if end_d is not None else None
+    _ensure_source_materialized_for_read("activity_content", start=start_d, end=end_exclusive)
+    _ensure_source_materialized_for_read("title_metadata")
     rows: list[dict[str, Any]] = []
-    for row in iter_activity_content_days():
-        if start_d and row.date < start_d:
-            continue
-        if end_d and row.date >= end_d:
-            continue
+    for row in iter_activity_content_days(start=start_d, end=end_exclusive, ensure=False):
         rows.append(_json_safe(asdict(row)))
         if len(rows) >= min(max(limit, 1), 10_000):
             break
@@ -559,13 +1009,12 @@ def activity_title_usage(
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
+    end_exclusive = end_d + date.resolution if end_d is not None else None
+    _ensure_source_materialized_for_read("activity_content", start=start_d, end=end_exclusive)
+    _ensure_source_materialized_for_read("title_metadata")
     rows: list[dict[str, Any]] = []
-    for row in iter_activity_title_usage():
+    for row in iter_activity_title_usage(start=start_d, end=end_exclusive, ensure=False):
         if matched is not None and row.matched != matched:
-            continue
-        if start_d and (row.last_date is None or row.last_date < start_d):
-            continue
-        if end_d and (row.first_date is None or row.first_date >= end_d):
             continue
         rows.append(_json_safe(asdict(row)))
         if len(rows) >= min(max(limit, 1), 10_000):
@@ -590,15 +1039,14 @@ def activity_content_coverage(start: str | None = None, end: str | None = None) 
 
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) if end else None
+    end_exclusive = end_d + date.resolution if end_d is not None else None
+    _ensure_source_materialized_for_read("activity_content", start=start_d, end=end_exclusive)
+    _ensure_source_materialized_for_read("title_metadata")
     focused = 0.0
     matched = 0.0
     gpt_matched = 0.0
     days = 0
-    for row in iter_activity_content_days():
-        if start_d and row.date < start_d:
-            continue
-        if end_d and row.date >= end_d:
-            continue
+    for row in iter_activity_content_days(start=start_d, end=end_exclusive, ensure=False):
         days += 1
         focused += row.focused_seconds
         matched += row.matched_seconds
@@ -640,8 +1088,10 @@ def activitywatch_archive_audit() -> dict[str, Any]:
 @app.tool()
 def analysis_artifact_status() -> list[dict[str, Any]]:
     """Inventory generated analysis artifacts with availability and shape status."""
+    from lynchpin.core.io import materialize_analysis_artifacts
     from lynchpin.sources.analysis_artifacts import artifact_inventory
 
+    materialize_analysis_artifacts()
     return [
         {
             "name": artifact.name,
@@ -695,7 +1145,7 @@ def operator_rhythm(
             "summary": str,
         }
     """
-    from lynchpin.analysis.operator_rhythm import compute_operator_rhythm
+    from lynchpin.analysis.operator_rhythm import compute_operator_rhythm, render_rhythm_summary
     from lynchpin.sources.activitywatch import circadian
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_signals import (
@@ -707,6 +1157,18 @@ def operator_rhythm(
 
     start_date = _date.fromisoformat(start)
     end_date = _date.fromisoformat(end)
+    materialization_end = _exclusive_end(end_date)
+
+    _ensure_source_materialized_for_read(
+        "activitywatch",
+        start=start_date,
+        end=materialization_end,
+    )
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(
+            caller="operator_rhythm",
+            window=(start_date, materialization_end),
+        )
 
     focus_rows: list[tuple[_date, int, float]] = []
     try:
@@ -722,7 +1184,7 @@ def operator_rhythm(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "commit_fact")
+            refresh_id = best_materialized_refresh_id(conn, "commit_fact", caller="operator_rhythm")
         if refresh_id is not None:
             try:
                 commit_ts = load_commit_timestamps_in_range(
@@ -788,8 +1250,34 @@ def operator_rhythm(
         "peak_focus_hour": list(rhythm.peak_focus_hour) if rhythm.peak_focus_hour else None,
         "peak_commit_hour": list(rhythm.peak_commit_hour) if rhythm.peak_commit_hour else None,
         "peak_combined_hour": list(rhythm.peak_combined_hour) if rhythm.peak_combined_hour else None,
-        "summary": rhythm.summary,
+        "summary": render_rhythm_summary(rhythm),
     }
+
+
+@app.tool()
+def operator_retrospective_readiness(
+    start: str,
+    end: str,
+    require_polylogue: bool = False,
+) -> dict[str, Any]:
+    """Gate whether a retrospective window supports behavioral explanation.
+
+    Returns ``behavioral_explanation_allowed=false`` when core continuous
+    sources such as ActivityWatch, terminal, machine telemetry, or xtask
+    history do not fully cover the window. Structural/git-only analysis can
+    still proceed. Polylogue chat semantics are a caveat by default and only
+    block when ``require_polylogue`` is true.
+    """
+    from lynchpin.analysis.operator_retrospective_readiness import (
+        operator_retrospective_readiness as _readiness,
+    )
+
+    report = _readiness(
+        start=_date.fromisoformat(start),
+        end=_date.fromisoformat(end),
+        require_polylogue=require_polylogue,
+    )
+    return report.to_dict()
 
 
 @app.tool()
@@ -931,10 +1419,10 @@ def operator_public_text_coverage(
     zero-contribution channels correctly.
 
     Returns per-source rows: ``source``, ``status``
-    (available / partial / out_of_range / missing), ``last_date`` ISO,
+    (available / partial / out_of_range / missing / untracked), ``last_date`` ISO,
     ``reason``. Sources not represented in ``coverage_report`` (wykop,
-    gmail at the moment) are reported as ``available`` with reason noted —
-    they may still have stale data but lynchpin doesn't currently track it.
+    gmail at the moment) are reported as ``untracked`` because Lynchpin
+    cannot yet distinguish real silence from stale data for those sources.
     """
     from datetime import date
 

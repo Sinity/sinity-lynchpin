@@ -1,4 +1,4 @@
-"""Machine telemetry promotion for the refresh DAG substrate step.
+"""Machine telemetry promotion for the materialization DAG substrate step.
 
 Uses DuckDB's SQLite ATTACH to bulk-transfer machine tables directly
 (no Python row-by-roundtrip).  Falls back to the iterator path when the

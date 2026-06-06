@@ -1,4 +1,4 @@
-"""Refresh-run report artifacts for DAG executions."""
+"""Materialization/run report artifacts for DAG executions."""
 
 from __future__ import annotations
 
@@ -11,18 +11,19 @@ from lynchpin.analysis.core.dag import StepResult, StepStatus
 from lynchpin.core.io import save_json
 
 
-def refresh_report_payload(
+def materialization_report_payload(
     *,
     dag_name: str,
     results: Iterable[StepResult],
     up_to: str | None,
+    materialization_plan: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
     rows = [_step_payload(row) for row in results]
     by_status: dict[str, int] = {}
     for row in rows:
         status = str(row["status"])
         by_status[status] = by_status.get(status, 0) + 1
-    return {
+    payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "dag_name": dag_name,
         "up_to": up_to,
@@ -33,19 +34,28 @@ def refresh_report_payload(
         "source_statuses": _source_statuses(rows),
         "caveats": [
             "row_counts are extracted from step return values when exposed by the producer",
-            "dry-run plans are not written as refresh reports",
+            "dry-run plans are not written as materialization reports",
         ],
     }
+    if materialization_plan is not None:
+        payload["materialization_plan"] = [_jsonish(row) for row in materialization_plan]
+    return payload
 
 
-def write_refresh_report(
+def write_materialization_report(
     out: Path,
     *,
     dag_name: str,
     results: Iterable[StepResult],
     up_to: str | None = None,
+    materialization_plan: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
-    payload = refresh_report_payload(dag_name=dag_name, results=results, up_to=up_to)
+    payload = materialization_report_payload(
+        dag_name=dag_name,
+        results=results,
+        up_to=up_to,
+        materialization_plan=materialization_plan,
+    )
     save_json(out, payload, sort_keys=True)
     return payload
 
@@ -136,4 +146,7 @@ def _source_statuses(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-__all__ = ["refresh_report_payload", "write_refresh_report"]
+__all__ = [
+    "materialization_report_payload",
+    "write_materialization_report",
+]

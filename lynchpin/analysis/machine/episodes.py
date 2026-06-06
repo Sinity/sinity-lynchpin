@@ -14,6 +14,7 @@ from lynchpin.analysis.machine.sql import latest_machine_rows
 from lynchpin.substrate.connection import connect, substrate_path
 
 Direction = Literal["high", "low", "state"]
+EPISODE_DETECTOR_VERSION = "sustained-pressure-v2"
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,8 @@ class MachineEpisodeAnalysis:
     episodes: list[MachineEpisode]
     caveats: list[str]
     suppressed_transient_count: int = 0
+    detector_version: str = EPISODE_DETECTOR_VERSION
+    min_sustained_samples: int = 3
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -285,6 +288,7 @@ def analyze_machine_episodes(
         episodes=episodes,
         caveats=caveats,
         suppressed_transient_count=suppressed,
+        min_sustained_samples=min_sustained_samples,
     )
 
 

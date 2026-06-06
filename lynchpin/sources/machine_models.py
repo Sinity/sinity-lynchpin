@@ -57,9 +57,11 @@ class MachineMetricSample:
     cpu_psi_some_avg60: float | None = None
     cpu_psi_some_avg300: float | None = None
     cpu_psi_some_total_us: float | None = None
+    memory_psi_some_avg10: float | None = None
     memory_psi_some_avg60: float | None = None
     memory_psi_some_avg300: float | None = None
     memory_psi_some_total_us: float | None = None
+    memory_psi_full_avg10: float | None = None
     memory_psi_full_avg60: float | None = None
     memory_psi_full_avg300: float | None = None
     memory_psi_full_total_us: float | None = None
@@ -102,6 +104,109 @@ class MachineServiceState:
     cpu_usage_nsec: int | None = None
     io_read_bytes: int | None = None
     io_write_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class MachineBlockDeviceSample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    major: int | None
+    minor: int | None
+    device: str
+    reads_completed: int | None = None
+    reads_merged: int | None = None
+    sectors_read: int | None = None
+    read_time_ms: int | None = None
+    writes_completed: int | None = None
+    writes_merged: int | None = None
+    sectors_written: int | None = None
+    write_time_ms: int | None = None
+    ios_in_progress: int | None = None
+    io_time_ms: int | None = None
+    weighted_io_time_ms: int | None = None
+    discards_completed: int | None = None
+    discards_merged: int | None = None
+    sectors_discarded: int | None = None
+    discard_time_ms: int | None = None
+    flushes_completed: int | None = None
+    flush_time_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class MachineServiceCgroupIOSample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    unit: str
+    scope: str
+    control_group: str | None
+    major: int | None
+    minor: int | None
+    rbytes: int | None = None
+    wbytes: int | None = None
+    rios: int | None = None
+    wios: int | None = None
+    dbytes: int | None = None
+    dios: int | None = None
+
+
+@dataclass(frozen=True)
+class MachineServiceCgroupPressureSample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    unit: str
+    scope: str
+    control_group: str | None
+    cpu_some_avg10: float | None = None
+    cpu_some_avg60: float | None = None
+    cpu_some_avg300: float | None = None
+    cpu_some_total_us: float | None = None
+    io_some_avg10: float | None = None
+    io_some_avg60: float | None = None
+    io_some_avg300: float | None = None
+    io_some_total_us: float | None = None
+    io_full_avg10: float | None = None
+    io_full_avg60: float | None = None
+    io_full_avg300: float | None = None
+    io_full_total_us: float | None = None
+    memory_some_avg10: float | None = None
+    memory_some_avg60: float | None = None
+    memory_some_avg300: float | None = None
+    memory_some_total_us: float | None = None
+    memory_full_avg10: float | None = None
+    memory_full_avg60: float | None = None
+    memory_full_avg300: float | None = None
+    memory_full_total_us: float | None = None
+
+
+@dataclass(frozen=True)
+class MachineProcessIODeltaSample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    interval_s: float
+    pid: int
+    process_start_time_ticks: int
+    comm: str | None
+    exe: str | None
+    cgroup: str | None
+    unit: str | None
+    scope: str | None
+    read_bytes_delta: int
+    write_bytes_delta: int
+    cancelled_write_bytes_delta: int
+    read_chars_delta: int
+    write_chars_delta: int
+    read_syscalls_delta: int
+    write_syscalls_delta: int
+    total_bytes_delta: int
+    total_syscalls_delta: int
 
 
 @dataclass(frozen=True)

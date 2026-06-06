@@ -96,8 +96,17 @@ class DownloadEvent:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def commands(*, start: Optional[datetime] = None, end: Optional[datetime] = None) -> Iterator[AtuinCommand]:
+def commands(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    ensure: bool = True,
+) -> Iterator[AtuinCommand]:
     """Yield shell commands from the canonical Atuin materialization."""
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("atuin", window=_datetime_window(start, end))
     path = canonical_atuin_history_path()
     if not path.exists():
         raise FileNotFoundError(
@@ -120,13 +129,37 @@ def canonical_atuin_history_path() -> Path:
     return cfg.captures_root / "shell/atuin/history.ndjson"
 
 
-def commands_from_atuin_db(db: Path) -> Iterator[AtuinCommand]:
+def _datetime_window(start: Optional[datetime], end: Optional[datetime]) -> tuple[date, date] | None:
+    if start is None or end is None:
+        return None
+    end_date = end.date()
+    if (end.hour, end.minute, end.second, end.microsecond) != (0, 0, 0, 0):
+        end_date += timedelta(days=1)
+    return (start.date(), end_date)
+
+
+def commands_from_atuin_db(
+    db: Path,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Iterator[AtuinCommand]:
     """Yield shell commands directly from an Atuin SQLite DB for materializers."""
     with contextlib.closing(sqlite3.connect(str(db))) as conn:
         unit = _detect_unit(conn)
         query = "SELECT timestamp, duration, exit, cwd, command FROM history"
+        params: list[int] = []
+        clauses: list[str] = []
+        if start is not None:
+            clauses.append("timestamp >= ?")
+            params.append(_to_unit(start, unit))
+        if end is not None:
+            clauses.append("timestamp < ?")
+            params.append(_to_unit(end, unit))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY timestamp"
-        for row in conn.execute(query):
+        for row in conn.execute(query, params):
             yield AtuinCommand(
                 timestamp=_from_unit(row[0], unit),
                 duration_ns=row[1], exit_code=row[2], cwd=row[3], command=row[4],
@@ -156,10 +189,16 @@ _LAST_CMD_FALLBACK = timedelta(seconds=5)
 _PROJECT_RE = re.compile(r"/realm/project/([^/]+)")
 
 
-def shell_sessions(*, start: datetime, end: datetime, gap_seconds: float = 300) -> list[ShellSession]:
+def shell_sessions(
+    *,
+    start: datetime,
+    end: datetime,
+    gap_seconds: float = 300,
+    ensure: bool = True,
+) -> list[ShellSession]:
     result: list[ShellSession] = []
     for g in group_by_gap(
-        commands(start=start, end=end),
+        commands(start=start, end=end, ensure=ensure),
         start_of=lambda c: c.timestamp,
         end_of=lambda c: c.timestamp + _LAST_CMD_FALLBACK,
         max_gap=gap_seconds,
@@ -439,12 +478,17 @@ class DailyTerminalActivity:
     categories: dict[str, int]
 
 
-def daily_terminal_activity(*, start: date, end: date) -> list[DailyTerminalActivity]:
+def daily_terminal_activity(
+    *,
+    start: date,
+    end: date,
+    ensure: bool = True,
+) -> list[DailyTerminalActivity]:
     """Daily terminal usage: commands, errors, projects, command categories."""
     from collections import defaultdict
 
     s_dt, e_dt = date_to_dt_range(start, end)
-    sessions = shell_sessions(start=s_dt, end=e_dt)
+    sessions = shell_sessions(start=s_dt, end=e_dt, ensure=ensure)
     by_day: dict[date, list[ShellSession]] = defaultdict(list)
     for s in sessions:
         d = logical_date(s.start)

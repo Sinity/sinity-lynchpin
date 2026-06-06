@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     _PROGRESS_FORMAT = args.progress
 
     if not args.all:
-        parser.error("only --all is supported; canonical products are refreshed as a coherent set")
+        parser.error("only --all is supported; canonical products are materialized as a coherent set")
 
     _progress("planning canonical materialization")
     plan = plan_materializations(force=args.force)

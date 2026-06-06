@@ -69,9 +69,9 @@ def test_source_observations_does_not_invent_unavailable_dates(monkeypatch) -> N
     assert rows[0].path == str(path)
 
 
-def test_source_observations_caches_default_today_path(monkeypatch) -> None:
-    source_observations._cached_source_observations.cache_clear()
+def test_source_observations_default_today_recomputes(monkeypatch) -> None:
     calls = 0
+    observed = date(2026, 5, 15)
 
     def compute(reference: date, _substrate_dates):
         nonlocal calls
@@ -80,7 +80,7 @@ def test_source_observations_caches_default_today_path(monkeypatch) -> None:
             source_observations.SourceObservation(
                 source="spotify",
                 available=True,
-                last_observed=reference,
+                last_observed=observed,
                 basis="test",
                 recommendation=None,
             ),
@@ -93,65 +93,14 @@ def test_source_observations_caches_default_today_path(monkeypatch) -> None:
 
     monkeypatch.setattr(source_observations, "_compute_source_observations", compute)
     monkeypatch.setattr(source_observations, "date", FixedDate)
-    monkeypatch.setattr(
-        source_observations,
-        "get_config",
-        lambda: SimpleNamespace(
-            available_sources=lambda: {"spotify": True},
-            local_root=Path("/tmp/lynchpin-local"),
-            captures_root=Path("/tmp/lynchpin-captures"),
-            exports_root=Path("/tmp/lynchpin-exports"),
-        ),
-    )
-
-    assert source_observations.source_observations() == source_observations.source_observations()
-    assert calls == 1
-    source_observations._cached_source_observations.cache_clear()
-
-
-def test_source_observations_cache_key_tracks_config_roots(monkeypatch) -> None:
-    source_observations._cached_source_observations.cache_clear()
-    calls = 0
-    local_root = Path("/tmp/lynchpin-local-a")
-
-    def compute(reference: date, _substrate_dates):
-        nonlocal calls
-        calls += 1
-        return (
-            source_observations.SourceObservation(
-                source="spotify",
-                available=True,
-                last_observed=reference,
-                basis=str(local_root),
-                recommendation=None,
-            ),
-        )
-
-    class FixedDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return date(2026, 5, 16)
-
-    def config():
-        return SimpleNamespace(
-            available_sources=lambda: {"spotify": True},
-            local_root=local_root,
-            captures_root=Path("/tmp/lynchpin-captures"),
-            exports_root=Path("/tmp/lynchpin-exports"),
-        )
-
-    monkeypatch.setattr(source_observations, "_compute_source_observations", compute)
-    monkeypatch.setattr(source_observations, "date", FixedDate)
-    monkeypatch.setattr(source_observations, "get_config", config)
 
     first = source_observations.source_observations()
-    local_root = Path("/tmp/lynchpin-local-b")
+    observed = date(2026, 5, 16)
     second = source_observations.source_observations()
 
-    assert first[0].basis == "/tmp/lynchpin-local-a"
-    assert second[0].basis == "/tmp/lynchpin-local-b"
+    assert first[0].last_observed == date(2026, 5, 15)
+    assert second[0].last_observed == date(2026, 5, 16)
     assert calls == 2
-    source_observations._cached_source_observations.cache_clear()
 
 
 def test_source_observations_prefers_materialized_dates(monkeypatch, tmp_path) -> None:
@@ -169,7 +118,7 @@ def test_source_observations_prefers_materialized_dates(monkeypatch, tmp_path) -
             row_count=1,
             first_date=date(2020, 1, 1),
             last_date=date(2025, 12, 18),
-            refresh_command="refresh",
+            materialization_hint="refresh",
             reason="ready",
         )
     ]
@@ -208,7 +157,7 @@ def test_coverage_bounds_audits_materialization_once(monkeypatch, tmp_path) -> N
             row_count=1,
             first_date=date(2020, 1, 1),
             last_date=date(2025, 12, 18),
-            refresh_command="refresh",
+            materialization_hint="refresh",
             reason="ready",
         )
     ]

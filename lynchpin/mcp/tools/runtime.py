@@ -6,8 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import latest_refresh_id as _latest_refresh_id
+from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
 from lynchpin.mcp.tools._utils import registered_tool_names
+from lynchpin.core.freshness import (
+    compact_materialization_status,
+    diagnostic_ledger_status_payload,
+    freshness_dependencies,
+    freshness_explain_target,
+    latest_receipts,
+)
 
 
 def _git_value(repo: Path, *args: str) -> str | None:
@@ -26,7 +33,8 @@ def _git_value(repo: Path, *args: str) -> str | None:
 
 @app.tool()
 def mcp_runtime_status() -> dict[str, Any]:
-    """Report the MCP server code path, repo revision, and latest substrate ID."""
+    """Report the MCP server code path, repo revision, and latest materialized substrate ID."""
+    from lynchpin.materialization import substrate_materialization_snapshot
     from lynchpin.substrate.connection import connect, substrate_path
 
     package_root = Path(__file__).resolve().parents[2]
@@ -39,9 +47,9 @@ def mcp_runtime_status() -> dict[str, Any]:
 
     try:
         with connect(substrate_path(), read_only=True) as conn:
-            latest_refresh = _latest_refresh_id(conn)
+            latest_materialized = latest_materialized_refresh_id(conn, caller="mcp_runtime_status")
     except Exception as exc:  # noqa: BLE001 - status tool should report broken substrate access.
-        latest_refresh = None
+        latest_materialized = None
         substrate_error = f"{type(exc).__name__}: {exc}"
     else:
         substrate_error = None
@@ -61,8 +69,12 @@ def mcp_runtime_status() -> dict[str, Any]:
         },
         "substrate": {
             "path": str(substrate_path()),
-            "latest_refresh_id": latest_refresh,
+            "latest_materialized_refresh_id": latest_materialized,
             "error": substrate_error,
+            "materialization": substrate_materialization_snapshot(
+                substrate_path(),
+                latest_materialized_refresh_id=latest_materialized,
+            ).to_json(),
         },
     }
 
@@ -95,3 +107,71 @@ def mcp_surface_self_check() -> dict[str, Any]:
             else None
         ),
     }
+
+
+@app.tool()
+def diagnostic_ledger_status() -> dict[str, Any]:
+    """Return diagnostic ledger and exceptional queue state."""
+
+    return diagnostic_ledger_status_payload()
+
+
+@app.tool()
+def observability_status() -> dict[str, Any]:
+    """Return compact live status for panels and operator prompts."""
+
+    payload = compact_materialization_status()
+    return {**payload, "kind": "lynchpin_observability_status"}
+
+
+@app.tool()
+def diagnostic_ledger_explain(target: str, limit: int = 20) -> dict[str, Any]:
+    """Explain diagnostic ledger decisions and exceptional work for a target."""
+
+    return freshness_explain_target(target, limit=limit)
+
+
+@app.tool()
+def diagnostic_ledger_receipts(
+    limit: int = 20,
+    target: str | None = None,
+    decision: str | None = None,
+    include_payload: bool = False,
+) -> list[dict[str, Any]]:
+    """Return recent diagnostic ledger decisions."""
+
+    return latest_receipts(
+        limit=limit,
+        target=target,
+        decision=decision,
+        include_payload=include_payload,
+    )
+
+
+@app.tool()
+def diagnostic_source_materialization_decision(
+    source: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    """Debug a source-contract materialization decision without recording ledger state."""
+
+    from datetime import date, timedelta
+
+    from lynchpin.materialization import ensure_materialized
+
+    start_d = date.fromisoformat(start) if start else None
+    end_d = date.fromisoformat(end) + timedelta(days=1) if end else None
+    window = (start_d, end_d) if start_d is not None and end_d is not None else None
+    return ensure_materialized(source, window=window).to_json()
+
+
+@app.tool()
+def diagnostic_ledger_dependency_edges(
+    target: str | None = None,
+    receipt_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return recorded diagnostic ledger dependency/provenance edges."""
+
+    return freshness_dependencies(target=target, receipt_id=receipt_id, limit=limit)

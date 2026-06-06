@@ -7,6 +7,7 @@ import json
 import sqlite3
 from datetime import datetime, date, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from lynchpin.sources.activitywatch import (
     FocusSpan, AppSession, _merge_adjacent, _focus_stretches, _session_ctx, _deep_compatible,
@@ -141,8 +142,84 @@ def test_activitywatch_raw_merges_archive_dbs_and_filters_bad_rows(monkeypatch, 
     assert event_bounds("aw-watcher-window_") == (date(2026, 3, 15), date(2026, 3, 15), 2)
 
 
-def test_activitywatch_ndjson_events_use_bucket_index(monkeypatch, tmp_path: Path) -> None:
-    """Canonical NDJSON reads should slice matching buckets, not full-scan all events."""
+def test_activitywatch_raw_accepts_multiple_bucket_prefixes(monkeypatch, tmp_path: Path) -> None:
+    live = tmp_path / "live.db"
+    _aw_db(
+        live,
+        [
+            ("aw-watcher-window_host", dt(10), dt(10, 5), {"app": "kitty"}),
+            ("aw-watcher-afk_host", dt(10), dt(10, 5), {"status": "not-afk"}),
+            ("aw-watcher-web-firefox_host", dt(10), dt(10, 5), {"url": "https://example.com"}),
+            ("other-bucket", dt(10), dt(10, 5), {"ignored": True}),
+        ],
+    )
+
+    class Config:
+        activitywatch_db = live
+        activitywatch_archive_db_dir = tmp_path / "missing"
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+
+    rows = list(
+        events_from_activitywatch_dbs(
+            ("aw-watcher-window_", "aw-watcher-web-"),
+            start=dt(9),
+            end=dt(11),
+        )
+    )
+
+    assert [row.bucket for row in rows] == [
+        "aw-watcher-window_host",
+        "aw-watcher-web-firefox_host",
+    ]
+
+
+def test_activitywatch_raw_skips_non_overlapping_candidate_db(monkeypatch, tmp_path: Path) -> None:
+    relevant = tmp_path / "relevant.db"
+    old = tmp_path / "old.db"
+    _aw_db(relevant, [("aw-watcher-window_host", dt(10), dt(10, 5), {"app": "kitty"})])
+    old.write_text("not sqlite", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._candidate_dbs",
+        lambda db_path=None: (old, relevant),
+    )
+
+    def fake_bounds(path, signature, prefixes):
+        del signature, prefixes
+        if path == old:
+            return (
+                int(dt(1).timestamp() * 1_000_000_000),
+                int(dt(2).timestamp() * 1_000_000_000),
+            )
+        return None
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw._db_event_bounds", fake_bounds)
+
+    rows = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(9), end=dt(11)))
+
+    assert [row.data["app"] for row in rows] == ["kitty"]
+
+
+def test_activitywatch_raw_skips_candidate_without_matching_buckets(monkeypatch, tmp_path: Path) -> None:
+    relevant = tmp_path / "relevant.db"
+    irrelevant = tmp_path / "irrelevant.db"
+    _aw_db(relevant, [("aw-watcher-window_host", dt(10), dt(10, 5), {"app": "kitty"})])
+    _aw_db(irrelevant, [("other-bucket", dt(10), dt(10, 5), {"ignored": True})])
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._candidate_dbs",
+        lambda db_path=None: (irrelevant, relevant),
+    )
+
+    rows = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(9), end=dt(11)))
+
+    assert [row.data["app"] for row in rows] == ["kitty"]
+
+
+def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) -> None:
+    """Canonical reads should use the day index instead of parsing full history."""
+    calls = []
     path = tmp_path / "activitywatch/events.ndjson"
     path.parent.mkdir()
     rows = [
@@ -166,15 +243,35 @@ def test_activitywatch_ndjson_events_use_bucket_index(monkeypatch, tmp_path: Pat
         },
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    index_path = tmp_path / "activitywatch/events_by_day/2026-03-15.ndjson"
+    index_path.parent.mkdir()
+    index_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
     class Config:
         captures_root = tmp_path
 
     monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+    monkeypatch.setattr("lynchpin.sources.activitywatch_event_index.get_config", lambda: Config())
+
+    def fake_ensure(name, *, window=None):
+        calls.append((name, window))
+        return SimpleNamespace(status="ready")
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._load_all_events",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full canonical parse should not run")),
+    )
 
     window = list(events("aw-watcher-window_", start=dt(8), end=dt(13)))
     web = list(events("aw-watcher-web-", start=dt(8), end=dt(13)))
 
+    assert calls == [
+        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
+        ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
+        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
+        ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
+    ]
     assert [event.data for event in window] == [{"app": "kitty"}]
     assert [event.data for event in web] == [{"url": "https://example.com"}]
 

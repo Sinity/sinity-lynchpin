@@ -41,12 +41,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from ...core.pr_review import PrReviewRow
-from ...sources.github import (
-    GitHubItem,
-    GitHubReview,
-    fetch_pr,
-    fetch_prs,
-)
+from ...materialization import ensure_materialized
+from ...sources.github import GitHubItem, GitHubReview
+from ...sources.github_context import iter_github_context
 from lynchpin.core.io import load_json_object, resolve_analysis_path, save_json
 
 
@@ -91,7 +88,7 @@ def build_active_pr_review_topology(
     """Build the per-PR + per-project SLO payload.
 
     ``items`` accepts caller-supplied ``(project, GitHubItem iterable)``
-    pairs for tests; when omitted, fetches via the local checkout.
+    pairs for tests; when omitted, reads the canonical ``github_context`` product.
     """
     end = end or datetime.now(timezone.utc).date()
     start = start or (end - timedelta(days=31))
@@ -106,6 +103,7 @@ def build_active_pr_review_topology(
             repo_paths=repo_paths,
             selected=selected,
             start=start,
+            end=end,
         )
 
     for project, project_items in per_project_iter:
@@ -330,51 +328,47 @@ def _resolve_repo_iter(
     repo_paths: Sequence[Path] | None,
     selected: set[str],
     start: date,
+    end: date,
 ) -> Iterable[tuple[str, Iterable[GitHubItem]]]:
-    """Resolve project → PR-iterable from active project snapshot or paths."""
-    if repo_paths is not None:
-        for path in repo_paths:
-            project = path.name
-            if selected and project not in selected:
-                continue
-            yield project, _fetch_pr_items(path, start=start)
-        return
+    """Resolve project → PR iterable from the canonical GitHub context product."""
+    product_projects = _selected_product_projects(
+        snapshot_file=snapshot_file,
+        repo_paths=repo_paths,
+        selected=selected,
+    )
+    result = ensure_materialized("github_context", window=(start, end))
+    if result.status not in {"ready", "updated"}:
+        return ()
 
+    grouped: dict[str, list[GitHubItem]] = defaultdict(list)
+    for row in iter_github_context(projects=product_projects or None, ensure=False):
+        item = row.item
+        if item.kind != "pr":
+            continue
+        cutoff = item.closed_at or item.updated_at
+        if item.state != "open" and cutoff is not None and cutoff.date() < start:
+            continue
+        grouped[row.project].append(item)
+    return tuple((project, tuple(items)) for project, items in sorted(grouped.items()))
+
+
+def _selected_product_projects(
+    *,
+    snapshot_file: str | PathLike[str],
+    repo_paths: Sequence[Path] | None,
+    selected: set[str],
+) -> set[str]:
+    if selected:
+        return selected
+    if repo_paths is not None:
+        return {path.name for path in repo_paths}
     payload = load_json_object(snapshot_file, label="active project snapshot")
     projects = payload.get("projects") if isinstance(payload, dict) else []
+    names: set[str] = set()
     for row in projects or ():
-        if not isinstance(row, dict):
-            continue
-        row_project = row.get("project")
-        path_str = row.get("path")
-        if not isinstance(row_project, str) or not isinstance(path_str, str):
-            continue
-        repo_path = Path(path_str)
-        if not repo_path.is_dir():
-            continue
-        if selected and row_project not in selected:
-            continue
-        yield row_project, _fetch_pr_items(repo_path, start=start)
-
-
-def _fetch_pr_items(repo_path: Path, *, start: date) -> Iterable[GitHubItem]:
-    """Fetch open and recent-closed PRs with reviews loaded.
-
-    Two passes: ``open`` to capture in-flight, ``closed`` for those closed
-    within the window. Then enrich each with ``include_review_comments``.
-    """
-    items: list[GitHubItem] = []
-    for state in ("open", "closed"):
-        result = fetch_prs(repo_path, state=state, limit=80, use_cache=True)  # type: ignore[arg-type]
-        if result.status != "ok":
-            continue
-        for item in result.items:
-            cutoff = item.closed_at or item.updated_at
-            if state == "closed" and cutoff is not None and cutoff.date() < start:
-                continue
-            enriched = fetch_pr(repo_path, item.number, include_review_comments=True, use_cache=True)
-            items.append(enriched if enriched is not None else item)
-    return items
+        if isinstance(row, dict) and isinstance(row.get("project"), str):
+            names.add(row["project"])
+    return names
 
 
 def _delta_minutes(start: datetime | None, end: datetime | None) -> float | None:

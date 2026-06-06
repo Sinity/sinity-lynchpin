@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from ..core.evidence import CostClass, EvidenceCaveat, EvidenceProvenance
+from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
 from ..core.primitives import logical_date
 from ..core.project_mentions import projects_mentioned_in_text
+from ..core.projects import canonical_project_name
 from .evidence_projects import include_project, normalize_project
 
 
@@ -99,7 +100,6 @@ def add_polylogue_work_events(
     start: date,
     end: date,
     selected: set[str],
-    mode: CostClass,
 ) -> None:
     """Promote Polylogue's ``session_work_events`` rows into per-event nodes."""
     from ..core.classify import resolve_project
@@ -128,18 +128,23 @@ def add_polylogue_work_events(
             projects = _projects_from_text(session.title)
         session_projects[session.conversation_id] = projects
 
-    for event in work_events(start=start, end=end + timedelta(days=1)):
+    try:
+        events = work_events(start=start, end=end + timedelta(days=1))
+    except PolylogueMaterializationError as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Polylogue work-event products unavailable; emitting zero work_event nodes: %s", exc
+        )
+        return
+
+    for event in events:
         if event.start is None:
             continue
-        event_projects: list[str] = []
-        for path in event.file_paths:
-            project = resolve_project(path)
-            if project and project not in event_projects:
-                event_projects.append(project)
-        if not event_projects:
-            for project in session_projects.get(event.conversation_id, ()):
-                if project and project not in event_projects:
-                    event_projects.append(project)
+        event_projects = _event_projects(
+            event.file_paths,
+            session_projects.get(event.conversation_id, ()),
+            resolve_project=resolve_project,
+        )
 
         event_date = logical_date(event.start)
         label = overlay_label(
@@ -211,7 +216,7 @@ def add_polylogue_work_events(
                         "tools_used": list(event.tools_used),
                         "parent_session_id": parent_session_id,
                     },
-                    provenance=EvidenceProvenance("polylogue", mode),
+                    provenance=EvidenceProvenance("polylogue", "materialized"),
                     caveats=tuple(event_caveats),
                 )
             )
@@ -219,3 +224,28 @@ def add_polylogue_work_events(
 
 def _projects_from_text(text: str) -> tuple[str, ...]:
     return projects_mentioned_in_text(text)
+
+
+def _event_projects(
+    file_paths: tuple[str, ...],
+    session_projects: tuple[str, ...],
+    *,
+    resolve_project: Any,
+) -> list[str]:
+    projects: list[str] = []
+    for project in session_projects:
+        if project and project not in projects:
+            projects.append(project)
+    for path in file_paths:
+        if "/realm/project/" not in str(path):
+            continue
+        project = canonical_project_name(str(path))
+        if project and project not in projects:
+            projects.append(project)
+    if projects:
+        return projects
+    for path in file_paths:
+        project = resolve_project(path)
+        if project and project not in projects:
+            projects.append(project)
+    return projects

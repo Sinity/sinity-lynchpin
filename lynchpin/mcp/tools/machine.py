@@ -5,22 +5,50 @@ annotations while registering @app.tool functions.
 """
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from lynchpin.analysis.machine.status import machine_status_payload
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_refresh_id, json_safe as _json_safe
+from lynchpin.mcp.tools._utils import (
+    best_materialized_refresh_id,
+    ensure_substrate_materialized_for_read,
+    json_safe as _json_safe,
+)
+
+
+def _ensure_machine_materialized_for_read(
+    *,
+    start: Any = None,
+    end: Any = None,
+) -> dict[str, Any]:
+    """Ensure canonical machine telemetry before reading promoted tables."""
+
+    from lynchpin.materialization import ensure_materialized
+
+    window = (start, end) if start is not None and end is not None else None
+    return ensure_materialized("machine", window=window).to_json()
+
+
+def _exclusive_end(end: Any) -> Any:
+    return end + timedelta(days=1) if end is not None else None
+
+
+def _ensure_work_observation_substrate_for_read(
+    *,
+    caller: str,
+    start: Any = None,
+    end: Any = None,
+) -> dict[str, Any]:
+    window = (start, end) if start is not None and end is not None else None
+    return ensure_substrate_materialized_for_read(caller=caller, window=window)
 
 
 def _analysis_artifact(name: str) -> dict[str, Any] | None:
-    from lynchpin.core.io import resolve_analysis_path
+    from lynchpin.core.io import load_materialized_analysis_artifact
 
-    path = Path(resolve_analysis_path(name))
-    if not path.exists():
-        return None
-    with path.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
+    payload, _materialization = load_materialized_analysis_artifact(name)
     return payload if isinstance(payload, dict) else None
 
 
@@ -66,10 +94,132 @@ def _artifact_rows(payload: dict[str, Any] | None, key: str) -> list[dict[str, A
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _workflow_mechanics_artifact_payload(
+    *,
+    start: str | None,
+    end: str | None,
+    project: str | None,
+    refresh_id: str | None,
+    retry_gap_min: int,
+    limit: int,
+) -> dict[str, Any] | None:
+    if (
+        start is not None
+        or end is not None
+        or project is not None
+        or refresh_id is not None
+        or retry_gap_min != 20
+        or limit != 100
+    ):
+        return None
+
+    payload = _analysis_artifact("workflow_mechanics.json")
+    if payload is None:
+        return None
+    if payload.get("start") is not None or payload.get("end") is not None:
+        return None
+    return _json_safe({**payload, "source": "artifact"})
+
+
 @app.tool()
 def machine_status() -> dict[str, Any]:
     """Summarize current machine-analysis readiness, support, claims, and blockers."""
     return _json_safe(machine_status_payload())
+
+
+@app.tool()
+def machine_service_io_for_xtask_invocation(
+    invocation_id: int,
+    limit: int = 20,
+    min_total_mib: float = 0.0,
+    include_below_processes: bool = False,
+    below_top_per_sample: int = 20,
+) -> dict[str, Any]:
+    """Attribute machine I/O counters for one exact Sinex xtask invocation.
+
+    This reads the Sinex xtask history DB and Sinnix machine telemetry SQLite
+    through Lynchpin source APIs. It intentionally does not require DuckDB
+    substrate promotion because the high-rate block/cgroup attribution tables
+    are already canonical in the machine telemetry SQLite.
+    """
+    from lynchpin.analysis.machine.service_io import (
+        analyze_machine_service_io_for_xtask_invocation,
+    )
+
+    report = analyze_machine_service_io_for_xtask_invocation(
+        invocation_id,
+        limit=limit,
+        min_total_mib=min_total_mib,
+        include_below_processes=include_below_processes,
+        below_top_per_sample=below_top_per_sample,
+    )
+    return _json_safe(
+        {
+            **report.to_dict(),
+            "source_mode": "direct_live_sources",
+            "source_databases": (
+                "sinex xtask history SQLite",
+                "sinnix machine telemetry SQLite",
+            ),
+            "substrate_promotion_required": False,
+        }
+    )
+
+
+@app.tool()
+def machine_xtask_contention(
+    start: str | None = None,
+    end: str | None = None,
+    hours: float = 24.0,
+    command: str | None = None,
+    limit: int = 10,
+    min_duration_s: float = 30.0,
+    min_io_full_max: float = 0.0,
+    success_only: bool = False,
+    include_below_processes: bool = False,
+    below_top_per_sample: int = 12,
+) -> dict[str, Any]:
+    """Rank slow xtask invocations and attribute their machine I/O windows.
+
+    Uses direct source reads for xtask history and machine telemetry. DuckDB is
+    not in the read path for this exact-window report.
+    """
+    from datetime import datetime, timezone
+
+    from lynchpin.analysis.machine.xtask_contention import analyze_xtask_contention
+
+    end_dt = (
+        datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if end is not None
+        else datetime.now(timezone.utc)
+    )
+    start_dt = (
+        datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if start is not None
+        else end_dt - timedelta(hours=hours)
+    )
+    report = analyze_xtask_contention(
+        start=start_dt,
+        end=end_dt,
+        command=command,
+        limit=limit,
+        min_duration_s=min_duration_s,
+        min_io_full_max=min_io_full_max,
+        include_failures=not success_only,
+        include_below_processes=include_below_processes,
+        below_top_per_sample=below_top_per_sample,
+    )
+    return _json_safe(
+        {
+            **report.to_dict(),
+            "source_mode": "direct_live_sources",
+            "source_databases": (
+                "sinex xtask history SQLite",
+                "sinnix machine telemetry SQLite",
+            ),
+            "substrate_promotion_required": False,
+        }
+    )
 
 
 @app.tool()
@@ -85,17 +235,27 @@ def machine_metrics_daily(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_machine_metric_daily
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
+        ensure_substrate_materialized_for_read(
+            caller="machine_metrics_daily",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "machine_metric_sample")
+            refresh_id = best_materialized_refresh_id(conn, "machine_metric_sample", caller="machine_metrics_daily")
             if refresh_id is None:
                 return []
 
         rows = load_machine_metric_daily(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             host=host,
         )
 
@@ -139,19 +299,37 @@ def machine_metrics_by_context(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_machine_metric_series_by_context
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
+        ensure_substrate_materialized_for_read(
+            caller="machine_metrics_by_context",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "machine_metric_sample")
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "machine_metric_sample",
+                caller="machine_metrics_by_context",
+            )
             if refresh_id is None:
                 return []
-        generations_refresh_id = best_refresh_id(conn, "sinnix_generation")
+        generations_refresh_id = best_materialized_refresh_id(
+            conn,
+            "sinnix_generation",
+            caller="machine_metrics_by_context.generations",
+        )
 
         rows = load_machine_metric_series_by_context(
             conn,
             refresh_id=refresh_id,
             generations_refresh_id=generations_refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             host=host,
         )
 
@@ -196,13 +374,11 @@ def machine_dataset_inventory(project: str | None = None, start: str | None = No
     }
 
 
-@app.tool()
-def machine_refresh_health() -> dict[str, Any]:
-    """Summarize machine-analysis refresh health from readiness dimensions."""
+def _machine_materialization_health_payload() -> dict[str, Any]:
     payload = _analysis_artifact("machine_analysis_readiness.json")
-    report = _analysis_artifact("machine_analysis_refresh_report.json")
+    report = _analysis_artifact("machine_analysis_materialization_report.json")
     if payload is None:
-        return {"summary": {"status": "missing"}, "dimensions": [], "latest_refresh_report": report}
+        return {"summary": {"status": "missing"}, "dimensions": [], "latest_materialization_report": report}
     dimensions = [row for row in payload.get("dimensions", []) if isinstance(row, dict)]
     status_counts: dict[str, int] = {}
     for row in dimensions:
@@ -218,8 +394,14 @@ def machine_refresh_health() -> dict[str, Any]:
             "caveats": payload.get("caveats", []),
         },
         "dimensions": dimensions,
-        "latest_refresh_report": report,
+        "latest_materialization_report": report,
     }
+
+
+@app.tool()
+def machine_materialization_health() -> dict[str, Any]:
+    """Summarize machine-analysis materialization health from readiness dimensions."""
+    return _machine_materialization_health_payload()
 
 
 @app.tool()
@@ -277,7 +459,14 @@ def machine_episodes(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Read typed machine episodes from the materialized analysis artifact."""
+    from lynchpin.analysis.machine.episodes import EPISODE_DETECTOR_VERSION
+
     payload = _required_analysis_artifact("machine_episode_analysis.json")
+    if payload.get("detector_version") != EPISODE_DETECTOR_VERSION:
+        raise RuntimeError(
+            "machine_episode_analysis.json was generated by an obsolete episode detector; "
+            "run `python -m lynchpin.analysis machine-episodes` or `just analysis-materialize`"
+        )
     episodes = [row for row in payload.get("episodes", []) if isinstance(row, dict)]
     rows = [
         row
@@ -441,29 +630,67 @@ def machine_command_performance(
     tool: str | None = None,
     project: str | None = None,
     pressure_only: bool = False,
+    refresh_id: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """Read command-performance windows joined to machine work states."""
-    payload = _analysis_artifact("command_performance_windows.json")
-    if payload is None:
-        return {"summary": {"status": "missing"}, "windows": []}
+    promoted_only_tool = tool in ("xtask", "polylogue")
+    payload = None if promoted_only_tool else _analysis_artifact("command_performance_windows.json")
     rows = _artifact_rows(payload, "windows")
-    if tool is not None:
-        rows = [row for row in rows if row.get("tool") == tool]
-    if project is not None:
-        rows = [row for row in rows if row.get("project") == project]
-    if pressure_only:
-        rows = [row for row in rows if row.get("machine_pressure_state") not in (None, "", "quiet")]
+    if payload is not None:
+        if tool is not None:
+            rows = [row for row in rows if row.get("tool") == tool]
+        if project is not None:
+            rows = [row for row in rows if row.get("project") == project]
+        if pressure_only:
+            rows = [row for row in rows if row.get("machine_pressure_state") not in (None, "", "quiet")]
+    work_rows, work_caveats = _work_observation_command_windows(
+        tool=tool,
+        project=project,
+        pressure_only=pressure_only,
+        refresh_id=refresh_id,
+    )
+    rows.extend(work_rows)
+    if payload is None and not rows:
+        return {"summary": {"status": "missing"}, "windows": []}
     rows.sort(key=lambda row: float(row.get("duration_seconds") or 0), reverse=True)
+    tool_summaries = _artifact_rows(payload, "tools")
+    if tool is not None:
+        tool_summaries = [row for row in tool_summaries if row.get("tool") == tool]
+    if work_rows:
+        tool_summaries = _merge_command_tool_summaries(tool_summaries, _tool_summaries_from_windows(work_rows))
     summary = {
-        "generated_at_utc": payload.get("generated_at_utc"),
-        "generated_for": payload.get("generated_for", {}),
-        "command_count": payload.get("command_count", len(rows)),
-        "tool_count": len(_artifact_rows(payload, "tools")),
-        "filters": {"tool": tool, "project": project, "pressure_only": pressure_only},
+        "generated_at_utc": payload.get("generated_at_utc") if payload else None,
+        "generated_for": payload.get("generated_for", {}) if payload else {},
+        "command_count": (payload.get("command_count", 0) if payload else 0) + len(work_rows),
+        "tool_count": len(tool_summaries),
+        "filters": {
+            "tool": tool,
+            "project": project,
+            "pressure_only": pressure_only,
+            "refresh_id": refresh_id,
+        },
         "filtered_count": len(rows),
-        "tool_summaries": _artifact_rows(payload, "tools"),
-        "caveats": payload.get("caveats", []),
+        "tool_summaries": tool_summaries,
+        "caveats": sorted(dict.fromkeys([
+            *(payload.get("caveats", []) if payload else []),
+            *work_caveats,
+            *(
+                [
+                    "xtask rows come from promoted work_observation ledgers, not shell history",
+                    "xtask pressure state is derived from host PSI maxima recorded by xtask",
+                ]
+                if any(row.get("tool") == "xtask" for row in work_rows)
+                else []
+            ),
+            *(
+                [
+                    "polylogue devtools rows come from promoted work_observation ledgers, not shell history",
+                ]
+                if any(row.get("tool") == "polylogue" for row in work_rows)
+                else []
+            ),
+        ])),
     }
     return {"summary": summary, "windows": rows[:max(limit, 0)]}
 
@@ -532,6 +759,209 @@ def machine_devshell_performance(
         "caveats": payload.get("caveats", []),
     }
     return {"summary": summary, "windows": rows[:max(limit, 0)]}
+
+
+def _work_observation_command_windows(
+    *,
+    tool: str | None,
+    project: str | None,
+    pressure_only: bool,
+    refresh_id: str | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if tool not in (None, "xtask", "polylogue"):
+        return [], []
+
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(caller="machine_command_performance")
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = _best_refresh_or_none(conn, "work_observation")
+        if refresh_id is None:
+            return [], []
+        stage_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM work_observation_stage WHERE refresh_id = ?",
+                [refresh_id],
+            ).fetchone()[0]
+            or 0
+        )
+        test_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM work_observation_test_result WHERE refresh_id = ?",
+                [refresh_id],
+            ).fetchone()[0]
+            or 0
+        )
+        clauses = ["refresh_id = ?"]
+        params: list[Any] = [refresh_id]
+        source_predicates = []
+        if tool in (None, "xtask"):
+            source_predicates.append("(source = 'xtask_history' OR work_kind = 'xtask_invocation')")
+        if tool in (None, "polylogue"):
+            source_predicates.append("(source = 'polylogue_devtools' OR work_kind IN ('polylogue_devtools_invocation', 'polylogue_log_run'))")
+        clauses.append("(" + " OR ".join(source_predicates) + ")")
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(project)
+        if pressure_only:
+            clauses.append(
+                """
+                (
+                  COALESCE(host_io_pressure_some_avg10_max, 0) >= 10
+                  OR COALESCE(host_memory_pressure_some_avg10_max, 0) >= 10
+                  OR COALESCE(host_cpu_pressure_some_avg10_max, 0) >= 10
+                )
+                """
+            )
+        rows = conn.execute(
+            f"""
+            SELECT
+              source_id,
+              source,
+              work_kind,
+              started_at,
+              ended_at,
+              duration_s,
+              exit_code,
+              cwd,
+              project,
+              command,
+              status,
+              host,
+              host_cpu_pressure_some_avg10_max,
+              host_io_pressure_some_avg10_max,
+              host_io_pressure_full_avg10_max,
+              host_memory_pressure_some_avg10_max,
+              host_memory_pressure_full_avg10_max,
+              process_count_max,
+              shm_free_min_mb,
+              shm_used_max_mb
+            FROM work_observation
+            WHERE {" AND ".join(clauses)}
+            """,
+            params,
+        ).fetchall()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        pressure_state = _work_observation_pressure_state(
+            cpu_some=row[12],
+            io_some=row[13],
+            io_full=row[14],
+            memory_some=row[15],
+            memory_full=row[16],
+        )
+        row_tool = _work_observation_tool(row[1], row[2])
+        result.append(
+            {
+                "source": "work_observation",
+                "source_id": row[0],
+                "tool": row_tool,
+                "project": row[8],
+                "command": list(row[9] or ()),
+                "command_prefix": " ".join(list(row[9] or ())[:2]),
+                "duration_seconds": _round(row[5]),
+                "exit_code": row[6],
+                "cwd": row[7],
+                "started_at": _json_safe(row[3]),
+                "ended_at": _json_safe(row[4]),
+                "status": row[10],
+                "host": row[11],
+                "machine_pressure_state": pressure_state,
+                "machine_work_state": "test_workload"
+                if row_tool == "xtask" and any(part in {"test", "ci", "nextest"} for part in (row[9] or ()))
+                else "devtools_workload" if row_tool == "polylogue" else "build_workload",
+                "machine_overlap_seconds": _round(row[5]),
+                "host_cpu_pressure_some_avg10_max": _round(row[12]),
+                "host_io_pressure_some_avg10_max": _round(row[13]),
+                "host_io_pressure_full_avg10_max": _round(row[14]),
+                "host_memory_pressure_some_avg10_max": _round(row[15]),
+                "host_memory_pressure_full_avg10_max": _round(row[16]),
+                "process_count_max": row[17],
+                "shm_free_min_mb": _round(row[18]),
+                "shm_used_max_mb": _round(row[19]),
+            }
+        )
+    caveats = []
+    if tool in (None, "xtask") and not any(row.get("tool") == "xtask" for row in result) and (stage_count or test_count):
+        caveats.append(
+            "xtask stage/test ledgers are present but xtask invocation rows are missing from work_observation; rerun the work-observation promotion"
+        )
+    if any(row.get("tool") == "polylogue" for row in result):
+        caveats.append("polylogue devtools rows come from promoted work_observation ledgers")
+    return result, caveats
+
+
+def _work_observation_tool(source: Any, work_kind: Any) -> str:
+    if source == "polylogue_devtools" or work_kind in {"polylogue_devtools_invocation", "polylogue_log_run"}:
+        return "polylogue"
+    if source == "xtask_history" or work_kind == "xtask_invocation":
+        return "xtask"
+    return "work_observation"
+
+
+def _work_observation_pressure_state(
+    *,
+    cpu_some: Any,
+    io_some: Any,
+    io_full: Any,
+    memory_some: Any,
+    memory_full: Any,
+) -> str:
+    if _float_or_zero(io_full) >= 10 or _float_or_zero(io_some) >= 10:
+        return "io_pressure"
+    if _float_or_zero(memory_full) >= 10 or _float_or_zero(memory_some) >= 10:
+        return "memory_pressure"
+    if _float_or_zero(cpu_some) >= 10:
+        return "cpu_pressure"
+    return "quiet"
+
+
+def _tool_summaries_from_windows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_tool: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_tool.setdefault(str(row.get("tool") or "unknown"), []).append(row)
+    summaries: list[dict[str, Any]] = []
+    for tool, tool_rows in by_tool.items():
+        durations = sorted(
+            float(row["duration_seconds"])
+            for row in tool_rows
+            if row.get("duration_seconds") is not None
+        )
+        summaries.append(
+            {
+                "tool": tool,
+                "command_count": len(tool_rows),
+                "error_count": sum(1 for row in tool_rows if row.get("exit_code") not in (None, 0)),
+                "median_duration_seconds": _median(durations),
+                "p95_duration_seconds": _p95(durations),
+                "pressure_overlap_count": sum(
+                    1
+                    for row in tool_rows
+                    if row.get("machine_pressure_state") not in (None, "", "quiet")
+                ),
+            }
+        )
+    return sorted(summaries, key=lambda row: (-int(row["command_count"]), str(row["tool"])))
+
+
+def _merge_command_tool_summaries(
+    left: list[dict[str, Any]],
+    right: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = {str(row.get("tool") or "unknown"): dict(row) for row in left}
+    for row in right:
+        tool = str(row.get("tool") or "unknown")
+        if tool not in merged:
+            merged[tool] = dict(row)
+            continue
+        current = merged[tool]
+        current["command_count"] = int(current.get("command_count") or 0) + int(row.get("command_count") or 0)
+        current["error_count"] = int(current.get("error_count") or 0) + int(row.get("error_count") or 0)
+        current["pressure_overlap_count"] = int(current.get("pressure_overlap_count") or 0) + int(row.get("pressure_overlap_count") or 0)
+    return sorted(merged.values(), key=lambda row: (-int(row.get("command_count") or 0), str(row.get("tool") or "")))
 
 
 @app.tool()
@@ -700,6 +1130,15 @@ def machine_work_observation_daily(
     from lynchpin.analysis.machine.work_observations import daily_work_observation_series
     from lynchpin.substrate.connection import connect, substrate_path
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(
+            caller="machine_work_observation_daily",
+            start=start_d,
+            end=end_d,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_or_none(conn, "work_observation")
@@ -708,8 +1147,8 @@ def machine_work_observation_daily(
         rows = daily_work_observation_series(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             project=project,
             command_contains=command_contains,
         )
@@ -756,16 +1195,41 @@ def machine_workflow_mechanics(
     """Workflow mechanics over work observations: command summaries and retry loops."""
     from datetime import date
 
+    from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.analysis.workflow_mechanics import analyze_workflow_mechanics
 
-    return analyze_workflow_mechanics(
-        start=date.fromisoformat(start) if start else None,
-        end=date.fromisoformat(end) if end else None,
+    artifact_payload = _workflow_mechanics_artifact_payload(
+        start=start,
+        end=end,
+        project=project,
+        refresh_id=refresh_id,
+        retry_gap_min=retry_gap_min,
+        limit=limit,
+    )
+    if artifact_payload is not None:
+        return artifact_payload
+
+    start_d = date.fromisoformat(start) if start else None
+    end_d = date.fromisoformat(end) if end else None
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(
+            caller="machine_workflow_mechanics",
+            start=start_d,
+            end=end_d,
+        )
+        with connect(substrate_path(), read_only=True) as conn:
+            refresh_id = _best_refresh_or_none(conn, "work_observation")
+
+    payload = analyze_workflow_mechanics(
+        start=start_d,
+        end=end_d,
         project=project,
         refresh_id=refresh_id,
         retry_gap_min=retry_gap_min,
         limit=min(max(limit, 1), 500),
     ).to_json()
+    payload["source"] = "live_analysis"
+    return payload
 
 
 @app.tool()
@@ -782,6 +1246,15 @@ def machine_work_stage_summary(
     from lynchpin.analysis.machine.work_observations import stage_timing_summary
     from lynchpin.substrate.connection import connect, substrate_path
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(
+            caller="machine_work_stage_summary",
+            start=start_d,
+            end=end_d,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_or_none(conn, "work_observation_stage")
@@ -790,8 +1263,8 @@ def machine_work_stage_summary(
         rows = stage_timing_summary(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             stage_name=stage_name,
             limit=limit,
         )
@@ -826,6 +1299,9 @@ def machine_work_test_summary(
     """Slowest xtask test summaries from promoted work_observation_test_result rows."""
     from lynchpin.analysis.machine.work_observations import test_duration_summary
     from lynchpin.substrate.connection import connect, substrate_path
+
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(caller="machine_work_test_summary")
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -910,6 +1386,9 @@ def machine_work_slow_tests(
     """Read slow xtask test-result rows with invocation project context."""
     from lynchpin.substrate.connection import connect, substrate_path
 
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(caller="machine_work_slow_tests")
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
             refresh_id = _best_refresh_or_none(conn, "work_observation_test_result")
@@ -961,6 +1440,9 @@ def machine_work_stage_daily(
 ) -> dict[str, Any]:
     """Read daily xtask stage timing grouped by stage and invocation project."""
     from lynchpin.substrate.connection import connect, substrate_path
+
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(caller="machine_work_stage_daily")
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -1025,6 +1507,9 @@ def machine_work_failures(
 ) -> dict[str, Any]:
     """Read failed invocation, stage, and test observations with common filters."""
     from lynchpin.substrate.connection import connect, substrate_path
+
+    if refresh_id is None:
+        _ensure_work_observation_substrate_for_read(caller="machine_work_failures")
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
@@ -1585,9 +2070,9 @@ def machine_benchmark_manifest_bundle(limit: int = 10) -> dict[str, Any]:
 
 
 @app.tool()
-def machine_benchmark_execution_queue(limit: int = 10, ready_only: bool = False) -> dict[str, Any]:
+def machine_benchmark_execution_handoff(limit: int = 10, ready_only: bool = False) -> dict[str, Any]:
     """Read ranked benchmark groups ready for future export/execution."""
-    payload = _analysis_artifact("machine_benchmark_execution_queue.json")
+    payload = _analysis_artifact("machine_benchmark_execution_handoff.json")
     if payload is None:
         return {"summary": {"status": "missing"}, "items": []}
     rows = [row for row in payload.get("items", []) if isinstance(row, dict)]
@@ -1597,7 +2082,7 @@ def machine_benchmark_execution_queue(limit: int = 10, ready_only: bool = False)
         "summary": {
             "generated_at_utc": payload.get("generated_at_utc"),
             "generated_for": payload.get("generated_for"),
-            "queue_count": payload.get("queue_count", len(rows)),
+            "handoff_count": payload.get("handoff_count", len(rows)),
             "ready_group_count": payload.get("ready_group_count"),
             "blocked_group_count": payload.get("blocked_group_count"),
             "run_template_count": payload.get("run_template_count"),
@@ -1609,9 +2094,64 @@ def machine_benchmark_execution_queue(limit: int = 10, ready_only: bool = False)
 
 
 @app.tool()
-def machine_below_export_queue(limit: int = 10, kind: str | None = None) -> dict[str, Any]:
+def machine_benchmark_selected_runbook(
+    run_group_id: str | None = None,
+    candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the operational command sequence for executing one ready benchmark group."""
+    payload = _analysis_artifact("machine_benchmark_execution_handoff.json")
+    if payload is None:
+        return {"summary": {"status": "missing"}, "commands": []}
+    rows = [row for row in payload.get("items", []) if isinstance(row, dict)]
+    rows = [
+        row for row in rows
+        if row.get("ready_to_export") is True
+        and (run_group_id is None or row.get("run_group_id") == run_group_id)
+        and (candidate_id is None or row.get("candidate_id") == candidate_id)
+    ]
+    rows.sort(key=lambda row: (not bool(row.get("pareto_frontier")), -float(row.get("priority_score") or 0), str(row.get("run_group_id") or "")))
+    if not rows:
+        return {
+            "summary": {
+                "status": "not_found",
+                "run_group_id": run_group_id,
+                "candidate_id": candidate_id,
+            },
+            "commands": [],
+        }
+    row = rows[0]
+    command = [
+        "python",
+        "-m",
+        "lynchpin.analysis",
+        "machine-benchmark-run-selected",
+        "--run-group-id",
+        str(row.get("run_group_id")),
+        "--execute",
+        "--materialize-after",
+    ]
+    return {
+        "summary": {
+            "status": "ready",
+            "run_group_id": row.get("run_group_id"),
+            "candidate_id": row.get("candidate_id"),
+            "primary_metric": row.get("primary_metric"),
+            "run_count": row.get("run_count"),
+            "ready_run_count": row.get("ready_run_count"),
+        },
+        "commands": [" ".join(command)],
+        "dry_run_command": " ".join(part for part in command if part not in {"--execute", "--materialize-after"}),
+        "caveats": [
+            "run the dry-run command first to inspect exported scripts",
+            "the execute command runs generated run.sh files and then materializes coherent machine analysis",
+        ],
+    }
+
+
+@app.tool()
+def machine_below_export_handoff(limit: int = 10, kind: str | None = None) -> dict[str, Any]:
     """Read planned live-below export windows for residual pressure episodes."""
-    payload = _analysis_artifact("machine_below_export_queue.json")
+    payload = _analysis_artifact("machine_below_export_handoff.json")
     if payload is None:
         return {"summary": {"status": "missing"}, "items": []}
     rows = [row for row in payload.get("items", []) if isinstance(row, dict)]
@@ -1622,7 +2162,7 @@ def machine_below_export_queue(limit: int = 10, kind: str | None = None) -> dict
         "summary": {
             "generated_at_utc": payload.get("generated_at_utc"),
             "generated_for": payload.get("generated_for"),
-            "queue_count": payload.get("queue_count", len(rows)),
+            "planned_window_count": payload.get("planned_window_count", len(rows)),
             "failed_capture_count": payload.get("failed_capture_count", len(failed)),
             "root": payload.get("root"),
             "live_store": payload.get("live_store"),
@@ -2036,17 +2576,31 @@ def machine_service_state_summary(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_machine_service_state_summary
 
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
+        ensure_substrate_materialized_for_read(
+            caller="machine_service_state_summary",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
+        )
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_refresh_id(conn, "machine_service_state")
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "machine_service_state",
+                caller="machine_service_state_summary",
+            )
             if refresh_id is None:
                 return []
 
         rows = load_machine_service_state_summary(
             conn,
             refresh_id=refresh_id,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
+            start=start_d,
+            end=end_d,
             host=host,
             unit=unit,
         )
@@ -2059,11 +2613,14 @@ def machine_service_state_summary(
             "samples": row[3],
             "active_samples": row[4],
             "max_memory_current_bytes": row[5],
-            "max_cpu_usage_nsec": row[6],
-            "max_io_read_bytes": row[7],
-            "max_io_write_bytes": row[8],
+            "cpu_usage_delta_nsec": row[6],
+            "io_read_delta_bytes": row[7],
+            "io_write_delta_bytes": row[8],
             "first_observed_at": _json_safe(row[9]),
             "last_observed_at": _json_safe(row[10]),
+            "last_cpu_usage_nsec": row[11],
+            "last_io_read_bytes": row[12],
+            "last_io_write_bytes": row[13],
         }
         for row in rows
     ]
@@ -2131,6 +2688,8 @@ def sinnix_generation_history(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_sinnix_generation_rows
 
+    ensure_substrate_materialized_for_read(caller="sinnix_generation_history")
+
     with connect(substrate_path(), read_only=True) as conn:
         rows = load_sinnix_generation_rows(conn, limit=limit, host=host)
     return [
@@ -2151,6 +2710,7 @@ def machine_bufferbloat_summary(
     start: str | None = None,
     end: str | None = None,
     interface: str | None = None,
+    refresh_id: str | None = None,
 ) -> dict[str, Any]:
     """Return per-day bufferbloat measurements from `machine_network_sample`.
 
@@ -2172,17 +2732,46 @@ def machine_bufferbloat_summary(
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_bufferbloat_daily
 
-    with connect(substrate_path(), read_only=True) as conn:
-        rows = load_bufferbloat_daily(
-            conn,
-            start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None,
-            interface=interface,
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
+        ensure_substrate_materialized_for_read(
+            caller="machine_bufferbloat_summary",
+            window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
         )
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "machine_network_sample",
+                caller="machine_bufferbloat_summary",
+            )
+            if refresh_id is None:
+                rows = []
+            else:
+                rows = load_bufferbloat_daily(
+                    conn,
+                    refresh_id=refresh_id,
+                    start=start_d,
+                    end=end_d,
+                    interface=interface,
+                )
+        else:
+            rows = load_bufferbloat_daily(
+                conn,
+                refresh_id=refresh_id,
+                start=start_d,
+                end=end_d,
+                interface=interface,
+            )
 
     return {
         "summary": {
             "row_count": len(rows),
+            "refresh_id": refresh_id,
             "filters": {"start": start, "end": end, "interface": interface},
         },
         "rows": [
@@ -2208,9 +2797,31 @@ def _round(value: Any, digits: int = 3) -> float | None:
     return round(float(value), digits)
 
 
+def _float_or_zero(value: Any) -> float:
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    midpoint = len(values) // 2
+    if len(values) % 2:
+        return round(values[midpoint], 3)
+    return round((values[midpoint - 1] + values[midpoint]) / 2, 3)
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    idx = min(len(values) - 1, int(len(values) * 0.95))
+    return round(values[idx], 3)
+
+
 def _best_refresh_or_none(conn: Any, table: str) -> str | None:
     try:
-        return best_refresh_id(conn, table)
+        return best_materialized_refresh_id(conn, table, caller=f"machine_gap_summary.{table}")
     except Exception:
         return None
 
@@ -2223,7 +2834,7 @@ def machine_gap_summary(
     recorded each code, plus any code exceeding the regression threshold.
 
     Reads the materialized ``machine_gap_summary.json`` artifact produced
-    by the daily refresh DAG; use ``threshold_pct`` to re-filter the
+    by the daily materialization DAG; use ``threshold_pct`` to re-filter the
     ``regressions`` list to a stricter share than what the artifact was
     computed at.
     """

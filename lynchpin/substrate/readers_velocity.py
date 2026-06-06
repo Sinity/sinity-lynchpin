@@ -338,7 +338,9 @@ def load_file_change_by_period(
                     SUM(fcf.lines_added) AS la,
                     SUM(fcf.lines_deleted) AS ld
                 FROM file_change_fact fcf
-                JOIN commit_fact cf USING (sha)
+                JOIN commit_fact cf
+                  ON fcf.sha = cf.sha
+                 AND fcf.refresh_id = cf.refresh_id
                 WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}
                 GROUP BY group_key, fcf.path
             )
@@ -391,7 +393,9 @@ def load_symbol_change_by_period(
                     sc.path,
                     MAX(cf.authored_at) AS authored_at
                 FROM symbol_change sc
-                JOIN commit_fact cf USING (sha)
+                JOIN commit_fact cf
+                  ON sc.sha = cf.sha
+                 AND sc.refresh_id = cf.refresh_id
                 WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}
                 GROUP BY group_key, sc.change_type, sc.qualified_name, sc.path
             )
@@ -405,7 +409,9 @@ def load_symbol_change_by_period(
             SELECT date_trunc('{granularity}', authored_at)::DATE AS period,
                    change_type, COUNT(*) AS n
             FROM symbol_change sc
-            JOIN commit_fact cf USING (sha)
+            JOIN commit_fact cf
+              ON sc.sha = cf.sha
+             AND sc.refresh_id = cf.refresh_id
             WHERE cf.refresh_id = ? AND cf.project = ?{date_filter}
             GROUP BY period, change_type
         """

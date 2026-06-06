@@ -11,7 +11,7 @@ from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
-from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int, in_date_range
+from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int
 from ..core.primitives import TopN, logical_date
 
 logger = logging.getLogger(__name__)
@@ -202,9 +202,13 @@ def summarize_activity(
     )
 
 
-def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> list[Path]:
+def _resolve_paths(paths: Optional[Sequence[Path]], filename: str, *, ensure: bool = True) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     cfg = get_config()
     canonical = cfg.exports_root / "reddit/processed/canonical" / filename
     if canonical.exists():
@@ -216,7 +220,7 @@ def _resolve_paths(paths: Optional[Sequence[Path]], filename: str) -> list[Path]
 
 
 def _path_sig(paths: Optional[Sequence[Path]], filename: str) -> object:
-    resolved = _resolve_paths(paths, filename)
+    resolved = _resolve_paths(paths, filename, ensure=False)
     return tuple(str(p) for p in resolved), files_signature(resolved)
 
 
@@ -227,12 +231,16 @@ def _comments_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_comments", depends_on=_comments_sig)
 def _load_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditComment]:
     comments: list[RedditComment] = []
-    for path in _resolve_paths(paths, "comments.csv"):
+    for path in _resolve_paths(paths, "comments.csv", ensure=False):
         comments.extend(_read_comment_csv(path))
     return comments
 
 
-def iter_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditComment]:
+def iter_comments(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditComment]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_comments(paths=paths)
 
 
@@ -243,7 +251,7 @@ def _posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_posts", depends_on=_posts_sig)
 def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
     posts: list[RedditPost] = []
-    for path in _resolve_paths(paths, "posts.csv"):
+    for path in _resolve_paths(paths, "posts.csv", ensure=False):
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -264,7 +272,11 @@ def _load_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditPost]:
     return posts
 
 
-def iter_posts(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditPost]:
+def iter_posts(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditPost]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_posts(paths=paths)
 
 
@@ -275,7 +287,7 @@ def _saved_posts_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_saved_posts", depends_on=_saved_posts_sig)
 def _load_saved_posts(paths: Optional[Sequence[Path]] = None) -> list[RedditSavedItem]:
     saved: list[RedditSavedItem] = []
-    for path in _resolve_paths(paths, "saved_posts.csv"):
+    for path in _resolve_paths(paths, "saved_posts.csv", ensure=False):
         saved.extend(_read_saved_csv(path, "post"))
     return saved
 
@@ -287,16 +299,24 @@ def _saved_comments_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_saved_comments", depends_on=_saved_comments_sig)
 def _load_saved_comments(paths: Optional[Sequence[Path]] = None) -> list[RedditSavedItem]:
     saved: list[RedditSavedItem] = []
-    for path in _resolve_paths(paths, "saved_comments.csv"):
+    for path in _resolve_paths(paths, "saved_comments.csv", ensure=False):
         saved.extend(_read_saved_csv(path, "comment"))
     return saved
 
 
-def iter_saved_posts(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditSavedItem]:
+def iter_saved_posts(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditSavedItem]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_saved_posts(paths=paths)
 
 
-def iter_saved_comments(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditSavedItem]:
+def iter_saved_comments(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditSavedItem]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_saved_comments(paths=paths)
 
 
@@ -307,7 +327,7 @@ def _comment_votes_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_comment_votes", depends_on=_comment_votes_sig)
 def _load_comment_votes(paths: Optional[Sequence[Path]] = None) -> list[RedditVote]:
     votes: list[RedditVote] = []
-    for path in _resolve_paths(paths, "comment_votes.csv"):
+    for path in _resolve_paths(paths, "comment_votes.csv", ensure=False):
         votes.extend(_read_vote_csv(path, "comment"))
     return votes
 
@@ -319,22 +339,34 @@ def _post_votes_sig(paths: Optional[Sequence[Path]] = None) -> object:
 @persistent_cache("reddit_post_votes", depends_on=_post_votes_sig)
 def _load_post_votes(paths: Optional[Sequence[Path]] = None) -> list[RedditVote]:
     votes: list[RedditVote] = []
-    for path in _resolve_paths(paths, "post_votes.csv"):
+    for path in _resolve_paths(paths, "post_votes.csv", ensure=False):
         votes.extend(_read_vote_csv(path, "post"))
     return votes
 
 
-def iter_comment_votes(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditVote]:
+def iter_comment_votes(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditVote]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_comment_votes(paths=paths)
 
 
-def iter_post_votes(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditVote]:
+def iter_post_votes(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditVote]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_post_votes(paths=paths)
 
 
-def _message_paths(paths: Optional[Sequence[Path]] = None) -> list[Path]:
+def _message_paths(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> list[Path]:
     if paths is not None:
         return [Path(path) for path in paths if Path(path).exists()]
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     cfg = get_config()
     canonical = cfg.exports_root / "reddit/processed/canonical"
     candidates = [
@@ -351,19 +383,23 @@ def _message_paths(paths: Optional[Sequence[Path]] = None) -> list[Path]:
 
 
 def _message_headers_sig(paths: Optional[Sequence[Path]] = None) -> object:
-    resolved = _message_paths(paths)
+    resolved = _message_paths(paths, ensure=False)
     return tuple(str(p) for p in resolved), files_signature(resolved)
 
 
 @persistent_cache("reddit_message_headers", depends_on=_message_headers_sig)
 def _load_message_headers(paths: Optional[Sequence[Path]] = None) -> list[RedditMessageHeader]:
     messages: list[RedditMessageHeader] = []
-    for path in _message_paths(paths):
+    for path in _message_paths(paths, ensure=False):
         messages.extend(_read_message_headers_csv(path))
     return messages
 
 
-def iter_message_headers(paths: Optional[Sequence[Path]] = None) -> Iterator[RedditMessageHeader]:
+def iter_message_headers(paths: Optional[Sequence[Path]] = None, *, ensure: bool = True) -> Iterator[RedditMessageHeader]:
+    if ensure and paths is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit")
     yield from _load_message_headers(paths=paths)
 
 
@@ -461,26 +497,31 @@ class _RedditDayBucket:
     words: int = 0
 
 
-def daily_activity(*, start: date, end: date) -> list[RedditDayActivity]:
+def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[RedditDayActivity]:
     """Daily Reddit engagement: comments, posts, subreddits."""
     from collections import defaultdict
 
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("reddit", window=(start, end))
+
     by_day: defaultdict[date, _RedditDayBucket] = defaultdict(_RedditDayBucket)
-    for comment in iter_comments():
+    for comment in iter_comments(ensure=False):
         if comment.created is None:
             continue
         d = logical_date(comment.created)
-        if not in_date_range(d, start, end):
+        if d < start or d >= end:
             continue
         bucket = by_day[d]
         bucket.comments += 1
         bucket.subs.add(comment.subreddit or "unknown", 1)
         bucket.words += len(comment.body.split()) if comment.body else 0
-    for post in iter_posts():
+    for post in iter_posts(ensure=False):
         if post.created is None:
             continue
         d = logical_date(post.created)
-        if not in_date_range(d, start, end):
+        if d < start or d >= end:
             continue
         by_day[d].posts += 1
 
@@ -496,12 +537,16 @@ def daily_activity(*, start: date, end: date) -> list[RedditDayActivity]:
 def subreddit_distribution(*, start: date, end: date) -> list[tuple[str, int, float]]:
     """Subreddit engagement distribution: (subreddit, comment_count, pct)."""
     from collections import Counter
+    from ..materialization import ensure_materialized
+
+    ensure_materialized("reddit", window=(start, end))
+
     subs: Counter[str] = Counter()
-    for comment in iter_comments():
+    for comment in iter_comments(ensure=False):
         if comment.created is None:
             continue
         d = logical_date(comment.created)
-        if not in_date_range(d, start, end):
+        if d < start or d >= end:
             continue
         subs[comment.subreddit or "unknown"] += 1
     total = sum(subs.values())

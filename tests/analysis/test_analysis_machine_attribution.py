@@ -11,24 +11,30 @@ from lynchpin.analysis.machine.below import BelowWindowExport
 from lynchpin.substrate.connection import apply_schema, connect
 
 
+def _insert_sustained_load_pressure(conn) -> None:
+    conn.execute(
+        """
+        INSERT INTO machine_metric_sample (
+            observed_at, host, source, source_schema_version,
+            load_1m, gap_codes, refresh_id
+        ) VALUES
+            (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
+            (?, 'host', 'machine.telemetry', 2, 31, [], 'r1'),
+            (?, 'host', 'machine.telemetry', 2, 32, [], 'r1')
+        """,
+        [
+            datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
+            datetime(2026, 5, 1, 10, 3, tzinfo=timezone.utc),
+        ],
+    )
+
+
 def test_below_attribution_joins_episode_to_bounded_capture(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
 
     report = tmp_path / "20260501-120000-auto" / "report"
     report.mkdir(parents=True)
@@ -69,7 +75,7 @@ def test_below_attribution_joins_episode_to_bounded_capture(tmp_path):
     row = analysis.attributions[0]
     assert row.episode_kind == "load_pressure"
     assert row.capture_id == "20260501-120000-auto"
-    assert row.overlap_seconds == 60.0
+    assert row.overlap_seconds == 120.0
     assert row.top_processes[0].key == "pytest -q"
     assert row.top_cgroups[0].key == "/user.slice"
     assert "observational" in row.caveats[0]
@@ -79,20 +85,7 @@ def test_below_attribution_reports_unattributed_pressure(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
 
     live_store = tmp_path / "live-below-store"
     live_store.mkdir()
@@ -115,20 +108,7 @@ def test_below_attribution_filters_contributors_to_episode_overlap(tmp_path):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
 
     report = tmp_path / "20260501-120000-auto" / "report"
     report.mkdir(parents=True)
@@ -174,20 +154,7 @@ def test_below_attribution_uses_workload_resource_windows_without_below_capture(
     started = datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc)
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
         conn.execute(
             """
             INSERT INTO work_observation (
@@ -226,20 +193,7 @@ def test_plan_below_windows_targets_unattributed_pressure_in_live_store(tmp_path
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
     live_store = tmp_path / "live-below-store"
     live_store.mkdir()
     epoch = int(datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp())
@@ -271,11 +225,13 @@ def test_plan_below_windows_deduplicates_overlapping_pressure_windows(tmp_path):
                 load_1m, dstate_task_count, gap_codes, refresh_id
             ) VALUES
                 (?, 'host', 'machine.telemetry', 2, 30, 2, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, 2, [], 'r1')
+                (?, 'host', 'machine.telemetry', 2, 31, 2, [], 'r1'),
+                (?, 'host', 'machine.telemetry', 2, 32, 2, [], 'r1')
             """,
             [
                 datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
                 datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
+                datetime(2026, 5, 1, 10, 3, tzinfo=timezone.utc),
             ],
         )
     live_store = tmp_path / "live-below-store"
@@ -299,20 +255,7 @@ def test_export_below_windows_for_pressure_episodes_can_write_planned_windows(mo
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO machine_metric_sample (
-                observed_at, host, source, source_schema_version,
-                load_1m, gap_codes, refresh_id
-            ) VALUES
-                (?, 'host', 'machine.telemetry', 2, 30, [], 'r1'),
-                (?, 'host', 'machine.telemetry', 2, 31, [], 'r1')
-            """,
-            [
-                datetime(2026, 5, 1, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
-            ],
-        )
+        _insert_sustained_load_pressure(conn)
     live_store = tmp_path / "live-below-store"
     live_store.mkdir()
     epoch = int(datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp())

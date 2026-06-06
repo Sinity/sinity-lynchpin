@@ -20,8 +20,6 @@ def test_clipboard_reads_clipse_history_and_dedupes(tmp_path, monkeypatch):
         clipboard_live_file=path,
         clipboard_export_files=(),
     ))
-    clipboard._entries_from_file.cache_clear()
-
     rows = clipboard.entries_in_range(start=date(2026, 4, 21), end=date(2026, 4, 21))
 
     assert len(rows) == 1
@@ -39,8 +37,6 @@ generated: 2026-01-15T10:00:00Z
 exact selected text
 ```
 """)
-    clipboard._entries_from_file.cache_clear()
-
     rows = list(clipboard.entries(paths=(path,)))
 
     assert len(rows) == 1

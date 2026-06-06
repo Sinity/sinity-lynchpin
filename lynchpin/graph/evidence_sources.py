@@ -22,13 +22,14 @@ def add_base_source_nodes(nodes: list[EvidenceNode], edges: list[EvidenceEdge], 
     caveats: list[EvidenceCaveat] = []
     _run_source('git', caveats, lambda: evidence_git.add_git(nodes, edges, start=start, end=end, selected=selected, mode=mode), node_count=lambda: len(nodes))
     _run_source('polylogue sessions', caveats, lambda: evidence_polylogue.add_polylogue(nodes, start=start, end=end, selected=selected), caveat_source='polylogue', node_count=lambda: len(nodes))
-    _run_source('polylogue work events', caveats, lambda: evidence_polylogue.add_polylogue_work_events(nodes, start=start, end=end, selected=selected, mode='materialized'), caveat_source='polylogue', node_count=lambda: len(nodes))
+    _run_source('polylogue work events', caveats, lambda: evidence_polylogue.add_polylogue_work_events(nodes, start=start, end=end, selected=selected), caveat_source='polylogue', node_count=lambda: len(nodes))
     _run_source('raw log', caveats, lambda: evidence_raw_log.add_raw_log(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
     _run_source('clipboard', caveats, lambda: evidence_clipboard.add_clipboard(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
     _run_source('irc', caveats, lambda: evidence_irc.add_irc(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
-    _run_source('activitywatch', caveats, lambda: evidence_activitywatch.add_focus(nodes, start=start, end=end, selected=selected, mode=mode), node_count=lambda: len(nodes))
+    _run_source('activitywatch', caveats, lambda: evidence_activitywatch.add_focus(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
     _run_source('terminal', caveats, lambda: evidence_terminal.add_terminal(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
     _run_source('web', caveats, lambda: evidence_web_media.add_web(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))
+    _run_source('personal daily signals', caveats, lambda: evidence_personal_products.add_personal_daily_signals(nodes, start=start, end=end), node_count=lambda: len(nodes))
     _run_source('personal products', caveats, lambda: evidence_personal_products.add_personal_products(nodes, start=start, end=end), node_count=lambda: len(nodes))
     if include_spotify:
         _run_source('spotify', caveats, lambda: evidence_web_media.add_spotify(nodes, start=start, end=end, selected=selected), node_count=lambda: len(nodes))

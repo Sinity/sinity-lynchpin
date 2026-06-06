@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..core.evidence import EvidenceCaveat, EvidenceProvenance
 from ..core.evidence_graph import EvidenceNode
-from ..core.primitives import logical_date
 from .evidence_projects import include_project
-
-def iter_streams(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.spotify import iter_streams as impl
-
-    return impl(*args, **kwargs)
 
 
 def daily_browsing(*args: Any, **kwargs: Any) -> Any:
@@ -24,13 +17,25 @@ def daily_browsing(*args: Any, **kwargs: Any) -> Any:
 
 
 def add_web(
-    nodes: list[EvidenceNode], *, start: date, end: date, selected: set[str]
+    nodes: list[EvidenceNode],
+    *,
+    start: date,
+    end: date,
+    selected: set[str],
 ) -> None:
-    from ..materialization import materialized_window_overlaps
+    from ..materialization import ensure_materialized
 
-    if not materialized_window_overlaps("webhistory", start=start, end=end):
-        return
-    days = daily_browsing(start=start, end=end)
+    ensure_materialized("webhistory", window=(start, end + timedelta(days=1)))
+    days = daily_browsing(start=start, end=end, ensure=False)
+    _add_web_days(nodes, days=days, selected=selected)
+
+
+def _add_web_days(
+    nodes: list[EvidenceNode],
+    *,
+    days: Any,
+    selected: set[str],
+) -> None:
     for day in days:
         if day.visit_count == 0:
             continue
@@ -72,47 +77,32 @@ def add_spotify(
     end: date,
     selected: set[str],
 ) -> None:
-    """Add listening-session evidence nodes from Spotify streaming history."""
-    from ..materialization import materialized_window_overlaps
+    """Add daily listening evidence nodes from the canonical Spotify product."""
+    from ..materialization import ensure_materialized
+    from ..sources.personal_signals import iter_spotify_daily_signals
 
-    if not materialized_window_overlaps("spotify", start=start, end=end):
-        return
-    streams = list(iter_streams())
-    if not streams:
-        return
-    by_day: dict[date, list[Any]] = defaultdict(list)
-    for s in streams:
-        end_time = getattr(s, "end_time", None)
-        if end_time is None:
-            continue
-        d = logical_date(end_time)
-        if start <= d < end:
-            by_day[d].append(s)
-
-    for d, day_streams in by_day.items():
-        top_artists = Counter(
-            s.artist for s in day_streams if hasattr(s, "artist")
-        ).most_common(5)
-        top_tracks = Counter(
-            s.track for s in day_streams if hasattr(s, "track")
-        ).most_common(5)
-        minutes = sum((getattr(s, "ms_played", 0) or 0) / 60_000 for s in day_streams)
+    ensure_materialized("spotify_daily", window=(start, end + timedelta(days=1)))
+    for row in iter_spotify_daily_signals(start=start, end=end + timedelta(days=1), ensure=False):
+        top_artists = list(row.top_artists[:5])
+        top_tracks = list(row.top_tracks[:5])
         nodes.append(
             EvidenceNode(
-                id=f"spotify:listening:{d.isoformat()}",
+                id=f"spotify:listening:{row.date.isoformat()}",
                 kind="listening_session",
                 source="spotify",
-                date=d,
+                date=row.date,
                 project=None,
                 summary=(
-                    f"{len(day_streams)} tracks, {minutes:.0f}min - "
-                    f"top: {', '.join(a for a, _ in top_artists[:3])}"
+                    f"{row.track_count} tracks, {row.minutes_played:.0f}min - "
+                    f"top: {', '.join(top_artists[:3])}"
                 ),
                 payload={
-                    "track_count": len(day_streams),
-                    "minutes": round(minutes, 1),
-                    "top_artists": [(a, c) for a, c in top_artists],
-                    "top_tracks": [(t, c) for t, c in top_tracks],
+                    "track_count": row.track_count,
+                    "minutes": round(row.minutes_played, 1),
+                    "unique_artists": row.unique_artists,
+                    "unique_tracks": row.unique_tracks,
+                    "top_artists": top_artists,
+                    "top_tracks": top_tracks,
                 },
                 provenance=EvidenceProvenance("spotify", "materialized"),
             )

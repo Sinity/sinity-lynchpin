@@ -1,16 +1,422 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def test_machine_metrics_daily_materializes_machine_and_substrate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine_calls = []
+    substrate_calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "machine", "status": "ready"}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_materialized(name, *, window=None):
+        machine_calls.append((name, window))
+        return Result()
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_metric_daily",
+        lambda *_args, **_kwargs: [
+            (date(2026, 5, 1), "host", 3, 40.0, 90.0, 80.0, 120.0, 0.1, 0.5, 1.0, 5.0, 0),
+        ],
+    )
+
+    from lynchpin.mcp.tools.machine import machine_metrics_daily
+
+    rows = machine_metrics_daily(start="2026-05-01", end="2026-05-03")
+
+    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert substrate_calls == [
+        ("machine_metrics_daily", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert rows[0]["date"] == "2026-05-01"
+
+
+def test_sinnix_generation_history_materializes_substrate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_sinnix_generation_rows",
+        lambda *_args, **_kwargs: [
+            ("host", "42", "2026-05-01T00:00:00+00:00", "/nix/store/x", "rev", "26.05"),
+        ],
+    )
+
+    from lynchpin.mcp.tools.machine import sinnix_generation_history
+
+    rows = sinnix_generation_history(limit=1)
+
+    assert calls == [("sinnix_generation_history", None)]
+    assert rows[0]["generation"] == "42"
+
+
+def test_machine_bufferbloat_summary_materializes_and_selects_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine_calls = []
+    substrate_calls = []
+    reader_calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "machine", "status": "ready"}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_materialized(name, *, window=None):
+        machine_calls.append((name, window))
+        return Result()
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    def fake_load_bufferbloat_daily(*_args, **kwargs):
+        reader_calls.append(kwargs)
+        return [(date(2026, 5, 1), "enp6s0", 1, 10.0, 10.0, 10.0, 0.0, 0.0, 0.0)]
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "network-rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_bufferbloat_daily",
+        fake_load_bufferbloat_daily,
+    )
+
+    from lynchpin.mcp.tools.machine import machine_bufferbloat_summary
+
+    result = machine_bufferbloat_summary(
+        start="2026-05-01",
+        end="2026-05-03",
+        interface="enp6s0",
+    )
+
+    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert substrate_calls == [
+        ("machine_bufferbloat_summary", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert reader_calls == [
+        {
+            "refresh_id": "network-rid",
+            "start": date(2026, 5, 1),
+            "end": date(2026, 5, 3),
+            "interface": "enp6s0",
+        }
+    ]
+    assert result["summary"]["refresh_id"] == "network-rid"
+    assert result["rows"][0]["avg_ms_p50"] == 10.0
+
+
+def test_machine_service_state_summary_materializes_half_open_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine_calls = []
+    substrate_calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "machine", "status": "ready"}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_materialized(name, *, window=None):
+        machine_calls.append((name, window))
+        return Result()
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "service-rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_service_state_summary",
+        lambda *_args, **_kwargs: [
+            ("host", "svc.service", "system", 1, 1, 1024, 10, 20, 30, None, None, 10, 20, 30),
+        ],
+    )
+
+    from lynchpin.mcp.tools.machine import machine_service_state_summary
+
+    rows = machine_service_state_summary(start="2026-05-01", end="2026-05-03")
+
+    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert substrate_calls == [
+        ("machine_service_state_summary", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert rows[0]["unit"] == "svc.service"
+
+
+def test_machine_work_observation_daily_materializes_and_selects_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    substrate_calls = []
+    reader_calls = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    def fake_daily_work_observation_series(*_args, **kwargs):
+        reader_calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                date=date(2026, 5, 1),
+                work_kind="xtask_invocation",
+                project="sinex",
+                command=("xtask", "check"),
+                observation_count=1,
+                success_count=1,
+                failed_count=0,
+                avg_duration_s=12.0,
+                median_duration_s=12.0,
+                p95_duration_s=12.0,
+                max_duration_s=12.0,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine._best_refresh_or_none",
+        lambda *_args, **_kwargs: "work-rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.machine.work_observations.daily_work_observation_series",
+        fake_daily_work_observation_series,
+    )
+
+    from lynchpin.mcp.tools.machine import machine_work_observation_daily
+
+    result = machine_work_observation_daily(
+        start="2026-05-01",
+        end="2026-05-03",
+        project="sinex",
+        command_contains="check",
+    )
+
+    assert substrate_calls == [
+        ("machine_work_observation_daily", (date(2026, 5, 1), date(2026, 5, 3)))
+    ]
+    assert reader_calls == [
+        {
+            "refresh_id": "work-rid",
+            "start": date(2026, 5, 1),
+            "end": date(2026, 5, 3),
+            "project": "sinex",
+            "command_contains": "check",
+        }
+    ]
+    assert result["summary"]["refresh_id"] == "work-rid"
+    assert result["rows"][0]["command"] == ["xtask", "check"]
+
+
+def test_machine_workflow_mechanics_materializes_and_passes_best_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    substrate_calls = []
+    analysis_calls = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Report:
+        def to_json(self) -> dict[str, object]:
+            return {"invocation_count": 0, "retry_chain_count": 0}
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    def fake_analyze_workflow_mechanics(**kwargs):
+        analysis_calls.append(kwargs)
+        return Report()
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine._best_refresh_or_none",
+        lambda *_args, **_kwargs: "work-rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.workflow_mechanics.analyze_workflow_mechanics",
+        fake_analyze_workflow_mechanics,
+    )
+
+    from lynchpin.mcp.tools.machine import machine_workflow_mechanics
+
+    result = machine_workflow_mechanics(
+        start="2026-05-01",
+        end="2026-05-03",
+        project="sinex",
+        retry_gap_min=5,
+        limit=10,
+    )
+
+    assert substrate_calls == [
+        ("machine_workflow_mechanics", (date(2026, 5, 1), date(2026, 5, 3)))
+    ]
+    assert analysis_calls == [
+        {
+            "start": date(2026, 5, 1),
+            "end": date(2026, 5, 3),
+            "project": "sinex",
+            "refresh_id": "work-rid",
+            "retry_gap_min": 5,
+            "limit": 10,
+        }
+    ]
+    assert result["invocation_count"] == 0
+
+
+def test_machine_workflow_mechanics_reuses_default_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_ensure_substrate_materialized_for_read(**_kwargs):
+        raise AssertionError("default artifact reads should not materialize substrate")
+
+    def fail_analyze_workflow_mechanics(**_kwargs):
+        raise AssertionError("default artifact reads should not recompute analysis")
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fail_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.workflow_mechanics.analyze_workflow_mechanics",
+        fail_analyze_workflow_mechanics,
+    )
+    monkeypatch.setattr(
+        "lynchpin.core.io.load_materialized_analysis_artifact",
+        lambda name: (
+            {
+                "generated_at_utc": "2026-06-06T00:00:00+00:00",
+                "start": None,
+                "end": None,
+                "invocation_count": 17,
+                "failure_count": 3,
+                "retry_chain_count": 2,
+                "command_summaries": [],
+                "retry_chains": [],
+            },
+            {"name": "analysis_artifact", "status": "ready"},
+        )
+        if name == "workflow_mechanics.json"
+        else (None, None),
+    )
+
+    from lynchpin.mcp.tools.machine import machine_workflow_mechanics
+
+    result = machine_workflow_mechanics()
+
+    assert result["source"] == "artifact"
+    assert result["invocation_count"] == 17
+    assert result["retry_chain_count"] == 2
 
 
 def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     analysis_root = tmp_path / "analysis"
     analysis_root.mkdir()
     (analysis_root / "machine_episode_analysis.json").write_text(
-        json.dumps({"episodes": [{"kind": "load_pressure", "host": "host", "started_at": "2026-05-01T12:00:00+00:00", "ended_at": "2026-05-01T12:05:00+00:00", "severity": 0.2}]}),
+        json.dumps({
+            "detector_version": "sustained-pressure-v2",
+            "episodes": [{"kind": "load_pressure", "host": "host", "started_at": "2026-05-01T12:00:00+00:00", "ended_at": "2026-05-01T12:05:00+00:00", "severity": 0.2}],
+        }),
         encoding="utf-8",
     )
     (analysis_root / "machine_context_windows.json").write_text(
@@ -177,15 +583,15 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         }),
         encoding="utf-8",
     )
-    (analysis_root / "machine_benchmark_execution_queue.json").write_text(
+    (analysis_root / "machine_benchmark_execution_handoff.json").write_text(
         json.dumps({
-            "queue_count": 1,
+            "planned_window_count": 1,
             "ready_group_count": 1,
             "blocked_group_count": 0,
             "run_template_count": 2,
             "ready_run_count": 2,
             "items": [{
-                "queue_id": "machine-benchmark-execution:grp1",
+                "handoff_id": "machine-benchmark-handoff:grp1",
                 "candidate_id": "cand1",
                 "run_group_id": "grp1",
                 "ready_to_export": True,
@@ -193,9 +599,9 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         }),
         encoding="utf-8",
     )
-    (analysis_root / "machine_below_export_queue.json").write_text(
+    (analysis_root / "machine_below_export_handoff.json").write_text(
         json.dumps({
-            "queue_count": 1,
+            "planned_window_count": 1,
             "failed_capture_count": 1,
             "root": "/realm/data/captures/stability-lab",
             "live_store": "/realm/data/captures/machine/below/store",
@@ -327,7 +733,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         }),
         encoding="utf-8",
     )
-    (analysis_root / "machine_analysis_refresh_report.json").write_text(
+    (analysis_root / "machine_analysis_materialization_report.json").write_text(
         json.dumps({"step_count": 1, "by_status": {"success": 1}, "steps": [{"name": "x"}]}),
         encoding="utf-8",
     )
@@ -407,8 +813,9 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         encoding="utf-8",
     )
 
-    config = type("Config", (), {"analysis_output_dir": analysis_root})()
+    config = type("Config", (), {"analysis_output_dir": analysis_root, "local_root": tmp_path / "local"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
+    monkeypatch.setattr("lynchpin.core.freshness.get_config", lambda: config)
 
     from lynchpin.mcp.tools.machine import (
         machine_below_attributions,
@@ -419,7 +826,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         machine_measurement_system,
         machine_dataset_diagnostics,
         machine_dataset_inventory,
-        machine_refresh_health,
+        machine_materialization_health,
         machine_context_windows,
         machine_episodes,
         machine_telemetry_analysis,
@@ -437,8 +844,8 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         machine_benchmark_plans,
         machine_benchmark_plan_template,
         machine_benchmark_manifest_bundle,
-        machine_benchmark_execution_queue,
-        machine_below_export_queue,
+        machine_benchmark_execution_handoff,
+        machine_below_export_handoff,
         machine_experiment_manifest_diagnostics,
         machine_benchmark_readiness,
         machine_derivation_inventory,
@@ -464,9 +871,9 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     assert len(machine_episodes(start="2026-05-01", kind="load_pressure")) == 1
     inventory = machine_dataset_inventory()
     assert inventory["summary"]["table_count"] == 1
-    health = machine_refresh_health()
+    health = machine_materialization_health()
     assert health["summary"]["status"] == "degraded"
-    assert health["latest_refresh_report"]["step_count"] == 1
+    assert health["latest_materialization_report"]["step_count"] == 1
     calibration = machine_calibration_fixtures(kind="null", status="passed")
     assert calibration["fixtures"][0]["fixture_id"] == "fixture1"
     measurement = machine_measurement_system(kind="timer_resolution_clock_source", status="passed")
@@ -565,14 +972,18 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     bundle = machine_benchmark_manifest_bundle()
     assert bundle["summary"]["run_template_count"] == 2
     assert bundle["groups"][0]["run_group_id"] == "grp1"
-    queue = machine_benchmark_execution_queue(ready_only=True)
+    queue = machine_benchmark_execution_handoff(ready_only=True)
     assert queue["summary"]["ready_group_count"] == 1
     assert queue["items"][0]["run_group_id"] == "grp1"
-    below_queue = machine_below_export_queue(kind="load_pressure")
-    assert below_queue["summary"]["queue_count"] == 1
-    assert below_queue["summary"]["failed_capture_count"] == 1
-    assert below_queue["items"][0]["capture_id"] == "pressure-load-1"
-    assert below_queue["failed_captures"][0]["capture_id"] == "pressure-empty-1"
+    from lynchpin.mcp.tools.machine import machine_benchmark_selected_runbook
+    runbook = machine_benchmark_selected_runbook(run_group_id="grp1")
+    assert runbook["summary"]["status"] == "ready"
+    assert "--execute --materialize-after" in runbook["commands"][0]
+    below_handoff = machine_below_export_handoff(kind="load_pressure")
+    assert below_handoff["summary"]["planned_window_count"] == 1
+    assert below_handoff["summary"]["failed_capture_count"] == 1
+    assert below_handoff["items"][0]["capture_id"] == "pressure-load-1"
+    assert below_handoff["failed_captures"][0]["capture_id"] == "pressure-empty-1"
     manifest_diag = machine_experiment_manifest_diagnostics(kind="executed_run", controlled_valid=True)
     assert manifest_diag["summary"]["controlled_benchmark_valid_count"] == 1
     assert manifest_diag["diagnostics"][0]["relative_path"] == "grp1/runs/run1/manifest.json"
@@ -661,7 +1072,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     assert len(assumptions["checks"]) == 1
     assert assumptions["checks"][0]["assumption_id"] == "a1"
     status = machine_status()
-    assert status["artifacts"]["available"] == 12
+    assert status["artifacts"]["available"] == 13
     assert status["support"]["natural_experiment"] == 1
     assert status["experiment_manifests"]["legacy_observational_count"] == 1
     assert status["claims"]["by_support_level"] == {"insufficient": 1, "natural_experiment": 1}
@@ -675,8 +1086,9 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
 def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     analysis_root = tmp_path / "analysis"
     analysis_root.mkdir()
-    config = type("Config", (), {"analysis_output_dir": analysis_root})()
+    config = type("Config", (), {"analysis_output_dir": analysis_root, "local_root": tmp_path / "local"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
+    monkeypatch.setattr("lynchpin.core.freshness.get_config", lambda: config)
 
     from lynchpin.mcp.tools.machine import machine_context_windows, machine_episodes
 
@@ -684,3 +1096,20 @@ def test_machine_list_tools_fail_when_required_artifact_is_missing(tmp_path: Pat
         machine_episodes()
     with pytest.raises(FileNotFoundError, match="machine_context_windows.json"):
         machine_context_windows()
+
+
+def test_machine_episodes_rejects_stale_detector_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    analysis_root = tmp_path / "analysis"
+    analysis_root.mkdir()
+    (analysis_root / "machine_episode_analysis.json").write_text(
+        json.dumps({"episodes": []}),
+        encoding="utf-8",
+    )
+    config = type("Config", (), {"analysis_output_dir": analysis_root, "local_root": tmp_path / "local"})()
+    monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
+    monkeypatch.setattr("lynchpin.core.freshness.get_config", lambda: config)
+
+    from lynchpin.mcp.tools.machine import machine_episodes
+
+    with pytest.raises(RuntimeError, match="obsolete episode detector"):
+        machine_episodes()

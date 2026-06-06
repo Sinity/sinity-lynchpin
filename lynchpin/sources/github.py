@@ -130,6 +130,7 @@ class GitHubFetchResult:
 
 
 CommandRunner = Callable[[Sequence[str], Path | None], subprocess.CompletedProcess[str]]
+GITHUB_CACHE_TTL_SECONDS = 48 * 60 * 60
 
 
 def repo_slug(repo_path: Path) -> str | None:
@@ -178,9 +179,28 @@ def fetch_prs(
     return _fetch_items(repo_path, kind="pr", state=state, limit=limit, runner=runner, use_cache=use_cache)
 
 
-def fetch_issue(repo_path: Path, number: int, *, runner: CommandRunner | None = None, use_cache: bool = True) -> GitHubItem | None:
+def fetch_issue(
+    repo_path: Path,
+    number: int,
+    *,
+    runner: CommandRunner | None = None,
+    use_cache: bool = True,
+    max_age_seconds: int = GITHUB_CACHE_TTL_SECONDS,
+) -> GitHubItem | None:
     """Fetch one issue by number."""
-    return _fetch_item(repo_path, kind="issue", number=number, runner=runner, use_cache=use_cache)
+    return _fetch_item(
+        repo_path,
+        kind="issue",
+        number=number,
+        runner=runner,
+        use_cache=use_cache,
+        max_age_seconds=max_age_seconds,
+    )
+
+
+def cached_issue(repo_path: Path, number: int) -> GitHubItem | None:
+    """Return one issue from the local GitHub cache without invoking ``gh``."""
+    return _cached_item(repo_path, kind="issue", number=number)
 
 
 def fetch_pr(
@@ -190,15 +210,28 @@ def fetch_pr(
     runner: CommandRunner | None = None,
     use_cache: bool = True,
     include_review_comments: bool = False,
+    max_age_seconds: int = GITHUB_CACHE_TTL_SECONDS,
 ) -> GitHubItem | None:
     """Fetch one PR by number."""
-    item = _fetch_item(repo_path, kind="pr", number=number, runner=runner, use_cache=use_cache)
+    item = _fetch_item(
+        repo_path,
+        kind="pr",
+        number=number,
+        runner=runner,
+        use_cache=use_cache,
+        max_age_seconds=max_age_seconds,
+    )
     if item is None or not include_review_comments:
         return item
     return replace(
         item,
         review_comments=fetch_pr_review_comments(repo_path, number, runner=runner, use_cache=use_cache),
     )
+
+
+def cached_pr(repo_path: Path, number: int) -> GitHubItem | None:
+    """Return one PR from the local GitHub cache without invoking ``gh``."""
+    return _cached_item(repo_path, kind="pr", number=number)
 
 
 def fetch_pr_review_comments(
@@ -338,6 +371,7 @@ def _fetch_item(
     number: int,
     runner: CommandRunner | None,
     use_cache: bool,
+    max_age_seconds: int,
 ) -> GitHubItem | None:
     if shutil.which("gh") is None and runner is None:
         return None
@@ -345,11 +379,40 @@ def _fetch_item(
     if slug is None:
         return None
     fields = _PR_FIELDS if kind == "pr" else _BODY_FIELDS
-    result = _run_cached(["gh", kind, "view", str(number), "--repo", slug, "--json", fields], repo_path, runner=runner, use_cache=use_cache)
+    result = _run_cached(
+        ["gh", kind, "view", str(number), "--repo", slug, "--json", fields],
+        repo_path,
+        runner=runner,
+        use_cache=use_cache,
+        max_age_seconds=max_age_seconds,
+    )
     if result.returncode != 0:
         return None
     try:
         payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _item_from_payload(repo_path.name, slug, kind, payload)
+
+
+def _cached_item(
+    repo_path: Path,
+    *,
+    kind: GitHubItemKind,
+    number: int,
+) -> GitHubItem | None:
+    slug = repo_slug(repo_path)
+    if slug is None:
+        return None
+    fields = _PR_FIELDS if kind == "pr" else _BODY_FIELDS
+    args = ["gh", kind, "view", str(number), "--repo", slug, "--json", fields]
+    payload_json = _cache_get(_cache_key(args), max_age_seconds=None)
+    if payload_json is None:
+        return None
+    try:
+        payload = json.loads(payload_json)
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict):
@@ -511,12 +574,12 @@ def _run_cached(
     *,
     runner: CommandRunner | None,
     use_cache: bool,
-    max_age_seconds: int = 6 * 60 * 60,
+    max_age_seconds: int = GITHUB_CACHE_TTL_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     if runner is not None or not use_cache or not args or args[0] != "gh":
         return (runner or _run)(args, cwd)
 
-    key = json.dumps(list(args), sort_keys=True)
+    key = _cache_key(args)
     cache = _cache_get(key, max_age_seconds=max_age_seconds)
     if cache is not None:
         return subprocess.CompletedProcess(list(args), returncode=0, stdout=cache, stderr="")
@@ -535,7 +598,11 @@ def _cache_path() -> Path:
     return path
 
 
-def _cache_get(key: str, *, max_age_seconds: int) -> str | None:
+def _cache_key(args: Sequence[str]) -> str:
+    return json.dumps(list(args), sort_keys=True)
+
+
+def _cache_get(key: str, *, max_age_seconds: int | None) -> str | None:
     try:
         with contextlib.closing(sqlite3.connect(str(_cache_path()))) as conn:
             with conn:
@@ -546,7 +613,7 @@ def _cache_get(key: str, *, max_age_seconds: int) -> str | None:
     if row is None:
         return None
     fetched_at, payload = row
-    if time.time() - float(fetched_at) > max_age_seconds:
+    if max_age_seconds is not None and time.time() - float(fetched_at) > max_age_seconds:
         return None
     return str(payload)
 
@@ -585,7 +652,10 @@ __all__ = [
     "GitHubLifecycleClassification",
     "GitHubReview",
     "GitHubReviewComment",
+    "GITHUB_CACHE_TTL_SECONDS",
     "classify_lifecycle",
+    "cached_issue",
+    "cached_pr",
     "extract_commit_refs",
     "extract_issue_refs",
     "fetch_issue",

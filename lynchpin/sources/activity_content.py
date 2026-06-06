@@ -72,7 +72,17 @@ def activity_title_usage_path(root: Path | None = None) -> Path:
     return base / "activity_content/title_usage.ndjson"
 
 
-def iter_activity_content_days(path: Path | None = None) -> Iterator[ActivityContentDay]:
+def iter_activity_content_days(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[ActivityContentDay]:
+    if ensure and path is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("activity_content", window=_window(start, end))
     target = path or activity_content_daily_path()
     if not target.exists():
         raise FileNotFoundError(
@@ -85,8 +95,13 @@ def iter_activity_content_days(path: Path | None = None) -> Iterator[ActivityCon
                 continue
             payload = json.loads(line)
             if isinstance(payload, dict):
+                row_date = date.fromisoformat(str(payload["date"]))
+                if start is not None and row_date < start:
+                    continue
+                if end is not None and row_date >= end:
+                    continue
                 yield ActivityContentDay(
-                    date=date.fromisoformat(str(payload["date"])),
+                    date=row_date,
                     focused_seconds=float(payload.get("focused_seconds") or 0.0),
                     matched_seconds=float(payload.get("matched_seconds") or 0.0),
                     gpt_matched_seconds=float(payload.get("gpt_matched_seconds") or 0.0),
@@ -102,7 +117,17 @@ def iter_activity_content_days(path: Path | None = None) -> Iterator[ActivityCon
                 )
 
 
-def iter_activity_title_usage(path: Path | None = None) -> Iterator[ActivityTitleUsage]:
+def iter_activity_title_usage(
+    path: Path | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    ensure: bool = True,
+) -> Iterator[ActivityTitleUsage]:
+    if ensure and path is None:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("activity_content", window=_window(start, end))
     target = path or activity_title_usage_path()
     if not target.exists():
         raise FileNotFoundError(
@@ -118,6 +143,12 @@ def iter_activity_title_usage(path: Path | None = None) -> Iterator[ActivityTitl
                 continue
             first = payload.get("first_date")
             last = payload.get("last_date")
+            first_date = date.fromisoformat(str(first)) if first else None
+            last_date = date.fromisoformat(str(last)) if last else None
+            if start is not None and (last_date is None or last_date < start):
+                continue
+            if end is not None and (first_date is None or first_date >= end):
+                continue
             yield ActivityTitleUsage(
                 title_hash=str(payload.get("title_hash") or ""),
                 app=str(payload.get("app") or ""),
@@ -125,8 +156,8 @@ def iter_activity_title_usage(path: Path | None = None) -> Iterator[ActivityTitl
                 example_title=str(payload.get("example_title") or ""),
                 focused_seconds=float(payload.get("focused_seconds") or 0.0),
                 span_count=int(payload.get("span_count") or 0),
-                first_date=date.fromisoformat(str(first)) if first else None,
-                last_date=date.fromisoformat(str(last)) if last else None,
+                first_date=first_date,
+                last_date=last_date,
                 matched=bool(payload.get("matched")),
                 classification_source=_str_or_none(payload.get("classification_source")),
                 confidence=_float_or_none(payload.get("confidence")),
@@ -162,3 +193,9 @@ def _float_or_none(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _window(start: date | None, end: date | None) -> tuple[date, date] | None:
+    if start is None or end is None:
+        return None
+    return (start, end)
