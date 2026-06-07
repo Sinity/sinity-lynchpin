@@ -9,6 +9,7 @@ import datetime as dt
 import os
 import shutil
 import subprocess
+import threading
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,11 +34,17 @@ def _print(*args, **kwargs):
         text = re.sub('\\[/?\\w+\\]', '', text)
         print(text)
 OUTPUT_ROOT_DEFAULT = Path('/realm/inbox/store/next')
+
+def _default_output_root() -> Path:
+    """Return the stable canonical output root for materialized code snapshots."""
+    from ...sources.code_snapshots import code_snapshots_path
+    return code_snapshots_path()
 DEFAULT_MAX_WORKERS = 4
 DEFAULT_SLICE_WORKERS = 4
 DEFAULT_ISSUE_LIMIT = 10000
 LARGE_SLICE_BYTES = 5000000
 _CONTROL_CHARS = bytes((b for b in range(32) if b not in (9, 10, 13))) + b'\x7f'
+_WORKTREE_TAR_EXCLUDES: tuple[str, ...] = ('--exclude=.git', '--exclude=.direnv', '--exclude=.venv', '--exclude=venv', '--exclude=node_modules', '--exclude=target', '--exclude=trybuild-target', '--exclude=.sinex', '--exclude=dist', '--exclude=build', '--exclude=coverage', '--exclude=.cache', '--exclude=.lynchpin', '--exclude=.mypy_cache', '--exclude=__pycache__', '--exclude=*.pyc', '--exclude=artefacts', '--exclude=result', '--exclude=out', '--exclude=.agent', '--exclude=*.lock', '--exclude=*.db', '--exclude=*.db-journal', '--exclude=*.db-wal', '--exclude=*.db-shm')
 DEFAULT_IGNORE = ('.git/**', '.direnv/**', '.venv/**', 'venv/**', 'node_modules/**', 'target/**', '**/trybuild-target/**', '.sinex/**', 'dist/**', 'build/**', 'coverage/**', '.cache/**', '.lynchpin/**', '.mypy_cache/**', '__pycache__/**', '*.pyc', 'artefacts/**', 'result/**', 'out/**', '.agent/history-summaries/**', '.agent/scratch/**', '*.lock', '*.db', '*.db-journal', '*.db-wal', '*.db-shm')
 
 def _utc_ts() -> str:
@@ -171,13 +178,23 @@ def _run_scratchpad(repomix_bin: str, output_dir: Path, plan: RepoPlan, git: dic
     name, size = _run_repomix(repomix_bin, output_path, plan, args, git, generated_at)
     _print(f'  [green]✓[/green] {output_path.name} ([dim]{_fmt_bytes(size)}[/dim])')
     return (name, size)
+_github_context_lock = threading.Lock()
+_github_context_ready: bool | None = None
 
 def _ensure_github_context_for_chisel() -> None:
-    from ...materialization import ensure_materialized
-    result = ensure_materialized('github_context')
-    if result.status in {'ready', 'updated'}:
-        return
-    raise MaterializationError('github_context', reason=f'GitHub context is unavailable for chisel issue rendering: {result.reason}')
+    global _github_context_ready
+    with _github_context_lock:
+        if _github_context_ready is True:
+            return
+        if _github_context_ready is False:
+            raise MaterializationError('github_context', reason='GitHub context materialization already failed in this run')
+        from ...materialization import ensure_materialized
+        result = ensure_materialized('github_context')
+        if result.status in {'ready', 'updated'}:
+            _github_context_ready = True
+            return
+        _github_context_ready = False
+        raise MaterializationError('github_context', reason=f'GitHub context is unavailable for chisel issue rendering: {result.reason}')
 
 def _issues_from_context_product(repo_slug: str, state: str, limit: int) -> list[dict]:
     from ...sources.github_context import iter_github_context
@@ -301,14 +318,19 @@ def _generate_portable_sidecars(plan: RepoPlan, out_dir: Path) -> tuple[list[str
     else:
         details = (bundle.stderr or bundle.stdout or 'git bundle failed').strip()
         _print(f'  [yellow]⚠[/yellow] {plan.name}: {details}')
-    archive_path = out_dir / f'{plan.name}-HEAD.tar.gz'
-    archive = _run(['git', 'archive', '--format=tar.gz', f'--prefix={plan.name}/', 'HEAD', '-o', str(archive_path)], cwd=plan.path)
+    archive_path = out_dir / f'{plan.name}-working-tree.tar.gz'
+    plan_excludes = []
+    for pat in plan.extra_ignore:
+        p = pat.strip('/').lstrip('**/').rstrip('/**').rstrip('/')
+        if p:
+            plan_excludes.append(f'--exclude={p}')
+    archive = _run(['tar', '-czf', str(archive_path), *_WORKTREE_TAR_EXCLUDES, *plan_excludes, '-C', str(plan.path.parent), plan.path.name])
     if archive.returncode == 0 and archive_path.exists():
         _print(f'  [green]✓[/green] {archive_path.name} ([dim]{_fmt_bytes(archive_path.stat().st_size)}[/dim])')
         sidecars.append(archive_path.name)
         total_bytes += archive_path.stat().st_size
     else:
-        details = (archive.stderr or archive.stdout or 'git archive failed').strip()
+        details = (archive.stderr or archive.stdout or 'tar failed').strip()
         _print(f'  [yellow]⚠[/yellow] {plan.name}: {details}')
     tree_path = out_dir / f'{plan.name}-repo-tree.txt'
     tree_path.write_text(_repo_tree(plan.path, max_depth=3), encoding='utf-8')
@@ -336,6 +358,18 @@ def _repo_tree(root: Path, *, max_depth: int) -> str:
                 walk(child, depth + 1)
     walk(root, 1)
     return '\n'.join(rows) + '\n'
+
+def _make_combined_tar(plan: RepoPlan, out_dir: Path, output_root: Path) -> tuple[str, int] | None:
+    """Create a single tar of all files chisel generated for this project."""
+    combined_path = output_root / f'{plan.name}-all.tar.gz'
+    result = _run(['tar', '-czf', str(combined_path), '-C', str(output_root), plan.name])
+    if result.returncode == 0 and combined_path.exists():
+        size = combined_path.stat().st_size
+        _print(f'  [green]✓[/green] {combined_path.name} ([dim]{_fmt_bytes(size)}[/dim])')
+        return (combined_path.name, size)
+    details = (result.stderr or result.stdout or 'tar failed').strip()
+    _print(f'  [yellow]⚠[/yellow] {plan.name}: combined tar: {details}')
+    return None
 
 def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at: str, slice_workers: int) -> dict:
     """Build all slices + compressed + issues + git-log for one repo."""
@@ -403,15 +437,20 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
     if xml_errors:
         for e in xml_errors:
             _print(f'  [red]✗ XML invalid:[/red] {e}')
+    combined_tar_result = _make_combined_tar(plan, out_dir, output_root)
+    combined_tar_name = combined_tar_result[0] if combined_tar_result is not None else None
+    combined_tar_bytes = combined_tar_result[1] if combined_tar_result is not None else 0
     elapsed = (dt.datetime.now() - t0).total_seconds()
     total_bytes = sum((s[1] for s in slices_done)) + extra_bytes + sidecars_bytes
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict:
+    global _github_context_ready
+    _github_context_ready = None
     repomix_bin = _require_repomix()
     repomix_ver = _repomix_version(repomix_bin)
     generated_at = _utc_ts()
-    output_root = (output_root or OUTPUT_ROOT_DEFAULT / generated_at).resolve()
+    output_root = (output_root or _default_output_root()).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     if project_names:
         unknown = [n for n in project_names if n not in REPO_PLANS]
@@ -514,7 +553,7 @@ def run_from_cli(argv: list[str] | None=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description='Chisel — XML repomix snapshots with semantic splitting and GitHub issue commentary.')
     ap.add_argument('--projects', default='', help='Whitespace-separated project names (default: all registered).')
-    ap.add_argument('--output-root', type=_parse_optional_path, default=None, help=f'Output directory (default: {OUTPUT_ROOT_DEFAULT}/<timestamp>).')
+    ap.add_argument('--output-root', type=_parse_optional_path, default=None, help='Output directory (default: derived_root/code-snapshots — stable, overwrites on re-run).')
     ap.add_argument('--max-workers', type=int, default=DEFAULT_MAX_WORKERS, help=f'Max parallel repos (default: {DEFAULT_MAX_WORKERS}).')
     ap.add_argument('--list', action='store_true', help='List available project plans and exit.')
     args = ap.parse_args(argv)

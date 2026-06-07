@@ -107,6 +107,7 @@ from .ingest.google_takeout_products import (
 )
 from .ingest.gmail_takeout_materialize import GMAIL_EVENTS_SCHEMA_VERSION, materialize_gmail_events
 from .ingest.github_context_materialize import materialize_github_context
+from .ingest.code_snapshots_materialize import materialize_code_snapshots
 from .analysis.keylog import write_keylog_analysis
 from .ingest.bookmarks_materialize import (
     BOOKMARK_EVENTS_SCHEMA_VERSION,
@@ -312,6 +313,7 @@ def _dataset_builders() -> dict[str, Any]:
         "sleep_productivity": _sleep_productivity_dataset,
         "irc": _irc_dataset,
         "wykop": _wykop_dataset,
+        "code_snapshots": _code_snapshots_dataset,
     }
 
 
@@ -340,6 +342,7 @@ def _materializers() -> dict[str, Callable[..., Any]]:
         "temporal_signals": materialize_temporal_signals,
         "sleep_productivity": materialize_sleep_productivity,
         "irc": materialize_irc_events,
+        "code_snapshots": materialize_code_snapshots,
     }
 
 
@@ -1822,6 +1825,51 @@ def _github_context_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
         covered_dates=_manifest_covered_dates(meta),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
+def _code_snapshots_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .sources.code_snapshots import code_snapshots_path
+    from .ingest.code_snapshots_materialize import code_snapshots_stale
+    from .substrate.code_snapshots import count_code_snapshot_slices
+    from .substrate.connection import connect
+
+    contract = source_contract("code_snapshots")
+    output_root = code_snapshots_path()
+
+    try:
+        with connect(read_only=True) as conn:
+            row_count = count_code_snapshot_slices(conn)
+            has_rows = conn.execute(
+                "SELECT COUNT(*) FROM code_snapshot_run WHERE refresh_id = 'latest'"
+            ).fetchone()
+            run_count = int(has_rows[0]) if has_rows else 0
+    except Exception:
+        run_count = 0
+        row_count = 0
+
+    if run_count == 0:
+        status: Status = "missing"
+        reason = "code_snapshot_run substrate table has no rows — run chisel to populate"
+    elif code_snapshots_stale():
+        status = "partial"
+        reason = "one or more registered repos have advanced since last chisel run"
+    else:
+        status = "ready"
+        reason = f"code snapshots are current ({run_count} projects, {row_count} slice files)"
+
+    return MaterializedDataset(
+        name="code_snapshots",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(output_root,) if output_root.exists() else (),
+        raw_roots=(output_root,) if output_root.exists() else (),
+        row_count=row_count or None,
+        first_date=None,
+        last_date=None,
         materialization_hint=contract.materialization_hint,
         reason=reason,
     )
