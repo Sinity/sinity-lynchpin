@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from ...core.cache import write_text_if_changed
+from ...core.errors import SchemaVersionError, SourceUnavailableError
 from ...core.config import get_config
 
 
@@ -91,7 +92,7 @@ def build_session_records(
     sessions_dir: Path,
 ) -> list[SessionDocument]:
     if not sessions_dir.exists():
-        raise ValueError(f"Sessions directory {sessions_dir} does not exist")
+        raise SourceUnavailableError("ledgers", reason=f"sessions directory does not exist: {sessions_dir}")
     return list(iter_session_documents_from(sessions_dir))
 
 
@@ -208,9 +209,9 @@ def write_session_ledger(
 def load_catalog(path: Path) -> list[dict[str, str]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
-        raise ValueError("Catalog must be a list of artefact definitions")
+        raise SchemaVersionError(source="artefact_catalog", expected="list", found="non-list")
     if not all(isinstance(entry, dict) for entry in payload):
-        raise ValueError("Catalog entries must be objects")
+        raise SchemaVersionError(source="artefact_catalog", expected="object entries", found="non-object entries")
     return payload
 
 
@@ -256,7 +257,7 @@ def write_artefact_ledger(
     resolved_catalog = catalog or cfg.artefact_catalog
     resolved_output = output or cfg.artefact_ledger_output
     if not resolved_catalog.exists():
-        raise ValueError(f"Catalog not found: {resolved_catalog}")
+        raise SourceUnavailableError("ledgers", reason=f"catalog not found: {resolved_catalog}")
 
     entries = load_catalog(resolved_catalog)
     artefacts = build_artefacts(entries, base_dir=(base_dir or Path(".").resolve()))

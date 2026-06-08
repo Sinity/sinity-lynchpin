@@ -68,7 +68,7 @@ def read_inventory(path: Path | None = None) -> SinnixRuntimeInventory:
     with inventory_path.open(encoding="utf-8") as fh:
         payload = json.load(fh)
     if not isinstance(payload, dict):
-        raise ValueError(f"{inventory_path} is not a JSON object")
+        raise SchemaVersionError(source="sinnix_runtime_inventory", expected="object", found=type(payload).__name__)
     schema = payload.get("schema")
     if schema != SCHEMA:
         raise SchemaVersionError(found=schema, expected=SCHEMA, source="sinnix_runtime_inventory")
@@ -94,20 +94,20 @@ def _dict_rows(value: object, field: str) -> list[dict[str, Any]]:
     dict_rows: list[dict[str, Any]] = []
     for item in rows:
         if not isinstance(item, dict):
-            raise ValueError(f"runtime inventory field {field!r} contains a non-object row")
+            raise SchemaVersionError(source="sinnix_runtime_inventory", expected="object row", found=type(item).__name__)
         dict_rows.append(dict(item))
     return dict_rows
 
 
 def _list_value(value: object, field: str) -> list[Any]:
     if not isinstance(value, list):
-        raise ValueError(f"runtime inventory field {field!r} must be a list")
+        raise SchemaVersionError(source="sinnix_runtime_inventory", expected="list", found=type(value).__name__)
     return list(value)
 
 
 def _dict_value(value: object, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"runtime inventory field {field!r} must be an object")
+        raise SchemaVersionError(source="sinnix_runtime_inventory", expected="object", found=type(value).__name__)
     return dict(value)
 
 

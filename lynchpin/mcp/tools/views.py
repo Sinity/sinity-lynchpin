@@ -51,20 +51,8 @@ def closure_chain_walks(refresh_id: str | None=None, project: str | None=None, m
         rows = load_issue_closure_chain_walks(conn, refresh_id=refresh_id, project=project, min_chain_depth=min_chain_depth)
     return [dataclass_to_json_dict(row) for row in rows]
 
-@app.tool()
 def file_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str | None=None) -> list[dict[str, Any]]:
-    """Query the work_event_file_overlap view and return edge dicts.
-
-    Each row represents a file-overlap edge between an AI work-event node
-    and a commit node that share file paths within ±24 h.
-
-    Parameters:
-        we_refresh_id:     filter to a specific work-event promote batch.
-        commit_refresh_id: filter to a specific commit promote batch.
-
-    Returns list of dicts with keys: source_id, target_id, relation,
-    evidence, weight.
-    """
+    """Query the work_event_file_overlap view and return edge dicts."""
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_file_overlap_edges
     if we_refresh_id is None or commit_refresh_id is None:
@@ -74,20 +62,8 @@ def file_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str | 
         edges = compute_file_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
     return [{'source_id': e.source_id, 'target_id': e.target_id, 'relation': e.relation, 'evidence': e.evidence, 'weight': e.weight} for e in edges]
 
-@app.tool()
 def symbol_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str | None=None) -> list[dict[str, Any]]:
-    """Query the work_event_symbol_overlap view and return edge dicts.
-
-    Each row represents a symbol-overlap edge between an AI work-event node
-    and a commit node that reference the same qualified symbol names.
-
-    Parameters:
-        we_refresh_id:     filter to a specific work-event promote batch.
-        commit_refresh_id: filter to a specific commit promote batch.
-
-    Returns list of dicts with keys: source_id, target_id, relation,
-    evidence, weight.
-    """
+    """Query the work_event_symbol_overlap view and return edge dicts."""
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_symbol_overlap_edges
     if we_refresh_id is None or commit_refresh_id is None:
@@ -96,6 +72,15 @@ def symbol_overlap_edges(we_refresh_id: str | None=None, commit_refresh_id: str 
     with connect(path) as conn:
         edges = compute_symbol_overlap_edges(conn, we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
     return [{'source_id': e.source_id, 'target_id': e.target_id, 'relation': e.relation, 'evidence': e.evidence, 'weight': e.weight} for e in edges]
+
+@app.tool()
+def overlap_edges(level: str='file', we_refresh_id: str | None=None, commit_refresh_id: str | None=None) -> list[dict[str, Any]]:
+    """AI work-event ↔ commit overlap edges. level: file (shared paths ±24h), symbol (shared qualified symbol names)."""
+    if level == 'file':
+        return file_overlap_edges(we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
+    if level == 'symbol':
+        return symbol_overlap_edges(we_refresh_id=we_refresh_id, commit_refresh_id=commit_refresh_id)
+    return [{'error': f'unknown level {level!r}. choices: file, symbol'}]
 
 @app.tool()
 def context_pack_diff(refresh_a: str | None=None, refresh_b: str | None=None) -> dict[str, Any]:

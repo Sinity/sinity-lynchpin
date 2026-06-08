@@ -20,7 +20,7 @@ def test_materialize_machine_telemetry_records_input_high_water(monkeypatch, tmp
     monkeypatch.setattr(
         machine_materialize,
         "_materialize_table",
-        lambda name, _rows_fn: {
+        lambda name, _rows_fn, **_kw: {
             "path": str(tmp_path / f"{name}.ndjson"),
             "row_count": 1,
             "first_date": "2026-01-01",
@@ -30,7 +30,7 @@ def test_materialize_machine_telemetry_records_input_high_water(monkeypatch, tmp
 
     manifest = machine_materialize.materialize_machine_telemetry()
 
-    assert manifest["row_count"] == 4
+    assert manifest["row_count"] == len(manifest["tables"])
     assert manifest["schema_version"] == MACHINE_TELEMETRY_SCHEMA_VERSION
     assert manifest["input_file_count"] == 1
     assert manifest["input_latest_mtime"] is not None

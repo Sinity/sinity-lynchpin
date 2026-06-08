@@ -1111,5 +1111,6 @@ def test_machine_episodes_rejects_stale_detector_artifact(tmp_path: Path, monkey
 
     from lynchpin.mcp.tools.machine import machine_episodes
 
-    with pytest.raises(RuntimeError, match="obsolete episode detector"):
+    from lynchpin.core.errors import SchemaVersionError
+    with pytest.raises(SchemaVersionError, match="machine_episode_analysis"):
         machine_episodes()

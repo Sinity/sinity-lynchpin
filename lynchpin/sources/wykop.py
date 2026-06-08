@@ -25,6 +25,9 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
+
+from ..core.coverage import CoverageBounds
+from ..core.primitives import logical_date
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Optional
@@ -86,7 +89,7 @@ class WykopAction:
 class WykopDayActivity:
     """Per-day Wykop activity summary."""
 
-    date: str  # YYYY-MM-DD
+    date: date
     comments: int
     own_chars: int  # characters in own text (excl quotes)
     total_chars: int  # including quoted text
@@ -207,16 +210,11 @@ def iter_actions(
 
 
 def daily_activity(
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    root: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[WykopDayActivity]:
-    """Per-day Wykop activity with comment counts and character volumes.
-
-    Args:
-        start, end: ISO date strings (YYYY-MM-DD) for filtering.
-        root: override data root.
-    """
+    """Per-day Wykop activity with comment counts and character volumes."""
     buckets: dict = defaultdict(  # type: ignore[type-arg]
         lambda: {
             "comments": 0,
@@ -228,19 +226,16 @@ def daily_activity(
         }
     )
 
-    start_d = date.fromisoformat(start) if start else None
-    end_d = date.fromisoformat(end) if end else None
-
-    for c in iter_comments(root=root, start=start_d, end=end_d):
-        day = c.created_at.strftime("%Y-%m-%d")
+    for c in iter_comments(start=start, end=end):
+        day = logical_date(c.created_at)
         b = buckets[day]
         b["comments"] += 1
         b["own_chars"] += c.own_length
         b["total_chars"] += len(c.content)
         b["comment_ids"].append(c.comment_id)
 
-    for a in iter_actions(root=root, start=start_d, end=end_d):
-        day = a.created_at.strftime("%Y-%m-%d")
+    for a in iter_actions(start=start, end=end):
+        day = logical_date(a.created_at)
         b = buckets[day]
         if a.kind in ("upvote", "plus"):
             b["upvotes"] += 1
@@ -263,6 +258,16 @@ def daily_activity(
         )
 
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    from ..core.config import get_config
+    if not get_config().wykop_root.exists():
+        return None
+    rows = daily_activity()
+    if not rows:
+        return None
+    return CoverageBounds(source="wykop", first=rows[0].date, last=rows[-1].date, kind="export")
 
 
 def _date_in_range(day: date, *, start: date | None, end: date | None) -> bool:
@@ -346,6 +351,7 @@ __all__ = [
     "iter_comments",
     "iter_actions",
     "daily_activity",
+    "coverage_bounds",
     "topic_distribution",
     "date_range",
 ]

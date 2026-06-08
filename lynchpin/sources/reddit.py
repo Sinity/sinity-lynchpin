@@ -11,6 +11,7 @@ from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
+from ..core.coverage import CoverageBounds
 from ..core.parse import parse_datetime, month_key as _month_key, in_month_range as _month_in_range, safe_int as _safe_int
 from ..core.primitives import TopN, logical_date
 
@@ -34,6 +35,7 @@ __all__ = [
     "iter_post_votes",
     "iter_message_headers",
     "daily_activity",
+    "coverage_bounds",
     "subreddit_distribution",
     "split_quoted_text",
 ]
@@ -556,6 +558,21 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[Reddi
         )
         for d, v in sorted(by_day.items())
     ]
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    cfg = get_config()
+    canonical = cfg.exports_root / "reddit/processed/canonical"
+    if not canonical.exists():
+        return None
+    dates = [
+        logical_date(c.created)
+        for c in iter_comments(ensure=False)
+        if c.created is not None
+    ]
+    if not dates:
+        return None
+    return CoverageBounds(source="reddit", first=min(dates), last=max(dates), kind="export")
 
 
 def subreddit_distribution(*, start: date, end: date) -> list[tuple[str, int, float]]:

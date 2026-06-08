@@ -21,7 +21,9 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+from ..core.coverage import CoverageBounds
 from ..core.errors import SourceUnavailableError
+from ..core.primitives import logical_date
 
 SMS_ROOT = Path(
     "/realm/data/exports/samsung/processed/2026-03-30-gdpr-extracted/"
@@ -76,7 +78,7 @@ class SMSThread:
 class SMSDayActivity:
     """Per-day SMS activity."""
 
-    date: str  # YYYY-MM-DD
+    date: date
     sent_count: int
     received_count: int
     sent_chars: int
@@ -143,11 +145,12 @@ def iter_messages(
 def thread_summaries(
     root: Optional[Path] = None,
     *,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[SMSThread]:
     """Aggregate messages into per-thread summaries, ranked by message count."""
-    start_dt, end_dt = _date_string_bounds(start, end)
+    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc) if start else None
+    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc) if end else None
     threads: dict[int, list[SMSMessage]] = defaultdict(list)
     for msg in iter_messages(root, start=start_dt, end=end_dt):
         threads[msg.thread_id].append(msg)
@@ -174,12 +177,13 @@ def thread_summaries(
 
 
 def daily_activity(
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    root: Optional[Path] = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[SMSDayActivity]:
     """Per-day SMS activity summary."""
-    start_dt, end_dt = _date_string_bounds(start, end)
+    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc) if start else None
+    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc) if end else None
     buckets: dict = defaultdict(  # type: ignore[type-arg]
         lambda: {
             "sent_count": 0,
@@ -190,8 +194,8 @@ def daily_activity(
         }
     )
 
-    for msg in iter_messages(root, start=start_dt, end=end_dt):
-        day = msg.date.strftime("%Y-%m-%d")
+    for msg in iter_messages(start=start_dt, end=end_dt):
+        day = logical_date(msg.date)
         b = buckets[day]
         b["counterparts"].add(msg.address)
         if msg.is_sent:
@@ -217,21 +221,13 @@ def daily_activity(
     return result
 
 
-def _date_string_bounds(
-    start: Optional[str],
-    end: Optional[str],
-) -> tuple[Optional[datetime], Optional[datetime]]:
-    start_dt = (
-        datetime.combine(date.fromisoformat(start), time.min, tzinfo=timezone.utc)
-        if start
-        else None
-    )
-    end_dt = (
-        datetime.combine(date.fromisoformat(end), time.max, tzinfo=timezone.utc)
-        if end
-        else None
-    )
-    return start_dt, end_dt
+def coverage_bounds() -> CoverageBounds | None:
+    if not SMS_ROOT.exists():
+        return None
+    rows = daily_activity()
+    if not rows:
+        return None
+    return CoverageBounds(source="sms", first=rows[0].date, last=rows[-1].date, kind="export")
 
 
 def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
@@ -245,11 +241,12 @@ def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:
 def counterpart_stats(
     root: Optional[Path] = None,
     *,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[tuple[str, int]]:
     """Message count per counterpart (address)."""
-    start_dt, end_dt = _date_string_bounds(start, end)
+    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc) if start else None
+    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc) if end else None
     counts: dict[str, int] = defaultdict(int)
     for msg in iter_messages(root, start=start_dt, end=end_dt):
         counts[msg.address] += 1
@@ -263,6 +260,7 @@ __all__ = [
     "iter_messages",
     "thread_summaries",
     "daily_activity",
+    "coverage_bounds",
     "date_range",
     "counterpart_stats",
 ]

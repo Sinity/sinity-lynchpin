@@ -92,7 +92,6 @@ def spotify_daily(
     ]
 
 
-@app.tool()
 def web_daily(start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
     """Daily canonical webhistory rollup with weak host/path buckets.
 
@@ -203,7 +202,6 @@ def web_daily(start: str | None = None, end: str | None = None) -> list[dict[str
     return rows
 
 
-@app.tool()
 def google_takeout_daily(start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
     """Daily timestamped Google Takeout product activity from canonical products."""
     from dataclasses import asdict
@@ -224,7 +222,6 @@ def google_takeout_daily(start: str | None = None, end: str | None = None) -> li
     ]
 
 
-@app.tool()
 def google_takeout_events(
     start: str | None = None,
     end: str | None = None,
@@ -275,7 +272,6 @@ def google_takeout_events(
     return rows
 
 
-@app.tool()
 def google_takeout_retrospective(
     start: str | None = None,
     end: str | None = None,
@@ -324,7 +320,6 @@ def personal_interest_trace(
     ).to_json()
 
 
-@app.tool()
 def terminal_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily canonical Atuin terminal activity."""
     from dataclasses import asdict
@@ -343,7 +338,6 @@ def terminal_daily(start: str, end: str) -> list[dict[str, Any]]:
     return [_json_safe(asdict(row)) for row in rows]
 
 
-@app.tool()
 def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, Any]]:
     """Gap-grouped canonical Atuin shell sessions."""
     from dataclasses import asdict
@@ -362,7 +356,6 @@ def terminal_sessions(start: str, end: str, limit: int = 100) -> list[dict[str, 
     return [_json_safe(asdict(row)) for row in capped]
 
 
-@app.tool()
 def keylog_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily keylog activity counts from scribe-tap metadata."""
     from datetime import date
@@ -378,7 +371,6 @@ def keylog_daily(start: str, end: str) -> list[dict[str, Any]]:
     ]
 
 
-@app.tool()
 def keybind_usage(
     start: str,
     end: str,
@@ -451,7 +443,6 @@ def keybind_usage(
     }
 
 
-@app.tool()
 def keylog_text_shape(
     start: str,
     end: str,
@@ -656,7 +647,6 @@ def _dict_rows(value: Any) -> list[dict[str, Any]]:
     return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
-@app.tool()
 def keylog_text_content(
     start: str,
     end: str,
@@ -701,7 +691,6 @@ def _keylog_text_content_from_payload(
     }
 
 
-@app.tool()
 def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
     """Search canonical browser bookmarks by title, URL, domain, or folder.
 
@@ -726,7 +715,6 @@ def bookmarks_search(query: str = "", limit: int = 50) -> list[dict[str, Any]]:
     return rows
 
 
-@app.tool()
 def bookmark_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily canonical browser bookmark activity."""
     from datetime import date
@@ -743,7 +731,6 @@ def bookmark_daily(start: str, end: str) -> list[dict[str, Any]]:
     return [_json_safe(row.__dict__) for row in daily_bookmark_activity(start=start_d, end=end_d, ensure=False)]
 
 
-@app.tool()
 def communication_events(start: str | None = None, end: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     """Canonical communication events from Messenger and parseable Outlook exports."""
     from dataclasses import asdict
@@ -770,7 +757,6 @@ def communication_events(start: str | None = None, end: str | None = None, limit
     return rows
 
 
-@app.tool()
 def communication_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily canonical communication-event activity."""
     from datetime import date
@@ -820,7 +806,6 @@ def focus_daily(start: str, end: str) -> list[dict[str, Any]]:
     return rows
 
 
-@app.tool()
 def arbtt_focus_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily focus activity from the historical ARBTT capture.
 
@@ -912,7 +897,6 @@ def materialization_status() -> list[dict[str, Any]]:
     return [row.to_json() for row in audit_materialization()]
 
 
-@app.tool()
 def title_metadata_status() -> dict[str, Any]:
     """Readiness and provenance for canonical title/window classification metadata."""
     import json
@@ -930,7 +914,6 @@ def title_metadata_status() -> dict[str, Any]:
     return {"status": "ready", **_json_safe(payload)}
 
 
-@app.tool()
 def title_metadata_audit(limit: int = 20) -> dict[str, Any]:
     """Auditable shape of canonical title/window classification metadata."""
     from collections import Counter
@@ -969,7 +952,6 @@ def title_metadata_audit(limit: int = 20) -> dict[str, Any]:
     }
 
 
-@app.tool()
 def activity_content_daily(start: str | None = None, end: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
     """Daily ActivityWatch content rollup joined to title metadata."""
     from dataclasses import asdict
@@ -990,7 +972,6 @@ def activity_content_daily(start: str | None = None, end: str | None = None, lim
     return rows
 
 
-@app.tool()
 def activity_title_usage(
     start: str | None = None,
     end: str | None = None,
@@ -1018,7 +999,6 @@ def activity_title_usage(
     return rows
 
 
-@app.tool()
 def activity_unmatched_titles(start: str | None = None, end: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """Top unmatched ActivityWatch titles by focused seconds."""
     rows = activity_title_usage(start=start, end=end, matched=False, limit=10_000)
@@ -1026,7 +1006,6 @@ def activity_unmatched_titles(start: str | None = None, end: str | None = None, 
     return rows[: min(max(limit, 1), 1000)]
 
 
-@app.tool()
 def activity_content_coverage(start: str | None = None, end: str | None = None) -> dict[str, Any]:
     """Coverage ratios for ActivityWatch title metadata matches over a date range."""
     from datetime import date
@@ -1057,7 +1036,6 @@ def activity_content_coverage(start: str | None = None, end: str | None = None) 
     }
 
 
-@app.tool()
 def webhistory_provenance() -> dict[str, Any]:
     """Canonical webhistory manifest with source counts and duplicate diagnostics."""
     import json
@@ -1104,7 +1082,6 @@ def analysis_artifact_status() -> list[dict[str, Any]]:
     ]
 
 
-@app.tool()
 def operator_rhythm(
     start: str,
     end: str,
@@ -1250,7 +1227,6 @@ def operator_rhythm(
     }
 
 
-@app.tool()
 def operator_retrospective_readiness(
     start: str,
     end: str,
@@ -1276,7 +1252,6 @@ def operator_retrospective_readiness(
     return report.to_dict()
 
 
-@app.tool()
 def activity_semantic_daily(
     start: str,
     end: str,
@@ -1338,7 +1313,6 @@ def activity_semantic_daily(
     return result
 
 
-@app.tool()
 def operator_public_text_daily(
     start: str,
     end: str,
@@ -1402,7 +1376,6 @@ def operator_public_text_daily(
     ]
 
 
-@app.tool()
 def operator_public_text_coverage(
     start: str,
     end: str,
@@ -1437,3 +1410,165 @@ def operator_public_text_coverage(
         }
         for r in rows
     ]
+@app.tool()
+def keylog(
+    view: str = "daily",
+    start: str = "",
+    end: str = "",
+    family: str | None = None,
+    chord: str | None = None,
+    bindings_path: str | None = None,
+    limit: int = 100,
+) -> Any:
+    """Keylog data. view: daily, binds, shape, content."""
+    if view == "daily":
+        return keylog_daily(start=start, end=end)
+    if view == "binds":
+        return keybind_usage(start=start, end=end, family=family, chord=chord, bindings_path=bindings_path, limit=limit)
+    if view == "shape":
+        return keylog_text_shape(start=start, end=end, bindings_path=bindings_path)
+    if view == "content":
+        return keylog_text_content(start=start, end=end, limit=limit)
+    return {"error": f"unknown view {view!r}. choices: daily, binds, shape, content"}
+
+
+@app.tool()
+def activity_content(
+    view: str = "daily",
+    start: str | None = None,
+    end: str | None = None,
+    matched: bool | None = None,
+    dimension: str = "topic_category",
+    limit: int = 1000,
+) -> Any:
+    """Activity content/title analytics. view: daily, titles, unmatched, coverage, semantic."""
+    if view == "daily":
+        return activity_content_daily(start=start, end=end, limit=limit)
+    if view == "titles":
+        return activity_title_usage(start=start, end=end, matched=matched, limit=limit)
+    if view == "unmatched":
+        return activity_unmatched_titles(start=start, end=end, limit=limit)
+    if view == "coverage":
+        return activity_content_coverage(start=start, end=end)
+    if view == "semantic":
+        return activity_semantic_daily(start=start or "", end=end or "", dimension=dimension)
+    return {"error": f"unknown view {view!r}. choices: daily, titles, unmatched, coverage, semantic"}
+
+
+@app.tool()
+def google_takeout(
+    view: str = "daily",
+    start: str | None = None,
+    end: str | None = None,
+    product: str | None = None,
+    query: str = "",
+    session_gap_min: int = 45,
+    top_n: int = 25,
+    limit: int = 100,
+) -> Any:
+    """Google Takeout data. view: daily, events, retrospective."""
+    if view == "daily":
+        return google_takeout_daily(start=start, end=end)
+    if view == "events":
+        return google_takeout_events(start=start, end=end, product=product, query=query, limit=limit)
+    if view == "retrospective":
+        return google_takeout_retrospective(start=start, end=end, session_gap_min=session_gap_min, top_n=top_n)
+    return {"error": f"unknown view {view!r}. choices: daily, events, retrospective"}
+
+
+@app.tool()
+def communication(
+    view: str = "events",
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+) -> Any:
+    """Communication events/daily rollups. view: events, daily."""
+    if view == "events":
+        return communication_events(start=start, end=end, limit=limit)
+    if view == "daily":
+        return communication_daily(start=start or "", end=end or "")
+    return {"error": f"unknown view {view!r}. choices: events, daily"}
+
+
+@app.tool()
+def operator(
+    view: str = "rhythm",
+    start: str = "",
+    end: str = "",
+    project: str | None = None,
+    refresh_id: str | None = None,
+    require_polylogue: bool = False,
+    sources: str = "irc,reddit,wykop,messenger,gmail",
+    monthly: bool = False,
+) -> Any:
+    """Operator-level analytics. view: rhythm, readiness, public_text, public_text_coverage."""
+    if view == "rhythm":
+        return operator_rhythm(start=start, end=end, project=project, refresh_id=refresh_id)
+    if view == "readiness":
+        return operator_retrospective_readiness(start=start, end=end, require_polylogue=require_polylogue)
+    if view == "public_text":
+        return operator_public_text_daily(start=start, end=end, sources=sources, monthly=monthly)
+    if view == "public_text_coverage":
+        return operator_public_text_coverage(start=start, end=end)
+    return {"error": f"unknown view {view!r}. choices: rhythm, readiness, public_text, public_text_coverage"}
+
+
+@app.tool()
+def terminal(
+    view: str = "daily",
+    start: str = "",
+    end: str = "",
+    limit: int = 100,
+) -> Any:
+    """Terminal activity. view: daily, sessions."""
+    if view == "daily":
+        return terminal_daily(start=start, end=end)
+    if view == "sessions":
+        return terminal_sessions(start=start, end=end, limit=limit)
+    return {"error": f"unknown view {view!r}. choices: daily, sessions"}
+
+
+@app.tool()
+def title_metadata(
+    view: str = "status",
+    limit: int = 20,
+) -> Any:
+    """Title metadata status and audit. view: status, audit."""
+    if view == "status":
+        return title_metadata_status()
+    if view == "audit":
+        return title_metadata_audit(limit=limit)
+    return {"error": f"unknown view {view!r}. choices: status, audit"}
+
+
+@app.tool()
+def bookmarks(
+    view: str = "search",
+    query: str = "",
+    limit: int = 50,
+    start: str | None = None,
+    end: str | None = None,
+) -> Any:
+    """Bookmark data. view: search (search bookmarks by query), daily (daily bookmark activity for a date range; requires start and end)."""
+    if view == "search":
+        return bookmarks_search(query=query, limit=limit)
+    if view == "daily":
+        if start is None or end is None:
+            return {"error": "start and end are required for view=daily"}
+        return bookmark_daily(start=start, end=end)
+    return {"error": f"unknown view {view!r}. choices: search, daily"}
+
+
+@app.tool()
+def web(
+    view: str = "daily",
+    start: str | None = None,
+    end: str | None = None,
+) -> Any:
+    """Web browsing data. view: daily (daily browsing activity), provenance (web history data provenance and coverage)."""
+    if view == "daily":
+        return web_daily(start=start, end=end)
+    if view == "provenance":
+        return webhistory_provenance()
+    return {"error": f"unknown view {view!r}. choices: daily, provenance"}

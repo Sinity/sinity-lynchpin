@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
@@ -30,12 +33,12 @@ def materialize_github_context(
 ) -> dict[str, Any]:
     output = output or github_context_path()
     if (start is None) != (end is None):
-        raise ValueError("GitHub context materialization requires both start and end")
+        raise MaterializationError("github_context_materialize", reason="GitHub context materialization requires both start and end")
     if start is None or end is None:
         end = datetime.now(timezone.utc).date() + timedelta(days=1)
         start = end - timedelta(days=90)
     if end <= start:
-        raise ValueError("GitHub context materialization end must be after start")
+        raise MaterializationError("github_context_materialize", reason="GitHub context materialization end must be after start")
 
     rows: dict[tuple[str, str, int], dict[str, Any]] = {}
     statuses: Counter[str] = Counter()
@@ -106,6 +109,14 @@ def materialize_github_context(
         "project_counts": dict(Counter(str(row["project"]) for row in ordered)),
     }
     _write_product(output=output, rows=ordered, manifest=manifest)
+
+    try:
+        substrate_rows = _promote_github_context_to_substrate(output)
+        manifest["substrate_rows"] = substrate_rows
+    except Exception as exc:
+        log.warning("github_context substrate promotion failed: %s", exc)
+        manifest["substrate_rows"] = 0
+
     return manifest
 
 
@@ -169,3 +180,131 @@ def _write_product(
     )
     tmp_output.replace(output)
     tmp_manifest.replace(output.with_suffix(".manifest.json"))
+
+
+def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
+    """Promote the written NDJSON product into the 6 github_* DuckDB tables.
+
+    Reads the NDJSON without triggering re-materialization (ensure=False).
+    Returns total rows inserted across all 6 tables.
+    """
+    from ..sources.github_context import iter_github_context
+    from ..substrate.connection import connect, update_read_snapshot
+    from ..substrate.github import (
+        promote_github_issue_comments,
+        promote_github_issues,
+        promote_github_pr_comments,
+        promote_github_pr_review_comments,
+        promote_github_pr_reviews,
+        promote_github_prs,
+    )
+
+    issue_rows: list[dict[str, Any]] = []
+    issue_comment_rows: list[dict[str, Any]] = []
+    pr_rows: list[dict[str, Any]] = []
+    pr_comment_rows: list[dict[str, Any]] = []
+    pr_review_rows: list[dict[str, Any]] = []
+    pr_review_comment_rows: list[dict[str, Any]] = []
+
+    for ctx_row in iter_github_context(path=ndjson_path, ensure=False):
+        project = ctx_row.project
+        item = ctx_row.item
+
+        if item.kind == "issue":
+            issue_rows.append({
+                "project": project,
+                "number": item.number,
+                "title": item.title,
+                "body": item.body,
+                "state": item.state,
+                "author": item.author.login,
+                "labels": [label.name for label in item.labels],
+                "comment_count": len(item.comments),
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "closed_at": item.closed_at.isoformat() if item.closed_at else None,
+                "url": item.url,
+            })
+            for idx, comment in enumerate(item.comments):
+                issue_comment_rows.append({
+                    "project": project,
+                    "issue_number": item.number,
+                    "comment_idx": idx,
+                    "author": comment.author.login,
+                    "body": comment.body,
+                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                    "url": comment.url,
+                })
+
+        elif item.kind == "pr":
+            pr_rows.append({
+                "project": project,
+                "number": item.number,
+                "title": item.title,
+                "body": item.body,
+                "state": item.state,
+                "author": item.author.login,
+                "labels": [label.name for label in item.labels],
+                "merge_commit": item.merge_commit,
+                "review_decision": item.review_decision,
+                "comment_count": len(item.comments),
+                "review_count": len(item.reviews),
+                "review_comment_count": len(item.review_comments),
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "closed_at": item.closed_at.isoformat() if item.closed_at else None,
+                "merged_at": item.merged_at.isoformat() if item.merged_at else None,
+                "url": item.url,
+            })
+            for idx, comment in enumerate(item.comments):
+                pr_comment_rows.append({
+                    "project": project,
+                    "pr_number": item.number,
+                    "comment_idx": idx,
+                    "author": comment.author.login,
+                    "body": comment.body,
+                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                    "url": comment.url,
+                })
+            for idx, review in enumerate(item.reviews):
+                pr_review_rows.append({
+                    "project": project,
+                    "pr_number": item.number,
+                    "review_idx": idx,
+                    "author": review.author.login,
+                    "state": review.state,
+                    "body": review.body,
+                    "submitted_at": review.submitted_at.isoformat() if review.submitted_at else None,
+                    "url": review.url,
+                })
+            for idx, rc in enumerate(item.review_comments):
+                pr_review_comment_rows.append({
+                    "project": project,
+                    "pr_number": item.number,
+                    "comment_idx": idx,
+                    "author": rc.author.login,
+                    "body": rc.body,
+                    "path": rc.path,
+                    "line": rc.line,
+                    "diff_hunk": rc.diff_hunk,
+                    "created_at": rc.created_at.isoformat() if rc.created_at else None,
+                    "url": rc.url,
+                })
+
+    with connect() as conn:
+        n = 0
+        n += promote_github_issues(conn, rows=issue_rows)
+        n += promote_github_issue_comments(conn, rows=issue_comment_rows)
+        n += promote_github_prs(conn, rows=pr_rows)
+        n += promote_github_pr_comments(conn, rows=pr_comment_rows)
+        n += promote_github_pr_reviews(conn, rows=pr_review_rows)
+        n += promote_github_pr_review_comments(conn, rows=pr_review_comment_rows)
+
+    update_read_snapshot()
+    log.info(
+        "github_context substrate: %d issues, %d issue_comments, %d prs, "
+        "%d pr_comments, %d reviews, %d review_comments",
+        len(issue_rows), len(issue_comment_rows), len(pr_rows),
+        len(pr_comment_rows), len(pr_review_rows), len(pr_review_comment_rows),
+    )
+    return n

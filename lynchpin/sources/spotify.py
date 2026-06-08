@@ -10,6 +10,7 @@ from typing import Iterator, Optional
 
 from ..core.cache import files_signature, persistent_cache
 from ..core.config import get_config
+from ..core.errors import DataCoverageError
 from ..core.primitives import logical_date
 
 __all__ = [
@@ -199,7 +200,7 @@ def _month_window(start_month: str, end_month: str) -> tuple[date, date]:
     else:
         end = date(end_year, end_month_num + 1, 1)
     if end <= start:
-        raise ValueError("end_month must be after or equal to start_month")
+        raise DataCoverageError("spotify", requested=f"{start_month}–{end_month}", available="")
     return start, end
 
 

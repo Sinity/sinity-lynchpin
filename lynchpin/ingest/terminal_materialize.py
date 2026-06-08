@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.terminal import canonical_atuin_history_path, commands_from_atuin_db
@@ -31,9 +32,9 @@ def materialize_atuin_history(
     cfg = get_config()
     output = output or canonical_atuin_history_path()
     if (start is None) != (end is None):
-        raise ValueError("Atuin history materialization requires both start and end")
+        raise MaterializationError("terminal_materialize", reason="Atuin history materialization requires both start and end")
     if start is not None and end is not None and end <= start:
-        raise ValueError("Atuin history materialization end must be after start")
+        raise MaterializationError("terminal_materialize", reason="Atuin history materialization end must be after start")
     input_files = atuin_input_files(cfg)
     output.parent.mkdir(parents=True, exist_ok=True)
 

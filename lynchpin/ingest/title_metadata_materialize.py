@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
-from ..core.errors import SchemaVersionError
+from ..core.errors import SchemaVersionError, SourceUnavailableError
 from ..core.io import latest_mtime_iso
 from ..sources.title_metadata import title_metadata_path
 
@@ -33,7 +33,7 @@ def materialize_title_metadata(
     try:
         import duckdb
     except ImportError as exc:  # pragma: no cover - depends on devshell packaging
-        raise RuntimeError("duckdb is required to materialize title metadata") from exc
+        raise SourceUnavailableError("duckdb", reason="duckdb is required to materialize title metadata") from exc
 
     row_count = 0
     source_counts: Counter[str] = Counter()

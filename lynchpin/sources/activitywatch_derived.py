@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..core.config import get_config
+from ..core.parse import as_local
 from ..core.primitives import logical_date
 from .activitywatch_models import (
     AttentionMetrics,
@@ -70,6 +71,7 @@ def iter_derived_focus_spans(
     ensure: bool = True,
 ) -> Iterator[FocusSpan]:
     _ensure_default_product(path, start=start, end=end, ensure=ensure)
+    start_cmp, end_cmp = as_local(start), as_local(end)
     for row in _rows(path or activitywatch_derived_path("focus_spans")):
         span = FocusSpan(
             start=_datetime(row["start"]),
@@ -82,7 +84,7 @@ def iter_derived_focus_spans(
             keypress_count=int(row.get("keypress_count") or 0),
             keylog_state=str(row.get("keylog_state") or "not_requested"),
         )
-        if span.end <= start or span.start >= end or span.duration_s < min_duration_s:
+        if span.end <= start_cmp or span.start >= end_cmp or span.duration_s < min_duration_s:
             continue
         yield span
 
@@ -127,6 +129,7 @@ def iter_derived_deep_work(
     *, start: datetime, end: datetime, path: Path | None = None, ensure: bool = True
 ) -> Iterator[DeepWorkBlock]:
     _ensure_default_product(path, start=start, end=end, ensure=ensure)
+    start_cmp, end_cmp = as_local(start), as_local(end)
     for row in _rows(path or activitywatch_derived_path("deep_work")):
         block = DeepWorkBlock(
             start=_datetime(row["start"]),
@@ -137,7 +140,7 @@ def iter_derived_deep_work(
             focus_ratio=float(row.get("focus_ratio") or 0.0),
             app_switches=int(row.get("app_switches") or 0),
         )
-        if block.end <= start or block.start >= end:
+        if block.end <= start_cmp or block.start >= end_cmp:
             continue
         yield block
 
@@ -161,6 +164,7 @@ def iter_derived_loops(
     *, start: datetime, end: datetime, path: Path | None = None, ensure: bool = True
 ) -> Iterator[FocusLoop]:
     _ensure_default_product(path, start=start, end=end, ensure=ensure)
+    start_cmp, end_cmp = as_local(start), as_local(end)
     for row in _rows(path or activitywatch_derived_path("loops")):
         loop = FocusLoop(
             date=_date(row["date"]),
@@ -173,7 +177,7 @@ def iter_derived_loops(
             context_b=str(row.get("context_b") or ""),
             dominant_project=_str_or_none(row.get("dominant_project")),
         )
-        if loop.end <= start or loop.start >= end:
+        if loop.end <= start_cmp or loop.start >= end_cmp:
             continue
         yield loop
 

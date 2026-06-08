@@ -10,7 +10,6 @@ from typing import Any
 from lynchpin.mcp.server import app
 
 
-@app.tool()
 def code_snapshot_status() -> dict[str, Any]:
     """Return the current materialization status and per-project summary for code snapshots.
 
@@ -40,7 +39,6 @@ def code_snapshot_status() -> dict[str, Any]:
     }
 
 
-@app.tool()
 def list_code_snapshot_slices(project: str | None = None) -> dict[str, Any]:
     """List code snapshot output files from the substrate, optionally filtered by project.
 
@@ -71,3 +69,16 @@ def list_code_snapshot_slices(project: str | None = None) -> dict[str, Any]:
         "total_bytes": total_bytes,
         "slices": slices,
     }
+
+
+@app.tool()
+def code_snapshots(
+    view: str = "status",
+    project: str | None = None,
+) -> Any:
+    """Code snapshot materialization status and slice discovery. view: status (materialization state and per-project summary), slices (list output files; use project to filter)."""
+    if view == "status":
+        return code_snapshot_status()
+    if view == "slices":
+        return list_code_snapshot_slices(project=project)
+    return {"error": f"unknown view {view!r}. choices: status, slices"}

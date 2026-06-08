@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import logical_date
 from ..sources.activitywatch_event_index import (
@@ -117,7 +118,7 @@ def _exclusive_window_dates(start: date | None, end: date | None) -> frozenset[d
     if start is None or end is None:
         return None
     if end <= start:
-        raise ValueError("ActivityWatch event index materialization end must be after start")
+        raise MaterializationError("activitywatch_event_index_materialize", reason="ActivityWatch event index materialization end must be after start")
     days: set[date] = set()
     cursor = start
     while cursor < end:

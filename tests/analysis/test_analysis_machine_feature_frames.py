@@ -128,4 +128,7 @@ def _stage(source_id: str, invocation_id: str, stage: str, duration: float, *, s
         started_at=datetime(2026, 5, 31, 12, tzinfo=timezone.utc),
         duration_s=duration,
         success=success,
+        io_full_avg10=None,
+        cpu_some_avg10=None,
+        memory_some_avg10=None,
     )

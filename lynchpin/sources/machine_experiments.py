@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.primitives import logical_date
 
 __all__ = [
     "MachineExperimentRun",
@@ -92,7 +93,7 @@ def _as_int(value: object) -> int | None:
 
 
 def _within_window(started_at: datetime, start: date | None, end: date | None) -> bool:
-    day = started_at.date()
+    day = logical_date(started_at)
     if start is not None and day < start:
         return False
     if end is not None and day > end:

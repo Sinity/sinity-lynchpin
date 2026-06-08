@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..graph.temporal_signals import ANOMALY_BASELINE_DAYS, detect_temporal_signals
 from ..sources.temporal_signals import temporal_signals_path
@@ -29,7 +30,7 @@ def materialize_temporal_signals(
     output = output or temporal_signals_path()
     start, end = _default_window(start, end)
     if end <= start:
-        raise ValueError("temporal signal materialization end must be after start")
+        raise MaterializationError("temporal_signals_materialize", reason="temporal signal materialization end must be after start")
     inclusive_end = end - timedelta(days=1)
     history_start = start - timedelta(days=ANOMALY_BASELINE_DAYS)
     _ensure_temporal_inputs(history_start, inclusive_end)
@@ -90,7 +91,7 @@ def _event_row(event: Any) -> SignalRow:
 
 def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     if (start is None) != (end is None):
-        raise ValueError("temporal signal materialization requires both start and end")
+        raise MaterializationError("temporal_signals_materialize", reason="temporal signal materialization requires both start and end")
     if start is not None and end is not None:
         return start, end
 

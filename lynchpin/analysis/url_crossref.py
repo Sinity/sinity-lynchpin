@@ -372,7 +372,7 @@ def _iter_raindrop_mentions(start: date, end: date) -> Iterator[URLMention]:
 def _iter_web_visits(start: date, end: date) -> Iterator[URLMention]:
     from ..sources.web import iter_entries
 
-    for entry in iter_entries(start_date=start.isoformat(), end_date=end.isoformat()):
+    for entry in iter_entries(start=start, end=end):
         url = entry.get("url") if isinstance(entry, dict) else getattr(entry, "url", None)
         iso = entry.get("iso_time") if isinstance(entry, dict) else getattr(entry, "iso_time", None)
         title = entry.get("title") if isinstance(entry, dict) else getattr(entry, "title", None)

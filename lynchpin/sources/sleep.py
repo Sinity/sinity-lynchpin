@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
+from ..core.coverage import CoverageBounds
 from ..core.parse import parse_datetime as _parse_dt, safe_float as _safe_float, in_date_range
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
@@ -29,6 +30,8 @@ __all__ = [
     "sleep_stages",
     "sleep_architecture",
     "sleep_productivity",
+    "daily_activity",
+    "coverage_bounds",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -295,6 +298,15 @@ def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
             quality=entry.quality_label,
         ))
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    if not get_config().sleep_jsonl.exists():
+        return None
+    dates = [e.date for e in entries()]
+    if not dates:
+        return None
+    return CoverageBounds(source="sleep", first=min(dates), last=max(dates), kind="export")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

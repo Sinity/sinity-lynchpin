@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..sources.personal_signals import (
     personal_daily_signals_path,
@@ -32,10 +33,10 @@ def materialize_personal_daily_signals(
 ) -> dict[str, Any]:
     output = output or personal_daily_signals_path()
     if (start is None) != (end is None):
-        raise ValueError("personal daily-signal materialization requires both start and end")
+        raise MaterializationError("personal_signals_materialize", reason="personal daily-signal materialization requires both start and end")
     if start is not None and end is not None:
         if end <= start:
-            raise ValueError("personal daily-signal materialization end must be after start")
+            raise MaterializationError("personal_signals_materialize", reason="personal daily-signal materialization end must be after start")
         window_rows, input_files = _window_personal_daily_signal_rows_with_inputs(start, end)
         rows = _merge_existing_signal_rows(
             output=output,
@@ -103,9 +104,9 @@ def materialize_spotify_daily(
 
     output = output or spotify_daily_path()
     if (start is None) != (end is None):
-        raise ValueError("Spotify daily materialization requires both start and end")
+        raise MaterializationError("personal_signals_materialize", reason="Spotify daily materialization requires both start and end")
     if start is not None and end is not None and end <= start:
-        raise ValueError("Spotify daily materialization end must be after start")
+        raise MaterializationError("personal_signals_materialize", reason="Spotify daily materialization end must be after start")
     input_files = spotify_daily_input_files()
     by_day: dict[date, list[Any]] = defaultdict(list)
     for stream in iter_streams(start=start, end=end):
@@ -382,10 +383,10 @@ def _window_personal_daily_signal_rows(
         from ..sources.wykop import daily_activity as wykop_daily_activity
 
         for wykop_row in wykop_daily_activity(
-            start=window_start.isoformat(),
-            end=inclusive_end.isoformat(),
+            start=window_start,
+            end=inclusive_end,
         ):
-            day = date.fromisoformat(wykop_row.date)
+            day = wykop_row.date
             add("wykop", day, "comment_count", float(wykop_row.comments))
             add("wykop", day, "own_chars", float(wykop_row.own_chars))
             add("wykop", day, "total_chars", float(wykop_row.total_chars))

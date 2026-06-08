@@ -10,6 +10,7 @@ from typing import Callable, Iterable, Iterator, Optional, TypeVar
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
+from ..core.errors import DataCoverageError
 from ..core.parse import in_month_range, month_key, parse_datetime, safe_int
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
@@ -154,7 +155,7 @@ def _month_window(start_month: str, end_month: str) -> tuple[date, date]:
         else date(end_year, end_month_num + 1, 1)
     )
     if end <= start:
-        raise ValueError("end_month must be after or equal to start_month")
+        raise DataCoverageError("wykop", requested=f"{start_month}–{end_month}", available="")
     return start, end
 
 

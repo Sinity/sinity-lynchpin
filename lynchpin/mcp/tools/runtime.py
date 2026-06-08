@@ -1,4 +1,9 @@
-"""Runtime and deployment introspection MCP tools."""
+"""Runtime and deployment introspection MCP tools.
+
+NOTE: do NOT add ``from __future__ import annotations`` here.
+FastMCP inspects annotations at decoration time and cannot handle postponed
+string annotations for tool parameters.
+"""
 
 import os
 import subprocess
@@ -8,9 +13,11 @@ from typing import Any
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
 from lynchpin.mcp.tools._utils import registered_tool_names
-from lynchpin.core.freshness import (
+from lynchpin.ingest.materialization_status import (
     compact_materialization_status,
     diagnostic_ledger_status_payload,
+)
+from lynchpin.core.freshness import (
     freshness_dependencies,
     freshness_explain_target,
     latest_receipts,
@@ -31,7 +38,6 @@ def _git_value(repo: Path, *args: str) -> str | None:
     return result.stdout.strip() or None
 
 
-@app.tool()
 def mcp_runtime_status() -> dict[str, Any]:
     """Report the MCP server code path, repo revision, and latest materialized substrate ID."""
     from lynchpin.materialization import substrate_materialization_snapshot
@@ -79,7 +85,6 @@ def mcp_runtime_status() -> dict[str, Any]:
     }
 
 
-@app.tool()
 def mcp_surface_self_check() -> dict[str, Any]:
     """Check contract-declared MCP tools against the live registered tool set."""
     from lynchpin.core.source_contracts import SOURCE_CONTRACTS
@@ -109,7 +114,6 @@ def mcp_surface_self_check() -> dict[str, Any]:
     }
 
 
-@app.tool()
 def diagnostic_ledger_status() -> dict[str, Any]:
     """Return diagnostic ledger and exceptional queue state."""
 
@@ -124,14 +128,12 @@ def observability_status() -> dict[str, Any]:
     return {**payload, "kind": "lynchpin_observability_status"}
 
 
-@app.tool()
 def diagnostic_ledger_explain(target: str, limit: int = 20) -> dict[str, Any]:
     """Explain diagnostic ledger decisions and exceptional work for a target."""
 
     return freshness_explain_target(target, limit=limit)
 
 
-@app.tool()
 def diagnostic_ledger_receipts(
     limit: int = 20,
     target: str | None = None,
@@ -148,7 +150,6 @@ def diagnostic_ledger_receipts(
     )
 
 
-@app.tool()
 def diagnostic_source_materialization_decision(
     source: str,
     start: str | None = None,
@@ -166,7 +167,6 @@ def diagnostic_source_materialization_decision(
     return ensure_materialized(source, window=window).to_json()
 
 
-@app.tool()
 def diagnostic_ledger_dependency_edges(
     target: str | None = None,
     receipt_id: str | None = None,
@@ -175,3 +175,43 @@ def diagnostic_ledger_dependency_edges(
     """Return recorded diagnostic ledger dependency/provenance edges."""
 
     return freshness_dependencies(target=target, receipt_id=receipt_id, limit=limit)
+
+
+@app.tool()
+def mcp_status(view: str = "runtime") -> dict[str, Any]:
+    """MCP server introspection. view: runtime (code path/git/substrate state), self_check (contract-declared vs live tools)."""
+    if view == "runtime":
+        return mcp_runtime_status()
+    if view == "self_check":
+        return mcp_surface_self_check()
+    return {"error": f"unknown view {view!r}. choices: runtime, self_check"}
+
+
+@app.tool()
+def diagnostic_ledger(
+    view: str = "status",
+    target: str | None = None,
+    receipt_id: str | None = None,
+    decision: str | None = None,
+    source: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 20,
+    include_payload: bool = False,
+) -> Any:
+    """Diagnostic ledger and materialization decisions. view: status (ledger+queue state), explain (decisions for target), receipts (recent decisions), edges (dependency/provenance edges), decision (debug source-contract decision)."""
+    if view == "status":
+        return diagnostic_ledger_status()
+    if view == "explain":
+        if target is None:
+            return {"error": "target is required for view=explain"}
+        return diagnostic_ledger_explain(target=target, limit=limit)
+    if view == "receipts":
+        return diagnostic_ledger_receipts(limit=limit, target=target, decision=decision, include_payload=include_payload)
+    if view == "edges":
+        return diagnostic_ledger_dependency_edges(target=target, receipt_id=receipt_id, limit=limit)
+    if view == "decision":
+        if source is None:
+            return {"error": "source is required for view=decision"}
+        return diagnostic_source_materialization_decision(source=source, start=start, end=end)
+    return {"error": f"unknown view {view!r}. choices: status, explain, receipts, edges, decision"}

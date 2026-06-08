@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..core.config import get_config
+from ..core.coverage import CoverageBounds
 from ..core.parse import as_local, iter_dates, parse_datetime
 from ..core.primitives import date_to_dt_range
 from ..core.primitives import logical_date
@@ -29,6 +30,7 @@ __all__ = [
     "keypress_count",
     "has_coverage",
     "daily_activity",
+    "coverage_bounds",
 ]
 
 
@@ -329,3 +331,18 @@ def daily_activity(
             last_ts=max(timestamps[d]) if timestamps[d] else None,
         ))
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    logs_dir = get_config().keylog_root / "logs"
+    if not logs_dir.exists():
+        return None
+    stems = sorted(p.stem for p in logs_dir.glob("????-??-??.jsonl"))
+    if not stems:
+        return None
+    try:
+        first = date.fromisoformat(stems[0])
+        last = date.fromisoformat(stems[-1])
+    except ValueError:
+        return None
+    return CoverageBounds(source="keylog", first=first, last=last, kind="capture")

@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import logical_date
 from ..sources.irc_raw import (
@@ -34,9 +35,9 @@ def materialize_irc_events(
     raw_root = irc_raw_root() if root is None else root
     output = output or irc_events_path()
     if (start is None) != (end is None):
-        raise ValueError("IRC materialization requires both start and end")
+        raise MaterializationError("irc_materialize", reason="IRC materialization requires both start and end")
     if start is not None and end is not None and end <= start:
-        raise ValueError("IRC materialization end must be after start")
+        raise MaterializationError("irc_materialize", reason="IRC materialization end must be after start")
     input_files = irc_input_files(raw_root)
     messages = sorted(iter_raw_messages(root=raw_root), key=lambda m: (m.timestamp, m.line_no))
 

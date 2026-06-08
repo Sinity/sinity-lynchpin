@@ -22,6 +22,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Iterable, Iterator, Sequence, TypeVar
 
 from ..core.classify import classify
+from ..core.coverage import CoverageBounds
 from ..core.title_features import extract_title_features
 from ..core.primitives import (
     TopN,
@@ -84,6 +85,7 @@ __all__ = [
     "sustained_focus",
     "AWDayActivity",
     "daily_activity",
+    "coverage_bounds",
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1321,6 +1323,41 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
             )
         )
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    import sqlite3
+    from datetime import timezone
+    from .activitywatch_raw import _candidate_dbs
+    dbs = _candidate_dbs()
+    first_ns: int | None = None
+    last_ns: int | None = None
+    for db_path in dbs:
+        if not db_path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute(
+                "SELECT MIN(starttime), MAX(starttime) FROM events"
+            ).fetchone()
+            conn.close()
+        except Exception:
+            continue
+        if row and row[0] is not None:
+            if first_ns is None or row[0] < first_ns:
+                first_ns = row[0]
+            if last_ns is None or row[1] > last_ns:
+                last_ns = row[1]
+    if first_ns is None or last_ns is None:
+        return None
+    first_dt = datetime.fromtimestamp(first_ns / 1_000_000_000, tz=timezone.utc)
+    last_dt = datetime.fromtimestamp(last_ns / 1_000_000_000, tz=timezone.utc)
+    return CoverageBounds(
+        source="activitywatch",
+        first=logical_date(first_dt),
+        last=logical_date(last_dt),
+        kind="capture",
+    )
 
 
 def _daily_presence_summary(

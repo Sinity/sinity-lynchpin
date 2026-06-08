@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..core.config import get_config
+from ..core.primitives import logical_date
 
 __all__ = [
     "CommunicationEvent",
@@ -86,7 +87,7 @@ def iter_communication_events(
             if start is not None or end is not None:
                 if timestamp is None:
                     continue
-                day = timestamp.date()
+                day = logical_date(timestamp)
                 if start is not None and day < start:
                     continue
                 if end is not None and day >= end:
@@ -116,7 +117,7 @@ def daily_communication_activity(*, start: date, end: date, ensure: bool = True)
     for event in iter_communication_events(start=start, end=end, ensure=ensure):
         if event.timestamp is None:
             continue
-        day = event.timestamp.date()
+        day = logical_date(event.timestamp)
         by_day[day].append(event)
     out: list[CommunicationDayActivity] = []
     for day, rows in by_day.items():

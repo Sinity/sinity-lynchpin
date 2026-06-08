@@ -19,6 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from ..core.coverage import CoverageBounds
+from ..core.errors import MaterializationError
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.projects import canonical_project_name
 from .polylogue_client import _default_polylogue_db_path, _polylogue_client
@@ -39,8 +41,11 @@ from .polylogue_models import (
 logger = logging.getLogger(__name__)
 
 
-class PolylogueMaterializationError(RuntimeError):
+class PolylogueMaterializationError(MaterializationError):
     """Raised when required Polylogue insight products are unavailable."""
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__("polylogue", reason=reason)
 
 
 __all__ = [
@@ -63,6 +68,7 @@ __all__ = [
     "day_session_summaries",
     "archive_readiness",
     "daily_activity",
+    "coverage_bounds",
     "work_thread_activity",
     "cost_summary",
     "work_pattern",
@@ -1256,6 +1262,27 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
             )
         )
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    import sqlite3
+    db = _default_polylogue_db_path()
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT MIN(created_at), MAX(created_at) FROM conversations"
+        ).fetchone()
+        conn.close()
+    except Exception:
+        return None
+    if not row or row[0] is None:
+        return None
+    from datetime import datetime
+    first = datetime.fromisoformat(row[0]).date()
+    last = datetime.fromisoformat(row[1]).date()
+    return CoverageBounds(source="polylogue", first=first, last=last, kind="capture")
 
 
 def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:

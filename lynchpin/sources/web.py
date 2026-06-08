@@ -17,13 +17,14 @@ import logging
 import re
 import sys
 from collections import Counter, defaultdict
-from datetime import date as _date_type, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, TextIO
 from urllib.parse import urlparse
 
 from ..core.cache import file_digest, file_signature, files_digest, persistent_cache, write_text_if_changed
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ..core.parse import in_date_range
 from ..core.primitives import logical_date
 from .web_models import (
@@ -172,22 +173,20 @@ def _load_entries(
 
 
 def iter_entries(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    start: date | None = None,
+    end: date | None = None,
     root: Optional[Path] = None,
     ndjson: Optional[Path] = None,
 ) -> Iterator[dict[str, object]]:
     if root is None and ndjson is None:
-        start = _date_type.fromisoformat(start_date) if start_date else None
-        end = _date_type.fromisoformat(end_date) if end_date else None
         for visit in _iter_all_visits(start=start, end=end):
             yield _visit_to_record(visit)
         return
 
     for entry in _load_entries(root, ndjson):
-        if start_date and entry.date < start_date:
+        if start and date.fromisoformat(entry.date) < start:
             continue
-        if end_date and entry.date > end_date:
+        if end and date.fromisoformat(entry.date) > end:
             continue
         yield entry.to_record()
 
@@ -264,7 +263,7 @@ def _load_raw_file(
     elif suffix == ".csv":
         entries.extend(_load_raw_csv(path))
     else:
-        raise ValueError(f"Unsupported webhistory file: {path}")
+        raise SourceUnavailableError("webhistory", reason=f"unsupported format: {path}")
     return entries
 
 
@@ -742,8 +741,8 @@ def _tokenize_topic(text: str) -> list[str]:
 
 
 def _iter_all_visits(
-    start: Optional[_date_type] = None,
-    end: Optional[_date_type] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
     ensure: bool = True,
 ) -> Iterator[WebHistoryVisit]:
     """Yield WebHistoryVisit from canonical NDJSON, filtered by date range."""
@@ -763,7 +762,7 @@ def _iter_all_visits(
 
 
 def _canonical_history_path(
-    window: tuple[_date_type, _date_type] | None = None,
+    window: tuple[date, date] | None = None,
     *,
     ensure: bool = True,
 ) -> Path:
@@ -782,7 +781,7 @@ def _canonical_history_path(
     return cfg.webhistory_ndjson
 
 
-def _ensure_webhistory(window: tuple[_date_type, _date_type] | None = None) -> None:
+def _ensure_webhistory(window: tuple[date, date] | None = None) -> None:
     from ..materialization import ensure_materialized
 
     ensure_materialized("webhistory", window=window)
@@ -803,10 +802,10 @@ def _daily_index_cache_path(history_path: Path) -> Path:
 
 
 def _load_daily_index(
-    window: tuple[_date_type, _date_type] | None = None,
+    window: tuple[date, date] | None = None,
     *,
     ensure: bool = True,
-) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]]:
+) -> tuple[list[WebDayActivity], dict[date, dict[str, int]]]:
     path = _canonical_history_path(window=window, ensure=ensure)
     signature = _canonical_history_signature(path)
     cache_path = _daily_index_cache_path(path)
@@ -820,9 +819,9 @@ def _load_daily_index(
 
 def _build_daily_index(
     path: Path,
-) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]]:
-    by_day: defaultdict[_date_type, _WebDayBucket] = defaultdict(_WebDayBucket)
-    domains_by_day: defaultdict[_date_type, Counter[str]] = defaultdict(Counter)
+) -> tuple[list[WebDayActivity], dict[date, dict[str, int]]]:
+    by_day: defaultdict[date, _WebDayBucket] = defaultdict(_WebDayBucket)
+    domains_by_day: defaultdict[date, Counter[str]] = defaultdict(Counter)
     for v in iter_ndjson_events(path):
         if v.timestamp is None:
             continue
@@ -854,7 +853,7 @@ def _build_daily_index(
 def _read_daily_index_cache(
     path: Path,
     signature: object,
-) -> tuple[list[WebDayActivity], dict[_date_type, dict[str, int]]] | None:
+) -> tuple[list[WebDayActivity], dict[date, dict[str, int]]] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -871,7 +870,7 @@ def _read_daily_index_cache(
             return None
         try:
             day = WebDayActivity(
-                date=_date_type.fromisoformat(str(row["date"])),
+                date=date.fromisoformat(str(row["date"])),
                 visit_count=int(row["visit_count"]),
                 unique_domains=int(row["unique_domains"]),
                 top_domains=tuple(
@@ -883,12 +882,12 @@ def _read_daily_index_cache(
         except (KeyError, TypeError, ValueError):
             return None
         days.append(day)
-    domains_by_day: dict[_date_type, dict[str, int]] = {}
+    domains_by_day: dict[date, dict[str, int]] = {}
     for raw_day, raw_counts in raw_domains.items():
         if not isinstance(raw_counts, dict):
             return None
         try:
-            domains_by_day[_date_type.fromisoformat(str(raw_day))] = {
+            domains_by_day[date.fromisoformat(str(raw_day))] = {
                 str(domain): int(count) for domain, count in raw_counts.items()
             }
         except ValueError:
@@ -900,7 +899,7 @@ def _write_daily_index_cache(
     path: Path,
     signature: object,
     days: list[WebDayActivity],
-    domains_by_day: dict[_date_type, dict[str, int]],
+    domains_by_day: dict[date, dict[str, int]],
 ) -> None:
     payload = {
         "signature": _jsonable_signature(signature),
@@ -930,8 +929,8 @@ def _jsonable_signature(value: object) -> object:
 
 def webhistory_daily_index(
     *,
-    start: _date_type | None = None,
-    end: _date_type | None = None,
+    start: date | None = None,
+    end: date | None = None,
     ensure: bool = True,
 ) -> list[WebDayActivity]:
     """Cached daily/domain index over canonical browser history."""
@@ -940,7 +939,7 @@ def webhistory_daily_index(
     return days
 
 
-def daily_browsing(*, start: _date_type, end: _date_type, ensure: bool = True) -> list[WebDayActivity]:
+def daily_browsing(*, start: date, end: date, ensure: bool = True) -> list[WebDayActivity]:
     """Daily web browsing aggregation: visits, domains, top sites."""
     return [
         day
@@ -954,8 +953,8 @@ daily_activity = daily_browsing
 
 def domain_breakdown(
     *,
-    start: _date_type,
-    end: _date_type,
+    start: date,
+    end: date,
     top_n: int = 20,
     ensure: bool = True,
 ) -> list[tuple[str, int, float]]:

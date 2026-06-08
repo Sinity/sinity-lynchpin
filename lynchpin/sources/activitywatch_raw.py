@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,8 @@ import functools
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+
+log = logging.getLogger(__name__)
 from .activitywatch_models import AWEvent
 from .activitywatch_event_index import iter_indexed_activitywatch_events
 
@@ -287,7 +290,11 @@ def _load_all_events_keyed(
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                log.warning("activitywatch_raw: skipping corrupted NDJSON line in %s", path)
+                continue
             bucket = str(payload.get("bucket") or "")
             if not bucket:
                 continue

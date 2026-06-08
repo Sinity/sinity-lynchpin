@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from lynchpin.sources import web
 from lynchpin.sources.web_models import WebHistoryEntry, WebHistoryVisit
@@ -23,9 +23,9 @@ def test_iter_entries_uses_bounded_canonical_visits(monkeypatch) -> None:
 
     monkeypatch.setattr(web, "_iter_all_visits", fake_iter_all_visits)
 
-    rows = list(web.iter_entries(start_date="2026-05-02", end_date="2026-05-03"))
+    rows = list(web.iter_entries(start=date(2026, 5, 2), end=date(2026, 5, 3)))
 
-    assert calls == [(datetime(2026, 5, 2).date(), datetime(2026, 5, 3).date(), True)]
+    assert calls == [(date(2026, 5, 2), date(2026, 5, 3), True)]
     assert rows == [
         {
             "url": "https://example.com/a",
@@ -47,8 +47,8 @@ def test_iter_entries_preserves_explicit_legacy_loader(monkeypatch, tmp_path) ->
 
     rows = list(
         web.iter_entries(
-            start_date="2026-05-02",
-            end_date="2026-05-02",
+            start=date(2026, 5, 2),
+            end=date(2026, 5, 2),
             root=tmp_path,
         )
     )

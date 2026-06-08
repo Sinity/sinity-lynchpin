@@ -32,6 +32,8 @@ def _classify_slice_kind(filename: str, project: str) -> str:
         return "xml_git_log"
     if "-issues-" in filename and filename.endswith(".xml"):
         return "xml_issues"
+    if "-prs-" in filename and filename.endswith(".xml"):
+        return "xml_prs"
     if filename.endswith(".xml.gz"):
         return "xml_compressed"
     if filename.endswith(".xml"):

@@ -94,6 +94,9 @@ def test_promote_work_observation_stage_and_test_children(tmp_path):
         started_at=datetime(2026, 5, 31, 19, 47, tzinfo=timezone.utc),
         duration_s=2.5,
         success=True,
+        io_full_avg10=8.0,
+        cpu_some_avg10=2.0,
+        memory_some_avg10=0.5,
     )
     test = SimpleNamespace(
         source_id="xtask:live:test:2",

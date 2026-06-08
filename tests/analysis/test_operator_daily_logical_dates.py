@@ -106,12 +106,12 @@ def test_fill_svn_reads_requested_window() -> None:
     calls = []
     daily = [
         SimpleNamespace(
-            date=datetime(2022, 9, 21, tzinfo=timezone.utc),
+            date=date(2022, 9, 21),
             commit_count=2,
             files_changed=7,
         ),
         SimpleNamespace(
-            date=datetime(2022, 9, 23, tzinfo=timezone.utc),
+            date=date(2022, 9, 23),
             commit_count=9,
             files_changed=99,
         ),

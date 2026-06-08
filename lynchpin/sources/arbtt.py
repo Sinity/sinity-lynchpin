@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..core.config import get_config
+from ..core.primitives import logical_date
 
 __all__ = [
     "ArbttFocusEvent",
@@ -75,7 +76,7 @@ def iter_arbtt_events(
                 continue
             payload = json.loads(line)
             timestamp = datetime.fromisoformat(str(payload["timestamp"]))
-            day = timestamp.date()
+            day = logical_date(timestamp)
             if start is not None and day < start:
                 continue
             if end is not None and day >= end:
@@ -97,7 +98,7 @@ def iter_arbtt_events(
 def daily_arbtt_activity(*, start: date, end: date, ensure: bool = True) -> list[ArbttDayActivity]:
     by_day: dict[date, list[ArbttFocusEvent]] = defaultdict(list)
     for row in iter_arbtt_events(start=start, end=end, ensure=ensure):
-        day = row.timestamp.date()
+        day = logical_date(row.timestamp)
         by_day[day].append(row)
     return sorted(
         [

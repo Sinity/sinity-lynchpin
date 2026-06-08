@@ -205,7 +205,6 @@ def list_substrate_tables() -> list[dict[str, Any]]:
     return result
 
 
-@app.tool()
 def substrate_readiness_report() -> dict[str, Any]:
     """Aggregate per-source readiness across the latest materialized substrate snapshot.
 
@@ -365,7 +364,6 @@ def substrate_readiness_report() -> dict[str, Any]:
     }
 
 
-@app.tool()
 def substrate_source_status(
     refresh_id: str | None = None,
     status: str | None = None,
@@ -474,7 +472,6 @@ def contract_coverage(
     return rows
 
 
-@app.tool()
 def analysis_readiness(
     start: str | None = None,
     end: str | None = None,
@@ -520,7 +517,6 @@ def analysis_readiness(
     }
 
 
-@app.tool()
 def promotion_runs(
     refresh_id: str | None = None,
     status: str | None = None,
@@ -567,7 +563,6 @@ def promotion_runs(
     ]
 
 
-@app.tool()
 def substrate_run_steps(
     refresh_id: str | None = None,
     status: str | None = None,
@@ -613,7 +608,6 @@ def substrate_run_steps(
     ]
 
 
-@app.tool()
 def analysis_claims(
     refresh_id: str | None = None,
     project: str | None = None,
@@ -661,7 +655,6 @@ def analysis_claims(
         ]
 
 
-@app.tool()
 def claim_evidence(
     claim_id: str,
     refresh_id: str | None = None,
@@ -680,7 +673,6 @@ def claim_evidence(
     return _json_safe(row)
 
 
-@app.tool()
 def analysis_claim_calibration(
     refresh_id: str | None = None,
     project: str | None = None,
@@ -699,7 +691,6 @@ def analysis_claim_calibration(
     return _json_safe(calibrate_claims(rows).to_json())
 
 
-@app.tool()
 def list_evidence_graph_builds(
     start: str | None = None,
     end: str | None = None,
@@ -742,7 +733,6 @@ def list_evidence_graph_builds(
     return [_json_safe(row) for row in rows]
 
 
-@app.tool()
 def load_evidence_graph_summary(
     refresh_id: str | None = None,
     start: str | None = None,
@@ -1083,7 +1073,6 @@ def substrate_prune(
     }
 
 
-@app.tool()
 def substrate_consistency_audit() -> dict[str, Any]:
     """Cross-check substrate_source_status.row_count against actual row counts.
 
@@ -1175,3 +1164,97 @@ def substrate_consistency_audit() -> dict[str, Any]:
         "checked_count": checked,
         "trustworthy": not discrepancies,
     }
+
+
+# ── Consolidated Dispatchers ────────────────────────────────────────────────
+
+
+@app.tool()
+def substrate_health(
+    view: str = "readiness",
+    refresh_id: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    kind: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+) -> Any:
+    """Substrate health and promotion status.
+
+    Parameters:
+        view: readiness (overall readiness report), sources (per-source status),
+              analysis (analysis readiness), runs (recent promotion run history),
+              steps (promotion run step details), consistency (consistency audit).
+    """
+    if view == "readiness":
+        return substrate_readiness_report()
+    if view == "sources":
+        return substrate_source_status(refresh_id=refresh_id, status=status, kind=kind)
+    if view == "analysis":
+        return analysis_readiness(start=start, end=end)
+    if view == "runs":
+        return promotion_runs(refresh_id=refresh_id, status=status, limit=limit)
+    if view == "steps":
+        return substrate_run_steps(refresh_id=refresh_id, status=status, limit=limit)
+    if view == "consistency":
+        return substrate_consistency_audit()
+    return {"error": f"unknown view {view!r}. choices: readiness, sources, analysis, runs, steps, consistency"}
+
+
+@app.tool()
+def evidence_graph(
+    view: str = "builds",
+    refresh_id: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> Any:
+    """Evidence graph data.
+
+    Parameters:
+        view: builds (list recent evidence graph builds),
+              summary (load evidence graph summary for a build).
+    """
+    if view == "builds":
+        return list_evidence_graph_builds(start=start, end=end)
+    if view == "summary":
+        return load_evidence_graph_summary(refresh_id=refresh_id, start=start, end=end)
+    return {"error": f"unknown view {view!r}. choices: builds, summary"}
+
+
+@app.tool()
+def analysis_evidence(
+    view: str = "claims",
+    claim_id: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    project: str | None = None,
+    claim_type: str | None = None,
+    min_confidence: float | None = None,
+    refresh_id: str | None = None,
+    limit: int = 200,
+) -> Any:
+    """Analysis claims and evidence.
+
+    Parameters:
+        view: claims (list analysis claims for date range),
+              calibration (claim calibration statistics),
+              evidence (evidence for a specific claim; requires claim_id).
+    """
+    if view == "claims":
+        return analysis_claims(
+            refresh_id=refresh_id,
+            project=project,
+            start=start,
+            end=end,
+            claim_type=claim_type,
+            min_confidence=min_confidence,
+            limit=limit,
+        )
+    if view == "calibration":
+        return analysis_claim_calibration(refresh_id=refresh_id, project=project, claim_type=claim_type, limit=limit)
+    if view == "evidence":
+        if claim_id is None:
+            return {"error": "claim_id is required for view=evidence"}
+        return claim_evidence(claim_id=claim_id, refresh_id=refresh_id)
+    return {"error": f"unknown view {view!r}. choices: claims, calibration, evidence"}

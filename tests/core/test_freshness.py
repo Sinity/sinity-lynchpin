@@ -4,12 +4,14 @@ from pathlib import Path
 
 from lynchpin.core.freshness import (
     FreshnessReceipt,
-    compact_materialization_status,
-    diagnostic_ledger_status_payload,
     freshness_explain_target,
     latest_receipts,
     record_dependency,
     record_receipt,
+)
+from lynchpin.ingest.materialization_status import (
+    compact_materialization_status,
+    diagnostic_ledger_status_payload,
 )
 
 
@@ -104,7 +106,7 @@ def test_compact_materialization_status_stays_queue_free(tmp_path: Path, monkeyp
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path / "local"))
     reload_config(monkeypatch)
     monkeypatch.setattr(
-        "lynchpin.core.freshness._machine_pressure_snapshot",
+        "lynchpin.ingest.materialization_status._machine_pressure_snapshot",
         lambda: {
             "state": "ready",
             "pressure": "high",
@@ -131,7 +133,7 @@ def test_compact_materialization_status_requires_recorded_snapshot(
 
     setup_substrate(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "lynchpin.core.freshness._machine_pressure_snapshot",
+        "lynchpin.ingest.materialization_status._machine_pressure_snapshot",
         lambda: {"state": "ready", "pressure": "normal", "blockers": []},
     )
 
@@ -153,7 +155,7 @@ def test_compact_materialization_status_reports_latest_snapshot(
     from lynchpin.substrate.connection import connect, substrate_path
 
     monkeypatch.setattr(
-        "lynchpin.core.freshness._machine_pressure_snapshot",
+        "lynchpin.ingest.materialization_status._machine_pressure_snapshot",
         lambda: {"state": "ready", "pressure": "normal", "blockers": []},
     )
     with connect(substrate_path()) as conn:

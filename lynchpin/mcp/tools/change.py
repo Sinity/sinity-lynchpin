@@ -1,7 +1,8 @@
 """Code-change and churn MCP tools.
 
-Do not enable postponed annotations in this module: FastMCP inspects function
-annotations while registering @app.tool functions.
+NOTE: do NOT add ``from __future__ import annotations`` here.
+FastMCP inspects annotations at decoration time and cannot handle postponed
+string annotations for tool parameters.
 """
 
 from typing import Any
@@ -15,7 +16,6 @@ from lynchpin.mcp.tools._utils import (
 )
 
 
-@app.tool()
 def refactor_candidates(
     project: str | None = None,
     refresh_id: str | None = None,
@@ -83,7 +83,6 @@ def refactor_candidates(
     return candidates[:50]
 
 
-@app.tool()
 def file_hotspots(
     top_n: int = 20,
     project: str | None = None,
@@ -150,7 +149,6 @@ def code_history_claims(
     ]
 
 
-@app.tool()
 def conventional_commits(
     project: str | None = None,
     refresh_id: str | None = None,
@@ -243,7 +241,6 @@ def ai_tool_usage(
         }
 
 
-@app.tool()
 def breaking_changes(
     project: str | None = None,
     refresh_id: str | None = None,
@@ -268,7 +265,6 @@ def breaking_changes(
     ]
 
 
-@app.tool()
 def commit_kind_attribution(
     refresh_id: str | None = None,
 ) -> dict[str, Any]:
@@ -322,7 +318,6 @@ def commit_kind_attribution(
     }
 
 
-@app.tool()
 def symbol_churn_hotspots(
     top_n: int = 20,
     project: str | None = None,
@@ -345,3 +340,37 @@ def symbol_churn_hotspots(
         )
 
     return [{"path": r[0], "symbols": r[1], "commits": r[2], "changes": r[3], "projects": r[4]} for r in rows]
+
+
+@app.tool()
+def code_hotspots(
+    view: str = "files",
+    top_n: int = 20,
+    project: str | None = None,
+    refresh_id: str | None = None,
+    min_similarity: float = 0.6,
+) -> Any:
+    """Code churn and refactor hotspots. view: files (churn hotspots by path root), symbols (symbol churn hotspots by file), refactors (rename/similarity-based refactor candidates)."""
+    if view == "files":
+        return file_hotspots(top_n=top_n, project=project, refresh_id=refresh_id)
+    if view == "symbols":
+        return symbol_churn_hotspots(top_n=top_n, project=project, refresh_id=refresh_id)
+    if view == "refactors":
+        return refactor_candidates(project=project, refresh_id=refresh_id, min_similarity=min_similarity)
+    return {"error": f"unknown view {view!r}. choices: files, symbols, refactors"}
+
+
+@app.tool()
+def commit_analysis(
+    view: str = "conventional",
+    project: str | None = None,
+    refresh_id: str | None = None,
+) -> Any:
+    """Commit-level analysis. view: conventional (commit type distribution), attribution (kind×AI attribution correlation), breaking (breaking-change commits)."""
+    if view == "conventional":
+        return conventional_commits(project=project, refresh_id=refresh_id)
+    if view == "attribution":
+        return commit_kind_attribution(refresh_id=refresh_id)
+    if view == "breaking":
+        return breaking_changes(project=project, refresh_id=refresh_id)
+    return {"error": f"unknown view {view!r}. choices: conventional, attribution, breaking"}

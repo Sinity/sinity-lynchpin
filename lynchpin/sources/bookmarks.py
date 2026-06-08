@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..core.config import get_config
+from ..core.primitives import logical_date
 
 __all__ = [
     "BookmarkEvent",
@@ -81,7 +82,7 @@ def iter_bookmarks(
             if start is not None or end is not None:
                 if added_at is None:
                     continue
-                day = added_at.date()
+                day = logical_date(added_at)
                 if start is not None and day < start:
                     continue
                 if end is not None and day >= end:
@@ -107,7 +108,7 @@ def daily_bookmark_activity(*, start: date, end: date, ensure: bool = True) -> l
     for row in iter_bookmarks(start=start, end=end, ensure=ensure):
         if row.added_at is None:
             continue
-        day = row.added_at.date()
+        day = logical_date(row.added_at)
         by_day[day].append(row)
     out: list[BookmarkDayActivity] = []
     for day, rows in by_day.items():

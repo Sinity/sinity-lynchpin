@@ -58,8 +58,8 @@ def iter_code_snapshots(project: str | None = None):
         yield from iter_code_snapshot_runs(conn, project=project)
 
 
-def materialize_code_snapshots() -> int:
-    """Run chisel → promote rows → return total row count inserted.
+def materialize_code_snapshots() -> dict[str, Any]:
+    """Run chisel → promote rows → return manifest dict.
 
     Output goes to the stable path returned by code_snapshots_path() so
     repeated runs overwrite rather than accumulate timestamped directories.
@@ -96,7 +96,13 @@ def materialize_code_snapshots() -> int:
         n_slices = promote_code_snapshot_slices(conn, rows=slice_rows)
 
     update_read_snapshot()
-    return n_runs + n_slices
+    return {
+        "dataset": "code_snapshots",
+        "row_count": n_runs + n_slices,
+        "run_count": n_runs,
+        "slice_count": n_slices,
+        "materialized_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _results_to_rows(

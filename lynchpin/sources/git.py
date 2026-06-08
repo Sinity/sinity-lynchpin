@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, TypedDict
 
 from ..core.cache import file_signature, persistent_cache
 from ..core.config import get_config
+from ..core.coverage import CoverageBounds
 from ..core.parse import in_date_range, parse_date_from_any
 from ..core.primitives import logical_date
 from ..core.source import read_jsonl_with
@@ -89,6 +90,7 @@ __all__ = [
     "file_change_facts",
     "patch_excerpt",
     "daily_activity",
+    "coverage_bounds",
     "commit_sessions",
     "repos",
     "repo_files",
@@ -338,6 +340,35 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
             )
         )
     return result
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    import json as _json
+    path = get_config().baseline_dir / "git_numstat.jsonl"
+    if not path.exists():
+        return None
+    first_dt = last_dt = None
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = _json.loads(line)
+                dt = datetime.fromisoformat(obj["authored_at"])
+                if first_dt is None:
+                    first_dt = dt
+                last_dt = dt
+            except (KeyError, ValueError, _json.JSONDecodeError):
+                continue
+    if first_dt is None:
+        return None
+    return CoverageBounds(
+        source="git_baseline",
+        first=logical_date(first_dt),
+        last=logical_date(last_dt),  # type: ignore[arg-type]
+        kind="capture",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

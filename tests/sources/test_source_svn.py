@@ -69,7 +69,7 @@ def test_daily_activity_passes_bounds_to_iter_commits(monkeypatch) -> None:
             "end": date(2022, 9, 22),
         }
     ]
-    assert [(row.date.date(), row.commit_count, row.files_changed) for row in rows] == [
+    assert [(row.date, row.commit_count, row.files_changed) for row in rows] == [
         (date(2022, 9, 22), 1, 1)
     ]
 

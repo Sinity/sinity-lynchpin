@@ -69,6 +69,9 @@ _WORK_OBSERVATION_STAGE_COLUMNS = (
     "started_at",
     "duration_s",
     "success",
+    "io_full_avg10",
+    "cpu_some_avg10",
+    "memory_some_avg10",
 )
 
 _WORK_OBSERVATION_TEST_RESULT_COLUMNS = (
@@ -211,6 +214,9 @@ def promote_work_observation_stages(
             r.started_at,
             r.duration_s,
             r.success,
+            r.io_full_avg10,
+            r.cpu_some_avg10,
+            r.memory_some_avg10,
         ),
         batch_size=10_000,
     )

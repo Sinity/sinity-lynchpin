@@ -680,7 +680,7 @@ def test_personal_daily_signal_rows_include_wykop_metrics(monkeypatch) -> None:
 
     @dataclass
     class WykopRow:
-        date: str
+        date: date
         comments: int
         own_chars: int
         total_chars: int
@@ -694,7 +694,7 @@ def test_personal_daily_signal_rows_include_wykop_metrics(monkeypatch) -> None:
         calls.append((start, end))
         return [
             WykopRow(
-                date="2026-05-01",
+                date=date(2026, 5, 1),
                 comments=2,
                 own_chars=30,
                 total_chars=45,
@@ -725,7 +725,7 @@ def test_personal_daily_signal_rows_include_wykop_metrics(monkeypatch) -> None:
         },
     )
 
-    assert calls == [("2026-05-01", "2026-05-01")]
+    assert calls == [(date(2026, 5, 1), date(2026, 5, 1))]
     assert rows == [
         ("wykop", date(2026, 5, 1), "comment_count", 2.0, {}),
         ("wykop", date(2026, 5, 1), "own_chars", 30.0, {}),

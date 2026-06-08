@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.parse import local_tz
 from ..core.primitives import logical_date
@@ -44,7 +45,7 @@ def materialize_activitywatch_derived(
 ) -> dict[str, Any]:
     start, end = _default_window(start, end)
     if end <= start:
-        raise ValueError("ActivityWatch derived materialization end must be after start")
+        raise MaterializationError("activitywatch_derived_materialize", reason="ActivityWatch derived materialization end must be after start")
     output_dir = activitywatch_derived_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     start_dt = datetime.combine(start, time.min, tzinfo=local_tz())

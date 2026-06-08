@@ -1,9 +1,13 @@
-"""Velocity MCP tools: time-series, narratives, symbol churn, temporal rhythm."""
+"""Velocity MCP tools: time-series, narratives, symbol churn, temporal rhythm.
+
+NOTE: do NOT add ``from __future__ import annotations`` here.
+FastMCP inspects annotations at decoration time and cannot handle postponed
+string annotations for tool parameters.
+"""
 from typing import Any
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, pinned_materialization_for_read
 
-@app.tool()
 def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None, window_days: int=7) -> list[dict[str, Any]]:
     """Project velocity time-series with rolling windows (Arc D.4).
 
@@ -34,7 +38,6 @@ def velocity_series(projects: list[str] | None=None, refresh_id: str | None=None
     cols = ['project', 'date', 'commit_count', 'rolling_avg', 'cumulative', 'source_count']
     return [{c: _json_safe(v) for c, v in zip(cols, row)} for row in rows]
 
-@app.tool()
 def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=None) -> dict[str, Any]:
     """Auto-summary of project velocity over the latest materialized window (Arc M.6).
 
@@ -88,7 +91,6 @@ def velocity_narrative(projects: list[str] | None=None, refresh_id: str | None=N
             summary = 'No project activity in this window.'
     return {'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'window': {'start': _json_safe(win[0]), 'end': _json_safe(win[1])}, 'total_commits': total_commits, 'total_active_days': total_days, 'peak': {'project': peak[0], 'date': _json_safe(peak[1]), 'commits': peak[2]} if peak else None, 'projects': projects_list, 'summary_text': summary}
 
-@app.tool()
 def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None) -> list[dict[str, Any]]:
     """Symbol-level churn per project per day (Phase B.1).
 
@@ -118,7 +120,6 @@ def symbol_velocity(projects: list[str] | None=None, refresh_id: str | None=None
         rows = load_symbol_velocity_rows(conn, refresh_id=refresh_id, projects=projs)
     return [{'project': r[0], 'date': _json_safe(r[1]), 'materialized_refresh_id': refresh_id, 'commit_count': r[2], 'symbols_added': r[3], 'symbols_modified': r[4], 'symbols_renamed': r[5], 'symbols_total': r[6]} for r in rows]
 
-@app.tool()
 def temporal_rhythm(project: str | None=None, refresh_id: str | None=None) -> dict[str, Any]:
     """Commit time-of-day × day-of-week patterns per project (Phase B.3).
 
@@ -255,7 +256,6 @@ def _is_non_code_path(path: str) -> bool:
         return False
     return any((pattern in path for pattern in _NON_CODE_PATH_PATTERNS))
 
-@app.tool()
 def engineering_throughput(project: str, start: str | None=None, end: str | None=None, granularity: str='week', refresh_id: str | None=None, grouping: str='raw', category: str | None=None) -> dict[str, Any]:
     """Decomposed engineering-throughput estimate for a project window.
 
@@ -402,3 +402,53 @@ def engineering_throughput(project: str, start: str | None=None, end: str | None
         reasons.append('symbol_change empty for this snapshot — symbol counts all zero')
     degraded = bool(reasons)
     return {'project': project, 'granularity': granularity, 'grouping': grouping, 'materialized_refresh_id': refresh_id, 'refresh_id': refresh_id, 'materialization': materialization, 'degraded': degraded, 'reason': '; '.join(reasons) if reasons else None, 'substrate_window': substrate_window, 'periods': periods}
+
+@app.tool()
+def velocity(view: str='series', projects: list[str] | None=None, refresh_id: str | None=None, window_days: int=7) -> Any:
+    """Commit velocity data with parametric dispatch.
+
+    Parameters:
+        view:       "series" (per-project weekly velocity series, default) or
+                    "narrative" (velocity narrative with context over latest snapshot).
+        projects:   Filter to specific projects; None = all.
+        refresh_id: Materialized substrate snapshot to query; default = best current snapshot.
+        window_days: Rolling-average window size (only for view=series; default 7).
+
+    Returns:
+        For view="series": [{"project": str, "date": str, "commit_count": int, ...}]
+        For view="narrative": {materialized_refresh_id, total_commits, peak, projects, summary_text}
+    """
+    if view == 'series':
+        return velocity_series(projects=projects, refresh_id=refresh_id, window_days=window_days)
+    if view == 'narrative':
+        return velocity_narrative(projects=projects, refresh_id=refresh_id)
+    return {'error': f'unknown view {view!r}. choices: series, narrative'}
+
+@app.tool()
+def code_velocity(view: str='throughput', project: str | None=None, start: str | None=None, end: str | None=None, refresh_id: str | None=None, granularity: str='week', grouping: str='raw', category: str | None=None) -> Any:
+    """Code velocity and throughput metrics with parametric dispatch.
+
+    Parameters:
+        view:       "throughput" (engineering throughput composite, default),
+                    "symbols" (symbol-level velocity by path), or
+                    "rhythm" (temporal commit rhythm patterns).
+        project:    Project name for throughput and rhythm views; None for rhythm = all projects.
+        start, end: ISO dates; required for throughput view; used for symbols/rhythm if provided.
+        refresh_id: Materialized substrate snapshot (default: best current snapshot).
+        granularity: "day" | "week" | "month" (only for view=throughput; default "week").
+        grouping:   "raw" | "pr" (only for view=throughput; default "raw").
+        category:   Filter to source/test/config/doc/other (only for view=throughput; None = all).
+
+    Returns:
+        For view="throughput": {project, periods, granularity, ...}
+        For view="symbols": [{"project": str, "date": str, "commit_count": int, ...}]
+        For view="rhythm": {hourly, weekday, peak_hour, peak_weekday}
+    """
+    if view == 'throughput':
+        return engineering_throughput(project=project or 'unknown', start=start, end=end, granularity=granularity, refresh_id=refresh_id, grouping=grouping, category=category)
+    if view == 'symbols':
+        projects_list = [project] if project else None
+        return symbol_velocity(projects=projects_list, refresh_id=refresh_id)
+    if view == 'rhythm':
+        return temporal_rhythm(project=project, refresh_id=refresh_id)
+    return {'error': f'unknown view {view!r}. choices: throughput, symbols, rhythm'}

@@ -15,7 +15,6 @@ from lynchpin.mcp.tools._utils import (
 )
 
 
-@app.tool()
 def pr_review_rows(
     projects: list[str] | None = None,
     states: list[str] | None = None,
@@ -51,7 +50,6 @@ def pr_review_rows(
     return [dataclass_to_json_dict(row) for row in rows]
 
 
-@app.tool()
 def review_bottlenecks(
     min_rounds: int = 2,
     min_review_hours: float = 24.0,
@@ -98,3 +96,30 @@ def review_bottlenecks(
         }
         for r in rows
     ]
+
+
+@app.tool()
+def review(
+    view: str = "rows",
+    projects: list[str] | None = None,
+    states: list[str] | None = None,
+    only_with_friction: bool = False,
+    refresh_id: str | None = None,
+    min_rounds: int = 2,
+    min_review_hours: float = 24.0,
+) -> Any:
+    """PR review data. view: rows (full pr_review_row records), bottlenecks (PRs with high round counts or long review times)."""
+    if view == "rows":
+        return pr_review_rows(
+            projects=projects,
+            states=states,
+            only_with_friction=only_with_friction,
+            refresh_id=refresh_id,
+        )
+    if view == "bottlenecks":
+        return review_bottlenecks(
+            min_rounds=min_rounds,
+            min_review_hours=min_review_hours,
+            refresh_id=refresh_id,
+        )
+    return {"error": f"unknown view {view!r}. choices: rows, bottlenecks"}

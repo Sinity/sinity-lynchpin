@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..sources.sleep import sleep_productivity
 from ..sources.sleep_productivity import sleep_productivity_path
@@ -28,7 +29,7 @@ def materialize_sleep_productivity(
     output = output or sleep_productivity_path()
     start, end = _default_window(start, end)
     if end <= start:
-        raise ValueError("sleep-productivity materialization end must be after start")
+        raise MaterializationError("sleep_productivity_materialize", reason="sleep-productivity materialization end must be after start")
     inclusive_end = end - timedelta(days=1)
     window_rows = [
         _productivity_row(row)
@@ -82,7 +83,7 @@ def _productivity_row(row: Any) -> ProductivityRow:
 
 def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     if (start is None) != (end is None):
-        raise ValueError("sleep-productivity materialization requires both start and end")
+        raise MaterializationError("sleep_productivity_materialize", reason="sleep-productivity materialization requires both start and end")
     if start is not None and end is not None:
         return start, end
 

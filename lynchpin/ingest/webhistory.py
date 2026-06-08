@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import logical_date
 from ..sources.browser_db import iter_browser_db_visits
@@ -319,9 +320,9 @@ def build_full_history(
     don't produce duplicate entries in the merged output.
     """
     if (start is None) != (end is None):
-        raise ValueError("webhistory materialization requires both start and end")
+        raise MaterializationError("webhistory", reason="webhistory materialization requires both start and end")
     if start is not None and end is not None and end <= start:
-        raise ValueError("webhistory materialization end must be after start")
+        raise MaterializationError("webhistory", reason="webhistory materialization end must be after start")
     cfg = get_config()
     data_dir = data_dir or cfg.webhistory_dir
     output = output or cfg.webhistory_ndjson or Path(str(cfg.webhistory_raw_dir).replace("/raw", "/derived")) / "full_history.ndjson"

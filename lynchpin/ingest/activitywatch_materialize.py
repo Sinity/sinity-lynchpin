@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch_dedup import dedup_and_merge
@@ -177,7 +178,7 @@ def _exclusive_window(start: date | None, end: date | None) -> tuple[datetime, d
     if start is None or end is None:
         return None
     if end <= start:
-        raise ValueError("ActivityWatch event materialization end must be after start")
+        raise MaterializationError("activitywatch_materialize", reason="ActivityWatch event materialization end must be after start")
     return date_to_dt_range(start, end - timedelta(days=1))
 
 

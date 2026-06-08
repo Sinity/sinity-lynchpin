@@ -77,6 +77,11 @@ class XtaskStageTiming:
     started_at: datetime
     duration_s: float | None
     success: bool | None
+    # End-of-stage PSI (pressure-stall) snapshot, avg10 (10s decaying average).
+    # None when /proc/pressure was unavailable or the DB predates PSI columns.
+    io_full_avg10: float | None
+    cpu_some_avg10: float | None
+    memory_some_avg10: float | None
 
 
 @dataclass(frozen=True)
@@ -384,6 +389,9 @@ def _row_to_stage_timing(row: sqlite3.Row, *, source_prefix: str) -> XtaskStageT
         started_at=_parse_dt(row["started_at"]),
         duration_s=_float(row["duration_secs"]),
         success=_bool(row["success"]),
+        io_full_avg10=_float(row["io_full_avg10"]),
+        cpu_some_avg10=_float(row["cpu_some_avg10"]),
+        memory_some_avg10=_float(row["memory_some_avg10"]),
     )
 
 
@@ -460,6 +468,9 @@ _STAGE_COLUMNS = (
     "started_at",
     "duration_secs",
     "success",
+    "io_full_avg10",
+    "cpu_some_avg10",
+    "memory_some_avg10",
 )
 
 _TEST_RESULT_COLUMNS = (

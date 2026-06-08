@@ -171,7 +171,12 @@ def _commands_from_ndjson(path: Path) -> Iterator[AtuinCommand]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                import warnings
+                warnings.warn(f"terminal: skipping corrupted NDJSON line in {path}", stacklevel=2)
+                continue
             yield AtuinCommand(
                 timestamp=datetime.fromisoformat(str(payload["timestamp"]).replace("Z", "+00:00")),
                 duration_ns=payload.get("duration_ns"),

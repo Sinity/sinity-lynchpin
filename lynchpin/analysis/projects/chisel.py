@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from ...core.errors import MaterializationError
+from ...core.errors import MaterializationError, SourceUnavailableError
 try:
     from rich.console import Console
     from rich.table import Table
@@ -58,7 +58,7 @@ def _run(cmd: Sequence[str], *, cwd: Path | None=None) -> subprocess.CompletedPr
 def _require_repomix() -> str:
     bin = shutil.which('repomix')
     if bin is None:
-        raise RuntimeError('repomix not found on PATH')
+        raise SourceUnavailableError('repomix', reason='repomix not found on PATH')
     return bin
 
 def _repomix_version(bin: str) -> str:
@@ -254,6 +254,68 @@ def _generate_issues(plan: RepoPlan, out_dir: Path, generated_at: str) -> tuple[
     _print(f'  [dim]issues: {len(open_issues)} open / {len(closed_issues)} closed[/dim]')
     return (len(open_issues), len(closed_issues))
 
+def _github_pr_to_chisel_dict(item) -> dict:
+    return {'number': item.number, 'state': item.state.upper(), 'title': item.title, 'body': item.body, 'labels': [{'name': label.name} for label in item.labels], 'url': item.url or '', 'mergeCommit': item.merge_commit or '', 'createdAt': item.created_at.isoformat() if item.created_at else '', 'mergedAt': item.merged_at.isoformat() if item.merged_at else '', 'comments': [{'author': {'login': comment.author.login}, 'body': comment.body, 'createdAt': comment.created_at.isoformat() if comment.created_at else ''} for comment in item.comments], 'reviews': [{'author': {'login': review.author.login}, 'state': review.state, 'body': review.body, 'submittedAt': review.submitted_at.isoformat() if review.submitted_at else ''} for review in item.reviews]}
+
+def _prs_from_context_product(repo_slug: str, state: str, limit: int=DEFAULT_ISSUE_LIMIT) -> list[dict]:
+    from ...sources.github_context import iter_github_context
+    wanted_slug = repo_slug.lower()
+    prs: list[dict] = []
+    for row in iter_github_context(ensure=False):
+        item = row.item
+        if item.kind != 'pr' or item.slug.lower() != wanted_slug:
+            continue
+        if state != 'all' and item.state != state:
+            continue
+        prs.append(_github_pr_to_chisel_dict(item))
+        if len(prs) >= limit:
+            break
+    return prs
+
+def _normalize_pr_data(prs: list[dict]) -> None:
+    for pr in prs:
+        pr['_comments'] = pr.pop('comments', [])
+        pr['_reviews'] = pr.pop('reviews', [])
+
+def _build_prs_xml(prs: list[dict], repo_slug: str, state: str, generated_at: str) -> str:
+    root = ET.Element('prs', {'repository': repo_slug, 'state': state, 'generated-at': generated_at, 'count': str(len(prs))})
+    for pr in prs:
+        el = ET.SubElement(root, 'pr', {'number': str(pr.get('number', '')), 'state': pr.get('state', ''), 'created-at': pr.get('createdAt', ''), 'merged-at': pr.get('mergedAt', ''), 'url': pr.get('url', ''), 'merge-commit': pr.get('mergeCommit', '')})
+        t = ET.SubElement(el, 'title')
+        t.text = pr.get('title', '')
+        b = ET.SubElement(el, 'body')
+        b.text = pr.get('body', '')
+        lb = ET.SubElement(el, 'labels')
+        lb.text = ', '.join((label['name'] for label in pr.get('labels', [])))
+        comments = ET.SubElement(el, 'comments')
+        for c in pr.get('_comments', []):
+            ce = ET.SubElement(comments, 'comment', {'author': (c.get('author') or {}).get('login', '?'), 'created-at': c.get('createdAt', '')})
+            cb = ET.SubElement(ce, 'body')
+            cb.text = c.get('body', '')
+        reviews = ET.SubElement(el, 'reviews')
+        for rv in pr.get('_reviews', []):
+            re_el = ET.SubElement(reviews, 'review', {'author': (rv.get('author') or {}).get('login', '?'), 'state': rv.get('state', ''), 'submitted-at': rv.get('submittedAt', '')})
+            rb = ET.SubElement(re_el, 'body')
+            rb.text = rv.get('body', '')
+    ET.indent(root, space='  ')
+    return ET.tostring(root, encoding='unicode', xml_declaration=True)
+
+def _generate_prs(plan: RepoPlan, out_dir: Path, generated_at: str) -> tuple[int, int]:
+    """Fetch and write prs-open.xml + prs-merged.xml. Returns (open_count, merged_count)."""
+    if not plan.github_slug or not _has_github_remote(plan.path):
+        return (0, 0)
+    _ensure_github_context_for_chisel()
+    open_prs = _prs_from_context_product(plan.github_slug, 'open', DEFAULT_ISSUE_LIMIT)
+    _normalize_pr_data(open_prs)
+    merged_prs = _prs_from_context_product(plan.github_slug, 'merged', DEFAULT_ISSUE_LIMIT)
+    _normalize_pr_data(merged_prs)
+    for state, prs in [('open', open_prs), ('merged', merged_prs)]:
+        if prs:
+            xml = _build_prs_xml(prs, plan.github_slug, state, generated_at)
+            (out_dir / f'{plan.name}-prs-{state}.xml').write_text(xml, encoding='utf-8')
+    _print(f'  [dim]prs: {len(open_prs)} open / {len(merged_prs)} merged[/dim]')
+    return (len(open_prs), len(merged_prs))
+
 def _generate_git_log(plan: RepoPlan, out_dir: Path, generated_at: str) -> int:
     default_branch = 'HEAD'
     branch_result = _run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd=plan.path)
@@ -396,10 +458,13 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         futures[f] = ('git-log', plan.name)
         f = ex.submit(_generate_issues, plan, out_dir, generated_at)
         futures[f] = ('issues', plan.name)
+        f = ex.submit(_generate_prs, plan, out_dir, generated_at)
+        futures[f] = ('prs', plan.name)
         f = ex.submit(_generate_portable_sidecars, plan, out_dir)
         futures[f] = ('sidecars', plan.name)
         gitlog_commits = 0
         issues_open = issues_closed = 0
+        prs_open = prs_merged = 0
         sidecars_done: list[str] = []
         sidecars_bytes = 0
         for future in as_completed(futures):
@@ -413,6 +478,8 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
                     gitlog_commits = result
                 elif kind == 'issues':
                     issues_open, issues_closed = result
+                elif kind == 'prs':
+                    prs_open, prs_merged = result
                 elif kind == 'compressed':
                     name, size = result
                     slices_done.append((name, size))
@@ -442,7 +509,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
     combined_tar_bytes = combined_tar_result[1] if combined_tar_result is not None else 0
     elapsed = (dt.datetime.now() - t0).total_seconds()
     total_bytes = sum((s[1] for s in slices_done)) + extra_bytes + sidecars_bytes
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict:
     global _github_context_ready

@@ -1,4 +1,9 @@
-"""Health, audit, and anomaly MCP tools."""
+"""Health, audit, and anomaly MCP tools.
+
+NOTE: do NOT add ``from __future__ import annotations`` here.
+FastMCP inspects annotations at decoration time and cannot handle postponed
+string annotations for tool parameters.
+"""
 from typing import Any
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, latest_materialized_refresh_id

@@ -62,6 +62,9 @@ def test_machine_work_observation_read_models(tmp_path):
         started_at=datetime(2026, 5, 31, 12, tzinfo=timezone.utc),
         duration_s=45.0,
         success=True,
+        io_full_avg10=15.0,
+        cpu_some_avg10=4.0,
+        memory_some_avg10=1.0,
     )
     failed_stage = SimpleNamespace(
         source_id="xtask:live:stage:2",
@@ -70,6 +73,9 @@ def test_machine_work_observation_read_models(tmp_path):
         started_at=datetime(2026, 5, 31, 12, tzinfo=timezone.utc),
         duration_s=10.0,
         success=False,
+        io_full_avg10=None,
+        cpu_some_avg10=None,
+        memory_some_avg10=None,
     )
     test = SimpleNamespace(
         source_id="xtask:live:test:1",

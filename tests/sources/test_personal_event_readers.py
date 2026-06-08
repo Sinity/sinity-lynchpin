@@ -31,7 +31,7 @@ def test_bookmark_reader_filters_half_open_window(tmp_path, monkeypatch) -> None
             {
                 "bookmark_id": "end",
                 "domain": "end.example",
-                "added_at": "2026-05-03T00:00:00+00:00",
+                "added_at": "2026-05-03T12:00:00+00:00",
             },
             {
                 "bookmark_id": "undated",
@@ -101,7 +101,7 @@ def test_communication_reader_filters_half_open_window(tmp_path, monkeypatch) ->
                 "event_id": "end",
                 "source": "outlook",
                 "conversation_id": "c",
-                "timestamp": "2026-05-03T00:00:00+00:00",
+                "timestamp": "2026-05-03T12:00:00+00:00",
                 "direction": "inbound",
             },
             {

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
 from ..sources.machine import (
     block_device_samples,
@@ -43,9 +44,9 @@ def materialize_machine_telemetry(
     *, start: date | None = None, end: date | None = None
 ) -> dict[str, Any]:
     if (start is None) != (end is None):
-        raise ValueError("machine materialization requires both start and end")
+        raise MaterializationError("machine_materialize", reason="machine materialization requires both start and end")
     if start is not None and end is not None and end <= start:
-        raise ValueError("machine materialization end must be after start")
+        raise MaterializationError("machine_materialize", reason="machine materialization end must be after start")
     cfg = get_config()
     input_files = machine_input_files(cfg)
     source_end = end - timedelta(days=1) if end is not None else None

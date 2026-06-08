@@ -12,6 +12,7 @@ import statistics
 import subprocess
 from typing import Any, Callable, Iterable, Protocol, Sequence, TypeVar
 
+from lynchpin.core.errors import DataCoverageError
 from lynchpin.sources import machine
 from lynchpin.sources.machine_models import (
     MachineBlockDeviceSample,
@@ -220,7 +221,7 @@ def analyze_machine_service_io_window(
 ) -> MachineServiceIOAttribution:
     """Rank systemd units by sampled I/O counter growth inside a time window."""
     if end < start:
-        raise ValueError("end must be on or after start")
+        raise DataCoverageError("machine_service_io", requested=f"{start}–{end}", available="")
     start = _as_utc(start)
     end = _as_utc(end)
 

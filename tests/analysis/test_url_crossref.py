@@ -178,10 +178,10 @@ def test_reddit_mentions_use_half_open_bounded_readers(monkeypatch):
 
 
 def test_web_mentions_use_source_date_filter(monkeypatch):
-    calls: list[tuple[str | None, str | None]] = []
+    calls: list[tuple[date | None, date | None]] = []
 
-    def fake_iter_entries(start_date: str | None = None, end_date: str | None = None, **_kwargs):
-        calls.append((start_date, end_date))
+    def fake_iter_entries(start: date | None = None, end: date | None = None, **_kwargs):
+        calls.append((start, end))
         yield {
             "url": "https://example.com/visited",
             "iso_time": "2026-06-02T12:00:00+00:00",
@@ -192,7 +192,7 @@ def test_web_mentions_use_source_date_filter(monkeypatch):
 
     mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"web"}))
 
-    assert calls == [("2026-06-01", "2026-06-03")]
+    assert calls == [(date(2026, 6, 1), date(2026, 6, 3))]
     assert [m.url for m in mentions] == ["https://example.com/visited"]
 
 

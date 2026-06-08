@@ -122,7 +122,7 @@ def test_diagnostic_mcp_tools_report_ledger_state(
     assert panel["materialization"]["primary_product"] == "evidence_graph_substrate"
     assert "queue" not in panel
     registered = set(registered_tool_names())
-    assert "diagnostic_ledger_status" in registered
+    assert "diagnostic_ledger" in registered
     assert "diagnostic_queue" not in registered
     assert "diagnostic_queue_summary" not in registered
     assert "diagnostic_queue_worker_once" not in registered
@@ -145,8 +145,7 @@ def test_mcp_capability_matrix_reports_contract_capabilities_without_stale_scori
 
     takeout = rows["google_takeout"]
     assert "gmail_takeout" in takeout["source_keys"]
-    assert "google_takeout_events" in takeout["mcp_tools"]
-    assert "google_takeout_retrospective" in takeout["mcp_tools"]
+    assert "google_takeout" in takeout["mcp_tools"]
     assert "google_activity_day" in takeout["graph_node_kinds"]
     assert "freshness" not in takeout
     assert "last_date" in takeout["date_bounds"]
@@ -158,7 +157,7 @@ def test_mcp_capability_matrix_reports_contract_capabilities_without_stale_scori
     assert terminal["materialization_target"] == "source:atuin"
     assert "refresh_executor" not in terminal
     assert terminal["materialization_executor"]["kind"] == "materializer"
-    assert "terminal_daily" in terminal["mcp_tools"]
+    assert "terminal" in terminal["mcp_tools"]
 
     artifacts = rows["analysis_artifacts"]
     assert artifacts["collection_model"] == "derived"

@@ -33,15 +33,15 @@ def test_source_contracts_carry_capability_and_coverage_policy() -> None:
     contracts = {contract.name: contract for contract in SOURCE_CONTRACTS}
 
     assert contracts["webhistory"].collection_model == "continuous"
-    assert "web_daily" in contracts["webhistory"].mcp_tools
+    assert "web" in contracts["webhistory"].mcp_tools
     assert contracts["reddit"].collection_model == "event_export"
     assert contracts["reddit"].materialization_mode == "local"
     assert contracts["reddit"].materialization_executor.ref == "reddit"
     assert "personal_daily_signal" in contracts["reddit"].substrate_tables
     assert contracts["title_metadata"].collection_model == "metadata"
-    assert "title_metadata_audit" in contracts["title_metadata"].mcp_tools
+    assert "title_metadata" in contracts["title_metadata"].mcp_tools
     assert contracts["atuin"].collection_model == "continuous"
-    assert "terminal_daily" in contracts["atuin"].mcp_tools
+    assert "terminal" in contracts["atuin"].mcp_tools
     assert contracts["activitywatch"].collection_model == "continuous"
     assert contracts["activitywatch"].materialization_executor.ref == "activitywatch"
     assert contracts["analysis_artifacts"].collection_model == "derived"

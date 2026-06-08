@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from lynchpin.sources import outlook, sms, wykop
 
@@ -45,9 +45,9 @@ def test_sms_daily_activity_passes_inclusive_date_window(monkeypatch) -> None:
     ]
     monkeypatch.setattr(sms, "_parse_sms_csv", lambda root=None: iter(parsed))
 
-    rows = sms.daily_activity(start="2026-05-02", end="2026-05-02")
+    rows = sms.daily_activity(start=date(2026, 5, 2), end=date(2026, 5, 2))
 
-    assert [(row.date, row.sent_count) for row in rows] == [("2026-05-02", 1)]
+    assert [(row.date, row.sent_count) for row in rows] == [(date(2026, 5, 2), 1)]
 
 
 def test_sms_summaries_pass_inclusive_date_window(monkeypatch, tmp_path) -> None:
@@ -69,8 +69,8 @@ def test_sms_summaries_pass_inclusive_date_window(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(sms, "iter_messages", fake_iter_messages)
 
-    threads = sms.thread_summaries(root=tmp_path, start="2026-05-02", end="2026-05-02")
-    counterparts = sms.counterpart_stats(root=tmp_path, start="2026-05-02", end="2026-05-02")
+    threads = sms.thread_summaries(root=tmp_path, start=date(2026, 5, 2), end=date(2026, 5, 2))
+    counterparts = sms.counterpart_stats(root=tmp_path, start=date(2026, 5, 2), end=date(2026, 5, 2))
 
     expected_bounds = (
         tmp_path,
@@ -102,7 +102,7 @@ def test_outlook_daily_activity_passes_bounds_to_iter_emails(monkeypatch) -> Non
 
     monkeypatch.setattr(outlook, "iter_emails", fake_iter_emails)
 
-    rows = outlook.daily_activity(start="2026-05-02", end="2026-05-02")
+    rows = outlook.daily_activity(start=date(2026, 5, 2), end=date(2026, 5, 2))
 
     assert calls == [
         (
@@ -110,7 +110,7 @@ def test_outlook_daily_activity_passes_bounds_to_iter_emails(monkeypatch) -> Non
             datetime(2026, 5, 2, 23, 59, 59, 999999, tzinfo=timezone.utc),
         )
     ]
-    assert [(row.date, row.inbox_count) for row in rows] == [("2026-05-02", 1)]
+    assert [(row.date, row.inbox_count) for row in rows] == [(date(2026, 5, 2), 1)]
 
 
 def test_outlook_correspondent_stats_passes_bounds_to_iter_emails(monkeypatch) -> None:
@@ -145,7 +145,7 @@ def test_outlook_correspondent_stats_passes_bounds_to_iter_emails(monkeypatch) -
 
     monkeypatch.setattr(outlook, "iter_emails", fake_iter_emails)
 
-    rows = outlook.correspondent_stats(start="2026-05-02", end="2026-05-02")
+    rows = outlook.correspondent_stats(start=date(2026, 5, 2), end=date(2026, 5, 2))
 
     assert calls == [
         (
@@ -227,14 +227,14 @@ def test_wykop_daily_activity_passes_bounds_to_raw_iterators(monkeypatch) -> Non
     monkeypatch.setattr(wykop, "iter_comments", fake_comments)
     monkeypatch.setattr(wykop, "iter_actions", fake_actions)
 
-    rows = wykop.daily_activity(start="2026-05-02", end="2026-05-02")
+    rows = wykop.daily_activity(start=date(2026, 5, 2), end=date(2026, 5, 2))
 
     assert calls == {
-        "comments": [(None, datetime(2026, 5, 2).date(), datetime(2026, 5, 2).date())],
-        "actions": [(None, datetime(2026, 5, 2).date(), datetime(2026, 5, 2).date())],
+        "comments": [(None, date(2026, 5, 2), date(2026, 5, 2))],
+        "actions": [(None, date(2026, 5, 2), date(2026, 5, 2))],
     }
     assert [(row.date, row.comments, row.upvotes) for row in rows] == [
-        ("2026-05-02", 1, 1)
+        (date(2026, 5, 2), 1, 1)
     ]
 
 
