@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from lynchpin.core.errors import MaterializationError
+from lynchpin.ingest._manifest import write_manifest
 
 
 def code_snapshots_stale() -> bool:
     """True if any REPO_PLANS repo's .git/HEAD mtime is newer than last promotion."""
-    from lynchpin.analysis.projects.chisel import REPO_PLANS
+    from lynchpin.sources.code_snapshots import REPO_PLANS
     from lynchpin.substrate.connection import connect
 
     try:
@@ -64,8 +65,7 @@ def materialize_code_snapshots() -> dict[str, Any]:
     Output goes to the stable path returned by code_snapshots_path() so
     repeated runs overwrite rather than accumulate timestamped directories.
     """
-    from lynchpin.analysis.projects.chisel import build_chisel_bundles
-    from lynchpin.sources.code_snapshots import code_snapshots_path
+    from lynchpin.sources.code_snapshots import build_chisel_bundles, code_snapshots_path
     from lynchpin.substrate.code_snapshots import (
         promote_code_snapshot_runs,
         promote_code_snapshot_slices,
@@ -96,13 +96,16 @@ def materialize_code_snapshots() -> dict[str, Any]:
         n_slices = promote_code_snapshot_slices(conn, rows=slice_rows)
 
     update_read_snapshot()
-    return {
+    manifest = {
         "dataset": "code_snapshots",
         "row_count": n_runs + n_slices,
         "run_count": n_runs,
         "slice_count": n_slices,
-        "materialized_at": datetime.now(timezone.utc).isoformat(),
+        "materialized_path": str(output_root),
     }
+    manifest_path = output_root / "code_snapshots.manifest.json"
+    write_manifest(manifest_path, manifest)
+    return manifest
 
 
 def _results_to_rows(

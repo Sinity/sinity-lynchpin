@@ -72,7 +72,7 @@ def test_materialize_temporal_signals_merges_window_and_tracks_covered_dates(mon
     ]
     assert manifest["covered_dates"] == ["2026-05-01", "2026-05-02", "2026-05-03"]
     assert manifest["schema_version"] == TEMPORAL_SIGNALS_SCHEMA_VERSION
-    assert manifest["window_semantics"] == "start inclusive, end exclusive"
+    assert manifest["window_semantics"] == "[start, end) — start inclusive, end exclusive"
     assert detector_calls == [(date(2026, 5, 2), date(2026, 5, 3), False)]
     assert ensure_calls == [
         (name, (date(2026, 5, 2) - timedelta(days=28), date(2026, 5, 4)))

@@ -330,7 +330,7 @@ def test_machine_workflow_mechanics_materializes_and_passes_best_snapshot(
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
     monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
     monkeypatch.setattr(
-        "lynchpin.mcp.tools.machine._best_refresh_or_none",
+        "lynchpin.mcp.tools.machine_observations._best_refresh_or_none",
         lambda *_args, **_kwargs: "work-rid",
     )
     monkeypatch.setattr(

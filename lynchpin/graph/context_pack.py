@@ -297,9 +297,9 @@ def _build_physiology(*, start: datetime, end: datetime) -> PhysiologySummary | 
         return None
 
     sleep_hours_mean, sleep_days = _mean_present(
-        row.get("sleep_minutes", row.get("sleep_arch_total_minutes")) / 60.0
+        (v / 60.0)
         for row in sleep_by_day.values()
-        if row.get("sleep_minutes", row.get("sleep_arch_total_minutes")) is not None
+        if (v := row.get("sleep_minutes", row.get("sleep_arch_total_minutes"))) is not None
     )
     sleep_score_mean, _ = _mean_present(row.get("sleep_score") for row in sleep_by_day.values())
     stress_mean, stress_days = _mean_present(row.get("stress_avg") for row in health_by_day.values())

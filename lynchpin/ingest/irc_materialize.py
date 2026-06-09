@@ -19,6 +19,7 @@ from ..sources.irc_raw import (
     normalize_nick,
 )
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 
 IRC_EVENTS_SCHEMA_VERSION = 1
@@ -68,7 +69,6 @@ def materialize_irc_events(
     manifest = {
         "dataset": "comms.irc.events",
         "schema_version": IRC_EVENTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": len(rows),
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
@@ -87,9 +87,7 @@ def materialize_irc_events(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    irc_manifest_path().write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_manifest(irc_manifest_path(), manifest)
     return manifest
 
 

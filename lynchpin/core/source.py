@@ -22,12 +22,31 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import date as _date
 from pathlib import Path
-from typing import Callable, Iterator, Optional, TypeVar
+from typing import Callable, Iterator, Optional, Protocol, TypeVar, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+@runtime_checkable
+class DayActivity(Protocol):
+    """Structural protocol satisfied by all per-day activity dataclasses.
+
+    Every source module's *DayActivity dataclass implicitly satisfies this
+    protocol — no changes to existing dataclasses are needed.
+
+    Naming convention for daily_activity functions:
+    - Signature: daily_activity(*, start: date, end: date, ensure: bool = True) -> list[DayActivity]
+    - Variant names (daily_browsing, daily_listening, etc.) are acceptable when
+      the source produces multiple per-day rows (e.g., git per-repo, polylogue per-provider).
+    - ensure=True is the canonical default for sources with ingest products;
+      sources reading live DBs directly may omit ensure.
+    """
+
+    date: _date
 
 
 @dataclass(frozen=True)

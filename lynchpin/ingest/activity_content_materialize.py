@@ -15,6 +15,7 @@ from ..sources.activitywatch import focus_spans
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from ..sources.title_metadata import hash_title, load_title_classification_map, normalize_title, title_metadata_path
 from ..sources.title_metadata_rules import classify_title_via_rules
+from ._manifest import write_manifest
 ACTIVITY_CONTENT_SCHEMA_VERSION = 1
 
 def materialize_activity_content(*, start: date | None=None, end: date | None=None, output: Path | None=None) -> dict[str, Any]:
@@ -83,8 +84,8 @@ def materialize_activity_content(*, start: date | None=None, end: date | None=No
         for row in sorted(title_usage.values(), key=lambda item: (-float(item['focused_seconds']), item['app'], item['normalized_title'])):
             row['focused_seconds'] = round(float(row['focused_seconds']), 3)
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + '\n')
-    manifest = {'dataset': 'lynchpin.activity_content_daily', 'schema_version': ACTIVITY_CONTENT_SCHEMA_VERSION, 'materialized_at': datetime.now(timezone.utc).astimezone().isoformat(), 'materialized_path': str(output), 'title_usage_path': str(usage_output), 'row_count': len(by_day), 'title_usage_count': len(title_usage), 'unmatched_title_count': sum((1 for row in title_usage.values() if not row['matched'])), 'top_unmatched_titles': [{'app': row['app'], 'normalized_title': row['normalized_title'], 'focused_seconds': round(float(row['focused_seconds']), 3), 'span_count': row['span_count']} for row in sorted((row for row in title_usage.values() if not row['matched']), key=lambda item: -float(item['focused_seconds']))[:20]], 'first_date': min(by_day).isoformat() if by_day else None, 'last_date': max(by_day).isoformat() if by_day else None, 'window_start': start.isoformat(), 'window_end': end.isoformat(), 'focused_seconds': round(focused_seconds_total, 3), 'matched_seconds': round(matched_seconds_total, 3), 'matched_ratio': round(matched_seconds_total / focused_seconds_total, 6) if focused_seconds_total else 0.0, 'source_counts': dict(sorted(source_counts.items())), 'input_files': [str(path) for path in input_files], 'input_file_count': len(input_files), 'input_latest_mtime': latest_mtime_iso(input_files)}
-    output.with_suffix('.manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    manifest = {'dataset': 'lynchpin.activity_content_daily', 'schema_version': ACTIVITY_CONTENT_SCHEMA_VERSION, 'materialized_path': str(output), 'title_usage_path': str(usage_output), 'row_count': len(by_day), 'title_usage_count': len(title_usage), 'unmatched_title_count': sum((1 for row in title_usage.values() if not row['matched'])), 'top_unmatched_titles': [{'app': row['app'], 'normalized_title': row['normalized_title'], 'focused_seconds': round(float(row['focused_seconds']), 3), 'span_count': row['span_count']} for row in sorted((row for row in title_usage.values() if not row['matched']), key=lambda item: -float(item['focused_seconds']))[:20]], 'first_date': min(by_day).isoformat() if by_day else None, 'last_date': max(by_day).isoformat() if by_day else None, 'window_start': start.isoformat(), 'window_end': end.isoformat(), 'focused_seconds': round(focused_seconds_total, 3), 'matched_seconds': round(matched_seconds_total, 3), 'matched_ratio': round(matched_seconds_total / focused_seconds_total, 6) if focused_seconds_total else 0.0, 'source_counts': dict(sorted(source_counts.items())), 'input_files': [str(path) for path in input_files], 'input_file_count': len(input_files), 'input_latest_mtime': latest_mtime_iso(input_files)}
+    write_manifest(output.with_suffix('.manifest.json'), manifest)
     return manifest
 
 def activity_content_input_files() -> tuple[Path, ...]:

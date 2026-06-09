@@ -376,3 +376,121 @@ class TestCleanupPeriodDetect:
             )
 
         assert result == []
+
+
+# ── Health wearables tools ────────────────────────────────────────────────────
+
+class TestHealthWearablesTools:
+    """Tests for health_daily_summary, health_stress_detail,
+    health_heart_rate_detail, and health_hrv_trend MCP tools."""
+
+    def test_health_daily_summary_returns_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import date as _date
+        from lynchpin.sources.health import DailyHealthSummary
+        import lynchpin.sources.health as _health_src
+
+        fake_rows = [
+            DailyHealthSummary(
+                date=_date(2026, 5, 1),
+                steps=8000,
+                stress_avg=35.0,
+                stress_count=10,
+                heart_rate_avg=68.0,
+                heart_rate_resting=58.0,
+                hrv_rmssd_avg=42.0,
+                hrv_count=3,
+                spo2_avg=97.5,
+                spo2_count=2,
+                respiratory_avg=None,
+                respiratory_count=0,
+                floors=3.0,
+                skin_temp_avg=36.1,
+                snoring_duration_s=0,
+                vitality_score=None,
+                calories=None,
+            )
+        ]
+        monkeypatch.setattr(_health_src, "daily_health_summary", lambda *, start, end: fake_rows)
+
+        from lynchpin.mcp.tools.health import health_daily_summary
+
+        result = health_daily_summary(start="2026-05-01", end="2026-05-31")
+        assert len(result) == 1
+        assert result[0]["steps"] == 8000
+        assert result[0]["heart_rate_resting"] == 58.0
+
+    def test_health_daily_summary_source_unavailable_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lynchpin.core.errors import SourceUnavailableError
+        import lynchpin.sources.health as _health_src
+
+        def _raise(*, start, end):
+            raise SourceUnavailableError("health", reason="no data")
+
+        monkeypatch.setattr(_health_src, "daily_health_summary", _raise)
+
+        from lynchpin.mcp.tools.health import health_daily_summary
+
+        result = health_daily_summary(start="2026-05-01", end="2026-05-31")
+        assert result == []
+
+    def test_health_stress_detail_returns_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import date as _date
+        from lynchpin.sources.health import DailyStressSummary
+        import lynchpin.sources.health as _health_src
+
+        fake_rows = [DailyStressSummary(date=_date(2026, 5, 1), measurement_count=10, avg_score=35.0, min_score=20, max_score=55)]
+        monkeypatch.setattr(_health_src, "daily_stress", lambda *, start, end: fake_rows)
+
+        from lynchpin.mcp.tools.health import health_stress_detail
+
+        result = health_stress_detail(start="2026-05-01", end="2026-05-31")
+        assert len(result) == 1
+        assert result[0]["avg_score"] == 35.0
+        assert result[0]["min_score"] == 20.0
+
+    def test_health_heart_rate_detail_returns_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import date as _date
+        from lynchpin.sources.health import DailyHeartRateSummary
+        import lynchpin.sources.health as _health_src
+
+        fake_rows = [DailyHeartRateSummary(date=_date(2026, 5, 1), measurement_count=50, avg_hr=72.0, min_hr=55.0, max_hr=110.0, resting_hr=60.0)]
+        monkeypatch.setattr(_health_src, "daily_heart_rate", lambda *, start, end: fake_rows)
+
+        from lynchpin.mcp.tools.health import health_heart_rate_detail
+
+        result = health_heart_rate_detail(start="2026-05-01", end="2026-05-31")
+        assert len(result) == 1
+        assert result[0]["resting_hr"] == 60.0
+
+    def test_health_hrv_trend_returns_rows_with_primary_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import datetime, timezone
+        from lynchpin.sources.health import HRVMeasurement
+        import lynchpin.sources.health as _health_src
+
+        fake_rows = [HRVMeasurement(timestamp=datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc), sdnn_avg=50.0, rmssd_avg=42.0, n_windows=3)]
+        monkeypatch.setattr(_health_src, "hrv_measurements", lambda *, start, end: fake_rows)
+
+        from lynchpin.mcp.tools.health import health_hrv_trend
+
+        result = health_hrv_trend(start="2026-05-01", end="2026-05-31", metric="rmssd")
+        assert len(result) == 1
+        assert result[0]["primary_metric"] == "rmssd"
+        assert result[0]["primary_value"] == 42.0
+
+    def test_health_hrv_trend_sdnn_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import datetime, timezone
+        from lynchpin.sources.health import HRVMeasurement
+        import lynchpin.sources.health as _health_src
+
+        fake_rows = [HRVMeasurement(timestamp=datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc), sdnn_avg=50.0, rmssd_avg=42.0, n_windows=3)]
+        monkeypatch.setattr(_health_src, "hrv_measurements", lambda *, start, end: fake_rows)
+
+        from lynchpin.mcp.tools.health import health_hrv_trend
+
+        result = health_hrv_trend(start="2026-05-01", end="2026-05-31", metric="sdnn")
+        assert result[0]["primary_metric"] == "sdnn"
+        assert result[0]["primary_value"] == 50.0

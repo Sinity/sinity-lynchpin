@@ -6,14 +6,18 @@ import argparse
 import json
 import sys
 from collections import Counter
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
-from ..graph.temporal_signals import ANOMALY_BASELINE_DAYS, detect_temporal_signals
-from ..sources.temporal_signals import temporal_signals_path
+from ..sources.temporal_signals import (
+    ANOMALY_BASELINE_DAYS,
+    detect_temporal_signals,
+    temporal_signals_path,
+)
+from ._manifest import write_manifest
 from .manifest_windows import merge_manifest_covered_dates
 
 
@@ -53,14 +57,17 @@ def materialize_temporal_signals(
     input_files = _temporal_input_files(start, end)
     covered_dates = _merge_covered_dates(manifest=output.with_suffix(".manifest.json"), start=start, end=end)
     counts = Counter(str(row["kind"]) for row in rows)
+    # window_semantics: [start, end) — start is inclusive, end is exclusive.
+    # inclusive_end = end - 1 day is passed to detect_temporal_signals() so the
+    # last analysed date is end - 1.  The manifest records the half-open
+    # [start, end) interval that is the canonical convention across lynchpin.
     manifest = {
         "dataset": "lynchpin.temporal_signals",
         "schema_version": TEMPORAL_SIGNALS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
-        "window_semantics": "start inclusive, end exclusive",
+        "window_semantics": "[start, end) — start inclusive, end exclusive",
         "baseline_days": ANOMALY_BASELINE_DAYS,
         "row_count": len(rows),
         "kind_counts": dict(sorted(counts.items())),
@@ -72,10 +79,7 @@ def materialize_temporal_signals(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 

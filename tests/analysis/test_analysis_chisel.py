@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from lynchpin.analysis.projects import chisel
+from lynchpin.sources import chisel
 from lynchpin.sources.github import GitHubActor, GitHubItem
 from lynchpin.sources.github_context import GitHubContextRow
 

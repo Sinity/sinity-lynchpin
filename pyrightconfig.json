@@ -1,0 +1,11 @@
+{
+  "include": ["lynchpin", "tests"],
+  "exclude": ["**/__pycache__", "**/.lynchpin", "**/node_modules"],
+  "extraPaths": ["."],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "off",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "none",
+  "reportUndefinedVariable": "none"
+}

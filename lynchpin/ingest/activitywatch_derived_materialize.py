@@ -32,6 +32,7 @@ from ..sources.activitywatch_derived import (
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from .activitywatch_event_index_materialize import activitywatch_event_index_input_files
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 
 ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
@@ -92,7 +93,6 @@ def materialize_activitywatch_derived(
     manifest = {
         "dataset": "lynchpin.activitywatch_derived",
         "schema_version": ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
         "window_semantics": "start inclusive, end exclusive",
@@ -108,10 +108,7 @@ def materialize_activitywatch_derived(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    activitywatch_derived_manifest_path(root).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(activitywatch_derived_manifest_path(root), manifest)
     return manifest
 
 

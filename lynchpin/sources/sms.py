@@ -178,12 +178,12 @@ def thread_summaries(
 
 def daily_activity(
     *,
-    start: date | None = None,
-    end: date | None = None,
+    start: date,
+    end: date,
 ) -> list[SMSDayActivity]:
     """Per-day SMS activity summary."""
-    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc) if start else None
-    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc) if end else None
+    start_dt = datetime.combine(start, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end, time.max, tzinfo=timezone.utc)
     buckets: dict = defaultdict(  # type: ignore[type-arg]
         lambda: {
             "sent_count": 0,
@@ -224,10 +224,16 @@ def daily_activity(
 def coverage_bounds() -> CoverageBounds | None:
     if not SMS_ROOT.exists():
         return None
-    rows = daily_activity()
-    if not rows:
+    try:
+        first_dt, last_dt = date_range()
+    except SourceUnavailableError:
         return None
-    return CoverageBounds(source="sms", first=rows[0].date, last=rows[-1].date, kind="export")
+    return CoverageBounds(
+        source="sms",
+        first=first_dt.date(),
+        last=last_dt.date(),
+        kind="export",
+    )
 
 
 def date_range(root: Optional[Path] = None) -> tuple[datetime, datetime]:

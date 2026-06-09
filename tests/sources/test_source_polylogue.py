@@ -303,7 +303,7 @@ def test_work_events_reads_direct_sqlite_products(tmp_path, monkeypatch) -> None
 
 def test_session_profile_maps_workflow_shape_and_terminal_state() -> None:
     insight = SimpleNamespace(
-        conversation_id="conv-1",
+        session_id="conv-1",
         source_name="claude-code",
         title="Implement reader",
         evidence=SimpleNamespace(
@@ -759,6 +759,77 @@ def test_session_profiles_for_date_gracefully_degrades(monkeypatch, caplog):
     assert result == []
     # Should have logged a warning
     assert "polylogue session profiles unavailable for date range" in caplog.text
+
+
+def test_session_profiles_for_date_includes_session_on_end_date(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: sessions on the end date must be returned (was silently dropped by < vs <=)."""
+    db = tmp_path / "polylogue.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                source_name TEXT,
+                title TEXT,
+                first_message_at TEXT,
+                last_message_at TEXT,
+                canonical_session_date TEXT,
+                repo_names_json TEXT,
+                repo_paths_json TEXT,
+                auto_tags_json TEXT,
+                message_count INTEGER,
+                word_count INTEGER,
+                engaged_duration_ms INTEGER,
+                wall_duration_ms INTEGER,
+                total_cost_usd REAL,
+                tool_use_count INTEGER,
+                thinking_count INTEGER,
+                substantive_count INTEGER,
+                attachment_count INTEGER,
+                work_event_count INTEGER,
+                phase_count INTEGER,
+                cost_is_estimated INTEGER,
+                workflow_shape TEXT,
+                workflow_shape_confidence REAL,
+                terminal_state TEXT,
+                terminal_state_confidence REAL,
+                inference_payload_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles VALUES (
+                'end-date-session', 'claude-code', 'Session on end date',
+                '2026-06-05T14:00:00+00:00',
+                '2026-06-05T15:00:00+00:00',
+                '2026-06-05',
+                '["sinity-lynchpin"]',
+                NULL,
+                '[]',
+                5, 80, 900000, 900000, 0.0, 2, 0, 4, 0, 1, 1,
+                0, 'implementation', 0.9, 'completed', 0.8,
+                '{}'
+            )
+            """
+        )
+
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(
+        polylogue,
+        "_require_materialized_products",
+        lambda: (_ for _ in ()).throw(AssertionError("facade readiness called")),
+    )
+
+    # single-day window: start == end == the session's date
+    result = polylogue.session_profiles_for_date(
+        start=date(2026, 6, 5), end=date(2026, 6, 5)
+    )
+
+    assert len(result) == 1, "session on end date must be included (was dropped by < instead of <=)"
+    assert result[0].conversation_id == "end-date-session"
 
 
 def test_work_thread_activity_gracefully_degrades_on_missing_products(monkeypatch, caplog):

@@ -174,6 +174,90 @@ def test_source_observation_bounds_renders_source_observation_contract(
     ]
 
 
+def test_operator_day_rows_returns_date_filtered_dicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from datetime import timedelta
+
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.mcp.tools.signals import operator_day_rows
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import promote_operator_day_rows
+
+    base = date(2026, 6, 1)
+    rows = [
+        OperatorDay(
+            date=base + timedelta(days=i),
+            git_commits=i + 1,
+            stress_mean=float(30 + i),
+            spo2_pct=97.0 if i % 2 == 0 else None,
+            sources_present=frozenset({"git", "health"}),
+        )
+        for i in range(5)
+    ]
+    with connect(substrate_path()) as conn:
+        promote_operator_day_rows(conn, refresh_id="r1", rows=rows)
+
+    _stub_signal_materialization(monkeypatch)
+    result = operator_day_rows(start="2026-06-02", end="2026-06-04", refresh_id="r1")
+
+    assert len(result) == 3
+    # i=1 → date 2026-06-02 (odd): spo2_pct absent
+    assert result[0]["date"] == "2026-06-02"
+    assert result[0]["git_commits"] == 2
+    assert result[0]["spo2_pct"] is None  # odd index → absent
+    # i=2 → date 2026-06-03 (even): spo2_pct set
+    assert result[1]["date"] == "2026-06-03"
+    assert result[1]["spo2_pct"] == 97.0
+
+
+def test_operator_day_rows_column_narrowing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.mcp.tools.signals import operator_day_rows
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import promote_operator_day_rows
+
+    with connect(substrate_path()) as conn:
+        promote_operator_day_rows(
+            conn,
+            refresh_id="r1",
+            rows=[OperatorDay(date=date(2026, 6, 1), git_commits=7, sources_present=frozenset({"git"}))],
+        )
+
+    _stub_signal_materialization(monkeypatch)
+    result = operator_day_rows(refresh_id="r1", columns=["date", "git_commits"])
+
+    assert len(result) == 1
+    assert set(result[0].keys()) == {"date", "git_commits"}
+    assert result[0]["git_commits"] == 7
+
+
+def test_operator_day_rows_invalid_column_returns_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.mcp.tools.signals import operator_day_rows
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import promote_operator_day_rows
+
+    with connect(substrate_path()) as conn:
+        promote_operator_day_rows(
+            conn,
+            refresh_id="r1",
+            rows=[OperatorDay(date=date(2026, 6, 1), sources_present=frozenset())],
+        )
+
+    _stub_signal_materialization(monkeypatch)
+    result = operator_day_rows(refresh_id="r1", columns=["date", "not_a_real_column"])
+    assert len(result) == 1
+    assert "error" in result[0]
+
+
 def test_cross_source_lag_reports_unavailable_when_attribution_has_no_event_overlap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -243,3 +327,43 @@ def test_cross_source_lag_reports_unavailable_when_attribution_has_no_event_over
     assert result["attributed_commits"] == 1
     assert result["pairs"] == 0
     assert result["caveats"]
+
+
+def test_operator_day_rows_finds_promoted_data_via_source_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """operator_day_rows() with no refresh_id finds rows promoted with a source_status record."""
+    from datetime import date
+
+    setup_substrate(tmp_path, monkeypatch)
+    _stub_signal_materialization(monkeypatch)
+
+    from lynchpin.analysis.operator_daily import OperatorDay
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.personal import promote_operator_day_rows
+
+    rows = [
+        OperatorDay(date=date(2026, 5, 1), git_commits=7, aw_deep_work_min=90.0, sources_present=frozenset({"git"})),
+        OperatorDay(date=date(2026, 5, 2), git_commits=2, aw_deep_work_min=30.0, sources_present=frozenset({"git"})),
+    ]
+    with connect(substrate_path()) as conn:
+        n = promote_operator_day_rows(conn, refresh_id="op-r1", rows=rows)
+        record_source_status(
+            conn,
+            refresh_id="op-r1",
+            source="operator_day",
+            status="ok",
+            reason=None,
+            row_count=n,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 2),
+        )
+
+    from lynchpin.mcp.tools.signals import operator_day_rows
+
+    result = operator_day_rows(start="2026-05-01", end="2026-05-02")
+    assert len(result) == 2
+    assert result[0]["date"] == "2026-05-01"
+    assert result[0]["git_commits"] == 7
+    assert result[1]["git_commits"] == 2

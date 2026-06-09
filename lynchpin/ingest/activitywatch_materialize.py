@@ -20,6 +20,7 @@ from ..sources.activitywatch_raw import (
     events_from_activitywatch_dbs,
 )
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
@@ -91,7 +92,6 @@ def materialize_activitywatch_events(
     manifest = {
         "dataset": "activitywatch.events",
         "schema_version": ACTIVITYWATCH_EVENTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": len(ordered),
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
@@ -109,10 +109,7 @@ def materialize_activitywatch_events(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 

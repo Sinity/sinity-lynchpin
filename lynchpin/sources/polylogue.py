@@ -383,18 +383,16 @@ _cached_profiles_signature: tuple[int, int] | None = None
 
 
 def _profiles_from_facade() -> list[SessionProfile]:
-    """Load session profiles via the SyncPolylogue facade.
+    """Load session profiles via SQLite direct path first, then SyncPolylogue facade.
 
-    Maps SessionProfileInsight (evidence + inference payloads) → SessionProfile.
-
-    work_event_kind: most-common heuristic label across
-    inference.work_events documents; falls back to inference.support_level-aware
-    heuristics are not used — the work_events list is the typed surface.
-
-    work_event_projects: use inference.repo_names when the product carries
-    canonical names, otherwise derive canonical names from the product's
-    evidence.repo_paths / cwd_paths via _canonical_projects().
+    The SQLite path reads the polylogue.db archive directly using the stable
+    session_profiles table (conversation_id primary key). This is preferred
+    because the facade layer may be on a newer schema than the DB.
     """
+    sqlite_result = _session_profiles_from_sqlite()
+    if sqlite_result is not None:
+        return sqlite_result
+
     _require_materialized_products()
     try:
         from polylogue.insights.archive import SessionProfileInsightQuery
@@ -494,7 +492,7 @@ def _session_profile_from_insight(insight: Any) -> SessionProfile:
         phase_count = inference.phase_count
 
     return SessionProfile(
-        conversation_id=insight.conversation_id,
+        conversation_id=insight.session_id,
         provider=insight.source_name,
         title=str(insight.title or ""),
         message_count=message_count,
@@ -587,7 +585,7 @@ def _session_profiles_from_facade(*, start: date, end: date) -> list[SessionProf
 
 
 def _session_profiles_from_sqlite(
-    *, start: date, end: date
+    *, start: Optional[date] = None, end: Optional[date] = None
 ) -> list[SessionProfile] | None:
     db = _default_polylogue_db_path()
     if not db.exists():
@@ -597,24 +595,42 @@ def _session_profiles_from_sqlite(
             conn.row_factory = sqlite3.Row
             if not _sqlite_has_table(conn, "session_profiles"):
                 return None
-            rows = conn.execute(
-                """
-                SELECT
-                    conversation_id, source_name, title, first_message_at,
-                    last_message_at, canonical_session_date, repo_names_json,
-                    repo_paths_json, auto_tags_json, message_count, word_count,
-                    engaged_duration_ms, wall_duration_ms, total_cost_usd,
-                    tool_use_count, thinking_count, substantive_count,
-                    attachment_count, work_event_count, phase_count,
-                    cost_is_estimated, workflow_shape, workflow_shape_confidence,
-                    terminal_state, terminal_state_confidence,
-                    inference_payload_json
-                FROM session_profiles
-                WHERE canonical_session_date >= ? AND canonical_session_date < ?
-                ORDER BY canonical_session_date, first_message_at, conversation_id
-                """,
-                (start.isoformat(), end.isoformat()),
-            ).fetchall()
+            if start is not None and end is not None:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        conversation_id, source_name, title, first_message_at,
+                        last_message_at, canonical_session_date, repo_names_json,
+                        repo_paths_json, auto_tags_json, message_count, word_count,
+                        engaged_duration_ms, wall_duration_ms, total_cost_usd,
+                        tool_use_count, thinking_count, substantive_count,
+                        attachment_count, work_event_count, phase_count,
+                        cost_is_estimated, workflow_shape, workflow_shape_confidence,
+                        terminal_state, terminal_state_confidence,
+                        inference_payload_json
+                    FROM session_profiles
+                    WHERE canonical_session_date >= ? AND canonical_session_date <= ?
+                    ORDER BY canonical_session_date, first_message_at, conversation_id
+                    """,
+                    (start.isoformat(), end.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        conversation_id, source_name, title, first_message_at,
+                        last_message_at, canonical_session_date, repo_names_json,
+                        repo_paths_json, auto_tags_json, message_count, word_count,
+                        engaged_duration_ms, wall_duration_ms, total_cost_usd,
+                        tool_use_count, thinking_count, substantive_count,
+                        attachment_count, work_event_count, phase_count,
+                        cost_is_estimated, workflow_shape, workflow_shape_confidence,
+                        terminal_state, terminal_state_confidence,
+                        inference_payload_json
+                    FROM session_profiles
+                    ORDER BY canonical_session_date, first_message_at, conversation_id
+                    """
+                ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("polylogue direct session profile read failed: %s", exc)
         return None
@@ -918,7 +934,7 @@ def conversation_lineages(
                 branch_type=str(summary.branch_type)
                 if summary.branch_type is not None
                 else None,
-                provider=str(summary.provider),
+                provider=str(summary.origin),
                 title=str(summary.title or ""),
                 created_at=summary.created_at,
             )
@@ -995,13 +1011,13 @@ def _work_events_from_facade(
     for insight in insights:
         ev = insight.evidence
         inf = insight.inference
-        profile = profile_context.get(str(insight.conversation_id))
+        profile = profile_context.get(str(insight.session_id))
         start = _parse_dt(ev.start_time) if ev.start_time else None
         end = _parse_dt(ev.end_time) if ev.end_time else None
         events.append(
             WorkEvent(
                 event_id=insight.event_id,
-                conversation_id=insight.conversation_id,
+                conversation_id=insight.session_id,
                 provider=insight.source_name,
                 kind=str(inf.heuristic_label or "unknown"),
                 confidence=float(inf.confidence),
@@ -1305,10 +1321,10 @@ def work_thread_activity(*, start: date, end: date) -> list[ChatDayActivity]:
         return []
 
     try:
-        from polylogue.insights.archive import WorkThreadInsightQuery
+        from polylogue.insights.archive import ThreadInsightQuery
 
         insights = _polylogue_client().list_work_thread_insights(
-            WorkThreadInsightQuery(limit=None)
+            ThreadInsightQuery(limit=None)
         )
     except Exception as exc:
         logger.warning("polylogue work-thread product read failed: %s", exc)

@@ -15,6 +15,7 @@ from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.terminal import canonical_atuin_history_path, commands_from_atuin_db
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 
 ATUIN_HISTORY_SCHEMA_VERSION = 1
@@ -63,7 +64,6 @@ def materialize_atuin_history(
     manifest = {
         "dataset": "atuin.history",
         "schema_version": ATUIN_HISTORY_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": len(rows),
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
@@ -81,7 +81,7 @@ def materialize_atuin_history(
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
     manifest_path = output.with_suffix(".manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(manifest_path, manifest)
     return manifest
 
 

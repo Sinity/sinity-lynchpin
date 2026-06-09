@@ -28,6 +28,46 @@ class GitHubContextRow:
     item: GitHubItem
 
 
+def active_github_repos() -> dict[str, Path]:
+    """Return ``{project_name: repo_path}`` for repos with a GitHub remote.
+
+    Sources-layer replacement for the graph-layer call in
+    ``ingest/github_context_materialize._active_repo_paths()``.  Discovers
+    repos via the registered project registry and unregistered checkouts under
+    ``/realm/project``, then filters to those that have a GitHub remote (i.e.
+    ``repo_slug()`` returns non-None).  Does NOT import from ``graph/``.
+    """
+    from ..core.projects import ALL_PROJECTS, project_path
+    from .github import repo_slug
+
+    result: dict[str, Path] = {}
+
+    # Registered projects.
+    for name in ALL_PROJECTS:
+        path = project_path(name)
+        if not (path / ".git").exists():
+            continue
+        if repo_slug(path) is not None:
+            result[name] = path
+
+    # Unregistered checkouts under /realm/project.
+    project_root = Path("/realm/project")
+    if project_root.exists():
+        registered_paths = {project_path(name).resolve() for name in ALL_PROJECTS}
+        for child in project_root.iterdir():
+            if child.name.startswith(".") or child.name == "_inactive":
+                continue
+            if not (child / ".git").exists():
+                continue
+            resolved = child.resolve()
+            if resolved in registered_paths:
+                continue
+            if repo_slug(child) is not None:
+                result[child.name] = child
+
+    return result
+
+
 def github_context_path(root: Path | None = None) -> Path:
     base = root or get_config().derived_root
     return base / "github/context.ndjson"

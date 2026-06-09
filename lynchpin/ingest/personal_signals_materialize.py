@@ -18,6 +18,7 @@ from ..sources.personal_signals import (
 )
 from .exports_materialize import spotify_streams_path
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 
 SignalRow = tuple[str, date, str, float, dict[str, Any]]
@@ -84,10 +85,7 @@ def materialize_personal_daily_signals(
         window_start=start,
         window_end=end,
     )
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 
@@ -167,10 +165,7 @@ def materialize_spotify_daily(
         window_start=start,
         window_end=end,
     )
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 
@@ -518,7 +513,6 @@ def _manifest(
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "dataset": dataset,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": row_count,
         "first_date": first_date.isoformat() if first_date else None,

@@ -43,7 +43,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from datetime import date as Date
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from ..core.analytics import detect_changepoints, detect_trend
 from ..core.coverage import CoverageBounds, partition_by_coverage
@@ -326,6 +327,22 @@ def analyze(*, start: date, end: date) -> BurnoutReport:
 
     report.summary = _build_summary(report)
     return report
+
+
+def write_report(out: Path, *, start: date, end: date) -> dict[str, Any]:
+    import json
+    from datetime import datetime, timezone
+    from dataclasses import asdict
+    from lynchpin.core.io import save_json
+    report = analyze(start=start, end=end)
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        **asdict(report),
+    }
+    save_json(out, json.loads(json.dumps(payload, default=str)))
+    return payload
 
 
 def _resolve_signal_bounds(src_bounds: dict[str, CoverageBounds]) -> dict[str, CoverageBounds]:

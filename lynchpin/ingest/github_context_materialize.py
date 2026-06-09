@@ -17,9 +17,11 @@ from ..sources.git import commit_facts
 from ..sources.github import GITHUB_CACHE_TTL_SECONDS, fetch_issue, fetch_issues, fetch_pr, fetch_prs, repo_slug
 from ..sources.github_context import (
     GITHUB_CONTEXT_SCHEMA_VERSION,
+    active_github_repos,
     github_context_path,
     github_item_to_payload,
 )
+from ._manifest import write_manifest
 
 
 def materialize_github_context(
@@ -121,13 +123,7 @@ def materialize_github_context(
 
 
 def _active_repo_paths() -> dict[str, Path]:
-    from ..graph.current_state import active_project_inventory
-
-    return {
-        item.name: item.path
-        for item in active_project_inventory()
-        if item.exists and item.is_git_repo and item.github_slug is not None
-    }
+    return active_github_repos()
 
 
 def _repo_git_inputs(active_paths: dict[str, Path] | None = None) -> tuple[Path, ...]:
@@ -174,10 +170,7 @@ def _write_product(
     with tmp_output.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    tmp_manifest.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(tmp_manifest, manifest)
     tmp_output.replace(output)
     tmp_manifest.replace(output.with_suffix(".manifest.json"))
 

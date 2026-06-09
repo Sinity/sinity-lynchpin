@@ -19,6 +19,7 @@ from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from .google_takeout_materialize import google_takeout_input_files, google_takeout_inventory_dir, materialize_google_takeout_inventory
 from ..sources.google_takeout import TakeoutMember, discover_takeout_archives, iter_member_bytes
+from ._manifest import write_manifest
 
 GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION = 1
 
@@ -93,7 +94,6 @@ def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str
     manifest = {
         "dataset": "google.takeout.products",
         "schema_version": GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "archive_count": len(discover_takeout_archives(root)),
         "first_date": first_date,
         "input_files": [str(path) for path in input_files],
@@ -114,7 +114,7 @@ def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str
         "errors": dict(sorted(errors.items())),
     }
     manifest_path = output_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(manifest_path, manifest)
     return manifest
 
 

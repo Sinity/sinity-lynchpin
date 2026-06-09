@@ -29,6 +29,7 @@ from ..sources.gmail_takeout import (
     gmail_manifest_path,
     iter_gmail_messages_deduped,
 )
+from ._manifest import write_manifest
 
 GMAIL_EVENTS_SCHEMA_VERSION = 1
 
@@ -68,7 +69,6 @@ def materialize_gmail_events(
     manifest = {
         "dataset": "comms.gmail.events",
         "schema_version": GMAIL_EVENTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": row_count,
         "first_date": first_ts.date().isoformat() if first_ts else None,
@@ -80,9 +80,7 @@ def materialize_gmail_events(
         "skipped_no_timestamp": skipped_no_timestamp,
         "archive_root": str(archive_root),
     }
-    gmail_manifest_path().write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_manifest(gmail_manifest_path(), manifest)
     return manifest
 
 

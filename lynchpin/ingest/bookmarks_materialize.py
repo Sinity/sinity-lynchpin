@@ -19,6 +19,7 @@ from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.bookmarks import BookmarkEvent, bookmarks_manifest_path, bookmarks_path
 from ..sources.web import normalize_url
+from ._manifest import write_manifest
 
 _WEBKIT_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 _BOOKMARK_SQL = """
@@ -53,7 +54,6 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
     manifest = {
         "dataset": "browser.bookmarks",
         "schema_version": BOOKMARK_EVENTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "raw_roots": [str(path) for path in raw_roots],
         "row_count": len(rows),
@@ -63,7 +63,7 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    bookmarks_manifest_path(root).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(bookmarks_manifest_path(root), manifest)
     return manifest
 
 

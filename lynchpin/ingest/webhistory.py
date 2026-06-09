@@ -37,6 +37,7 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -574,13 +575,9 @@ def _write_full_history_manifest(output: Path, report: dict[str, Any]) -> None:
         "dataset": "webhistory.full_history",
         "schema_version": WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
         "materialized_path": str(output),
-        "materialized_at": datetime.now().astimezone().isoformat(),
         **report,
     }
-    full_history_manifest_path(output).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(full_history_manifest_path(output), manifest)
 
 
 def _visit_date_bounds(timestamps: list[datetime]) -> dict[str, str]:

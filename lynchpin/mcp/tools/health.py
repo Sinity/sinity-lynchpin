@@ -378,3 +378,96 @@ def cleanup_period_detect(start: str, end: str, project: str | None=None) -> lis
         likely_cleanup = ratio > 5000
         result.append({'year_month': month, 'commit_count': commit_count, 'ai_messages': ai_msgs, 'ratio': round(ratio, 1), 'likely_cleanup': likely_cleanup})
     return result
+
+@app.tool()
+def health_daily_summary(start: str, end: str) -> list[dict[str, Any]]:
+    """All health signals per day from Samsung Health exports.
+
+    Returns one row per date in [start, end] that has data. Fields include
+    steps, stress, heart rate, HRV, SpO2, respiratory rate, floors,
+    skin temperature, snoring duration, vitality score, and calories.
+
+    Parameters:
+        start: ISO date string, e.g. "2026-05-01".
+        end:   ISO date string, inclusive, e.g. "2026-05-31".
+    """
+    from datetime import date as _date
+    from dataclasses import asdict
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.health import daily_health_summary
+    try:
+        rows = list(daily_health_summary(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+    except SourceUnavailableError:
+        return []
+    return [_json_safe(asdict(r)) for r in rows]
+
+@app.tool()
+def health_stress_detail(start: str, end: str) -> list[dict[str, Any]]:
+    """Daily stress summary (avg/min/max score, measurement count).
+
+    Returns one row per date in [start, end] that has stress data.
+
+    Parameters:
+        start: ISO date string, e.g. "2026-05-01".
+        end:   ISO date string, inclusive, e.g. "2026-05-31".
+    """
+    from datetime import date as _date
+    from dataclasses import asdict
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.health import daily_stress
+    try:
+        rows = list(daily_stress(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+    except SourceUnavailableError:
+        return []
+    return [_json_safe(asdict(r)) for r in rows]
+
+@app.tool()
+def health_heart_rate_detail(start: str, end: str) -> list[dict[str, Any]]:
+    """Daily heart rate summary (avg/min/max BPM and resting HR).
+
+    Returns one row per date in [start, end] that has HR data.
+
+    Parameters:
+        start: ISO date string, e.g. "2026-05-01".
+        end:   ISO date string, inclusive, e.g. "2026-05-31".
+    """
+    from datetime import date as _date
+    from dataclasses import asdict
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.health import daily_heart_rate
+    try:
+        rows = list(daily_heart_rate(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+    except SourceUnavailableError:
+        return []
+    return [_json_safe(asdict(r)) for r in rows]
+
+@app.tool()
+def health_hrv_trend(start: str, end: str, metric: str='rmssd') -> list[dict[str, Any]]:
+    """Raw HRV measurements for trend analysis (SDNN or RMSSD).
+
+    Returns per-measurement rows within [start, end]. Each row has timestamp,
+    sdnn_avg, rmssd_avg, and n_windows. Use metric="sdnn" or metric="rmssd"
+    to select which field to highlight in the summary key.
+
+    Parameters:
+        start:  ISO date string, e.g. "2026-05-01".
+        end:    ISO date string, inclusive, e.g. "2026-05-31".
+        metric: "rmssd" (default) or "sdnn" — selects the primary trend field.
+    """
+    from datetime import date as _date
+    from dataclasses import asdict
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources.health import hrv_measurements
+    valid_metrics = {'rmssd', 'sdnn'}
+    primary_field = f'{metric.lower()}_avg' if metric.lower() in valid_metrics else 'rmssd_avg'
+    try:
+        rows = list(hrv_measurements(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+    except SourceUnavailableError:
+        return []
+    result = []
+    for r in rows:
+        d = _json_safe(asdict(r))
+        d['primary_metric'] = metric.lower() if metric.lower() in valid_metrics else 'rmssd'
+        d['primary_value'] = d.get(primary_field)
+        result.append(d)
+    return result

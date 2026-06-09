@@ -19,6 +19,7 @@ from ..sources.activitywatch_event_index import (
     activitywatch_event_index_path,
 )
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
+from ._manifest import write_manifest
 
 
 def activitywatch_event_index_input_files() -> tuple[Path, ...]:
@@ -88,7 +89,6 @@ def materialize_activitywatch_event_index(
     manifest = {
         "dataset": "lynchpin.activitywatch_event_index",
         "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "date_boundary": "logical_06:00_local",
         "partition": "logical_date(event.start)",
         "product_paths": paths,
@@ -107,10 +107,7 @@ def materialize_activitywatch_event_index(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    activitywatch_event_index_manifest_path(root).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(activitywatch_event_index_manifest_path(root), manifest)
     return manifest
 
 

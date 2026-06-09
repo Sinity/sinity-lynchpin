@@ -81,7 +81,7 @@ def iter_derived_focus_spans(
             title=_str_or_none(row.get("title")),
             mode=_str_or_none(row.get("mode")),
             project=_str_or_none(row.get("project")),
-            keypress_count=int(row.get("keypress_count") or 0),
+            keypress_count=_int(row.get("keypress_count")),
             keylog_state=str(row.get("keylog_state") or "not_requested"),
         )
         if span.end <= start_cmp or span.start >= end_cmp or span.duration_s < min_duration_s:
@@ -99,7 +99,7 @@ def iter_derived_project_focus_days(
         yield ProjectFocusDay(
             date=_date(row["date"]),
             project=str(row["project"]),
-            duration_s=float(row.get("duration_s") or 0.0),
+            duration_s=_float(row.get("duration_s")),
         )
 
 
@@ -111,17 +111,17 @@ def iter_derived_daily_activity(
         hourly = row.get("hourly_active") or ()
         yield AWDayActivity(
             date=_date(row["date"]),
-            active_hours=float(row.get("active_hours") or 0.0),
-            deep_work_min=float(row.get("deep_work_min") or 0.0),
-            fragmentation_score=float(row.get("fragmentation_score") or 0.0),
-            project_count=int(row.get("project_count") or 0),
+            active_hours=_float(row.get("active_hours")),
+            deep_work_min=_float(row.get("deep_work_min")),
+            fragmentation_score=_float(row.get("fragmentation_score")),
+            project_count=_int(row.get("project_count")),
             dominant_mode=_str_or_none(row.get("dominant_mode")),
             dominant_project=_str_or_none(row.get("dominant_project")),
-            hourly_active=tuple(float(item or 0.0) for item in hourly),
-            outage_hours=float(row.get("outage_hours") or 0.0),
-            presence_active_hours=float(row.get("presence_active_hours") or 0.0),
-            presence_typing_hours=float(row.get("presence_typing_hours") or 0.0),
-            presence_data_gap_hours=float(row.get("presence_data_gap_hours") or 0.0),
+            hourly_active=tuple(_float(h) for h in (hourly if isinstance(hourly, (list, tuple)) else ())),
+            outage_hours=_float(row.get("outage_hours")),
+            presence_active_hours=_float(row.get("presence_active_hours")),
+            presence_typing_hours=_float(row.get("presence_typing_hours")),
+            presence_data_gap_hours=_float(row.get("presence_data_gap_hours")),
         )
 
 
@@ -134,11 +134,11 @@ def iter_derived_deep_work(
         block = DeepWorkBlock(
             start=_datetime(row["start"]),
             end=_datetime(row["end"]),
-            duration_min=float(row.get("duration_min") or 0.0),
+            duration_min=_float(row.get("duration_min")),
             project=_str_or_none(row.get("project")),
             mode=str(row.get("mode") or ""),
-            focus_ratio=float(row.get("focus_ratio") or 0.0),
-            app_switches=int(row.get("app_switches") or 0),
+            focus_ratio=_float(row.get("focus_ratio")),
+            app_switches=_int(row.get("app_switches")),
         )
         if block.end <= start_cmp or block.start >= end_cmp:
             continue
@@ -152,9 +152,9 @@ def iter_derived_circadian(
     for row in _dated_rows(path or activitywatch_derived_path("circadian"), start=start, end=end):
         yield CircadianProfile(
             date=_date(row["date"]),
-            hour=int(row.get("hour") or 0),
-            active_min=float(row.get("active_min") or 0.0),
-            recovery_min=float(row.get("recovery_min") or 0.0),
+            hour=_int(row.get("hour")),
+            active_min=_float(row.get("active_min")),
+            recovery_min=_float(row.get("recovery_min")),
             dominant_mode=_str_or_none(row.get("dominant_mode")),
             dominant_project=_str_or_none(row.get("dominant_project")),
         )
@@ -170,9 +170,9 @@ def iter_derived_loops(
             date=_date(row["date"]),
             start=_datetime(row["start"]),
             end=_datetime(row["end"]),
-            duration_min=float(row.get("duration_min") or 0.0),
-            span_count=int(row.get("span_count") or 0),
-            switch_count=int(row.get("switch_count") or 0),
+            duration_min=_float(row.get("duration_min")),
+            span_count=_int(row.get("span_count")),
+            switch_count=_int(row.get("switch_count")),
             context_a=str(row.get("context_a") or ""),
             context_b=str(row.get("context_b") or ""),
             dominant_project=_str_or_none(row.get("dominant_project")),
@@ -189,10 +189,10 @@ def iter_derived_fragmentation(
     for row in _dated_rows(path or activitywatch_derived_path("fragmentation"), start=start, end=end):
         yield FragmentationMetrics(
             date=_date(row["date"]),
-            total_switches=int(row.get("total_switches") or 0),
-            avg_focus_min=float(row.get("avg_focus_min") or 0.0),
-            longest_focus_min=float(row.get("longest_focus_min") or 0.0),
-            fragmentation=float(row.get("fragmentation") or 0.0),
+            total_switches=_int(row.get("total_switches")),
+            avg_focus_min=_float(row.get("avg_focus_min")),
+            longest_focus_min=_float(row.get("longest_focus_min")),
+            fragmentation=_float(row.get("fragmentation")),
         )
 
 
@@ -203,10 +203,10 @@ def iter_derived_attention(
     for row in _dated_rows(path or activitywatch_derived_path("attention"), start=start, end=end):
         yield AttentionMetrics(
             date=_date(row["date"]),
-            entropy=float(row.get("entropy") or 0.0),
-            gini=float(row.get("gini") or 0.0),
+            entropy=_float(row.get("entropy")),
+            gini=_float(row.get("gini")),
             top_project=_str_or_none(row.get("top_project")),
-            project_count=int(row.get("project_count") or 0),
+            project_count=_int(row.get("project_count")),
         )
 
 
@@ -273,3 +273,21 @@ def _datetime(value: object) -> datetime:
 def _str_or_none(value: object) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def _int(value: object | None, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    return int(str(value))
+
+
+def _float(value: object | None, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, float):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    return float(str(value))

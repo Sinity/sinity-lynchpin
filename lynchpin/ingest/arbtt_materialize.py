@@ -18,10 +18,11 @@ from ..core.classify import resolve_project
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.arbtt import ArbttFocusEvent, arbtt_events_path, arbtt_manifest_path
+from ._manifest import write_manifest
 
 _HEADER_RE = re.compile(r"^(?P<stamp>\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)")
 _WINDOW_RE = re.compile(r"^\s*\((?P<active>\*| )\)\s+(?P<program>.*?):\s*(?P<title>.*)$")
-ARBTT_EVENTS_SCHEMA_VERSION = 1
+ARBTT_EVENTS_SCHEMA_VERSION = 2
 
 
 def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = None) -> dict[str, Any]:
@@ -41,7 +42,6 @@ def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = 
     manifest = {
         "dataset": "focus.arbtt.events",
         "schema_version": ARBTT_EVENTS_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "row_count": len(rows),
         "first_date": rows[0].timestamp.date().isoformat() if rows else None,
@@ -51,7 +51,7 @@ def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = 
         "input_latest_mtime": latest_mtime_iso(input_files),
         "arbtt_dump_available": shutil.which("arbtt-dump") is not None,
     }
-    arbtt_manifest_path(root).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(arbtt_manifest_path(root), manifest)
     return manifest
 
 
@@ -99,7 +99,10 @@ def _parse_window_line(line: str, path: Path, timestamp: datetime) -> ArbttFocus
     category = ""
     tags = tuple(re.findall(r"\$?([A-Za-z][A-Za-z0-9_-]+)", line.split("$", 1)[1] if "$" in line else ""))
     project = resolve_project(program, title)
-    digest = hashlib.sha1(f"{timestamp.isoformat()}\0{program}\0{title}\0{path}".encode("utf-8", errors="replace")).hexdigest()
+    # Path intentionally excluded: the same event may appear in multiple log
+    # file copies (e.g. backups). Dedup in _dedupe() uses this id to collapse
+    # identical (timestamp, program, title) events across files.
+    digest = hashlib.sha1(f"{timestamp.isoformat()}\0{program}\0{title}".encode("utf-8", errors="replace")).hexdigest()
     return ArbttFocusEvent(
         event_id=digest,
         timestamp=timestamp,

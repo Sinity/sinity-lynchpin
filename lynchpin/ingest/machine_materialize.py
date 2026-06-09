@@ -24,6 +24,7 @@ from ..sources.machine import (
     service_cgroup_pressure_samples,
     service_states,
 )
+from ._manifest import write_manifest
 
 
 MACHINE_TELEMETRY_SCHEMA_VERSION = 1
@@ -113,7 +114,6 @@ def materialize_machine_telemetry(
     manifest = {
         "dataset": "machine.telemetry",
         "schema_version": MACHINE_TELEMETRY_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "tables": reports,
         "row_count": sum(int(report["row_count"]) for report in reports.values()),
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
@@ -128,7 +128,7 @@ def materialize_machine_telemetry(
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(manifest_path, manifest)
     return manifest
 
 

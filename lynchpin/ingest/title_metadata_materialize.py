@@ -14,6 +14,7 @@ from ..core.config import get_config
 from ..core.errors import SchemaVersionError, SourceUnavailableError
 from ..core.io import latest_mtime_iso
 from ..sources.title_metadata import title_metadata_path
+from ._manifest import write_manifest
 
 
 TITLE_METADATA_SCHEMA_VERSION = 1
@@ -61,7 +62,6 @@ def materialize_title_metadata(
     manifest = {
         "dataset": "lynchpin.title_metadata",
         "schema_version": TITLE_METADATA_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "source_db": str(db),
         "source_db_size_bytes": db.stat().st_size,
@@ -74,10 +74,7 @@ def materialize_title_metadata(
         "source_counts": dict(sorted(source_counts.items())),
         "model_versions": dict(sorted(model_versions.items())),
     }
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 

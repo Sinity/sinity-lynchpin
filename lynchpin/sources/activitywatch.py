@@ -1243,7 +1243,7 @@ def sustained_focus(
 # ── Daily activity (composite) ──────────────────────────────────────────────
 
 
-def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
+def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[AWDayActivity]:
     """Composite daily aggregation — the AW equivalent of git.daily_activity.
 
     Combines active_seconds_by_date, deep_work, fragmentation, attention,
@@ -1253,6 +1253,11 @@ def daily_activity(*, start: date, end: date) -> list[AWDayActivity]:
     watcher/daemon downtime rather than operator AFK. Days with high
     outage_hours should not be interpreted as low-activity days.
     """
+    if ensure:
+        from ..materialization import ensure_materialized
+
+        ensure_materialized("activitywatch", window=(start, end))
+
     s, e = date_to_dt_range(start, end)
 
     active_map = active_seconds_by_date(start, end)

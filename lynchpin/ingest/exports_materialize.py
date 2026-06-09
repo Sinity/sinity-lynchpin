@@ -15,6 +15,7 @@ from ..core.io import latest_mtime_iso
 from ..sources.exports_messenger import iter_fbmessenger_messages, iter_fbmessenger_threads
 from ..sources.exports_raindrop import iter_raindrop_bookmarks_all
 from ..sources.spotify import iter_streams
+from ._manifest import write_manifest
 
 
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
@@ -309,7 +310,6 @@ def _write_manifest(
     manifest = {
         "dataset": dataset,
         "schema_version": schema_version,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(product_path),
         "row_count": len(rows),
         "first_date": min(dates).isoformat() if dates else None,
@@ -320,7 +320,7 @@ def _write_manifest(
     }
     if extra:
         manifest.update(extra)
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(path, manifest)
     return manifest
 
 
@@ -336,7 +336,6 @@ def _write_reddit_manifest(
     manifest = {
         "dataset": "reddit.canonical_csv",
         "schema_version": REDDIT_CANONICAL_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(product_path),
         "file_count": len(reports),
         "first_date": first_date,
@@ -347,7 +346,7 @@ def _write_reddit_manifest(
         "input_latest_mtime": latest_mtime_iso(source_paths),
         "files": reports,
     }
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest(path, manifest)
     return manifest
 
 

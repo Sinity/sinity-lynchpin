@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..core.config import get_config
+from ..core.coverage import CoverageBounds
 from ..core.parse import parse_datetime
 from ..core.primitives import logical_date
 
@@ -23,6 +25,7 @@ __all__ = [
     "iter_raindrop_bookmarks_all",
     "summarize_raindrop_bookmarks",
     "daily_raindrop_activity",
+    "coverage_bounds",
 ]
 
 
@@ -184,6 +187,28 @@ def daily_raindrop_activity(*, start: date, end: date, ensure: bool = True) -> l
     return sorted(
         [RaindropDayActivity(date=d, bookmarks_added=count, unique_tags=len(tags)) for d, (count, tags) in by_date.items()],
         key=lambda x: x.date,
+    )
+
+
+def coverage_bounds() -> CoverageBounds | None:
+    """Return observed date range from the raindrop materialization manifest."""
+    cfg = get_config()
+    manifest_path = cfg.exports_root / "raindrop/processed/bookmarks.manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    first_raw = manifest.get("first_date")
+    last_raw = manifest.get("last_date")
+    if not first_raw or not last_raw:
+        return None
+    return CoverageBounds(
+        source="raindrop",
+        first=date.fromisoformat(first_raw),
+        last=date.fromisoformat(last_raw),
+        kind="export",
     )
 
 

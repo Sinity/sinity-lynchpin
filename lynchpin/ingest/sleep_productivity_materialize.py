@@ -14,6 +14,7 @@ from ..core.io import latest_mtime_iso
 from ..sources.sleep import sleep_productivity
 from ..sources.sleep_productivity import sleep_productivity_path
 from .manifest_windows import merge_manifest_covered_dates
+from ._manifest import write_manifest
 
 
 ProductivityRow = dict[str, Any]
@@ -48,7 +49,6 @@ def materialize_sleep_productivity(
     manifest = {
         "dataset": "lynchpin.sleep_productivity",
         "schema_version": SLEEP_PRODUCTIVITY_SCHEMA_VERSION,
-        "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "materialized_path": str(output),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
@@ -62,10 +62,7 @@ def materialize_sleep_productivity(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    output.with_suffix(".manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
 
 

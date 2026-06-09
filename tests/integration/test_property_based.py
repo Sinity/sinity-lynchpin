@@ -37,10 +37,11 @@ def test_sms_missing_root_returns_empty():
 
 def test_sms_daily_activity_consistent():
     """Daily totals should sum to total messages."""
+    from datetime import date
     from lynchpin.sources.sms import daily_activity, iter_messages
 
     all_msgs = list(iter_messages())
-    daily = daily_activity()
+    daily = daily_activity(start=date(2000, 1, 1), end=date(2100, 12, 31))
 
     total_sent = sum(d.sent_count for d in daily)
     total_received = sum(d.received_count for d in daily)
@@ -76,9 +77,10 @@ def test_svn_filtered_by_nonexistent_author_returns_empty():
 
 def test_svn_daily_activity_sums_to_total():
     """Daily totals should match individual commit counts."""
+    from datetime import date
     from lynchpin.sources.svn import daily_activity
 
-    daily = daily_activity()
+    daily = daily_activity(start=date(2000, 1, 1), end=date(2100, 12, 31))
     total_from_daily = sum(d.commit_count for d in daily)
     assert total_from_daily > 500  # michab has hundreds of commits
 
@@ -145,10 +147,11 @@ def test_outlook_emails_have_dates():
 
 def test_outlook_daily_activity_consistent():
     """Daily email totals should sum to total."""
+    from datetime import date
     from lynchpin.sources.outlook import daily_activity, iter_emails
 
     emails = list(iter_emails())
-    daily = daily_activity()
+    daily = daily_activity(start=date(2000, 1, 1), end=date(2100, 12, 31))
 
     inbox_total = sum(d.inbox_count for d in daily)
     sent_total = sum(d.sent_count for d in daily)
