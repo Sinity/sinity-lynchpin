@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+_SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/db/polylogue/index.db")
+
 
 @dataclass(frozen=True)
 class LynchpinConfig:
@@ -209,12 +211,7 @@ class LynchpinConfig:
         polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", exports_root / "chatlog/processed/markdown"))
         polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", exports_root / "chatlog/archive"))
         xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
-        polylogue_db = Path(
-            os.environ.get(
-                "LYNCHPIN_POLYLOGUE_DB",
-                os.environ.get("POLYLOGUE_DB_PATH", xdg_data_home / "polylogue" / "polylogue.db"),
-            )
-        ).expanduser()
+        polylogue_db = _default_polylogue_db(xdg_data_home)
         polylogue_project_root = Path(os.environ.get(
             "LYNCHPIN_POLYLOGUE_PROJECT_ROOT",
             os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue"),
@@ -389,6 +386,27 @@ def _non_legacy_generated_path(env_value: str | None, default: Path) -> Path:
     if "__lynchpin_exported" in candidate.parts:
         return Path(default)
     return candidate
+
+
+def _default_polylogue_db(
+    xdg_data_home: Path,
+    *,
+    sinnix_index_db: Path = _SINNIX_POLYLOGUE_INDEX_DB,
+) -> Path:
+    for env_name in ("LYNCHPIN_POLYLOGUE_DB", "POLYLOGUE_DB_PATH"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            return Path(env_value).expanduser()
+
+    candidates = (
+        sinnix_index_db,
+        xdg_data_home / "polylogue" / "index.db",
+        xdg_data_home / "polylogue" / "polylogue.db",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.expanduser()
+    return candidates[-1].expanduser()
 
 
 def resolve_latest_dated_dir(root: Path, ignore: Optional[set[str]] = None) -> Optional[Path]:

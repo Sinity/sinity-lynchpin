@@ -92,7 +92,7 @@ def run_polylogue_time_composition(
         limit=limit,
         include_cross_source=include_cross_source,
     )
-    save_json(payload, out_file)
+    save_json(out_file, payload)
     if markdown_out is not None:
         Path(markdown_out).parent.mkdir(parents=True, exist_ok=True)
         Path(markdown_out).write_text(render_markdown(payload), encoding="utf-8")

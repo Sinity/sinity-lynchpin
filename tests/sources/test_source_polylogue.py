@@ -301,6 +301,103 @@ def test_work_events_reads_direct_sqlite_products(tmp_path, monkeypatch) -> None
     assert result[0].terminal_state == "tool_left"
 
 
+def test_work_events_reads_current_polylogue_schema(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "polylogue.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE session_profiles (
+                session_id TEXT PRIMARY KEY,
+                source_name TEXT,
+                title TEXT,
+                first_message_at TEXT,
+                last_message_at TEXT,
+                canonical_session_date TEXT,
+                repo_names_json TEXT,
+                repo_paths_json TEXT,
+                auto_tags_json TEXT,
+                message_count INTEGER,
+                word_count INTEGER,
+                engaged_duration_ms INTEGER,
+                wall_duration_ms INTEGER,
+                total_cost_usd REAL,
+                tool_use_count INTEGER,
+                thinking_count INTEGER,
+                substantive_count INTEGER,
+                attachment_count INTEGER,
+                work_event_count INTEGER,
+                phase_count INTEGER,
+                cost_is_estimated INTEGER,
+                workflow_shape TEXT,
+                workflow_shape_confidence REAL,
+                terminal_state TEXT,
+                terminal_state_confidence REAL,
+                inference_payload_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE session_work_events (
+                session_id TEXT,
+                position INTEGER,
+                work_event_type TEXT,
+                summary TEXT,
+                confidence REAL,
+                started_at_ms INTEGER,
+                ended_at_ms INTEGER,
+                duration_ms INTEGER,
+                file_paths_json TEXT,
+                tools_used_json TEXT,
+                PRIMARY KEY (session_id, position)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles VALUES (
+                's1', 'codex', 'Lynchpin work',
+                '2026-06-01T10:00:00+00:00',
+                '2026-06-01T10:30:00+00:00',
+                '2026-06-01',
+                '["sinity-lynchpin"]',
+                NULL,
+                '[]',
+                7, 120, 1800000, 1800000, 0.0, 3, 1, 5, 0, 1, 1,
+                0, 'debugging', 0.8, 'tool_left', 0.7,
+                '{}'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_work_events VALUES (
+                's1', 2, 'debugging', 'fixed current schema reader', 0.9,
+                1780308300000, 1780309200000, 900000,
+                '["/realm/project/sinity-lynchpin/lynchpin/sources/polylogue.py"]',
+                '["apply_patch"]'
+            )
+            """
+        )
+
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(
+        polylogue,
+        "_require_materialized_products",
+        lambda: (_ for _ in ()).throw(AssertionError("facade readiness called")),
+    )
+
+    result = polylogue.work_events(start=date(2026, 6, 1), end=date(2026, 6, 2))
+
+    assert len(result) == 1
+    assert result[0].event_id == "s1:2"
+    assert result[0].conversation_id == "s1"
+    assert result[0].provider == "codex"
+    assert result[0].kind == "debugging"
+    assert result[0].tools_used == ("apply_patch",)
+    assert result[0].workflow_shape == "debugging"
+
+
 def test_session_profile_maps_workflow_shape_and_terminal_state() -> None:
     insight = SimpleNamespace(
         session_id="conv-1",
@@ -563,6 +660,51 @@ def test_archive_readiness_uses_direct_sqlite_products(monkeypatch, tmp_path):
     assert readiness.work_event_count == 1
     assert readiness.conversation_stats_count == 1
     assert "direct Polylogue" in readiness.reason
+
+
+def test_archive_readiness_marks_stale_direct_profiles_degraded(monkeypatch, tmp_path):
+    db = tmp_path / "polylogue.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY)")
+        conn.execute(
+            """
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                canonical_session_date TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE session_work_events (
+                event_id TEXT PRIMARY KEY,
+                conversation_id TEXT
+            )
+            """
+        )
+        conn.execute("INSERT INTO conversations VALUES ('c1')")
+        conn.execute("INSERT INTO conversations VALUES ('c2')")
+        conn.execute("INSERT INTO session_profiles VALUES ('c1', '2026-06-05')")
+        conn.execute("INSERT INTO session_work_events VALUES ('e1', 'c1')")
+
+    monkeypatch.setattr(polylogue, "_default_polylogue_db_path", lambda: db)
+    monkeypatch.setattr(
+        polylogue,
+        "_polylogue_client",
+        lambda: SimpleNamespace(
+            insight_readiness_report=lambda query: (_ for _ in ()).throw(
+                AssertionError("facade should not be called for direct product counts")
+            )
+        ),
+    )
+
+    readiness = polylogue.archive_readiness()
+
+    assert readiness.status == "degraded"
+    assert readiness.conversation_count == 2
+    assert readiness.session_profile_count == 1
+    assert readiness.work_event_count == 1
+    assert readiness.reason == "stale products: session_profiles=1/2"
 
 
 def test_archive_readiness_reports_facade_failure(monkeypatch, tmp_path):

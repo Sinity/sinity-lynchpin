@@ -23,8 +23,9 @@ def machine_workload_summary(
 
     Returns per-day IO (MB) for: agent_session, agent_build, rust_build,
     nix_build, sinex_stack, polylogue_daemon, test_suite, backup, browser,
-    other. Also includes system IO pressure (PSI full avg300) and the count
-    of simultaneous heavy workloads per day.
+    media_service, storage_maintenance, observability, system_io, other. Also
+    includes system IO pressure (PSI full avg300) and the count of simultaneous
+    heavy workloads per day.
 
     Args:
         start: ISO date string (YYYY-MM-DD). Defaults to 7 days ago.

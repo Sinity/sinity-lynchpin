@@ -344,6 +344,7 @@ def daily_activity(*, start: date, end: date) -> list[GitDayActivity]:
 
 def coverage_bounds() -> CoverageBounds | None:
     import json as _json
+
     path = get_config().baseline_dir / "git_numstat.jsonl"
     if not path.exists():
         return None
@@ -562,7 +563,10 @@ def github_context_for_commits(
         from ..materialization import ensure_materialized
 
         window = (
-            (min(referenced_commit_dates), max(referenced_commit_dates) + timedelta(days=1))
+            (
+                min(referenced_commit_dates),
+                max(referenced_commit_dates) + timedelta(days=1),
+            )
             if referenced_commit_dates
             else None
         )
@@ -593,7 +597,11 @@ def github_context_for_commits(
         items.append(_github_item(repo, kind, number, slug, item))
     available = [item for item in items if item.get("status") == "ok"]
     status = "ok" if available else "cache_miss"
-    if not cache_only and materialization_status not in {"ready", "updated"} and not available:
+    if (
+        not cache_only
+        and materialization_status not in {"ready", "updated"}
+        and not available
+    ):
         status = "unavailable"
     if attempted >= max_refs:
         status = "truncated"
@@ -754,41 +762,50 @@ def _iter_repo_commit_records(
     )
     assert proc.stdout is not None
     current: _MutableRepoCommit | None = None
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        if not line:
-            continue
-        if line.startswith("COMMIT|"):
-            if current is not None:
-                rec = _finalize_record(repo_path.name, current)
-                if rec and in_date_range(logical_date(rec.authored_at), start, end):
-                    yield rec
-            parts = line.split("|", 4)
-            current = {
-                "commit": parts[1],
-                "authored_at": parts[2],
-                "author": parts[3],
-                "subject": parts[4] if len(parts) > 4 else "",
-                "path_changes": [],
-            }
-            continue
-        if current is None or "\t" not in line:
-            continue
-        cols = (line.split("\t", 2) + ["", "", ""])[:3]
-        path = cols[2].strip()
-        if path:
-            current["path_changes"].append(
-                (
-                    path,
-                    int(cols[0]) if cols[0].isdigit() else 0,
-                    int(cols[1]) if cols[1].isdigit() else 0,
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith("COMMIT|"):
+                if current is not None:
+                    rec = _finalize_record(repo_path.name, current)
+                    if rec and in_date_range(logical_date(rec.authored_at), start, end):
+                        yield rec
+                parts = line.split("|", 4)
+                current = {
+                    "commit": parts[1],
+                    "authored_at": parts[2],
+                    "author": parts[3],
+                    "subject": parts[4] if len(parts) > 4 else "",
+                    "path_changes": [],
+                }
+                continue
+            if current is None or "\t" not in line:
+                continue
+            cols = (line.split("\t", 2) + ["", "", ""])[:3]
+            path = cols[2].strip()
+            if path:
+                current["path_changes"].append(
+                    (
+                        path,
+                        int(cols[0]) if cols[0].isdigit() else 0,
+                        int(cols[1]) if cols[1].isdigit() else 0,
+                    )
                 )
-            )
-    if current:
-        rec = _finalize_record(repo_path.name, current)
-        if rec and in_date_range(logical_date(rec.authored_at), start, end):
-            yield rec
-    proc.communicate()
+        if current:
+            rec = _finalize_record(repo_path.name, current)
+            if rec and in_date_range(logical_date(rec.authored_at), start, end):
+                yield rec
+    finally:
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def _default_history_ref(repo_path: Path) -> str | None:

@@ -125,6 +125,19 @@ def observability_status() -> dict[str, Any]:
     """Return compact live status for panels and operator prompts."""
 
     payload = compact_materialization_status()
+    machine = payload.get("machine")
+    if isinstance(machine, dict):
+        # Standing storage guardrails (2026-06-12 overhaul): daily wear vs
+        # per-device budget, plus the login-path SQLite-lock canary that only
+        # fires under pathological IO starvation. Both degrade to state=error
+        # instead of breaking the status surface.
+        from lynchpin.analysis.machine.wear import (
+            machine_wear_status,
+            storage_canary_status,
+        )
+
+        machine["wear"] = machine_wear_status()
+        machine["storage_canary"] = storage_canary_status()
     return {**payload, "kind": "lynchpin_observability_status"}
 
 

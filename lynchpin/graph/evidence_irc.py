@@ -30,7 +30,11 @@ def add_irc(
     """
     from ..materialization import ensure_materialized
 
-    ensure_materialized("irc", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "irc",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
     for conv in conversations_in_range(start=start, end=end, ensure=False):
         full_text = " ".join(msg.text for msg in conv.messages)
         # Also scan channel name for project mentions.
@@ -47,10 +51,10 @@ def add_irc(
 
         for project in projects_to_emit:
             proj_tag = project or "none"
-            node_id = (
-                f"irc:{conv.conversation_id}:{conv.channel}:{proj_tag}"
+            node_id = f"irc:{conv.conversation_id}:{conv.channel}:{proj_tag}"
+            message_count = int(
+                getattr(conv, "message_count", getattr(conv, "total_lines", 0))
             )
-            message_count = int(getattr(conv, "message_count", getattr(conv, "total_lines", 0)))
             source_files = sorted(
                 {
                     str(getattr(msg, "source_file", ""))
@@ -58,7 +62,11 @@ def add_irc(
                     if getattr(msg, "source_file", "")
                 }
             )
-            snippet = full_text[:200] if full_text else f"[{conv.channel}] {message_count} messages"
+            snippet = (
+                full_text[:200]
+                if full_text
+                else f"[{conv.channel}] {message_count} messages"
+            )
             nodes.append(
                 EvidenceNode(
                     id=node_id,

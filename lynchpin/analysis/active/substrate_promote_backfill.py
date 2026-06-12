@@ -6,6 +6,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+_MAX_COMMIT_PATHS = 128
+_MAX_EVENT_PATHS = 128
+
 
 def _backfill_ai_attribution(
     conn: Any,
@@ -14,56 +17,68 @@ def _backfill_ai_attribution(
     time_window_hours: int = 24,
 ) -> int:
     """Populate commit_fact.ai_attribution from project/path/timestamp overlap."""
-    matches = conn.execute(
+    commit_rows = conn.execute(
         """
-        WITH candidate_paths AS (
-            SELECT
-                c.sha,
-                c.repo,
-                we.event_id,
-                we.kind,
-                cp.commit_path,
-                ep.event_path
-            FROM commit_fact c
-            JOIN ai_work_event we
-              ON c.refresh_id = we.refresh_id
-             AND c.project = we.project
-             AND ABS(EXTRACT(EPOCH FROM c.authored_at - we.start_ts)) < ?
-            , UNNEST(c.paths) AS cp(commit_path)
-            , UNNEST(we.file_paths) AS ep(event_path)
-            WHERE c.refresh_id = ?
-              AND we.start_ts IS NOT NULL
-              AND c.project IS NOT NULL
-              AND we.project IS NOT NULL
-              AND len(c.paths) > 0
-              AND len(we.file_paths) > 0
-        ),
-        path_matches AS (
-            SELECT DISTINCT sha, repo, event_id, kind
-            FROM candidate_paths
-            WHERE
-                ends_with(ltrim(event_path, '/'), ltrim(commit_path, '/'))
-                OR ends_with(ltrim(commit_path, '/'), ltrim(event_path, '/'))
-        )
         SELECT
-            sha,
-            repo,
-            COUNT(DISTINCT event_id) AS matched_events,
-            ARRAY_AGG(DISTINCT kind) AS kinds,
-            ARRAY_AGG(DISTINCT event_id) AS event_ids
-        FROM path_matches
-        GROUP BY sha, repo
-    """,
-        [time_window_hours * 3600, refresh_id],
+            sha, repo, project, authored_at, paths
+        FROM commit_fact
+        WHERE refresh_id = ?
+          AND project IS NOT NULL
+          AND authored_at IS NOT NULL
+          AND len(paths) > 0
+        """,
+        [refresh_id],
+    ).fetchall()
+    event_rows = conn.execute(
+        """
+        SELECT
+            event_id, project, kind, start_ts, file_paths
+        FROM ai_work_event
+        WHERE refresh_id = ?
+          AND project IS NOT NULL
+          AND start_ts IS NOT NULL
+          AND len(file_paths) > 0
+        """,
+        [refresh_id],
     ).fetchall()
 
+    events_by_project: dict[str, list[tuple[str, str, datetime, tuple[str, ...]]]] = {}
+    for event_id, project, kind, start_ts, file_paths in event_rows:
+        event_paths = _bounded_normalized_paths(file_paths, _MAX_EVENT_PATHS)
+        if not event_paths:
+            continue
+        events_by_project.setdefault(str(project), []).append(
+            (str(event_id), str(kind), start_ts, event_paths)
+        )
+
     now_iso = datetime.now(timezone.utc).isoformat()
-    for sha, repo, matched_events, kinds, event_ids in matches:
+    matched_count = 0
+    for sha, repo, project, authored_at, paths in commit_rows:
+        commit_paths = _bounded_normalized_paths(paths, _MAX_COMMIT_PATHS)
+        if not commit_paths:
+            continue
+        event_ids: list[str] = []
+        kinds: list[str] = []
+        seen_events: set[str] = set()
+        seen_kinds: set[str] = set()
+        for event_id, kind, start_ts, event_paths in events_by_project.get(str(project), ()):
+            if abs((authored_at - start_ts).total_seconds()) >= time_window_hours * 3600:
+                continue
+            if not _has_suffix_path_overlap(commit_paths, event_paths):
+                continue
+            if event_id not in seen_events:
+                seen_events.add(event_id)
+                event_ids.append(event_id)
+            if kind not in seen_kinds:
+                seen_kinds.add(kind)
+                kinds.append(kind)
+        if not event_ids:
+            continue
         attribution = json.dumps(
             {
-                "matched_events": int(matched_events),
-                "top_kinds": list(kinds[:5]) if kinds else [],
-                "matched_event_ids": list(event_ids[:20]) if event_ids else [],
+                "matched_events": len(event_ids),
+                "top_kinds": kinds[:5],
+                "matched_event_ids": event_ids[:20],
                 "matched_via": "project_suffix_path_overlap",
                 "time_window_hours": time_window_hours,
                 "backfilled_at": now_iso,
@@ -77,4 +92,29 @@ def _backfill_ai_attribution(
             """,
             [attribution, refresh_id, sha, repo],
         )
-    return len(matches)
+        matched_count += 1
+    return matched_count
+
+
+def _bounded_normalized_paths(paths: Any, limit: int) -> tuple[str, ...]:
+    if not paths:
+        return ()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        value = str(raw or "").strip().lstrip("/")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+        if len(normalized) >= limit:
+            break
+    return tuple(normalized)
+
+
+def _has_suffix_path_overlap(commit_paths: tuple[str, ...], event_paths: tuple[str, ...]) -> bool:
+    for commit_path in commit_paths:
+        for event_path in event_paths:
+            if event_path.endswith(commit_path) or commit_path.endswith(event_path):
+                return True
+    return False

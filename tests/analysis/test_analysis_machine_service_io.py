@@ -231,6 +231,98 @@ def test_service_io_window_ranks_positive_deltas_and_handles_resets(
     assert alpha.caveats == ("counter_reset_detected",)
 
 
+def test_service_cgroup_io_delta_surfaces_counter_reset_caveat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unit restart mid-window resets cgroup io.stat counters to zero. The
+    # positive-delta summation keeps totals correct, but the consumer must
+    # see the restart instead of silently trusting an apparently clean window.
+    mib = 1024 * 1024
+    metrics = [_metric(0), _metric(30)]
+    cgroup_rows = [
+        _cgroup_io("gamma.service", 0, rbytes=100 * mib, wbytes=50 * mib, rios=10, wios=5),
+        _cgroup_io("gamma.service", 10, rbytes=160 * mib, wbytes=90 * mib, rios=16, wios=9),
+        # restart: counters reset, then accumulate again
+        _cgroup_io("gamma.service", 20, rbytes=20 * mib, wbytes=10 * mib, rios=2, wios=1),
+        _cgroup_io("gamma.service", 30, rbytes=30 * mib, wbytes=15 * mib, rios=3, wios=2),
+        _cgroup_io("delta.service", 0, rbytes=0, wbytes=0, rios=0, wios=0),
+        _cgroup_io("delta.service", 30, rbytes=40 * mib, wbytes=20 * mib, rios=4, wios=2),
+    ]
+    monkeypatch.setattr(machine_source, "metric_samples", lambda **_: iter(metrics))
+    monkeypatch.setattr(machine_source, "service_states", lambda **_: iter(()))
+    monkeypatch.setattr(
+        machine_source, "service_cgroup_io_samples", lambda **_: iter(cgroup_rows)
+    )
+
+    report = analyze_machine_service_io_window(
+        start=_ts(0), end=_ts(30), min_total_mib=0.0
+    )
+
+    by_unit = {row.unit: row for row in report.service_cgroup_io}
+    gamma = by_unit["gamma.service"]
+    # 60 MiB pre-reset delta + 20 MiB post-reset baseline + 10 MiB tail
+    assert gamma.read_mib == 90.0
+    assert gamma.write_mib == 55.0
+    assert gamma.caveats == ("counter_reset_detected",)
+    assert by_unit["delta.service"].caveats == ()
+
+
+def test_device_unattributed_io_exposes_observability_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # diskstats says the device moved 400 MiB; observed cgroups only account
+    # for 150 MiB. The 250 MiB residual (kernel writeback, unobserved units)
+    # must be surfaced instead of silently vanishing from attribution.
+    mib = 1024 * 1024
+    metrics = [_metric(0), _metric(30)]
+    devices = [
+        _block_device(
+            "nvme0n1",
+            0,
+            sectors_read=0,
+            sectors_written=0,
+            reads_completed=0,
+            writes_completed=0,
+            io_time_ms=0,
+            weighted_io_time_ms=0,
+        ),
+        _block_device(
+            "nvme0n1",
+            30,
+            sectors_read=(100 * mib) // 512,
+            sectors_written=(300 * mib) // 512,
+            reads_completed=100,
+            writes_completed=300,
+            io_time_ms=1000,
+            weighted_io_time_ms=1000,
+        ),
+    ]
+    cgroup_rows = [
+        _cgroup_io("epsilon.service", 0, rbytes=0, wbytes=0, rios=0, wios=0),
+        _cgroup_io("epsilon.service", 30, rbytes=50 * mib, wbytes=100 * mib, rios=5, wios=10),
+    ]
+    monkeypatch.setattr(machine_source, "metric_samples", lambda **_: iter(metrics))
+    monkeypatch.setattr(machine_source, "service_states", lambda **_: iter(()))
+    monkeypatch.setattr(
+        machine_source, "block_device_samples", lambda **_: iter(devices)
+    )
+    monkeypatch.setattr(
+        machine_source, "service_cgroup_io_samples", lambda **_: iter(cgroup_rows)
+    )
+
+    report = analyze_machine_service_io_window(
+        start=_ts(0), end=_ts(30), min_total_mib=0.0
+    )
+
+    assert len(report.device_unattributed) == 1
+    gap = report.device_unattributed[0]
+    assert gap.device == "nvme0n1"
+    assert gap.device_total_mib == 400.0
+    assert gap.attributed_total_mib == 150.0
+    assert gap.unattributed_mib == 250.0
+    assert gap.unattributed_pct == 62.5
+
+
 def test_service_io_classifies_low_throughput_high_wait_contention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

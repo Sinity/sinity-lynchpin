@@ -32,7 +32,7 @@ def add_arbtt(
         return
 
     try:
-        rows = _daily_activity(start=start, end=end)
+        rows = _daily_activity(start=start, end=end, ensure=False)
     except (SourceUnavailableError, FileNotFoundError):
         return
 

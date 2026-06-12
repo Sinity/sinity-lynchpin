@@ -10,14 +10,22 @@ from ..materialization import ensure_materialized
 
 
 def ensure_personal_daily_signals(start: date, end: date) -> None:
-    ensure_materialized("personal_daily_signals", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "personal_daily_signals",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
 
 
-def add_personal_daily_signals(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
+def add_personal_daily_signals(
+    nodes: list[EvidenceNode], *, start: date, end: date
+) -> None:
     from ..sources.personal_signals import iter_personal_daily_signals
 
     ensure_personal_daily_signals(start, end)
-    for row in iter_personal_daily_signals(start=start, end=end + timedelta(days=1), ensure=False):
+    for row in iter_personal_daily_signals(
+        start=start, end=end + timedelta(days=1), ensure=False
+    ):
         dimensions = dict(row.dimensions)
         nodes.append(
             EvidenceNode(
@@ -56,7 +64,9 @@ def _add_activity_content(nodes: list[EvidenceNode], *, start: date, end: date) 
 
     from ..sources.activity_content import iter_activity_content_days
 
-    for row in iter_activity_content_days(start=start, end=end + timedelta(days=1), ensure=False):
+    for row in iter_activity_content_days(
+        start=start, end=end + timedelta(days=1), ensure=False
+    ):
         top_activity = _top_bucket(row.activity_seconds)
         top_topic = _top_bucket(row.topic_seconds)
         nodes.append(
@@ -92,7 +102,9 @@ def _add_google_takeout(nodes: list[EvidenceNode], *, start: date, end: date) ->
 
     from ..sources.google_takeout_products import iter_daily_activity
 
-    for row in iter_daily_activity(start=start, end=end + timedelta(days=1), ensure=False):
+    for row in iter_daily_activity(
+        start=start, end=end + timedelta(days=1), ensure=False
+    ):
         label = row.product if row.service is None else f"{row.product}/{row.service}"
         nodes.append(
             EvidenceNode(
@@ -245,7 +257,11 @@ def _add_irc(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
 def _ensure_source(source: str, *, start: date, end: date) -> None:
     from ..materialization import ensure_materialized
 
-    ensure_materialized(source, window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        source,
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
 
 
 def _top_bucket(values: dict[str, float]) -> tuple[str, float] | None:

@@ -15,7 +15,11 @@ def add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
         build_sleep_evidence,
     )
 
-    ensure_materialized("personal_daily_signals", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "personal_daily_signals",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
 
     for sq in build_sleep_evidence(start=start, end=end, ensure=False):
         nodes.append(
@@ -48,10 +52,16 @@ def add_health(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
     from ..sources.sleep_productivity import iter_sleep_productivity
     from .health_bridge import sleep_productivity_link_from_row
 
-    ensure_materialized("sleep_productivity", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "sleep_productivity",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
     links = (
         sleep_productivity_link_from_row(row)
-        for row in iter_sleep_productivity(start=start, end=end + timedelta(days=1), ensure=False)
+        for row in iter_sleep_productivity(
+            start=start, end=end + timedelta(days=1), ensure=False
+        )
     )
     for link in links:
         nodes.append(
@@ -119,9 +129,7 @@ def add_readiness(nodes: list[EvidenceNode], *, end: date) -> None:
     )
 
 
-def add_temporal_signals(
-    nodes: list[EvidenceNode], *, start: date, end: date
-) -> None:
+def add_temporal_signals(nodes: list[EvidenceNode], *, start: date, end: date) -> None:
     kind_map: dict[str, EvidenceNodeKind] = {
         "temporal_changepoint": "temporal_changepoint",
         "temporal_trend": "temporal_trend",
@@ -131,8 +139,14 @@ def add_temporal_signals(
     from ..materialization import ensure_materialized
     from ..sources.temporal_signals import iter_temporal_signals
 
-    ensure_materialized("temporal_signals", window=(start, end + timedelta(days=1)))
-    events = iter_temporal_signals(start=start, end=end + timedelta(days=1), ensure=False)
+    ensure_materialized(
+        "temporal_signals",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
+    events = iter_temporal_signals(
+        start=start, end=end + timedelta(days=1), ensure=False
+    )
     for idx, event in enumerate(events):
         node_kind = kind_map.get(event.kind)
         if node_kind is None:

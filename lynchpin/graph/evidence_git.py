@@ -38,7 +38,9 @@ def add_git(
     selected: set[str],
     mode: CostClass,
 ) -> None:
-    facts = tuple(commit_facts(start=start, end=end + timedelta(days=1), include_paths=True))
+    facts = tuple(
+        commit_facts(start=start, end=end + timedelta(days=1), include_paths=True)
+    )
     selected_facts = []
     for fact in facts:
         project = normalize_project(fact.repo)
@@ -99,13 +101,19 @@ def add_git(
             continue
         refs = extract_commit_refs(fact.subject)
         wanted_refs.update((project, "pr", number) for number in refs["prs"])
-        wanted_refs.update((project, "issue", number) for number in refs["issues"] - refs["prs"])
+        wanted_refs.update(
+            (project, "issue", number) for number in refs["issues"] - refs["prs"]
+        )
     if not wanted_refs:
         return
     try:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("github_context", window=(start, end + timedelta(days=1)))
+        ensure_materialized(
+            "github_context",
+            window=(start, end + timedelta(days=1)),
+            budget="manual",
+        )
         for row in iter_github_context(
             projects={project for project, _kind, _number in wanted_refs},
             ensure=False,

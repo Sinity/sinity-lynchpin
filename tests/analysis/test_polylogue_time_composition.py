@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -56,6 +57,27 @@ def test_build_polylogue_time_composition_summarizes_rows(monkeypatch):
     assert payload["summary"]["session_count"] == 1
     assert payload["summary"]["seconds_by_lane"]["message_gap"] == 5.0
     assert payload["sessions"][0]["session_id"] == "s1"
+
+
+def test_run_polylogue_time_composition_writes_json(monkeypatch, tmp_path):
+    import lynchpin.analysis.ecosystem.polylogue_time_composition as mod
+
+    payload = {
+        "kind": "polylogue_time_composition",
+        "summary": {"session_count": 0},
+        "sessions": [],
+    }
+    monkeypatch.setattr(mod, "build_polylogue_time_composition", lambda **_kwargs: payload)
+
+    out = tmp_path / "polylogue-time-composition.json"
+    result = mod.run_polylogue_time_composition(
+        out,
+        start=date(2026, 6, 1),
+        end=date(2026, 6, 6),
+    )
+
+    assert result == payload
+    assert json.loads(out.read_text(encoding="utf-8")) == payload
 
 
 def test_polylogue_time_composition_command_is_registered():

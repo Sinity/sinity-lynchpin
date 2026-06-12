@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from lynchpin.graph.evidence_clipboard import add_clipboard
+from lynchpin.graph import evidence_clipboard
 from lynchpin.graph.evidence_irc import add_irc
 
 
@@ -141,6 +142,32 @@ def test_add_clipboard_respects_selected_filter(monkeypatch: pytest.MonkeyPatch)
     assert nodes == []
 
 
+def test_add_clipboard_bounds_text_before_project_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    long_text = "x" * (evidence_clipboard._MAX_PROJECT_MENTION_TEXT + 1000)
+    clip = _make_clip(long_text, _CLIP_TS)
+    seen_lengths: list[int] = []
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_clipboard.entries_in_range",
+        lambda **kwargs: [clip],
+    )
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_clipboard.projects_mentioned_in_text",
+        lambda text: seen_lengths.append(len(text)) or (),
+    )
+
+    nodes: list = []
+    add_clipboard(
+        nodes,
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 31),
+        selected=set(),
+    )
+
+    assert seen_lengths == [evidence_clipboard._MAX_PROJECT_MENTION_TEXT]
+    assert len(nodes) == 1
+    assert len(nodes[0].payload["value"]) == 1000
+
+
 def test_add_clipboard_no_source_data(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "lynchpin.graph.evidence_clipboard.entries_in_range",
@@ -165,7 +192,10 @@ def test_add_clipboard_no_source_data(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _stub_irc_materialization(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda name, *, window: None)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, **kwargs: None,
+    )
 
 
 def _make_conv(

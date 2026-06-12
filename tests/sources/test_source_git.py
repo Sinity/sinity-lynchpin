@@ -5,8 +5,15 @@ import subprocess
 from datetime import date, datetime, timedelta
 
 from lynchpin.sources.git import (
-    _parse_prefix, _count_bursts, _path_root, _parse_date, _parse_git_shortstat,
-    GitCommitFact, commit_facts, github_context_for_commits,
+    _iter_repo_commit_records,
+    _parse_prefix,
+    _count_bursts,
+    _path_root,
+    _parse_date,
+    _parse_git_shortstat,
+    GitCommitFact,
+    commit_facts,
+    github_context_for_commits,
 )
 from lynchpin.core.primitives import logical_date
 from lynchpin.sources.github import GitHubActor, GitHubItem
@@ -33,7 +40,9 @@ class TestCountBursts:
 
     def test_burst(self):
         base = datetime(2026, 3, 15, 10, 0, 0)
-        ts = [base + timedelta(seconds=i * 30) for i in range(5)]  # 0s, 30s, 60s, 90s, 120s apart
+        ts = [
+            base + timedelta(seconds=i * 30) for i in range(5)
+        ]  # 0s, 30s, 60s, 90s, 120s apart
         assert _count_bursts(ts) >= 1
 
     def test_too_few(self):
@@ -65,7 +74,9 @@ class TestParseDate:
 
 class TestParseShortstat:
     def test_full(self):
-        result = _parse_git_shortstat(" 3 files changed, 42 insertions(+), 10 deletions(-)")
+        result = _parse_git_shortstat(
+            " 3 files changed, 42 insertions(+), 10 deletions(-)"
+        )
         assert result["files_changed"] == 3
         assert result["lines_added"] == 42
         assert result["lines_deleted"] == 10
@@ -118,7 +129,9 @@ def test_github_context_for_commits_reads_materialized_context(monkeypatch):
     )
     monkeypatch.setattr(
         "lynchpin.sources.github_context.iter_github_context",
-        lambda *, projects=None, **_kwargs: iter((type("Row", (), {"project": "polylogue", "item": item})(),)),
+        lambda *, projects=None, **_kwargs: iter(
+            (type("Row", (), {"project": "polylogue", "item": item})(),)
+        ),
     )
 
     result = github_context_for_commits([fact])
@@ -146,11 +159,15 @@ def test_github_context_for_commits_reports_missing_product(monkeypatch):
     )
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window=None: type("Result", (), {"status": "failed", "reason": "network_down"})(),
+        lambda name, *, window=None: type(
+            "Result", (), {"status": "failed", "reason": "network_down"}
+        )(),
     )
     monkeypatch.setattr(
         "lynchpin.sources.github_context.iter_github_context",
-        lambda *, projects=None, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("missing context")),
+        lambda *, projects=None, **_kwargs: (_ for _ in ()).throw(
+            FileNotFoundError("missing context")
+        ),
     )
 
     result = github_context_for_commits([fact])
@@ -163,20 +180,41 @@ def test_github_context_for_commits_reports_missing_product(monkeypatch):
 def test_commit_facts_defaults_to_current_history_ref(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
     (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "feat: base"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "switch", "-c", "side"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: base"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "switch", "-c", "side"], cwd=repo, check=True, capture_output=True
+    )
     (repo / "side.txt").write_text("side\n", encoding="utf-8")
     subprocess.run(["git", "add", "side.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "feat: side"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "switch", "master"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: side"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "switch", "master"], cwd=repo, check=True, capture_output=True
+    )
 
-    default_rows = tuple(commit_facts(start=date(2026, 1, 1), end=date(2027, 1, 1), repo_paths=(repo,)))
-    all_rows = tuple(commit_facts(start=date(2026, 1, 1), end=date(2027, 1, 1), repo_paths=(repo,), all_refs=True))
+    default_rows = tuple(
+        commit_facts(start=date(2026, 1, 1), end=date(2027, 1, 1), repo_paths=(repo,))
+    )
+    all_rows = tuple(
+        commit_facts(
+            start=date(2026, 1, 1),
+            end=date(2027, 1, 1),
+            repo_paths=(repo,),
+            all_refs=True,
+        )
+    )
 
     assert [row.subject for row in default_rows] == ["feat: base"]
     assert {row.subject for row in all_rows} == {"feat: base", "feat: side"}
@@ -184,8 +222,12 @@ def test_commit_facts_defaults_to_current_history_ref(tmp_path):
 
 def _init_repo(repo):
     repo.mkdir()
-    subprocess.run(["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
 
 
@@ -197,7 +239,11 @@ def _commit_at(repo, name, msg, author_date):
         "GIT_COMMITTER_DATE": author_date,
     }
     subprocess.run(
-        ["git", "commit", "-m", msg], cwd=repo, check=True, capture_output=True, env={**os.environ, **env}
+        ["git", "commit", "-m", msg],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        env={**os.environ, **env},
     )
 
 
@@ -227,12 +273,18 @@ def test_commits_bucket_by_logical_day_not_author_tz(tmp_path):
 def test_commit_facts_can_skip_numstat_paths(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "init", "-b", "master"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
     (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "feat: base"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: base"], cwd=repo, check=True, capture_output=True
+    )
 
     rows = tuple(
         commit_facts(
@@ -247,3 +299,69 @@ def test_commit_facts_can_skip_numstat_paths(tmp_path):
     assert rows[0].subject == "feat: base"
     assert rows[0].paths == ()
     assert rows[0].lines_changed == 0
+
+
+def test_iter_repo_commit_records_closes_git_process_when_consumer_stops(
+    monkeypatch, tmp_path
+):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    class FakeStdout:
+        def __init__(self):
+            self.closed = False
+            self._lines = iter(
+                [
+                    "COMMIT|a1|2026-01-02T00:00:00+00:00|Tester|feat: first\n",
+                    "COMMIT|b2|2026-01-03T00:00:00+00:00|Tester|feat: second\n",
+                ]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._lines)
+
+        def close(self):
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = FakeStdout()
+            self.terminated = False
+            self.killed = False
+            self.waited = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 0
+
+    fake = FakeProcess()
+    monkeypatch.setattr(
+        "lynchpin.sources.git._default_history_ref", lambda _repo: "master"
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.git.subprocess.Popen", lambda *_args, **_kwargs: fake
+    )
+
+    records = _iter_repo_commit_records(
+        repo, start=date(2026, 1, 1), end=date(2026, 1, 4), include_paths=False
+    )
+    first = next(records)
+    records.close()
+
+    assert first.subject == "feat: first"
+    assert fake.stdout.closed is True
+    assert fake.terminated is True
+    assert fake.waited is True
+    assert fake.killed is False

@@ -29,7 +29,7 @@ def add_gmail(
         return
 
     try:
-        rows = _daily_activity(start=start, end=end)
+        rows = _daily_activity(start=start, end=end, ensure=False)
     except (SourceUnavailableError, Exception):  # noqa: BLE001 - graceful degradation
         return
 

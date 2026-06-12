@@ -14,7 +14,7 @@ import logging
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -249,7 +249,10 @@ def _archive_readiness_from_sqlite(db: Path) -> PolylogueReadiness | None:
         logger.warning("polylogue direct readiness read failed: %s", exc)
         return None
 
-    if profile_count > 0 and work_event_count > 0:
+    if conversation_count > 0 and profile_count < conversation_count:
+        status = "degraded"
+        reason = f"stale products: session_profiles={profile_count}/{conversation_count}"
+    elif profile_count > 0 and work_event_count > 0:
         status = "ready"
         reason = "direct Polylogue session-profile and work-event products are populated"
     elif conversation_count > 0 or profile_count > 0 or work_event_count > 0:
@@ -283,6 +286,10 @@ def _archive_readiness_from_sqlite(db: Path) -> PolylogueReadiness | None:
 def _sqlite_table_count(conn: sqlite3.Connection, table: str) -> int:
     row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
     return int(row[0]) if row else 0
+
+
+def _sqlite_table_columns(conn: sqlite3.Connection, table: str) -> frozenset[str]:
+    return frozenset(str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def _readiness_total_conversations(report: object) -> int:
@@ -595,11 +602,18 @@ def _session_profiles_from_sqlite(
             conn.row_factory = sqlite3.Row
             if not _sqlite_has_table(conn, "session_profiles"):
                 return None
+            columns = _sqlite_table_columns(conn, "session_profiles")
+            session_id_column = "conversation_id" if "conversation_id" in columns else "session_id"
+            session_id_expr = (
+                "conversation_id"
+                if session_id_column == "conversation_id"
+                else "session_id AS conversation_id"
+            )
             if start is not None and end is not None:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
-                        conversation_id, source_name, title, first_message_at,
+                        {session_id_expr}, source_name, title, first_message_at,
                         last_message_at, canonical_session_date, repo_names_json,
                         repo_paths_json, auto_tags_json, message_count, word_count,
                         engaged_duration_ms, wall_duration_ms, total_cost_usd,
@@ -610,15 +624,15 @@ def _session_profiles_from_sqlite(
                         inference_payload_json
                     FROM session_profiles
                     WHERE canonical_session_date >= ? AND canonical_session_date <= ?
-                    ORDER BY canonical_session_date, first_message_at, conversation_id
+                    ORDER BY canonical_session_date, first_message_at, {session_id_column}
                     """,
                     (start.isoformat(), end.isoformat()),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
-                        conversation_id, source_name, title, first_message_at,
+                        {session_id_expr}, source_name, title, first_message_at,
                         last_message_at, canonical_session_date, repo_names_json,
                         repo_paths_json, auto_tags_json, message_count, word_count,
                         engaged_duration_ms, wall_duration_ms, total_cost_usd,
@@ -628,7 +642,7 @@ def _session_profiles_from_sqlite(
                         terminal_state, terminal_state_confidence,
                         inference_payload_json
                     FROM session_profiles
-                    ORDER BY canonical_session_date, first_message_at, conversation_id
+                    ORDER BY canonical_session_date, first_message_at, {session_id_column}
                     """
                 ).fetchall()
     except sqlite3.Error as exc:
@@ -1053,31 +1067,78 @@ def _work_events_from_sqlite(
             conn.row_factory = sqlite3.Row
             if not _sqlite_has_table(conn, "session_work_events"):
                 return None
-            if start is not None and end is not None:
-                rows = conn.execute(
-                    """
-                    SELECT
-                        event_id, conversation_id, source_name, heuristic_label,
-                        confidence, start_time, end_time, duration_ms,
-                        summary, file_paths_json, tools_used_json
-                    FROM session_work_events
-                    WHERE start_time >= ?
-                      AND start_time < ?
-                    ORDER BY start_time, event_index
-                    """,
-                    (start.isoformat(), end.isoformat()),
-                ).fetchall()
+            columns = _sqlite_table_columns(conn, "session_work_events")
+            if "conversation_id" in columns:
+                if start is not None and end is not None:
+                    rows = conn.execute(
+                        """
+                        SELECT
+                            event_id, conversation_id, source_name, heuristic_label,
+                            confidence, start_time, end_time, duration_ms,
+                            summary, file_paths_json, tools_used_json
+                        FROM session_work_events
+                        WHERE start_time >= ?
+                          AND start_time < ?
+                        ORDER BY start_time, event_index
+                        """,
+                        (start.isoformat(), end.isoformat()),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT
+                            event_id, conversation_id, source_name, heuristic_label,
+                            confidence, start_time, end_time, duration_ms,
+                            summary, file_paths_json, tools_used_json
+                        FROM session_work_events
+                        ORDER BY canonical_session_date, start_time, event_index
+                        """
+                    ).fetchall()
             else:
-                rows = conn.execute(
-                    """
+                if "session_id" not in columns:
+                    return None
+                query = """
                     SELECT
-                        event_id, conversation_id, source_name, heuristic_label,
-                        confidence, start_time, end_time, duration_ms,
-                        summary, file_paths_json, tools_used_json
+                        (session_work_events.session_id || ':' || session_work_events.position) AS event_id,
+                        session_work_events.session_id AS conversation_id,
+                        COALESCE(session_profiles.source_name, '') AS source_name,
+                        session_work_events.work_event_type AS heuristic_label,
+                        session_work_events.confidence AS confidence,
+                        CASE
+                            WHEN session_work_events.started_at_ms IS NULL THEN NULL
+                            ELSE strftime('%Y-%m-%dT%H:%M:%S+00:00', session_work_events.started_at_ms / 1000, 'unixepoch')
+                        END AS start_time,
+                        CASE
+                            WHEN session_work_events.ended_at_ms IS NULL THEN NULL
+                            ELSE strftime('%Y-%m-%dT%H:%M:%S+00:00', session_work_events.ended_at_ms / 1000, 'unixepoch')
+                        END AS end_time,
+                        session_work_events.duration_ms AS duration_ms,
+                        session_work_events.summary AS summary,
+                        session_work_events.file_paths_json AS file_paths_json,
+                        session_work_events.tools_used_json AS tools_used_json
                     FROM session_work_events
-                    ORDER BY canonical_session_date, start_time, event_index
-                    """
-                ).fetchall()
+                    LEFT JOIN session_profiles
+                      ON session_profiles.session_id = session_work_events.session_id
+                """
+                if start is not None and end is not None:
+                    rows = conn.execute(
+                        query
+                        + """
+                        WHERE session_work_events.started_at_ms >= ?
+                          AND session_work_events.started_at_ms < ?
+                        ORDER BY session_work_events.started_at_ms, session_work_events.position
+                        """,
+                        (_date_start_epoch_ms(start), _date_start_epoch_ms(end)),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        query
+                        + """
+                        ORDER BY session_profiles.canonical_session_date,
+                                 session_work_events.started_at_ms,
+                                 session_work_events.position
+                        """
+                    ).fetchall()
     except sqlite3.Error as exc:
         logger.warning("polylogue direct work-event read failed: %s", exc)
         return None
@@ -1118,6 +1179,10 @@ def _work_event_from_row(
         if profile
         else 0.0,
     )
+
+
+def _date_start_epoch_ms(value: date) -> int:
+    return int(datetime.combine(value, dt_time.min, tzinfo=timezone.utc).timestamp() * 1000)
 
 
 def work_events(

@@ -71,6 +71,7 @@ class GmailDayActivity:
     outbound_count: int
     inbound_count: int
 
+
 # ── Parsing ────────────────────────────────────────────────────────────────────
 
 
@@ -133,19 +134,16 @@ def _parse_mbox_bytes(
             to_raw = _header_str(msg.get("To", ""))
             cc_raw = _header_str(msg.get("Cc", ""))
             recipients = tuple(
-                addr.strip()
-                for addr in (to_raw or "").split(",")
-                if addr.strip()
+                addr.strip() for addr in (to_raw or "").split(",") if addr.strip()
             )
             cc = tuple(
-                addr.strip()
-                for addr in (cc_raw or "").split(",")
-                if addr.strip()
+                addr.strip() for addr in (cc_raw or "").split(",") if addr.strip()
             )
             yield GmailMessage(
                 message_id=message_id,
                 thread_id=_normalize_thread_id(
-                    _header_str(msg.get("Thread-Id", None)) or _header_str(msg.get("References", None))
+                    _header_str(msg.get("Thread-Id", None))
+                    or _header_str(msg.get("References", None))
                 ),
                 sender=sender,
                 recipients=recipients,
@@ -155,9 +153,10 @@ def _parse_mbox_bytes(
                 body_preview=_extract_body_preview(msg),
                 label=label,
                 archive_source=archive_source,
-                size_bytes=len(msg.as_bytes() if hasattr(msg, "as_bytes") else str(msg).encode()),
+                size_bytes=len(
+                    msg.as_bytes() if hasattr(msg, "as_bytes") else str(msg).encode()
+                ),
             )
-
 
 
 def _normalize_thread_id(raw: str | None) -> str | None:
@@ -165,6 +164,7 @@ def _normalize_thread_id(raw: str | None) -> str | None:
         return None
     cleaned = raw.strip()
     return cleaned if cleaned else None
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -195,7 +195,9 @@ def iter_materialized_gmail_messages(
     if ensure and path is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("google_takeout", window=(start, end) if start and end else None)
+        ensure_materialized(
+            "google_takeout", window=(start, end) if start and end else None
+        )
     if not target.exists():
         raise FileNotFoundError(f"canonical Gmail Takeout product is missing: {target}")
     with target.open(encoding="utf-8") as handle:
@@ -282,26 +284,30 @@ def daily_gmail_activity(
     start: date,
     end: date,
     root: Optional[Path] = None,
+    ensure: bool = True,
 ) -> list[GmailDayActivity]:
     """Daily Gmail activity rollup.
 
     Groups deduplicated messages by day. Messages without a timestamp are
     excluded (they are rare in practice).
     """
-    by_date: dict[date, dict] = defaultdict(lambda: {
-        "count": 0,
-        "threads": set(),
-        "correspondents": set(),
-        "outbound": 0,
-        "inbound": 0,
-    })
+    by_date: dict[date, dict] = defaultdict(
+        lambda: {
+            "count": 0,
+            "threads": set(),
+            "correspondents": set(),
+            "outbound": 0,
+            "inbound": 0,
+        }
+    )
 
     # Use the materialized NDJSON for configured reads; explicit root overrides
     # remain raw/source-level access for tests and one-off import diagnostics.
     if root is None:
         from ..materialization import ensure_materialized
 
-        ensure_materialized("google_takeout", window=(start, end))
+        if ensure:
+            ensure_materialized("google_takeout", window=(start, end))
         iter_msgs = iter_materialized_gmail_messages(start=start, end=end, ensure=False)
     else:
         iter_msgs = iter_gmail_messages_deduped(root=root, start=start, end=end)
@@ -324,14 +330,16 @@ def daily_gmail_activity(
     result: list[GmailDayActivity] = []
     for d in sorted(by_date):
         b = by_date[d]
-        result.append(GmailDayActivity(
-            date=d,
-            message_count=b["count"],
-            thread_count=len(b["threads"]),
-            unique_correspondents=len(b["correspondents"]),
-            outbound_count=b["outbound"],
-            inbound_count=b["inbound"],
-        ))
+        result.append(
+            GmailDayActivity(
+                date=d,
+                message_count=b["count"],
+                thread_count=len(b["threads"]),
+                unique_correspondents=len(b["correspondents"]),
+                outbound_count=b["outbound"],
+                inbound_count=b["inbound"],
+            )
+        )
     return result
 
 
@@ -341,11 +349,13 @@ def daily_gmail_activity(
 # github.com>`` is a GitHub notification addressed TO sinity, not FROM sinity.
 # An earlier heuristic matched 'sinity' anywhere and miscounted 45 such
 # rows as outbound (vs. only 37 actual ezo.dev sends).
-_OPERATOR_EMAIL_ADDRESSES: frozenset[str] = frozenset({
-    "ezo.dev@gmail.com",
-    "ilukbas@gmail.com",
-    "sinity@substack.com",  # operator's substack publisher address
-})
+_OPERATOR_EMAIL_ADDRESSES: frozenset[str] = frozenset(
+    {
+        "ezo.dev@gmail.com",
+        "ilukbas@gmail.com",
+        "sinity@substack.com",  # operator's substack publisher address
+    }
+)
 
 _EMAIL_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 

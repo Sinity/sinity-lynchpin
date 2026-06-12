@@ -25,7 +25,11 @@ def add_web(
 ) -> None:
     from ..materialization import ensure_materialized
 
-    ensure_materialized("webhistory", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "webhistory",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
     days = daily_browsing(start=start, end=end, ensure=False)
     _add_web_days(nodes, days=days, selected=selected)
 
@@ -81,8 +85,14 @@ def add_spotify(
     from ..materialization import ensure_materialized
     from ..sources.personal_signals import iter_spotify_daily_signals
 
-    ensure_materialized("spotify_daily", window=(start, end + timedelta(days=1)))
-    for row in iter_spotify_daily_signals(start=start, end=end + timedelta(days=1), ensure=False):
+    ensure_materialized(
+        "spotify_daily",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
+    for row in iter_spotify_daily_signals(
+        start=start, end=end + timedelta(days=1), ensure=False
+    ):
         top_artists = list(row.top_artists[:5])
         top_tracks = list(row.top_tracks[:5])
         nodes.append(

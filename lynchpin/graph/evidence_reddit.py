@@ -30,7 +30,7 @@ def add_reddit(
         return
 
     try:
-        rows = _daily_activity(start=start, end=end)
+        rows = _daily_activity(start=start, end=end, ensure=False)
     except SourceUnavailableError:
         return
 

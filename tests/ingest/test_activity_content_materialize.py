@@ -15,7 +15,13 @@ def test_materialize_activity_content_records_input_high_water(monkeypatch, tmp_
 
     monkeypatch.setattr(activity_content_materialize, "activity_content_input_files", lambda: (aw, titles))
     monkeypatch.setattr(activity_content_materialize, "load_title_classification_map", lambda: {})
-    monkeypatch.setattr(activity_content_materialize, "focus_spans", lambda **_kwargs: iter(()))
+    focus_calls = []
+
+    def fake_focus_spans(**kwargs):
+        focus_calls.append(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(activity_content_materialize, "focus_spans", fake_focus_spans)
 
     manifest = activity_content_materialize.materialize_activity_content(
         start=date(2026, 1, 1),
@@ -27,3 +33,5 @@ def test_materialize_activity_content_records_input_high_water(monkeypatch, tmp_
     assert manifest["schema_version"] == ACTIVITY_CONTENT_SCHEMA_VERSION
     assert manifest["input_file_count"] == 2
     assert manifest["input_latest_mtime"] is not None
+    assert focus_calls
+    assert all(call["enrich_polylogue"] is False for call in focus_calls)

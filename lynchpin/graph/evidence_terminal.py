@@ -26,7 +26,11 @@ def add_terminal(
 ) -> None:
     from ..materialization import ensure_materialized
 
-    ensure_materialized("atuin", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "atuin",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
 
     start_dt, end_dt = date_to_dt_range(start, end)
     sessions = tuple(shell_sessions(start=start_dt, end=end_dt, ensure=False))

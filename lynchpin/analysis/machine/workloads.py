@@ -24,6 +24,10 @@ WorkloadKind taxonomy:
   Background/scheduled:
     Backup            borg
     Browser           chrome, kitty scrollback
+    MediaService      stashbox/transmission/media processing
+    StorageMaintenance btrfs scrub/balance/fstrim
+    Observability     machine telemetry/below
+    SystemIO          journald/kernel writeback/system managers
   Other:
     Other             everything else (includes orphan candidates)
 """
@@ -68,6 +72,10 @@ class WorkloadKind(str, Enum):
     TestSuite = "test_suite"
     Backup = "backup"
     Browser = "browser"
+    MediaService = "media_service"
+    StorageMaintenance = "storage_maintenance"
+    Observability = "observability"
+    SystemIO = "system_io"
     Other = "other"
 
 
@@ -87,6 +95,10 @@ _COMM_RULES: list[tuple[re.Pattern[str], WorkloadKind]] = [
     (re.compile(r"^(\.polylogued-wra|polylogued)$"), WorkloadKind.PolylogueDaemon),
     (re.compile(r"^(\.borg-wrapped|borgbackup|borgbackup-chec|borgbackup-job-)"), WorkloadKind.Backup),
     (re.compile(r"^(chrome|chromium|\.chromium-brows|qutebrowser|firefox|kitty)$"), WorkloadKind.Browser),
+    (re.compile(r"^(stash|ffmpeg|transmission-da)$"), WorkloadKind.MediaService),
+    (re.compile(r"^(machine-telemetry|below)$"), WorkloadKind.Observability),
+    (re.compile(r"^(btrfs|fstrim)$"), WorkloadKind.StorageMaintenance),
+    (re.compile(r"^(systemd-journal|btrfs-transaction|kworker/.*)$"), WorkloadKind.SystemIO),
 ]
 
 # These comms are session-manager parents that double-count child IO via cgroup
@@ -100,6 +112,19 @@ def _classify(comm: str | None, cgroup: str | None) -> WorkloadKind | None:
         return WorkloadKind.Other
     if comm in _EXCLUDED_COMMS:
         return None  # session-manager parents double-count child IO
+    if cgroup:
+        if "stashbox.service" in cgroup or "transmission.service" in cgroup:
+            return WorkloadKind.MediaService
+        if (
+            "btrfs-scrub" in cgroup
+            or "mx500-balance.service" in cgroup
+            or "sinnix-fstrim.service" in cgroup
+        ):
+            return WorkloadKind.StorageMaintenance
+        if "machine-telemetry.service" in cgroup or "below.service" in cgroup:
+            return WorkloadKind.Observability
+        if "systemd-journald.service" in cgroup:
+            return WorkloadKind.SystemIO
     # Build-related comms running inside agent.slice are agent-launched work
     if cgroup and _AGENT_SLICE.search(cgroup) and _BUILD_COMMS.match(comm):
         return WorkloadKind.AgentBuild

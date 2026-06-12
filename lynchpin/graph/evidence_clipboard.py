@@ -11,6 +11,8 @@ from ..core.primitives import logical_date
 from ..core.project_mentions import projects_mentioned_in_text
 from .evidence_projects import include_project
 
+_MAX_PROJECT_MENTION_TEXT = 20_000
+
 
 def entries_in_range(*args: Any, **kwargs: Any) -> Any:
     from ..sources.clipboard import entries_in_range as impl
@@ -35,7 +37,8 @@ def add_clipboard(
         text = entry.value
         if not text:
             continue
-        mentioned = projects_mentioned_in_text(text)
+        text_sample = text[:_MAX_PROJECT_MENTION_TEXT]
+        mentioned = projects_mentioned_in_text(text_sample)
         # When no project is detected and selection is unrestricted, emit once
         # without a project so the entry is visible.
         projects_to_emit: tuple[str | None, ...]
@@ -49,7 +52,7 @@ def add_clipboard(
         for project in projects_to_emit:
             proj_tag = project or "none"
             node_id = (
-                f"clipboard:{entry.recorded_at.isoformat()}:{proj_tag}:{hash(text) & 0xFFFFFF:06x}"
+                f"clipboard:{entry.recorded_at.isoformat()}:{proj_tag}:{hash(text_sample) & 0xFFFFFF:06x}"
             )
             nodes.append(
                 EvidenceNode(
@@ -60,10 +63,10 @@ def add_clipboard(
                     project=project,
                     start=entry.recorded_at,
                     end=entry.recorded_at,
-                    summary=f"[{entry.kind}] {text[:200]}",
+                    summary=f"[{entry.kind}] {text_sample[:200]}",
                     payload={
                         "kind": entry.kind,
-                        "value": text[:1000],
+                        "value": text_sample[:1000],
                         "pinned": entry.pinned,
                         "file_path": entry.file_path,
                         "source_file": entry.source,

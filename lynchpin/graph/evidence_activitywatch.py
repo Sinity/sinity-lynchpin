@@ -10,10 +10,15 @@ from ..core.evidence_graph import EvidenceNode
 from ..core.primitives import date_to_dt_range, logical_date
 from .evidence_projects import include_project, normalize_project
 
+
 def ensure_activitywatch_derived(*, start: date, end: date) -> None:
     from ..materialization import ensure_materialized
 
-    ensure_materialized("activitywatch_derived", window=(start, end + timedelta(days=1)))
+    ensure_materialized(
+        "activitywatch_derived",
+        window=(start, end + timedelta(days=1)),
+        budget="manual",
+    )
 
 
 def attention(*args: Any, **kwargs: Any) -> Any:
@@ -143,89 +148,89 @@ def add_focus(
         )
 
     for profile in circadian(start=start, end=end, ensure=False):
-            project = normalize_project(profile.dominant_project)
-            if not include_project(project, selected):
-                continue
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-circadian:{profile.date.isoformat()}:{project}",
-                    kind="circadian_profile",
-                    source="activitywatch",
-                    date=profile.date,
-                    project=project,
-                    summary=f"circadian: peak hour={profile.hour}, dominant={profile.dominant_mode}",
-                    payload={
-                        "peak_hour": profile.hour,
-                        "active_min": profile.active_min,
-                        "dominant_mode": profile.dominant_mode,
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "materialized"),
-                )
+        project = normalize_project(profile.dominant_project)
+        if not include_project(project, selected):
+            continue
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-circadian:{profile.date.isoformat()}:{project}",
+                kind="circadian_profile",
+                source="activitywatch",
+                date=profile.date,
+                project=project,
+                summary=f"circadian: peak hour={profile.hour}, dominant={profile.dominant_mode}",
+                payload={
+                    "peak_hour": profile.hour,
+                    "active_min": profile.active_min,
+                    "dominant_mode": profile.dominant_mode,
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
 
     for idx, loop in enumerate(loops(start=start_dt, end=end_dt, ensure=False)):
-            project = normalize_project(loop.dominant_project)
-            if loop.span_count < 2 or not include_project(project, selected):
-                continue
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-loop:{loop.date.isoformat()}:{idx}",
-                    kind="focus_loop",
-                    source="activitywatch",
-                    date=loop.date,
-                    project=project,
-                    summary=f"focus loop: {loop.switch_count} switches {loop.context_a}<->{loop.context_b}, {loop.duration_min:.0f}m",
-                    payload={
-                        "switch_count": loop.switch_count,
-                        "span_count": loop.span_count,
-                        "context_a": loop.context_a,
-                        "context_b": loop.context_b,
-                        "duration_min": round(loop.duration_min, 1),
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "materialized"),
-                )
+        project = normalize_project(loop.dominant_project)
+        if loop.span_count < 2 or not include_project(project, selected):
+            continue
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-loop:{loop.date.isoformat()}:{idx}",
+                kind="focus_loop",
+                source="activitywatch",
+                date=loop.date,
+                project=project,
+                summary=f"focus loop: {loop.switch_count} switches {loop.context_a}<->{loop.context_b}, {loop.duration_min:.0f}m",
+                payload={
+                    "switch_count": loop.switch_count,
+                    "span_count": loop.span_count,
+                    "context_a": loop.context_a,
+                    "context_b": loop.context_b,
+                    "duration_min": round(loop.duration_min, 1),
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
 
     for frag in fragmentation(start=start, end=end, ensure=False):
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-frag:{frag.date.isoformat()}",
-                    kind="fragmentation_day",
-                    source="activitywatch",
-                    date=frag.date,
-                    project=None,
-                    summary=f"fragmentation: {frag.total_switches} switches, avg focus={frag.avg_focus_min:.0f}m, longest={frag.longest_focus_min:.0f}m",
-                    payload={
-                        "total_switches": frag.total_switches,
-                        "avg_focus_min": round(frag.avg_focus_min, 1),
-                        "longest_focus_min": round(frag.longest_focus_min, 1),
-                        "fragmentation_index": round(frag.fragmentation, 2),
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "materialized"),
-                )
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-frag:{frag.date.isoformat()}",
+                kind="fragmentation_day",
+                source="activitywatch",
+                date=frag.date,
+                project=None,
+                summary=f"fragmentation: {frag.total_switches} switches, avg focus={frag.avg_focus_min:.0f}m, longest={frag.longest_focus_min:.0f}m",
+                payload={
+                    "total_switches": frag.total_switches,
+                    "avg_focus_min": round(frag.avg_focus_min, 1),
+                    "longest_focus_min": round(frag.longest_focus_min, 1),
+                    "fragmentation_index": round(frag.fragmentation, 2),
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
 
     for attn in attention(start=start, end=end, ensure=False):
-            project = normalize_project(attn.top_project)
-            if not include_project(project, selected):
-                continue
-            nodes.append(
-                EvidenceNode(
-                    id=f"aw-attn:{attn.date.isoformat()}:{project}",
-                    kind="attention_day",
-                    source="activitywatch",
-                    date=attn.date,
-                    project=project,
-                    summary=f"attention: entropy={attn.entropy:.2f}, gini={attn.gini:.2f}, top={attn.top_project}",
-                    payload={
-                        "entropy": round(attn.entropy, 2),
-                        "gini": round(attn.gini, 2),
-                        "top_project": attn.top_project,
-                        "project_count": attn.project_count,
-                    },
-                    provenance=EvidenceProvenance("activitywatch", "materialized"),
-                )
+        project = normalize_project(attn.top_project)
+        if not include_project(project, selected):
+            continue
+        nodes.append(
+            EvidenceNode(
+                id=f"aw-attn:{attn.date.isoformat()}:{project}",
+                kind="attention_day",
+                source="activitywatch",
+                date=attn.date,
+                project=project,
+                summary=f"attention: entropy={attn.entropy:.2f}, gini={attn.gini:.2f}, top={attn.top_project}",
+                payload={
+                    "entropy": round(attn.entropy, 2),
+                    "gini": round(attn.gini, 2),
+                    "top_project": attn.top_project,
+                    "project_count": attn.project_count,
+                },
+                provenance=EvidenceProvenance("activitywatch", "materialized"),
             )
+        )
     for focus in project_focus_days(start=start_dt, end=end_dt, ensure=False):
         _append_project_focus_day(nodes, focus=focus, selected=selected)
 

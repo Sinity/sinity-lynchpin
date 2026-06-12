@@ -159,6 +159,26 @@ class MachineServiceCgroupIODelta:
     total_iops: float | None
     device_total_mib_pct: float | None
     disk_completed_iops_pct: float | None
+    caveats: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MachineDeviceUnattributedIO:
+    """Device-level IO not covered by any observed unit cgroup.
+
+    The residual (diskstats total minus the sum of observed cgroup deltas on
+    that device) makes attribution blind spots visible: kernel writeback,
+    btrfs workers, and units missing from the observed inventory all land
+    here instead of silently vanishing.
+    """
+
+    device: str
+    major: int | None
+    minor: int | None
+    device_total_mib: float
+    attributed_total_mib: float
+    unattributed_mib: float
+    unattributed_pct: float | None
 
 
 @dataclass(frozen=True)
@@ -199,6 +219,7 @@ class MachineServiceIOAttribution:
     service_cgroup_io: tuple[MachineServiceCgroupIODelta, ...] = ()
     service_cgroup_pressure: tuple[MachineServiceCgroupPressureSummary, ...] = ()
     load_shape: MachineWindowLoadShape | None = None
+    device_unattributed: tuple[MachineDeviceUnattributedIO, ...] = ()
     process_io_deltas: tuple[MachineProcessIODeltaSummary, ...] = ()
     below_processes: tuple[MachineBelowProcessIORate, ...] = ()
     below_errors: tuple[str, ...] = ()
@@ -294,6 +315,22 @@ def analyze_machine_service_io_window(
             top_per_sample=below_top_per_sample,
             limit=limit,
         )
+    cgroup_io_deltas = tuple(
+        sorted(
+            (
+                _service_cgroup_io_delta(rows, device_deltas)
+                for rows in _group_service_cgroup_io(
+                    _sampled_counter_envelopes(cgroup_io, start, end, _service_cgroup_io_key)
+                ).values()
+            ),
+            key=lambda item: (
+                -item.total_mib,
+                -(item.total_iops or 0.0),
+                item.scope,
+                item.unit,
+            ),
+        )
+    )
     return MachineServiceIOAttribution(
         start=start,
         end=end,
@@ -310,25 +347,7 @@ def analyze_machine_service_io_window(
         ),
         target=target,
         block_devices=device_deltas,
-        service_cgroup_io=tuple(
-            row
-            for row in sorted(
-                (
-                    _service_cgroup_io_delta(rows, device_deltas)
-                    for rows in _group_service_cgroup_io(
-                        _sampled_counter_envelopes(
-                            cgroup_io, start, end, _service_cgroup_io_key
-                        )
-                    ).values()
-                ),
-                key=lambda item: (
-                    -item.total_mib,
-                    -(item.total_iops or 0.0),
-                    item.scope,
-                    item.unit,
-                ),
-            )
-        ),
+        service_cgroup_io=cgroup_io_deltas,
         service_cgroup_pressure=tuple(
             sorted(
                 (
@@ -345,6 +364,7 @@ def analyze_machine_service_io_window(
             )
         ),
         load_shape=_classify_load_shape(pressure, device_deltas),
+        device_unattributed=_device_unattributed_io(device_deltas, cgroup_io_deltas),
         process_io_deltas=tuple(
             row
             for row in sorted(
@@ -703,10 +723,16 @@ def _service_cgroup_io_delta(
     devices: tuple[MachineBlockDeviceIODelta, ...],
 ) -> MachineServiceCgroupIODelta:
     ordered = sorted(rows, key=lambda row: row.observed_at)
-    read_bytes, _read_reset = _positive_counter_delta([row.rbytes for row in ordered])
-    write_bytes, _write_reset = _positive_counter_delta([row.wbytes for row in ordered])
-    read_ios, _rios_reset = _positive_counter_delta([row.rios for row in ordered])
-    write_ios, _wios_reset = _positive_counter_delta([row.wios for row in ordered])
+    read_bytes, read_reset = _positive_counter_delta([row.rbytes for row in ordered])
+    write_bytes, write_reset = _positive_counter_delta([row.wbytes for row in ordered])
+    read_ios, rios_reset = _positive_counter_delta([row.rios for row in ordered])
+    write_ios, wios_reset = _positive_counter_delta([row.wios for row in ordered])
+    caveats: list[str] = []
+    if read_reset or write_reset or rios_reset or wios_reset:
+        # Mirror _service_delta: unit restarts reset cgroup counters mid-window;
+        # the totals stay correct (positive-delta summation) but the consumer
+        # should know the window includes at least one restart.
+        caveats.append("counter_reset_detected")
     elapsed_s = max(
         (ordered[-1].observed_at - ordered[0].observed_at).total_seconds(), 0.0
     )
@@ -743,6 +769,7 @@ def _service_cgroup_io_delta(
             total_ios / elapsed_s if elapsed_s > 0 else None,
             device_total_iops,
         ),
+        caveats=tuple(caveats),
     )
 
 
@@ -835,6 +862,39 @@ def _pct(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None or denominator <= 0:
         return None
     return round((numerator / denominator) * 100.0, 1)
+
+
+def _device_unattributed_io(
+    devices: tuple[MachineBlockDeviceIODelta, ...],
+    cgroup_rows: tuple[MachineServiceCgroupIODelta, ...],
+) -> tuple[MachineDeviceUnattributedIO, ...]:
+    attributed: dict[tuple[int | None, int | None], float] = {}
+    for row in cgroup_rows:
+        if row.major is None or row.minor is None:
+            continue
+        key = (row.major, row.minor)
+        attributed[key] = attributed.get(key, 0.0) + row.total_mib
+    results = []
+    for device in devices:
+        if device.major is None or device.minor is None:
+            continue
+        attributed_mib = round(attributed.get((device.major, device.minor), 0.0), 1)
+        # Cgroup and diskstats counters live at different kernel layers, so
+        # the residual can be slightly negative; clamp to zero because only
+        # the positive gap means unobserved IO.
+        unattributed = round(max(device.total_mib - attributed_mib, 0.0), 1)
+        results.append(
+            MachineDeviceUnattributedIO(
+                device=device.device,
+                major=device.major,
+                minor=device.minor,
+                device_total_mib=device.total_mib,
+                attributed_total_mib=attributed_mib,
+                unattributed_mib=unattributed,
+                unattributed_pct=_pct(unattributed, device.total_mib),
+            )
+        )
+    return tuple(sorted(results, key=lambda item: -item.unattributed_mib))
 
 
 def _positive_counter_delta(values: Iterable[int | None]) -> tuple[int, bool]:
