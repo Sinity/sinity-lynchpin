@@ -174,3 +174,40 @@ def test_compact_materialization_status_reports_latest_snapshot(
     assert product_status["materialization"]["status"] == "ready"
     assert product_status["materialization"]["latest_materialized_refresh_id"] == "rid-status"
     assert "latest_refresh_id" not in product_status["materialization"]
+
+
+def test_compact_materialization_status_reports_degraded_available_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tests.mcp.conftest import setup_substrate
+
+    setup_substrate(tmp_path, monkeypatch)
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    monkeypatch.setattr(
+        "lynchpin.ingest.materialization_status._machine_pressure_snapshot",
+        lambda: {"state": "ready", "pressure": "normal", "blockers": []},
+    )
+    with connect(substrate_path()) as conn:
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (
+                'rid-failed', 'error', 'activity_content coverage gap',
+                DATE '2026-05-01', DATE '2026-05-31', 'materialized',
+                '{"commits":1}', TIMESTAMPTZ '2026-06-05 12:00:00+00',
+                TIMESTAMPTZ '2026-06-05 12:01:00+00'
+            )
+            """
+        )
+
+    product_status = compact_materialization_status()
+
+    assert product_status["health"] == "attention"
+    assert product_status["materialization"]["status"] == "failed"
+    assert product_status["materialization"]["latest_materialized_refresh_id"] is None
+    assert product_status["materialization"]["latest_available_refresh_id"] == "rid-failed"
+    assert product_status["materialization"]["latest_available_status"] == "error"
+    assert "activity_content coverage gap" in product_status["materialization"]["reason"]

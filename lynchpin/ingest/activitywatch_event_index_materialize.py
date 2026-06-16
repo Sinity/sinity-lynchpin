@@ -50,7 +50,10 @@ def materialize_activitywatch_event_index(
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if not isinstance(payload, dict) or not payload.get("bucket"):
                 continue
             event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))

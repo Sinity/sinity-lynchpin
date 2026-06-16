@@ -129,8 +129,32 @@ class GitHubFetchResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class GitHubItemInventory:
+    repo: str
+    slug: str
+    kind: GitHubItemKind
+    number: int
+    state: GitHubItemState
+    updated_at: datetime | None
+    closed_at: datetime | None
+    merged_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class GitHubInventoryResult:
+    status: Literal["ok", "unavailable", "error"]
+    repo: str
+    slug: str | None
+    items: tuple[GitHubItemInventory, ...]
+    reason: str | None = None
+
+
 CommandRunner = Callable[[Sequence[str], Path | None], subprocess.CompletedProcess[str]]
 GITHUB_CACHE_TTL_SECONDS = 48 * 60 * 60
+GITHUB_COMMAND_TIMEOUT_SECONDS = 180
+_ISSUE_INVENTORY_FIELDS = "number,state,updatedAt,closedAt"
+_PR_INVENTORY_FIELDS = "number,state,updatedAt,closedAt,mergedAt"
 
 
 def repo_slug(repo_path: Path) -> str | None:
@@ -177,6 +201,30 @@ def fetch_prs(
 ) -> GitHubFetchResult:
     """Fetch PRs with comments for a local repo."""
     return _fetch_items(repo_path, kind="pr", state=state, limit=limit, runner=runner, use_cache=use_cache)
+
+
+def fetch_issue_inventory(
+    repo_path: Path,
+    *,
+    state: Literal["open", "closed", "all"] = "all",
+    limit: int = 100,
+    runner: CommandRunner | None = None,
+    use_cache: bool = True,
+) -> GitHubInventoryResult:
+    """Fetch lightweight issue identity/lifecycle metadata for staleness checks."""
+    return _fetch_inventory(repo_path, kind="issue", state=state, limit=limit, runner=runner, use_cache=use_cache)
+
+
+def fetch_pr_inventory(
+    repo_path: Path,
+    *,
+    state: Literal["open", "closed", "merged", "all"] = "all",
+    limit: int = 100,
+    runner: CommandRunner | None = None,
+    use_cache: bool = True,
+) -> GitHubInventoryResult:
+    """Fetch lightweight PR identity/lifecycle metadata for staleness checks."""
+    return _fetch_inventory(repo_path, kind="pr", state=state, limit=limit, runner=runner, use_cache=use_cache)
 
 
 def fetch_issue(
@@ -364,6 +412,36 @@ def _fetch_items(
     return GitHubFetchResult("ok", repo_path.name, slug, items)
 
 
+def _fetch_inventory(
+    repo_path: Path,
+    *,
+    kind: GitHubItemKind,
+    state: str,
+    limit: int,
+    runner: CommandRunner | None,
+    use_cache: bool,
+) -> GitHubInventoryResult:
+    if shutil.which("gh") is None and runner is None:
+        return GitHubInventoryResult("unavailable", repo_path.name, None, (), "gh_not_found")
+    slug = repo_slug(repo_path) if runner is None else repo_slug_with_runner(repo_path, runner)
+    if slug is None:
+        return GitHubInventoryResult("unavailable", repo_path.name, None, (), "github_remote_not_found")
+    fields = _PR_INVENTORY_FIELDS if kind == "pr" else _ISSUE_INVENTORY_FIELDS
+    args = ["gh", kind, "list", "--repo", slug, "--state", state, "--limit", str(limit), "--json", fields]
+    result = _run_cached(args, repo_path, runner=runner, use_cache=use_cache)
+    if result.returncode != 0:
+        reason = result.stderr.strip() or f"gh_{kind}_inventory_failed"
+        return GitHubInventoryResult("error", repo_path.name, slug, (), reason)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return GitHubInventoryResult("error", repo_path.name, slug, (), f"invalid_json: {exc}")
+    if not isinstance(payload, list):
+        return GitHubInventoryResult("error", repo_path.name, slug, (), "unexpected_json_shape")
+    items = tuple(_inventory_from_payload(repo_path.name, slug, kind, row) for row in payload if isinstance(row, dict))
+    return GitHubInventoryResult("ok", repo_path.name, slug, items)
+
+
 def _fetch_item(
     repo_path: Path,
     *,
@@ -452,6 +530,19 @@ def _item_from_payload(repo: str, slug: str, kind: GitHubItemKind, payload: dict
         review_decision=_str_or_none(payload.get("reviewDecision")),
         reviews=_reviews(payload.get("reviews")),
         latest_reviews=_reviews(payload.get("latestReviews")),
+    )
+
+
+def _inventory_from_payload(repo: str, slug: str, kind: GitHubItemKind, payload: dict[str, object]) -> GitHubItemInventory:
+    return GitHubItemInventory(
+        repo=repo,
+        slug=slug,
+        kind=kind,
+        number=_int(payload.get("number")),
+        state=_state(payload, kind),
+        updated_at=_dt(payload.get("updatedAt")),
+        closed_at=_dt(payload.get("closedAt")),
+        merged_at=_dt(payload.get("mergedAt")),
     )
 
 
@@ -565,7 +656,13 @@ def _str_or_none(value: object) -> str | None:
 
 
 def _run(args: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(args), cwd=cwd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(
+        list(args),
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=GITHUB_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 def _run_cached(
@@ -647,7 +744,9 @@ __all__ = [
     "GitHubActor",
     "GitHubComment",
     "GitHubFetchResult",
+    "GitHubInventoryResult",
     "GitHubItem",
+    "GitHubItemInventory",
     "GitHubLabel",
     "GitHubLifecycleClassification",
     "GitHubReview",
@@ -659,8 +758,10 @@ __all__ = [
     "extract_commit_refs",
     "extract_issue_refs",
     "fetch_issue",
+    "fetch_issue_inventory",
     "fetch_issues",
     "fetch_pr",
+    "fetch_pr_inventory",
     "fetch_pr_review_comments",
     "fetch_prs",
     "lifecycle_summary",

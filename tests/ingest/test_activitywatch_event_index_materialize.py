@@ -109,6 +109,43 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
     assert manifest["window_end"] == "2026-06-07"
 
 
+def test_materialize_activitywatch_event_index_skips_corrupt_canonical_lines(
+    monkeypatch, tmp_path
+):
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    canonical = tmp_path / "activitywatch/events.ndjson"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(
+        "\n".join(
+            [
+                '": "aw-watcher-window_host", "data": {"app": "truncated"}',
+                json.dumps(
+                    {
+                        "bucket": "aw-watcher-window_host",
+                        "start": "2026-06-06T08:00:00+00:00",
+                        "end": "2026-06-06T08:30:00+00:00",
+                        "data": {"app": "new-window"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    canonical.with_suffix(".manifest.json").write_text('{"row_count": 1}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+
+    manifest = mod.materialize_activitywatch_event_index(
+        root=tmp_path,
+        start=date(2026, 6, 6),
+        end=date(2026, 6, 7),
+    )
+
+    assert manifest["row_count"] == 1
+    assert manifest["covered_dates"] == ["2026-06-06"]
+
+
 def test_indexed_activitywatch_events_read_only_relevant_day_files(tmp_path):
     from lynchpin.sources.activitywatch_event_index import (
         activitywatch_event_index_path,

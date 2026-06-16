@@ -29,7 +29,7 @@ def source_readiness(*, start: date, end: date, include_polylogue_product_counts
     return SourceReadinessReport(start=start, end=end, generated_at=datetime.now(timezone.utc), sources=tuple(sorted(items, key=lambda item: item.source)))
 
 def _github_source(*, include_frontier: bool, start: date, end: date, repair: bool) -> SourceReadiness:
-    base = _materialized_contract_source('github_context', 'GitHub lifecycle context product is materialized within the 48h network refresh contract', 'GitHub lifecycle context product is missing', start=start, end=end, repair=repair)
+    base = _materialized_contract_source('github_context', 'GitHub lifecycle context product is materialized within the short live gh refresh contract', 'GitHub lifecycle context product is missing', start=start, end=end, repair=repair)
     reason = base.reason
     caveats = base.caveats
     if include_frontier:

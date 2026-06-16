@@ -35,6 +35,8 @@ data/raw/
 .cclsp.json
 .mcp.json
 
+.serena/
+
 AGENTS.override.md
 lynchpin.egg-info/
 usb.ids

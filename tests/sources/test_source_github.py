@@ -8,6 +8,8 @@ from lynchpin.sources.github import (
     extract_commit_refs,
     extract_issue_refs,
     fetch_pr,
+    fetch_issue_inventory,
+    fetch_pr_inventory,
     fetch_issues,
     fetch_pr_review_comments,
     lifecycle_summary,
@@ -108,6 +110,89 @@ def test_fetch_issues_uses_cache_for_real_gh_calls(monkeypatch, tmp_path: Path):
     assert first.status == "ok"
     assert second.status == "ok"
     assert len(calls) == 1
+
+
+def test_fetch_pr_inventory_uses_lightweight_fields(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    payload = [
+        {
+            "number": 5,
+            "state": "MERGED",
+            "updatedAt": "2026-05-03T00:00:00Z",
+            "closedAt": "2026-05-03T00:00:00Z",
+            "mergedAt": "2026-05-03T00:00:00Z",
+        }
+    ]
+    seen: list[list[str]] = []
+
+    def runner(args, cwd):
+        if args[:4] == ["git", "remote", "get-url", "origin"]:
+            return _completed(args, cwd, stdout="git@github.com:Sinity/lynchpin.git\n")
+        seen.append(list(args))
+        return _completed(args, cwd, stdout=json.dumps(payload))
+
+    result = fetch_pr_inventory(tmp_path, runner=runner)
+
+    assert result.status == "ok"
+    assert seen == [
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "Sinity/lynchpin",
+            "--state",
+            "all",
+            "--limit",
+            "100",
+            "--json",
+            "number,state,updatedAt,closedAt,mergedAt",
+        ]
+    ]
+    assert result.items[0].number == 5
+    assert result.items[0].state == "merged"
+    assert result.items[0].merged_at is not None
+
+
+def test_fetch_issue_inventory_uses_issue_supported_fields(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    payload = [
+        {
+            "number": 9,
+            "state": "CLOSED",
+            "updatedAt": "2026-05-04T00:00:00Z",
+            "closedAt": "2026-05-04T00:00:00Z",
+        }
+    ]
+    seen: list[list[str]] = []
+
+    def runner(args, cwd):
+        if args[:4] == ["git", "remote", "get-url", "origin"]:
+            return _completed(args, cwd, stdout="git@github.com:Sinity/lynchpin.git\n")
+        seen.append(list(args))
+        return _completed(args, cwd, stdout=json.dumps(payload))
+
+    result = fetch_issue_inventory(tmp_path, runner=runner)
+
+    assert result.status == "ok"
+    assert seen == [
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            "Sinity/lynchpin",
+            "--state",
+            "all",
+            "--limit",
+            "100",
+            "--json",
+            "number,state,updatedAt,closedAt",
+        ]
+    ]
+    assert result.items[0].number == 9
+    assert result.items[0].state == "closed"
+    assert result.items[0].closed_at is not None
 
 
 def test_fetch_pr_refreshes_cache_after_48h(monkeypatch, tmp_path: Path):

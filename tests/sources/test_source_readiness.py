@@ -256,7 +256,7 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
             name=name,
             status="ready",
             changed=False,
-            reason="GitHub lifecycle context product is materialized within the 48h network refresh contract",
+            reason="GitHub lifecycle context product is materialized within the short live gh refresh contract",
             elapsed_ms=0,
             product_paths=(tmp_path / "github/context.ndjson",),
             source_high_water={"row_count": 1, "first_date": "2026-05-01", "last_date": "2026-05-06"},

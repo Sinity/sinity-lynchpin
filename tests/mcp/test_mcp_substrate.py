@@ -673,8 +673,71 @@ def test_readiness_report_uses_latest_successful_promotion_run(
     result = substrate_readiness_report()
 
     assert result["latest_materialized_refresh_id"] == "rid-full"
+    assert result["latest_available_refresh_id"] == "rid-full"
+    assert result["latest_available_status"] == "ok"
     assert "latest_refresh_id" not in result
     assert {source["source"] for source in result["sources"]} == {"commits"}
+
+
+def test_readiness_report_exposes_failed_promotion_as_degraded_available_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.substrate import substrate_readiness_report
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (
+                'rid-failed', 'error', 'activity_content coverage gap',
+                DATE '2026-05-01', DATE '2026-05-31', 'materialized',
+                '{"evidence_graph_nodes":1}', TIMESTAMPTZ '2026-06-05 12:00:00+00',
+                TIMESTAMPTZ '2026-06-05 12:01:00+00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status (
+                refresh_id, source, kind, status, reason, row_count,
+                window_start, window_end, recorded_at
+            )
+            VALUES
+              ('rid-failed', 'commits', 'stage', 'ok', NULL, 1,
+               DATE '2026-05-01', DATE '2026-05-31', TIMESTAMPTZ '2026-06-05 12:01:00+00'),
+              ('rid-failed', 'activity_content', 'continuous', 'unavailable',
+               'coverage gap', 0, DATE '2026-05-01', DATE '2026-05-31',
+               TIMESTAMPTZ '2026-06-05 12:01:00+00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build
+            (refresh_id, start_date, end_date, mode, projects, node_count, edge_count, caveats, generated_at)
+            VALUES (
+                'rid-failed', DATE '2026-05-01', DATE '2026-05-31',
+                'materialized', [], 10, 20, '[]',
+                TIMESTAMPTZ '2026-06-05 12:00:30+00'
+            )
+            """
+        )
+
+    result = substrate_readiness_report()
+
+    assert result["latest_materialized_refresh_id"] is None
+    assert result["latest_available_refresh_id"] == "rid-failed"
+    assert result["latest_available_status"] == "error"
+    assert result["summary"]["ok"] == 1
+    assert result["summary"]["unavailable"] == 1
+    assert result["summary"]["trustworthy"] is False
+    assert result["materialization"]["status"] == "failed"
+    assert result["materialization"]["source_high_water"]["latest_available_refresh_id"] == "rid-failed"
+    assert result["evidence_graph"]["refresh_id"] == "rid-failed"
 
 
 def test_personal_signal_tool_fails_when_backing_stage_missing(

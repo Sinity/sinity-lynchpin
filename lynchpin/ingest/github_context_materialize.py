@@ -5,16 +5,24 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
+from ..core.parse import parse_datetime
+from ..core.source_contracts import GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS
 from ..sources.git import commit_facts
-from ..sources.github import GITHUB_CACHE_TTL_SECONDS, fetch_issue, fetch_issues, fetch_pr, fetch_prs, repo_slug
+from ..sources.github import (
+    GitHubItemInventory,
+    fetch_issue,
+    fetch_issue_inventory,
+    fetch_pr,
+    fetch_pr_inventory,
+    repo_slug,
+)
 from ..sources.github_context import (
     GITHUB_CONTEXT_SCHEMA_VERSION,
     active_github_repos,
@@ -23,15 +31,22 @@ from ..sources.github_context import (
 )
 from ._manifest import write_manifest
 
+log = logging.getLogger(__name__)
+
+DEFAULT_GITHUB_LIST_LIMIT = 10_000
+
 
 def materialize_github_context(
     *,
     output: Path | None = None,
     start: date | None = None,
     end: date | None = None,
-    open_limit: int = 100,
-    closed_limit: int = 40,
-    closed_pr_limit: int = 40,
+    open_limit: int = DEFAULT_GITHUB_LIST_LIMIT,
+    closed_limit: int = DEFAULT_GITHUB_LIST_LIMIT,
+    closed_pr_limit: int = DEFAULT_GITHUB_LIST_LIMIT,
+    commit_ref_fetch_limit: int = 20,
+    projects: set[str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     output = output or github_context_path()
     if (start is None) != (end is None):
@@ -42,28 +57,60 @@ def materialize_github_context(
     if end <= start:
         raise MaterializationError("github_context_materialize", reason="GitHub context materialization end must be after start")
 
-    rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+    rows: dict[tuple[str, str, int], dict[str, Any]] = _load_existing_rows(output)
     statuses: Counter[str] = Counter()
     reasons: Counter[str] = Counter()
+    detail_refreshes = 0
+    detail_reuses = 0
+    detail_misses = 0
+    inventory_items_seen = 0
+    missing_commit_refs_seen = 0
+    missing_commit_refs_attempted = 0
+    missing_commit_refs_fetched = 0
+    missing_commit_refs_deferred = 0
 
     active_paths = _active_repo_paths()
+    if projects is not None:
+        active_paths = {project: path for project, path in active_paths.items() if project in projects}
     for project, path in active_paths.items():
         slug = repo_slug(path)
         if slug is None:
             continue
-        for result in (
-            fetch_issues(path, state="open", limit=open_limit, use_cache=False),
-            fetch_issues(path, state="closed", limit=closed_limit, use_cache=False),
-            fetch_prs(path, state="open", limit=open_limit, use_cache=False),
-            fetch_prs(path, state="closed", limit=closed_pr_limit, use_cache=False),
-        ):
+        if progress is not None:
+            progress(f"GitHub context: refreshing {project} ({slug})")
+        inventories = [
+            ("issue", "all", lambda: fetch_issue_inventory(path, state="all", limit=max(open_limit, closed_limit), use_cache=False)),
+            ("pr", "all", lambda: fetch_pr_inventory(path, state="all", limit=max(open_limit, closed_pr_limit), use_cache=False)),
+        ]
+        for kind, state, refresh in inventories:
+            if progress is not None:
+                progress(f"GitHub context: fetching {project} {kind}s {state} inventory")
+            result = refresh()
             statuses[result.status] += 1
             if result.reason:
                 reasons[result.reason] += 1
-            for item in result.items:
-                if item.kind == "pr":
-                    item = fetch_pr(path, item.number, use_cache=False, include_review_comments=True) or item
-                rows[(project, item.kind, item.number)] = github_item_to_payload(project=project, item=item)
+            if result.status != "ok":
+                continue
+            inventory_items_seen += len(result.items)
+            _reconcile_current_open_rows(rows, project=project, kind=kind, items=result.items)
+            for inventory in result.items:
+                key = (project, inventory.kind, inventory.number)
+                existing = rows.get(key)
+                if existing is not None and not _inventory_requires_detail(existing, inventory):
+                    detail_reuses += 1
+                    _merge_inventory_metadata(existing, inventory)
+                    continue
+                if progress is not None:
+                    progress(f"GitHub context: hydrating {project} {inventory.kind} #{inventory.number}")
+                if inventory.kind == "pr":
+                    item = fetch_pr(path, inventory.number, use_cache=False, include_review_comments=True)
+                else:
+                    item = fetch_issue(path, inventory.number, use_cache=False)
+                if item is None:
+                    detail_misses += 1
+                    continue
+                detail_refreshes += 1
+                rows[key] = github_item_to_payload(project=project, item=item)
 
     for fact in commit_facts(start=start, end=end, include_paths=False):
         project = fact.repo
@@ -74,16 +121,33 @@ def materialize_github_context(
 
         refs = extract_commit_refs(fact.subject)
         for number in sorted(refs["prs"]):
-            item = fetch_pr(path, number, use_cache=False, include_review_comments=True, max_age_seconds=GITHUB_CACHE_TTL_SECONDS)
+            if (project, "pr", number) in rows:
+                continue
+            missing_commit_refs_seen += 1
+            if missing_commit_refs_attempted >= commit_ref_fetch_limit:
+                missing_commit_refs_deferred += 1
+                continue
+            missing_commit_refs_attempted += 1
+            item = fetch_pr(path, number, use_cache=False, include_review_comments=True)
             if item is not None:
                 rows[(project, "pr", number)] = github_item_to_payload(project=project, item=item)
+                missing_commit_refs_fetched += 1
         for number in sorted(refs["issues"] - refs["prs"]):
-            item = fetch_issue(path, number, use_cache=False, max_age_seconds=GITHUB_CACHE_TTL_SECONDS)
+            if (project, "issue", number) in rows:
+                continue
+            missing_commit_refs_seen += 1
+            if missing_commit_refs_attempted >= commit_ref_fetch_limit:
+                missing_commit_refs_deferred += 1
+                continue
+            missing_commit_refs_attempted += 1
+            item = fetch_issue(path, number, use_cache=False)
             if item is not None:
                 rows[(project, "issue", number)] = github_item_to_payload(project=project, item=item)
+                missing_commit_refs_fetched += 1
 
     ordered = [rows[key] for key in sorted(rows)]
     _raise_for_failed_refresh(statuses=statuses, reasons=reasons, active_project_count=len(active_paths))
+    _raise_for_missing_detail_fetches(detail_misses)
 
     input_files = _repo_git_inputs(active_paths)
     manifest = {
@@ -102,12 +166,21 @@ def materialize_github_context(
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
         "window_semantics": "start inclusive, end exclusive",
-        "ttl_seconds": GITHUB_CACHE_TTL_SECONDS,
+        "ttl_seconds": GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS,
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
         "fetch_status_counts": dict(statuses),
         "fetch_reason_counts": dict(reasons),
+        "inventory_items_seen": inventory_items_seen,
+        "detail_refreshes": detail_refreshes,
+        "detail_reuses": detail_reuses,
+        "detail_misses": detail_misses,
+        "missing_commit_refs_seen": missing_commit_refs_seen,
+        "missing_commit_refs_attempted": missing_commit_refs_attempted,
+        "missing_commit_refs_fetched": missing_commit_refs_fetched,
+        "missing_commit_refs_deferred": missing_commit_refs_deferred,
+        "commit_ref_fetch_limit": commit_ref_fetch_limit,
         "project_counts": dict(Counter(str(row["project"]) for row in ordered)),
     }
     _write_product(output=output, rows=ordered, manifest=manifest)
@@ -124,6 +197,101 @@ def materialize_github_context(
 
 def _active_repo_paths() -> dict[str, Path]:
     return active_github_repos()
+
+
+def _load_existing_rows(output: Path) -> dict[tuple[str, str, int], dict[str, Any]]:
+    rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+    if not output.exists():
+        return rows
+    with output.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            project = str(row.get("project") or "")
+            kind = str(row.get("kind") or "")
+            try:
+                number = int(row.get("number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if project and kind in {"issue", "pr"} and number:
+                rows[(project, kind, number)] = row
+    return rows
+
+
+def _reconcile_current_open_rows(
+    rows: dict[tuple[str, str, int], dict[str, Any]],
+    *,
+    project: str,
+    kind: str,
+    items: tuple[Any, ...],
+) -> None:
+    if any(item.state != "open" for item in items):
+        open_items = [item for item in items if item.state == "open"]
+    else:
+        open_items = list(items)
+    live_open_numbers = {int(item.number) for item in open_items}
+    stale_keys = [
+        key
+        for key, row in rows.items()
+        if key[0] == project
+        and key[1] == kind
+        and str(row.get("state") or "").lower() == "open"
+        and key[2] not in live_open_numbers
+    ]
+    for key in stale_keys:
+        del rows[key]
+
+
+def _inventory_requires_detail(existing: dict[str, Any], inventory: GitHubItemInventory) -> bool:
+    if str(existing.get("kind") or "") != inventory.kind:
+        return True
+    if str(existing.get("state") or "").lower() != inventory.state:
+        return True
+    existing_updated = _payload_datetime(existing.get("updated_at"))
+    if inventory.updated_at is None or existing_updated is None:
+        return True
+    if inventory.updated_at > existing_updated:
+        return True
+    if inventory.kind == "pr" and inventory.state == "open" and not _can_reuse_existing_pr(existing, inventory):
+        return True
+    return False
+
+
+def _merge_inventory_metadata(existing: dict[str, Any], inventory: GitHubItemInventory) -> None:
+    existing["repo"] = existing.get("repo") or inventory.repo
+    existing["slug"] = existing.get("slug") or inventory.slug
+    existing["kind"] = inventory.kind
+    existing["number"] = inventory.number
+    existing["state"] = inventory.state
+    if inventory.updated_at is not None:
+        existing["updated_at"] = inventory.updated_at.isoformat()
+    if inventory.closed_at is not None:
+        existing["closed_at"] = inventory.closed_at.isoformat()
+    if inventory.merged_at is not None:
+        existing["merged_at"] = inventory.merged_at.isoformat()
+
+
+def _payload_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        return parse_datetime(value)
+    return None
+
+
+def _can_reuse_existing_pr(existing: dict[str, Any] | None, listed_item) -> bool:
+    if existing is None:
+        return False
+    state = str(existing.get("state") or listed_item.state or "").lower()
+    if state == "open" or listed_item.state == "open":
+        return False
+    return bool(existing.get("review_comments") or existing.get("reviews") or existing.get("comments"))
 
 
 def _repo_git_inputs(active_paths: dict[str, Path] | None = None) -> tuple[Path, ...]:
@@ -156,6 +324,15 @@ def _raise_for_failed_refresh(
     if reason_detail:
         reason = f"{reason}; {reason_detail}"
     raise MaterializationError("github_context", reason=reason)
+
+
+def _raise_for_missing_detail_fetches(detail_misses: int) -> None:
+    if detail_misses == 0:
+        return
+    raise MaterializationError(
+        "github_context",
+        reason=f"GitHub detail refresh failed for {detail_misses} item(s); existing product preserved",
+    )
 
 
 def _write_product(

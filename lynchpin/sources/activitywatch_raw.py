@@ -61,7 +61,7 @@ def events(
         from ..materialization import ensure_materialized
 
         window = _datetime_window(start, end)
-        ensure_materialized("activitywatch", window=window)
+        canonical_result = ensure_materialized("activitywatch", window=window)
         index_result = ensure_materialized("activitywatch_event_index", window=window)
         if index_result.status in {"ready", "updated"}:
             yield from iter_indexed_activitywatch_events(
@@ -69,6 +69,9 @@ def events(
                 start=start,
                 end=end,
             )
+            return
+        if canonical_result.status not in {"ready", "updated"}:
+            yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end)
             return
         path = canonical_activitywatch_events_path()
         if not path.exists():

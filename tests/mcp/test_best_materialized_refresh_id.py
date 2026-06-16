@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from lynchpin.substrate.snapshots import (
     best_materialized_refresh_id,
+    latest_promotion_snapshot,
     latest_materialized_refresh_id,
     ordered_materialized_refresh_ids,
 )
@@ -224,6 +225,44 @@ def test_snapshot_helpers_do_not_fallback_when_promotion_runs_are_failed_only(
     try:
         assert latest_materialized_refresh_id(test_conn, caller="test.failed_only") is None
         assert ordered_materialized_refresh_ids(test_conn, caller="test.failed_only") == []
+    finally:
+        test_conn.close()
+
+
+def test_latest_promotion_snapshot_reports_failed_promotion_attempt(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE substrate_promotion_run (
+            refresh_id VARCHAR,
+            status VARCHAR,
+            reason VARCHAR,
+            finished_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO substrate_promotion_run VALUES (?, ?, ?, ?)",
+        [
+            "r-failed",
+            "error",
+            "activity_content coverage gap",
+            datetime(2026, 5, 24, 10, tzinfo=timezone.utc),
+        ],
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert latest_promotion_snapshot(test_conn, caller="test.failed_attempt") == (
+            "r-failed",
+            datetime(2026, 5, 24, 10, tzinfo=timezone.utc),
+            "error",
+            "activity_content coverage gap",
+        )
     finally:
         test_conn.close()
 

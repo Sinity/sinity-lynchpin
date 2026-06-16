@@ -34,6 +34,12 @@ class Step:
     name: str
     fn: Callable[..., Any]
     depends_on: list[str] = field(default_factory=list)
+    # Optional content-key: a callable returning a stable identity of this
+    # step's inputs (e.g. a git HEAD sha + code version). When present and
+    # unchanged since the last successful run, the step may be memoized
+    # (skipped) because its output would be byte-identical. See
+    # ``lynchpin.analysis.core.memo``.
+    fingerprint: Callable[[], str | None] | None = None
 
     def __hash__(self) -> int:
         return hash(self.name)

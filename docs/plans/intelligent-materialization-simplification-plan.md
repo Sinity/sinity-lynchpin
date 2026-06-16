@@ -983,7 +983,7 @@ Keep these capabilities, but simplify their surface:
   Public daily reads convert their inclusive date API to the materializer's
   half-open window, while graph/operator paths that already converged the
   product pass `ensure=False`.
-- GitHub context materialization uses a 48h network-refresh contract. Products
+- GitHub context materialization uses a short live-gh refresh contract. Products
   older than that trigger a network refresh with cache bypass; if the network
   refresh fails, the result is `blocked` rather than `ready` so stale GitHub
   lifecycle data cannot silently satisfy freshness-sensitive reads.

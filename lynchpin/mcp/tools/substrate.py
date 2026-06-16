@@ -260,30 +260,47 @@ def substrate_readiness_report() -> dict[str, Any]:
         substrate_version = int(version_row[0]) if version_row else None
 
         # ── latest materialized snapshot ID ────────────────────────────────
-        from lynchpin.substrate.snapshots import latest_materialized_snapshot
+        from lynchpin.substrate.snapshots import latest_materialized_snapshot, latest_promotion_snapshot
 
         latest_row = latest_materialized_snapshot(conn, caller="substrate_readiness_report")
 
         if latest_row is None:
-            materialization = substrate_materialization_snapshot(path).to_json()
-            return {
-                "substrate_version": substrate_version,
-                "latest_materialized_refresh_id": None,
-                "latest_recorded_at": None,
-                "sources": [],
-                "evidence_graph": None,
-                "summary": {
-                    "ok": 0, "empty": 0, "unavailable": 0, "error": 0,
-                    "trustworthy": False,
-                },
-                "materialization": materialization,
-            }
+            latest_attempt = latest_promotion_snapshot(
+                conn,
+                caller="substrate_readiness_report",
+            )
+            if latest_attempt is None:
+                materialization = substrate_materialization_snapshot(path).to_json()
+                return {
+                    "substrate_version": substrate_version,
+                    "latest_materialized_refresh_id": None,
+                    "latest_recorded_at": None,
+                    "latest_available_refresh_id": None,
+                    "latest_available_status": None,
+                    "sources": [],
+                    "evidence_graph": None,
+                    "summary": {
+                        "ok": 0, "empty": 0, "unavailable": 0, "error": 0,
+                        "trustworthy": False,
+                    },
+                    "materialization": materialization,
+                }
+            latest_refresh_id, latest_recorded_at, promotion_status, promotion_reason = latest_attempt
+            latest_materialized_id = None
+        else:
+            latest_refresh_id, latest_recorded_at = latest_row
+            promotion_status = "ok"
+            promotion_reason = None
+            latest_materialized_id = str(latest_refresh_id)
 
-        latest_refresh_id, latest_recorded_at = latest_row
         materialization = substrate_materialization_snapshot(
             path,
-            latest_materialized_refresh_id=str(latest_refresh_id),
+            latest_materialized_refresh_id=latest_materialized_id,
             latest_recorded_at=latest_recorded_at,
+            latest_available_refresh_id=str(latest_refresh_id),
+            latest_available_recorded_at=latest_recorded_at,
+            latest_available_status=promotion_status,
+            latest_available_reason=promotion_reason,
         ).to_json()
 
         # ── per-source status for that refresh ─────────────────────────────
@@ -350,13 +367,19 @@ def substrate_readiness_report() -> dict[str, Any]:
         if s in by_kind:
             by_kind[s] += 1
     summary["trustworthy"] = (
-        summary["unavailable"] == 0 and summary["error"] == 0 and len(sources) > 0
+        promotion_status == "ok"
+        and summary["unavailable"] == 0
+        and summary["error"] == 0
+        and len(sources) > 0
     )
 
     return {
         "substrate_version": substrate_version,
-        "latest_materialized_refresh_id": latest_refresh_id,
+        "latest_materialized_refresh_id": latest_materialized_id,
         "latest_recorded_at": _json_safe(latest_recorded_at),
+        "latest_available_refresh_id": str(latest_refresh_id),
+        "latest_available_status": promotion_status,
+        "latest_available_reason": promotion_reason,
         "sources": sources,
         "evidence_graph": evidence_graph,
         "summary": summary,

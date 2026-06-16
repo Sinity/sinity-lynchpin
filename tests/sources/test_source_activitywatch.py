@@ -276,6 +276,36 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
     assert [event.data for event in web] == [{"url": "https://example.com"}]
 
 
+def test_activitywatch_raw_falls_back_to_live_db_when_canonical_refresh_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    live = tmp_path / "live.db"
+    _aw_db(live, [("aw-watcher-window_host", dt(10), dt(10, 5), {"app": "kitty"})])
+
+    class Config:
+        activitywatch_db = live
+        activitywatch_archive_db_dir = tmp_path / "missing"
+
+    calls = []
+
+    def fake_ensure(name, *, window=None):
+        calls.append((name, window))
+        if name == "activitywatch":
+            return SimpleNamespace(status="failed")
+        return SimpleNamespace(status="failed")
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+
+    rows = list(events("aw-watcher-window_", start=dt(9), end=dt(11)))
+
+    assert calls == [
+        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
+        ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
+    ]
+    assert [row.data["app"] for row in rows] == ["kitty"]
+
+
 def test_active_intervals_accepts_date_for_inclusive_day_window(monkeypatch) -> None:
     """active_intervals must treat ``end`` as inclusive when passed a date.
 

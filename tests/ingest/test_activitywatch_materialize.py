@@ -135,6 +135,55 @@ def test_materialize_activitywatch_events_replaces_only_requested_window(monkeyp
     assert all(call[1] is not None and call[2] is not None for call in calls)
 
 
+def test_materialize_activitywatch_events_skips_corrupt_existing_rows_for_window(
+    monkeypatch, tmp_path
+):
+    from lynchpin.ingest import activitywatch_materialize
+
+    output = tmp_path / "events.ndjson"
+    cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
+    output.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "bucket": "aw-watcher-window_host",
+                        "start": "2026-06-05T08:00:00+00:00",
+                        "end": "2026-06-05T09:00:00+00:00",
+                        "data": {"app": "before"},
+                    }
+                ),
+                '": "aw-watcher-window_host", "data": {"app": "truncated"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    replacement = AWEvent(
+        bucket="aw-watcher-window_host",
+        start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc),
+        data={"app": "new-window"},
+    )
+
+    monkeypatch.setattr(activitywatch_materialize, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        activitywatch_materialize,
+        "events_from_activitywatch_dbs",
+        lambda prefix, *, start=None, end=None: iter([replacement]),
+    )
+
+    manifest = activitywatch_materialize.materialize_activitywatch_events(
+        output=output,
+        start=date(2026, 6, 6),
+        end=date(2026, 6, 7),
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [row["data"]["app"] for row in rows] == ["before", "new-window"]
+    assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06"]
+
+
 def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_materialize
 

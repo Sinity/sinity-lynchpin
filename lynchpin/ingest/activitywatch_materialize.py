@@ -152,7 +152,10 @@ def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if isinstance(payload, dict):
                 rows.append(payload)
     return rows

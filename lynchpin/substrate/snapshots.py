@@ -67,6 +67,48 @@ def latest_materialized_snapshot(
     return (str(row[0]), row[1]) if row else None
 
 
+def latest_promotion_snapshot(
+    conn: Any,
+    *,
+    caller: str,
+    ledger_path: Path | None = None,
+) -> tuple[str, Any, str, str | None] | None:
+    """Return the latest recorded promotion attempt, regardless of outcome.
+
+    Successful promotion runs remain the canonical materialized snapshot
+    boundary. This helper is for status/readiness surfaces that must explain a
+    partially populated substrate after a DAG failed late.
+    """
+
+    _ = caller, ledger_path
+    try:
+        has_promotion_run = _table_exists(conn, "substrate_promotion_run")
+        promotion_run_count = (
+            _table_row_count(conn, "substrate_promotion_run") if has_promotion_run else 0
+        )
+    except Exception:
+        has_promotion_run = False
+        promotion_run_count = 0
+    if has_promotion_run and promotion_run_count > 0:
+        row = conn.execute(
+            "SELECT refresh_id, finished_at, status, reason "
+            "FROM substrate_promotion_run "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+        return (str(row[0]), row[1], str(row[2]), row[3]) if row else None
+
+    try:
+        row = conn.execute(
+            "SELECT refresh_id, MAX(recorded_at) AS recorded_at "
+            "FROM substrate_source_status "
+            "GROUP BY refresh_id "
+            "ORDER BY recorded_at DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        return None
+    return (str(row[0]), row[1], "ok", None) if row else None
+
+
 def ordered_materialized_refresh_ids(
     conn: Any,
     *,

@@ -42,7 +42,7 @@ def compact_materialization_status() -> dict[str, Any]:
 
 def _substrate_product_status() -> dict[str, Any]:
     from lynchpin.core.config import get_config
-    from lynchpin.substrate.connection import connect, substrate_path, substrate_read_snapshot_path
+    from lynchpin.substrate.connection import substrate_path, substrate_read_snapshot_path
 
     try:
         canonical = substrate_path()
@@ -53,6 +53,12 @@ def _substrate_product_status() -> dict[str, Any]:
         snapshot = canonical.with_suffix(".read-snapshot.duckdb")
 
     latest_materialized_refresh_id, latest_recorded_at, read_error = _latest_materialized_snapshot(canonical)
+    (
+        latest_available_refresh_id,
+        latest_available_recorded_at,
+        latest_available_status,
+        latest_available_reason,
+    ) = _latest_available_snapshot(canonical)
     return {
         "canonical_path": str(canonical),
         "canonical_present": canonical.exists(),
@@ -62,6 +68,10 @@ def _substrate_product_status() -> dict[str, Any]:
         "snapshot_modified_at_utc": _mtime(snapshot),
         "latest_materialized_refresh_id": latest_materialized_refresh_id,
         "latest_recorded_at": latest_recorded_at,
+        "latest_available_refresh_id": latest_available_refresh_id,
+        "latest_available_recorded_at": latest_available_recorded_at,
+        "latest_available_status": latest_available_status,
+        "latest_available_reason": latest_available_reason,
         "status_error": read_error,
     }
 
@@ -69,21 +79,37 @@ def _substrate_product_status() -> dict[str, Any]:
 def _compact_materialization_snapshot(status: dict[str, Any]) -> dict[str, Any]:
     product_present = bool(status["canonical_present"] or status["snapshot_present"])
     snapshot_id = status.get("latest_materialized_refresh_id")
+    available_id = status.get("latest_available_refresh_id")
     ready = bool(product_present and snapshot_id)
     if ready:
         reason = "substrate has a recorded promotion snapshot"
+        materialization_status = "ready"
     elif status.get("status_error"):
         reason = f"could not inspect substrate promotion snapshot: {status['status_error']}"
+        materialization_status = "blocked"
+    elif product_present and available_id:
+        reason = (
+            "substrate has populated tables from latest promotion attempt "
+            f"with status {status.get('latest_available_status') or 'unknown'}"
+        )
+        if status.get("latest_available_reason"):
+            reason = f"{reason}: {status['latest_available_reason']}"
+        materialization_status = "failed"
     elif product_present:
         reason = "substrate file is present but has no recorded promotion snapshot"
+        materialization_status = "blocked"
     else:
         reason = "no substrate product or read snapshot is present"
+        materialization_status = "blocked"
     return {
-        "status": "ready" if ready else "blocked",
+        "status": materialization_status,
         "primary_product": "evidence_graph_substrate",
         "reason": reason,
         "latest_materialized_refresh_id": snapshot_id,
         "latest_recorded_at": status.get("latest_recorded_at"),
+        "latest_available_refresh_id": available_id,
+        "latest_available_recorded_at": status.get("latest_available_recorded_at"),
+        "latest_available_status": status.get("latest_available_status"),
         "products": {
             "evidence_graph_substrate": {
                 "status": "ready" if status["canonical_present"] else "blocked",
@@ -114,6 +140,28 @@ def _latest_materialized_snapshot(canonical: Path) -> tuple[str | None, str | No
         return None, None, None
     refresh_id, recorded_at = row
     return str(refresh_id), str(recorded_at) if recorded_at is not None else None, None
+
+
+def _latest_available_snapshot(canonical: Path) -> tuple[str | None, str | None, str | None, str | None]:
+    if not canonical.exists():
+        return None, None, None, None
+    try:
+        from lynchpin.substrate.connection import connect
+        from lynchpin.substrate.snapshots import latest_promotion_snapshot
+
+        with connect(canonical, read_only=True) as conn:
+            row = latest_promotion_snapshot(conn, caller="compact_materialization_status")
+    except Exception:
+        return None, None, None, None
+    if row is None:
+        return None, None, None, None
+    refresh_id, recorded_at, status, reason = row
+    return (
+        str(refresh_id),
+        str(recorded_at) if recorded_at is not None else None,
+        str(status),
+        str(reason) if reason is not None else None,
+    )
 
 
 def _machine_pressure_snapshot() -> dict[str, Any]:

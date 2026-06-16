@@ -620,15 +620,26 @@ def substrate_materialization_snapshot(
     *,
     latest_materialized_refresh_id: str | None = None,
     latest_recorded_at: Any | None = None,
+    latest_available_refresh_id: str | None = None,
+    latest_available_recorded_at: Any | None = None,
+    latest_available_status: str | None = None,
+    latest_available_reason: str | None = None,
 ) -> MaterializationResult:
     """Cheap materialization status for the derived DuckDB substrate."""
 
-    status: MaterializationStatus = "ready" if path.exists() and latest_materialized_refresh_id else "blocked"
-    reason = (
-        "substrate has a recorded promotion snapshot"
-        if status == "ready"
-        else "substrate has no recorded promotion snapshot"
-    )
+    if path.exists() and latest_materialized_refresh_id:
+        status: MaterializationStatus = "ready"
+        reason = "substrate has a recorded promotion snapshot"
+    elif path.exists() and latest_available_refresh_id:
+        status = "failed"
+        reason = (
+            f"latest substrate promotion ended with status {latest_available_status or 'unknown'}"
+        )
+        if latest_available_reason:
+            reason = f"{reason}: {latest_available_reason}"
+    else:
+        status = "blocked"
+        reason = "substrate has no recorded promotion snapshot"
     return MaterializationResult(
         name="evidence_graph_substrate",
         status=status,
@@ -639,9 +650,16 @@ def substrate_materialization_snapshot(
         source_high_water={
             "latest_materialized_refresh_id": latest_materialized_refresh_id,
             "latest_recorded_at": str(latest_recorded_at) if latest_recorded_at is not None else None,
+            "latest_available_refresh_id": latest_available_refresh_id,
+            "latest_available_recorded_at": (
+                str(latest_available_recorded_at)
+                if latest_available_recorded_at is not None
+                else None
+            ),
+            "latest_available_status": latest_available_status,
         },
         coverage={
-            "relation": "dated" if status == "ready" else "unavailable",
+            "relation": "dated" if status in {"ready", "failed"} else "unavailable",
             "interpretation": reason,
         },
     )
