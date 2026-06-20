@@ -33,6 +33,30 @@ def _issue(number: int, state: str) -> GitHubContextRow:
     )
 
 
+def _pr(number: int, state: str) -> GitHubContextRow:
+    merged_at = datetime(2026, 5, 2, tzinfo=timezone.utc) if state == "merged" else None
+    return GitHubContextRow(
+        project="example",
+        item=GitHubItem(
+            repo="example",
+            slug="Sinity/example",
+            kind="pr",
+            number=number,
+            title=f"PR {number}",
+            state=state,
+            url=f"https://github.com/Sinity/example/pull/{number}",
+            author=GitHubActor("Sinity"),
+            labels=(),
+            body="",
+            comments=(),
+            created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            closed_at=merged_at,
+            merged_at=merged_at,
+        ),
+    )
+
+
 def test_generate_issues_uses_full_limit_for_open_and_closed(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -91,6 +115,80 @@ def test_generate_issues_does_not_mix_same_slug_aliases(monkeypatch, tmp_path: P
     tree = ET.parse(tmp_path / "example-issues-open.xml")
     numbers = [issue.attrib["number"] for issue in tree.getroot().findall("issue")]
     assert numbers == ["1"]
+
+
+def test_generate_issues_replaces_stale_open_xml_with_empty_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    stale = tmp_path / "example-issues-open.xml"
+    stale.write_text(
+        """<?xml version='1.0' encoding='utf-8'?>
+<issues repository="Sinity/example" state="open" generated-at="old" count="1">
+  <issue number="99" state="OPEN" created-at="" updated-at="" url="" />
+</issues>""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(chisel, "_has_github_remote", lambda repo: True)
+    monkeypatch.setattr(chisel, "_ensure_github_context_for_chisel", lambda: None)
+    monkeypatch.setattr(
+        chisel,
+        "_github_context_index",
+        {
+            ("example", "sinity/example", "issue", "closed"): [_issue(1, "closed").item],
+        },
+    )
+
+    plan = chisel.RepoPlan(
+        name="example",
+        path=tmp_path,
+        slices=(),
+        github_slug="Sinity/example",
+    )
+
+    assert chisel._generate_issues(plan, tmp_path, "2026-05-24T000000Z") == (0, 1)
+    tree = ET.parse(stale)
+    root = tree.getroot()
+    assert root.attrib["generated-at"] == "2026-05-24T000000Z"
+    assert root.attrib["count"] == "0"
+    assert root.findall("issue") == []
+
+
+def test_generate_prs_replaces_stale_open_xml_with_empty_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    stale = tmp_path / "example-prs-open.xml"
+    stale.write_text(
+        """<?xml version='1.0' encoding='utf-8'?>
+<prs repository="Sinity/example" state="open" generated-at="old" count="1">
+  <pr number="99" state="OPEN" created-at="" merged-at="" url="" merge-commit="" />
+</prs>""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(chisel, "_has_github_remote", lambda repo: True)
+    monkeypatch.setattr(chisel, "_ensure_github_context_for_chisel", lambda: None)
+    monkeypatch.setattr(
+        chisel,
+        "_github_context_index",
+        {
+            ("example", "sinity/example", "pr", "merged"): [_pr(1, "merged").item],
+        },
+    )
+
+    plan = chisel.RepoPlan(
+        name="example",
+        path=tmp_path,
+        slices=(),
+        github_slug="Sinity/example",
+    )
+
+    assert chisel._generate_prs(plan, tmp_path, "2026-05-24T000000Z") == (0, 1)
+    tree = ET.parse(stale)
+    root = tree.getroot()
+    assert root.attrib["generated-at"] == "2026-05-24T000000Z"
+    assert root.attrib["count"] == "0"
+    assert root.findall("pr") == []
 
 
 def test_generate_issues_requires_existing_github_context_product(

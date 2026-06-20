@@ -2,7 +2,13 @@
 
 Produces AI-ready codebase snapshots split by concern (code modules, tests, docs,
 issues, log) plus one compressed whole-repo XML per project.
-Output under /realm/inbox/store/next/<timestamp>/.
+By default outputs are written to the stable derived-data root returned by
+``code_snapshots_path()``:
+
+    /realm/data/derived/lynchpin/code-snapshots
+
+Re-running chisel overwrites that stable snapshot set. Pass ``--output-root``
+only for explicit one-off exports.
 """
 from __future__ import annotations
 import datetime as dt
@@ -50,7 +56,6 @@ def _emit(log: list[str] | None, message: str) -> None:
         _print_live(message)
     else:
         log.append(message)
-OUTPUT_ROOT_DEFAULT = Path('/realm/inbox/store/next')
 
 def _default_output_root() -> Path:
     """Return the stable canonical output root for materialized code snapshots."""
@@ -337,10 +342,9 @@ def _generate_issues(plan: RepoPlan, out_dir: Path, generated_at: str, log: list
     _normalize_comments(closed_issues)
     count = 0
     for state, issues in [('open', open_issues), ('closed', closed_issues)]:
-        if issues:
-            xml = _build_issues_xml(issues, plan.github_slug, state, generated_at)
-            (out_dir / f'{plan.name}-issues-{state}.xml').write_text(xml, encoding='utf-8')
-            count += len(issues)
+        xml = _build_issues_xml(issues, plan.github_slug, state, generated_at)
+        (out_dir / f'{plan.name}-issues-{state}.xml').write_text(xml, encoding='utf-8')
+        count += len(issues)
     _emit(log, f'  [dim]issues: {len(open_issues)} open / {len(closed_issues)} closed[/dim]')
     return (len(open_issues), len(closed_issues))
 
@@ -392,9 +396,8 @@ def _generate_prs(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[st
     merged_prs = _prs_from_context_product(plan.name, plan.github_slug, 'merged', DEFAULT_ISSUE_LIMIT)
     _normalize_pr_data(merged_prs)
     for state, prs in [('open', open_prs), ('merged', merged_prs)]:
-        if prs:
-            xml = _build_prs_xml(prs, plan.github_slug, state, generated_at)
-            (out_dir / f'{plan.name}-prs-{state}.xml').write_text(xml, encoding='utf-8')
+        xml = _build_prs_xml(prs, plan.github_slug, state, generated_at)
+        (out_dir / f'{plan.name}-prs-{state}.xml').write_text(xml, encoding='utf-8')
     _emit(log, f'  [dim]prs: {len(open_prs)} open / {len(merged_prs)} merged[/dim]')
     return (len(open_prs), len(merged_prs))
 

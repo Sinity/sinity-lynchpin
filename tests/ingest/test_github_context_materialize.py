@@ -433,6 +433,64 @@ def test_materialize_github_context_drops_stale_open_rows(monkeypatch, tmp_path:
     assert by_number == {2: "open", 3: "closed"}
 
 
+def test_materialize_github_context_drops_stale_open_pr_rows(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    output = tmp_path / "github" / "context.ndjson"
+    output.parent.mkdir()
+    rows = [
+        {
+            "project": "lynchpin",
+            "repo": "lynchpin",
+            "slug": "Sinity/lynchpin",
+            "kind": "pr",
+            "number": 1,
+            "state": "open",
+        },
+        {
+            "project": "lynchpin",
+            "repo": "lynchpin",
+            "slug": "Sinity/lynchpin",
+            "kind": "pr",
+            "number": 2,
+            "state": "open",
+        },
+    ]
+    output.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
+    monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(
+        materializer,
+        "fetch_issue_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult("ok", "lynchpin", "Sinity/lynchpin", ()),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult(
+            "ok",
+            "lynchpin",
+            "Sinity/lynchpin",
+            (_inventory(kind="pr", number=2),),
+        ),
+    )
+    monkeypatch.setattr(materializer, "fetch_pr", lambda path, number, **kwargs: _item(kind="pr", number=number))
+
+    materializer.materialize_github_context(
+        output=output,
+        start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
+        end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
+    )
+
+    by_number = {
+        row["number"]: row["state"]
+        for row in (json.loads(line) for line in output.read_text(encoding="utf-8").splitlines())
+        if row["kind"] == "pr"
+    }
+    assert by_number == {2: "open"}
+
+
 def test_materialize_github_context_does_not_refetch_existing_commit_refs(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     output = tmp_path / "github" / "context.ndjson"
