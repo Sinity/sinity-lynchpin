@@ -6,7 +6,9 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 from typing import Any
 
 from lynchpin.analysis.machine.benchmark_execution_handoff import (
@@ -129,6 +131,13 @@ def run_selected_benchmark_group(
         _run_or_validate_script(script, execute=execute)
         for script in scripts
     )
+    promoted_paths = _promote_to_experiment_root(
+        target_dir=target_dir,
+        run_group_id=group.run_group_id,
+        execute=execute,
+        materialize_after=materialize_after,
+        overwrite=overwrite,
+    )
     materialization_commands = _materialization_commands(
         start=start,
         end=end,
@@ -153,7 +162,7 @@ def run_selected_benchmark_group(
         execute=execute,
         materialize_after=materialize_after,
         output_dir=str(target_dir),
-        written_paths=tuple(str(path) for path in written),
+        written_paths=tuple(str(path) for path in (*written, *promoted_paths)),
         run_scripts=script_results,
         materialization_commands=materialization_commands,
         materialization_exit_codes=materialization_exit_codes,
@@ -161,7 +170,7 @@ def run_selected_benchmark_group(
         caveats=tuple(sorted(dict.fromkeys([
             *bundle.caveats,
             "execution uses exported per-run scripts; failed workload exit codes are still manifest evidence when manifest.json is written",
-            "post-execution materialization uses the coherent materialize/promote path so experiment rows join the same substrate snapshot as telemetry",
+            "post-execution materialization refreshes only the machine-analysis chain needed to rescore benchmark evidence",
         ]))),
     )
 
@@ -284,6 +293,36 @@ def _run_or_validate_script(script: Path, *, execute: bool) -> BenchmarkRunScrip
     )
 
 
+def _promote_to_experiment_root(
+    *,
+    target_dir: Path,
+    run_group_id: str,
+    execute: bool,
+    materialize_after: bool,
+    overwrite: bool,
+) -> tuple[Path, ...]:
+    if not execute or not materialize_after:
+        return ()
+    source = target_dir / run_group_id
+    canonical_root = experiment_root()
+    try:
+        same_root = target_dir.resolve() == canonical_root.resolve()
+    except OSError:
+        same_root = False
+    if same_root:
+        return ()
+    destination = canonical_root / run_group_id
+    if destination.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f"{destination} already exists; pass overwrite=True to refresh canonical experiment output"
+            )
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination)
+    return (destination,)
+
+
 def _materialization_commands(
     *,
     start: date | None,
@@ -291,33 +330,29 @@ def _materialization_commands(
     script_results: tuple[BenchmarkRunScriptResult, ...],
 ) -> tuple[tuple[str, ...], ...]:
     start, end = _materialization_window(start=start, end=end, script_results=script_results)
-    return (
-        (
-            "python",
-            "-m",
-            "lynchpin.cli.materialize",
-            "--all",
-            "--promote",
-            "--start",
-            start.isoformat(),
-            "--end",
-            end.isoformat(),
-            "--progress",
-            "quiet",
-        ),
-        (
-            "python",
+    refresh_id = f"machine-experiments:{start.isoformat()}:{end.isoformat()}"
+    commands = []
+    for command in (
+        "machine-experiment-manifests",
+        "machine-promote-experiments",
+        "machine-experiments",
+        "machine-support-assessment",
+        "machine-benchmark-handoff",
+        "machine-readiness",
+    ):
+        commands.append((
+            sys.executable,
             "-m",
             "lynchpin.analysis",
-            "materialize-machine",
+            command,
             "--start",
             start.isoformat(),
             "--end",
             end.isoformat(),
-            "--up-to",
-            "machine_analysis_readiness",
-        ),
-    )
+        ))
+        if command == "machine-experiments":
+            commands[-1] = (*commands[-1], "--refresh-id", refresh_id)
+    return tuple(commands)
 
 
 def _materialization_window(

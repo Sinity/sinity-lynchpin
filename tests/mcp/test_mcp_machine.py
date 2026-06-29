@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_machine_metrics_daily_materializes_machine_and_substrate(
+def test_machine_metrics_daily_materializes_substrate_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     machine_calls = []
@@ -55,11 +55,148 @@ def test_machine_metrics_daily_materializes_machine_and_substrate(
 
     rows = machine_metrics_daily(start="2026-05-01", end="2026-05-03")
 
-    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert machine_calls == []
     assert substrate_calls == [
         ("machine_metrics_daily", (date(2026, 5, 1), date(2026, 5, 4)))
     ]
     assert rows[0]["date"] == "2026-05-01"
+
+
+def test_machine_metrics_memory_materializes_substrate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine_calls = []
+    substrate_calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "machine", "status": "ready"}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_materialized(name, *, window=None):
+        machine_calls.append((name, window))
+        return Result()
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_memory_breakdown",
+        lambda *_args, **_kwargs: [
+            {
+                "observed_at": "2026-05-01T12:00:00+00:00",
+                "host": "host",
+                "source_schema_version": 4,
+                "mem_total_mb": 32000,
+                "mem_used_mb": 15000,
+                "mem_avail_mb": 17000,
+                "mem_anon_mb": 9000,
+                "mem_file_cache_mb": 4200,
+                "mem_slab_reclaimable_mb": 700,
+                "mem_slab_unreclaimable_mb": 300,
+                "mem_shmem_mb": 500,
+                "mem_dirty_mb": 25,
+                "mem_writeback_mb": 3,
+                "swap_used_mb": 0,
+                "memory_psi_some_avg60": 0.0,
+                "memory_psi_full_avg60": 0.0,
+            },
+        ],
+    )
+
+    from lynchpin.mcp.tools.machine import machine_metrics
+
+    result = machine_metrics(by="memory", start="2026-05-01", end="2026-05-03")
+
+    assert machine_calls == []
+    assert substrate_calls == [
+        ("machine_memory_breakdown", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert result["rows"][0]["mem_anon_mb"] == 9000
+    assert result["rows"][0]["mem_file_cache_mb"] == 4200
+
+
+def test_machine_pressure_explain_materializes_substrate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine_calls = []
+    substrate_calls = []
+
+    class Result:
+        def to_json(self) -> dict[str, object]:
+            return {"name": "machine", "status": "ready"}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_materialized(name, *, window=None):
+        machine_calls.append((name, window))
+        return Result()
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_pressure_explainer",
+        lambda *_args, **_kwargs: [
+            {
+                "center": "2026-05-01T12:00:00+00:00",
+                "metric": {"mem_file_cache_mb": 16000},
+                "top_services_by_memory": [{"unit": "transmission.service"}],
+                "top_process_io_deltas": [{"comm": "codex"}],
+                "notes": ["IO full PSI is elevated in this window"],
+            },
+        ],
+    )
+
+    from lynchpin.mcp.tools.machine import machine_pressure_explain
+
+    result = machine_pressure_explain(start="2026-05-01", end="2026-05-03")
+
+    assert machine_calls == []
+    assert substrate_calls == [
+        ("machine_pressure_explain", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert result["summary"]["joins"] == [
+        "machine_metric_sample",
+        "machine_service_state",
+        "machine_process_io_delta_sample",
+    ]
+    assert result["windows"][0]["top_process_io_deltas"][0]["comm"] == "codex"
 
 
 def test_sinnix_generation_history_materializes_substrate(
@@ -153,7 +290,7 @@ def test_machine_bufferbloat_summary_materializes_and_selects_snapshot(
         interface="enp6s0",
     )
 
-    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert machine_calls == []
     assert substrate_calls == [
         ("machine_bufferbloat_summary", (date(2026, 5, 1), date(2026, 5, 4)))
     ]
@@ -208,7 +345,11 @@ def test_machine_service_state_summary_materializes_half_open_window(
     monkeypatch.setattr(
         "lynchpin.substrate.machine.load_machine_service_state_summary",
         lambda *_args, **_kwargs: [
-            ("host", "svc.service", "system", 1, 1, 1024, 10, 20, 30, None, None, 10, 20, 30),
+            (
+                "host", "svc.service", "system", 1, 1,
+                1024, 512, 128, 64,
+                10, 20, 30, None, None, 10, 20, 30,
+            ),
         ],
     )
 
@@ -216,11 +357,14 @@ def test_machine_service_state_summary_materializes_half_open_window(
 
     rows = machine_service_state_summary(start="2026-05-01", end="2026-05-03")
 
-    assert machine_calls == [("machine", (date(2026, 5, 1), date(2026, 5, 4)))]
+    assert machine_calls == []
     assert substrate_calls == [
         ("machine_service_state_summary", (date(2026, 5, 1), date(2026, 5, 4)))
     ]
     assert rows[0]["unit"] == "svc.service"
+    assert rows[0]["max_memory_anon_bytes"] == 512
+    assert rows[0]["max_memory_file_bytes"] == 128
+    assert rows[0]["max_memory_kernel_bytes"] == 64
 
 
 def test_machine_work_observation_daily_materializes_and_selects_snapshot(

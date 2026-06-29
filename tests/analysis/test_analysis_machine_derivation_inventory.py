@@ -263,3 +263,36 @@ def test_derivations_for_candidate_infers_project_from_xtask_workload() -> None:
     )
 
     assert [row["name"] for row in rows] == ["xtask"]
+
+
+def test_derivations_for_candidate_binds_xtask_test_package_workload() -> None:
+    from lynchpin.analysis.machine.derivation_inventory import derivations_for_candidate
+
+    rows = derivations_for_candidate(
+        {
+            "targets": [
+                {"project": "polylogue", "attr": "polylogue", "drv_path": "/nix/store/poly.drv", "eval_status": "ready"},
+                {"project": "sinex", "attr": "sinexd", "drv_path": "/nix/store/sinexd.drv", "eval_status": "ready"},
+                {"project": "sinex", "attr": "xtask", "drv_path": "/nix/store/xtask.drv", "eval_status": "ready"},
+                {
+                    "project": "sinity-lynchpin",
+                    "attr": "lynchpin",
+                    "drv_path": "/nix/store/lynchpin.drv",
+                    "eval_status": "ready",
+                },
+            ]
+        },
+        {
+            "project": None,
+            "metric": "xtask.test.xtask.duration_s",
+            "suggested_benchmark_manifest": {"workload": "xtask-test-package:xtask"},
+        },
+    )
+
+    assert rows == ({
+        "project": "sinex",
+        "name": "xtask",
+        "drv_path": "/nix/store/xtask.drv",
+        "store_path": None,
+        "flake_ref": None,
+    },)

@@ -20,6 +20,7 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_EXPERIMENTS,
     SOURCE_MACHINE_GPU,
     SOURCE_MACHINE_NETWORK,
+    SOURCE_MACHINE_PROCESS_IO_DELTA,
     SOURCE_MACHINE_SERVICE_STATE,
     SourceSelection,
     record_source_status,
@@ -41,6 +42,7 @@ def promote_machine_tables(
         SOURCE_MACHINE,
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
+        SOURCE_MACHINE_PROCESS_IO_DELTA,
         SOURCE_MACHINE_SERVICE_STATE,
         SOURCE_MACHINE_EXPERIMENTS,
     )):
@@ -58,6 +60,9 @@ def promote_machine_tables(
                 window_end=window_end,
                 counts=counts,
                 selection=selection,
+            )
+            _promote_machine_process_io_slow(
+                conn, refresh_id, window_start, window_end, counts, selection
             )
             _promote_experiments(conn, refresh_id, window_start, window_end, counts, selection)
             return
@@ -255,7 +260,6 @@ def _source_window_filter(window_start: date, window_end: date) -> tuple[str, li
         [window_start.isoformat(), (window_end + timedelta(days=1)).isoformat()],
     )
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Slow path — Python row-by-row (fallback)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -273,6 +277,7 @@ def _promote_machine_slow(
         promote_machine_gpu_samples,
         promote_machine_metric_samples,
         promote_machine_network_samples,
+        promote_machine_process_io_delta_samples,
         promote_machine_service_states,
     )
 
@@ -281,6 +286,7 @@ def _promote_machine_slow(
         SOURCE_MACHINE_SERVICE_STATE,
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
+        SOURCE_MACHINE_PROCESS_IO_DELTA,
     ):
         return
 
@@ -289,6 +295,7 @@ def _promote_machine_slow(
             gpu_samples,
             metric_samples,
             network_samples,
+            process_io_delta_samples,
             readiness as machine_readiness,
             service_states,
         )
@@ -343,15 +350,77 @@ def _promote_machine_slow(
                 reason=machine_ready.reason, row_count=network_count,
                 window_start=window_start, window_end=window_end,
             )
+        if selection.includes(SOURCE_MACHINE_PROCESS_IO_DELTA):
+            process_io_count = promote_machine_process_io_delta_samples(
+                conn, refresh_id=refresh_id,
+                samples=process_io_delta_samples(start=window_start, end=window_end),
+            )
+            counts["machine_process_io_delta_samples"] = process_io_count
+            record_source_status(
+                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_PROCESS_IO_DELTA,
+                status="ok" if process_io_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                reason=machine_ready.reason, row_count=process_io_count,
+                window_start=window_start, window_end=window_end,
+            )
     except Exception as exc:
         log.warning("substrate_promote: machine telemetry promotion skipped: %s", exc)
-        for source in (SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE, SOURCE_MACHINE_GPU, SOURCE_MACHINE_NETWORK):
+        for source in (SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE, SOURCE_MACHINE_GPU, SOURCE_MACHINE_NETWORK, SOURCE_MACHINE_PROCESS_IO_DELTA):
             if selection.includes(source):
                 record_source_status(
                     conn, refresh_id=refresh_id, source=source,
                     status="error", reason=str(exc), row_count=0,
                     window_start=window_start, window_end=window_end,
                 )
+
+
+def _promote_machine_process_io_slow(
+    conn: Any,
+    refresh_id: str,
+    window_start: date,
+    window_end: date,
+    counts: dict[str, int],
+    selection: SourceSelection,
+) -> None:
+    if not selection.includes(SOURCE_MACHINE_PROCESS_IO_DELTA):
+        return
+    try:
+        from lynchpin.sources.machine import (
+            process_io_delta_samples,
+            readiness as machine_readiness,
+        )
+        from lynchpin.substrate.machine import promote_machine_process_io_delta_samples
+
+        machine_ready = machine_readiness()
+        process_io_count = promote_machine_process_io_delta_samples(
+            conn,
+            refresh_id=refresh_id,
+            samples=process_io_delta_samples(start=window_start, end=window_end),
+        )
+        counts["machine_process_io_delta_samples"] = process_io_count
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_PROCESS_IO_DELTA,
+            status="ok"
+            if process_io_count
+            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+            reason=machine_ready.reason,
+            row_count=process_io_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except Exception as exc:
+        log.warning("substrate_promote: process I/O delta promotion skipped: %s", exc)
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_PROCESS_IO_DELTA,
+            status="error",
+            reason=str(exc),
+            row_count=0,
+            window_start=window_start,
+            window_end=window_end,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -146,25 +146,43 @@ def _materialize_table(
 ) -> dict[str, Any]:
     output = canonical_machine_table_path(name)
     output.parent.mkdir(parents=True, exist_ok=True)
-    rows = [sample_to_json(sample) for sample in rows_fn()]
-    if start is not None and end is not None:
-        rows = [
-            *[
-                row
-                for row in _read_existing_rows(output)
-                if not (start <= _row_date(row) < end)
-            ],
-            *rows,
-        ]
-    rows.sort(key=lambda row: str(row.get("observed_at") or ""))
-    timestamps = [_row_timestamp(row) for row in rows]
-    covered_dates = _covered_dates_for_table(name, rows=rows, start=start, end=end)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    tmp_output = output.with_name(output.name + ".tmp")
+    row_count = 0
+    timestamps: list[datetime] = []
+    observed_dates: set[date] = set()
+
+    def write_row(handle: Any, row: MachineRow) -> None:
+        nonlocal row_count
+        row_count += 1
+        timestamp = _row_timestamp(row)
+        timestamps.append(timestamp)
+        observed_dates.add(timestamp.date())
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    with tmp_output.open("w", encoding="utf-8") as handle:
+        if start is not None and end is not None:
+            for row in _iter_existing_rows(output):
+                if _row_date(row) < start:
+                    write_row(handle, row)
+
+        for sample in rows_fn():
+            write_row(handle, sample_to_json(sample))
+
+        if start is not None and end is not None:
+            for row in _iter_existing_rows(output):
+                if _row_date(row) >= end:
+                    write_row(handle, row)
+
+    tmp_output.replace(output)
+    covered_dates = _covered_dates_for_table(
+        name,
+        observed_dates=observed_dates,
+        start=start,
+        end=end,
+    )
     return {
         "path": str(output),
-        "row_count": len(rows),
+        "row_count": row_count,
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
         "last_date": covered_dates[-1].isoformat() if covered_dates else None,
         "first_timestamp_date": min(timestamps).date().isoformat() if timestamps else None,
@@ -175,17 +193,19 @@ def _materialize_table(
 
 
 def _read_existing_rows(path: Path) -> list[MachineRow]:
+    return list(_iter_existing_rows(path))
+
+
+def _iter_existing_rows(path: Path) -> Iterable[MachineRow]:
     if not path.exists():
-        return []
-    rows: list[MachineRow] = []
+        return
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             payload = json.loads(line)
             if isinstance(payload, dict) and payload.get("observed_at"):
-                rows.append(payload)
-    return rows
+                yield payload
 
 
 def _row_timestamp(row: MachineRow) -> datetime:
@@ -199,11 +219,11 @@ def _row_date(row: MachineRow) -> date:
 def _covered_dates_for_table(
     name: str,
     *,
-    rows: list[MachineRow],
+    observed_dates: set[date],
     start: date | None,
     end: date | None,
 ) -> tuple[date, ...]:
-    covered = {_row_date(row) for row in rows}
+    covered = set(observed_dates)
     if start is not None and end is not None:
         manifest = canonical_machine_table_path("manifest").with_suffix(".json")
         if manifest.exists():

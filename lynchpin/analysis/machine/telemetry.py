@@ -40,7 +40,15 @@ class DailyMachineTelemetry:
     sample_count: int
     avg_load_1m: float | None
     p95_load_1m: float | None
+    max_mem_used_mb: int | None
     min_mem_avail_mb: int | None
+    max_mem_anon_mb: int | None
+    max_mem_file_cache_mb: int | None
+    max_mem_slab_reclaimable_mb: int | None
+    max_mem_slab_unreclaimable_mb: int | None
+    max_mem_shmem_mb: int | None
+    max_mem_dirty_mb: int | None
+    max_mem_writeback_mb: int | None
     max_swap_used_mb: int | None
     avg_io_psi_some: float | None
     avg_io_psi_full: float | None
@@ -81,9 +89,27 @@ class MachineCorrelation:
 
 
 @dataclass(frozen=True)
+class MachineMemoryBreakdown:
+    day: date
+    sample_count: int
+    mem_total_mb: int | None
+    max_mem_used_mb: int | None
+    min_mem_avail_mb: int | None
+    max_mem_anon_mb: int | None
+    max_mem_file_cache_mb: int | None
+    max_mem_slab_reclaimable_mb: int | None
+    max_mem_slab_unreclaimable_mb: int | None
+    max_mem_shmem_mb: int | None
+    max_mem_dirty_mb: int | None
+    max_mem_writeback_mb: int | None
+    max_swap_used_mb: int | None
+
+
+@dataclass(frozen=True)
 class MachineTelemetryAnalysis:
     coverage: MachineCoverage
     daily: list[DailyMachineTelemetry]
+    memory_breakdown: list[MachineMemoryBreakdown]
     hardware_regimes: list[HardwareRegime]
     signals: list[MachineSignalAnalysis]
     correlations: list[MachineCorrelation]
@@ -110,6 +136,7 @@ def analyze_machine_telemetry(
     with connect(path or substrate_path(), read_only=True) as conn:
         coverage = _coverage(conn, start=start, end=end)
         daily = _daily(conn, start=start, end=end)
+        memory_breakdown = _memory_breakdown(conn, start=start, end=end)
         hardware_regimes = _hardware_regimes(conn, start=start, end=end)
 
     signals = _signals(daily)
@@ -118,6 +145,7 @@ def analyze_machine_telemetry(
     return MachineTelemetryAnalysis(
         coverage=coverage,
         daily=daily,
+        memory_breakdown=memory_breakdown,
         hardware_regimes=hardware_regimes,
         signals=signals,
         correlations=correlations,
@@ -212,7 +240,15 @@ def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMach
             count(*) AS sample_count,
             avg(load_1m) AS avg_load_1m,
             quantile_cont(load_1m, 0.95) AS p95_load_1m,
+            max(mem_used_mb) AS max_mem_used_mb,
             min(mem_avail_mb) AS min_mem_avail_mb,
+            max(mem_anon_mb) AS max_mem_anon_mb,
+            max(mem_file_cache_mb) AS max_mem_file_cache_mb,
+            max(mem_slab_reclaimable_mb) AS max_mem_slab_reclaimable_mb,
+            max(mem_slab_unreclaimable_mb) AS max_mem_slab_unreclaimable_mb,
+            max(mem_shmem_mb) AS max_mem_shmem_mb,
+            max(mem_dirty_mb) AS max_mem_dirty_mb,
+            max(mem_writeback_mb) AS max_mem_writeback_mb,
             max(swap_used_mb) AS max_swap_used_mb,
             avg(coalesce(io_psi_some_avg10, io_psi_some_avg60)) AS avg_io_psi_some,
             avg(coalesce(io_psi_full_avg10, io_psi_full_avg60)) AS avg_io_psi_full,
@@ -231,12 +267,68 @@ def _daily(conn: Any, *, start: date | None, end: date | None) -> list[DailyMach
             sample_count=int(row[1]),
             avg_load_1m=_round(row[2]),
             p95_load_1m=_round(row[3]),
-            min_mem_avail_mb=None if row[4] is None else int(row[4]),
-            max_swap_used_mb=None if row[5] is None else int(row[5]),
-            avg_io_psi_some=_round(row[6]),
-            avg_io_psi_full=_round(row[7]),
-            avg_gpu_power_w=_round(row[8]),
-            avg_gpu_pcie_gen=_round(row[9]),
+            max_mem_used_mb=_int_or_none(row[4]),
+            min_mem_avail_mb=_int_or_none(row[5]),
+            max_mem_anon_mb=_int_or_none(row[6]),
+            max_mem_file_cache_mb=_int_or_none(row[7]),
+            max_mem_slab_reclaimable_mb=_int_or_none(row[8]),
+            max_mem_slab_unreclaimable_mb=_int_or_none(row[9]),
+            max_mem_shmem_mb=_int_or_none(row[10]),
+            max_mem_dirty_mb=_int_or_none(row[11]),
+            max_mem_writeback_mb=_int_or_none(row[12]),
+            max_swap_used_mb=_int_or_none(row[13]),
+            avg_io_psi_some=_round(row[14]),
+            avg_io_psi_full=_round(row[15]),
+            avg_gpu_power_w=_round(row[16]),
+            avg_gpu_pcie_gen=_round(row[17]),
+        )
+        for row in rows
+    ]
+
+
+def _memory_breakdown(
+    conn: Any, *, start: date | None, end: date | None
+) -> list[MachineMemoryBreakdown]:
+    where, params = _window_clause(start, end)
+    metric_rows = latest_machine_rows("machine_metric_sample")
+    rows = conn.execute(
+        f"""
+        SELECT
+            CAST(observed_at AS DATE) AS day,
+            count(*) AS sample_count,
+            max(mem_total_mb) AS mem_total_mb,
+            max(mem_used_mb) AS max_mem_used_mb,
+            min(mem_avail_mb) AS min_mem_avail_mb,
+            max(mem_anon_mb) AS max_mem_anon_mb,
+            max(mem_file_cache_mb) AS max_mem_file_cache_mb,
+            max(mem_slab_reclaimable_mb) AS max_mem_slab_reclaimable_mb,
+            max(mem_slab_unreclaimable_mb) AS max_mem_slab_unreclaimable_mb,
+            max(mem_shmem_mb) AS max_mem_shmem_mb,
+            max(mem_dirty_mb) AS max_mem_dirty_mb,
+            max(mem_writeback_mb) AS max_mem_writeback_mb,
+            max(swap_used_mb) AS max_swap_used_mb
+        FROM ({metric_rows})
+        {where}
+        GROUP BY day
+        ORDER BY day
+        """,
+        params,
+    ).fetchall()
+    return [
+        MachineMemoryBreakdown(
+            day=row[0],
+            sample_count=int(row[1]),
+            mem_total_mb=_int_or_none(row[2]),
+            max_mem_used_mb=_int_or_none(row[3]),
+            min_mem_avail_mb=_int_or_none(row[4]),
+            max_mem_anon_mb=_int_or_none(row[5]),
+            max_mem_file_cache_mb=_int_or_none(row[6]),
+            max_mem_slab_reclaimable_mb=_int_or_none(row[7]),
+            max_mem_slab_unreclaimable_mb=_int_or_none(row[8]),
+            max_mem_shmem_mb=_int_or_none(row[9]),
+            max_mem_dirty_mb=_int_or_none(row[10]),
+            max_mem_writeback_mb=_int_or_none(row[11]),
+            max_swap_used_mb=_int_or_none(row[12]),
         )
         for row in rows
     ]
@@ -371,6 +463,10 @@ def _round(value: Any, digits: int = 4) -> float | None:
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def _int_or_none(value: Any) -> int | None:
+    return None if value is None else int(value)
 
 
 def _best_link_row(rows: list[Any]) -> Any | None:

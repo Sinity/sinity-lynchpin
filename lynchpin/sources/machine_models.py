@@ -44,7 +44,16 @@ class MachineMetricSample:
     gpu_pcie_gen: int | None = None
     gpu_pcie_width: int | None = None
     load_1m: float | None = None
+    mem_total_mb: int | None = None
+    mem_used_mb: int | None = None
     mem_avail_mb: int | None = None
+    mem_anon_mb: int | None = None
+    mem_file_cache_mb: int | None = None
+    mem_slab_reclaimable_mb: int | None = None
+    mem_slab_unreclaimable_mb: int | None = None
+    mem_dirty_mb: int | None = None
+    mem_writeback_mb: int | None = None
+    mem_shmem_mb: int | None = None
     swap_used_mb: int | None = None
     io_psi_some_avg10: float | None = None
     io_psi_some_avg60: float | None = None
@@ -101,6 +110,15 @@ class MachineServiceState:
     main_pid: int | None = None
     control_group: str | None = None
     memory_current_bytes: int | None = None
+    memory_anon_bytes: int | None = None
+    memory_file_bytes: int | None = None
+    memory_kernel_bytes: int | None = None
+    memory_slab_bytes: int | None = None
+    memory_sock_bytes: int | None = None
+    memory_shmem_bytes: int | None = None
+    memory_swapcached_bytes: int | None = None
+    memory_zswap_bytes: int | None = None
+    memory_zswapped_bytes: int | None = None
     cpu_usage_nsec: int | None = None
     io_read_bytes: int | None = None
     io_write_bytes: int | None = None
@@ -207,6 +225,7 @@ class MachineProcessIODeltaSample:
     write_syscalls_delta: int
     total_bytes_delta: int
     total_syscalls_delta: int
+    command_line: str | None = None
 
 
 @dataclass(frozen=True)

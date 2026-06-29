@@ -6,6 +6,7 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine import promote_machine_metric_samples
     from lynchpin.substrate.machine import load_machine_metric_samples
+    from lynchpin.substrate.machine import load_machine_memory_breakdown
 
     db = tmp_path / "sub.duckdb"
     sample = MachineMetricSample(
@@ -16,7 +17,16 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         source_schema_version=1,
         cpu_package_w=16.5,
         gpu_power_w=28.0,
+        mem_total_mb=32000,
+        mem_used_mb=15000,
         mem_avail_mb=2048,
+        mem_anon_mb=9000,
+        mem_file_cache_mb=4200,
+        mem_slab_reclaimable_mb=700,
+        mem_slab_unreclaimable_mb=300,
+        mem_dirty_mb=25,
+        mem_writeback_mb=3,
+        mem_shmem_mb=500,
         swap_used_mb=1536,
         gpu_pcie_gen=1,
         gpu_pcie_width=16,
@@ -33,7 +43,10 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
         row = conn.execute(
             """
             SELECT host, cpu_package_w, gpu_power_w, gpu_pcie_gen,
-                   mem_avail_mb, swap_used_mb,
+                   mem_total_mb, mem_used_mb, mem_avail_mb, mem_anon_mb,
+                   mem_file_cache_mb, mem_slab_reclaimable_mb,
+                   mem_slab_unreclaimable_mb, mem_dirty_mb, mem_writeback_mb,
+                   mem_shmem_mb, swap_used_mb,
                    io_psi_some_avg60, cpu_psi_some_avg60,
                    memory_psi_full_total_us, gap_codes
             FROM machine_metric_sample
@@ -41,22 +54,41 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
             """
         ).fetchone()
         loaded = load_machine_metric_samples(conn, refresh_id="r1")
+        memory = load_machine_memory_breakdown(conn, refresh_id="r1", limit=10)
 
     assert row[0] == "sinnix-prime"
     assert row[1] == 16.5
     assert row[2] == 28.0
     assert row[3] == 1
-    assert row[4] == 2048
-    assert row[5] == 1536
-    assert row[6] == 0.3
-    assert row[7] == 0.1
-    assert row[8] == 67890.0
-    assert row[9] == ["fan.hwmon_unavailable"]
+    assert row[4] == 32000
+    assert row[5] == 15000
+    assert row[6] == 2048
+    assert row[7] == 9000
+    assert row[8] == 4200
+    assert row[9] == 700
+    assert row[10] == 300
+    assert row[11] == 25
+    assert row[12] == 3
+    assert row[13] == 500
+    assert row[14] == 1536
+    assert row[15] == 0.3
+    assert row[16] == 0.1
+    assert row[17] == 67890.0
+    assert row[18] == ["fan.hwmon_unavailable"]
     assert len(loaded) == 1
     assert loaded[0].host == "sinnix-prime"
+    assert loaded[0].mem_anon_mb == 9000
+    assert loaded[0].mem_file_cache_mb == 4200
     assert loaded[0].swap_used_mb == 1536
     assert loaded[0].io_psi_some_total_us == 12345.0
     assert loaded[0].gap_codes == ("fan.hwmon_unavailable",)
+    assert len(memory) == 1
+    assert memory[0]["mem_total_mb"] == 32000
+    assert memory[0]["mem_used_mb"] == 15000
+    assert memory[0]["mem_anon_mb"] == 9000
+    assert memory[0]["mem_file_cache_mb"] == 4200
+    assert memory[0]["mem_slab_reclaimable_mb"] == 700
+    assert memory[0]["mem_slab_unreclaimable_mb"] == 300
 
 
 def test_promote_machine_experiment_runs_round_trip(tmp_path):
@@ -171,6 +203,9 @@ def test_promote_machine_service_states_round_trip(tmp_path):
         main_pid=42,
         control_group="/user.slice/user-1000.slice",
         memory_current_bytes=1234,
+        memory_anon_bytes=1000,
+        memory_file_bytes=200,
+        memory_kernel_bytes=34,
         cpu_usage_nsec=5678,
         io_read_bytes=90,
         io_write_bytes=12,
@@ -184,6 +219,58 @@ def test_promote_machine_service_states_round_trip(tmp_path):
     assert loaded[0].unit == "polylogued.service"
     assert loaded[0].scope == "user"
     assert loaded[0].memory_current_bytes == 1234
+    assert loaded[0].memory_anon_bytes == 1000
+    assert loaded[0].memory_file_bytes == 200
+    assert loaded[0].memory_kernel_bytes == 34
+
+
+def test_promote_machine_process_io_delta_samples_round_trip(tmp_path):
+    from lynchpin.sources.machine import MachineProcessIODeltaSample
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_process_io_delta_samples
+    from lynchpin.substrate.machine import promote_machine_process_io_delta_samples
+
+    db = tmp_path / "sub.duckdb"
+    sample = MachineProcessIODeltaSample(
+        observed_at=datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+        host="sinnix-prime",
+        boot_id="boot-a",
+        source_schema_version=4,
+        interval_s=10.0,
+        pid=123,
+        process_start_time_ticks=456789,
+        comm="rustc",
+        exe="/nix/store/rustc/bin/rustc",
+        cgroup="/user.slice/user-1000.slice/session.scope",
+        unit="session.scope",
+        scope="user",
+        command_line="/nix/store/rustc/bin/rustc --crate-name demo",
+        read_bytes_delta=1_048_576,
+        write_bytes_delta=2_097_152,
+        cancelled_write_bytes_delta=0,
+        read_chars_delta=4096,
+        write_chars_delta=8192,
+        read_syscalls_delta=11,
+        write_syscalls_delta=22,
+        total_bytes_delta=3_145_728,
+        total_syscalls_delta=33,
+    )
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert (
+            promote_machine_process_io_delta_samples(
+                conn, refresh_id="r1", samples=[sample]
+            )
+            == 1
+        )
+        loaded = load_machine_process_io_delta_samples(conn, refresh_id="r1")
+
+    assert len(loaded) == 1
+    assert loaded[0].comm == "rustc"
+    assert loaded[0].unit == "session.scope"
+    assert loaded[0].command_line == "/nix/store/rustc/bin/rustc --crate-name demo"
+    assert loaded[0].total_bytes_delta == 3_145_728
+    assert loaded[0].total_syscalls_delta == 33
 
 
 def test_machine_service_state_summary_reports_counter_deltas(tmp_path):
@@ -197,11 +284,12 @@ def test_machine_service_state_summary_reports_counter_deltas(tmp_path):
             """
             INSERT INTO machine_service_state (
                 observed_at, host, unit, scope, active_state, sub_state,
-                memory_current_bytes, cpu_usage_nsec, io_read_bytes,
+                memory_current_bytes, memory_anon_bytes, memory_file_bytes,
+                memory_kernel_bytes, cpu_usage_nsec, io_read_bytes,
                 io_write_bytes, refresh_id
             ) VALUES
-                (?, 'host', 'below.service', 'system', 'active', 'running', 100, 1000, 50, 10, 'r1'),
-                (?, 'host', 'below.service', 'system', 'active', 'running', 200, 1750, 90, 25, 'r1')
+                (?, 'host', 'below.service', 'system', 'active', 'running', 100, 70, 20, 10, 1000, 50, 10, 'r1'),
+                (?, 'host', 'below.service', 'system', 'active', 'running', 200, 120, 50, 30, 1750, 90, 25, 'r1')
             """,
             [
                 datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
@@ -213,10 +301,92 @@ def test_machine_service_state_summary_reports_counter_deltas(tmp_path):
     assert len(rows) == 1
     row = rows[0]
     assert row[5] == 200
-    assert row[6] == 750
-    assert row[7] == 40
-    assert row[8] == 15
-    assert row[11] == 1750
+    assert row[6] == 120
+    assert row[7] == 50
+    assert row[8] == 30
+    assert row[9] == 750
+    assert row[10] == 40
+    assert row[11] == 15
+    assert row[14] == 1750
+
+
+def test_machine_pressure_explainer_joins_metric_service_and_process_io(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_pressure_explainer
+
+    db = tmp_path / "sub.duckdb"
+    observed_at = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO machine_metric_sample (
+                observed_at, host, boot_id, source, source_schema_version,
+                mem_total_mb, mem_used_mb, mem_avail_mb, mem_anon_mb,
+                mem_file_cache_mb, mem_slab_reclaimable_mb,
+                mem_slab_unreclaimable_mb, mem_dirty_mb, mem_writeback_mb,
+                mem_shmem_mb, swap_used_mb,
+                io_psi_some_avg10, io_psi_some_avg60,
+                io_psi_full_avg10, io_psi_full_avg60,
+                memory_psi_some_avg60, memory_psi_full_avg60,
+                refresh_id
+            ) VALUES (
+                ?, 'host', 'boot', 'machine.telemetry', 4,
+                32000, 18000, 14000, 8000,
+                16000, 1500,
+                500, 2, 0,
+                200, 256,
+                5.0, 8.0,
+                2.0, 3.0,
+                0.1, 0.0,
+                'r1'
+            )
+            """,
+            [observed_at],
+        )
+        conn.execute(
+            """
+            INSERT INTO machine_service_state (
+                observed_at, host, boot_id, unit, scope, active_state, sub_state,
+                memory_current_bytes, memory_anon_bytes, memory_file_bytes,
+                memory_kernel_bytes, refresh_id
+            ) VALUES (
+                ?, 'host', 'boot', 'transmission.service', 'system', 'active', 'running',
+                2097152000, 104857600, 1887436800, 104857600, 'r1'
+            )
+            """,
+            [observed_at],
+        )
+        conn.execute(
+            """
+            INSERT INTO machine_process_io_delta_sample (
+                observed_at, host, boot_id, source_schema_version, interval_s,
+                pid, process_start_time_ticks, comm, unit, scope, command_line,
+                read_bytes_delta, write_bytes_delta, cancelled_write_bytes_delta,
+                read_chars_delta, write_chars_delta,
+                read_syscalls_delta, write_syscalls_delta,
+                total_bytes_delta, total_syscalls_delta, refresh_id
+            ) VALUES (
+                ?, 'host', 'boot', 4, 10.0,
+                123, 456, 'codex', 'session.scope', 'user', 'codex exec',
+                104857600, 209715200, 0,
+                4096, 8192,
+                10, 20,
+                314572800, 30, 'r1'
+            )
+            """,
+            [observed_at],
+        )
+
+        windows = load_machine_pressure_explainer(conn, refresh_id="r1", focus="io")
+
+    assert len(windows) == 1
+    assert windows[0]["metric"]["mem_file_cache_mb"] == 16000
+    assert "reclaimable cache/slab exceeds anonymous process memory" in windows[0]["notes"]
+    assert windows[0]["top_services_by_memory"][0]["unit"] == "transmission.service"
+    assert windows[0]["top_services_by_memory"][0]["max_file_mib"] == 1800
+    assert windows[0]["top_process_io_deltas"][0]["comm"] == "codex"
+    assert windows[0]["top_process_io_deltas"][0]["total_mib_delta"] == 300
 
 
 def test_promote_machine_network_samples_round_trip(tmp_path):

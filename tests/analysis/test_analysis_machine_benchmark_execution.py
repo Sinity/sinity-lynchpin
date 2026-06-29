@@ -32,7 +32,7 @@ def test_selected_benchmark_group_exports_one_ready_group(tmp_path):
     assert result.run_scripts[0].executed is False
     assert (tmp_path / "experiments/grp1/runs/run1/run.sh").exists()
     assert "bash " in result.next_actions[0]
-    assert "lynchpin.cli.materialize" in result.next_actions[1]
+    assert "machine-experiment-manifests" in result.next_actions[1]
 
 
 def test_selected_benchmark_group_executes_and_refreshes(monkeypatch, tmp_path):
@@ -109,6 +109,7 @@ def test_selected_benchmark_group_executes_and_refreshes(monkeypatch, tmp_path):
         return Completed()
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "experiment_root", lambda: tmp_path / "canonical-experiments")
 
     result = run_selected_benchmark_group(
         run_group_id="grp1",
@@ -123,10 +124,15 @@ def test_selected_benchmark_group_executes_and_refreshes(monkeypatch, tmp_path):
 
     assert result.run_scripts[0].executed is True
     assert result.run_scripts[0].validation_valid is True
-    assert len(result.materialization_exit_codes) == 2
+    assert len(result.materialization_exit_codes) == 6
+    assert (tmp_path / "canonical-experiments/grp1/runs/run1/manifest.json").exists()
     assert calls[0][0] == "bash"
-    assert calls[1][:3] == ("python", "-m", "lynchpin.cli.materialize")
-    assert calls[2][:3] == ("python", "-m", "lynchpin.analysis")
+    assert calls[1][1:3] == ("-m", "lynchpin.analysis")
+    assert "machine-experiment-manifests" in calls[1]
+    assert "machine-promote-experiments" in calls[2]
+    assert "machine-experiments" in calls[3]
+    assert "--refresh-id" in calls[3]
+    assert "machine-readiness" in calls[-1]
 
 
 def _write_queue_inputs(candidates, bundle, preflight, support) -> None:

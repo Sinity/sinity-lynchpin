@@ -33,6 +33,15 @@ BASE_METRIC_COLUMNS = (
 )
 
 OPTIONAL_METRIC_COLUMNS = (
+    "mem_total_mb",
+    "mem_used_mb",
+    "mem_anon_mb",
+    "mem_file_cache_mb",
+    "mem_slab_reclaimable_mb",
+    "mem_slab_unreclaimable_mb",
+    "mem_dirty_mb",
+    "mem_writeback_mb",
+    "mem_shmem_mb",
     "cpu_psi_some_avg60",
     "cpu_psi_some_avg300",
     "cpu_psi_some_total_us",
@@ -66,6 +75,18 @@ EXPECTED_SERVICE_STATE_COLUMNS = (
     "cpu_usage_nsec",
     "io_read_bytes",
     "io_write_bytes",
+)
+
+OPTIONAL_SERVICE_STATE_COLUMNS = (
+    "memory_anon_bytes",
+    "memory_file_bytes",
+    "memory_kernel_bytes",
+    "memory_slab_bytes",
+    "memory_sock_bytes",
+    "memory_shmem_bytes",
+    "memory_swapcached_bytes",
+    "memory_zswap_bytes",
+    "memory_zswapped_bytes",
 )
 
 EXPECTED_NETWORK_COLUMNS = (
@@ -185,6 +206,10 @@ EXPECTED_PROCESS_IO_DELTA_COLUMNS = (
     "total_syscalls_delta",
 )
 
+OPTIONAL_PROCESS_IO_DELTA_COLUMNS = (
+    "command_line",
+)
+
 EXPECTED_GPU_COLUMNS = (
     "observed_at",
     "host",
@@ -228,6 +253,13 @@ def validate_service_state_schema(conn: sqlite3.Connection) -> None:
     _validate_columns(conn, "service_state", EXPECTED_SERVICE_STATE_COLUMNS)
 
 
+def service_state_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    columns = _table_columns(conn, "service_state")
+    return EXPECTED_SERVICE_STATE_COLUMNS + tuple(
+        column for column in OPTIONAL_SERVICE_STATE_COLUMNS if column in columns
+    )
+
+
 def validate_network_schema(conn: sqlite3.Connection) -> None:
     _validate_columns(conn, "network_sample", EXPECTED_NETWORK_COLUMNS)
 
@@ -255,6 +287,13 @@ def validate_process_io_delta_schema(conn: sqlite3.Connection) -> None:
         conn,
         "process_io_delta_sample",
         EXPECTED_PROCESS_IO_DELTA_COLUMNS,
+    )
+
+
+def process_io_delta_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    columns = _table_columns(conn, "process_io_delta_sample")
+    return EXPECTED_PROCESS_IO_DELTA_COLUMNS + tuple(
+        column for column in OPTIONAL_PROCESS_IO_DELTA_COLUMNS if column in columns
     )
 
 

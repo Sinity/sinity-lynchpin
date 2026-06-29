@@ -7,7 +7,6 @@ from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import (
     _analysis_artifact,
     _artifact_rows,
-    _ensure_machine_materialized_for_read,
     _exclusive_end,
     _required_analysis_artifact,
     _round,
@@ -135,7 +134,6 @@ def machine_metrics_daily(
     end_d = _date.fromisoformat(end) if end else None
     materialization_end = _exclusive_end(end_d)
     if refresh_id is None:
-        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_metrics_daily",
             window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
@@ -201,7 +199,6 @@ def machine_metrics_by_context(
     end_d = _date.fromisoformat(end) if end else None
     materialization_end = _exclusive_end(end_d)
     if refresh_id is None:
-        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_metrics_by_context",
             window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
@@ -412,7 +409,13 @@ def machine_telemetry_analysis(section: str = "daily", limit: int = 100) -> dict
     payload = _analysis_artifact("machine_telemetry_analysis.json")
     if payload is None:
         return {"summary": {"status": "missing"}, "rows": []}
-    valid_sections = {"daily", "signals", "hardware_regimes", "correlations"}
+    valid_sections = {
+        "daily",
+        "memory_breakdown",
+        "signals",
+        "hardware_regimes",
+        "correlations",
+    }
     selected = section if section in valid_sections else "daily"
     rows = _artifact_rows(payload, selected)
     summary = {
@@ -423,6 +426,134 @@ def machine_telemetry_analysis(section: str = "daily", limit: int = 100) -> dict
         "caveats": payload.get("caveats", []),
     }
     return {"summary": summary, "rows": rows[:max(limit, 0)]}
+
+
+def machine_memory_breakdown(
+    start: str | None = None,
+    end: str | None = None,
+    host: str | None = None,
+    refresh_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Return recent decomposed memory samples from machine_metric_sample."""
+    from datetime import date as _date
+
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_machine_memory_breakdown
+
+    # Import here to allow test patching in the machine module
+    from lynchpin.mcp.tools import machine as machine_module
+
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        machine_module.ensure_substrate_materialized_for_read(
+            caller="machine_memory_breakdown",
+            window=(start_d, materialization_end)
+            if start_d is not None and materialization_end is not None
+            else None,
+        )
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = machine_module.best_materialized_refresh_id(
+                conn,
+                "machine_metric_sample",
+                caller="machine_memory_breakdown",
+            )
+            if refresh_id is None:
+                return {"summary": {"row_count": 0}, "rows": []}
+        rows = load_machine_memory_breakdown(
+            conn,
+            refresh_id=refresh_id,
+            start=start_d,
+            end=end_d,
+            host=host,
+            limit=limit,
+        )
+
+    for row in rows:
+        row["observed_at"] = _json_safe(row.get("observed_at"))
+    return {
+        "summary": {
+            "refresh_id": refresh_id,
+            "row_count": len(rows),
+            "schema": "schema-v4 memory split when source_schema_version >= 4",
+        },
+        "rows": rows,
+    }
+
+
+@app.tool()
+def machine_pressure_explain(
+    start: str | None = None,
+    end: str | None = None,
+    host: str | None = None,
+    refresh_id: str | None = None,
+    focus: str = "io",
+    limit: int = 5,
+    window_minutes: int = 5,
+    top_n: int = 8,
+) -> dict[str, Any]:
+    """Explain pressure windows by joining memory split, service RSS, and process I/O."""
+    from datetime import date as _date
+
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import load_machine_pressure_explainer
+
+    # Import here to allow test patching in the machine module.
+    from lynchpin.mcp.tools import machine as machine_module
+
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        machine_module.ensure_substrate_materialized_for_read(
+            caller="machine_pressure_explain",
+            window=(start_d, materialization_end)
+            if start_d is not None and materialization_end is not None
+            else None,
+        )
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = machine_module.best_materialized_refresh_id(
+                conn,
+                "machine_metric_sample",
+                caller="machine_pressure_explain",
+            )
+            if refresh_id is None:
+                return {"summary": {"row_count": 0}, "windows": []}
+        windows = load_machine_pressure_explainer(
+            conn,
+            refresh_id=refresh_id,
+            start=start_d,
+            end=end_d,
+            host=host,
+            focus=focus,
+            limit=limit,
+            window_minutes=window_minutes,
+            top_n=top_n,
+        )
+
+    return _json_safe(
+        {
+            "summary": {
+                "refresh_id": refresh_id,
+                "row_count": len(windows),
+                "focus": focus,
+                "window_minutes": window_minutes,
+                "top_n": top_n,
+                "joins": [
+                    "machine_metric_sample",
+                    "machine_service_state",
+                    "machine_process_io_delta_sample",
+                ],
+            },
+            "windows": windows,
+        }
+    )
 
 
 def machine_below_attributions(
@@ -540,7 +671,6 @@ def machine_service_state_summary(
     end_d = _date.fromisoformat(end) if end else None
     materialization_end = _exclusive_end(end_d)
     if refresh_id is None:
-        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_service_state_summary",
             window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
@@ -573,14 +703,17 @@ def machine_service_state_summary(
             "samples": row[3],
             "active_samples": row[4],
             "max_memory_current_bytes": row[5],
-            "cpu_usage_delta_nsec": row[6],
-            "io_read_delta_bytes": row[7],
-            "io_write_delta_bytes": row[8],
-            "first_observed_at": _json_safe(row[9]),
-            "last_observed_at": _json_safe(row[10]),
-            "last_cpu_usage_nsec": row[11],
-            "last_io_read_bytes": row[12],
-            "last_io_write_bytes": row[13],
+            "max_memory_anon_bytes": row[6],
+            "max_memory_file_bytes": row[7],
+            "max_memory_kernel_bytes": row[8],
+            "cpu_usage_delta_nsec": row[9],
+            "io_read_delta_bytes": row[10],
+            "io_write_delta_bytes": row[11],
+            "first_observed_at": _json_safe(row[12]),
+            "last_observed_at": _json_safe(row[13]),
+            "last_cpu_usage_nsec": row[14],
+            "last_io_read_bytes": row[15],
+            "last_io_write_bytes": row[16],
         }
         for row in rows
     ]
@@ -702,7 +835,6 @@ def machine_bufferbloat_summary(
     end_d = _date.fromisoformat(end) if end else None
     materialization_end = _exclusive_end(end_d)
     if refresh_id is None:
-        _ensure_machine_materialized_for_read(start=start_d, end=materialization_end)
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_bufferbloat_summary",
             window=(start_d, materialization_end) if start_d is not None and materialization_end is not None else None,
@@ -797,12 +929,26 @@ def machine_metrics(
     host: str | None = None,
     refresh_id: str | None = None,
 ) -> Any:
-    """Machine telemetry metrics. by: daily, context."""
+    """Machine telemetry metrics. by: daily, context, memory, pressure."""
     if by == "daily":
         return machine_metrics_daily(start=start, end=end, host=host, refresh_id=refresh_id)
     if by == "context":
         return machine_metrics_by_context(start=start, end=end, host=host, refresh_id=refresh_id)
-    return {"error": f"unknown by {by!r}. choices: daily, context"}
+    if by == "memory":
+        return machine_memory_breakdown(
+            start=start,
+            end=end,
+            host=host,
+            refresh_id=refresh_id,
+        )
+    if by == "pressure":
+        return machine_pressure_explain(
+            start=start,
+            end=end,
+            host=host,
+            refresh_id=refresh_id,
+        )
+    return {"error": f"unknown by {by!r}. choices: daily, context, memory, pressure"}
 
 
 @app.tool()

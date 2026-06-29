@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
@@ -45,7 +45,12 @@ def load_machine_metric_samples(
             cpu_package_w, cpu_core_w, cpu_pkg_c, cpu_max_core_c,
             gpu_power_w, gpu_fan_pct, gpu_temp_c, gpu_util_pct,
             gpu_pstate, gpu_pcie_gen, gpu_pcie_width,
-            load_1m, mem_avail_mb, swap_used_mb, io_psi_some_avg10, io_psi_full_avg10,
+            load_1m,
+            mem_total_mb, mem_used_mb, mem_avail_mb, mem_anon_mb,
+            mem_file_cache_mb, mem_slab_reclaimable_mb,
+            mem_slab_unreclaimable_mb, mem_dirty_mb, mem_writeback_mb,
+            mem_shmem_mb, swap_used_mb,
+            io_psi_some_avg10, io_psi_full_avg10,
             io_psi_some_avg60, io_psi_some_avg300, io_psi_some_total_us,
             io_psi_full_avg60, io_psi_full_avg300, io_psi_full_total_us,
             cpu_psi_some_avg60, cpu_psi_some_avg300, cpu_psi_some_total_us,
@@ -78,28 +83,37 @@ def load_machine_metric_samples(
             gpu_pcie_gen=row[14],
             gpu_pcie_width=row[15],
             load_1m=row[16],
-            mem_avail_mb=row[17],
-            swap_used_mb=row[18],
-            io_psi_some_avg10=row[19],
-            io_psi_full_avg10=row[20],
-            io_psi_some_avg60=row[21],
-            io_psi_some_avg300=row[22],
-            io_psi_some_total_us=row[23],
-            io_psi_full_avg60=row[24],
-            io_psi_full_avg300=row[25],
-            io_psi_full_total_us=row[26],
-            cpu_psi_some_avg60=row[27],
-            cpu_psi_some_avg300=row[28],
-            cpu_psi_some_total_us=row[29],
-            memory_psi_some_avg60=row[30],
-            memory_psi_some_avg300=row[31],
-            memory_psi_some_total_us=row[32],
-            memory_psi_full_avg60=row[33],
-            memory_psi_full_avg300=row[34],
-            memory_psi_full_total_us=row[35],
-            latency_oversleep_ms=row[36],
-            dstate_task_count=row[37],
-            gap_codes=tuple(row[38] or []),
+            mem_total_mb=row[17],
+            mem_used_mb=row[18],
+            mem_avail_mb=row[19],
+            mem_anon_mb=row[20],
+            mem_file_cache_mb=row[21],
+            mem_slab_reclaimable_mb=row[22],
+            mem_slab_unreclaimable_mb=row[23],
+            mem_dirty_mb=row[24],
+            mem_writeback_mb=row[25],
+            mem_shmem_mb=row[26],
+            swap_used_mb=row[27],
+            io_psi_some_avg10=row[28],
+            io_psi_full_avg10=row[29],
+            io_psi_some_avg60=row[30],
+            io_psi_some_avg300=row[31],
+            io_psi_some_total_us=row[32],
+            io_psi_full_avg60=row[33],
+            io_psi_full_avg300=row[34],
+            io_psi_full_total_us=row[35],
+            cpu_psi_some_avg60=row[36],
+            cpu_psi_some_avg300=row[37],
+            cpu_psi_some_total_us=row[38],
+            memory_psi_some_avg60=row[39],
+            memory_psi_some_avg300=row[40],
+            memory_psi_some_total_us=row[41],
+            memory_psi_full_avg60=row[42],
+            memory_psi_full_avg300=row[43],
+            memory_psi_full_total_us=row[44],
+            latency_oversleep_ms=row[45],
+            dstate_task_count=row[46],
+            gap_codes=tuple(row[47] or []),
         )
         for row in rows
     ]
@@ -290,7 +304,10 @@ def load_machine_service_states(
         SELECT
             observed_at, host, boot_id, unit, scope,
             active_state, sub_state, main_pid, control_group,
-            memory_current_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes
+            memory_current_bytes, memory_anon_bytes, memory_file_bytes,
+            memory_kernel_bytes, memory_slab_bytes, memory_sock_bytes,
+            memory_shmem_bytes, memory_swapcached_bytes, memory_zswap_bytes,
+            memory_zswapped_bytes, cpu_usage_nsec, io_read_bytes, io_write_bytes
         FROM machine_service_state
         {where}
         ORDER BY observed_at, scope, unit
@@ -310,9 +327,85 @@ def load_machine_service_states(
             main_pid=row[7],
             control_group=row[8],
             memory_current_bytes=row[9],
-            cpu_usage_nsec=row[10],
-            io_read_bytes=row[11],
-            io_write_bytes=row[12],
+            memory_anon_bytes=row[10],
+            memory_file_bytes=row[11],
+            memory_kernel_bytes=row[12],
+            memory_slab_bytes=row[13],
+            memory_sock_bytes=row[14],
+            memory_shmem_bytes=row[15],
+            memory_swapcached_bytes=row[16],
+            memory_zswap_bytes=row[17],
+            memory_zswapped_bytes=row[18],
+            cpu_usage_nsec=row[19],
+            io_read_bytes=row[20],
+            io_write_bytes=row[21],
+        )
+        for row in rows
+    ]
+
+
+def load_machine_process_io_delta_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    hosts: tuple[str, ...] | None = None,
+    refresh_id: str | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """SELECT and hydrate bounded per-process I/O delta samples."""
+    from lynchpin.sources.machine import MachineProcessIODeltaSample
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    add_date_filter("observed_at", start, end, clauses, params)
+    add_in_filter("host", hosts, clauses, params)
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+
+    where = build_where(clauses, params)
+    sql = f"""
+        SELECT
+            observed_at, host, boot_id, source_schema_version, interval_s,
+            pid, process_start_time_ticks, comm, exe, cgroup, unit, scope,
+            command_line, read_bytes_delta, write_bytes_delta,
+            cancelled_write_bytes_delta, read_chars_delta, write_chars_delta,
+            read_syscalls_delta, write_syscalls_delta, total_bytes_delta,
+            total_syscalls_delta
+        FROM machine_process_io_delta_sample
+        {where}
+        ORDER BY observed_at, total_bytes_delta DESC, total_syscalls_delta DESC
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(int(limit), 0))
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        MachineProcessIODeltaSample(
+            observed_at=row[0],
+            host=row[1],
+            boot_id=row[2],
+            source_schema_version=int(row[3]),
+            interval_s=float(row[4]),
+            pid=int(row[5]),
+            process_start_time_ticks=row[6],
+            comm=row[7],
+            exe=row[8],
+            cgroup=row[9],
+            unit=row[10],
+            scope=row[11],
+            command_line=row[12],
+            read_bytes_delta=int(row[13]),
+            write_bytes_delta=int(row[14]),
+            cancelled_write_bytes_delta=int(row[15]),
+            read_chars_delta=int(row[16]),
+            write_chars_delta=int(row[17]),
+            read_syscalls_delta=int(row[18]),
+            write_syscalls_delta=int(row[19]),
+            total_bytes_delta=int(row[20]),
+            total_syscalls_delta=int(row[21]),
         )
         for row in rows
     ]
@@ -323,7 +416,11 @@ _METRIC_SAMPLE_COLUMNS = (
     "cpu_package_w", "cpu_core_w", "cpu_pkg_c", "cpu_max_core_c",
     "gpu_power_w", "gpu_fan_pct", "gpu_temp_c", "gpu_util_pct",
     "gpu_pstate", "gpu_pcie_gen", "gpu_pcie_width",
-    "load_1m", "mem_avail_mb", "swap_used_mb",
+    "load_1m",
+    "mem_total_mb", "mem_used_mb", "mem_avail_mb", "mem_anon_mb",
+    "mem_file_cache_mb", "mem_slab_reclaimable_mb",
+    "mem_slab_unreclaimable_mb", "mem_dirty_mb", "mem_writeback_mb",
+    "mem_shmem_mb", "swap_used_mb",
     "io_psi_some_avg10", "io_psi_full_avg10",
     "io_psi_some_avg60", "io_psi_some_avg300", "io_psi_some_total_us",
     "io_psi_full_avg60", "io_psi_full_avg300", "io_psi_full_total_us",
@@ -352,7 +449,11 @@ def promote_machine_metric_samples(
             s.cpu_package_w, s.cpu_core_w, s.cpu_pkg_c, s.cpu_max_core_c,
             s.gpu_power_w, s.gpu_fan_pct, s.gpu_temp_c, s.gpu_util_pct,
             s.gpu_pstate, s.gpu_pcie_gen, s.gpu_pcie_width,
-            s.load_1m, s.mem_avail_mb, s.swap_used_mb,
+            s.load_1m,
+            s.mem_total_mb, s.mem_used_mb, s.mem_avail_mb, s.mem_anon_mb,
+            s.mem_file_cache_mb, s.mem_slab_reclaimable_mb,
+            s.mem_slab_unreclaimable_mb, s.mem_dirty_mb, s.mem_writeback_mb,
+            s.mem_shmem_mb, s.swap_used_mb,
             s.io_psi_some_avg10, s.io_psi_full_avg10,
             s.io_psi_some_avg60, s.io_psi_some_avg300, s.io_psi_some_total_us,
             s.io_psi_full_avg60, s.io_psi_full_avg300, s.io_psi_full_total_us,
@@ -368,8 +469,48 @@ def promote_machine_metric_samples(
 _SERVICE_STATE_COLUMNS = (
     "observed_at", "host", "boot_id", "unit", "scope",
     "active_state", "sub_state", "main_pid", "control_group",
-    "memory_current_bytes", "cpu_usage_nsec", "io_read_bytes", "io_write_bytes",
+    "memory_current_bytes", "memory_anon_bytes", "memory_file_bytes",
+    "memory_kernel_bytes", "memory_slab_bytes", "memory_sock_bytes",
+    "memory_shmem_bytes", "memory_swapcached_bytes", "memory_zswap_bytes",
+    "memory_zswapped_bytes", "cpu_usage_nsec", "io_read_bytes", "io_write_bytes",
 )
+
+
+_PROCESS_IO_DELTA_COLUMNS = (
+    "observed_at", "host", "boot_id", "source_schema_version",
+    "interval_s", "pid", "process_start_time_ticks", "comm", "exe",
+    "cgroup", "unit", "scope", "command_line",
+    "read_bytes_delta", "write_bytes_delta", "cancelled_write_bytes_delta",
+    "read_chars_delta", "write_chars_delta", "read_syscalls_delta",
+    "write_syscalls_delta", "total_bytes_delta", "total_syscalls_delta",
+)
+
+
+def promote_machine_process_io_delta_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_process_io_delta_sample rows, idempotent on refresh_id."""
+    return promote_rows(
+        conn,
+        table="machine_process_io_delta_sample",
+        columns=_PROCESS_IO_DELTA_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
+            s.interval_s, s.pid, s.process_start_time_ticks, s.comm, s.exe,
+            s.cgroup, s.unit, s.scope, s.command_line,
+            s.read_bytes_delta, s.write_bytes_delta,
+            s.cancelled_write_bytes_delta, s.read_chars_delta,
+            s.write_chars_delta, s.read_syscalls_delta,
+            s.write_syscalls_delta, s.total_bytes_delta,
+            s.total_syscalls_delta,
+        ),
+        batch_size=50_000,
+    )
 
 
 def promote_machine_service_states(
@@ -388,7 +529,11 @@ def promote_machine_service_states(
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, s.unit, s.scope,
             s.active_state, s.sub_state, s.main_pid, s.control_group,
-            s.memory_current_bytes, s.cpu_usage_nsec, s.io_read_bytes, s.io_write_bytes,
+            s.memory_current_bytes, s.memory_anon_bytes, s.memory_file_bytes,
+            s.memory_kernel_bytes, s.memory_slab_bytes, s.memory_sock_bytes,
+            s.memory_shmem_bytes, s.memory_swapcached_bytes, s.memory_zswap_bytes,
+            s.memory_zswapped_bytes, s.cpu_usage_nsec, s.io_read_bytes,
+            s.io_write_bytes,
         ),
         batch_size=50_000,
     )
@@ -620,6 +765,217 @@ def load_machine_metric_series_by_context(
     return conn.execute(sql, params).fetchall()
 
 
+def load_machine_memory_breakdown(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    start: date | None = None,
+    end: date | None = None,
+    host: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return recent decomposed memory samples from ``machine_metric_sample``.
+
+    The promoted Sinnix schema-v4 columns split memory into anonymous process
+    memory, reclaimable file/slab cache, unreclaimable slab/kernel-ish memory,
+    shmem, dirty/writeback, and swap. This reader intentionally returns sample
+    rows rather than a single "used" number so callers can distinguish pressure
+    from reclaimable cache.
+    """
+    sql = """
+        SELECT
+            observed_at, host, source_schema_version,
+            mem_total_mb, mem_used_mb, mem_avail_mb,
+            mem_anon_mb, mem_file_cache_mb,
+            mem_slab_reclaimable_mb, mem_slab_unreclaimable_mb,
+            mem_shmem_mb, mem_dirty_mb, mem_writeback_mb,
+            swap_used_mb, memory_psi_some_avg60, memory_psi_full_avg60
+        FROM machine_metric_sample
+        WHERE refresh_id = ?
+    """
+    params: list[Any] = [refresh_id]
+    if start:
+        sql += " AND observed_at::DATE >= ?"
+        params.append(start)
+    if end:
+        sql += " AND observed_at::DATE <= ?"
+        params.append(end)
+    if host:
+        sql += " AND host = ?"
+        params.append(host)
+    sql += " ORDER BY observed_at DESC LIMIT ?"
+    params.append(max(int(limit), 0))
+    rows = conn.execute(sql, params).fetchall()
+    columns = [desc[0] for desc in (conn.description or [])]
+    return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def _rows_as_dicts(conn: "duckdb.DuckDBPyConnection") -> list[dict[str, Any]]:
+    columns = [desc[0] for desc in (conn.description or [])]
+    return [dict(zip(columns, row, strict=True)) for row in conn.fetchall()]
+
+
+def _pressure_sort_sql(focus: str) -> str:
+    if focus == "memory":
+        return "mem_avail_mb ASC NULLS LAST, mem_used_mb DESC NULLS LAST"
+    if focus == "swap":
+        return "swap_used_mb DESC NULLS LAST, mem_avail_mb ASC NULLS LAST"
+    if focus == "cache":
+        return (
+            "mem_file_cache_mb DESC NULLS LAST,"
+            " mem_slab_reclaimable_mb DESC NULLS LAST"
+        )
+    if focus == "io":
+        return (
+            "COALESCE(io_psi_full_avg60, io_psi_full_avg10, 0) DESC,"
+            " COALESCE(io_psi_some_avg60, io_psi_some_avg10, 0) DESC,"
+            " mem_used_mb DESC NULLS LAST"
+        )
+    msg = f"unknown pressure focus {focus!r}; expected io, memory, swap, or cache"
+    raise ValueError(msg)
+
+
+def _pressure_notes(metric: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    anon = metric.get("mem_anon_mb") or 0
+    file_cache = metric.get("mem_file_cache_mb") or 0
+    slab_reclaimable = metric.get("mem_slab_reclaimable_mb") or 0
+    slab_unreclaimable = metric.get("mem_slab_unreclaimable_mb") or 0
+    swap = metric.get("swap_used_mb") or 0
+    io_full = metric.get("io_psi_full_avg60") or metric.get("io_psi_full_avg10") or 0
+    mem_full = metric.get("memory_psi_full_avg60") or 0
+
+    if file_cache + slab_reclaimable > anon:
+        notes.append("reclaimable cache/slab exceeds anonymous process memory")
+    if slab_unreclaimable > 1024:
+        notes.append("unreclaimable slab/kernel memory is above 1 GiB")
+    if swap > 0:
+        notes.append("swap is occupied; this may be retained historical pressure, not live demand")
+    if io_full >= 1.0:
+        notes.append("IO full PSI is elevated in this window")
+    if mem_full >= 1.0:
+        notes.append("memory full PSI is elevated in this window")
+    if not notes:
+        notes.append("no single promoted pressure signal dominates this sample")
+    return notes
+
+
+def load_machine_pressure_explainer(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    start: date | None = None,
+    end: date | None = None,
+    host: str | None = None,
+    focus: str = "io",
+    limit: int = 5,
+    window_minutes: int = 5,
+    top_n: int = 8,
+) -> list[dict[str, Any]]:
+    """Join memory, PSI, service RSS split, and process I/O around pressure windows."""
+    metric_sql = f"""
+        SELECT
+            observed_at, host, source_schema_version,
+            mem_total_mb, mem_used_mb, mem_avail_mb,
+            mem_anon_mb, mem_file_cache_mb,
+            mem_slab_reclaimable_mb, mem_slab_unreclaimable_mb,
+            mem_shmem_mb, mem_dirty_mb, mem_writeback_mb,
+            swap_used_mb,
+            memory_psi_some_avg60,
+            memory_psi_full_avg60,
+            io_psi_some_avg10, io_psi_some_avg60,
+            io_psi_full_avg10, io_psi_full_avg60
+        FROM machine_metric_sample
+        WHERE refresh_id = ?
+    """
+    params: list[Any] = [refresh_id]
+    if start:
+        metric_sql += " AND observed_at::DATE >= ?"
+        params.append(start)
+    if end:
+        metric_sql += " AND observed_at::DATE <= ?"
+        params.append(end)
+    if host:
+        metric_sql += " AND host = ?"
+        params.append(host)
+    metric_sql += f" ORDER BY {_pressure_sort_sql(focus)} LIMIT ?"
+    params.append(max(int(limit), 0))
+
+    conn.execute(metric_sql, params)
+    metrics = _rows_as_dicts(conn)
+    windows: list[dict[str, Any]] = []
+    half_window = timedelta(minutes=max(int(window_minutes), 0))
+    top_limit = max(int(top_n), 0)
+
+    for metric in metrics:
+        observed_at = metric["observed_at"]
+        if not isinstance(observed_at, datetime):
+            continue
+        window_start = observed_at - half_window
+        window_end = observed_at + half_window
+
+        service_sql = """
+            SELECT
+                unit, scope,
+                COUNT(*) AS samples,
+                MAX(memory_current_bytes) / 1048576.0 AS max_current_mib,
+                MAX(memory_anon_bytes) / 1048576.0 AS max_anon_mib,
+                MAX(memory_file_bytes) / 1048576.0 AS max_file_mib,
+                MAX(memory_kernel_bytes) / 1048576.0 AS max_kernel_mib,
+                MIN(observed_at) AS first_observed_at,
+                MAX(observed_at) AS last_observed_at
+            FROM machine_service_state
+            WHERE refresh_id = ?
+              AND host = ?
+              AND observed_at >= ?
+              AND observed_at <= ?
+            GROUP BY unit, scope
+            ORDER BY max_current_mib DESC NULLS LAST
+            LIMIT ?
+        """
+        conn.execute(
+            service_sql,
+            [refresh_id, metric["host"], window_start, window_end, top_limit],
+        )
+        services = _rows_as_dicts(conn)
+
+        process_sql = """
+            SELECT
+                observed_at, pid, comm, unit, scope,
+                total_bytes_delta / 1048576.0 AS total_mib_delta,
+                read_bytes_delta / 1048576.0 AS read_mib_delta,
+                write_bytes_delta / 1048576.0 AS write_mib_delta,
+                total_syscalls_delta,
+                LEFT(command_line, 180) AS command_line
+            FROM machine_process_io_delta_sample
+            WHERE refresh_id = ?
+              AND host = ?
+              AND observed_at >= ?
+              AND observed_at <= ?
+            ORDER BY total_bytes_delta DESC NULLS LAST
+            LIMIT ?
+        """
+        conn.execute(
+            process_sql,
+            [refresh_id, metric["host"], window_start, window_end, top_limit],
+        )
+        processes = _rows_as_dicts(conn)
+
+        windows.append(
+            {
+                "center": observed_at,
+                "window_start": window_start,
+                "window_end": window_end,
+                "metric": metric,
+                "top_services_by_memory": services,
+                "top_process_io_deltas": processes,
+                "notes": _pressure_notes(metric),
+            }
+        )
+
+    return windows
+
+
 def load_machine_service_state_summary(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -632,7 +988,8 @@ def load_machine_service_state_summary(
     """Return aggregated service state rows.
 
     Returns (host, unit, scope, samples, active_samples,
-    max_memory_current_bytes, cpu_usage_delta_nsec, io_read_delta_bytes,
+    max_memory_current_bytes, max_memory_anon_bytes, max_memory_file_bytes,
+    max_memory_kernel_bytes, cpu_usage_delta_nsec, io_read_delta_bytes,
     io_write_delta_bytes, first_observed_at, last_observed_at,
     last_cpu_usage_nsec, last_io_read_bytes, last_io_write_bytes) tuples.
     """
@@ -644,6 +1001,9 @@ def load_machine_service_state_summary(
             COUNT(*) AS samples,
             SUM(CASE WHEN active_state = 'active' THEN 1 ELSE 0 END) AS active_samples,
             MAX(memory_current_bytes) AS max_memory_current_bytes,
+            MAX(memory_anon_bytes) AS max_memory_anon_bytes,
+            MAX(memory_file_bytes) AS max_memory_file_bytes,
+            MAX(memory_kernel_bytes) AS max_memory_kernel_bytes,
             CASE
                 WHEN MIN(cpu_usage_nsec) IS NULL OR MAX(cpu_usage_nsec) IS NULL THEN NULL
                 ELSE GREATEST(MAX(cpu_usage_nsec) - MIN(cpu_usage_nsec), 0)
@@ -825,8 +1185,11 @@ __all__ = [
     "load_machine_gpu_samples",
     "load_machine_metric_daily",
     "load_machine_metric_samples",
+    "load_machine_memory_breakdown",
     "load_machine_metric_series_by_context",
     "load_machine_network_samples",
+    "load_machine_pressure_explainer",
+    "load_machine_process_io_delta_samples",
     "load_machine_service_state_summary",
     "load_machine_service_states",
     "load_sinnix_generation_rows",
@@ -834,5 +1197,6 @@ __all__ = [
     "promote_machine_gpu_samples",
     "promote_machine_metric_samples",
     "promote_machine_network_samples",
+    "promote_machine_process_io_delta_samples",
     "promote_machine_service_states",
 ]

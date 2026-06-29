@@ -26,6 +26,7 @@ SOURCE_MACHINE = "machine"
 SOURCE_MACHINE_GPU = "machine_gpu_sample"
 SOURCE_MACHINE_NETWORK = "machine_network_sample"
 SOURCE_MACHINE_SERVICE_STATE = "machine_service_state"
+SOURCE_MACHINE_PROCESS_IO_DELTA = "machine_process_io_delta_sample"
 SOURCE_MACHINE_EXPERIMENTS = "machine_experiments"
 SOURCE_SINNIX_GENERATION = "sinnix_generation"
 SOURCE_BORG_DRILL = "borg_drill_run"
@@ -39,6 +40,7 @@ MACHINE_SOURCE_IDS = frozenset(
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
         SOURCE_MACHINE_SERVICE_STATE,
+        SOURCE_MACHINE_PROCESS_IO_DELTA,
         SOURCE_MACHINE_EXPERIMENTS,
     }
 )

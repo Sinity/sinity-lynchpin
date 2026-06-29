@@ -32,11 +32,11 @@ from .machine_schema import (
     EXPECTED_BLOCK_DEVICE_COLUMNS,
     EXPECTED_GPU_COLUMNS,
     EXPECTED_NETWORK_COLUMNS,
-    EXPECTED_PROCESS_IO_DELTA_COLUMNS,
     EXPECTED_SERVICE_CGROUP_IO_COLUMNS,
     EXPECTED_SERVICE_CGROUP_PRESSURE_COLUMNS,
-    EXPECTED_SERVICE_STATE_COLUMNS,
     metric_columns,
+    process_io_delta_columns,
+    service_state_columns,
     table_exists,
     validate_block_device_schema,
     validate_gpu_schema,
@@ -215,7 +215,24 @@ def _metric_sample_from_sqlite_row(row: sqlite3.Row) -> MachineMetricSample | No
         gpu_pcie_gen=row["gpu_pcie_gen"],
         gpu_pcie_width=row["gpu_pcie_width"],
         load_1m=row["load_1m"],
+        mem_total_mb=row["mem_total_mb"] if "mem_total_mb" in row_keys else None,
+        mem_used_mb=row["mem_used_mb"] if "mem_used_mb" in row_keys else None,
         mem_avail_mb=row["mem_avail_mb"],
+        mem_anon_mb=row["mem_anon_mb"] if "mem_anon_mb" in row_keys else None,
+        mem_file_cache_mb=row["mem_file_cache_mb"]
+        if "mem_file_cache_mb" in row_keys
+        else None,
+        mem_slab_reclaimable_mb=row["mem_slab_reclaimable_mb"]
+        if "mem_slab_reclaimable_mb" in row_keys
+        else None,
+        mem_slab_unreclaimable_mb=row["mem_slab_unreclaimable_mb"]
+        if "mem_slab_unreclaimable_mb" in row_keys
+        else None,
+        mem_dirty_mb=row["mem_dirty_mb"] if "mem_dirty_mb" in row_keys else None,
+        mem_writeback_mb=row["mem_writeback_mb"]
+        if "mem_writeback_mb" in row_keys
+        else None,
+        mem_shmem_mb=row["mem_shmem_mb"] if "mem_shmem_mb" in row_keys else None,
         swap_used_mb=row["swap_used_mb"],
         io_psi_some_avg10=row["io_psi_some_avg10"],
         io_psi_some_avg60=row["io_psi_some_avg60"]
@@ -298,17 +315,19 @@ def service_states(
     if end is not None:
         where.append("date(observed_at) <= ?")
         params.append(end.isoformat())
-    sql = "SELECT " + ", ".join(EXPECTED_SERVICE_STATE_COLUMNS) + " FROM service_state"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY observed_at, scope, unit"
     with connect_readonly(db) as conn:
         validate_service_state_schema(conn)
+        columns = service_state_columns(conn)
+        sql = "SELECT " + ", ".join(columns) + " FROM service_state"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at, scope, unit"
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = as_utc(row["observed_at"])
             if observed_at is None:
                 continue
+            row_keys = row.keys()
             yield MachineServiceState(
                 observed_at=observed_at,
                 host=row["host"],
@@ -320,6 +339,33 @@ def service_states(
                 main_pid=row["main_pid"],
                 control_group=row["control_group"],
                 memory_current_bytes=row["memory_current_bytes"],
+                memory_anon_bytes=row["memory_anon_bytes"]
+                if "memory_anon_bytes" in row_keys
+                else None,
+                memory_file_bytes=row["memory_file_bytes"]
+                if "memory_file_bytes" in row_keys
+                else None,
+                memory_kernel_bytes=row["memory_kernel_bytes"]
+                if "memory_kernel_bytes" in row_keys
+                else None,
+                memory_slab_bytes=row["memory_slab_bytes"]
+                if "memory_slab_bytes" in row_keys
+                else None,
+                memory_sock_bytes=row["memory_sock_bytes"]
+                if "memory_sock_bytes" in row_keys
+                else None,
+                memory_shmem_bytes=row["memory_shmem_bytes"]
+                if "memory_shmem_bytes" in row_keys
+                else None,
+                memory_swapcached_bytes=row["memory_swapcached_bytes"]
+                if "memory_swapcached_bytes" in row_keys
+                else None,
+                memory_zswap_bytes=row["memory_zswap_bytes"]
+                if "memory_zswap_bytes" in row_keys
+                else None,
+                memory_zswapped_bytes=row["memory_zswapped_bytes"]
+                if "memory_zswapped_bytes" in row_keys
+                else None,
                 cpu_usage_nsec=row["cpu_usage_nsec"],
                 io_read_bytes=row["io_read_bytes"],
                 io_write_bytes=row["io_write_bytes"],
@@ -563,23 +609,23 @@ def process_io_delta_samples(
     if end is not None:
         where.append("date(observed_at) <= ?")
         params.append(end.isoformat())
-    sql = (
-        "SELECT "
-        + ", ".join(EXPECTED_PROCESS_IO_DELTA_COLUMNS)
-        + " FROM process_io_delta_sample"
-    )
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY observed_at, total_bytes_delta DESC, total_syscalls_delta DESC"
     with connect_readonly(db) as conn:
         if not table_exists(conn, "process_io_delta_sample"):
             return
         validate_process_io_delta_schema(conn)
+        columns = process_io_delta_columns(conn)
+        sql = (
+            "SELECT " + ", ".join(columns) + " FROM process_io_delta_sample"
+        )
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at, total_bytes_delta DESC, total_syscalls_delta DESC"
         conn.row_factory = sqlite3.Row
         for row in conn.execute(sql, params):
             observed_at = as_utc(row["observed_at"])
             if observed_at is None:
                 continue
+            row_keys = row.keys()
             yield MachineProcessIODeltaSample(
                 observed_at=observed_at,
                 host=row["host"],
@@ -593,6 +639,9 @@ def process_io_delta_samples(
                 cgroup=row["cgroup"],
                 unit=row["unit"],
                 scope=row["scope"],
+                command_line=row["command_line"]
+                if "command_line" in row_keys
+                else None,
                 read_bytes_delta=int(row["read_bytes_delta"]),
                 write_bytes_delta=int(row["write_bytes_delta"]),
                 cancelled_write_bytes_delta=int(

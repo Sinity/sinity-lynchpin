@@ -301,7 +301,12 @@ def _candidate_project(candidate: dict[str, Any]) -> str | None:
     if project is not None:
         return project
     terms = _candidate_terms(candidate)
-    if "xtask-stage" in terms or "xtask.stage" in terms:
+    if (
+        "xtask-stage" in terms
+        or "xtask.stage" in terms
+        or "xtask-test-package" in terms
+        or "xtask.test." in terms
+    ):
         return "sinex"
     if "lynchpin" in terms or "pytest" in terms:
         return "sinity-lynchpin"
@@ -310,7 +315,13 @@ def _candidate_project(candidate: dict[str, Any]) -> str | None:
 
 def _candidate_attrs(candidate: dict[str, Any], *, project: str | None) -> tuple[str, ...]:
     terms = _candidate_terms(candidate)
-    if project == "sinex" and ("xtask-stage" in terms or "xtask.stage" in terms or "stage.duration_s" in terms):
+    if project == "sinex" and (
+        "xtask-stage" in terms
+        or "xtask.stage" in terms
+        or "xtask-test-package" in terms
+        or "xtask.test." in terms
+        or "stage.duration_s" in terms
+    ):
         return ("xtask",)
     if project == "sinity-lynchpin":
         return ("lynchpin",)

@@ -16,18 +16,27 @@ def test_machine_telemetry_analysis_keeps_general_signals(tmp_path):
                 INSERT INTO machine_metric_sample (
                     observed_at, host, boot_id, source, source_schema_version,
                     gpu_power_w, gpu_temp_c, gpu_util_pct, gpu_pcie_gen,
-                    gpu_pcie_width, load_1m, mem_avail_mb, swap_used_mb,
+                    gpu_pcie_width, load_1m, mem_total_mb, mem_used_mb,
+                    mem_avail_mb, mem_anon_mb, mem_file_cache_mb,
+                    mem_slab_reclaimable_mb, mem_slab_unreclaimable_mb,
+                    mem_dirty_mb, mem_writeback_mb, mem_shmem_mb, swap_used_mb,
                     io_psi_some_avg10, io_psi_full_avg10,
                     gap_codes, refresh_id
                 ) VALUES (?, 'host', 'boot', 'machine.telemetry', 2,
-                    ?, 40, 5, ?, 16, ?, ?, ?, ?, ?, [], 'r1')
+                    ?, 40, 5, ?, 16, ?, 32000, ?, ?, ?, ?, ?, ?, 2, 1, ?, ?, ?, ?, [], 'r1')
                 """,
                 [
                     datetime(2026, 5, day, 12, tzinfo=timezone.utc),
                     20.0 + idx,
                     4 if day >= 5 else 2,
                     float(idx),
+                    12000 + idx,
                     32000 - (idx * 100),
+                    8000 + idx,
+                    3000 + idx,
+                    700 + idx,
+                    300 + idx,
+                    500 + idx,
                     idx * 256,
                     0.1 * idx,
                     0.05 * idx,
@@ -44,6 +53,11 @@ def test_machine_telemetry_analysis_keeps_general_signals(tmp_path):
         "max_swap_used_mb",
     }
     assert analysis.daily[-1].max_swap_used_mb == 2048
+    assert analysis.daily[-1].max_mem_used_mb == 12008
+    assert analysis.daily[-1].max_mem_file_cache_mb == 3008
+    assert analysis.memory_breakdown[-1].max_mem_anon_mb == 8008
+    assert analysis.memory_breakdown[-1].max_mem_slab_reclaimable_mb == 708
+    assert analysis.memory_breakdown[-1].max_mem_slab_unreclaimable_mb == 308
     assert analysis.hardware_regimes[0].sample_count == 4
     assert max(regime.max_swap_used_mb or 0 for regime in analysis.hardware_regimes) == 2048
     assert any(regime.gpu_pcie_gen == 4 for regime in analysis.hardware_regimes)

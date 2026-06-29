@@ -140,6 +140,55 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
             );
             """
         )
+        conn.executescript(
+            """
+            ALTER TABLE metric_sample ADD COLUMN mem_total_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_used_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_anon_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_file_cache_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_slab_reclaimable_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_slab_unreclaimable_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_dirty_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_writeback_mb INTEGER;
+            ALTER TABLE metric_sample ADD COLUMN mem_shmem_mb INTEGER;
+            UPDATE metric_sample
+            SET schema_version = 4,
+                mem_total_mb = 32000,
+                mem_used_mb = 15000,
+                mem_anon_mb = 9000,
+                mem_file_cache_mb = 4200,
+                mem_slab_reclaimable_mb = 700,
+                mem_slab_unreclaimable_mb = 300,
+                mem_dirty_mb = 25,
+                mem_writeback_mb = 3,
+                mem_shmem_mb = 500
+            WHERE observed_at = '2026-05-12T12:00:00+00:00';
+
+            ALTER TABLE service_state ADD COLUMN memory_anon_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_file_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_kernel_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_slab_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_sock_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_shmem_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_swapcached_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_zswap_bytes INTEGER;
+            ALTER TABLE service_state ADD COLUMN memory_zswapped_bytes INTEGER;
+            UPDATE service_state
+            SET memory_anon_bytes = 1000,
+                memory_file_bytes = 200,
+                memory_kernel_bytes = 34,
+                memory_slab_bytes = 30,
+                memory_sock_bytes = 2,
+                memory_shmem_bytes = 20,
+                memory_swapcached_bytes = 4,
+                memory_zswap_bytes = 5,
+                memory_zswapped_bytes = 6;
+
+            ALTER TABLE process_io_delta_sample ADD COLUMN command_line TEXT;
+            UPDATE process_io_delta_sample
+            SET command_line = '/nix/store/rustc/bin/rustc --crate-name demo';
+            """
+        )
     monkeypatch.setattr(
         machine,
         "get_config",
@@ -153,6 +202,16 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
     assert len(rows) == 2
     assert rows[0].cpu_package_w == 16.5
     assert rows[0].gpu_pcie_gen == 1
+    assert rows[0].source_schema_version == 4
+    assert rows[0].mem_total_mb == 32000
+    assert rows[0].mem_used_mb == 15000
+    assert rows[0].mem_anon_mb == 9000
+    assert rows[0].mem_file_cache_mb == 4200
+    assert rows[0].mem_slab_reclaimable_mb == 700
+    assert rows[0].mem_slab_unreclaimable_mb == 300
+    assert rows[0].mem_dirty_mb == 25
+    assert rows[0].mem_writeback_mb == 3
+    assert rows[0].mem_shmem_mb == 500
     assert rows[0].swap_used_mb == 512
     assert rows[0].gap_codes == ("fan.hwmon_unavailable",)
     latest = machine.latest_metric_sample()
@@ -166,6 +225,9 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
     assert states[0].unit == "polylogued.service"
     assert states[0].scope == "user"
     assert states[0].memory_current_bytes == 1234
+    assert states[0].memory_anon_bytes == 1000
+    assert states[0].memory_file_bytes == 200
+    assert states[0].memory_kernel_bytes == 34
     devices = list(
         machine.block_device_samples(start=date(2026, 5, 12), end=date(2026, 5, 12))
     )
@@ -199,6 +261,7 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
     assert len(process_io) == 1
     assert process_io[0].comm == "rustc"
     assert process_io[0].unit == "session.scope"
+    assert process_io[0].command_line == "/nix/store/rustc/bin/rustc --crate-name demo"
     assert process_io[0].read_bytes_delta == 1048576
     assert process_io[0].total_syscalls_delta == 33
     gpu = list(machine.gpu_samples(start=date(2026, 5, 12), end=date(2026, 5, 12)))
