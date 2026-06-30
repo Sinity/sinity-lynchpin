@@ -18,12 +18,19 @@ def test_observability_catalog_identifies_canonical_machine_input():
 
     machine = by_id["machine.telemetry"]
     assert machine.integration_state == "canonical"
-    assert machine.substrate_table == "machine_metric_sample; machine_gpu_sample; machine_service_state; machine_network_sample"
+    assert machine.substrate_table == (
+        "machine_metric_sample; machine_gpu_sample; "
+        "machine_service_state; machine_network_sample; "
+        "machine_process_io_delta_sample; machine_process_memory_sample; "
+        "machine_cgroup_memory_sample"
+    )
     assert "psi" in machine.state_dimensions
     assert "gpu_high_frequency" in machine.state_dimensions
     assert "network_link_quality" in machine.state_dimensions
     assert "block_device_io" in machine.state_dimensions
     assert "service_cgroup_io" in machine.state_dimensions
+    assert "process_pss_private_memory" in machine.state_dimensions
+    assert "cgroup_memory_split" in machine.state_dimensions
     assert "directly from the live SQLite" in machine.next_action
 
 

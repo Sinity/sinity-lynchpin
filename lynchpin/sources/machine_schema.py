@@ -210,6 +210,59 @@ OPTIONAL_PROCESS_IO_DELTA_COLUMNS = (
     "command_line",
 )
 
+EXPECTED_PROCESS_MEMORY_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "schema_version",
+    "pid",
+    "process_start_time_ticks",
+    "comm",
+    "exe",
+    "cgroup",
+    "unit",
+    "scope",
+    "command_line",
+    "rss_kb",
+    "pss_kb",
+    "pss_anon_kb",
+    "pss_file_kb",
+    "pss_shmem_kb",
+    "private_clean_kb",
+    "private_dirty_kb",
+    "shared_clean_kb",
+    "shared_dirty_kb",
+    "swap_kb",
+)
+
+EXPECTED_CGROUP_MEMORY_COLUMNS = (
+    "observed_at",
+    "host",
+    "boot_id",
+    "schema_version",
+    "label",
+    "scope",
+    "control_group",
+    "memory_current_bytes",
+    "memory_peak_bytes",
+    "memory_swap_current_bytes",
+    "memory_swap_peak_bytes",
+    "memory_high_bytes",
+    "memory_max_bytes",
+    "memory_anon_bytes",
+    "memory_file_bytes",
+    "memory_kernel_bytes",
+    "memory_slab_bytes",
+    "memory_sock_bytes",
+    "memory_shmem_bytes",
+    "memory_swapcached_bytes",
+    "memory_zswap_bytes",
+    "memory_zswapped_bytes",
+    "cgroup_populated",
+    "cgroup_frozen",
+    "cgroup_freeze",
+)
+
 EXPECTED_GPU_COLUMNS = (
     "observed_at",
     "host",
@@ -295,6 +348,32 @@ def process_io_delta_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
     return EXPECTED_PROCESS_IO_DELTA_COLUMNS + tuple(
         column for column in OPTIONAL_PROCESS_IO_DELTA_COLUMNS if column in columns
     )
+
+
+def validate_process_memory_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(
+        conn,
+        "process_memory_sample",
+        EXPECTED_PROCESS_MEMORY_COLUMNS,
+    )
+
+
+def process_memory_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    _table_columns(conn, "process_memory_sample")
+    return EXPECTED_PROCESS_MEMORY_COLUMNS
+
+
+def validate_cgroup_memory_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(
+        conn,
+        "cgroup_memory_sample",
+        EXPECTED_CGROUP_MEMORY_COLUMNS,
+    )
+
+
+def cgroup_memory_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    _table_columns(conn, "cgroup_memory_sample")
+    return EXPECTED_CGROUP_MEMORY_COLUMNS
 
 
 def validate_gpu_schema(conn: sqlite3.Connection) -> None:

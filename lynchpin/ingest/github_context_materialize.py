@@ -112,7 +112,7 @@ def materialize_github_context(
                 detail_refreshes += 1
                 rows[key] = github_item_to_payload(project=project, item=item)
 
-    for fact in commit_facts(start=start, end=end, include_paths=False):
+    for fact in commit_facts(start=start, end=end, all_refs=True, include_paths=False):
         project = fact.repo
         path = active_paths.get(project)
         if path is None:

@@ -9,19 +9,24 @@ analytical substrate.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sqlite3
+import socket
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.config import get_config
 from .machine_models import (
     MachineBlockDeviceSample,
+    MachineCgroupMemorySample,
     MachineGpuSample,
     MachineMetricSample,
     MachineNetworkSample,
     MachineProcessIODeltaSample,
+    MachineProcessMemorySample,
     MachineServiceCgroupIOSample,
     MachineServiceCgroupPressureSample,
     MachineServiceState,
@@ -36,6 +41,8 @@ from .machine_schema import (
     EXPECTED_SERVICE_CGROUP_PRESSURE_COLUMNS,
     metric_columns,
     process_io_delta_columns,
+    process_memory_columns,
+    cgroup_memory_columns,
     service_state_columns,
     table_exists,
     validate_block_device_schema,
@@ -43,6 +50,8 @@ from .machine_schema import (
     validate_metric_schema,
     validate_network_schema,
     validate_process_io_delta_schema,
+    validate_process_memory_schema,
+    validate_cgroup_memory_schema,
     validate_service_cgroup_io_schema,
     validate_service_cgroup_pressure_schema,
     validate_service_state_schema,
@@ -57,10 +66,12 @@ from .machine_sqlite import (
 
 __all__ = [
     "MachineBlockDeviceSample",
+    "MachineCgroupMemorySample",
     "MachineGpuSample",
     "MachineMetricSample",
     "MachineNetworkSample",
     "MachineProcessIODeltaSample",
+    "MachineProcessMemorySample",
     "MachineServiceCgroupIOSample",
     "MachineServiceCgroupPressureSample",
     "MachineServiceState",
@@ -76,6 +87,8 @@ __all__ = [
     "service_cgroup_io_samples",
     "service_cgroup_pressure_samples",
     "process_io_delta_samples",
+    "process_memory_samples",
+    "cgroup_memory_samples",
     "canonical_machine_table_path",
 ]
 
@@ -105,6 +118,9 @@ def readiness() -> MachineSourceReadiness:
     process_io_delta_rows = count_sqlite_rows(
         cfg.machine_telemetry_db, "process_io_delta_sample"
     )
+    process_memory_rows = count_sqlite_rows(
+        cfg.machine_telemetry_db, "process_memory_sample"
+    )
     if live_rows:
         status = "ready"
         reason = (
@@ -113,7 +129,8 @@ def readiness() -> MachineSourceReadiness:
             f"block_device_samples={block_device_rows}; "
             f"service_cgroup_io_samples={cgroup_io_rows}; "
             f"service_cgroup_pressure_samples={cgroup_pressure_rows}; "
-            f"process_io_delta_samples={process_io_delta_rows}"
+            f"process_io_delta_samples={process_io_delta_rows}; "
+            f"process_memory_samples={process_memory_rows}"
         )
     else:
         status = "unavailable"
@@ -656,6 +673,307 @@ def process_io_delta_samples(
             )
 
 
+def process_memory_samples(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+    limit: int | None = None,
+) -> Iterator[MachineProcessMemorySample]:
+    if path is None:
+        if db := _default_machine_db():
+            yielded = False
+            for sample in process_memory_samples(
+                start=start,
+                end=end,
+                path=db,
+                limit=limit,
+            ):
+                yielded = True
+                yield sample
+            if yielded:
+                return
+        ndjson = canonical_machine_table_path("process_memory_sample")
+        if ndjson.exists():
+            yield from _process_memory_samples_from_ndjson(
+                ndjson, start=start, end=end
+            )
+            return
+        yield from _live_process_memory_samples(start=start, end=end, limit=limit)
+        return
+    db = path
+    if not db.exists():
+        return
+    with connect_readonly(db) as conn:
+        if not table_exists(conn, "process_memory_sample"):
+            return
+        validate_process_memory_schema(conn)
+        columns = process_memory_columns(conn)
+        where: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            where.append("date(observed_at) >= ?")
+            params.append(start.isoformat())
+        if end is not None:
+            where.append("date(observed_at) <= ?")
+            params.append(end.isoformat())
+        sql = "SELECT " + ", ".join(columns) + " FROM process_memory_sample"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at, pss_kb DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(int(limit), 0))
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(sql, params):
+            observed_at = as_utc(row["observed_at"])
+            if observed_at is None:
+                continue
+            yield MachineProcessMemorySample(
+                observed_at=observed_at,
+                host=row["host"],
+                boot_id=row["boot_id"],
+                source_schema_version=int(row["schema_version"]),
+                pid=int(row["pid"]),
+                process_start_time_ticks=row["process_start_time_ticks"],
+                comm=row["comm"],
+                exe=row["exe"],
+                cgroup=row["cgroup"],
+                unit=row["unit"],
+                scope=row["scope"],
+                command_line=row["command_line"],
+                rss_kb=int(row["rss_kb"]),
+                pss_kb=int(row["pss_kb"]),
+                pss_anon_kb=row["pss_anon_kb"],
+                pss_file_kb=row["pss_file_kb"],
+                pss_shmem_kb=row["pss_shmem_kb"],
+                private_clean_kb=int(row["private_clean_kb"]),
+                private_dirty_kb=int(row["private_dirty_kb"]),
+                shared_clean_kb=int(row["shared_clean_kb"]),
+                shared_dirty_kb=int(row["shared_dirty_kb"]),
+                swap_kb=int(row["swap_kb"]),
+            )
+
+
+def cgroup_memory_samples(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+) -> Iterator[MachineCgroupMemorySample]:
+    if path is None:
+        if db := _default_machine_db():
+            yield from cgroup_memory_samples(start=start, end=end, path=db)
+            return
+        ndjson = canonical_machine_table_path("cgroup_memory_sample")
+        if ndjson.exists():
+            yield from _cgroup_memory_samples_from_ndjson(ndjson, start=start, end=end)
+        return
+    db = path
+    if not db.exists():
+        return
+    with connect_readonly(db) as conn:
+        if not table_exists(conn, "cgroup_memory_sample"):
+            return
+        validate_cgroup_memory_schema(conn)
+        columns = cgroup_memory_columns(conn)
+        where: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            where.append("date(observed_at) >= ?")
+            params.append(start.isoformat())
+        if end is not None:
+            where.append("date(observed_at) <= ?")
+            params.append(end.isoformat())
+        sql = "SELECT " + ", ".join(columns) + " FROM cgroup_memory_sample"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at, label"
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(sql, params):
+            observed_at = as_utc(row["observed_at"])
+            if observed_at is None:
+                continue
+            yield MachineCgroupMemorySample(
+                observed_at=observed_at,
+                host=row["host"],
+                boot_id=row["boot_id"],
+                source_schema_version=int(row["schema_version"]),
+                label=row["label"],
+                scope=row["scope"],
+                control_group=row["control_group"],
+                memory_current_bytes=row["memory_current_bytes"],
+                memory_peak_bytes=row["memory_peak_bytes"],
+                memory_swap_current_bytes=row["memory_swap_current_bytes"],
+                memory_swap_peak_bytes=row["memory_swap_peak_bytes"],
+                memory_high_bytes=row["memory_high_bytes"],
+                memory_max_bytes=row["memory_max_bytes"],
+                memory_anon_bytes=row["memory_anon_bytes"],
+                memory_file_bytes=row["memory_file_bytes"],
+                memory_kernel_bytes=row["memory_kernel_bytes"],
+                memory_slab_bytes=row["memory_slab_bytes"],
+                memory_sock_bytes=row["memory_sock_bytes"],
+                memory_shmem_bytes=row["memory_shmem_bytes"],
+                memory_swapcached_bytes=row["memory_swapcached_bytes"],
+                memory_zswap_bytes=row["memory_zswap_bytes"],
+                memory_zswapped_bytes=row["memory_zswapped_bytes"],
+                cgroup_populated=row["cgroup_populated"],
+                cgroup_frozen=row["cgroup_frozen"],
+                cgroup_freeze=row["cgroup_freeze"],
+            )
+
+
+def _live_process_memory_samples(
+    *,
+    start: date | None,
+    end: date | None,
+    limit: int | None,
+) -> Iterator[MachineProcessMemorySample]:
+    observed_at = datetime.now(timezone.utc)
+    if start is not None and observed_at.date() < start:
+        return
+    if end is not None and observed_at.date() > end:
+        return
+
+    host = socket.gethostname()
+    boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id")).strip() or None
+    samples: list[MachineProcessMemorySample] = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        sample = _process_memory_sample_from_proc(
+            proc,
+            observed_at=observed_at,
+            host=host,
+            boot_id=boot_id,
+        )
+        if sample is not None:
+            samples.append(sample)
+
+    max_rows = 50 if limit is None else max(int(limit), 0)
+    samples.sort(key=lambda row: row.pss_kb, reverse=True)
+    yield from samples[:max_rows]
+
+
+def _process_memory_sample_from_proc(
+    proc: Path,
+    *,
+    observed_at: datetime,
+    host: str,
+    boot_id: str | None,
+) -> MachineProcessMemorySample | None:
+    try:
+        pid = int(proc.name)
+        rollup = _parse_smaps_rollup(proc / "smaps_rollup")
+        if not rollup or rollup.get("Pss", 0) <= 0:
+            return None
+        comm = _read_text(proc / "comm").strip() or None
+        cmdline = _read_cmdline(proc / "cmdline")
+        stat = _read_text(proc / "stat")
+        start_ticks = _process_start_ticks(stat)
+        exe = os.readlink(proc / "exe") if (proc / "exe").exists() else None
+        cgroup = _read_process_cgroup(proc / "cgroup")
+        unit = _unit_from_cgroup(cgroup)
+        scope = _scope_from_cgroup(cgroup)
+        return MachineProcessMemorySample(
+            observed_at=observed_at,
+            host=host,
+            boot_id=boot_id,
+            source_schema_version=1,
+            pid=pid,
+            process_start_time_ticks=start_ticks,
+            comm=comm,
+            exe=exe,
+            cgroup=cgroup,
+            unit=unit,
+            scope=scope,
+            command_line=cmdline,
+            rss_kb=rollup.get("Rss", 0),
+            pss_kb=rollup.get("Pss", 0),
+            pss_anon_kb=rollup.get("Pss_Anon"),
+            pss_file_kb=rollup.get("Pss_File"),
+            pss_shmem_kb=rollup.get("Pss_Shmem"),
+            private_clean_kb=rollup.get("Private_Clean", 0),
+            private_dirty_kb=rollup.get("Private_Dirty", 0),
+            shared_clean_kb=rollup.get("Shared_Clean", 0),
+            shared_dirty_kb=rollup.get("Shared_Dirty", 0),
+            swap_kb=rollup.get("Swap", 0),
+        )
+    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueError):
+        return None
+
+
+def _parse_smaps_rollup(path: Path) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in _read_text(path).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].endswith(":"):
+            try:
+                values[parts[0][:-1]] = int(parts[1])
+            except ValueError:
+                continue
+    return values
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _read_cmdline(path: Path) -> str | None:
+    data = path.read_bytes().replace(b"\0", b" ").strip()
+    return data.decode("utf-8", errors="ignore") or None
+
+
+def _process_start_ticks(stat: str) -> int | None:
+    # /proc/<pid>/stat wraps comm in parentheses; fields after the last ") "
+    # start at field 3. starttime is field 22, index 19 in the suffix.
+    if ") " not in stat:
+        return None
+    fields = stat.rsplit(") ", 1)[1].split()
+    if len(fields) <= 19:
+        return None
+    return int(fields[19])
+
+
+def _read_process_cgroup(path: Path) -> str | None:
+    for line in _read_text(path).splitlines():
+        if "::" in line:
+            return line.split("::", 1)[1]
+        parts = line.split(":", 2)
+        if len(parts) == 3:
+            return parts[2]
+    return None
+
+
+def _unit_from_cgroup(cgroup: str | None) -> str | None:
+    if not cgroup:
+        return None
+    units = [
+        part
+        for part in cgroup.split("/")
+        if part.endswith((".service", ".scope"))
+    ]
+    return _systemd_unescape_fragment(units[-1]) if units else None
+
+
+def _systemd_unescape_fragment(fragment: str) -> str:
+    return re.sub(
+        r"\\x([0-9A-Fa-f]{2})",
+        lambda match: chr(int(match.group(1), 16)),
+        fragment,
+    )
+
+
+def _scope_from_cgroup(cgroup: str | None) -> str | None:
+    if not cgroup:
+        return None
+    if "/user.slice/" in cgroup:
+        return "user"
+    if cgroup.startswith("/system.slice") or ".service" in cgroup:
+        return "system"
+    return None
+
+
 def gpu_samples(
     *,
     start: date | None = None,
@@ -858,6 +1176,20 @@ def _process_io_delta_samples_from_ndjson(
 ) -> Iterator[MachineProcessIODeltaSample]:
     for row in _load_machine_rows(path, start=start, end=end):
         yield MachineProcessIODeltaSample(**row)
+
+
+def _process_memory_samples_from_ndjson(
+    path: Path, *, start: date | None, end: date | None
+) -> Iterator[MachineProcessMemorySample]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineProcessMemorySample(**row)
+
+
+def _cgroup_memory_samples_from_ndjson(
+    path: Path, *, start: date | None, end: date | None
+) -> Iterator[MachineCgroupMemorySample]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineCgroupMemorySample(**row)
 
 
 def _gpu_samples_from_ndjson(

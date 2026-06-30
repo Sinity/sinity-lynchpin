@@ -178,6 +178,7 @@ def test_machine_pressure_explain_materializes_substrate_only(
                 "metric": {"mem_file_cache_mb": 16000},
                 "top_services_by_memory": [{"unit": "transmission.service"}],
                 "top_process_io_deltas": [{"comm": "codex"}],
+                "top_processes_by_pss": [{"comm": "codex", "pss_mib": 300.0}],
                 "notes": ["IO full PSI is elevated in this window"],
             },
         ],
@@ -195,8 +196,129 @@ def test_machine_pressure_explain_materializes_substrate_only(
         "machine_metric_sample",
         "machine_service_state",
         "machine_process_io_delta_sample",
+        "machine_process_memory_sample",
     ]
     assert result["windows"][0]["top_process_io_deltas"][0]["comm"] == "codex"
+    assert result["windows"][0]["top_processes_by_pss"][0]["pss_mib"] == 300.0
+
+
+def test_machine_pressure_report_materializes_substrate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from lynchpin.sources.machine import MachineProcessMemorySample
+
+    substrate_calls = []
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
+        substrate_calls.append((caller, window))
+        return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    def fake_memory(*_args, **_kwargs):
+        return [
+            {
+                "observed_at": "2026-05-01T12:00:00+00:00",
+                "mem_used_mb": 18000,
+                "mem_total_mb": 32000,
+                "mem_avail_mb": 14000,
+                "mem_anon_mb": 8000,
+                "mem_file_cache_mb": 16000,
+                "mem_slab_reclaimable_mb": 512,
+                "mem_slab_unreclaimable_mb": 128,
+                "swap_used_mb": 0,
+                "memory_psi_full_avg60": 0.0,
+            }
+        ]
+
+    def fake_windows(*_args, **kwargs):
+        return [
+            {
+                "focus": kwargs.get("focus"),
+                "top_processes_by_pss": [{"comm": "codex", "pss_mib": 300.0}],
+            }
+        ]
+
+    def fake_processes(*_args, **_kwargs):
+        return [
+            MachineProcessMemorySample(
+                observed_at=datetime(2026, 5, 1, 12, tzinfo=timezone.utc),
+                host="host",
+                boot_id="boot",
+                source_schema_version=4,
+                pid=123,
+                process_start_time_ticks=456,
+                comm="codex",
+                exe="/bin/codex",
+                cgroup="/user.slice/user-1000.slice/session.scope",
+                unit="session.scope",
+                scope="user",
+                command_line="codex",
+                rss_kb=409600,
+                pss_kb=307200,
+                pss_anon_kb=204800,
+                pss_file_kb=81920,
+                pss_shmem_kb=20480,
+                private_clean_kb=10240,
+                private_dirty_kb=194560,
+                shared_clean_kb=40960,
+                shared_dirty_kb=61440,
+                swap_kb=0,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.ensure_substrate_materialized_for_read",
+        fake_ensure_substrate_materialized_for_read,
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: "fixture.duckdb")
+    monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Conn())
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.machine.best_materialized_refresh_id",
+        lambda *_args, **_kwargs: "rid",
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_memory_breakdown",
+        fake_memory,
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_pressure_explainer",
+        fake_windows,
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.machine.load_machine_process_memory_samples",
+        fake_processes,
+    )
+
+    from lynchpin.mcp.tools.machine import machine_pressure_report
+
+    result = machine_pressure_report(start="2026-05-01", end="2026-05-03")
+
+    assert substrate_calls == [
+        ("machine_pressure_report", (date(2026, 5, 1), date(2026, 5, 4)))
+    ]
+    assert result["summary"]["joins"] == [
+        "machine_metric_sample",
+        "machine_service_state",
+        "machine_process_io_delta_sample",
+        "machine_process_memory_sample",
+    ]
+    assert result["top_processes_by_pss"][0]["comm"] == "codex"
+    assert result["top_processes_by_pss"][0]["pss_mib"] == 300.0
+    assert result["summary"]["classification"] == "cache-heavy"
+    assert result["process_memory_groups"][0]["workload_class"] == "agent"
+    assert result["process_memory_groups"][0]["pss_mib"] == 300.0
+    assert result["memory_accounting"]["finite_pressure_mb"] == 18000.0
+    assert result["memory_accounting"]["reclaimable_cache_mb"] == 16512.0
+    assert result["memory_accounting"]["top_process_pss_vs_anon_percent"] == 3.8
+    assert result["interpretation"]["mem_file_cache_mb"] == 16000
 
 
 def test_sinnix_generation_history_materializes_substrate(

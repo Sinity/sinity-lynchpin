@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     import duckdb
-SUBSTRATE_VERSION = 35
+SUBSTRATE_VERSION = 37
 'Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote.'
 
 def substrate_path() -> Path:

@@ -133,8 +133,8 @@ def _git_state(repo: Path) -> dict[str, str | bool]:
     return {'branch': branch.stdout.strip(), 'commit': commit.stdout.strip(), 'dirty': bool(status.stdout.strip())}
 
 def _has_github_remote(repo: Path) -> bool:
-    result = _run(['git', 'remote', 'get-url', 'origin'], cwd=repo)
-    return result.returncode == 0 and 'github.com' in result.stdout
+    from .github import repo_slug
+    return repo_slug(repo) is not None
 
 def _sanitize_xml(path: Path) -> int:
     """Strip control characters from an XML file. Returns number of bytes removed."""
@@ -402,19 +402,11 @@ def _generate_prs(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[st
     return (len(open_prs), len(merged_prs))
 
 def _generate_git_log(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None=None) -> int:
-    default_branch = 'HEAD'
-    branch_result = _run(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd=plan.path)
-    if branch_result.returncode == 0:
-        default_branch = branch_result.stdout.strip().removeprefix('origin/')
-    else:
-        br = _run(['git', 'symbolic-ref', '--short', 'HEAD'], cwd=plan.path)
-        if br.returncode == 0:
-            default_branch = br.stdout.strip()
-    result = _run(['git', 'log', '--first-parent', '--reverse', default_branch, '--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e'], cwd=plan.path)
+    result = _run(['git', 'log', '--all', '--reverse', '--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e'], cwd=plan.path)
     if result.returncode != 0:
         _emit(log, f'  [yellow]⚠[/yellow] {plan.name}: git log failed: {result.stderr.strip()}')
         return 0
-    root = ET.Element('git-log', {'repository': str(plan.path), 'branch': default_branch, 'style': 'first-parent', 'generated-at': generated_at})
+    root = ET.Element('git-log', {'repository': str(plan.path), 'refs': 'all', 'style': 'all-refs', 'generated-at': generated_at})
     count = 0
     for block in result.stdout.split('\x1e'):
         block = block.strip()

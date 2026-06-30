@@ -16,6 +16,7 @@ no events in the window.
 from __future__ import annotations
 
 import logging
+import gc
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -39,7 +40,9 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_EXPERIMENTS,
     SOURCE_MACHINE_GPU,
     SOURCE_MACHINE_NETWORK,
+    SOURCE_MACHINE_CGROUP_MEMORY,
     SOURCE_MACHINE_PROCESS_IO_DELTA,
+    SOURCE_MACHINE_PROCESS_MEMORY,
     SOURCE_MACHINE_SERVICE_STATE,
     SOURCE_SINNIX_GENERATION,
     SOURCE_BORG_DRILL,
@@ -379,6 +382,8 @@ def _run_stage(
             finished_at=finished_at,
         )
         raise
+    finally:
+        gc.collect()
     finished_at = datetime.now(timezone.utc)
     record_run_step(
         conn,
@@ -495,6 +500,8 @@ __all__ = [
     "SOURCE_MACHINE",
     "SOURCE_MACHINE_GPU",
     "SOURCE_MACHINE_NETWORK",
+    "SOURCE_MACHINE_PROCESS_IO_DELTA",
+    "SOURCE_MACHINE_PROCESS_MEMORY",
     "SOURCE_MACHINE_SERVICE_STATE",
     "SOURCE_MACHINE_EXPERIMENTS",
     "SOURCE_SINNIX_GENERATION",

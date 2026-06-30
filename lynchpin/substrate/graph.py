@@ -503,6 +503,7 @@ def promote_evidence_graph(
             refresh_id=refresh_id,
             rows=graph.nodes,
             extractor=_extract_node,
+            batch_size=5000,
             refresh_id_position="first",
             delete_existing=False,
             wrap_transaction=False,  # this fn owns the surrounding transaction
@@ -515,13 +516,17 @@ def promote_evidence_graph(
             refresh_id=refresh_id,
             rows=graph.edges,
             extractor=_extract_edge,
+            batch_size=5000,
             refresh_id_position="first",
             delete_existing=False,
             wrap_transaction=False,  # this fn owns the surrounding transaction
         )
         conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except Exception as rollback_exc:  # noqa: BLE001 - preserve original promote failure.
+            log.warning("promote_evidence_graph: rollback failed after promote error: %s", rollback_exc)
         raise
 
     log.info(

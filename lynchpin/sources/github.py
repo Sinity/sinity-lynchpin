@@ -162,9 +162,11 @@ def repo_slug(repo_path: Path) -> str | None:
     if not (repo_path / ".git").exists():
         return None
     result = _run(["git", "remote", "get-url", "origin"], cwd=repo_path)
-    if result.returncode != 0:
-        return None
-    return slug_from_remote(result.stdout.strip())
+    if result.returncode == 0:
+        slug = slug_from_remote(result.stdout.strip())
+        if slug is not None:
+            return slug
+    return None
 
 
 def slug_from_remote(remote: str) -> str | None:

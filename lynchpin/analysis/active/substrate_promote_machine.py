@@ -7,6 +7,7 @@ SQLite extension is unavailable or the canonical DB path is absent.
 
 from __future__ import annotations
 
+import gc
 from dataclasses import replace
 import json
 import logging
@@ -20,7 +21,9 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_EXPERIMENTS,
     SOURCE_MACHINE_GPU,
     SOURCE_MACHINE_NETWORK,
+    SOURCE_MACHINE_CGROUP_MEMORY,
     SOURCE_MACHINE_PROCESS_IO_DELTA,
+    SOURCE_MACHINE_PROCESS_MEMORY,
     SOURCE_MACHINE_SERVICE_STATE,
     SourceSelection,
     record_source_status,
@@ -42,7 +45,9 @@ def promote_machine_tables(
         SOURCE_MACHINE,
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
+        SOURCE_MACHINE_CGROUP_MEMORY,
         SOURCE_MACHINE_PROCESS_IO_DELTA,
+        SOURCE_MACHINE_PROCESS_MEMORY,
         SOURCE_MACHINE_SERVICE_STATE,
         SOURCE_MACHINE_EXPERIMENTS,
     )):
@@ -62,6 +67,12 @@ def promote_machine_tables(
                 selection=selection,
             )
             _promote_machine_process_io_slow(
+                conn, refresh_id, window_start, window_end, counts, selection
+            )
+            _promote_machine_process_memory_slow(
+                conn, refresh_id, window_start, window_end, counts, selection
+            )
+            _promote_machine_cgroup_memory_slow(
                 conn, refresh_id, window_start, window_end, counts, selection
             )
             _promote_experiments(conn, refresh_id, window_start, window_end, counts, selection)
@@ -181,7 +192,6 @@ def _promote_machine_fast(
     from lynchpin.sources.machine import readiness as machine_readiness
 
     machine_ready = machine_readiness()
-    date_filter, date_params = _source_window_filter(window_start, window_end)
     projections = _machine_projections()
 
     tables = [
@@ -204,12 +214,15 @@ def _promote_machine_fast(
             )
             columns, overrides = projections[src_table]
             select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-            conn.execute(
-                f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
-                f"SELECT {select_exprs}, ? AS refresh_id "
-                f"FROM machine_src.{src_table} {date_filter}",
-                [refresh_id, *date_params],
-            )
+            for chunk_start, chunk_end in _iter_day_windows(window_start, window_end):
+                date_filter, date_params = _source_window_filter(chunk_start, chunk_end)
+                conn.execute(
+                    f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                    f"SELECT {select_exprs}, ? AS refresh_id "
+                    f"FROM machine_src.{src_table} {date_filter}",
+                    [refresh_id, *date_params],
+                )
+                gc.collect()
             row_count = conn.execute(
                 f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
                 [refresh_id],
@@ -247,6 +260,13 @@ def _promote_machine_fast(
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
 
 
+def _iter_day_windows(window_start: date, window_end: date) -> "Iterator[tuple[date, date]]":
+    current = window_start
+    while current <= window_end:
+        yield current, current
+        current += timedelta(days=1)
+
+
 def _source_window_filter(window_start: date, window_end: date) -> tuple[str, list[str]]:
     """Return the fast source-window predicate for machine SQLite tables.
 
@@ -277,7 +297,9 @@ def _promote_machine_slow(
         promote_machine_gpu_samples,
         promote_machine_metric_samples,
         promote_machine_network_samples,
+        promote_machine_cgroup_memory_samples,
         promote_machine_process_io_delta_samples,
+        promote_machine_process_memory_samples,
         promote_machine_service_states,
     )
 
@@ -287,6 +309,8 @@ def _promote_machine_slow(
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
         SOURCE_MACHINE_PROCESS_IO_DELTA,
+        SOURCE_MACHINE_PROCESS_MEMORY,
+        SOURCE_MACHINE_CGROUP_MEMORY,
     ):
         return
 
@@ -296,6 +320,8 @@ def _promote_machine_slow(
             metric_samples,
             network_samples,
             process_io_delta_samples,
+            process_memory_samples,
+            cgroup_memory_samples,
             readiness as machine_readiness,
             service_states,
         )
@@ -362,9 +388,33 @@ def _promote_machine_slow(
                 reason=machine_ready.reason, row_count=process_io_count,
                 window_start=window_start, window_end=window_end,
             )
+        if selection.includes(SOURCE_MACHINE_PROCESS_MEMORY):
+            process_memory_count = promote_machine_process_memory_samples(
+                conn, refresh_id=refresh_id,
+                samples=process_memory_samples(start=window_start, end=window_end),
+            )
+            counts["machine_process_memory_samples"] = process_memory_count
+            record_source_status(
+                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_PROCESS_MEMORY,
+                status="ok" if process_memory_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                reason=machine_ready.reason, row_count=process_memory_count,
+                window_start=window_start, window_end=window_end,
+            )
+        if selection.includes(SOURCE_MACHINE_CGROUP_MEMORY):
+            cgroup_memory_count = promote_machine_cgroup_memory_samples(
+                conn, refresh_id=refresh_id,
+                samples=cgroup_memory_samples(start=window_start, end=window_end),
+            )
+            counts["machine_cgroup_memory_samples"] = cgroup_memory_count
+            record_source_status(
+                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_CGROUP_MEMORY,
+                status="ok" if cgroup_memory_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                reason=machine_ready.reason, row_count=cgroup_memory_count,
+                window_start=window_start, window_end=window_end,
+            )
     except Exception as exc:
         log.warning("substrate_promote: machine telemetry promotion skipped: %s", exc)
-        for source in (SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE, SOURCE_MACHINE_GPU, SOURCE_MACHINE_NETWORK, SOURCE_MACHINE_PROCESS_IO_DELTA):
+        for source in (SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE, SOURCE_MACHINE_GPU, SOURCE_MACHINE_NETWORK, SOURCE_MACHINE_PROCESS_IO_DELTA, SOURCE_MACHINE_PROCESS_MEMORY, SOURCE_MACHINE_CGROUP_MEMORY):
             if selection.includes(source):
                 record_source_status(
                     conn, refresh_id=refresh_id, source=source,
@@ -415,6 +465,106 @@ def _promote_machine_process_io_slow(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_MACHINE_PROCESS_IO_DELTA,
+            status="error",
+            reason=str(exc),
+            row_count=0,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+
+def _promote_machine_process_memory_slow(
+    conn: Any,
+    refresh_id: str,
+    window_start: date,
+    window_end: date,
+    counts: dict[str, int],
+    selection: SourceSelection,
+) -> None:
+    if not selection.includes(SOURCE_MACHINE_PROCESS_MEMORY):
+        return
+    try:
+        from lynchpin.sources.machine import (
+            process_memory_samples,
+            readiness as machine_readiness,
+        )
+        from lynchpin.substrate.machine import promote_machine_process_memory_samples
+
+        machine_ready = machine_readiness()
+        process_memory_count = promote_machine_process_memory_samples(
+            conn,
+            refresh_id=refresh_id,
+            samples=process_memory_samples(start=window_start, end=window_end),
+        )
+        counts["machine_process_memory_samples"] = process_memory_count
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_PROCESS_MEMORY,
+            status="ok"
+            if process_memory_count
+            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+            reason=machine_ready.reason,
+            row_count=process_memory_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except Exception as exc:
+        log.warning("substrate_promote: process memory promotion skipped: %s", exc)
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_PROCESS_MEMORY,
+            status="error",
+            reason=str(exc),
+            row_count=0,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+
+def _promote_machine_cgroup_memory_slow(
+    conn: Any,
+    refresh_id: str,
+    window_start: date,
+    window_end: date,
+    counts: dict[str, int],
+    selection: SourceSelection,
+) -> None:
+    if not selection.includes(SOURCE_MACHINE_CGROUP_MEMORY):
+        return
+    try:
+        from lynchpin.sources.machine import (
+            cgroup_memory_samples,
+            readiness as machine_readiness,
+        )
+        from lynchpin.substrate.machine import promote_machine_cgroup_memory_samples
+
+        machine_ready = machine_readiness()
+        cgroup_memory_count = promote_machine_cgroup_memory_samples(
+            conn,
+            refresh_id=refresh_id,
+            samples=cgroup_memory_samples(start=window_start, end=window_end),
+        )
+        counts["machine_cgroup_memory_samples"] = cgroup_memory_count
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_CGROUP_MEMORY,
+            status="ok"
+            if cgroup_memory_count
+            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+            reason=machine_ready.reason,
+            row_count=cgroup_memory_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except Exception as exc:
+        log.warning("substrate_promote: cgroup memory promotion skipped: %s", exc)
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_CGROUP_MEMORY,
             status="error",
             reason=str(exc),
             row_count=0,

@@ -193,6 +193,28 @@ def test_promote_evidence_graph_idempotent(tmp_path: Path) -> None:
     assert edge_count == 2
 
 
+def test_promote_evidence_graph_preserves_commit_error_when_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DuckDB fatal can invalidate the connection before ROLLBACK works."""
+    from lynchpin.substrate import graph as graph_mod
+
+    graph = _make_evidence_graph()
+
+    class FatalConn:
+        def execute(self, sql: str, params: object | None = None) -> "FatalConn":
+            if sql == "COMMIT":
+                raise RuntimeError("Corrupted ART index")
+            if sql == "ROLLBACK":
+                raise RuntimeError("database has been invalidated")
+            return self
+
+    monkeypatch.setattr(graph_mod, "promote_rows", lambda *args, **kwargs: 1)
+
+    with pytest.raises(RuntimeError, match="Corrupted ART index"):
+        graph_mod.promote_evidence_graph(FatalConn(), refresh_id="r1", graph=graph)
+
+
 def test_promote_evidence_graph_partition_isolation(tmp_path: Path) -> None:
     """Two graphs with different refresh_ids have independent nodes."""
     from lynchpin.substrate import graph as graph_mod

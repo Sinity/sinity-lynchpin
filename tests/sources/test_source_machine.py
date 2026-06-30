@@ -113,6 +113,43 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
               'session.scope', 'user',
               1048576, 2097152, 0, 4096, 8192, 11, 22, 3145728, 33
             );
+            CREATE TABLE process_memory_sample (
+              observed_at TEXT, host TEXT, boot_id TEXT, schema_version INTEGER,
+              pid INTEGER, process_start_time_ticks INTEGER,
+              comm TEXT, exe TEXT, cgroup TEXT, unit TEXT, scope TEXT,
+              command_line TEXT, rss_kb INTEGER, pss_kb INTEGER,
+              pss_anon_kb INTEGER, pss_file_kb INTEGER, pss_shmem_kb INTEGER,
+              private_clean_kb INTEGER, private_dirty_kb INTEGER,
+              shared_clean_kb INTEGER, shared_dirty_kb INTEGER, swap_kb INTEGER
+            );
+            INSERT INTO process_memory_sample VALUES (
+              '2026-05-12T12:00:10+00:00', 'sinnix-prime', 'boot-a', 4,
+              123, 456789, 'rustc', '/nix/store/rustc/bin/rustc',
+              '/user.slice/user-1000.slice/session.scope',
+              'session.scope', 'user',
+              '/nix/store/rustc/bin/rustc --crate-name demo',
+              409600, 307200, 204800, 81920, 20480,
+              10240, 194560, 40960, 61440, 0
+            );
+            CREATE TABLE cgroup_memory_sample (
+              observed_at TEXT, host TEXT, boot_id TEXT, schema_version INTEGER,
+              label TEXT, scope TEXT, control_group TEXT,
+              memory_current_bytes INTEGER, memory_peak_bytes INTEGER,
+              memory_swap_current_bytes INTEGER, memory_swap_peak_bytes INTEGER,
+              memory_high_bytes INTEGER, memory_max_bytes INTEGER,
+              memory_anon_bytes INTEGER, memory_file_bytes INTEGER,
+              memory_kernel_bytes INTEGER, memory_slab_bytes INTEGER,
+              memory_sock_bytes INTEGER, memory_shmem_bytes INTEGER,
+              memory_swapcached_bytes INTEGER, memory_zswap_bytes INTEGER,
+              memory_zswapped_bytes INTEGER, cgroup_populated INTEGER,
+              cgroup_frozen INTEGER, cgroup_freeze INTEGER
+            );
+            INSERT INTO cgroup_memory_sample VALUES (
+              '2026-05-12T12:00:10+00:00', 'sinnix-prime', 'boot-a', 4,
+              'system.nix-build', 'system', '/nix.slice/nix-build.slice',
+              104857600, 209715200, 0, 0, 19327352832, 25769803776,
+              73400320, 20971520, 8388608, 4194304, 0, 0, 0, 0, 0, 1, 1, 1
+            );
             CREATE TABLE gpu_sample (
               observed_at TEXT, host TEXT, boot_id TEXT,
               gpu_power_w REAL, gpu_power_limit_w REAL, gpu_temp_c REAL,
@@ -264,6 +301,26 @@ def test_machine_source_reads_live_sqlite(monkeypatch, tmp_path):
     assert process_io[0].command_line == "/nix/store/rustc/bin/rustc --crate-name demo"
     assert process_io[0].read_bytes_delta == 1048576
     assert process_io[0].total_syscalls_delta == 33
+    process_memory = list(
+        machine.process_memory_samples(
+            start=date(2026, 5, 12), end=date(2026, 5, 12)
+        )
+    )
+    assert len(process_memory) == 1
+    assert process_memory[0].comm == "rustc"
+    assert process_memory[0].unit == "session.scope"
+    assert process_memory[0].pss_kb == 307200
+    assert process_memory[0].pss_anon_kb == 204800
+    assert process_memory[0].private_dirty_kb == 194560
+    cgroup_memory = list(
+        machine.cgroup_memory_samples(
+            start=date(2026, 5, 12), end=date(2026, 5, 12)
+        )
+    )
+    assert len(cgroup_memory) == 1
+    assert cgroup_memory[0].label == "system.nix-build"
+    assert cgroup_memory[0].memory_anon_bytes == 73400320
+    assert cgroup_memory[0].cgroup_frozen == 1
     gpu = list(machine.gpu_samples(start=date(2026, 5, 12), end=date(2026, 5, 12)))
     assert len(gpu) == 1
     assert gpu[0].gpu_power_w == 30.0

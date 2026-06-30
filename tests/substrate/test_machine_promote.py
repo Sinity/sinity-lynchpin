@@ -273,6 +273,105 @@ def test_promote_machine_process_io_delta_samples_round_trip(tmp_path):
     assert loaded[0].total_syscalls_delta == 33
 
 
+def test_promote_machine_process_memory_samples_round_trip(tmp_path):
+    from lynchpin.sources.machine import MachineProcessMemorySample
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_process_memory_samples
+    from lynchpin.substrate.machine import promote_machine_process_memory_samples
+
+    db = tmp_path / "sub.duckdb"
+    sample = MachineProcessMemorySample(
+        observed_at=datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+        host="sinnix-prime",
+        boot_id="boot-a",
+        source_schema_version=4,
+        pid=123,
+        process_start_time_ticks=456789,
+        comm="rustc",
+        exe="/nix/store/rustc/bin/rustc",
+        cgroup="/user.slice/user-1000.slice/session.scope",
+        unit="session.scope",
+        scope="user",
+        command_line="/nix/store/rustc/bin/rustc --crate-name demo",
+        rss_kb=409600,
+        pss_kb=307200,
+        pss_anon_kb=204800,
+        pss_file_kb=81920,
+        pss_shmem_kb=20480,
+        private_clean_kb=10240,
+        private_dirty_kb=194560,
+        shared_clean_kb=40960,
+        shared_dirty_kb=61440,
+        swap_kb=0,
+    )
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert (
+            promote_machine_process_memory_samples(
+                conn, refresh_id="r1", samples=[sample]
+            )
+            == 1
+        )
+        loaded = load_machine_process_memory_samples(conn, refresh_id="r1")
+
+    assert len(loaded) == 1
+    assert loaded[0].comm == "rustc"
+    assert loaded[0].unit == "session.scope"
+    assert loaded[0].pss_kb == 307200
+    assert loaded[0].pss_anon_kb == 204800
+    assert loaded[0].private_dirty_kb == 194560
+
+
+def test_promote_machine_cgroup_memory_samples_round_trip(tmp_path):
+    from lynchpin.sources.machine import MachineCgroupMemorySample
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_cgroup_memory_samples
+    from lynchpin.substrate.machine import promote_machine_cgroup_memory_samples
+
+    db = tmp_path / "sub.duckdb"
+    sample = MachineCgroupMemorySample(
+        observed_at=datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+        host="sinnix-prime",
+        boot_id="boot-a",
+        source_schema_version=4,
+        label="system.nix-build",
+        scope="system",
+        control_group="/nix.slice/nix-build.slice",
+        memory_current_bytes=104857600,
+        memory_peak_bytes=209715200,
+        memory_swap_current_bytes=0,
+        memory_swap_peak_bytes=0,
+        memory_high_bytes=19327352832,
+        memory_max_bytes=25769803776,
+        memory_anon_bytes=73400320,
+        memory_file_bytes=20971520,
+        memory_kernel_bytes=8388608,
+        memory_slab_bytes=4194304,
+        memory_sock_bytes=0,
+        memory_shmem_bytes=0,
+        memory_swapcached_bytes=0,
+        memory_zswap_bytes=0,
+        memory_zswapped_bytes=0,
+        cgroup_populated=1,
+        cgroup_frozen=1,
+        cgroup_freeze=1,
+    )
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert (
+            promote_machine_cgroup_memory_samples(
+                conn, refresh_id="r1", samples=[sample]
+            )
+            == 1
+        )
+        loaded = load_machine_cgroup_memory_samples(conn, refresh_id="r1")
+
+    assert len(loaded) == 1
+    assert loaded[0].label == "system.nix-build"
+    assert loaded[0].memory_anon_bytes == 73400320
+    assert loaded[0].cgroup_frozen == 1
+
+
 def test_machine_service_state_summary_reports_counter_deltas(tmp_path):
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine import load_machine_service_state_summary
@@ -377,6 +476,24 @@ def test_machine_pressure_explainer_joins_metric_service_and_process_io(tmp_path
             """,
             [observed_at],
         )
+        conn.execute(
+            """
+            INSERT INTO machine_process_memory_sample (
+                observed_at, host, boot_id, source_schema_version,
+                pid, process_start_time_ticks, comm, unit, scope, command_line,
+                rss_kb, pss_kb, pss_anon_kb, pss_file_kb, pss_shmem_kb,
+                private_clean_kb, private_dirty_kb,
+                shared_clean_kb, shared_dirty_kb, swap_kb, refresh_id
+            ) VALUES (
+                ?, 'host', 'boot', 4,
+                123, 456, 'codex', 'session.scope', 'user', 'codex exec',
+                409600, 307200, 204800, 81920, 20480,
+                10240, 194560,
+                40960, 61440, 0, 'r1'
+            )
+            """,
+            [observed_at],
+        )
 
         windows = load_machine_pressure_explainer(conn, refresh_id="r1", focus="io")
 
@@ -387,6 +504,8 @@ def test_machine_pressure_explainer_joins_metric_service_and_process_io(tmp_path
     assert windows[0]["top_services_by_memory"][0]["max_file_mib"] == 1800
     assert windows[0]["top_process_io_deltas"][0]["comm"] == "codex"
     assert windows[0]["top_process_io_deltas"][0]["total_mib_delta"] == 300
+    assert windows[0]["top_processes_by_pss"][0]["comm"] == "codex"
+    assert windows[0]["top_processes_by_pss"][0]["pss_mib"] == 300
 
 
 def test_promote_machine_network_samples_round_trip(tmp_path):

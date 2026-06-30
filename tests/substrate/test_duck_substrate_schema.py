@@ -36,6 +36,9 @@ def test_apply_schema_creates_all_tables(tmp_path: Path) -> None:
         "machine_gpu_sample",
         "machine_network_sample",
         "machine_service_state",
+        "machine_process_io_delta_sample",
+        "machine_process_memory_sample",
+        "machine_cgroup_memory_sample",
         "machine_experiment_run",
         "work_observation",
     }

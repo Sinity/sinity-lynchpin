@@ -67,6 +67,16 @@ def test_machine_sqlite_window_filter_uses_half_open_text_range() -> None:
     assert params == ["2026-05-01", "2026-05-04"]
 
 
+def test_machine_fast_path_chunks_window_by_day() -> None:
+    from lynchpin.analysis.active.substrate_promote_machine import _iter_day_windows
+
+    assert list(_iter_day_windows(date(2026, 5, 1), date(2026, 5, 3))) == [
+        (date(2026, 5, 1), date(2026, 5, 1)),
+        (date(2026, 5, 2), date(2026, 5, 2)),
+        (date(2026, 5, 3), date(2026, 5, 3)),
+    ]
+
+
 def test_machine_experiment_promotion_enriches_manifest_validation(tmp_path: Path) -> None:
     from lynchpin.analysis.active.substrate_promote_machine import (
         _validated_experiment_runs,
@@ -1002,6 +1012,48 @@ def test_evidence_graph_empty_promote_is_not_reported_ok(
     assert counts["evidence_graph_nodes"] == 0
     assert status_row == ("empty", "evidence graph build produced no nodes", 0)
     assert audit["evidence_graph_substrate"].status == "empty"
+
+
+def test_evidence_graph_fatal_duckdb_error_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fatal DuckDB errors invalidate the connection; callers must fail fast."""
+    from lynchpin.analysis.active import substrate_promote_graph as graph_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_EVIDENCE_GRAPH,
+        SourceSelection,
+    )
+    from lynchpin.core.evidence_graph import EvidenceGraph
+
+    graph = EvidenceGraph(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 2),
+        generated_at=datetime(2026, 5, 3, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "lynchpin.graph.evidence_graph.build_evidence_graph",
+        lambda *args, **kwargs: graph,
+    )
+    monkeypatch.setattr(
+        graph_promote,
+        "record_source_status",
+        lambda *args, **kwargs: pytest.fail("should not write status on invalid connection"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.graph.promote_evidence_graph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Corrupted ART index")),
+    )
+
+    with pytest.raises(RuntimeError, match="Corrupted ART index"):
+        graph_promote.promote_graph_source(
+            object(),
+            refresh_id="dag:fatal",
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 2),
+            counts={},
+            selection=SourceSelection.from_collection({SOURCE_EVIDENCE_GRAPH}),
+            write_evidence_graph=True,
+        )
 
 
 def test_source_status_idempotent_on_re_run(

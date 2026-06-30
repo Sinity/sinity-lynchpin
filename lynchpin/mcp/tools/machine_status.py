@@ -496,7 +496,7 @@ def machine_pressure_explain(
     window_minutes: int = 5,
     top_n: int = 8,
 ) -> dict[str, Any]:
-    """Explain pressure windows by joining memory split, service RSS, and process I/O."""
+    """Explain pressure windows by joining memory split, service RSS, process I/O, and process PSS."""
     from datetime import date as _date
 
     from lynchpin.substrate.connection import connect, substrate_path
@@ -549,9 +549,277 @@ def machine_pressure_explain(
                     "machine_metric_sample",
                     "machine_service_state",
                     "machine_process_io_delta_sample",
+                    "machine_process_memory_sample",
                 ],
             },
             "windows": windows,
+        }
+    )
+
+
+def _classify_pressure(latest: dict[str, Any], process_rows: list[dict[str, Any]]) -> str:
+    if not latest and not process_rows:
+        return "instrumentation-gap"
+    mem_avail = latest.get("mem_avail_mb") or 0
+    mem_total = latest.get("mem_total_mb") or 0
+    swap_used = latest.get("swap_used_mb") or 0
+    memory_full = latest.get("memory_psi_full_avg60") or 0
+    anon = latest.get("mem_anon_mb") or 0
+    file_cache = latest.get("mem_file_cache_mb") or 0
+    if swap_used > 0 and (memory_full > 1 or (mem_total and mem_avail / mem_total < 0.2)):
+        return "swap-pressure"
+    if memory_full > 1:
+        return "process-heavy" if anon >= file_cache else "io-thrash"
+    if file_cache > anon and mem_avail > 8192:
+        return "cache-heavy"
+    return "ok"
+
+
+def _process_workload_class(row: dict[str, Any]) -> str:
+    text = " ".join(
+        str(row.get(key) or "").lower()
+        for key in ("comm", "unit", "command_line")
+    )
+    if any(token in text for token in ("chrome", "chromium", "firefox")):
+        return "browser"
+    if any(token in text for token in ("hyprland", "kitty", "noctalia", "quickshell")):
+        return "desktop-terminal"
+    if any(token in text for token in ("codex", "claude", "gemini", "mcp")):
+        return "agent"
+    if any(token in text for token in ("nix", "cargo", "rustc", "cc1", "ld")):
+        return "build"
+    if any(token in text for token in ("serena", "codebase-memory")):
+        return "semantic-tools"
+    if any(token in text for token in ("lynchpin", "polylogue")):
+        return "evidence-tools"
+    return "other"
+
+
+def _group_process_memory_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        workload_class = _process_workload_class(row)
+        group = grouped.setdefault(
+            workload_class,
+            {
+                "workload_class": workload_class,
+                "process_count": 0,
+                "pss_mib": 0.0,
+                "private_mib": 0.0,
+                "top_process": None,
+            },
+        )
+        group["process_count"] += 1
+        group["pss_mib"] += float(row.get("pss_mib") or 0.0)
+        group["private_mib"] += float(row.get("private_mib") or 0.0)
+        if group["top_process"] is None or float(row.get("pss_mib") or 0.0) > float(group["top_process"].get("pss_mib") or 0.0):
+            group["top_process"] = {
+                "comm": row.get("comm"),
+                "unit": row.get("unit"),
+                "pss_mib": row.get("pss_mib"),
+            }
+    return [
+        {
+            **group,
+            "pss_mib": _round(group["pss_mib"], 1),
+            "private_mib": _round(group["private_mib"], 1),
+        }
+        for group in sorted(grouped.values(), key=lambda item: item["pss_mib"], reverse=True)
+    ]
+
+
+def _memory_accounting(latest: dict[str, Any], process_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    mem_total = float(latest.get("mem_total_mb") or 0.0)
+    mem_avail = float(latest.get("mem_avail_mb") or 0.0)
+    mem_used = float(latest.get("mem_used_mb") or 0.0)
+    mem_anon = float(latest.get("mem_anon_mb") or 0.0)
+    file_cache = float(latest.get("mem_file_cache_mb") or 0.0)
+    slab_reclaimable = float(latest.get("mem_slab_reclaimable_mb") or 0.0)
+    slab_unreclaimable = float(latest.get("mem_slab_unreclaimable_mb") or 0.0)
+    swap_used = float(latest.get("swap_used_mb") or 0.0)
+    top_pss = sum(float(row.get("pss_mib") or 0.0) for row in process_rows)
+    top_private = sum(float(row.get("private_mib") or 0.0) for row in process_rows)
+    reclaimable = file_cache + slab_reclaimable
+    finite_pressure_mb = mem_total - mem_avail if mem_total else mem_used
+    return {
+        "mem_total_mb": _round(mem_total, 1) if mem_total else None,
+        "mem_used_mb": _round(mem_used, 1) if latest else None,
+        "mem_avail_mb": _round(mem_avail, 1) if latest else None,
+        "mem_avail_percent": _round((mem_avail / mem_total) * 100, 1)
+        if mem_total
+        else None,
+        "finite_pressure_mb": _round(finite_pressure_mb, 1) if latest else None,
+        "anon_mb": _round(mem_anon, 1) if latest else None,
+        "reclaimable_cache_mb": _round(reclaimable, 1) if latest else None,
+        "file_cache_mb": _round(file_cache, 1) if latest else None,
+        "slab_reclaimable_mb": _round(slab_reclaimable, 1) if latest else None,
+        "slab_unreclaimable_mb": _round(slab_unreclaimable, 1) if latest else None,
+        "swap_used_mb": _round(swap_used, 1) if latest else None,
+        "top_process_pss_mb": _round(top_pss, 1),
+        "top_process_private_mb": _round(top_private, 1),
+        "top_process_pss_vs_anon_percent": _round((top_pss / mem_anon) * 100, 1)
+        if mem_anon
+        else None,
+        "top_process_sample_count": len(process_rows),
+    }
+
+
+@app.tool()
+def machine_pressure_report(
+    start: str | None = None,
+    end: str | None = None,
+    host: str | None = None,
+    refresh_id: str | None = None,
+    window_minutes: int = 5,
+    window_limit: int = 3,
+    top_n: int = 8,
+) -> dict[str, Any]:
+    """Compact machine pressure report with memory decomposition and PSS attribution."""
+    from datetime import date as _date
+
+    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.machine import (
+        load_machine_memory_breakdown,
+        load_machine_pressure_explainer,
+        load_machine_process_memory_samples,
+    )
+
+    from lynchpin.mcp.tools import machine as machine_module
+
+    start_d = _date.fromisoformat(start) if start else None
+    end_d = _date.fromisoformat(end) if end else None
+    materialization_end = _exclusive_end(end_d)
+    if refresh_id is None:
+        machine_module.ensure_substrate_materialized_for_read(
+            caller="machine_pressure_report",
+            window=(start_d, materialization_end)
+            if start_d is not None and materialization_end is not None
+            else None,
+        )
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = machine_module.best_materialized_refresh_id(
+                conn,
+                "machine_metric_sample",
+                caller="machine_pressure_report",
+            )
+            if refresh_id is None:
+                return {
+                    "summary": {"row_count": 0, "status": "empty"},
+                    "memory": [],
+                    "worst_windows": {},
+                    "top_processes_by_pss": [],
+                }
+        memory = load_machine_memory_breakdown(
+            conn,
+            refresh_id=refresh_id,
+            start=start_d,
+            end=end_d,
+            host=host,
+            limit=1,
+        )
+        worst_windows = {
+            focus: load_machine_pressure_explainer(
+                conn,
+                refresh_id=refresh_id,
+                start=start_d,
+                end=end_d,
+                host=host,
+                focus=focus,
+                limit=window_limit,
+                window_minutes=window_minutes,
+                top_n=top_n,
+            )
+            for focus in ("io", "memory", "cache", "swap")
+        }
+        processes = load_machine_process_memory_samples(
+            conn,
+            refresh_id=refresh_id,
+            start=start_d,
+            end=end_d,
+            hosts=(host,) if host else None,
+            limit=max(int(top_n), 0),
+        )
+
+    process_rows = [
+        {
+            "observed_at": sample.observed_at,
+            "pid": sample.pid,
+            "comm": sample.comm,
+            "unit": sample.unit,
+            "scope": sample.scope,
+            "rss_mib": _round(sample.rss_kb / 1024, 1),
+            "pss_mib": _round(sample.pss_kb / 1024, 1),
+            "pss_anon_mib": _round(sample.pss_anon_kb / 1024, 1)
+            if sample.pss_anon_kb is not None
+            else None,
+            "pss_file_mib": _round(sample.pss_file_kb / 1024, 1)
+            if sample.pss_file_kb is not None
+            else None,
+            "pss_shmem_mib": _round(sample.pss_shmem_kb / 1024, 1)
+            if sample.pss_shmem_kb is not None
+            else None,
+            "private_mib": _round(
+                (sample.private_clean_kb + sample.private_dirty_kb) / 1024,
+                1,
+            ),
+            "shared_mib": _round(
+                (sample.shared_clean_kb + sample.shared_dirty_kb) / 1024,
+                1,
+            ),
+            "swap_mib": _round(sample.swap_kb / 1024, 1),
+            "command_line": sample.command_line,
+        }
+        for sample in processes
+    ]
+    latest = memory[0] if memory else {}
+    missing_window_pss = any(
+        not window.get("top_processes_by_pss")
+        for windows in worst_windows.values()
+        for window in windows
+    )
+    caveats = [
+        "PSS/private attribution comes from promoted process smaps_rollup samples; "
+        "kernel page cache remains host-level and is not fully assignable to a process.",
+        "High mem_used can be mostly reclaimable file/slab cache; use mem_avail and PSI for pressure.",
+    ]
+    if missing_window_pss:
+        caveats.append(
+            "Some pressure windows have no process-PSS rows; they likely predate continuous process-memory capture or fall outside retained top-N samples."
+        )
+    return _json_safe(
+        {
+            "summary": {
+                "refresh_id": refresh_id,
+                "status": "ok" if latest or process_rows else "empty",
+                "classification": _classify_pressure(latest, process_rows),
+                "memory_rows": len(memory),
+                "process_rows": len(process_rows),
+                "window_limit": window_limit,
+                "window_minutes": window_minutes,
+                "top_n": top_n,
+                "joins": [
+                    "machine_metric_sample",
+                    "machine_service_state",
+                    "machine_process_io_delta_sample",
+                    "machine_process_memory_sample",
+                ],
+            },
+            "memory": latest,
+            "worst_windows": worst_windows,
+            "top_processes_by_pss": process_rows,
+            "process_memory_groups": _group_process_memory_rows(process_rows),
+            "memory_accounting": _memory_accounting(latest, process_rows),
+            "interpretation": {
+                "mem_used_mb": latest.get("mem_used_mb"),
+                "mem_avail_mb": latest.get("mem_avail_mb"),
+                "mem_anon_mb": latest.get("mem_anon_mb"),
+                "mem_file_cache_mb": latest.get("mem_file_cache_mb"),
+                "swap_used_mb": latest.get("swap_used_mb"),
+                "memory_psi_full_avg60": latest.get("memory_psi_full_avg60"),
+            },
+            "caveats": caveats,
         }
     )
 
@@ -929,7 +1197,7 @@ def machine_metrics(
     host: str | None = None,
     refresh_id: str | None = None,
 ) -> Any:
-    """Machine telemetry metrics. by: daily, context, memory, pressure."""
+    """Machine telemetry metrics. by: daily, context, memory, pressure, pressure_report."""
     if by == "daily":
         return machine_metrics_daily(start=start, end=end, host=host, refresh_id=refresh_id)
     if by == "context":
@@ -948,7 +1216,14 @@ def machine_metrics(
             host=host,
             refresh_id=refresh_id,
         )
-    return {"error": f"unknown by {by!r}. choices: daily, context, memory, pressure"}
+    if by == "pressure_report":
+        return machine_pressure_report(
+            start=start,
+            end=end,
+            host=host,
+            refresh_id=refresh_id,
+        )
+    return {"error": f"unknown by {by!r}. choices: daily, context, memory, pressure, pressure_report"}
 
 
 @app.tool()

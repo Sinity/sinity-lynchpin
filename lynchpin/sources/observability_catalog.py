@@ -59,7 +59,12 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
             layer="raw_capture",
             integration_state="canonical",
             path=cfg.machine_telemetry_db,
-            substrate_table="machine_metric_sample; machine_gpu_sample; machine_service_state; machine_network_sample",
+            substrate_table=(
+                "machine_metric_sample; machine_gpu_sample; "
+                "machine_service_state; machine_network_sample; "
+                "machine_process_io_delta_sample; machine_process_memory_sample; "
+                "machine_cgroup_memory_sample"
+            ),
             grain=(
                 "10s host sample, 1s GPU sample, 60s service-state sample, "
                 "5m network-link sample, plus direct-read block-device and "
@@ -77,13 +82,16 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
                 "block_device_io",
                 "service_cgroup_io",
                 "service_cgroup_pressure",
+                "process_pss_private_memory",
+                "cgroup_memory_split",
                 "network_link_quality",
             ),
             retention="canonical raw capture under /realm/data/captures/machine",
             next_action=(
                 "promote coarse metric, service, GPU, and network samples for "
                 "snapshot analytics; read high-rate block_device_sample, "
-                "service_cgroup_io_sample, and service_cgroup_pressure_sample "
+                "service_cgroup_io_sample, service_cgroup_pressure_sample, "
+                "and cgroup_memory_sample "
                 "directly from the live SQLite for exact-window attribution"
             ),
         ),

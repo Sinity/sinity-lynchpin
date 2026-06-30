@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -220,6 +221,40 @@ def test_generate_issues_requires_existing_github_context_product(
         assert "existing GitHub context product is missing" in exc.reason
     else:
         raise AssertionError("expected GitHub context to be required")
+
+
+def test_generate_git_log_covers_all_refs(monkeypatch, tmp_path: Path) -> None:
+    plan = chisel.RepoPlan(
+        name="example",
+        path=tmp_path / "example",
+        slices=(),
+    )
+    plan.path.mkdir()
+    commands: list[list[str]] = []
+    log_payload = (
+        "\x00abc123\x1fSinity\x1fsinity@example.test\x1f2026-06-01T12:00:00+00:00"
+        "\x1forigin/feature/demo\x1ffeat: side branch\x1ffeat: side branch\x1e"
+    )
+
+    def fake_run(cmd, *, cwd=None):
+        commands.append(list(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0, log_payload, "")
+
+    monkeypatch.setattr(chisel, "_run", fake_run)
+
+    count = chisel._generate_git_log(plan, tmp_path, "2026-06-30T000000Z")
+
+    assert count == 1
+    assert commands == [[
+        "git",
+        "log",
+        "--all",
+        "--reverse",
+        "--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e",
+    ]]
+    root = ET.parse(tmp_path / "example-git-log.xml").getroot()
+    assert root.attrib["refs"] == "all"
+    assert root.attrib["style"] == "all-refs"
 
 
 def test_chisel_refreshes_github_context_for_selected_projects(monkeypatch) -> None:

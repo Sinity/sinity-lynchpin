@@ -25,6 +25,8 @@ MACHINE_TABLE_NAMES = (
     "service_cgroup_io_sample",
     "service_cgroup_pressure_sample",
     "process_io_delta_sample",
+    "process_memory_sample",
+    "cgroup_memory_sample",
 )
 
 

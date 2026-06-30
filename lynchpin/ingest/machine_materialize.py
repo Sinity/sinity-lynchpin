@@ -19,6 +19,8 @@ from ..sources.machine import (
     metric_samples,
     network_samples,
     process_io_delta_samples,
+    process_memory_samples,
+    cgroup_memory_samples,
     sample_to_json,
     service_cgroup_io_samples,
     service_cgroup_pressure_samples,
@@ -38,6 +40,8 @@ MACHINE_TABLES = (
     "service_cgroup_io_sample",
     "service_cgroup_pressure_sample",
     "process_io_delta_sample",
+    "process_memory_sample",
+    "cgroup_memory_sample",
 )
 
 
@@ -97,6 +101,18 @@ def materialize_machine_telemetry(
         "process_io_delta_sample": _materialize_table(
             "process_io_delta_sample",
             lambda: process_io_delta_samples(start=start, end=source_end, path=cfg.machine_telemetry_db),
+            start=start,
+            end=end,
+        ),
+        "process_memory_sample": _materialize_table(
+            "process_memory_sample",
+            lambda: process_memory_samples(start=start, end=source_end, path=cfg.machine_telemetry_db),
+            start=start,
+            end=end,
+        ),
+        "cgroup_memory_sample": _materialize_table(
+            "cgroup_memory_sample",
+            lambda: cgroup_memory_samples(start=start, end=source_end, path=cfg.machine_telemetry_db),
             start=start,
             end=end,
         ),

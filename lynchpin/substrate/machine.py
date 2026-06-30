@@ -411,6 +411,146 @@ def load_machine_process_io_delta_samples(
     ]
 
 
+def load_machine_process_memory_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    hosts: tuple[str, ...] | None = None,
+    refresh_id: str | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """SELECT and hydrate bounded per-process PSS/private memory samples."""
+    from lynchpin.sources.machine import MachineProcessMemorySample
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    add_date_filter("observed_at", start, end, clauses, params)
+    add_in_filter("host", hosts, clauses, params)
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+
+    where = build_where(clauses, params)
+    sql = f"""
+        SELECT
+            observed_at, host, boot_id, source_schema_version,
+            pid, process_start_time_ticks, comm, exe, cgroup, unit, scope,
+            command_line, rss_kb, pss_kb, pss_anon_kb, pss_file_kb,
+            pss_shmem_kb, private_clean_kb, private_dirty_kb,
+            shared_clean_kb, shared_dirty_kb, swap_kb
+        FROM machine_process_memory_sample
+        {where}
+        ORDER BY observed_at, pss_kb DESC
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(int(limit), 0))
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        MachineProcessMemorySample(
+            observed_at=row[0],
+            host=row[1],
+            boot_id=row[2],
+            source_schema_version=int(row[3]),
+            pid=int(row[4]),
+            process_start_time_ticks=row[5],
+            comm=row[6],
+            exe=row[7],
+            cgroup=row[8],
+            unit=row[9],
+            scope=row[10],
+            command_line=row[11],
+            rss_kb=int(row[12]),
+            pss_kb=int(row[13]),
+            pss_anon_kb=row[14],
+            pss_file_kb=row[15],
+            pss_shmem_kb=row[16],
+            private_clean_kb=int(row[17]),
+            private_dirty_kb=int(row[18]),
+            shared_clean_kb=int(row[19]),
+            shared_dirty_kb=int(row[20]),
+            swap_kb=int(row[21]),
+        )
+        for row in rows
+    ]
+
+
+def load_machine_cgroup_memory_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    hosts: tuple[str, ...] | None = None,
+    refresh_id: str | None = None,
+    labels: tuple[str, ...] | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """SELECT and hydrate aggregate cgroup memory samples."""
+    from lynchpin.sources.machine import MachineCgroupMemorySample
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    add_date_filter("observed_at", start, end, clauses, params)
+    add_in_filter("host", hosts, clauses, params)
+    add_in_filter("label", labels, clauses, params)
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+
+    where = build_where(clauses, params)
+    sql = f"""
+        SELECT
+            observed_at, host, boot_id, source_schema_version, label, scope,
+            control_group, memory_current_bytes, memory_peak_bytes,
+            memory_swap_current_bytes, memory_swap_peak_bytes, memory_high_bytes,
+            memory_max_bytes, memory_anon_bytes, memory_file_bytes,
+            memory_kernel_bytes, memory_slab_bytes, memory_sock_bytes,
+            memory_shmem_bytes, memory_swapcached_bytes, memory_zswap_bytes,
+            memory_zswapped_bytes, cgroup_populated, cgroup_frozen,
+            cgroup_freeze
+        FROM machine_cgroup_memory_sample
+        {where}
+        ORDER BY observed_at, label
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(int(limit), 0))
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        MachineCgroupMemorySample(
+            observed_at=row[0],
+            host=row[1],
+            boot_id=row[2],
+            source_schema_version=int(row[3]),
+            label=row[4],
+            scope=row[5],
+            control_group=row[6],
+            memory_current_bytes=row[7],
+            memory_peak_bytes=row[8],
+            memory_swap_current_bytes=row[9],
+            memory_swap_peak_bytes=row[10],
+            memory_high_bytes=row[11],
+            memory_max_bytes=row[12],
+            memory_anon_bytes=row[13],
+            memory_file_bytes=row[14],
+            memory_kernel_bytes=row[15],
+            memory_slab_bytes=row[16],
+            memory_sock_bytes=row[17],
+            memory_shmem_bytes=row[18],
+            memory_swapcached_bytes=row[19],
+            memory_zswap_bytes=row[20],
+            memory_zswapped_bytes=row[21],
+            cgroup_populated=row[22],
+            cgroup_frozen=row[23],
+            cgroup_freeze=row[24],
+        )
+        for row in rows
+    ]
+
+
 _METRIC_SAMPLE_COLUMNS = (
     "observed_at", "host", "boot_id", "source", "source_schema_version",
     "cpu_package_w", "cpu_core_w", "cpu_pkg_c", "cpu_max_core_c",
@@ -462,7 +602,7 @@ def promote_machine_metric_samples(
             s.memory_psi_full_avg60, s.memory_psi_full_avg300, s.memory_psi_full_total_us,
             s.latency_oversleep_ms, s.dstate_task_count, list(s.gap_codes),
         ),
-        batch_size=50_000,
+        batch_size=10_000,
     )
 
 
@@ -484,6 +624,79 @@ _PROCESS_IO_DELTA_COLUMNS = (
     "read_chars_delta", "write_chars_delta", "read_syscalls_delta",
     "write_syscalls_delta", "total_bytes_delta", "total_syscalls_delta",
 )
+
+
+_PROCESS_MEMORY_COLUMNS = (
+    "observed_at", "host", "boot_id", "source_schema_version",
+    "pid", "process_start_time_ticks", "comm", "exe", "cgroup", "unit",
+    "scope", "command_line", "rss_kb", "pss_kb", "pss_anon_kb",
+    "pss_file_kb", "pss_shmem_kb", "private_clean_kb",
+    "private_dirty_kb", "shared_clean_kb", "shared_dirty_kb", "swap_kb",
+)
+
+_CGROUP_MEMORY_COLUMNS = (
+    "observed_at", "host", "boot_id", "source_schema_version", "label",
+    "scope", "control_group", "memory_current_bytes", "memory_peak_bytes",
+    "memory_swap_current_bytes", "memory_swap_peak_bytes", "memory_high_bytes",
+    "memory_max_bytes", "memory_anon_bytes", "memory_file_bytes",
+    "memory_kernel_bytes", "memory_slab_bytes", "memory_sock_bytes",
+    "memory_shmem_bytes", "memory_swapcached_bytes", "memory_zswap_bytes",
+    "memory_zswapped_bytes", "cgroup_populated", "cgroup_frozen",
+    "cgroup_freeze",
+)
+
+
+def promote_machine_process_memory_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_process_memory_sample rows, idempotent on refresh_id."""
+    return promote_rows(
+        conn,
+        table="machine_process_memory_sample",
+        columns=_PROCESS_MEMORY_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
+            s.pid, s.process_start_time_ticks, s.comm, s.exe, s.cgroup,
+            s.unit, s.scope, s.command_line, s.rss_kb, s.pss_kb,
+            s.pss_anon_kb, s.pss_file_kb, s.pss_shmem_kb,
+            s.private_clean_kb, s.private_dirty_kb,
+            s.shared_clean_kb, s.shared_dirty_kb, s.swap_kb,
+        ),
+        batch_size=10_000,
+    )
+
+
+def promote_machine_cgroup_memory_samples(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    samples: Iterable[Any],
+) -> int:
+    """INSERT machine_cgroup_memory_sample rows, idempotent on refresh_id."""
+    return promote_rows(
+        conn,
+        table="machine_cgroup_memory_sample",
+        columns=_CGROUP_MEMORY_COLUMNS,
+        refresh_id=refresh_id,
+        rows=samples,
+        extractor=lambda s: (
+            s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
+            s.label, s.scope, s.control_group, s.memory_current_bytes,
+            s.memory_peak_bytes, s.memory_swap_current_bytes,
+            s.memory_swap_peak_bytes, s.memory_high_bytes, s.memory_max_bytes,
+            s.memory_anon_bytes, s.memory_file_bytes, s.memory_kernel_bytes,
+            s.memory_slab_bytes, s.memory_sock_bytes, s.memory_shmem_bytes,
+            s.memory_swapcached_bytes, s.memory_zswap_bytes,
+            s.memory_zswapped_bytes, s.cgroup_populated, s.cgroup_frozen,
+            s.cgroup_freeze,
+        ),
+        batch_size=10_000,
+    )
 
 
 def promote_machine_process_io_delta_samples(
@@ -509,7 +722,7 @@ def promote_machine_process_io_delta_samples(
             s.write_syscalls_delta, s.total_bytes_delta,
             s.total_syscalls_delta,
         ),
-        batch_size=50_000,
+        batch_size=10_000,
     )
 
 
@@ -961,6 +1174,31 @@ def load_machine_pressure_explainer(
         )
         processes = _rows_as_dicts(conn)
 
+        memory_sql = """
+            SELECT
+                observed_at, pid, comm, unit, scope,
+                pss_kb / 1024.0 AS pss_mib,
+                rss_kb / 1024.0 AS rss_mib,
+                (private_clean_kb + private_dirty_kb) / 1024.0 AS private_mib,
+                pss_anon_kb / 1024.0 AS pss_anon_mib,
+                pss_file_kb / 1024.0 AS pss_file_mib,
+                pss_shmem_kb / 1024.0 AS pss_shmem_mib,
+                swap_kb / 1024.0 AS swap_mib,
+                LEFT(command_line, 180) AS command_line
+            FROM machine_process_memory_sample
+            WHERE refresh_id = ?
+              AND host = ?
+              AND observed_at >= ?
+              AND observed_at <= ?
+            ORDER BY pss_kb DESC NULLS LAST
+            LIMIT ?
+        """
+        conn.execute(
+            memory_sql,
+            [refresh_id, metric["host"], window_start, window_end, top_limit],
+        )
+        memory = _rows_as_dicts(conn)
+
         windows.append(
             {
                 "center": observed_at,
@@ -968,6 +1206,7 @@ def load_machine_pressure_explainer(
                 "window_end": window_end,
                 "metric": metric,
                 "top_services_by_memory": services,
+                "top_processes_by_pss": memory,
                 "top_process_io_deltas": processes,
                 "notes": _pressure_notes(metric),
             }
@@ -1190,6 +1429,8 @@ __all__ = [
     "load_machine_network_samples",
     "load_machine_pressure_explainer",
     "load_machine_process_io_delta_samples",
+    "load_machine_process_memory_samples",
+    "load_machine_cgroup_memory_samples",
     "load_machine_service_state_summary",
     "load_machine_service_states",
     "load_sinnix_generation_rows",
@@ -1198,5 +1439,7 @@ __all__ = [
     "promote_machine_metric_samples",
     "promote_machine_network_samples",
     "promote_machine_process_io_delta_samples",
+    "promote_machine_process_memory_samples",
+    "promote_machine_cgroup_memory_samples",
     "promote_machine_service_states",
 ]

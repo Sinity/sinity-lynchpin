@@ -229,6 +229,61 @@ class MachineProcessIODeltaSample:
 
 
 @dataclass(frozen=True)
+class MachineProcessMemorySample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    pid: int
+    process_start_time_ticks: int | None
+    comm: str | None
+    exe: str | None
+    cgroup: str | None
+    unit: str | None
+    scope: str | None
+    command_line: str | None
+    rss_kb: int
+    pss_kb: int
+    pss_anon_kb: int | None
+    pss_file_kb: int | None
+    pss_shmem_kb: int | None
+    private_clean_kb: int
+    private_dirty_kb: int
+    shared_clean_kb: int
+    shared_dirty_kb: int
+    swap_kb: int
+
+
+@dataclass(frozen=True)
+class MachineCgroupMemorySample:
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    label: str
+    scope: str
+    control_group: str
+    memory_current_bytes: int | None
+    memory_peak_bytes: int | None
+    memory_swap_current_bytes: int | None
+    memory_swap_peak_bytes: int | None
+    memory_high_bytes: int | None
+    memory_max_bytes: int | None
+    memory_anon_bytes: int | None
+    memory_file_bytes: int | None
+    memory_kernel_bytes: int | None
+    memory_slab_bytes: int | None
+    memory_sock_bytes: int | None
+    memory_shmem_bytes: int | None
+    memory_swapcached_bytes: int | None
+    memory_zswap_bytes: int | None
+    memory_zswapped_bytes: int | None
+    cgroup_populated: int | None
+    cgroup_frozen: int | None
+    cgroup_freeze: int | None
+
+
+@dataclass(frozen=True)
 class MachineNetworkSample:
     observed_at: datetime
     host: str

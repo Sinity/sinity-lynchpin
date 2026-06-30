@@ -166,6 +166,7 @@ def promote_symbol_changes(
         refresh_id=refresh_id,
         rows=_iter_unique_symbol_rows(rows),
         extractor=lambda t: t,
+        batch_size=10000,
     )
 
 

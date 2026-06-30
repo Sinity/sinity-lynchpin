@@ -13,6 +13,7 @@ extractor lambda — typically 8–12 lines instead of 30–50.
 
 from __future__ import annotations
 
+import gc
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, TypeVar
 
@@ -112,6 +113,8 @@ def promote_rows(
             conn.executemany(insert_sql, buffer)
         total += len(buffer)
         buffer.clear()
+        if batch_size is not None:
+            gc.collect()
 
     # Wrap DELETE + every INSERT batch in ONE transaction. In DuckDB autocommit,
     # executemany commits (and fsyncs the WAL) per row — measured at ~120KB-1.8MB

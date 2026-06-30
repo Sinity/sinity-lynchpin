@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,6 @@ def promote_artifact_sources(
         try:
             commit_facts, commit_annotations = _load_commit_facts(commit_facts_file)
             _merge_ai_attribution(commit_annotations, ai_attribution_file)
-            commit_facts = list(commit_facts)
         except Exception as exc:
             log.warning("substrate_promote: commit facts hydration failed: %s", exc)
             record_source_status(
@@ -106,12 +106,13 @@ def promote_artifact_sources(
                     reason="no commits in active facts payload",
                     row_count=0,
                 )
+        del commit_facts, commit_annotations
+        gc.collect()
 
     # ── file_changes: same pattern ────────────────────────────────────────
     if selection.includes(SOURCE_FILE_CHANGES):
         try:
             fc_facts, fc_annotations = _load_file_change_facts(file_changes_file)
-            fc_facts = list(fc_facts)
         except Exception as exc:
             log.warning("substrate_promote: file change hydration failed: %s", exc)
             record_source_status(
@@ -171,40 +172,29 @@ def promote_artifact_sources(
                     reason="no file changes in active facts payload",
                     row_count=0,
                 )
+        del fc_facts, fc_annotations
+        gc.collect()
 
     # ── symbol_changes: load events list, promote ─────────────────────────
     if selection.includes(SOURCE_SYMBOLS):
-        try:
-            symbol_rows = list(_load_symbol_change_rows(symbol_changes_file))
-        except Exception as exc:
-            log.warning("substrate_promote: symbol change hydration failed: %s", exc)
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source=SOURCE_SYMBOLS,
-                status="error",
-                reason=str(exc),
-                row_count=0,
-            )
-            symbol_rows = []
-
-        if symbol_rows:
+        if Path(symbol_changes_file).exists():
             try:
                 counts["symbols"] = promote_symbol_changes(
                     conn,
                     refresh_id=refresh_id,
-                    rows=symbol_rows,
+                    rows=_load_symbol_change_rows(symbol_changes_file),
                 )
+                status = "ok" if counts["symbols"] > 0 else "empty"
                 record_source_status(
                     conn,
                     refresh_id=refresh_id,
                     source=SOURCE_SYMBOLS,
-                    status="ok",
-                    reason=None,
+                    status=status,
+                    reason=None if status == "ok" else "no symbol events in payload",
                     row_count=counts["symbols"],
                 )
             except Exception as exc:
-                log.warning("substrate_promote: symbol promotion failed: %s", exc)
+                log.warning("substrate_promote: symbol change promotion failed: %s", exc)
                 record_source_status(
                     conn,
                     refresh_id=refresh_id,
@@ -214,27 +204,15 @@ def promote_artifact_sources(
                     row_count=0,
                 )
         else:
-            if not Path(symbol_changes_file).exists():
-                log.debug(
-                    "substrate_promote: active_symbol_changes.json unavailable"
-                )
-                record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_SYMBOLS,
-                    status="unavailable",
-                    reason="active_symbol_changes.json missing",
-                    row_count=0,
-                )
-            else:
-                log.debug(
-                    "substrate_promote: active_symbol_changes.json has no symbol events"
-                )
-                record_source_status(
-                    conn,
-                    refresh_id=refresh_id,
-                    source=SOURCE_SYMBOLS,
-                    status="empty",
-                    reason="no symbol events in payload",
-                    row_count=0,
-                )
+            log.debug(
+                "substrate_promote: active_symbol_changes.json unavailable"
+            )
+            record_source_status(
+                conn,
+                refresh_id=refresh_id,
+                source=SOURCE_SYMBOLS,
+                status="unavailable",
+                reason="active_symbol_changes.json missing",
+                row_count=0,
+            )
+        gc.collect()

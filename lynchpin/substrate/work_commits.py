@@ -294,6 +294,7 @@ def promote_commits(
         refresh_id=refresh_id,
         rows=facts,
         extractor=extract,
+        batch_size=5000,
     )
 
 

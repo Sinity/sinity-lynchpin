@@ -70,7 +70,7 @@ def test_materialize_github_context_refreshes_open_lists_without_gh_cache(
 
     monkeypatch.setattr(materializer, "_active_repo_paths", active_repo_paths)
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
 
     def fetch_issue_inventory(path, *, state, limit, use_cache):
         inventory_calls_seen.append((f"issue:{state}", use_cache))
@@ -155,7 +155,7 @@ def test_materialize_github_context_reuses_existing_closed_pr_details(monkeypatc
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",
@@ -224,7 +224,7 @@ def test_materialize_github_context_hydrates_only_changed_inventory_rows(monkeyp
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",
@@ -311,7 +311,7 @@ def test_materialize_github_context_refreshes_closed_lists_when_history_exists(m
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
 
     def fetch_issues(path, *, state, limit, use_cache):
         calls.append(("issue", state))
@@ -341,7 +341,7 @@ def test_materialize_github_context_filters_projects(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"alpha": repo_a, "beta": repo_b})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: f"Sinity/{path.name}")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
 
     def fetch_issues(path, *, state, limit, use_cache):
         calls.append(f"issue:{path.name}:{state}")
@@ -401,7 +401,7 @@ def test_materialize_github_context_drops_stale_open_rows(monkeypatch, tmp_path:
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",
@@ -459,7 +459,7 @@ def test_materialize_github_context_drops_stale_open_pr_rows(monkeypatch, tmp_pa
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",
@@ -521,7 +521,7 @@ def test_materialize_github_context_does_not_refetch_existing_commit_refs(monkey
     monkeypatch.setattr(
         materializer,
         "commit_facts",
-        lambda *, start, end, include_paths: (
+        lambda *, start, end, all_refs, include_paths: (
             type("Fact", (), {"repo": "lynchpin", "subject": "fix thing (#7)\n\nRefs #8"})(),
         ),
     )
@@ -566,7 +566,7 @@ def test_materialize_github_context_caps_missing_commit_ref_fetches(monkeypatch,
     monkeypatch.setattr(
         materializer,
         "commit_facts",
-        lambda *, start, end, include_paths: (
+        lambda *, start, end, all_refs, include_paths: (
             type("Fact", (), {"repo": "lynchpin", "subject": "one (#1)"})(),
             type("Fact", (), {"repo": "lynchpin", "subject": "two (#2)"})(),
             type("Fact", (), {"repo": "lynchpin", "subject": "three (#3)"})(),
@@ -597,6 +597,49 @@ def test_materialize_github_context_caps_missing_commit_ref_fetches(monkeypatch,
     assert manifest["missing_commit_refs_deferred"] == 1
 
 
+def test_materialize_github_context_backfills_commit_refs_from_all_branches(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    output = tmp_path / "github" / "context.ndjson"
+    output.parent.mkdir()
+    calls: list[tuple[bool, bool]] = []
+
+    def fake_commit_facts(*, start, end, all_refs, include_paths):
+        calls.append((all_refs, include_paths))
+        return (type("Fact", (), {"repo": "lynchpin", "subject": "side branch work (#9)"})(),)
+
+    monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
+    monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
+    monkeypatch.setattr(materializer, "commit_facts", fake_commit_facts)
+    monkeypatch.setattr(
+        materializer,
+        "fetch_issue_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult("ok", "lynchpin", "Sinity/lynchpin", ()),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult("ok", "lynchpin", "Sinity/lynchpin", ()),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr",
+        lambda path, number, **kwargs: _item(kind="pr", number=number),
+    )
+
+    manifest = materializer.materialize_github_context(
+        output=output,
+        start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
+        end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
+    )
+
+    assert calls == [(True, False)]
+    assert manifest["missing_commit_refs_fetched"] == 1
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [(row["kind"], row["number"]) for row in rows] == [("pr", 9)]
+
+
 def test_materialize_github_context_preserves_previous_product_on_network_failure(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     output = tmp_path / "github" / "context.ndjson"
@@ -607,7 +650,7 @@ def test_materialize_github_context_preserves_previous_product_on_network_failur
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
 
     def fetch_issues(path, *, state, limit, use_cache):
         status = "error"
@@ -641,7 +684,7 @@ def test_materialize_github_context_preserves_previous_product_on_detail_miss(mo
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",
@@ -693,7 +736,7 @@ def test_materialize_github_context_enriches_pr_review_comments(monkeypatch, tmp
 
     monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
     monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
-    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, include_paths: ())
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
     monkeypatch.setattr(
         materializer,
         "fetch_issue_inventory",

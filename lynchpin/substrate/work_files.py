@@ -117,6 +117,7 @@ def promote_file_changes(
         refresh_id=refresh_id,
         rows=facts,
         extractor=extract,
+        batch_size=10000,
     )
 
 

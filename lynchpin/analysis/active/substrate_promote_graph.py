@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 from datetime import date
 from typing import Any
@@ -13,6 +14,14 @@ from .substrate_promote_status import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _is_duckdb_fatal_connection_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "database has been invalidated" in message
+        or "Corrupted ART index" in message
+    )
 
 
 def promote_graph_source(
@@ -49,6 +58,8 @@ def promote_graph_source(
             refresh_id=refresh_id,
             claims=analysis_claim_rows(graph),
         )
+        del graph
+        gc.collect()
         node_count = graph_counts.get("nodes", 0)
         edge_count = graph_counts.get("edges", 0)
         counts["evidence_graph_nodes"] = node_count
@@ -66,6 +77,8 @@ def promote_graph_source(
             window_end=window_end,
         )
     except Exception as exc:
+        if _is_duckdb_fatal_connection_error(exc):
+            raise
         log.warning("substrate_promote: evidence_graph promotion skipped: %s", exc)
         record_source_status(
             conn,
