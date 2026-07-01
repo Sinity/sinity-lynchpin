@@ -388,6 +388,15 @@ def _window_personal_daily_signal_rows(
             add("wykop", day, "upvote_count", float(wykop_row.upvotes))
             add("wykop", day, "downvote_count", float(wykop_row.downvotes))
 
+    if _overlaps(audit_by_name, "themotte", window_start, window_end):
+        from ..sources.themotte import daily_activity as themotte_daily_activity
+
+        for themotte_row in themotte_daily_activity(start=window_start, end=window_end):
+            day = themotte_row.date
+            add("themotte", day, "message_count", float(themotte_row.messages), peers=",".join(themotte_row.peers))
+            add("themotte", day, "outbound_message_count", float(themotte_row.outbound_messages))
+            add("themotte", day, "notification_count", float(themotte_row.notifications))
+
     if _overlaps(audit_by_name, "facebook_messenger", window_start, window_end):
         from ..sources.exports import daily_messenger_activity
 

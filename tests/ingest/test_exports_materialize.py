@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lynchpin.ingest.exports_materialize import (
@@ -9,6 +11,70 @@ from lynchpin.ingest.exports_materialize import (
     _write_manifest,
     _write_reddit_manifest,
 )
+
+
+def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> None:
+    from lynchpin.ingest import communications_materialize
+    from lynchpin.sources.themotte import TheMotteMessage, TheMotteNotification
+
+    output = tmp_path / "communication_events.ndjson"
+    manifest = tmp_path / "communication_events.manifest.json"
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "exports_root": tmp_path / "exports",
+            "teams_root": tmp_path / "teams",
+            "themotte_username": "Sinity",
+        },
+    )()
+    monkeypatch.setattr(communications_materialize, "get_config", lambda: cfg)
+    monkeypatch.setattr(communications_materialize, "communication_manifest_path", lambda: manifest)
+    monkeypatch.setattr(communications_materialize, "themotte_input_files", lambda: ())
+    monkeypatch.setattr(
+        communications_materialize,
+        "iter_themotte_messages",
+        lambda username: iter(
+            (
+                TheMotteMessage(
+                    id="1",
+                    created_at=datetime(2026, 2, 1, 10, tzinfo=timezone.utc),
+                    author="self_made_human",
+                    recipient="Sinity",
+                    peer="self_made_human",
+                    body="reply",
+                    url="https://www.themotte.org/comment/1",
+                    relative_time="4mo ago",
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        communications_materialize,
+        "iter_themotte_notifications",
+        lambda username: iter(
+            (
+                TheMotteNotification(
+                    id="n1",
+                    created_at=datetime(2026, 2, 1, 11, tzinfo=timezone.utc),
+                    kind="Username Mention",
+                    actor="naraburns",
+                    title="Username Mention",
+                    text="mentioned @Sinity",
+                    url="https://www.themotte.org/comment/2",
+                    relative_time="4mo ago",
+                    unread=True,
+                ),
+            )
+        ),
+    )
+
+    report = communications_materialize.materialize_communication_events(output=output)
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+
+    assert report["sources"] == ["themotte"]
+    assert [row["raw_kind"] for row in rows] == ["themotte_private_message", "themotte_notification"]
+    assert rows[0]["direction"] == "inbound"
 
 
 def test_export_roots_only_accept_dated_directories(tmp_path: Path) -> None:

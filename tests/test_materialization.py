@@ -2884,6 +2884,35 @@ def test_wykop_audit_uses_comment_dates_for_coverage(tmp_path) -> None:
     assert row.last_date == date(2026, 5, 3)
 
 
+def test_themotte_audit_uses_synced_date_bounds(tmp_path) -> None:
+    from lynchpin import materialization
+
+    root = tmp_path / "themotte" / "Sinity"
+    root.mkdir(parents=True)
+    (root / "themotte_messages.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "1",
+                "created_at": "2026-02-01T10:00:00Z",
+                "author": "Sinity",
+                "recipient": "self_made_human",
+                "peer": "self_made_human",
+                "body": "hello",
+                "url": "https://www.themotte.org/comment/1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = SimpleNamespace(themotte_root=tmp_path / "themotte", themotte_username="Sinity")
+
+    row = materialization._themotte_dataset(cfg)
+
+    assert row.status == "ready"
+    assert row.first_date == date(2026, 2, 1)
+    assert row.last_date == date(2026, 2, 1)
+
+
 def test_machine_audit_marks_manifest_with_changed_input_db_partial(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION

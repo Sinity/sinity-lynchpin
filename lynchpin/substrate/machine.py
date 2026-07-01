@@ -17,6 +17,28 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _add_observed_at_filter(
+    clauses: list[str],
+    params: list[Any],
+    *,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
+) -> None:
+    """Append observed_at filters, preserving exact datetime windows."""
+    if isinstance(start, datetime):
+        clauses.append("observed_at >= ?")
+        params.append(start)
+    elif start is not None:
+        clauses.append("observed_at::DATE >= ?")
+        params.append(start)
+    if isinstance(end, datetime):
+        clauses.append("observed_at <= ?")
+        params.append(end)
+    elif end is not None:
+        clauses.append("observed_at::DATE <= ?")
+        params.append(end)
+
+
 def load_machine_metric_samples(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -414,8 +436,8 @@ def load_machine_process_io_delta_samples(
 def load_machine_process_memory_samples(
     conn: "duckdb.DuckDBPyConnection",
     *,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     hosts: tuple[str, ...] | None = None,
     refresh_id: str | None = None,
     limit: int | None = None,
@@ -426,7 +448,7 @@ def load_machine_process_memory_samples(
     clauses: list[str] = []
     params: list[Any] = []
 
-    add_date_filter("observed_at", start, end, clauses, params)
+    _add_observed_at_filter(clauses, params, start=start, end=end)
     add_in_filter("host", hosts, clauses, params)
     if refresh_id is not None:
         clauses.append("refresh_id = ?")
@@ -982,10 +1004,10 @@ def load_machine_memory_breakdown(
     conn: "duckdb.DuckDBPyConnection",
     *,
     refresh_id: str,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     host: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return recent decomposed memory samples from ``machine_metric_sample``.
 
@@ -1007,17 +1029,17 @@ def load_machine_memory_breakdown(
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
-    if start:
-        sql += " AND observed_at::DATE >= ?"
-        params.append(start)
-    if end:
-        sql += " AND observed_at::DATE <= ?"
-        params.append(end)
+    clauses: list[str] = []
+    _add_observed_at_filter(clauses, params, start=start, end=end)
+    if clauses:
+        sql += " AND " + " AND ".join(clauses)
     if host:
         sql += " AND host = ?"
         params.append(host)
-    sql += " ORDER BY observed_at DESC LIMIT ?"
-    params.append(max(int(limit), 0))
+    sql += " ORDER BY observed_at DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(int(limit), 0))
     rows = conn.execute(sql, params).fetchall()
     columns = [desc[0] for desc in (conn.description or [])]
     return [dict(zip(columns, row, strict=True)) for row in rows]
@@ -1077,8 +1099,8 @@ def load_machine_pressure_explainer(
     conn: "duckdb.DuckDBPyConnection",
     *,
     refresh_id: str,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     host: str | None = None,
     focus: str = "io",
     limit: int = 5,
@@ -1102,12 +1124,10 @@ def load_machine_pressure_explainer(
         WHERE refresh_id = ?
     """
     params: list[Any] = [refresh_id]
-    if start:
-        metric_sql += " AND observed_at::DATE >= ?"
-        params.append(start)
-    if end:
-        metric_sql += " AND observed_at::DATE <= ?"
-        params.append(end)
+    clauses: list[str] = []
+    _add_observed_at_filter(clauses, params, start=start, end=end)
+    if clauses:
+        metric_sql += " AND " + " AND ".join(clauses)
     if host:
         metric_sql += " AND host = ?"
         params.append(host)

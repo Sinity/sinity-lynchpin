@@ -74,6 +74,8 @@ class LynchpinConfig:
     goodreads_library: Path
     wykop_root: Path
     wykop_username: str
+    themotte_root: Path
+    themotte_username: str
     samsung_gdpr_cloud_dir: Path
     clipboard_live_file: Path
     clipboard_export_files: tuple[Path, ...]
@@ -116,6 +118,7 @@ class LynchpinConfig:
             "goodreads": self.goodreads_library.exists(),
             "raindrop": self.raindrop_csv is not None and self.raindrop_csv.exists(),
             "wykop": self.wykop_root.exists(),
+            "themotte": self.themotte_root.exists(),
             "dendron": self.dendron_root.exists(),
             "samsung_gdpr_cloud": self.samsung_gdpr_cloud_dir.exists(),
             "clipboard": self.clipboard_live_file.exists() or any(path.exists() for path in self.clipboard_export_files),
@@ -249,6 +252,8 @@ class LynchpinConfig:
         ))
         wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", exports_root / "wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
+        themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", exports_root / "themotte/raw"))
+        themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
             "LYNCHPIN_SAMSUNG_GDPR_CLOUD", exports_root / "health/raw/samsung-gdpr-cloud"
         ))
@@ -338,6 +343,8 @@ class LynchpinConfig:
             raindrop_dir=raindrop_dir, raindrop_csv=raindrop_csv,
             goodreads_library=goodreads_library, wykop_root=wykop_root,
             wykop_username=wykop_username,
+            themotte_root=themotte_root,
+            themotte_username=themotte_username,
             samsung_gdpr_cloud_dir=samsung_gdpr_cloud_dir,
             clipboard_live_file=clipboard_live_file,
             clipboard_export_files=clipboard_export_files,

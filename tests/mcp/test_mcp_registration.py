@@ -7,235 +7,24 @@ def test_mcp_app_instantiates() -> None:
     assert app.name == "lynchpin"
 
 
-def test_mcp_tools_registered() -> None:
-    from lynchpin.mcp.tools.change import (
-        ai_tool_usage,
-        breaking_changes,
-        code_history_claims,
-        commit_kind_attribution,
-        conventional_commits,
-        file_hotspots,
-        refactor_candidates,
-        symbol_churn_hotspots,
-    )
-    from lynchpin.mcp.tools.machine import (
-        machine_benchmark_manifest_bundle,
-        machine_experiment_manifest_diagnostics,
-        machine_benchmark_plans,
-        machine_benchmark_plan_template,
-        machine_benchmark_runs,
-        machine_benchmark_phases,
-        machine_benchmark_estimates,
-        machine_benchmark_execution_handoff,
-        machine_benchmark_selected_runbook,
-        machine_benchmark_readiness,
-        machine_attribution_claims,
-        machine_claim_evidence,
-        machine_attribution_candidate_details,
-        machine_assumption_checks,
-        machine_status,
-        machine_boundary_candidates,
-        machine_calibration_fixtures,
-        machine_discovery_validation_splits,
-        machine_measurement_system,
-        machine_mechanism_hypotheses,
-        machine_instrumentation_gaps,
-        machine_below_attributions,
-        machine_attribution_candidates,
-        machine_context_windows,
-        machine_dataset_diagnostics,
-        machine_dataset_inventory,
-        machine_derivation_inventory,
-        machine_episodes,
-        machine_experiment_claims,
-        machine_feature_frame_preview,
-        machine_matched_comparisons,
-        machine_materialization_health,
-        machine_negative_controls,
-        machine_lagged_exposures,
-        machine_anomaly_clusters,
-        machine_metrics_daily,
-        machine_observation_cohorts,
-        machine_observational_baselines,
-        machine_service_state_summary,
-        machine_support_assessments,
-        machine_work_observation_artifact,
-        machine_work_observation_daily,
-        machine_workflow_mechanics,
-        machine_work_slow_tests,
-        machine_work_stage_daily,
-        machine_work_failures,
-        machine_work_stage_summary,
-        machine_work_test_summary,
-    )
-    from lynchpin.mcp.tools.personal import (
-        bookmark_daily,
-        bookmarks_search,
-        communication_daily,
-        communication_events,
-        focus_daily,
-        google_takeout_daily,
-        google_takeout_events,
-        google_takeout_retrospective,
-        keybind_usage,
-        keylog_daily,
-        keylog_text_content,
-        keylog_text_shape,
-        terminal_daily,
-        terminal_sessions,
-        materialization_status,
-        operator_retrospective_readiness,
-        personal_daily_signals,
-        personal_interest_trace,
-        spotify_daily,
-        title_metadata_audit,
-        web_daily,
-    )
-    from lynchpin.mcp.tools.capability import mcp_capability_matrix
-    from lynchpin.mcp.tools.artifacts import (
-        analysis_artifact_inventory,
-        read_analysis_artifact,
-    )
-    from lynchpin.mcp.tools.review import pr_review_rows, review_bottlenecks
-    from lynchpin.mcp.tools.runtime import mcp_runtime_status, mcp_surface_self_check
-    from lynchpin.mcp.tools.signals import source_observation_bounds, verify_vs_edit_ratio
-    from lynchpin.mcp.tools.substrate import (
-        list_evidence_graph_builds,
-        list_substrate_tables,
-        load_evidence_graph_summary,
-        query_substrate,
-        substrate_readiness_report,
-        substrate_source_status,
-        analysis_readiness,
-        analysis_claims,
-        analysis_claim_calibration,
-        claim_evidence,
-        contract_coverage,
-        promotion_runs,
-        substrate_run_steps,
-    )
-    from lynchpin.mcp.tools.views import (
-        closure_chain_walks,
-        file_overlap_edges,
-        project_day_correlations,
-        symbol_overlap_edges,
-    )
+def test_only_collapsed_public_tools_are_registered() -> None:
+    from lynchpin.mcp.registry import PUBLIC_TOOL_NAMES
+    from lynchpin.mcp.server import app
 
-    for fn in [
-        query_substrate,
-        list_substrate_tables,
-        list_evidence_graph_builds,
-        load_evidence_graph_summary,
-        substrate_source_status,
-        substrate_readiness_report,
-        project_day_correlations,
-        closure_chain_walks,
-        file_overlap_edges,
-        symbol_overlap_edges,
-        pr_review_rows,
-        review_bottlenecks,
-        spotify_daily,
-        web_daily,
-        bookmarks_search,
-        bookmark_daily,
-        communication_events,
-        communication_daily,
-        focus_daily,
-        google_takeout_daily,
-        google_takeout_events,
-        google_takeout_retrospective,
-        keylog_daily,
-        keybind_usage,
-        keylog_text_content,
-        keylog_text_shape,
-        terminal_daily,
-        terminal_sessions,
-        operator_retrospective_readiness,
-        personal_daily_signals,
-        personal_interest_trace,
-        materialization_status,
-        title_metadata_audit,
-        analysis_readiness,
-        analysis_claims,
-        analysis_claim_calibration,
-        claim_evidence,
-        contract_coverage,
-        mcp_capability_matrix,
-        analysis_artifact_inventory,
-        read_analysis_artifact,
-        promotion_runs,
-        substrate_run_steps,
-        refactor_candidates,
-        file_hotspots,
-        code_history_claims,
-        conventional_commits,
-        ai_tool_usage,
-        breaking_changes,
-        commit_kind_attribution,
-        symbol_churn_hotspots,
-        machine_episodes,
-        machine_context_windows,
-        machine_below_attributions,
-        machine_attribution_candidates,
-        machine_observational_baselines,
-        machine_experiment_claims,
-        machine_feature_frame_preview,
-        machine_benchmark_plans,
-        machine_benchmark_plan_template,
-        machine_benchmark_manifest_bundle,
-        machine_experiment_manifest_diagnostics,
-        machine_benchmark_execution_handoff,
-        machine_benchmark_selected_runbook,
-        machine_benchmark_runs,
-        machine_benchmark_phases,
-        machine_benchmark_estimates,
-        machine_benchmark_readiness,
-        machine_attribution_claims,
-        machine_claim_evidence,
-        machine_attribution_candidate_details,
-        machine_assumption_checks,
-        machine_status,
-        machine_boundary_candidates,
-        machine_calibration_fixtures,
-        machine_discovery_validation_splits,
-        machine_measurement_system,
-        machine_mechanism_hypotheses,
-        machine_instrumentation_gaps,
-        machine_matched_comparisons,
-        machine_negative_controls,
-        machine_lagged_exposures,
-        machine_anomaly_clusters,
-        machine_materialization_health,
-        machine_dataset_diagnostics,
-        machine_dataset_inventory,
-        machine_derivation_inventory,
-        machine_observation_cohorts,
-        machine_support_assessments,
-        machine_metrics_daily,
-        machine_service_state_summary,
-        machine_work_observation_daily,
-        machine_workflow_mechanics,
-        machine_work_slow_tests,
-        machine_work_stage_daily,
-        machine_work_failures,
-        machine_work_stage_summary,
-        machine_work_test_summary,
-        machine_work_observation_artifact,
-        mcp_runtime_status,
-        mcp_surface_self_check,
-        source_observation_bounds,
-        verify_vs_edit_ratio,
-    ]:
-        assert callable(fn)
+    tools = getattr(app._tool_manager, "_tools", {})
+
+    assert tuple(sorted(tools)) == tuple(sorted(PUBLIC_TOOL_NAMES))
+    assert len(tools) == 8
 
 
-def test_default_mcp_does_not_export_mutating_maintenance_tools() -> None:
-    from lynchpin.mcp.tools import substrate
+def test_legacy_mutating_helpers_are_not_exported_as_tools() -> None:
+    from lynchpin.mcp.server import app
     from lynchpin.mcp.tools import health
+    from lynchpin.mcp.tools import substrate
 
     assert callable(substrate.ai_attribution_backfill)
     assert callable(substrate.substrate_prune)
     assert callable(health.promote_analysis_product)
-    assert not hasattr(substrate.ai_attribution_backfill, "name")
-    assert not hasattr(substrate.substrate_prune, "name")
-    assert not hasattr(health.promote_analysis_product, "name")
+    assert "ai_attribution_backfill" not in app._tool_manager._tools
+    assert "substrate_prune" not in app._tool_manager._tools
+    assert "promote_analysis_product" not in app._tool_manager._tools

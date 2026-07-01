@@ -1,7 +1,8 @@
-"""FastMCP server for the lynchpin DuckDB substrate.
+"""FastMCP server for the Lynchpin analysis surface.
 
-Exposes read-only access to commit facts, evidence graphs, project-day
-correlations, closure chains, overlap edges, and PR review rows.
+Exposes read-only tools over the DuckDB substrate, generated analysis products,
+source capability metadata, code snapshots, GitHub context, personal signals,
+and local machine telemetry.
 
 Entry: ``python -m lynchpin.mcp`` (stdio transport).
 """
@@ -10,36 +11,47 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
+from lynchpin.mcp.registry import PUBLIC_TOOL_NAMES
+
 app = FastMCP(
     "lynchpin",
     instructions=(
         "Lynchpin is a personal data analysis hub. This MCP server exposes "
-        "the DuckDB substrate — commit facts, AI work events, evidence graphs, "
-        "project-day correlations, closure chains, overlap edges, and PR review "
-        "rows — as read-only tools for agent-driven analysis. "
-        "All SQL access is SELECT-only with read_only=True enforced at the "
-        "DuckDB level. Use query_substrate for ad-hoc exploration and the "
-        "typed tools for structured access."
+        "read-only tools over the DuckDB substrate, evidence graph, generated "
+        "analysis artifacts, code snapshots, GitHub lifecycle context, personal "
+        "signals, and local machine telemetry. Start with mcp_guide for routing "
+        "and mcp_capability_matrix for per-source coverage/materialization "
+        "details. Use aggregate tools before query_substrate; direct SQL access "
+        "is SELECT-only with read_only=True enforced at the DuckDB level."
     ),
 )
 
-# Tools register themselves via @app.tool() decorators in submodules.
-# Import order: substrate first, then domain modules.
-from lynchpin.mcp.tools import substrate as _substrate  # noqa: E402, F401
-from lynchpin.mcp.tools import views as _views          # noqa: E402, F401
-from lynchpin.mcp.tools import velocity as _velocity    # noqa: E402, F401
-from lynchpin.mcp.tools import health as _health        # noqa: E402, F401
-from lynchpin.mcp.tools import machine as _machine      # noqa: E402, F401
-from lynchpin.mcp.tools import signals as _signals      # noqa: E402, F401
-from lynchpin.mcp.tools import change as _change        # noqa: E402, F401
-from lynchpin.mcp.tools import review as _review        # noqa: E402, F401
-from lynchpin.mcp.tools import personal as _personal    # noqa: E402, F401
-from lynchpin.mcp.tools import capability as _capability  # noqa: E402, F401
-from lynchpin.mcp.tools import runtime as _runtime      # noqa: E402, F401
-from lynchpin.mcp.tools import artifacts as _artifacts  # noqa: E402, F401
-from lynchpin.mcp.tools import code_snapshots as _code_snapshots  # noqa: E402, F401
-from lynchpin.mcp.tools import github as _github                  # noqa: E402, F401
-from lynchpin.mcp.tools import personal_analysis as _personal_analysis  # noqa: E402, F401
-from lynchpin.mcp.tools import git_analysis as _git_analysis          # noqa: E402, F401
+_original_tool = app.tool
+
+
+def _public_tool_only(*args, **kwargs):
+    """Register only the collapsed public MCP tools.
+
+    Legacy modules still contain ``@app.tool()`` decorators because their
+    functions remain useful as Python implementation targets. This gate makes
+    those imports inert for FastMCP registration while allowing the eight
+    public routers to register normally.
+    """
+
+    decorator = _original_tool(*args, **kwargs)
+
+    def _decorator(fn):
+        if getattr(fn, "__name__", "") in PUBLIC_TOOL_NAMES:
+            return decorator(fn)
+        return fn
+
+    return _decorator
+
+
+app.tool = _public_tool_only  # type: ignore[method-assign]
+
+# The collapsed public module registers the only exported MCP tools. Legacy
+# domain modules are imported lazily by the routers and remain private.
+from lynchpin.mcp.tools import public as _public  # noqa: E402, F401
 
 __all__ = ["app"]

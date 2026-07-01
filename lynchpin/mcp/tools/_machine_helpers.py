@@ -1,5 +1,5 @@
 """Shared private helpers for machine MCP tool modules."""
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,33 @@ def _ensure_machine_materialized_for_read(
 
 def _exclusive_end(end: Any) -> Any:
     return end + timedelta(days=1) if end is not None else None
+
+
+def _parse_temporal_bound(value: str | None) -> date | datetime | None:
+    """Parse an MCP date/datetime bound.
+
+    Date-only inputs keep the existing day-granularity behavior. Datetime
+    inputs are preserved so machine telemetry tools can answer exact recent
+    windows such as "last few hours".
+    """
+    if value is None:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    if "T" in normalized or " " in normalized:
+        return datetime.fromisoformat(normalized)
+    return date.fromisoformat(normalized)
+
+
+def _materialization_window_for_bounds(
+    start: date | datetime | None,
+    end: date | datetime | None,
+) -> tuple[date, date] | None:
+    """Return the date window needed to materialize a temporal read window."""
+    if start is None or end is None:
+        return None
+    start_day = start.date() if isinstance(start, datetime) else start
+    end_day = end.date() if isinstance(end, datetime) else end
+    return (start_day, _exclusive_end(end_day))
 
 
 def _ensure_work_observation_substrate_for_read(

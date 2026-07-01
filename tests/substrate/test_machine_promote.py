@@ -91,6 +91,43 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     assert memory[0]["mem_slab_unreclaimable_mb"] == 300
 
 
+def test_load_machine_memory_breakdown_filters_exact_timestamps_without_default_limit(tmp_path):
+    from lynchpin.sources.machine import MachineMetricSample
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_memory_breakdown
+    from lynchpin.substrate.machine import promote_machine_metric_samples
+
+    db = tmp_path / "sub.duckdb"
+
+    def sample(hour: int) -> MachineMetricSample:
+        return MachineMetricSample(
+            observed_at=datetime(2026, 5, 12, hour, 0, tzinfo=timezone.utc),
+            host="sinnix-prime",
+            boot_id="boot-a",
+            source="machine.telemetry",
+            source_schema_version=4,
+            mem_total_mb=32000,
+            mem_used_mb=10_000 + hour,
+            mem_avail_mb=20_000 - hour,
+        )
+
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert promote_machine_metric_samples(
+            conn,
+            refresh_id="r1",
+            samples=[sample(hour) for hour in range(6)],
+        ) == 6
+        rows = load_machine_memory_breakdown(
+            conn,
+            refresh_id="r1",
+            start=datetime(2026, 5, 12, 2, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 5, 12, 4, 0, tzinfo=timezone.utc),
+        )
+
+    assert [row["mem_used_mb"] for row in rows] == [10004, 10003, 10002]
+
+
 def test_promote_machine_experiment_runs_round_trip(tmp_path):
     from lynchpin.sources.machine_experiments import MachineExperimentRun
     from lynchpin.substrate.connection import apply_schema, connect

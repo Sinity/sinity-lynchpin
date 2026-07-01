@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -131,6 +131,64 @@ def test_machine_metrics_memory_materializes_substrate_only(
         ("machine_memory_breakdown", (date(2026, 5, 1), date(2026, 5, 4)))
     ]
     assert result["rows"][0]["mem_anon_mb"] == 9000
+    assert result["rows"][0]["mem_file_cache_mb"] == 4200
+
+
+def test_machine_metrics_memory_accepts_exact_timestamp_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lynchpin.sources.machine_models import MachineMetricSample
+
+    source_calls = []
+
+    def fake_metric_samples(*, start=None, end=None):
+        source_calls.append((start, end))
+        yield MachineMetricSample(
+            observed_at=datetime(2026, 5, 1, 9, 59, tzinfo=timezone.utc),
+            host="host",
+            boot_id="boot",
+            source="machine.telemetry",
+            source_schema_version=4,
+            mem_total_mb=32000,
+            mem_used_mb=14000,
+            mem_avail_mb=18000,
+        )
+        yield MachineMetricSample(
+            observed_at=datetime(2026, 5, 1, 11, 0, tzinfo=timezone.utc),
+            host="host",
+            boot_id="boot",
+            source="machine.telemetry",
+            source_schema_version=4,
+            mem_total_mb=32000,
+            mem_used_mb=15000,
+            mem_avail_mb=17000,
+            mem_file_cache_mb=4200,
+        )
+        yield MachineMetricSample(
+            observed_at=datetime(2026, 5, 1, 12, 1, tzinfo=timezone.utc),
+            host="host",
+            boot_id="boot",
+            source="machine.telemetry",
+            source_schema_version=4,
+            mem_total_mb=32000,
+            mem_used_mb=16000,
+            mem_avail_mb=16000,
+        )
+
+    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", fake_metric_samples)
+
+    from lynchpin.mcp.tools.machine import machine_metrics
+
+    result = machine_metrics(
+        by="memory",
+        start="2026-05-01T10:00:00+00:00",
+        end="2026-05-01T12:00:00+00:00",
+    )
+
+    assert source_calls == [(date(2026, 5, 1), date(2026, 5, 1))]
+    assert result["summary"]["source_mode"] == "direct_live_machine_telemetry"
+    assert result["summary"]["row_count"] == 1
+    assert result["rows"][0]["observed_at"] == "2026-05-01T11:00:00+00:00"
     assert result["rows"][0]["mem_file_cache_mb"] == 4200
 
 

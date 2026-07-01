@@ -288,10 +288,21 @@ def _payload_datetime(value: object) -> datetime | None:
 def _can_reuse_existing_pr(existing: dict[str, Any] | None, listed_item) -> bool:
     if existing is None:
         return False
-    state = str(existing.get("state") or listed_item.state or "").lower()
-    if state == "open" or listed_item.state == "open":
-        return False
-    return bool(existing.get("review_comments") or existing.get("reviews") or existing.get("comments"))
+    return _has_pr_detail_payload(existing)
+
+
+def _has_pr_detail_payload(existing: dict[str, Any]) -> bool:
+    required_keys = {
+        "title",
+        "url",
+        "author",
+        "labels",
+        "body",
+        "comments",
+        "reviews",
+        "review_comments",
+    }
+    return required_keys.issubset(existing)
 
 
 def _repo_git_inputs(active_paths: dict[str, Path] | None = None) -> tuple[Path, ...]:

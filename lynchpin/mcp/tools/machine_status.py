@@ -1,4 +1,6 @@
 """Machine service-state, metrics, health, telemetry, and window tools."""
+from dataclasses import asdict
+from datetime import date, datetime
 from typing import Any
 
 from lynchpin.analysis.machine.status import machine_status_payload
@@ -8,6 +10,8 @@ from lynchpin.mcp.tools._machine_helpers import (
     _analysis_artifact,
     _artifact_rows,
     _exclusive_end,
+    _materialization_window_for_bounds,
+    _parse_temporal_bound,
     _required_analysis_artifact,
     _round,
     _timestamp_filter,
@@ -433,26 +437,41 @@ def machine_memory_breakdown(
     end: str | None = None,
     host: str | None = None,
     refresh_id: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Return recent decomposed memory samples from machine_metric_sample."""
-    from datetime import date as _date
-
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_machine_memory_breakdown
 
     # Import here to allow test patching in the machine module
     from lynchpin.mcp.tools import machine as machine_module
 
-    start_d = _date.fromisoformat(start) if start else None
-    end_d = _date.fromisoformat(end) if end else None
-    materialization_end = _exclusive_end(end_d)
+    start_bound = _parse_temporal_bound(start)
+    end_bound = _parse_temporal_bound(end)
+    if refresh_id is None and (
+        isinstance(start_bound, datetime) or isinstance(end_bound, datetime)
+    ):
+        rows = _live_memory_breakdown_rows(
+            start=start_bound,
+            end=end_bound,
+            host=host,
+            limit=limit,
+        )
+        return {
+            "summary": {
+                "refresh_id": None,
+                "row_count": len(rows),
+                "schema": "schema-v4 memory split when source_schema_version >= 4",
+                "source_mode": "direct_live_machine_telemetry",
+            },
+            "rows": rows,
+        }
+
+    materialization_window = _materialization_window_for_bounds(start_bound, end_bound)
     if refresh_id is None:
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_memory_breakdown",
-            window=(start_d, materialization_end)
-            if start_d is not None and materialization_end is not None
-            else None,
+            window=materialization_window,
         )
 
     with connect(substrate_path(), read_only=True) as conn:
@@ -467,8 +486,8 @@ def machine_memory_breakdown(
         rows = load_machine_memory_breakdown(
             conn,
             refresh_id=refresh_id,
-            start=start_d,
-            end=end_d,
+            start=start_bound,
+            end=end_bound,
             host=host,
             limit=limit,
         )
@@ -485,6 +504,41 @@ def machine_memory_breakdown(
     }
 
 
+def _live_memory_breakdown_rows(
+    *,
+    start: date | datetime | None,
+    end: date | datetime | None,
+    host: str | None,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    """Return memory rows from the live SQLite source for exact recent windows."""
+    from lynchpin.sources.machine import metric_samples
+
+    start_day = start.date() if isinstance(start, datetime) else start
+    end_day = end.date() if isinstance(end, datetime) else end
+    rows: list[dict[str, Any]] = []
+    for sample in metric_samples(start=start_day, end=end_day):
+        if host is not None and sample.host != host:
+            continue
+        if isinstance(start, datetime) and sample.observed_at < _comparable_bound(start):
+            continue
+        if isinstance(end, datetime) and sample.observed_at > _comparable_bound(end):
+            continue
+        row = asdict(sample)
+        row["observed_at"] = _json_safe(row["observed_at"])
+        rows.append(row)
+    rows.sort(key=lambda row: str(row["observed_at"]), reverse=True)
+    if limit is not None:
+        return rows[: max(int(limit), 0)]
+    return rows
+
+
+def _comparable_bound(bound: datetime) -> datetime:
+    if bound.tzinfo is not None:
+        return bound
+    return bound.replace(tzinfo=datetime.now().astimezone().tzinfo)
+
+
 @app.tool()
 def machine_pressure_explain(
     start: str | None = None,
@@ -497,23 +551,19 @@ def machine_pressure_explain(
     top_n: int = 8,
 ) -> dict[str, Any]:
     """Explain pressure windows by joining memory split, service RSS, process I/O, and process PSS."""
-    from datetime import date as _date
-
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import load_machine_pressure_explainer
 
     # Import here to allow test patching in the machine module.
     from lynchpin.mcp.tools import machine as machine_module
 
-    start_d = _date.fromisoformat(start) if start else None
-    end_d = _date.fromisoformat(end) if end else None
-    materialization_end = _exclusive_end(end_d)
+    start_bound = _parse_temporal_bound(start)
+    end_bound = _parse_temporal_bound(end)
+    materialization_window = _materialization_window_for_bounds(start_bound, end_bound)
     if refresh_id is None:
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_pressure_explain",
-            window=(start_d, materialization_end)
-            if start_d is not None and materialization_end is not None
-            else None,
+            window=materialization_window,
         )
 
     with connect(substrate_path(), read_only=True) as conn:
@@ -528,8 +578,8 @@ def machine_pressure_explain(
         windows = load_machine_pressure_explainer(
             conn,
             refresh_id=refresh_id,
-            start=start_d,
-            end=end_d,
+            start=start_bound,
+            end=end_bound,
             host=host,
             focus=focus,
             limit=limit,
@@ -675,8 +725,6 @@ def machine_pressure_report(
     top_n: int = 8,
 ) -> dict[str, Any]:
     """Compact machine pressure report with memory decomposition and PSS attribution."""
-    from datetime import date as _date
-
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.machine import (
         load_machine_memory_breakdown,
@@ -686,15 +734,13 @@ def machine_pressure_report(
 
     from lynchpin.mcp.tools import machine as machine_module
 
-    start_d = _date.fromisoformat(start) if start else None
-    end_d = _date.fromisoformat(end) if end else None
-    materialization_end = _exclusive_end(end_d)
+    start_bound = _parse_temporal_bound(start)
+    end_bound = _parse_temporal_bound(end)
+    materialization_window = _materialization_window_for_bounds(start_bound, end_bound)
     if refresh_id is None:
         machine_module.ensure_substrate_materialized_for_read(
             caller="machine_pressure_report",
-            window=(start_d, materialization_end)
-            if start_d is not None and materialization_end is not None
-            else None,
+            window=materialization_window,
         )
 
     with connect(substrate_path(), read_only=True) as conn:
@@ -714,8 +760,8 @@ def machine_pressure_report(
         memory = load_machine_memory_breakdown(
             conn,
             refresh_id=refresh_id,
-            start=start_d,
-            end=end_d,
+            start=start_bound,
+            end=end_bound,
             host=host,
             limit=1,
         )
@@ -723,8 +769,8 @@ def machine_pressure_report(
             focus: load_machine_pressure_explainer(
                 conn,
                 refresh_id=refresh_id,
-                start=start_d,
-                end=end_d,
+                start=start_bound,
+                end=end_bound,
                 host=host,
                 focus=focus,
                 limit=window_limit,
@@ -736,8 +782,8 @@ def machine_pressure_report(
         processes = load_machine_process_memory_samples(
             conn,
             refresh_id=refresh_id,
-            start=start_d,
-            end=end_d,
+            start=start_bound,
+            end=end_bound,
             hosts=(host,) if host else None,
             limit=max(int(top_n), 0),
         )

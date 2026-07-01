@@ -16,6 +16,7 @@ from lynchpin.sources.chisel import (  # noqa: F401
     REPO_PLANS,
     RepoPlan,
     Slice,
+    StatsBucket,
     build_chisel_bundles,
     run_from_cli,
 )

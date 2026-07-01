@@ -12,7 +12,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lynchpin.mcp.registry import PUBLIC_TOOL_NAMES
 from lynchpin.substrate import snapshots as _snapshots
+
+PLATFORM_TOOL_NAMES: tuple[str, ...] = PUBLIC_TOOL_NAMES
 
 
 def json_safe(value: Any) -> Any:
@@ -140,3 +143,66 @@ def registered_tool_names() -> tuple[str, ...]:
     if not isinstance(tools, dict):
         return ()
     return tuple(sorted(str(name) for name in tools))
+
+
+def declared_tool_names() -> tuple[str, ...]:
+    """Return public MCP tool names expected in the collapsed registry."""
+
+    return tuple(sorted(PUBLIC_TOOL_NAMES))
+
+
+def mcp_tool_registry_summary() -> dict[str, Any]:
+    """Classify live MCP tools into source-declared, platform, and unexpected sets."""
+
+    registered = set(registered_tool_names())
+    declared = set(declared_tool_names())
+    platform = set(PLATFORM_TOOL_NAMES)
+    from lynchpin.mcp.server import app
+
+    tools = getattr(getattr(app, "_tool_manager", None), "_tools", {})
+    module_rows: dict[str, dict[str, Any]] = {}
+    if isinstance(tools, dict):
+        for name in registered:
+            tool = tools.get(name)
+            fn = getattr(tool, "fn", None)
+            module = str(getattr(fn, "__module__", "unknown"))
+            row = module_rows.setdefault(
+                module,
+                {
+                    "module": module,
+                    "registered_tool_count": 0,
+                    "declared_tool_count": 0,
+                    "platform_tool_count": 0,
+                    "unexpected_unmapped_tool_count": 0,
+                    "tools": [],
+                },
+            )
+            row["registered_tool_count"] += 1
+            if name in declared:
+                row["declared_tool_count"] += 1
+            if name in platform:
+                row["platform_tool_count"] += 1
+            if name not in declared and name not in platform:
+                row["unexpected_unmapped_tool_count"] += 1
+            row["tools"].append(name)
+    module_summary = tuple(
+        {
+            **row,
+            "tools": tuple(sorted(row["tools"])),
+        }
+        for row in sorted(
+            module_rows.values(),
+            key=lambda item: (-int(item["registered_tool_count"]), str(item["module"])),
+        )
+    )
+    return {
+        "registered": tuple(sorted(registered)),
+        "declared": tuple(sorted(declared)),
+        "platform": tuple(sorted(platform)),
+        "registered_platform": tuple(sorted(registered & platform)),
+        "missing_platform": tuple(sorted(platform - registered)),
+        "missing_declared": tuple(sorted(declared - registered)),
+        "registered_unmapped": tuple(sorted(registered - declared)),
+        "unexpected_unmapped": tuple(sorted(registered - declared - platform)),
+        "module_summary": module_summary,
+    }

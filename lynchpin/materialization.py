@@ -313,6 +313,7 @@ def _dataset_builders() -> dict[str, Any]:
         "sleep_productivity": _sleep_productivity_dataset,
         "irc": _irc_dataset,
         "wykop": _wykop_dataset,
+        "themotte": _themotte_dataset,
         "code_snapshots": _code_snapshots_dataset,
     }
 
@@ -1701,6 +1702,36 @@ def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _wykop_operator_root(root: Path) -> Path:
+    account_root = root / "Sinity"
+    return account_root if account_root.exists() else root
+
+
+def _themotte_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    root = _themotte_operator_root(cfg.themotte_root)
+    row = _raw_source_dataset(
+        cfg,
+        name="themotte",
+        raw_roots=(root,),
+        authority="TheMotte authenticated browser sync",
+        query_surface="lynchpin.sources.themotte",
+        materialization_hint="python -m lynchpin.ingest.themotte_sync",
+        row_count=_count_files(root, suffixes=(".json", ".jsonl")),
+    )
+    try:
+        from lynchpin.sources.themotte import date_range
+
+        first, last = date_range(root=cfg.themotte_root, username=cfg.themotte_username)
+    except Exception:
+        return row
+    return replace(
+        row,
+        first_date=first.date(),
+        last_date=last.date(),
+        reason="TheMotte sync is present with dated messages or notifications",
+    )
+
+
+def _themotte_operator_root(root: Path) -> Path:
     account_root = root / "Sinity"
     return account_root if account_root.exists() else root
 

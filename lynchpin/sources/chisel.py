@@ -12,6 +12,9 @@ only for explicit one-off exports.
 """
 from __future__ import annotations
 import datetime as dt
+import fnmatch
+import hashlib
+import json
 import os
 import signal
 import shutil
@@ -68,8 +71,8 @@ DEFAULT_ISSUE_LIMIT = 10000
 LARGE_SLICE_BYTES = 5000000
 _repomix_semaphore = threading.Semaphore(DEFAULT_REPOMIX_WORKERS)
 _CONTROL_CHARS = bytes((b for b in range(32) if b not in (9, 10, 13))) + b'\x7f'
-_WORKTREE_TAR_EXCLUDES: tuple[str, ...] = ('--exclude=.git', '--exclude=.direnv', '--exclude=.venv', '--exclude=venv', '--exclude=node_modules', '--exclude=target', '--exclude=trybuild-target', '--exclude=.sinex', '--exclude=dist', '--exclude=build', '--exclude=coverage', '--exclude=.cache', '--exclude=.lynchpin', '--exclude=.mypy_cache', '--exclude=__pycache__', '--exclude=*.pyc', '--exclude=artefacts', '--exclude=result', '--exclude=out', '--exclude=.agent', '--exclude=*.lock', '--exclude=*.db', '--exclude=*.db-journal', '--exclude=*.db-wal', '--exclude=*.db-shm')
-DEFAULT_IGNORE = ('.git/**', '.direnv/**', '.venv/**', 'venv/**', 'node_modules/**', 'target/**', '**/trybuild-target/**', '.sinex/**', 'dist/**', 'build/**', 'coverage/**', '.cache/**', '.lynchpin/**', '.mypy_cache/**', '__pycache__/**', '*.pyc', 'artefacts/**', 'result/**', 'out/**', '.agent/history-summaries/**', '.agent/scratch/**', '*.lock', '*.db', '*.db-journal', '*.db-wal', '*.db-shm')
+_WORKTREE_TAR_EXCLUDES: tuple[str, ...] = ('--exclude=.git', '--exclude=.direnv', '--exclude=.venv', '--exclude=venv', '--exclude=node_modules', '--exclude=target', '--exclude=trybuild-target', '--exclude=.sinex', '--exclude=dist', '--exclude=build', '--exclude=coverage', '--exclude=.cache', '--exclude=.local', '--exclude=.lynchpin', '--exclude=.claude', '--exclude=.serena', '--exclude=.env', '--exclude=.env.*', '--exclude=.mcp.json', '--exclude=.cclsp.json', '--exclude=token.json', '--exclude=credentials.json', '--exclude=.mypy_cache', '--exclude=.pytest_cache', '--exclude=.ruff_cache', '--exclude=.playwright-mcp', '--exclude=playwright-report', '--exclude=test-results', '--exclude=__pycache__', '--exclude=*.pyc', '--exclude=artefacts', '--exclude=result', '--exclude=out', '--exclude=.agent', '--exclude=*.lock', '--exclude=*.db', '--exclude=*.db-journal', '--exclude=*.db-wal', '--exclude=*.db-shm')
+DEFAULT_IGNORE = ('.git/**', '.direnv/**', '.venv/**', '**/.venv/**', 'venv/**', 'node_modules/**', '**/node_modules/**', 'target/**', '**/target/**', '**/trybuild-target/**', '.sinex/**', 'dist/**', '**/dist/**', 'build/**', '**/build/**', 'coverage/**', '**/coverage/**', '.cache/**', '**/.cache/**', '.local/**', '**/.local/**', '.lynchpin/**', '**/.lynchpin/**', '.claude/**', '**/.claude/**', '.serena/**', '**/.serena/**', '.env', '.env.*', '.mcp.json', '.cclsp.json', 'token.json', 'credentials.json', '.mypy_cache/**', '.pytest_cache/**', '.ruff_cache/**', '**/.ruff_cache/**', '.playwright-mcp/**', '**/.playwright-mcp/**', 'playwright-report/**', '**/playwright-report/**', 'test-results/**', '**/test-results/**', '__pycache__/**', '**/__pycache__/**', '*.pyc', 'artefacts/**', 'result/**', 'out/**', '.agent/history-summaries/**', '.agent/scratch/**', '*.lock', '*.db', '*.db-journal', '*.db-wal', '*.db-shm')
 
 def _utc_ts() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H%M%SZ')
@@ -160,8 +163,39 @@ def _fmt_bytes(n: int) -> str:
         return f'{n / 1000:.1f} KB'
     return f'{n} B'
 
+def _planned_output_count(plan: RepoPlan) -> int:
+    return len(plan.slices) + int(plan.compressed) + 12 + len(plan.extra_copy)
+
+def _print_scope(plans: Sequence[RepoPlan], output_root: Path) -> None:
+    if _console is not None:
+        table = Table(title='Planned outputs', title_style='bold')
+        table.add_column('#', justify='right')
+        table.add_column('Project', style='bold')
+        table.add_column('Configured slices', justify='right')
+        table.add_column('XML snapshots', justify='right')
+        table.add_column('Sidecars', justify='right')
+        table.add_column('Output')
+        for idx, plan in enumerate(plans, start=1):
+            xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
+            sidecars = _planned_output_count(plan) - xml_snapshots
+            table.add_row(str(idx), plan.name, str(len(plan.slices)), str(xml_snapshots), str(sidecars), str(output_root / plan.name))
+        _console.print(table)
+        return
+    _print('[dim]Scope:[/dim]')
+    for idx, plan in enumerate(plans, start=1):
+        xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
+        sidecars = _planned_output_count(plan) - xml_snapshots
+        _print(f'  [{idx}/{len(plans)}] {plan.name}: {len(plan.slices)} configured slices, {xml_snapshots} XML snapshots, {sidecars} sidecars -> {output_root / plan.name}')
+
 @dataclass(frozen=True)
 class Slice:
+    name: str
+    description: str
+    include: tuple[str, ...]
+    extra_ignore: tuple[str, ...] = ()
+
+@dataclass(frozen=True)
+class StatsBucket:
     name: str
     description: str
     include: tuple[str, ...]
@@ -176,15 +210,16 @@ class RepoPlan:
     compressed: bool = True
     extra_ignore: tuple[str, ...] = ()
     extra_copy: tuple[tuple[str, str], ...] = ()
+    stats_buckets: tuple[StatsBucket, ...] = ()
 REPO_PLANS: dict[str, RepoPlan] = {}
 
-def _plan(name: str, path: str, github_slug: str | None, *slices: Slice, compressed: bool=True, extra_ignore: tuple[str, ...]=(), extra_copy: tuple[tuple[str, str], ...]=()) -> RepoPlan:
-    plan = RepoPlan(name, Path(path), tuple(slices), github_slug, compressed, extra_ignore, extra_copy)
+def _plan(name: str, path: str, github_slug: str | None, *slices: Slice, compressed: bool=True, extra_ignore: tuple[str, ...]=(), extra_copy: tuple[tuple[str, str], ...]=(), stats_buckets: tuple[StatsBucket, ...]=()) -> RepoPlan:
+    plan = RepoPlan(name, Path(path), tuple(slices), github_slug, compressed, extra_ignore, extra_copy, stats_buckets)
     REPO_PLANS[name] = plan
     return plan
-_plan('sinex', '/realm/project/sinex', 'Sinity/sinex', Slice('core-crates', 'Runtime daemons — gateway and ingest daemon', ('crate/core/**',)), Slice('lib-crates', 'Shared libraries — db, primitives, macros, node-sdk, schema', ('crate/lib/**',)), Slice('root-and-config', 'Build metadata, configuration, schemas, top-level docs', ('Cargo.toml', 'Cargo.lock', 'README.md', 'AGENTS.md', 'config/**', 'schemas/**')), Slice('nodes-and-cli', 'Deployable nodes, CLI, xtask, CI, scripts', ('crate/nodes/**', 'crate/cli/**', 'xtask/**', '.github/**', 'scripts/**', 'justfile')), Slice('nixos-deployment', 'NixOS modules, flake, deployment surfaces', ('nixos/**', 'flake.nix', 'rustfmt.toml')), Slice('docs', 'Documentation', ('docs/**', 'xtask/docs/**', 'CLAUDE.md', 'CONTRIBUTING.md')), Slice('tests', 'Test suites and verification', ('tests/**', 'crate/tests/**')))
-_plan('sinnix', '/realm/project/sinnix', 'Sinity/sinnix', Slice('hosts-and-modules', 'Host profiles, Nix modules, flake composition', ('hosts/**', 'modules/**', 'flake/**', 'flake.nix')), Slice('scripts-and-dots', 'Scripts, dotfiles, agent control plane, CI', ('scripts/**', 'dots/**', '.github/**', 'README.md', 'CLAUDE.md')))
-_plan('polylogue', '/realm/project/polylogue', 'Sinity/polylogue', Slice('core-and-storage', 'Core library, storage backends, schemas, sources', ('polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'README.md')), Slice('cli-mcp-and-operations', 'CLI, MCP server, operational automation, UI glue', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/ui/**', 'scripts/**', '.github/**', 'AGENTS.md')), Slice('rendering-and-site', 'Rendering engine, site generation, demos, templates', ('polylogue/rendering/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'demos/**')), Slice('docs', 'Documentation', ('docs/**', 'CLAUDE.md', 'CHANGELOG.md')), Slice('tests-and-qa', 'Tests and QA campaigns', ('tests/**', 'qa/**')))
+_plan('sinex', '/realm/project/sinex', 'Sinity/sinex', Slice('code-proper', 'Production Rust crates, CLI, daemon, schemas, and developer tooling source', ('crate/*/src/**', 'xtask/src/**', 'xtask/macros/src/**', 'Cargo.toml', 'crate/*/Cargo.toml', 'xtask/Cargo.toml', 'xtask/macros/Cargo.toml')), Slice('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', 'crate/*/fuzz/**', 'xtask/tests/**')), Slice('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), Slice('agent-instructions', 'Agent-facing instructions, includes, scripts, and GitHub coordination context', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), Slice('agent-devloop-and-demos', 'Agent devloop reports, handoffs, demos, and local generated evidence summaries', ('.agent/devloops/**', '.agent/demos/**', '.agent/handoff/**', '.agent/inbox/**'), extra_ignore=('.agent/artifacts/**',)), Slice('other-project-surface', 'Build, deployment, schemas, fixtures, configs, examples, and generated contracts', ('.config/**', 'flake.nix', 'rust-toolchain.toml', 'rustfmt.toml', 'rust-analyzer.toml', 'nixos/**', 'schemas/**', 'demo/**', 'xtask/cloud/**', 'xtask/config/**', 'tests/fixtures/**'), extra_ignore=('nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), stats_buckets=(StatsBucket('agent-instructions', 'Agent README, includes, scripts, dev bindings, and GitHub coordination metadata', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), StatsBucket('agent-devloop', 'Agent devloop raw exports, conductor handoffs, run logs, and inbox state', ('.agent/devloops/**', '.agent/handoff/**', '.agent/inbox/**')), StatsBucket('agent-demos', 'Agent demos and generated demo evidence', ('.agent/demos/**',)), StatsBucket('agent-artifacts', 'Large local agent artifact imports and downloads, separated from instructions', ('.agent/artifacts/**',)), StatsBucket('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', 'crate/*/fuzz/**', 'xtask/tests/**')), StatsBucket('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), StatsBucket('code-sinexd-runtime', 'sinexd runtime, parser, source driver, stream, and service internals', ('crate/sinexd/src/runtime/**', 'crate/sinexd/src/sources/**')), StatsBucket('code-sinexd-api', 'sinexd API handlers, RPC, SSE, gateway, and surface DTOs', ('crate/sinexd/src/api/**',)), StatsBucket('code-sinexd-event-engine', 'sinexd event engine, material assembly, policy, and automata', ('crate/sinexd/src/event_engine/**', 'crate/sinexd/src/automata/**')), StatsBucket('code-sinexd-other', 'remaining sinexd production source and manifest', ('crate/sinexd/src/**', 'crate/sinexd/Cargo.toml')), StatsBucket('code-db', 'database crate source and manifest', ('crate/sinex-db/src/**', 'crate/sinex-db/Cargo.toml')), StatsBucket('code-primitives', 'domain primitives crate source and manifest', ('crate/sinex-primitives/src/**', 'crate/sinex-primitives/Cargo.toml')), StatsBucket('code-cli', 'sinexctl CLI source and manifest', ('crate/sinexctl/src/**', 'crate/sinexctl/Cargo.toml')), StatsBucket('code-xtask', 'xtask command, sandbox, graph, and developer tooling source', ('xtask/src/**', 'xtask/Cargo.toml')), StatsBucket('code-schema-macros', 'schema and macro crates plus xtask macros', ('crate/sinex-schema/src/**', 'crate/sinex-schema/Cargo.toml', 'crate/sinex-macros/src/**', 'crate/sinex-macros/Cargo.toml', 'xtask/macros/src/**', 'xtask/macros/Cargo.toml')), StatsBucket('code-workspace', 'workspace-level Rust manifests and configuration', ('Cargo.toml',))))
+_plan('sinnix', '/realm/project/sinnix', 'Sinity/sinnix', Slice('hosts-and-modules', 'Host profiles, Nix modules, flake composition', ('hosts/**', 'modules/**', 'flake/**', 'flake.nix')), Slice('scripts-and-dots', 'Scripts, dotfiles, agent control plane, CI', ('scripts/**', 'dots/**', '.github/**', 'README.md', 'CLAUDE.md')), stats_buckets=(StatsBucket('hosts', 'Host profiles', ('hosts/**',)), StatsBucket('modules', 'NixOS and Home Manager modules', ('modules/**',)), StatsBucket('flake', 'Flake parts, package data, overlays, and npm metadata', ('flake/**', 'flake.nix')), StatsBucket('dots', 'Home-manager dotfiles and agent configuration', ('dots/**',)), StatsBucket('scripts', 'Operational scripts', ('scripts/**',)), StatsBucket('pkgs', 'Local package sources and tests', ('pkgs/**',)), StatsBucket('docs', 'Repository documentation and incident notes', ('docs/**', 'README.md', 'CLAUDE.md')), StatsBucket('agent-context', 'Agent instructions and GitHub metadata', ('.agent/**', '.github/**', 'agent/**')), StatsBucket('assets-and-eval', 'Assets, evaluations, secrets scaffolding, and misc support', ('assets/**', 'eval/**', 'secret/**'))))
+_plan('polylogue', '/realm/project/polylogue', 'Sinity/polylogue', Slice('core-and-storage', 'Core library, storage backends, schemas, sources', ('polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'README.md')), Slice('cli-mcp-and-operations', 'CLI, MCP server, operational automation, UI glue', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/ui/**', 'scripts/**', '.github/**', 'AGENTS.md')), Slice('agent-devloop', 'Agent conductor devloop state, task ledgers, scripts, and tools', ('.agent/README.md', '.agent/conductor-devloop/**', '.agent/scripts/**', '.agent/task-history/**', '.agent/xtask/**', '.agent/tools/**', '.agent/learnings.local.md', '.github/**'), extra_ignore=('.agent/task-history/*.jsonl', '.agent/xtask/*.jsonl')), Slice('agent-demos-and-prompts', 'Agent demos, cloud prompts, and proposed issue packets', ('.agent/demos/**', '.agent/cloud-prompts/**', '.agent/proposed_issue_set/**'), extra_ignore=()), Slice('rendering-and-site', 'Rendering engine, site generation, demos, templates', ('polylogue/rendering/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'demos/**')), Slice('docs', 'Documentation', ('docs/**', 'CLAUDE.md', 'CHANGELOG.md')), Slice('tests-and-qa', 'Tests and QA campaigns', ('tests/**', 'qa/**')), stats_buckets=(StatsBucket('agent-devloop', 'Agent conductor devloop state, task ledgers, scripts, tools, and GitHub metadata', ('.agent/README.md', '.agent/conductor-devloop/**', '.agent/scripts/**', '.agent/task-history/**', '.agent/xtask/**', '.agent/tools/**', '.agent/learnings.local.md', '.github/**')), StatsBucket('agent-demos-prompts', 'Agent demos, cloud prompts, and proposed issue packets', ('.agent/demos/**', '.agent/cloud-prompts/**', '.agent/proposed_issue_set/**')), StatsBucket('agent-archive', 'Archived or retired agent workspace material, separated from active devloop state', ('.agent/archive/**',)), StatsBucket('tests-and-qa', 'Tests, QA, fixtures, visual and benchmark suites', ('tests/**', 'qa/**')), StatsBucket('docs', 'Documentation, plans, product notes, and markdown surfaces', ('docs/**', 'README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md')), StatsBucket('archive-query', 'Archive query and expression code', ('polylogue/archive/query/**',)), StatsBucket('archive-data', 'Archive data, semantic artifacts, and stored products', ('polylogue/archive/**', 'polylogue/artifacts/**')), StatsBucket('daemon', 'Daemon runtime, status, HTTP, metrics, and service code', ('polylogue/daemon/**',)), StatsBucket('api-and-surfaces', 'API, surfaces, browser capture, telemetry, and public payloads', ('polylogue/api/**', 'polylogue/surfaces/**', 'polylogue/browser_capture/**', 'polylogue/telemetry/**')), StatsBucket('core-and-storage', 'Core library, storage, schemas, sources, paths, and cost modules', ('polylogue/core/**', 'polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'polylogue/paths/**', 'polylogue/cost/**')), StatsBucket('pipeline-product-readiness', 'Pipeline, product, readiness, insight, and verification code', ('polylogue/pipeline/**', 'polylogue/product/**', 'polylogue/readiness/**', 'polylogue/insights/**', 'polylogue/verification/**')), StatsBucket('cli-mcp-operations', 'CLI, MCP, operations, maintenance, context, and scripts', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/maintenance/**', 'polylogue/context/**', 'scripts/**', 'systemd/**')), StatsBucket('rendering-and-site', 'Rendering, UI, site, showcase, templates, demos, and browser extension', ('polylogue/rendering/**', 'polylogue/ui/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'polylogue/demo/**', 'demos/**', 'browser-extension/**')), StatsBucket('devtools-packaging-nix', 'Developer tools, packaging, contrib, and Nix support', ('devtools/**', 'packaging/**', 'contrib/**', 'nix/**', 'pyproject.toml'))))
 _plan('knowledgebase', '/realm/data/knowledgebase', 'Sinity/knowledgebase', Slice('permanent', 'Authored knowledge: reflections, ideas, concepts, self-analysis, MOCs', ('permanent.*',)), Slice('extrinsic-chatlogs-reports', 'AI chatlogs and analysis reports', ('extrinsic.chatlog.*', 'extrinsic.report.*', 'extrinsic.psychometry.*')), Slice('extrinsic-docs-comms', 'External documents, psychometric tests, communications', ('extrinsic.doc.*', 'extrinsic.comms.*', 'extrinsic.misc.*')), Slice('logs-inbox-archive', 'Journals, raw logs, inbox captures, archived notes', ('logs.*', 'inbox.*', 'archive.*')), Slice('infrastructure', 'Vault machinery: schemas, scripts, templates, projects, config', ('schemas/**', 'scripts/**', 'templates.*', 'projects.*', 'root.md', 'root.schema.yml', 'CLAUDE.md', 'dendron.yml', 'plan.txt', 'README.md')), compressed=False, extra_ignore=('store/**', 'assets/**', '90_special/**', '.gitignore'), extra_copy=(('logs.raw-log.md', 'raw-log-copy.md'),))
 
 def _ignore_str(plan: RepoPlan, slice: Slice | None=None) -> str:
@@ -215,7 +250,8 @@ def _run_repomix(repomix_bin: str, output_path: Path, plan: RepoPlan, args: list
 
 def _run_slice(repomix_bin: str, output_dir: Path, plan: RepoPlan, slice: Slice, git: dict, generated_at: str, log: list[str] | None=None) -> tuple[str, int]:
     output_path = output_dir / f'{plan.name}-{slice.name}.xml'
-    args = ['--style', 'xml', '--parsable-style', '--quiet', '--no-security-check', '--include-full-directory-structure', '--output-show-line-numbers', '--header-text', _slice_header(plan, slice, git, generated_at), '--include', ','.join(slice.include), '--ignore', _ignore_str(plan, slice), '--output', str(output_path)]
+    gitignore_args = ['--no-gitignore'] if any((pattern.startswith('.agent/') for pattern in slice.include)) else []
+    args = ['--style', 'xml', '--parsable-style', '--quiet', '--no-security-check', *gitignore_args, '--include-full-directory-structure', '--output-show-line-numbers', '--header-text', _slice_header(plan, slice, git, generated_at), '--include', ','.join(slice.include), '--ignore', _ignore_str(plan, slice), '--output', str(output_path)]
     name, size = _run_repomix(repomix_bin, output_path, plan, args, git, generated_at, log)
     warn = ' [yellow](large)[/yellow]' if size > LARGE_SLICE_BYTES else ''
     _emit(log, f'  [green]✓[/green] {name}.xml ([dim]{_fmt_bytes(size)}[/dim]){warn}')
@@ -228,7 +264,7 @@ def _run_compressed(repomix_bin: str, output_dir: Path, plan: RepoPlan, git: dic
     name, size = _run_repomix(repomix_bin, output_path, plan, args, git, generated_at, log)
     _emit(log, f'  [green]✓[/green] {output_path.name} ([dim]{_fmt_bytes(size)}[/dim])')
     return (name, size)
-_SCRATCHPAD_IGNORE = ('.git/**', '*.db', '*.db-journal', '*.db-wal', '*.db-shm', '*.lock', '*.pyc')
+_SCRATCHPAD_INCLUDE = ('.agent/scratch/*.md', '.agent/scratch/current/**/*.md', '.agent/scratch/research/**/*.md', '.agent/scratch/**/README.md', '.agent/scratch/**/INDEX.md', '.agent/scratch/**/*index*.md')
 
 def _run_scratchpad(repomix_bin: str, output_dir: Path, plan: RepoPlan, git: dict, generated_at: str, log: list[str] | None=None) -> tuple[str, int] | None:
     scratch_dir = plan.path / '.agent' / 'scratch'
@@ -238,7 +274,7 @@ def _run_scratchpad(repomix_bin: str, output_dir: Path, plan: RepoPlan, git: dic
         return None
     output_path = output_dir / f'{plan.name}-scratchpad.xml'
     header = '\n'.join((f'Project: {plan.name}', f'Source: {plan.path}/.agent/scratch/', 'Slice: scratchpad — working notes, debugging analysis, temporary reasoning', f'Generated: {generated_at}', f"Branch: {git['branch']} · Commit: {git['commit']} · Dirty: {git['dirty']}", 'Generated by chisel (lynchpin) via repomix.'))
-    args = ['--style', 'xml', '--parsable-style', '--quiet', '--no-security-check', '--no-gitignore', '--include-full-directory-structure', '--output-show-line-numbers', '--header-text', header, '--include', '.agent/scratch/**', '--ignore', ','.join(_SCRATCHPAD_IGNORE), '--output', str(output_path)]
+    args = ['--style', 'xml', '--parsable-style', '--quiet', '--no-security-check', '--no-gitignore', '--include-full-directory-structure', '--output-show-line-numbers', '--header-text', header, '--include', ','.join(_SCRATCHPAD_INCLUDE), '--output', str(output_path)]
     try:
         name, size = _run_repomix(repomix_bin, output_path, plan, args, git, generated_at, log)
     except MaterializationError as exc:
@@ -248,12 +284,211 @@ def _run_scratchpad(repomix_bin: str, output_dir: Path, plan: RepoPlan, git: dic
         raise
     _emit(log, f'  [green]✓[/green] {output_path.name} ([dim]{_fmt_bytes(size)}[/dim])')
     return (name, size)
+_STAT_KEYS = ('blanks', 'code', 'comments')
+
+def _glob_matches(rel_path: str, pattern: str) -> bool:
+    rel_path = rel_path.strip().lstrip('./')
+    pattern = pattern.strip().lstrip('./')
+    if not pattern:
+        return False
+    if fnmatch.fnmatchcase(rel_path, pattern):
+        return True
+    if pattern.endswith('/**'):
+        prefix = pattern[:-3].rstrip('/')
+        if not any((char in prefix for char in '*?[')):
+            return rel_path == prefix or rel_path.startswith(f'{prefix}/')
+    return False
+
+def _glob_any(rel_path: str, patterns: Sequence[str]) -> bool:
+    return any((_glob_matches(rel_path, pattern) for pattern in patterns))
+
+def _stats_buckets(plan: RepoPlan) -> tuple[StatsBucket, ...]:
+    if plan.stats_buckets:
+        return plan.stats_buckets
+    return tuple((StatsBucket(slice.name, slice.description, slice.include, slice.extra_ignore) for slice in plan.slices))
+
+def _classify_stats_bucket(plan: RepoPlan, rel_path: str) -> str:
+    rel_path = rel_path.strip().lstrip('./')
+    for bucket in _stats_buckets(plan):
+        if _glob_any(rel_path, bucket.extra_ignore):
+            continue
+        if _glob_any(rel_path, bucket.include):
+            return bucket.name
+    return 'other'
+
+def _empty_stats_bucket(description: str) -> dict[str, Any]:
+    return {'description': description, 'files': 0, 'blanks': 0, 'code': 0, 'comments': 0, 'lines': 0, 'languages': {}}
+
+def _add_stats(target: dict[str, Any], stats: dict[str, Any]) -> None:
+    for key in _STAT_KEYS:
+        target[key] += int(stats.get(key) or 0)
+    target['lines'] += sum((int(stats.get(key) or 0) for key in _STAT_KEYS))
+
+def _add_language_stats(bucket: dict[str, Any], language: str, stats: dict[str, Any], *, count_file: bool) -> None:
+    languages = bucket['languages']
+    entry = languages.setdefault(language, {'files': 0, 'blanks': 0, 'code': 0, 'comments': 0, 'lines': 0})
+    if count_file:
+        entry['files'] += 1
+    _add_stats(entry, stats)
+
+def _add_report_stats(bucket: dict[str, Any], language: str, stats: dict[str, Any]) -> None:
+    bucket['files'] += 1
+    _add_stats(bucket, stats)
+    _add_language_stats(bucket, language, stats, count_file=True)
+    for embedded_language, embedded_stats in (stats.get('blobs') or {}).items():
+        _add_stats(bucket, embedded_stats)
+        _add_language_stats(bucket, embedded_language, embedded_stats, count_file=False)
+
+def _tokei_exclude_args(plan: RepoPlan) -> list[str]:
+    args: list[str] = []
+    for pattern in (*DEFAULT_IGNORE, *plan.extra_ignore):
+        args.extend(['-e', pattern])
+    return args
+
+def _relative_tokei_report_name(plan: RepoPlan, name: str) -> str:
+    path = Path(name)
+    try:
+        return path.resolve().relative_to(plan.path.resolve()).as_posix()
+    except (OSError, ValueError):
+        return name.strip().lstrip('./')
+
+def _collect_tokei_stats(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
+    result = _run(['tokei', '--hidden', '--no-ignore', '--files', '--output', 'json', *_tokei_exclude_args(plan), '--', '.'], cwd=plan.path)
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or 'tokei failed').strip()
+        raise MaterializationError(plan.name, reason=details)
+    raw = json.loads(result.stdout)
+    bucket_descriptions = {bucket.name: bucket.description for bucket in _stats_buckets(plan)}
+    buckets = {name: _empty_stats_bucket(description) for name, description in bucket_descriptions.items()}
+    buckets['other'] = _empty_stats_bucket('Files not matched by the explicit attribution buckets')
+    files: list[dict[str, Any]] = []
+    for language, language_stats in raw.items():
+        if language == 'Total':
+            continue
+        for report in language_stats.get('reports') or []:
+            rel_path = _relative_tokei_report_name(plan, str(report.get('name', '')))
+            bucket_name = _classify_stats_bucket(plan, rel_path)
+            bucket = buckets.setdefault(bucket_name, _empty_stats_bucket(bucket_descriptions.get(bucket_name, '')))
+            stats = report.get('stats') or {}
+            _add_report_stats(bucket, language, stats)
+            files.append({'path': rel_path, 'bucket': bucket_name, 'language': language, 'blanks': int(stats.get('blanks') or 0), 'code': int(stats.get('code') or 0), 'comments': int(stats.get('comments') or 0), 'lines': sum((int(stats.get(key) or 0) for key in _STAT_KEYS))})
+    for bucket in buckets.values():
+        bucket['languages'] = dict(sorted(bucket['languages'].items(), key=lambda item: (-item[1]['lines'], item[0])))
+    return {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'buckets': dict(sorted(buckets.items(), key=lambda item: (999 if item[0] == 'other' else list(bucket_descriptions).index(item[0]) if item[0] in bucket_descriptions else 998, item[0]))), 'files': sorted(files, key=lambda row: (row['bucket'], row['path'])), 'rust_inline_tests': _rust_inline_test_stats(plan)}
+
+def _member_name(rel_path: str) -> str:
+    parts = rel_path.split('/')
+    if len(parts) >= 2 and parts[0] in {'crate', 'tests'}:
+        return f'{parts[0]}/{parts[1]}'
+    return parts[0] if parts else ''
+
+def _rust_inline_test_stats(plan: RepoPlan) -> dict[str, Any]:
+    by_member: dict[str, dict[str, Any]] = {}
+    largest: list[dict[str, Any]] = []
+    total_blocks = 0
+    total_lines = 0
+    total_files = 0
+    for path in sorted(plan.path.rglob('*.rs')):
+        try:
+            rel_path = path.relative_to(plan.path).as_posix()
+        except ValueError:
+            continue
+        if _glob_any(rel_path, (*DEFAULT_IGNORE, *plan.extra_ignore)):
+            continue
+        if '/src/' not in rel_path:
+            continue
+        lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        blocks = _rust_inline_test_blocks(lines)
+        if not blocks:
+            continue
+        file_lines = sum((block['lines'] for block in blocks))
+        total_files += 1
+        total_blocks += len(blocks)
+        total_lines += file_lines
+        member = _member_name(rel_path)
+        entry = by_member.setdefault(member, {'files': 0, 'blocks': 0, 'lines': 0})
+        entry['files'] += 1
+        entry['blocks'] += len(blocks)
+        entry['lines'] += file_lines
+        largest.append({'path': rel_path, 'blocks': len(blocks), 'lines': file_lines, 'file_lines': len(lines)})
+    return {'files': total_files, 'blocks': total_blocks, 'lines': total_lines, 'by_member': dict(sorted(by_member.items(), key=lambda item: (-item[1]['lines'], item[0]))), 'largest_files': sorted(largest, key=lambda row: (-row['lines'], row['path']))[:25], 'note': "These lines are inside #[cfg(test)] mod tests blocks in src files. They are counted by tokei in the owning source file's bucket because tokei is file-oriented, not Rust item-oriented."}
+
+def _rust_inline_test_blocks(lines: Sequence[str]) -> list[dict[str, int]]:
+    blocks: list[dict[str, int]] = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip().startswith('#[cfg(test'):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and (not lines[j].strip()):
+            j += 1
+        k = j
+        while k < len(lines) and (lines[k].strip().startswith('#[') or lines[k].strip().startswith('//')):
+            k += 1
+        if k >= len(lines) or 'mod tests' not in lines[k]:
+            i += 1
+            continue
+        start = i
+        if lines[k].strip().endswith(';'):
+            end = k
+        else:
+            depth = 0
+            seen_open = False
+            end = k
+            for n in range(k, len(lines)):
+                for char in lines[n]:
+                    if char == '{':
+                        depth += 1
+                        seen_open = True
+                    elif char == '}':
+                        depth -= 1
+                end = n
+                if seen_open and depth <= 0:
+                    break
+        blocks.append({'start_line': start + 1, 'end_line': end + 1, 'lines': end - start + 1})
+        i = end + 1
+    return blocks
+
+def _stats_markdown(plan: RepoPlan, stats: dict[str, Any]) -> str:
+    lines = [f'# {plan.name} tokei attribution stats', '', f"Generated: {stats['generated_at']}", f"Source: `{stats['source']}`", '', '## Buckets', '', '| Bucket | Files | Lines | Code | Comments | Blanks | Top languages |', '| --- | ---: | ---: | ---: | ---: | ---: | --- |']
+    for name, bucket in stats['buckets'].items():
+        top_languages = ', '.join((f"{language} {values['lines']:,}" for language, values in list(bucket['languages'].items())[:4]))
+        lines.append(f"| `{name}` | {bucket['files']:,} | {bucket['lines']:,} | {bucket['code']:,} | {bucket['comments']:,} | {bucket['blanks']:,} | {top_languages or '-'} |")
+    lines.extend(('', '## Inline Rust Tests', ''))
+    inline = stats.get('rust_inline_tests') or {}
+    if inline.get('blocks'):
+        lines.extend((f"- Files with inline test modules: {inline['files']:,}", f"- Inline `#[cfg(test)] mod tests` blocks: {inline['blocks']:,}", f"- Approximate inline test lines: {inline['lines']:,}", '', '| Member | Files | Blocks | Lines |', '| --- | ---: | ---: | ---: |'))
+        for member, values in list((inline.get('by_member') or {}).items())[:12]:
+            lines.append(f"| `{member}` | {values['files']:,} | {values['blocks']:,} | {values['lines']:,} |")
+        lines.extend(('', 'Largest inline-test source files:', '', '| File | Blocks | Inline lines | File lines |', '| --- | ---: | ---: | ---: |'))
+        for row in list(inline.get('largest_files') or [])[:12]:
+            lines.append(f"| `{row['path']}` | {row['blocks']:,} | {row['lines']:,} | {row['file_lines']:,} |")
+        lines.append('')
+    else:
+        lines.extend(('- No inline Rust test modules detected under `src/`.', ''))
+    lines.extend(('', '## Notes', '', '- Buckets are assigned by the first matching project-relative glob.', "- Embedded languages reported by tokei, such as fenced code in Markdown, are counted in the owning file's bucket.", '- The `other` bucket is intentionally explicit: it catches files outside the project-specific attribution model.', '- Inline Rust test modules are reported separately because tokei cannot split Rust source files by item.', ''))
+    return '\n'.join(lines)
+
+def _generate_tokei_stats(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None=None) -> tuple[list[str], int]:
+    if shutil.which('tokei') is None:
+        _emit(log, '  [yellow]⚠[/yellow] tokei stats skipped: tokei not found on PATH')
+        return ([], 0)
+    stats = _collect_tokei_stats(plan, generated_at)
+    json_path = out_dir / f'{plan.name}-tokei-stats.json'
+    md_path = out_dir / f'{plan.name}-tokei-stats.md'
+    json_path.write_text(json.dumps(stats, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    md_path.write_text(_stats_markdown(plan, stats), encoding='utf-8')
+    size = json_path.stat().st_size + md_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] tokei-stats ({_fmt_bytes(size)})')
+    return ([json_path.name, md_path.name], size)
 _github_context_lock = threading.Lock()
 _github_context_ready: bool | None = None
 _github_context_index: dict[tuple[str, str, str, str], list[Any]] | None = None
+_github_context_manifest: dict[str, Any] | None = None
 
 def _ensure_github_context_for_chisel(projects: set[str] | None=None) -> None:
-    global _github_context_index, _github_context_ready
+    global _github_context_index, _github_context_manifest, _github_context_ready
     with _github_context_lock:
         if _github_context_ready is True:
             return
@@ -261,7 +496,7 @@ def _ensure_github_context_for_chisel(projects: set[str] | None=None) -> None:
             raise MaterializationError('github_context', reason='GitHub context materialization already failed in this run')
         from ..ingest.github_context_materialize import materialize_github_context
         try:
-            materialize_github_context(projects=projects, progress=_print_live)
+            _github_context_manifest = materialize_github_context(projects=projects, progress=_print_live)
         except MaterializationError as exc:
             try:
                 _github_context_index = _build_github_context_index()
@@ -274,6 +509,25 @@ def _ensure_github_context_for_chisel(projects: set[str] | None=None) -> None:
         _github_context_index = _build_github_context_index()
         _github_context_ready = True
 
+def _github_context_summary() -> str:
+    manifest = _github_context_manifest or {}
+    if not manifest:
+        return 'existing product'
+    inventory = int(manifest.get('inventory_items_seen') or 0)
+    refreshed = int(manifest.get('detail_refreshes') or 0)
+    reused = int(manifest.get('detail_reuses') or 0)
+    missed = int(manifest.get('detail_misses') or 0)
+    fetched_refs = int(manifest.get('missing_commit_refs_fetched') or 0)
+    deferred_refs = int(manifest.get('missing_commit_refs_deferred') or 0)
+    parts = [f'{inventory} inventory', f'{refreshed} detail refresh', f'{reused} reused']
+    if missed:
+        parts.append(f'{missed} missed')
+    if fetched_refs or deferred_refs:
+        parts.append(f'{fetched_refs} commit refs fetched')
+    if deferred_refs:
+        parts.append(f'{deferred_refs} deferred')
+    return '; '.join(parts)
+
 def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
     if not any((plan.github_slug for plan in plans)):
         return
@@ -281,7 +535,7 @@ def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
     t0 = dt.datetime.now()
     _ensure_github_context_for_chisel({plan.name for plan in plans})
     elapsed = (dt.datetime.now() - t0).total_seconds()
-    _print_live(f'GitHub context: ready ({elapsed:.1f}s)')
+    _print_live(f'GitHub context: ready ({elapsed:.1f}s; {_github_context_summary()})')
 
 def _build_github_context_index() -> dict[tuple[str, str, str, str], list[Any]]:
     from .github_context import iter_github_context
@@ -356,6 +610,7 @@ def _prs_from_context_product(project: str, repo_slug: str, state: str, limit: i
         items = [*_github_context_items(project, repo_slug, 'pr', 'open', limit), *_github_context_items(project, repo_slug, 'pr', 'merged', limit)][:limit]
     else:
         items = _github_context_items(project, repo_slug, 'pr', state, limit)
+        items = [item for item in items if item.state == state]
     return [_github_pr_to_chisel_dict(item) for item in items]
 
 def _normalize_pr_data(prs: list[dict]) -> None:
@@ -427,9 +682,9 @@ def _generate_git_log(plan: RepoPlan, out_dir: Path, generated_at: str, log: lis
         count += 1
     root.set('count', str(count))
     ET.indent(root, space='  ')
-    out_path = out_dir / f'{plan.name}-git-log.xml'
+    out_path = out_dir / f'{plan.name}-git-log-all-refs.xml'
     out_path.write_text(ET.tostring(root, encoding='unicode', xml_declaration=True), encoding='utf-8')
-    _emit(log, f'  [dim]git-log: {count} commits[/dim]')
+    _emit(log, f'  [dim]git-log all-refs: {count} commits[/dim]')
     return count
 
 def _copy_extras(plan: RepoPlan, out_dir: Path, log: list[str] | None=None) -> int:
@@ -448,7 +703,7 @@ def _generate_portable_sidecars(plan: RepoPlan, out_dir: Path, log: list[str] | 
     """Write portable GPT-Pro sidecars absent from Chisel's XML surfaces."""
     sidecars: list[str] = []
     total_bytes = 0
-    bundle_path = out_dir / f'{plan.name}.bundle'
+    bundle_path = out_dir / f'{plan.name}-all-refs.bundle'
     bundle_lock = Path(f'{bundle_path}.lock')
     if bundle_lock.exists():
         bundle_lock.unlink()
@@ -501,6 +756,337 @@ def _repo_tree(root: Path, *, max_depth: int) -> str:
                 walk(child, depth + 1)
     walk(root, 1)
     return '\n'.join(rows) + '\n'
+_LOCAL_STATE_PATTERNS = ('.local/**', '.cache/**', '.lynchpin/**', '.claude/**', '.serena/**', '.playwright-mcp/**', '.pytest_cache/**', '.ruff_cache/**', '.mypy_cache/**', '.sinex/**', '.venv/**', 'venv/**', 'node_modules/**', 'target/**', 'test-results/**', 'playwright-report/**')
+_AGENT_ARCHIVE_PATTERNS = ('.agent/archive/**', '.agent/scratch/archive/**', '.agent/scratch/artifacts/**', '.agent/artifacts/**')
+_AGENT_TRANSIENT_PATTERNS = ('.agent/scratch/live-baselines/**', '.agent/scratch/live-dogfood-*', '.agent/scratch/inbox-imports/**', '.agent/scratch/logs/**', '.agent/xtask/*.jsonl', '.agent/task-history/*.jsonl')
+_AGENT_ACTIVE_CONTEXT_PATTERNS = ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.agent/conductor-devloop/**', '.agent/task-history/**', '.agent/cloud-prompts/**', '.agent/proposed_issue_set/**', '.agent/handoff/**', '.agent/tools/**', '.agent/learnings.local.md')
+_AGENT_DEMO_PATTERNS = ('.agent/demos/**', '.agent/devloops/**')
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
+    if name.endswith('-overview.json') or name.endswith('-overview.md'):
+        return ('overview', 'Human-oriented snapshot guide and triage summary')
+    if name.endswith('-all-refs.bundle'):
+        return ('all-refs', 'Git bundle containing all refs')
+    if name.endswith('-git-log-all-refs.xml'):
+        return ('all-refs', 'XML git log over all refs')
+    if name.endswith('-working-tree.tar.gz'):
+        return ('current-working-tree', 'Working-tree archive with uncommitted changes and local-state ignores')
+    if name.endswith('-branch-delta.patch'):
+        return ('current-branch', 'Patch for current HEAD against the remote default branch merge-base')
+    if name.endswith('-branch-delta-log.txt'):
+        return ('current-branch', 'Commit log for current HEAD against the remote default branch')
+    if name.endswith('-branch-delta-files.txt'):
+        return ('current-branch', 'Changed file list for current HEAD against the remote default branch')
+    if name.endswith('-branch-delta.md'):
+        return ('current-branch', 'Human-readable branch delta summary')
+    if name.endswith('-scratchpad.xml'):
+        return ('scratchpad', 'Repomix XML over .agent/scratch working notes')
+    if name.endswith('-issues-open.xml') or name.endswith('-issues-closed.xml'):
+        return ('github-context', 'Rendered GitHub issue context')
+    if name.endswith('-prs-open.xml') or name.endswith('-prs-merged.xml'):
+        return ('github-context', 'Rendered GitHub pull request context')
+    if name.endswith('-tokei-stats.json') or name.endswith('-tokei-stats.md'):
+        return ('current-working-tree', 'Tokei attribution stats by Chisel bucket')
+    if name.endswith('-ignore-audit.json') or name.endswith('-ignore-audit.md'):
+        return ('audit', 'Local-state ignore audit')
+    if name.endswith('-agent-audit.json') or name.endswith('-agent-audit.md'):
+        return ('audit', 'Agent workspace layout and prune-candidate audit')
+    if name.endswith('-repo-tree.txt'):
+        return ('current-working-tree', 'Shallow repository tree')
+    if name.endswith('-compressed.xml'):
+        return ('current-working-tree', 'Compressed repomix XML over configured slices')
+    if name.endswith('.xml') and name.startswith(f'{plan.name}-'):
+        slice_name = name.removeprefix(f'{plan.name}-').removesuffix('.xml')
+        return ('current-working-tree', f'Repomix XML slice: {slice_name}')
+    if name == f'{plan.name}-manifest.json':
+        return ('manifest', 'Per-project artifact manifest')
+    return ('sidecar', 'Generated Chisel sidecar')
+
+def _path_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    result = _run(['du', '-sb', str(path)])
+    if result.returncode == 0 and result.stdout.strip():
+        return int(result.stdout.split()[0])
+    return 0
+
+def _generate_ignore_audit(plan: RepoPlan, out_dir: Path, log: list[str] | None=None) -> tuple[list[str], int]:
+    entries: list[dict[str, Any]] = []
+    for child in sorted(plan.path.iterdir(), key=lambda p: p.name):
+        if not child.name.startswith('.') and child.name not in {'node_modules', 'target', 'test-results'}:
+            continue
+        rel = child.relative_to(plan.path).as_posix()
+        rel_probe = f'{rel}/' if child.is_dir() else rel
+        matched_patterns = [pattern for pattern in (*DEFAULT_IGNORE, *plan.extra_ignore) if _glob_matches(rel_probe, pattern) or _glob_matches(f'{rel}/x', pattern)]
+        local_state = [pattern for pattern in _LOCAL_STATE_PATTERNS if _glob_matches(rel_probe, pattern) or _glob_matches(f'{rel}/x', pattern)]
+        entries.append({'path': rel, 'kind': 'dir' if child.is_dir() else 'file', 'bytes': _path_size(child), 'ignored': bool(matched_patterns), 'local_state': bool(local_state), 'matched_patterns': matched_patterns[:8]})
+    audit = {'project': plan.name, 'source': str(plan.path), 'entries': entries, 'ignored_local_state_bytes': sum((e['bytes'] for e in entries if e['ignored'] and e['local_state'])), 'tracked_hidden_bytes': sum((e['bytes'] for e in entries if not e['ignored']))}
+    json_path = out_dir / f'{plan.name}-ignore-audit.json'
+    md_path = out_dir / f'{plan.name}-ignore-audit.md'
+    json_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    lines = [f'# {plan.name} ignore audit', '', f'Source: `{plan.path}`', '', '| Path | Ignored | Local state | Size | Matched patterns |', '| --- | ---: | ---: | ---: | --- |']
+    for entry in sorted(entries, key=lambda e: (-e['bytes'], e['path'])):
+        patterns = ', '.join((f'`{p}`' for p in entry['matched_patterns'][:4])) or '-'
+        lines.append(f"| `{entry['path']}` | {str(entry['ignored']).lower()} | {str(entry['local_state']).lower()} | {_fmt_bytes(entry['bytes'])} | {patterns} |")
+    lines.append('')
+    md_path.write_text('\n'.join(lines), encoding='utf-8')
+    size = json_path.stat().st_size + md_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] ignore-audit ({_fmt_bytes(size)})')
+    return ([json_path.name, md_path.name], size)
+
+def _agent_audit_class(rel: str) -> tuple[str, str]:
+    if _glob_any(rel, _AGENT_ARCHIVE_PATTERNS):
+        return ('archive-or-generated', 'Review for relocation outside .agent or leave excluded from Chisel')
+    if _glob_any(rel, _AGENT_TRANSIENT_PATTERNS):
+        return ('transient-heavy', 'Keep out of main context; summarize through manifests or generated reports')
+    if rel.startswith('.agent/scratch/'):
+        return ('scratchpad-managed', 'Covered by the scratchpad snapshot')
+    if _glob_any(rel, _AGENT_ACTIVE_CONTEXT_PATTERNS):
+        return ('active-context', 'Keep visible in agent/devloop Chisel slices')
+    if _glob_any(rel, _AGENT_DEMO_PATTERNS):
+        return ('demo-or-devloop', 'Keep segmented from instructions; prune bulky generated payloads case by case')
+    return ('review', 'Unclassified .agent surface; inspect before including broadly')
+
+def _agent_audit_rows(agent_dir: Path, repo_root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            rel = path.relative_to(repo_root).as_posix()
+        except ValueError:
+            return
+        if rel in seen:
+            return
+        seen.add(rel)
+        rel_probe = f'{rel}/' if path.is_dir() else rel
+        cls, recommendation = _agent_audit_class(rel_probe)
+        rows.append({'path': rel, 'kind': 'dir' if path.is_dir() else 'file', 'bytes': _path_size(path), 'files': sum((1 for child in path.rglob('*') if child.is_file())) if path.is_dir() else 1, 'class': cls, 'recommendation': recommendation})
+    for child in sorted(agent_dir.iterdir(), key=lambda p: p.name):
+        add(child)
+        if child.is_dir():
+            for grandchild in sorted(child.iterdir(), key=lambda p: p.name):
+                if grandchild.is_dir():
+                    add(grandchild)
+    return sorted(rows, key=lambda row: (-int(row['bytes']), row['path']))
+
+def _generate_agent_audit(plan: RepoPlan, out_dir: Path, log: list[str] | None=None) -> tuple[list[str], int]:
+    agent_dir = plan.path / '.agent'
+    if not agent_dir.exists():
+        return ([], 0)
+    rows = _agent_audit_rows(agent_dir, plan.path)
+    by_class: dict[str, dict[str, int]] = {}
+    for row in rows:
+        entry = by_class.setdefault(row['class'], {'bytes': 0, 'files': 0, 'entries': 0})
+        entry['bytes'] += int(row['bytes'])
+        entry['files'] += int(row['files'])
+        entry['entries'] += 1
+    audit = {'project': plan.name, 'source': str(agent_dir), 'summary_by_class': dict(sorted(by_class.items())), 'entries': rows}
+    json_path = out_dir / f'{plan.name}-agent-audit.json'
+    md_path = out_dir / f'{plan.name}-agent-audit.md'
+    json_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    lines = [f'# {plan.name} agent workspace audit', '', f'Source: `{agent_dir}`', '', 'This is a read-only audit. Chisel does not delete or move these files.', '', '## Summary', '', '| Class | Entries | Files | Size |', '| --- | ---: | ---: | ---: |']
+    for cls, entry in sorted(by_class.items(), key=lambda item: (-item[1]['bytes'], item[0])):
+        lines.append(f"| `{cls}` | {entry['entries']} | {entry['files']} | {_fmt_bytes(entry['bytes'])} |")
+    lines.extend(('', '## Largest Entries', '', '| Path | Class | Files | Size | Recommendation |', '| --- | --- | ---: | ---: | --- |'))
+    for row in rows[:40]:
+        lines.append(f"| `{row['path']}` | `{row['class']}` | {row['files']} | {_fmt_bytes(row['bytes'])} | {row['recommendation']} |")
+    lines.append('')
+    md_path.write_text('\n'.join(lines), encoding='utf-8')
+    size = json_path.stat().st_size + md_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] agent-audit ({_fmt_bytes(size)})')
+    return ([json_path.name, md_path.name], size)
+
+def _remote_default_ref(repo: Path) -> str:
+    symbolic = _run(['git', 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd=repo)
+    if symbolic.returncode == 0 and symbolic.stdout.strip():
+        return symbolic.stdout.strip()
+    for candidate in ('origin/master', 'origin/main'):
+        exists = _run(['git', 'rev-parse', '--verify', '--quiet', candidate], cwd=repo)
+        if exists.returncode == 0:
+            return candidate
+    return 'HEAD'
+
+def _generate_branch_delta(plan: RepoPlan, out_dir: Path, log: list[str] | None=None) -> tuple[list[str], int]:
+    base_ref = _remote_default_ref(plan.path)
+    if base_ref == 'HEAD':
+        md_path = out_dir / f'{plan.name}-branch-delta.md'
+        md_path.write_text(f'# {plan.name} branch delta\n\nNo remote default branch is configured for this checkout.\n', encoding='utf-8')
+        _emit(log, '  [dim]branch-delta: no remote default branch configured[/dim]')
+        return ([md_path.name], md_path.stat().st_size)
+    merge_base = _run(['git', 'merge-base', 'HEAD', base_ref], cwd=plan.path)
+    files: list[str] = []
+    if merge_base.returncode != 0 or not merge_base.stdout.strip():
+        md_path = out_dir / f'{plan.name}-branch-delta.md'
+        md_path.write_text(f'# {plan.name} branch delta\n\nUnable to determine merge-base for `{base_ref}`.\n', encoding='utf-8')
+        _emit(log, f'  [yellow]⚠[/yellow] branch-delta: merge-base unavailable for {base_ref}')
+        return ([md_path.name], md_path.stat().st_size)
+    base = merge_base.stdout.strip()
+    stat = _run(['git', 'diff', '--stat', f'{base}...HEAD'], cwd=plan.path)
+    diff = _run(['git', 'diff', '--binary', f'{base}...HEAD'], cwd=plan.path)
+    changed = _run(['git', 'diff', '--name-status', f'{base}...HEAD'], cwd=plan.path)
+    commits = _run(['git', 'log', '--oneline', '--decorate', f'{base}..HEAD'], cwd=plan.path)
+    outputs = {f'{plan.name}-branch-delta.patch': diff.stdout, f'{plan.name}-branch-delta-files.txt': changed.stdout, f'{plan.name}-branch-delta-log.txt': commits.stdout}
+    for name, content in outputs.items():
+        path = out_dir / name
+        path.write_text(content, encoding='utf-8')
+        files.append(path.name)
+    md_path = out_dir / f'{plan.name}-branch-delta.md'
+    md_path.write_text('\n'.join((f'# {plan.name} branch delta', '', f'Base ref: `{base_ref}`', f'Merge base: `{base}`', '', '## Diff Stat', '', '```text', stat.stdout.strip(), '```', '', '## Commits', '', '```text', commits.stdout.strip(), '```', '')), encoding='utf-8')
+    files.append(md_path.name)
+    size = sum(((out_dir / name).stat().st_size for name in files))
+    _emit(log, f'  [green]✓[/green] branch-delta vs {base_ref} ({_fmt_bytes(size)})')
+    return (files, size)
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _xml_declared_count(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return None
+    try:
+        return int(root.attrib.get('count') or len(list(root)))
+    except ValueError:
+        return len(list(root))
+
+def _artifact_rows(out_dir: Path, plan: RepoPlan) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted(out_dir.iterdir(), key=lambda item: item.name):
+        if not path.is_file():
+            continue
+        scope, purpose = _file_scope_and_purpose(plan, path.name)
+        rows.append({'name': path.name, 'bytes': path.stat().st_size, 'scope': scope, 'purpose': purpose})
+    return rows
+
+def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str, git: dict[str, str | bool], *, issues_open: int, issues_closed: int, prs_open: int, prs_merged: int, gitlog_commits: int, xml_errors: list[str], log: list[str] | None=None) -> tuple[list[str], int]:
+    artifacts = _artifact_rows(out_dir, plan)
+    stats = _read_json_file(out_dir / f'{plan.name}-tokei-stats.json')
+    agent_audit = _read_json_file(out_dir / f'{plan.name}-agent-audit.json')
+    ignore_audit = _read_json_file(out_dir / f'{plan.name}-ignore-audit.json')
+    large_artifacts = [row for row in sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True) if int(row['bytes']) >= LARGE_SLICE_BYTES][:12]
+    top_buckets = sorted((stats.get('buckets') or {}).items(), key=lambda item: int(item[1].get('lines') or 0), reverse=True)[:8]
+    agent_summary = agent_audit.get('summary_by_class') or {}
+    review_agent_entries = int((agent_summary.get('review') or {}).get('entries') or 0)
+    archive_agent_bytes = int((agent_summary.get('archive-or-generated') or {}).get('bytes') or 0)
+    ignored_local_state = int(ignore_audit.get('ignored_local_state_bytes') or 0)
+    tracked_hidden = int(ignore_audit.get('tracked_hidden_bytes') or 0)
+    branch_delta_patch = out_dir / f'{plan.name}-branch-delta.patch'
+    branch_delta_size = branch_delta_patch.stat().st_size if branch_delta_patch.exists() else 0
+    xml_snapshot_count = len(plan.slices) + int(plan.compressed) + 3
+    open_first = [f'{plan.name}-overview.md', f'{plan.name}-manifest.json', f'{plan.name}-prs-open.xml' if prs_open else None, f'{plan.name}-issues-open.xml' if issues_open else None, f'{plan.name}-branch-delta.md', f'{plan.name}-tokei-stats.md', f'{plan.name}-agent-audit.md' if agent_audit else None]
+    open_first = [item for item in open_first if item]
+    overview = {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'git': git, 'counts': {'configured_slices': len(plan.slices), 'xml_snapshots': xml_snapshot_count, 'artifacts': len(artifacts) + 3, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'open_issue_xml_count': _xml_declared_count(out_dir / f'{plan.name}-issues-open.xml'), 'open_pr_xml_count': _xml_declared_count(out_dir / f'{plan.name}-prs-open.xml')}, 'attention': {'xml_errors': xml_errors, 'large_artifacts': large_artifacts, 'agent_review_entries': review_agent_entries, 'agent_archive_or_generated_bytes': archive_agent_bytes, 'ignored_local_state_bytes': ignored_local_state, 'tracked_hidden_bytes': tracked_hidden, 'branch_delta_patch_bytes': branch_delta_size}, 'top_buckets': [{'name': name, 'files': bucket.get('files'), 'lines': bucket.get('lines'), 'code': bucket.get('code'), 'comments': bucket.get('comments')} for name, bucket in top_buckets], 'open_first': open_first}
+    json_path = out_dir / f'{plan.name}-overview.json'
+    md_path = out_dir / f'{plan.name}-overview.md'
+    json_path.write_text(json.dumps(overview, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    lines = [f'# {plan.name} Chisel overview', '', f'Generated: {generated_at}', f'Source: `{plan.path}`', f"Git: `{git.get('branch', '?')}` @ `{str(git.get('commit', ''))[:8]}` dirty={str(git.get('dirty', '?')).lower()}", '', '## Counts', '', '| Signal | Count |', '| --- | ---: |', f'| Configured slices | {len(plan.slices)} |', f'| XML snapshots | {xml_snapshot_count} |', f'| Artifacts | {len(artifacts) + 3} |', f'| Open issues | {issues_open} |', f'| Open PRs | {prs_open} |', f'| Merged PRs | {prs_merged} |', f'| All-ref git commits | {gitlog_commits} |', '', '## Open First', '']
+    lines.extend((f'- `{item}`' for item in open_first))
+    attention_lines: list[str] = []
+    if xml_errors:
+        attention_lines.append(f'- XML validation errors: {len(xml_errors)}')
+    if large_artifacts:
+        attention_lines.append(f'- Large artifacts >= {_fmt_bytes(LARGE_SLICE_BYTES)}: {len(large_artifacts)}')
+    if review_agent_entries:
+        attention_lines.append(f"- Agent audit has {review_agent_entries} unclassified review entr{('y' if review_agent_entries == 1 else 'ies')}.")
+    if archive_agent_bytes:
+        attention_lines.append(f'- Agent archive/generated surface: {_fmt_bytes(archive_agent_bytes)}.')
+    if ignored_local_state:
+        attention_lines.append(f'- Ignored local runtime state: {_fmt_bytes(ignored_local_state)}.')
+    if tracked_hidden:
+        attention_lines.append(f'- Tracked hidden files/directories: {_fmt_bytes(tracked_hidden)}.')
+    if branch_delta_size:
+        attention_lines.append(f'- Current branch delta patch: {_fmt_bytes(branch_delta_size)}.')
+    lines.extend(('', '## Attention', '', *(attention_lines or ['- No attention flags.'])))
+    lines.extend(('', '## Largest Artifacts', '', '| Artifact | Scope | Size |', '| --- | --- | ---: |'))
+    for row in sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True)[:12]:
+        lines.append(f"| `{row['name']}` | `{row['scope']}` | {_fmt_bytes(int(row['bytes']))} |")
+    lines.extend(('', '## Top Attribution Buckets', '', '| Bucket | Files | Lines | Code | Comments |', '| --- | ---: | ---: | ---: | ---: |'))
+    for name, bucket in top_buckets:
+        lines.append(f"| `{name}` | {int(bucket.get('files') or 0):,} | {int(bucket.get('lines') or 0):,} | {int(bucket.get('code') or 0):,} | {int(bucket.get('comments') or 0):,} |")
+    lines.append('')
+    md_path.write_text('\n'.join(lines), encoding='utf-8')
+    size = json_path.stat().st_size + md_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] overview ({_fmt_bytes(size)})')
+    return ([json_path.name, md_path.name], size)
+
+def _write_project_manifest(plan: RepoPlan, out_dir: Path, generated_at: str, git: dict[str, str | bool], xml_errors: list[str], log: list[str] | None=None) -> tuple[str, int]:
+    manifest_path = out_dir / f'{plan.name}-manifest.json'
+    artifacts = []
+    for path in sorted(out_dir.iterdir(), key=lambda p: p.name):
+        if not path.is_file():
+            continue
+        scope, purpose = _file_scope_and_purpose(plan, path.name)
+        artifacts.append({'name': path.name, 'bytes': path.stat().st_size, 'sha256': None if path == manifest_path else _sha256_file(path), 'scope': scope, 'purpose': purpose})
+    artifacts.append({'name': manifest_path.name, 'bytes': 0, 'sha256': None, 'scope': 'manifest', 'purpose': 'Per-project artifact manifest'})
+    manifest = {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'git': git, 'slices': [s.__dict__ for s in plan.slices], 'stats_buckets': [b.__dict__ for b in _stats_buckets(plan)], 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors, 'artifacts': artifacts}
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    manifest['artifacts'][-1]['bytes'] = manifest_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    size = manifest_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] {manifest_path.name} ({_fmt_bytes(size)})')
+    return (manifest_path.name, size)
+
+def _write_root_index(output_root: Path, plans: Sequence[RepoPlan], results: dict[str, Any], generated_at: str, repomix_version: str, total_elapsed: float) -> tuple[str, str]:
+    projects: list[dict[str, Any]] = []
+    for plan in plans:
+        manifest_path = output_root / plan.name / f'{plan.name}-manifest.json'
+        stats_path = output_root / plan.name / f'{plan.name}-tokei-stats.json'
+        overview_path = output_root / plan.name / f'{plan.name}-overview.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {}
+        stats = json.loads(stats_path.read_text(encoding='utf-8')) if stats_path.exists() else {}
+        overview = json.loads(overview_path.read_text(encoding='utf-8')) if overview_path.exists() else {}
+        artifacts = manifest.get('artifacts') or []
+        buckets = stats.get('buckets') or {}
+        projects.append({'name': plan.name, 'status': results.get(plan.name, {}).get('status', 'missing'), 'source': str(plan.path), 'git': manifest.get('git', results.get(plan.name, {}).get('git')), 'total_bytes': sum((int(a.get('bytes') or 0) for a in artifacts)), 'artifact_count': len(artifacts), 'largest_artifacts': sorted(artifacts, key=lambda artifact: int(artifact.get('bytes') or 0), reverse=True)[:10], 'buckets': buckets, 'inline_rust_tests': stats.get('rust_inline_tests'), 'overview': overview, 'manifest': str(manifest_path.relative_to(output_root)) if manifest_path.exists() else None, 'overview_markdown': f'{plan.name}/{plan.name}-overview.md' if (output_root / plan.name / f'{plan.name}-overview.md').exists() else None})
+    index = {'generated_at': generated_at, 'repomix_version': repomix_version, 'output_root': str(output_root), 'total_elapsed_s': total_elapsed, 'projects': projects}
+    json_path = output_root / 'index.json'
+    md_path = output_root / 'index.md'
+    json_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    lines = ['# Chisel Snapshot Index', '', f'Generated: {generated_at}', f'Repomix: `{repomix_version}`', f'Output root: `{output_root}`', '', '## Projects', '', '| Project | Status | Branch | Dirty | Open issues | Open PRs | Artifacts | Size | Overview | Manifest |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |']
+    for project in projects:
+        git = project.get('git') or {}
+        manifest_link = project['manifest'] or '-'
+        overview_link = project['overview_markdown'] or '-'
+        counts = (project.get('overview') or {}).get('counts') or {}
+        lines.append(f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | {str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | {counts.get('prs_open', 0)} | {project['artifact_count']} | {_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{manifest_link}` |")
+    lines.extend(('', '## Attention Summary', '', '| Project | Large artifacts | Agent review | Agent archive/generated | Branch delta |', '| --- | ---: | ---: | ---: | ---: |'))
+    for project in projects:
+        attention = (project.get('overview') or {}).get('attention') or {}
+        lines.append(f"| `{project['name']}` | {len(attention.get('large_artifacts') or [])} | {attention.get('agent_review_entries', 0)} | {_fmt_bytes(int(attention.get('agent_archive_or_generated_bytes') or 0))} | {_fmt_bytes(int(attention.get('branch_delta_patch_bytes') or 0))} |")
+    lines.extend(('', '## Largest Artifacts', ''))
+    for project in projects:
+        lines.extend((f"### {project['name']}", '', '| Artifact | Scope | Size |', '| --- | --- | ---: |'))
+        for artifact in project['largest_artifacts'][:8]:
+            lines.append(f"| `{artifact['name']}` | `{artifact['scope']}` | {_fmt_bytes(int(artifact['bytes']))} |")
+        lines.append('')
+    lines.extend(('## Attribution Buckets', ''))
+    for project in projects:
+        lines.extend((f"### {project['name']}", '', '| Bucket | Files | Lines | Code | Comments |', '| --- | ---: | ---: | ---: | ---: |'))
+        for name, bucket in (project.get('buckets') or {}).items():
+            lines.append(f"| `{name}` | {bucket['files']:,} | {bucket['lines']:,} | {bucket['code']:,} | {bucket['comments']:,} |")
+        inline = project.get('inline_rust_tests') or {}
+        if inline.get('blocks'):
+            lines.append(f"| `inline-rust-tests` | {inline['files']:,} | {inline['lines']:,} | n/a | n/a |")
+        lines.append('')
+    md_path.write_text('\n'.join(lines), encoding='utf-8')
+    return (json_path.name, md_path.name)
 
 def _make_combined_tar(plan: RepoPlan, out_dir: Path, output_root: Path, log: list[str] | None=None) -> tuple[str, int] | None:
     """Create a single tar of all files chisel generated for this project."""
@@ -515,19 +1101,21 @@ def _make_combined_tar(plan: RepoPlan, out_dir: Path, output_root: Path, log: li
     return None
 
 def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at: str, slice_workers: int) -> dict:
-    """Build all slices + compressed + issues + git-log for one repo."""
+    """Build all slices, current-tree sidecars, and all-refs git history for one repo."""
     log: list[str] = []
     if not plan.path.exists():
         return {'project': plan.name, 'status': 'missing', 'log_lines': [f'[bold]{plan.name}[/bold]  [red]missing[/red]  [dim]{plan.path}[/dim]']}
     t0 = dt.datetime.now()
     out_dir = output_root / plan.name
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     git = _git_state(plan.path)
-    planned_outputs = len(plan.slices) + int(plan.compressed) + 5
-    if plan.extra_copy:
-        planned_outputs += len(plan.extra_copy)
-    _emit(log, f"[bold]{plan.name}[/bold]  [dim]{plan.path}[/dim]  {git['branch']} @ {git['commit'][:8]}  [dim]{planned_outputs} planned outputs, {slice_workers} slice workers[/dim]")
-    _print_live(f"→ {plan.name}: start  {git['branch']} @ {git['commit'][:8]}  ({planned_outputs} outputs, {slice_workers} slice workers)")
+    planned_outputs = _planned_output_count(plan)
+    xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
+    sidecars = planned_outputs - xml_snapshots
+    _emit(log, f"[bold]{plan.name}[/bold]  [dim]{plan.path}[/dim]  {git['branch']} @ {git['commit'][:8]}  [dim]{len(plan.slices)} configured slices, {xml_snapshots} XML snapshots, {sidecars} sidecars, {slice_workers} slice workers[/dim]")
+    _print_live(f"→ {plan.name}: start  {git['branch']} @ {git['commit'][:8]}  ({xml_snapshots} XML + {sidecars} sidecars, {slice_workers} slice workers)")
     slices_done: list[tuple[str, int]] = []
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=slice_workers) as ex:
@@ -550,11 +1138,23 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         submit('issues', plan.name, _generate_issues, plan, out_dir, generated_at, log)
         submit('prs', plan.name, _generate_prs, plan, out_dir, generated_at, log)
         submit('sidecars', plan.name, _generate_portable_sidecars, plan, out_dir, log)
+        submit('tokei-stats', plan.name, _generate_tokei_stats, plan, out_dir, generated_at, log)
+        submit('ignore-audit', plan.name, _generate_ignore_audit, plan, out_dir, log)
+        submit('agent-audit', plan.name, _generate_agent_audit, plan, out_dir, log)
+        submit('branch-delta', plan.name, _generate_branch_delta, plan, out_dir, log)
         gitlog_commits = 0
         issues_open = issues_closed = 0
         prs_open = prs_merged = 0
         sidecars_done: list[str] = []
         sidecars_bytes = 0
+        stats_files_done: list[str] = []
+        stats_bytes = 0
+        audit_files_done: list[str] = []
+        audit_bytes = 0
+        agent_audit_files_done: list[str] = []
+        agent_audit_bytes = 0
+        delta_files_done: list[str] = []
+        delta_bytes = 0
         for future in as_completed(futures):
             kind, label = futures[future]
             try:
@@ -579,6 +1179,22 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
                     names, size = result
                     sidecars_done.extend(names)
                     sidecars_bytes += size
+                elif kind == 'tokei-stats':
+                    names, size = result
+                    stats_files_done.extend(names)
+                    stats_bytes += size
+                elif kind == 'ignore-audit':
+                    names, size = result
+                    audit_files_done.extend(names)
+                    audit_bytes += size
+                elif kind == 'agent-audit':
+                    names, size = result
+                    agent_audit_files_done.extend(names)
+                    agent_audit_bytes += size
+                elif kind == 'branch-delta':
+                    names, size = result
+                    delta_files_done.extend(names)
+                    delta_bytes += size
                 elapsed = (dt.datetime.now() - started).total_seconds()
                 _print_live(f'  ✓ {plan.name}: {kind} {label} ({elapsed:.1f}s)')
             except Exception as e:
@@ -595,17 +1211,20 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
     if xml_errors:
         for e in xml_errors:
             _emit(log, f'  [red]✗ XML invalid:[/red] {e}')
+    overview_files_done, overview_bytes = _generate_snapshot_overview(plan, out_dir, generated_at, git, issues_open=issues_open, issues_closed=issues_closed, prs_open=prs_open, prs_merged=prs_merged, gitlog_commits=gitlog_commits, xml_errors=xml_errors, log=log)
+    manifest_name, manifest_bytes = _write_project_manifest(plan, out_dir, generated_at, git, xml_errors, log)
     combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
     combined_tar_name = combined_tar_result[0] if combined_tar_result is not None else None
     combined_tar_bytes = combined_tar_result[1] if combined_tar_result is not None else 0
     elapsed = (dt.datetime.now() - t0).total_seconds()
-    total_bytes = sum((s[1] for s in slices_done)) + extra_bytes + sidecars_bytes
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
+    total_bytes = sum((path.stat().st_size for path in out_dir.iterdir() if path.is_file()))
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'stats_files': stats_files_done, 'audit_files': audit_files_done, 'agent_audit_files': agent_audit_files_done, 'delta_files': delta_files_done, 'overview_files': overview_files_done, 'manifest': manifest_name, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict[str, Any]:
-    global _github_context_index, _github_context_ready
+    global _github_context_index, _github_context_manifest, _github_context_ready
     _abort_event.clear()
     _github_context_index = None
+    _github_context_manifest = None
     _github_context_ready = None
     repomix_bin = _require_repomix()
     repomix_ver = _repomix_version(repomix_bin)
@@ -626,10 +1245,7 @@ def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_roo
     _print(f'Output: {output_root}')
     _print(f"Repos:  {len(plans)} selected — {', '.join((p.name for p in plans))}")
     _print(f'Pools:  {repo_workers} across repos × {slice_workers} within each; {DEFAULT_REPOMIX_WORKERS} global repomix slots')
-    _print('[dim]Scope:[/dim]')
-    for idx, plan in enumerate(plans, start=1):
-        planned_outputs = len(plan.slices) + int(plan.compressed) + 5 + len(plan.extra_copy)
-        _print(f'  [{idx}/{len(plans)}] {plan.name}: {len(plan.slices)} slices, {planned_outputs} planned outputs -> {output_root / plan.name}')
+    _print_scope(plans, output_root)
     _print()
     _ensure_chisel_prerequisites(plans)
     _print()
@@ -669,55 +1285,52 @@ def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_roo
     total_elapsed = round((dt.datetime.now() - t0).total_seconds(), 1)
     if _console is not None:
         table = Table(title=f'Chisel — {generated_at}', title_style='bold')
-        table.add_column('Project', style='bold')
-        table.add_column('Status')
-        table.add_column('Slices', justify='right')
-        table.add_column('Issues', justify='right')
-        table.add_column('GitLog', justify='right')
-        table.add_column('Size', justify='right')
-        table.add_column('Valid', justify='center')
-        table.add_column('Time', justify='right')
+        table.add_column('Repo', style='bold', no_wrap=True)
+        table.add_column('St', no_wrap=True)
+        table.add_column('Snap', justify='right', no_wrap=True)
+        table.add_column('Issues', justify='right', no_wrap=True)
+        table.add_column('PRs', justify='right', no_wrap=True)
+        table.add_column('Git', justify='right', no_wrap=True)
+        table.add_column('Size', justify='right', no_wrap=True)
+        table.add_column('Time', justify='right', no_wrap=True)
         total_bytes = 0
-        total_valid = 0
-        total_invalid = 0
         for plan in plans:
             r = results.get(plan.name, {})
             status = r.get('status', '?')
             color = 'green' if status == 'generated' else 'yellow' if status == 'partial' else 'red'
-            slices = r.get('slices', 0)
+            status_label = 'OK' if status == 'generated' else 'PART' if status == 'partial' else 'FAIL'
+            configured_slices = len(plan.slices)
+            xml_snapshots = r.get('slices', 0)
+            snapshots = f'{configured_slices}/{xml_snapshots}'
             issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c"
+            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m"
             commits = str(r.get('gitlog_commits', 0))
             size = r.get('total_bytes', 0)
             total_bytes += size
-            valid = r.get('xml_valid', True)
-            if valid:
-                total_valid += 1
-                valid_s = '[green]✓[/green]'
-            else:
-                total_invalid += 1
-                valid_s = '[red]✗[/red]'
             elapsed = f"{r.get('elapsed_s', 0):.1f}s"
-            table.add_row(plan.name, f'[{color}]{status}[/{color}]', str(slices), issues, commits, _fmt_bytes(size), valid_s, elapsed)
+            table.add_row(plan.name, f'[{color}]{status_label}[/{color}]', snapshots, issues, prs, commits, _fmt_bytes(size), elapsed)
         table.add_section()
-        valid_summary = f'[green]{total_valid}✓[/green]' if total_invalid == 0 else f'[green]{total_valid}✓[/green] [red]{total_invalid}✗[/red]'
-        table.add_row('[bold]TOTAL[/bold]', '', '', '', '', _fmt_bytes(total_bytes), valid_summary, f'{total_elapsed:.1f}s')
+        table.add_row('[bold]TOTAL[/bold]', '', '', '', '', '', _fmt_bytes(total_bytes), f'{total_elapsed:.1f}s')
         _console.print(table)
     else:
-        _print(f"\n{'Project':<22} {'Status':<12} {'Slices':>7} {'Issues':>12} {'GitLog':>8} {'Valid':>6} {'Size':>12} {'Time':>8}")
-        _print('-' * 95)
+        _print(f"\n{'Repo':<22} {'St':<5} {'Snap':>7} {'Issues':>12} {'PRs':>12} {'Git':>8} {'Size':>12} {'Time':>8}")
+        _print('-' * 100)
         total_bytes = 0
         for plan in plans:
             r = results.get(plan.name, {})
             status = r.get('status', '?')
-            slices = r.get('slices', 0)
+            status_label = 'OK' if status == 'generated' else 'PART' if status == 'partial' else 'FAIL'
+            configured_slices = len(plan.slices)
+            xml_snapshots = r.get('slices', 0)
+            snapshots = f'{configured_slices}/{xml_snapshots}'
             issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c"
+            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m"
             commits = str(r.get('gitlog_commits', 0))
             size = r.get('total_bytes', 0)
             total_bytes += size
-            valid = '✓' if r.get('xml_valid', True) else '✗'
             elapsed = f"{r.get('elapsed_s', 0)}s"
-            _print(f'{plan.name:<22} {status:<12} {slices:>7} {issues:>12} {commits:>8} {valid:>6} {_fmt_bytes(size):>12} {elapsed:>8}')
-        _print('-' * 95)
+            _print(f'{plan.name:<22} {status_label:<5} {snapshots:>7} {issues:>12} {prs:>12} {commits:>8} {_fmt_bytes(size):>12} {elapsed:>8}')
+        _print('-' * 100)
     all_xml_errors: list[str] = []
     for plan in plans:
         r = results.get(plan.name, {})
@@ -729,8 +1342,10 @@ def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_roo
             _print(xml_err)
     else:
         _print('\n[green]All XML outputs well-formed.[/green]')
+    index_json, index_md = _write_root_index(output_root, plans, results, generated_at, repomix_ver, total_elapsed)
+    _print(f'[green]Wrote root index:[/green] {index_json}, {index_md}')
     _print(f'[dim]Done. {output_root}[/dim]')
-    return {'generated_at': generated_at, 'output_root': str(output_root), 'repomix_version': repomix_ver, 'total_elapsed_s': total_elapsed, 'total_bytes': total_bytes, 'projects': results}
+    return {'generated_at': generated_at, 'output_root': str(output_root), 'repomix_version': repomix_ver, 'total_elapsed_s': total_elapsed, 'total_bytes': total_bytes, 'index': {'json': index_json, 'markdown': index_md}, 'projects': results}
 
 def _split_names(value: str) -> list[str] | None:
     names = [item for item in value.split() if item]

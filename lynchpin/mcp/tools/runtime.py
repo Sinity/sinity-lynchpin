@@ -12,6 +12,7 @@ from typing import Any
 
 from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
+from lynchpin.mcp.tools._utils import mcp_tool_registry_summary
 from lynchpin.mcp.tools._utils import registered_tool_names
 from lynchpin.ingest.materialization_status import (
     compact_materialization_status,
@@ -87,28 +88,25 @@ def mcp_runtime_status() -> dict[str, Any]:
 
 def mcp_surface_self_check() -> dict[str, Any]:
     """Check contract-declared MCP tools against the live registered tool set."""
-    from lynchpin.core.source_contracts import SOURCE_CONTRACTS
-
     status = mcp_runtime_status()
-    live = set(registered_tool_names())
-    declared = {
-        tool
-        for contract in SOURCE_CONTRACTS
-        for tool in contract.mcp_tools
-        if not tool.startswith("(")
-    }
-    missing = sorted(declared - live)
-    unmapped = sorted(live - declared)
+    registry = mcp_tool_registry_summary()
+    missing = list(registry["missing_declared"])
+    unexpected_unmapped = list(registry["unexpected_unmapped"])
     return {
         "runtime": status,
-        "declared_tool_count": len(declared),
-        "registered_tool_count": len(live),
+        "declared_tool_count": len(registry["declared"]),
+        "registered_tool_count": len(registry["registered"]),
+        "platform_tool_count": len(registry["platform"]),
         "missing_declared_tools": missing,
-        "registered_unmapped_tools": unmapped,
-        "ok": not missing,
+        "missing_platform_tools": list(registry["missing_platform"]),
+        "registered_platform_tools": list(registry["registered_platform"]),
+        "registered_unmapped_tools": list(registry["registered_unmapped"]),
+        "unexpected_unmapped_tools": unexpected_unmapped,
+        "module_summary": list(registry["module_summary"]),
+        "ok": not missing and not unexpected_unmapped,
         "restart_hint": (
-            "registered tools differ from source contracts; restart the MCP server after code changes"
-            if missing
+            "registered tools differ from source contracts/platform classification; restart the MCP server after code changes"
+            if missing or unexpected_unmapped
             else None
         ),
     }
@@ -192,12 +190,16 @@ def diagnostic_ledger_dependency_edges(
 
 @app.tool()
 def mcp_status(view: str = "runtime") -> dict[str, Any]:
-    """MCP server introspection. view: runtime (code path/git/substrate state), self_check (contract-declared vs live tools)."""
+    """MCP server introspection. view: runtime (code path/git/substrate state), self_check (contract-declared vs live tools), guide (compact routing guide)."""
     if view == "runtime":
         return mcp_runtime_status()
     if view == "self_check":
         return mcp_surface_self_check()
-    return {"error": f"unknown view {view!r}. choices: runtime, self_check"}
+    if view == "guide":
+        from lynchpin.mcp.tools.capability import mcp_guide
+
+        return mcp_guide()
+    return {"error": f"unknown view {view!r}. choices: runtime, self_check, guide"}
 
 
 @app.tool()

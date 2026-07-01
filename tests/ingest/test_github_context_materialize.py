@@ -191,6 +191,68 @@ def test_materialize_github_context_reuses_existing_closed_pr_details(monkeypatc
     assert rows[0]["review_comments"][0]["body"] == "kept inline"
 
 
+def test_materialize_github_context_reuses_existing_open_pr_details(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    output = tmp_path / "github" / "context.ndjson"
+    output.parent.mkdir()
+    existing = {
+        "project": "lynchpin",
+        "repo": "lynchpin",
+        "slug": "Sinity/lynchpin",
+        "kind": "pr",
+        "number": 7,
+        "title": "open pr",
+        "state": "open",
+        "url": "https://github.com/Sinity/lynchpin/pull/7",
+        "author": "Sinity",
+        "labels": [],
+        "body": "",
+        "comments": [],
+        "reviews": [],
+        "review_comments": [],
+        "updated_at": "2026-06-02T00:00:00+00:00",
+    }
+    output.write_text(json.dumps(existing) + "\n", encoding="utf-8")
+    detail_calls = 0
+
+    monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
+    monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
+    monkeypatch.setattr(
+        materializer,
+        "fetch_issue_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult("ok", "lynchpin", "Sinity/lynchpin", ()),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult(
+            "ok",
+            "lynchpin",
+            "Sinity/lynchpin",
+            (_inventory(kind="pr", number=7, state="open"),),
+        ),
+    )
+
+    def fetch_pr(path, number, **kwargs):
+        nonlocal detail_calls
+        detail_calls += 1
+        return None
+
+    monkeypatch.setattr(materializer, "fetch_pr", fetch_pr)
+
+    manifest = materializer.materialize_github_context(
+        output=output,
+        start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
+        end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert detail_calls == 0
+    assert manifest["detail_reuses"] == 1
+    assert rows[0]["state"] == "open"
+
+
 def test_materialize_github_context_hydrates_only_changed_inventory_rows(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     output = tmp_path / "github" / "context.ndjson"
