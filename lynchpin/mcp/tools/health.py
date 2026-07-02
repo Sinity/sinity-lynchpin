@@ -4,11 +4,21 @@ NOTE: do NOT add ``from __future__ import annotations`` here.
 FastMCP inspects annotations at decoration time and cannot handle postponed
 string annotations for tool parameters.
 """
-from typing import Any
-from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import best_materialized_refresh_id, ensure_substrate_materialized_for_read, half_open_date_window, json_safe as _json_safe, latest_materialized_refresh_id
 
-@app.tool()
+from typing import Any
+
+from lynchpin.mcp.tools._utils import (
+    best_materialized_refresh_id,
+    ensure_substrate_materialized_for_read,
+    half_open_date_window,
+    json_safe as _json_safe,
+    latest_materialized_refresh_id,
+)
+
+
+# ── E.3 Gap Draft ────────────────────────────────────────────────────────────
+
+
 def substrate_gap_draft() -> dict[str, Any]:
     """Read substrate_source_status and emit a tracker-issue draft (Arc E.3).
 
@@ -27,31 +37,87 @@ def substrate_gap_draft() -> dict[str, Any]:
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_source_gap_rows
-    ensure_substrate_materialized_for_read(caller='substrate_gap_draft')
-    with connect(substrate_path(), read_only=True) as conn:
-        refresh_id = latest_materialized_refresh_id(conn, caller='substrate_gap_draft')
-        if refresh_id is None:
-            return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
-        gaps = load_source_gap_rows(conn, refresh_id=refresh_id)
-        gap_list = [{'source': r[0], 'status': r[1], 'reason': r[2], 'row_count': r[3]} for r in gaps]
-        if not gap_list:
-            return {'needs_attention': False, 'draft_title': None, 'draft_body': None, 'gaps': [], 'all_sources_healthy': True}
-        draft_title = f'substrate: {len(gap_list)} source(s) unavailable or errored'
-        lines = [f'## Substrate gap report — {refresh_id}', '', f'{len(gap_list)} source(s) need attention:', '']
-        for g in gap_list:
-            lines.append(f"- **{g['source']}** — `{g['status']}`" + (f": {g['reason']}" if g['reason'] else ''))
-        lines.extend(['', '### Action', '', 'Run `substrate_readiness_report` to review, then:'])
-        for g in gap_list:
-            if g['source'] == 'pr_review':
-                lines.append('- `pr_review`: run `pr_review_topology` to generate `active_pr_review_topology.json`.')
-            elif g['source'] == 'symbols':
-                lines.append('- `symbols`: install tree-sitter grammars in the nix environment, then re-run `active_symbol_changes`.')
-            else:
-                lines.append(f"- `{g['source']}`: investigate — `{g.get('reason', 'unknown')}`")
-        return {'needs_attention': True, 'draft_title': draft_title, 'draft_body': '\n'.join(lines), 'gaps': gap_list, 'all_sources_healthy': False}
 
-@app.tool()
-def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
+    ensure_substrate_materialized_for_read(caller="substrate_gap_draft")
+
+    with connect(substrate_path(), read_only=True) as conn:
+        refresh_id = latest_materialized_refresh_id(conn, caller="substrate_gap_draft")
+        if refresh_id is None:
+            return {
+                "needs_attention": False,
+                "draft_title": None,
+                "draft_body": None,
+                "gaps": [],
+                "all_sources_healthy": True,
+            }
+
+        gaps = load_source_gap_rows(conn, refresh_id=refresh_id)
+
+        gap_list = [
+            {"source": r[0], "status": r[1], "reason": r[2], "row_count": r[3]}
+            for r in gaps
+        ]
+
+        if not gap_list:
+            return {
+                "needs_attention": False,
+                "draft_title": None,
+                "draft_body": None,
+                "gaps": [],
+                "all_sources_healthy": True,
+            }
+
+        draft_title = f"substrate: {len(gap_list)} source(s) unavailable or errored"
+        lines = [
+            f"## Substrate gap report — {refresh_id}",
+            "",
+            f"{len(gap_list)} source(s) need attention:",
+            "",
+        ]
+        for g in gap_list:
+            lines.append(
+                f"- **{g['source']}** — `{g['status']}`"
+                + (f": {g['reason']}" if g["reason"] else "")
+            )
+        lines.extend(
+            [
+                "",
+                "### Action",
+                "",
+                "Run `substrate_readiness_report` to review, then:",
+            ]
+        )
+        for g in gap_list:
+            if g["source"] == "pr_review":
+                lines.append(
+                    "- `pr_review`: run `pr_review_topology` to generate "
+                    "`active_pr_review_topology.json`."
+                )
+            elif g["source"] == "symbols":
+                lines.append(
+                    "- `symbols`: install tree-sitter grammars in the nix "
+                    "environment, then re-run `active_symbol_changes`."
+                )
+            else:
+                lines.append(
+                    f"- `{g['source']}`: investigate — `{g.get('reason', 'unknown')}`"
+                )
+
+        return {
+            "needs_attention": True,
+            "draft_title": draft_title,
+            "draft_body": "\n".join(lines),
+            "gaps": gap_list,
+            "all_sources_healthy": False,
+        }
+
+
+# ── M.17 SubstrateConfidenceMatrix ───────────────────────────────────────────
+
+
+def substrate_confidence_matrix(
+    refresh_id: str | None = None,
+) -> dict[str, Any]:
     """Per-dimension confidence scores for the substrate (Arc M.17).
 
     Aggregates across evidence_node metadata, substrate_source_status,
@@ -75,13 +141,93 @@ def substrate_confidence_matrix(refresh_id: str | None=None) -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import load_evidence_node_by_source, load_source_status_map
-    if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='substrate_confidence_matrix')
-    return {'refresh_id': refresh_id, 'dimensions': dimensions, 'summary': {'total_nodes': total_nodes, 'source_count': len(dimensions), 'healthy_source_count': healthy, 'confidence_pct': round(confidence, 1)}}
+    from lynchpin.substrate.readers_health import (
+        load_evidence_node_by_source,
+        load_source_status_map,
+    )
 
-@app.tool()
-def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
+    if refresh_id is None:
+        ensure_substrate_materialized_for_read(caller="substrate_confidence_matrix")
+
+    with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = best_materialized_refresh_id(conn, "evidence_node", caller="substrate_confidence_matrix")
+            if refresh_id is None:
+                return {"error": "no promote runs"}
+
+        dimensions = []
+        for row in load_evidence_node_by_source(conn, refresh_id=refresh_id):
+            dimensions.append(
+                {
+                    "source": row[0],
+                    "node_count": row[1],
+                    "project_count": row[2],
+                    "date_span_days": row[3],
+                    "has_caveats": bool(row[4]),
+                }
+            )
+
+        # Attach status from substrate_source_status. The evidence_node.source
+        # vocabulary uses graph-layer labels (terminal, web, git) while
+        # substrate_source_status uses the dataset-contract names (atuin,
+        # webhistory, etc.). Map between them so the matrix isn't half
+        # "unknown".
+        _evidence_to_status_source = {
+            "terminal": "atuin",
+            "web": "webhistory",
+            # "git" rolls up commit_fact + file_change_fact + symbol_change
+            # which all promote together; the closest dataset entry is
+            # evidence_graph_substrate (the stage that builds them).
+            "git": "evidence_graph_substrate",
+        }
+        # Sources internal to the evidence graph (analysis artifacts, github
+        # refs, raw_log entries, temporal proximity nodes, etc.) don't have a
+        # backing dataset in substrate_source_status; they're populated by
+        # the graph build itself.
+        _evidence_graph_internal = frozenset({
+            "analysis", "github_ref", "raw_log", "readiness",
+            "temporal",
+        })
+
+        status_map = {}
+        for srow in load_source_status_map(conn, refresh_id=refresh_id):
+            status_map[srow[0]] = srow[1]
+
+        for dim in dimensions:
+            source = dim["source"]
+            lookup = _evidence_to_status_source.get(source, source)
+            if lookup in status_map:
+                dim["status"] = status_map[lookup]
+            elif source in _evidence_graph_internal:
+                dim["status"] = "graph_internal"
+            else:
+                dim["status"] = "unknown"
+
+        total_nodes = sum(d["node_count"] for d in dimensions)
+        # graph_internal sources don't have a "could fail" state — they're
+        # emitter-controlled and always populate when the build runs. Count
+        # them as healthy so the confidence_pct isn't artificially deflated.
+        healthy = sum(1 for d in dimensions if d["status"] in {"ok", "graph_internal"})
+        confidence = (healthy / max(len(dimensions), 1)) * 100
+
+    return {
+        "refresh_id": refresh_id,
+        "dimensions": dimensions,
+        "summary": {
+            "total_nodes": total_nodes,
+            "source_count": len(dimensions),
+            "healthy_source_count": healthy,
+            "confidence_pct": round(confidence, 1),
+        },
+    }
+
+
+# ── K.1 Kind Audit ───────────────────────────────────────────────────────────
+
+
+def kind_audit(
+    refresh_id: str | None = None,
+) -> dict[str, Any]:
     """Source-label-vs-Lynchpin kind audit (Arc K.1).
 
     Reads ai_work_event.kind_* columns to surface agreement rates,
@@ -108,28 +254,63 @@ def kind_audit(refresh_id: str | None=None) -> dict[str, Any]:
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import load_ai_work_event_count, load_ai_work_event_disagreements, load_ai_work_event_per_kind_confidence, load_ai_work_event_source_distribution, load_ai_work_event_tier_distribution
+    from lynchpin.substrate.readers_health import (
+        load_ai_work_event_count,
+        load_ai_work_event_disagreements,
+        load_ai_work_event_per_kind_confidence,
+        load_ai_work_event_source_distribution,
+        load_ai_work_event_tier_distribution,
+    )
+
     if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='kind_audit')
+        ensure_substrate_materialized_for_read(caller="kind_audit")
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, 'ai_work_event', caller='kind_audit')
+            refresh_id = best_materialized_refresh_id(conn, "ai_work_event", caller="kind_audit")
             if refresh_id is None:
-                return {'error': 'no promote runs'}
+                return {"error": "no promote runs"}
+
         total = load_ai_work_event_count(conn, refresh_id=refresh_id)
+
         tiers = {}
         for r in load_ai_work_event_tier_distribution(conn, refresh_id=refresh_id):
-            tiers[r[0] or 'null'] = r[1]
+            tiers[r[0] or "null"] = r[1]
+
         sources = {}
         for r in load_ai_work_event_source_distribution(conn, refresh_id=refresh_id):
-            sources[r[0] or 'null'] = r[1]
+            sources[r[0] or "null"] = r[1]
+
         disagreements = load_ai_work_event_disagreements(conn, refresh_id=refresh_id)
         per_kind = load_ai_work_event_per_kind_confidence(conn, refresh_id=refresh_id)
-    disagree_count = sources.get('disagreement', 0)
-    return {'refresh_id': refresh_id, 'total': total, 'tier_distribution': tiers, 'source_distribution': sources, 'disagreement_rate': round(disagree_count / max(total, 1), 3), 'top_disagreements': [{'kind': r[0], 'source_kind': r[1], 'overlay_kind': r[2], 'count': r[3]} for r in disagreements], 'per_kind_confidence': [{'kind': r[0], 'count': r[1], 'avg_confidence': r[2]} for r in per_kind]}
 
-@app.tool()
-def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) -> dict[str, Any]:
+    disagree_count = sources.get("disagreement", 0)
+    return {
+        "refresh_id": refresh_id,
+        "total": total,
+        "tier_distribution": tiers,
+        "source_distribution": sources,
+        "disagreement_rate": round(disagree_count / max(total, 1), 3),
+        "top_disagreements": [
+            {"kind": r[0], "source_kind": r[1], "overlay_kind": r[2], "count": r[3]}
+            for r in disagreements
+        ],
+        "per_kind_confidence": [
+            {"kind": r[0], "count": r[1], "avg_confidence": r[2]} for r in per_kind
+        ],
+    }
+
+
+# ── M.11 Project-Relationship Graph ──────────────────────────────────────────
+
+
+# ── A.1 D.3 WorkPackageDurability ────────────────────────────────────────────
+
+
+def work_package_durability(
+    refresh_id: str | None = None,
+    min_symbols: int = 10,
+) -> dict[str, Any]:
     """Symbol survival at HEAD — which work packages persist? (Arc D.3)
 
     Self-joins symbol_change on qualified_name: symbols whose latest
@@ -153,48 +334,130 @@ def work_package_durability(refresh_id: str | None=None, min_symbols: int=10) ->
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import load_symbol_change_count, load_symbol_survival_by_project_day
+    from lynchpin.substrate.readers_health import (
+        load_symbol_change_count,
+        load_symbol_survival_by_project_day,
+    )
+
     if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='work_package_durability')
+        ensure_substrate_materialized_for_read(caller="work_package_durability")
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, 'symbol_change', caller='work_package_durability')
+            refresh_id = best_materialized_refresh_id(
+                conn,
+                "symbol_change",
+                caller="work_package_durability",
+            )
             if refresh_id is None:
-                return {'error': 'no promote runs'}
-        total = load_symbol_change_count(conn, refresh_id=refresh_id)
-        rows = load_symbol_survival_by_project_day(conn, refresh_id=refresh_id, min_symbols=min_symbols)
-        surviving_total = sum((r[3] for r in rows))
-        per_day = [{'project': r[0], 'date': _json_safe(r[1]), 'total': r[2], 'surviving': r[3], 'rate': round(r[3] / max(r[2], 1), 3)} for r in rows]
-    return {'refresh_id': refresh_id, 'total_symbols': total, 'surviving': surviving_total, 'overall_survival_rate': round(surviving_total / max(total, 1), 3), 'per_project_day': per_day}
+                return {"error": "no promote runs"}
 
-@app.tool()
-def evidence_confidence(refresh_id: str | None=None) -> list[dict[str, Any]]:
+        total = load_symbol_change_count(conn, refresh_id=refresh_id)
+        rows = load_symbol_survival_by_project_day(
+            conn, refresh_id=refresh_id, min_symbols=min_symbols
+        )
+
+        surviving_total = sum(r[3] for r in rows)
+
+        per_day = [
+            {
+                "project": r[0],
+                "date": _json_safe(r[1]),
+                "total": r[2],
+                "surviving": r[3],
+                "rate": round(r[3] / max(r[2], 1), 3),
+            }
+            for r in rows
+        ]
+
+    return {
+        "refresh_id": refresh_id,
+        "total_symbols": total,
+        "surviving": surviving_total,
+        "overall_survival_rate": round(surviving_total / max(total, 1), 3),
+        "per_project_day": per_day,
+    }
+
+
+# ── A.2 M.9 Frontier SLO Dashboard ───────────────────────────────────────────
+
+
+# ── B.4 Evidence Confidence Tiering ──────────────────────────────────────────
+
+
+def evidence_confidence(
+    refresh_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-source evidence confidence tiers (Phase B.4).
+
+    Computes confidence (high/medium/low) for each evidence source based on:
+    - Source inherent reliability: git > polylogue > activitywatch > raw-log
+    - Row count (more data = more confidence)
+    - Caveat presence (nodes with caveats are downgraded)
+
+    Parameters:
+        refresh_id: snapshot (default: latest).
+
+    Returns:
+        [{"source": str, "node_count": int, "caveated_pct": float,
+          "reliability_base": str, "confidence_tier": str}]
+    """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_evidence_node_source_caveats
-    RELIABILITY = {'git': 'high', 'polylogue': 'medium', 'terminal': 'medium', 'activitywatch': 'medium', 'github': 'medium', 'github_ref': 'medium', 'raw_log': 'low', 'analysis': 'low'}
+
+    RELIABILITY = {
+        "git": "high",
+        "polylogue": "medium",
+        "terminal": "medium",
+        "activitywatch": "medium",
+        "github": "medium",
+        "github_ref": "medium",
+        "raw_log": "low",
+        "analysis": "low",
+    }
+
     if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='evidence_confidence')
+        ensure_substrate_materialized_for_read(caller="evidence_confidence")
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, 'evidence_node', caller='evidence_confidence')
+            refresh_id = best_materialized_refresh_id(conn, "evidence_node", caller="evidence_confidence")
             if refresh_id is None:
                 return []
+
         rows = load_evidence_node_source_caveats(conn, refresh_id=refresh_id)
+
     results = []
     for r in rows:
-        base = RELIABILITY.get(r[0], 'low')
+        base = RELIABILITY.get(r[0], "low")
         caveat_pct = r[2] or 0.0
-        if caveat_pct > 20 and base == 'high':
-            tier = 'medium'
-        elif caveat_pct > 20 and base == 'medium':
-            tier = 'low'
+        # Downgrade if >20% of nodes have caveats
+        if caveat_pct > 20 and base == "high":
+            tier = "medium"
+        elif caveat_pct > 20 and base == "medium":
+            tier = "low"
         else:
             tier = base
-        results.append({'source': r[0], 'node_count': r[1], 'caveated_pct': caveat_pct, 'reliability_base': base, 'confidence_tier': tier})
+        results.append(
+            {
+                "source": r[0],
+                "node_count": r[1],
+                "caveated_pct": caveat_pct,
+                "reliability_base": base,
+                "confidence_tier": tier,
+            }
+        )
+
     return results
 
-@app.tool()
-def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) -> list[dict[str, Any]]:
+
+# ── B.5 Cross-Source Anomaly Detection ───────────────────────────────────────
+
+
+def source_anomalies(
+    refresh_id: str | None = None,
+    threshold_sigma: float = 2.0,
+) -> list[dict[str, Any]]:
     """Cross-source anomaly detection per project-day (Phase B.5).
 
     Flags project-days where one evidence dimension is anomalously
@@ -215,17 +478,24 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.readers_health import load_project_day_anomaly_rows
+
     if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='source_anomalies')
+        ensure_substrate_materialized_for_read(caller="source_anomalies")
+
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = best_materialized_refresh_id(conn, 'project_day_correlation', caller='source_anomalies')
+            refresh_id = best_materialized_refresh_id(conn, "project_day_correlation", caller="source_anomalies")
             if refresh_id is None:
                 return []
+
         rows = load_project_day_anomaly_rows(conn, refresh_id=refresh_id)
+
     if not rows:
         return []
+
+    # Per-project normalization: compute means/std per project, per dimension.
     from collections import defaultdict
+
     proj_commits: dict[str, list[int]] = defaultdict(list)
     proj_ai: dict[str, list[int]] = defaultdict(list)
     proj_focus: dict[str, list[float]] = defaultdict(list)
@@ -240,27 +510,88 @@ def source_anomalies(refresh_id: str | None=None, threshold_sigma: float=2.0) ->
         if len(vals) < 2:
             return 0.0
         mean = sum(vals) / len(vals)
-        std = (sum(((v - mean) ** 2 for v in vals)) / len(vals)) ** 0.5
+        std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
         return abs((val - mean) / std) if std > 0 else 0.0
+
     anomalies = []
     for r in rows:
         proj, d, commits, ai, focus_sec, src = r
         c_vals = proj_commits.get(proj, [])
         a_vals = proj_ai.get(proj, [])
         f_vals = proj_focus.get(proj, [])
+
         commit_z = _z(commits, c_vals)
         ai_z = _z(ai, a_vals)
         focus_z = _z(focus_sec or 0, f_vals)
+
         if commits > 0 and ai == 0:
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'commits_without_ai_event', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(commit_z, 3), 'detail': f'{commits} commits with 0 project-attributed AI work events; interpret as an attribution gap until ai_work_event.project coverage is healthy'})
-        if ai > 0 and commits == 0 and (ai_z > threshold_sigma):
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'ai_without_commits', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(ai_z, 3), 'detail': f"{ai} AI work events with 0 commits — exploration that didn't ship"})
+            anomalies.append(
+                {
+                    "project": proj,
+                    "date": _json_safe(d),
+                    "anomaly_type": "commits_without_ai_event",
+                    "commit_count": commits,
+                    "ai_count": ai,
+                    "focus_min": round((focus_sec or 0) / 60, 1),
+                    "source_count": src,
+                    "severity_z": round(commit_z, 3),
+                    "detail": (
+                        f"{commits} commits with 0 project-attributed AI work events; "
+                        "interpret as an attribution gap until ai_work_event.project "
+                        "coverage is healthy"
+                    ),
+                }
+            )
+        if ai > 0 and commits == 0 and ai_z > threshold_sigma:
+            anomalies.append(
+                {
+                    "project": proj,
+                    "date": _json_safe(d),
+                    "anomaly_type": "ai_without_commits",
+                    "commit_count": commits,
+                    "ai_count": ai,
+                    "focus_min": round((focus_sec or 0) / 60, 1),
+                    "source_count": src,
+                    "severity_z": round(ai_z, 3),
+                    "detail": f"{ai} AI work events with 0 commits — exploration that didn't ship",
+                }
+            )
         if (focus_sec or 0) > 0 and commits == 0:
-            anomalies.append({'project': proj, 'date': _json_safe(d), 'anomaly_type': 'focus_without_git', 'commit_count': commits, 'ai_count': ai, 'focus_min': round((focus_sec or 0) / 60, 1), 'source_count': src, 'severity_z': round(focus_z, 3), 'detail': f'{round((focus_sec or 0) / 60, 1)} focus-minutes with 0 commits — reading, debugging, planning, or delayed materialization'})
-    anomalies.sort(key=lambda a: (a['project'], a['date']))
+            anomalies.append(
+                {
+                    "project": proj,
+                    "date": _json_safe(d),
+                    "anomaly_type": "focus_without_git",
+                    "commit_count": commits,
+                    "ai_count": ai,
+                    "focus_min": round((focus_sec or 0) / 60, 1),
+                    "source_count": src,
+                    "severity_z": round(focus_z, 3),
+                    "detail": (
+                        f"{round((focus_sec or 0) / 60, 1)} focus-minutes with 0 commits — "
+                        "reading, debugging, planning, or delayed materialization"
+                    ),
+                }
+            )
+
+    anomalies.sort(key=lambda a: (a["project"], a["date"]))
     return anomalies
 
-def promote_analysis_product(title: str, path: str, refresh_id: str | None=None, dry_run: bool=False) -> dict[str, Any]:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase C — Beyond current data model
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── C.1 Narrative-as-Evidence ────────────────────────────────────────────────
+
+
+def promote_analysis_product(
+    title: str,
+    path: str,
+    refresh_id: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Register an analysis product as an evidence node (Phase C.1).
 
     Context packs, current-state reports, and narrative outputs are
@@ -279,22 +610,58 @@ def promote_analysis_product(title: str, path: str, refresh_id: str | None=None,
     import json as _json
     from datetime import datetime as _dt, timezone as _tz
     from lynchpin.substrate.connection import connect, substrate_path, apply_schema
+
     now = _dt.now(_tz.utc)
     node_id = f"analysis_product:{title.replace(' ', '_')}:{now.strftime('%Y%m%d')}"
+
     if dry_run:
-        return {'promoted': False, 'node_id': node_id, 'dry_run': True}
+        return {"promoted": False, "node_id": node_id, "dry_run": True}
+
     with connect(substrate_path(), read_only=False) as conn:
         apply_schema(conn)
         if refresh_id is None:
-            refresh_id = latest_materialized_refresh_id(conn, caller='adversarial_review')
+            refresh_id = latest_materialized_refresh_id(conn, caller="adversarial_review")
             if refresh_id is None:
-                return {'promoted': False, 'node_id': node_id, 'error': 'no promote runs'}
-        conn.execute('DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?', [refresh_id, node_id])
-        conn.execute("\n            INSERT INTO evidence_node (\n                refresh_id, id, kind, source, date, project,\n                summary, start_ts, end_ts, url, payload, provenance, caveats\n            ) VALUES (?, ?, 'analysis_product', 'analysis',\n                      CURRENT_DATE, NULL, ?, ?, ?, NULL, ?, NULL, '[]')\n        ", [refresh_id, node_id, title, now, now, _json.dumps({'title': title, 'path': path, 'generated_at': now.isoformat()})])
-    return {'promoted': True, 'node_id': node_id, 'dry_run': False}
+                return {
+                    "promoted": False,
+                    "node_id": node_id,
+                    "error": "no promote runs",
+                }
 
-@app.tool()
-def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -> dict[str, Any]:
+        conn.execute(
+            "DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?",
+            [refresh_id, node_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_node (
+                refresh_id, id, kind, source, date, project,
+                summary, start_ts, end_ts, url, payload, provenance, caveats
+            ) VALUES (?, ?, 'analysis_product', 'analysis',
+                      CURRENT_DATE, NULL, ?, ?, ?, NULL, ?, NULL, '[]')
+        """,
+            [
+                refresh_id,
+                node_id,
+                title,
+                now,
+                now,
+                _json.dumps(
+                    {"title": title, "path": path, "generated_at": now.isoformat()}
+                ),
+            ],
+        )
+
+    return {"promoted": True, "node_id": node_id, "dry_run": False}
+
+
+# ── C.2 Health Trend ─────────────────────────────────────────────────────────
+
+
+def health_trend(
+    refresh_id: str | None = None,
+    alert_threshold_pct: float = 10.0,
+) -> dict[str, Any]:
     """Substrate health trend across refresh snapshots (Phase C.2).
 
     Compares latest refresh with prior one; emits alert when confidence
@@ -310,32 +677,60 @@ def health_trend(refresh_id: str | None=None, alert_threshold_pct: float=10.0) -
          "gaps_current": int, "gaps_prior": int}
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import load_ordered_refresh_ids, load_source_status_by_refresh
+    from lynchpin.substrate.readers_health import (
+        load_ordered_refresh_ids,
+        load_source_status_by_refresh,
+    )
+
     if refresh_id is None:
-        ensure_substrate_materialized_for_read(caller='health_trend')
+        ensure_substrate_materialized_for_read(caller="health_trend")
+
     with connect(substrate_path(), read_only=True) as conn:
         refresh_ids = load_ordered_refresh_ids(conn)
+
     if len(refresh_ids) < 2:
-        return {'alert': False, 'detail': 'need 2+ refresh snapshots for trend', 'current': refresh_ids[-1] if refresh_ids else None, 'prior': None}
+        return {
+            "alert": False,
+            "detail": "need 2+ refresh snapshots for trend",
+            "current": refresh_ids[-1] if refresh_ids else None,
+            "prior": None,
+        }
+
     current = refresh_id or refresh_ids[-1]
     prior = refresh_ids[-2]
+
     with connect(substrate_path(), read_only=True) as conn:
 
         def _conf(rid: str) -> tuple[float, int]:
             rows = load_source_status_by_refresh(conn, refresh_id=rid)
             statuses = {r[0]: r[1] for r in rows}
             total = sum(statuses.values())
-            ok_count = statuses.get('ok', 0)
-            gaps = statuses.get('unavailable', 0) + statuses.get('error', 0)
-            return (ok_count / max(total, 1) * 100, gaps)
+            ok_count = statuses.get("ok", 0)
+            gaps = statuses.get("unavailable", 0) + statuses.get("error", 0)
+            return (ok_count / max(total, 1)) * 100, gaps
+
         conf_curr, gaps_curr = _conf(current)
         conf_prior, gaps_prior = _conf(prior)
         delta = conf_curr - conf_prior
         alert = delta < -alert_threshold_pct
-    return {'current': current, 'prior': prior, 'confidence_current': round(conf_curr, 1), 'confidence_prior': round(conf_prior, 1), 'delta': round(delta, 1), 'alert': alert, 'gaps_current': gaps_curr, 'gaps_prior': gaps_prior}
 
-@app.tool()
-def cleanup_period_detect(start: str, end: str, project: str | None=None) -> list[dict[str, Any]]:
+    return {
+        "current": current,
+        "prior": prior,
+        "confidence_current": round(conf_curr, 1),
+        "confidence_prior": round(conf_prior, 1),
+        "delta": round(delta, 1),
+        "alert": alert,
+        "gaps_current": gaps_curr,
+        "gaps_prior": gaps_prior,
+    }
+
+
+def cleanup_period_detect(
+    start: str,
+    end: str,
+    project: str | None = None,
+) -> list[dict[str, Any]]:
     """Detect likely squash-cleanup periods via AI messages/commit ratio.
 
     Identifies months where the messages-to-commits ratio is anomalously high
@@ -357,30 +752,57 @@ def cleanup_period_detect(start: str, end: str, project: str | None=None) -> lis
     """
     from datetime import date as _date_cls
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import load_commits_by_month, load_ai_messages_by_month
+    from lynchpin.substrate.readers_health import (
+        load_commits_by_month,
+        load_ai_messages_by_month,
+    )
+
     start_d = _date_cls.fromisoformat(start)
     end_d = _date_cls.fromisoformat(end)
-    ensure_substrate_materialized_for_read(caller='cleanup_period_detect', window=half_open_date_window(start_d, end_d))
+
+    ensure_substrate_materialized_for_read(
+        caller="cleanup_period_detect",
+        window=half_open_date_window(start_d, end_d),
+    )
+
     with connect(substrate_path(), read_only=True) as conn:
         commits_by_month: dict[str, int] = {}
         for row in load_commits_by_month(conn, start=start_d, end=end_d, project=project):
             commits_by_month[row[0]] = row[1]
+
         messages_by_month: dict[str, int] = {}
         for row in load_ai_messages_by_month(conn, start=start_d, end=end_d, project=project):
             if row[1]:
                 messages_by_month[row[0]] = int(row[1])
+
+    # Compute results
     all_months = sorted(set(commits_by_month.keys()) | set(messages_by_month.keys()))
     result: list[dict[str, Any]] = []
+
     for month in all_months:
         commit_count = commits_by_month.get(month, 0)
         ai_msgs = messages_by_month.get(month, 0)
         ratio = ai_msgs / max(1, commit_count)
         likely_cleanup = ratio > 5000
-        result.append({'year_month': month, 'commit_count': commit_count, 'ai_messages': ai_msgs, 'ratio': round(ratio, 1), 'likely_cleanup': likely_cleanup})
+
+        result.append({
+            "year_month": month,
+            "commit_count": commit_count,
+            "ai_messages": ai_msgs,
+            "ratio": round(ratio, 1),
+            "likely_cleanup": likely_cleanup,
+        })
+
     return result
 
-@app.tool()
-def health_daily_summary(start: str, end: str) -> list[dict[str, Any]]:
+
+# ── Health wearables direct query tools ──────────────────────────────────────
+
+
+def health_daily_summary(
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
     """All health signals per day from Samsung Health exports.
 
     Returns one row per date in [start, end] that has data. Fields include
@@ -395,14 +817,20 @@ def health_daily_summary(start: str, end: str) -> list[dict[str, Any]]:
     from dataclasses import asdict
     from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_health_summary
+
     try:
-        rows = list(daily_health_summary(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+        rows = list(daily_health_summary(
+            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+        ))
     except SourceUnavailableError:
         return []
     return [_json_safe(asdict(r)) for r in rows]
 
-@app.tool()
-def health_stress_detail(start: str, end: str) -> list[dict[str, Any]]:
+
+def health_stress_detail(
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
     """Daily stress summary (avg/min/max score, measurement count).
 
     Returns one row per date in [start, end] that has stress data.
@@ -415,14 +843,20 @@ def health_stress_detail(start: str, end: str) -> list[dict[str, Any]]:
     from dataclasses import asdict
     from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_stress
+
     try:
-        rows = list(daily_stress(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+        rows = list(daily_stress(
+            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+        ))
     except SourceUnavailableError:
         return []
     return [_json_safe(asdict(r)) for r in rows]
 
-@app.tool()
-def health_heart_rate_detail(start: str, end: str) -> list[dict[str, Any]]:
+
+def health_heart_rate_detail(
+    start: str,
+    end: str,
+) -> list[dict[str, Any]]:
     """Daily heart rate summary (avg/min/max BPM and resting HR).
 
     Returns one row per date in [start, end] that has HR data.
@@ -435,14 +869,21 @@ def health_heart_rate_detail(start: str, end: str) -> list[dict[str, Any]]:
     from dataclasses import asdict
     from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import daily_heart_rate
+
     try:
-        rows = list(daily_heart_rate(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+        rows = list(daily_heart_rate(
+            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+        ))
     except SourceUnavailableError:
         return []
     return [_json_safe(asdict(r)) for r in rows]
 
-@app.tool()
-def health_hrv_trend(start: str, end: str, metric: str='rmssd') -> list[dict[str, Any]]:
+
+def health_hrv_trend(
+    start: str,
+    end: str,
+    metric: str = "rmssd",
+) -> list[dict[str, Any]]:
     """Raw HRV measurements for trend analysis (SDNN or RMSSD).
 
     Returns per-measurement rows within [start, end]. Each row has timestamp,
@@ -458,16 +899,21 @@ def health_hrv_trend(start: str, end: str, metric: str='rmssd') -> list[dict[str
     from dataclasses import asdict
     from lynchpin.core.errors import SourceUnavailableError
     from lynchpin.sources.health import hrv_measurements
-    valid_metrics = {'rmssd', 'sdnn'}
-    primary_field = f'{metric.lower()}_avg' if metric.lower() in valid_metrics else 'rmssd_avg'
+
+    valid_metrics = {"rmssd", "sdnn"}
+    primary_field = f"{metric.lower()}_avg" if metric.lower() in valid_metrics else "rmssd_avg"
+
     try:
-        rows = list(hrv_measurements(start=_date.fromisoformat(start), end=_date.fromisoformat(end)))
+        rows = list(hrv_measurements(
+            start=_date.fromisoformat(start), end=_date.fromisoformat(end)
+        ))
     except SourceUnavailableError:
         return []
+
     result = []
     for r in rows:
         d = _json_safe(asdict(r))
-        d['primary_metric'] = metric.lower() if metric.lower() in valid_metrics else 'rmssd'
-        d['primary_value'] = d.get(primary_field)
+        d["primary_metric"] = metric.lower() if metric.lower() in valid_metrics else "rmssd"
+        d["primary_value"] = d.get(primary_field)
         result.append(d)
     return result

@@ -26,7 +26,7 @@ def test_collapsed_public_mcp_surface_has_eight_tools(
     assert "personal_daily_signals" not in tools
 
 
-def test_legacy_modules_remain_importable_but_do_not_register_tools(
+def test_internal_modules_remain_importable_but_do_not_register_tools(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -69,7 +69,7 @@ def test_lynchpin_status_self_check_reports_public_metadata(
     assert data["unexpected_tools"] == []
 
 
-def test_lynchpin_catalog_exposes_actions_and_legacy_map(
+def test_lynchpin_catalog_exposes_actions_without_retired_routes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,7 +77,7 @@ def test_lynchpin_catalog_exposes_actions_and_legacy_map(
 
     from lynchpin.mcp.tools.public import lynchpin_catalog
 
-    result = lynchpin_catalog(include_schema=True, include_legacy_map=True)
+    result = lynchpin_catalog(include_schema=True)
 
     assert result["ok"] is True
     data = result["data"]
@@ -90,8 +90,12 @@ def test_lynchpin_catalog_exposes_actions_and_legacy_map(
         "ai_backfill",
         "prune",
     }
-    assert data["legacy_map"]["query_substrate"]["tool"] == "lynchpin_query"
-    assert data["legacy_map"]["machine_metrics"]["tool"] == "lynchpin_machine"
+    assert tools["lynchpin_catalog"]["actions"][0]["name"] == "catalog"
+    assert tools["lynchpin_query"]["actions"][0]["parameters"]
+    assert tools["lynchpin_project"]["actions"][-1]["views"] == ["status", "runs", "slices", "audit"]
+    assert "old_route_map" not in data
+    assert all("retired_tools" not in tool for tool in data["tools"])
+    assert all("retired_mcp_tools" not in row for row in data["source_contracts"])
     assert data["query_entities"]["commits"] == "commit_fact"
     assert data["source_contracts"]
 
@@ -113,7 +117,7 @@ def test_lynchpin_status_runtime_wraps_existing_status(
     assert result["data"]["substrate"]["path"].endswith("substrate.duckdb")
 
 
-def test_lynchpin_ops_materialize_dry_run_uses_manual_budget(
+def test_lynchpin_ops_materialize_dry_run_uses_explicit_inspection_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

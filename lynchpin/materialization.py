@@ -391,7 +391,7 @@ def plan_materializations(
     cfg: LynchpinConfig | None = None,
     force: bool = False,
 ) -> list[MaterializationPlanStep]:
-    """Return the deterministic local materialization plan."""
+    """Return the deterministic transparent materialization plan."""
     cfg = cfg or get_config()
     materializers = _materializers()
     steps: list[MaterializationPlanStep] = []
@@ -399,7 +399,7 @@ def plan_materializations(
         contract = source_contract(row.name)
         if row.name not in materializers:
             action = "check-only"
-            reason = "no local materializer is defined for this contract"
+            reason = "no transparent materializer is defined for this contract"
         elif force or row.status != "ready":
             action = "materialize"
             reason = row.reason
@@ -466,13 +466,13 @@ def run_materialization_plan(
 
 
 def run_materializer_by_name(name: str) -> dict[str, Any]:
-    """Run one registered local materializer by source/product name."""
+    """Run one registered transparent materializer by source/product name."""
 
     materializers = _materializers()
     if name not in materializers:
         raise MaterializationError(
             name,
-            reason="no local materializer is defined for this contract",
+            reason="no transparent materializer is defined for this contract",
         )
     report = _run_materializer(materializers[name], window=None)
     return report if isinstance(report, dict) else {"result": report}
@@ -502,7 +502,7 @@ def ensure_materialized(
     """Ensure one source/product is materialized enough for a read path.
 
     This function is intentionally not a queueing API. It either proves the
-    current product is usable, runs a local materializer directly when the
+    current product is usable, runs a transparent materializer directly when the
     source contract says that is valid, or reports why Lynchpin cannot advance
     the product locally.
     """
@@ -533,7 +533,7 @@ def ensure_materialized(
             window=window,
         )
 
-    if contract.materialization_mode == "manual":
+    if contract.materialization_mode == "external":
         return _materialization_result(
             before,
             status="manual",
@@ -559,7 +559,7 @@ def ensure_materialized(
             before,
             status="blocked",
             changed=False,
-            reason="no local materializer is defined for this contract",
+            reason="no transparent materializer is defined for this contract",
             started=started,
             window=window,
         )

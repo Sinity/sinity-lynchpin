@@ -7,7 +7,6 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
 
@@ -25,7 +24,6 @@ def _validate_repo(repo: str) -> str | None:
     return None
 
 
-@app.tool()
 def repo_names() -> list[dict[str, Any]]:
     """List all known git repositories with their paths and branch info."""
     from dataclasses import asdict
@@ -34,7 +32,6 @@ def repo_names() -> list[dict[str, Any]]:
     return [_json_safe(asdict(r)) for r in repos()]
 
 
-@app.tool()
 def repo_language_stats(repo: str) -> dict[str, Any]:
     """Language breakdown for a repository via tokei.
 
@@ -60,7 +57,6 @@ def repo_language_stats(repo: str) -> dict[str, Any]:
     return _json_safe(d)
 
 
-@app.tool()
 def repo_file_list(
     repo: str,
     tracked_only: bool = True,
@@ -98,7 +94,6 @@ def repo_file_list(
     }
 
 
-@app.tool()
 def repo_recent_commits(
     repo: str,
     limit: int = 20,

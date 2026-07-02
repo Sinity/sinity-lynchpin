@@ -7,7 +7,6 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     dataclass_to_json_dict,
@@ -98,7 +97,6 @@ def review_bottlenecks(
     ]
 
 
-@app.tool()
 def review(
     view: str = "rows",
     projects: list[str] | None = None,

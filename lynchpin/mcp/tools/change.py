@@ -7,7 +7,6 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     ensure_substrate_materialized_for_read,
@@ -110,7 +109,6 @@ def file_hotspots(
     ]
 
 
-@app.tool()
 def code_history_claims(
     start: str,
     end: str,
@@ -172,7 +170,6 @@ def conventional_commits(
     return [{"project": r[0], "kind": r[1], "count": r[2], "pct": r[3]} for r in rows]
 
 
-@app.tool()
 def ai_tool_usage(
     start: str | None = None,
     end: str | None = None,
@@ -342,7 +339,6 @@ def symbol_churn_hotspots(
     return [{"path": r[0], "symbols": r[1], "commits": r[2], "changes": r[3], "projects": r[4]} for r in rows]
 
 
-@app.tool()
 def code_hotspots(
     view: str = "files",
     top_n: int = 20,
@@ -360,7 +356,6 @@ def code_hotspots(
     return {"error": f"unknown view {view!r}. choices: files, symbols, refactors"}
 
 
-@app.tool()
 def commit_analysis(
     view: str = "conventional",
     project: str | None = None,

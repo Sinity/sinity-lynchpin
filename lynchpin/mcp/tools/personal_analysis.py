@@ -7,13 +7,11 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import _analysis_artifact
 
 _MISSING = {"summary": {"status": "missing"}}
 
 
-@app.tool()
 def anomaly_crossref_report(signal: str | None = None) -> dict[str, Any]:
     """Read the cross-source anomaly correlation report.
 
@@ -48,7 +46,6 @@ def anomaly_crossref_report(signal: str | None = None) -> dict[str, Any]:
     return result
 
 
-@app.tool()
 def life_phase_report(phase: str | None = None) -> dict[str, Any]:
     """Read the multi-signal life-phase boundary detection report.
 
@@ -81,7 +78,6 @@ def life_phase_report(phase: str | None = None) -> dict[str, Any]:
     return result
 
 
-@app.tool()
 def productivity_predictors_report() -> dict[str, Any]:
     """Read the productivity predictors report.
 
@@ -105,7 +101,6 @@ def productivity_predictors_report() -> dict[str, Any]:
     return result
 
 
-@app.tool()
 def substance_health_report(substance: str | None = None, signal: str | None = None) -> dict[str, Any]:
     """Read the substance × health lag-correlation report.
 
@@ -138,7 +133,6 @@ def substance_health_report(substance: str | None = None, signal: str | None = N
     return result
 
 
-@app.tool()
 def burnout_warning_report() -> dict[str, Any]:
     """Read the burnout-warning analysis report.
 
@@ -162,7 +156,6 @@ def burnout_warning_report() -> dict[str, Any]:
     return result
 
 
-@app.tool()
 def ai_session_efficiency_report(project: str | None = None) -> dict[str, Any]:
     """Read the AI session efficiency analysis report.
 

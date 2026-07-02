@@ -153,7 +153,7 @@ def _ensure_coverage_materializations(
             continue
         if contract.collection_model in {"metadata", "stage"}:
             continue
-        if contract.materialization_mode != "local":
+        if contract.materialization_mode != "transparent":
             continue
         result = ensure_materialized(name, window=(start, end), budget="inline", cfg=cfg)
         changed = changed or result.changed

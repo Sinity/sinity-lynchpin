@@ -951,8 +951,8 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
             "validation_issue_count": 1,
             "promotion_issue_count": 0,
             "controlled_run_invalid_count": 0,
-            "legacy_observational_count": 1,
-            "by_kind": {"executed_run": 1, "legacy_or_ad_hoc_run": 1},
+            "ad_hoc_observational_count": 1,
+            "by_kind": {"executed_run": 1, "ad_hoc_run": 1},
             "diagnostics": [
                 {
                     "relative_path": "grp1/runs/run1/manifest.json",
@@ -962,8 +962,8 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
                     "issues": [],
                 },
                 {
-                    "relative_path": "legacy/manifest.json",
-                    "manifest_kind": "legacy_or_ad_hoc_run",
+                    "relative_path": "ad_hoc/manifest.json",
+                    "manifest_kind": "ad_hoc_run",
                     "source_loadable": True,
                     "controlled_benchmark_valid": False,
                     "issues": ["missing measurement_context"],
@@ -1398,7 +1398,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     status = machine_status()
     assert status["artifacts"]["available"] == 13
     assert status["support"]["natural_experiment"] == 1
-    assert status["experiment_manifests"]["legacy_observational_count"] == 1
+    assert status["experiment_manifests"]["ad_hoc_observational_count"] == 1
     assert status["claims"]["by_support_level"] == {"insufficient": 1, "natural_experiment": 1}
     assert status["measurement"]["by_status"] == {"passed": 1}
     assert status["assumptions"]["by_status"] == {"failed": 1, "passed": 1}

@@ -468,14 +468,14 @@ def test_webhistory_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> Non
     assert "schema is older" in row.reason
 
 
-def test_local_continuous_materializers_accept_windows() -> None:
+def test_transparent_continuous_materializers_accept_windows() -> None:
     from lynchpin import materialization
     from lynchpin.core.source_contracts import source_contract
 
     offenders = []
     for name, fn in materialization._materializers().items():
         contract = source_contract(name)
-        if contract.materialization_mode != "local" or contract.collection_model != "continuous":
+        if contract.materialization_mode != "transparent" or contract.collection_model != "continuous":
             continue
         params = inspect.signature(fn).parameters
         if "start" not in params or "end" not in params:
@@ -957,11 +957,7 @@ def test_analysis_artifacts_dataset_reports_generated_products(tmp_path) -> None
     assert row.row_count == 1
     assert row.first_date is None
     assert row.last_date is None
-    assert row.to_json()["mcp_tools"] == [
-        "analysis_artifact_status",
-        "analysis_artifact_inventory",
-        "read_analysis_artifact",
-    ]
+    assert row.to_json()["mcp_tools"] == ["lynchpin_catalog", "lynchpin_status", "lynchpin_ops"]
 
 
 def test_keylog_analysis_dataset_reports_artifact_coverage(monkeypatch, tmp_path) -> None:
@@ -1168,7 +1164,7 @@ def test_github_context_audit_marks_old_schema_partial(monkeypatch, tmp_path) ->
     assert "schema is older" in row.reason
 
 
-def test_materialization_contract_names_have_explicit_local_materializer_policy() -> None:
+def test_materialization_contract_names_have_explicit_transparent_materializer_policy() -> None:
     from lynchpin.core.source_contracts import SOURCE_CONTRACT_NAMES
     from lynchpin.core.source_contracts import source_contract
     from lynchpin.materialization import _dataset_builders, _materializers
@@ -1178,7 +1174,7 @@ def test_materialization_contract_names_have_explicit_local_materializer_policy(
     executable_contract_names = {
         name
         for name in materializer_names
-        if source_contract(name).materialization_mode in {"local", "derived"}
+        if source_contract(name).materialization_mode in {"transparent", "derived"}
     }
 
     assert builder_names == set(SOURCE_CONTRACT_NAMES)
@@ -3174,7 +3170,7 @@ def test_ensure_materialized_substrate_blocks_out_of_window_snapshot(monkeypatch
     assert result.status == "blocked"
     assert result.changed is False
     assert result.coverage["fully_covers_requested_window"] is False
-    assert "no local materializer" in result.reason
+    assert "no transparent materializer" in result.reason
 
 
 def test_ensure_materialized_derived_without_bounds_runs_materializer(monkeypatch) -> None:
@@ -3261,7 +3257,7 @@ def test_ensure_materialized_substrate_without_bounds_blocks_windowed_read(monke
 
     assert result.status == "blocked"
     assert result.coverage["relation"] == "undated"
-    assert "no local materializer" in result.reason
+    assert "no transparent materializer" in result.reason
 
 
 def test_ensure_materialized_forwards_window_to_window_aware_materializer(monkeypatch) -> None:

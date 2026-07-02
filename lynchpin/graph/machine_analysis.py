@@ -1169,7 +1169,7 @@ def _add_machine_manifest_diagnostic_nodes(
             "validation_issue_count",
             "promotion_issue_count",
             "controlled_run_invalid_count",
-            "legacy_observational_count",
+            "ad_hoc_observational_count",
             "by_kind",
         )
     }

@@ -14,22 +14,21 @@ Cross-group composites (machine_gaps, machine_dataset) are defined here.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._machine_helpers import _best_refresh_or_none
+from lynchpin.mcp.tools._machine_helpers import _best_refresh_or_none  # noqa: F401 - aggregate facade export
 from lynchpin.mcp.tools._utils import (
-    best_materialized_refresh_id,
-    ensure_substrate_materialized_for_read,
-    json_safe as _json_safe,
+    best_materialized_refresh_id,  # noqa: F401 - aggregate facade export
+    ensure_substrate_materialized_for_read,  # noqa: F401 - aggregate facade export
+    json_safe as _json_safe,  # noqa: F401 - aggregate facade export
 )
 
-# Import sub-modules to trigger @app.tool registrations.
+# Import submodules so this private aggregate facade exposes the machine helper surface.
 from lynchpin.mcp.tools import machine_status as _machine_status  # noqa: F401
 from lynchpin.mcp.tools import machine_benchmarks as _machine_benchmarks  # noqa: F401
 from lynchpin.mcp.tools import machine_diagnostics as _machine_diagnostics  # noqa: F401
 from lynchpin.mcp.tools import machine_observations as _machine_observations  # noqa: F401
 from lynchpin.mcp.tools import machine_workloads as _machine_workloads  # noqa: F401
 
-# Re-export all public names for backward compatibility.
+# Re-export helper names for internal tests and cross-module helper indirection.
 from lynchpin.mcp.tools.machine_status import *  # noqa: F401, F403
 from lynchpin.mcp.tools.machine_benchmarks import *  # noqa: F401, F403
 from lynchpin.mcp.tools.machine_diagnostics import *  # noqa: F401, F403
@@ -41,7 +40,6 @@ from lynchpin.mcp.tools.machine_status import machine_gap_summary, machine_datas
 from lynchpin.mcp.tools.machine_diagnostics import machine_instrumentation_gaps, machine_dataset_diagnostics
 
 
-@app.tool()
 def machine_gaps(
     view: str = "summary",
     threshold_pct: float | None = None,
@@ -57,7 +55,6 @@ def machine_gaps(
     return {"error": f"unknown view {view!r}. choices: summary, instrumentation"}
 
 
-@app.tool()
 def machine_dataset(
     view: str = "inventory",
     project: str | None = None,

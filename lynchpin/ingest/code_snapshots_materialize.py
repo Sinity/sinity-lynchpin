@@ -91,7 +91,7 @@ def materialize_code_snapshots() -> dict[str, Any]:
         )
         raise MaterializationError("code_snapshots", reason=str(first_err))
 
-    with connect() as conn:
+    with connect(recover_corrupt_from_snapshot=True) as conn:
         n_runs = promote_code_snapshot_runs(conn, rows=run_rows)
         n_slices = promote_code_snapshot_slices(conn, rows=slice_rows)
 

@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.guide:
         from lynchpin.mcp.tools.public import lynchpin_catalog
 
-        _print_json(lynchpin_catalog(include_schema=True, include_legacy_map=True))
+        _print_json(lynchpin_catalog(include_schema=True))
         return
     if args.self_check:
         from lynchpin.mcp.tools.public import lynchpin_status

@@ -114,7 +114,7 @@ def machine_status_payload(
             "validation_issue_count": _int(manifest_diagnostics, "validation_issue_count"),
             "promotion_issue_count": _int(manifest_diagnostics, "promotion_issue_count"),
             "controlled_run_invalid_count": _int(manifest_diagnostics, "controlled_run_invalid_count"),
-            "legacy_observational_count": _int(manifest_diagnostics, "legacy_observational_count"),
+            "ad_hoc_observational_count": _int(manifest_diagnostics, "ad_hoc_observational_count"),
             "template_count": _int(manifest_diagnostics, "template_count"),
             "out_of_window_count": _int(manifest_diagnostics, "out_of_window_count"),
             "by_kind": _dict_field(manifest_diagnostics, "by_kind"),

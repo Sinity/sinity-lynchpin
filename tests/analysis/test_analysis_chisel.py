@@ -371,11 +371,18 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
         slices=(),
         stats_buckets=(
             chisel.StatsBucket("agent-context", "Agent context", (".agent/**",)),
-            chisel.StatsBucket("test-suite", "Tests", ("tests/**", "crate/*/tests/**")),
+            chisel.StatsBucket(
+                "test-suite",
+                "Tests",
+                ("tests/**", "crate/*/tests/**", *chisel.SINEX_RUST_SPLIT_TEST_PATTERNS),
+            ),
             chisel.StatsBucket("docs", "Docs", ("README.md", "docs/**")),
-            chisel.StatsBucket("code-proper", "Code", ("src/**",)),
+            chisel.StatsBucket("code-proper", "Code", ("src/**", "crate/*/src/**")),
         ),
     )
+    split_test = repo / "crate" / "demo" / "src" / "api" / "flow_test.rs"
+    split_test.parent.mkdir(parents=True)
+    split_test.write_text("fn one() {}\nfn two() {}\n", encoding="utf-8")
     payload = {
         "Markdown": {
             "reports": [
@@ -387,6 +394,7 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
             "reports": [
                 {"name": str(repo / "src" / "lib.rs"), "stats": {"blanks": 3, "code": 30, "comments": 4}},
                 {"name": str(repo / "crate" / "demo" / "tests" / "flow.rs"), "stats": {"blanks": 5, "code": 40, "comments": 1}},
+                {"name": str(split_test), "stats": {"blanks": 0, "code": 2, "comments": 0}},
             ],
         },
         "JSON": {
@@ -411,10 +419,13 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
     assert stats["buckets"]["agent-context"]["files"] == 1
     assert stats["buckets"]["agent-context"]["comments"] == 9
     assert stats["buckets"]["docs"]["files"] == 1
-    assert stats["buckets"]["test-suite"]["code"] == 40
+    assert stats["buckets"]["test-suite"]["code"] == 42
     assert stats["buckets"]["code-proper"]["code"] == 30
     assert stats["buckets"]["other"]["files"] == 1
     assert stats["buckets"]["other"]["code"] == 50
+    assert stats["rust_split_test_files"]["files"] == 1
+    assert stats["rust_split_test_files"]["lines"] == 2
+    assert stats["rust_inline_tests"]["files"] == 0
 
 
 def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
@@ -427,10 +438,17 @@ def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
     assert chisel._classify_stats_bucket(plan, ".agent/demos/sinex/CURATED_CATALOG.md") == "agent-demos"
     assert chisel._classify_stats_bucket(plan, ".agent/artifacts/sinex/export.json") == "agent-artifacts"
     assert chisel._classify_stats_bucket(plan, "crate/sinexd/tests/api/auth_test.rs") == "test-suite"
+    assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/api/handlers/source_status_test.rs") == "test-suite"
+    assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/api/replay_control/tests/mod.rs") == "test-suite"
+    assert chisel._classify_stats_bucket(plan, "xtask/src/process/tests.rs") == "test-suite"
     assert chisel._classify_stats_bucket(plan, "tests/e2e/README.md") == "test-suite"
     assert chisel._classify_stats_bucket(plan, "crate/sinexd/docs/runtime_qos.md") == "docs"
     assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/main.rs") == "code-sinexd-other"
     assert chisel._classify_stats_bucket(plan, "schemas/v2/registry.json") == "other"
+    code_slice = next(slice for slice in plan.slices if slice.name == "code-proper")
+    test_slice = next(slice for slice in plan.slices if slice.name == "test-suite")
+    assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(code_slice.extra_ignore)
+    assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(test_slice.include)
 
 
 def test_polylogue_stats_buckets_split_agent_devloop_and_archive_query() -> None:
@@ -600,6 +618,22 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
 
+    audit_names, audit_size = chisel._generate_snapshot_audit(
+        plan,
+        out_dir,
+        "2026-06-11T000000Z",
+        previous_manifest={
+            "artifacts": [
+                {"name": "example-core.xml", "bytes": chisel.LARGE_SLICE_BYTES - 10},
+            ]
+        },
+    )
+    audit = chisel.json.loads((out_dir / "example-snapshot-audit.json").read_text(encoding="utf-8"))
+    assert set(audit_names) == {"example-snapshot-audit.json", "example-snapshot-audit.md"}
+    assert audit_size > 0
+    assert audit["size"]["largest_deltas"][0]["name"] == "example-core.xml"
+    assert audit["local_state"]["tracked_hidden_bytes"] == 40
+
 
 def test_portable_sidecars_name_all_refs_bundle(monkeypatch, tmp_path: Path) -> None:
     plan = chisel.RepoPlan(
@@ -747,6 +781,7 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     assert "→ alpha: slice core" in output
     assert "✓ alpha: slice core" in output
     assert result["status"] == "generated"
+    assert result["snapshot_audit_files"] == ["alpha-snapshot-audit.json", "alpha-snapshot-audit.md"]
 
 
 def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> None:
@@ -793,3 +828,4 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
 
     assert result["status"] == "generated"
     assert not stale.exists()
+    assert (tmp_path / "out" / "alpha" / "alpha-snapshot-audit.json").exists()

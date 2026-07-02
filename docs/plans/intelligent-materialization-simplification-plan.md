@@ -242,7 +242,7 @@ Collapse the normal operator/API surface to:
   blocked/manual reasons;
 - `analysis_artifact_inventory` / `read_analysis_artifact`: artifact discovery
   and reads, internally calling `ensure_materialized` for products they own;
-- `mcp_capability_matrix`: capability/readiness map over product status;
+- `lynchpin_catalog(include_schema=True)`: capability/readiness map over product status;
 - one compact `lynchpin status --json` CLI for Noctalia/Waybar/operator panels.
 
 Removed from normal MCP/operator use:
@@ -1072,7 +1072,7 @@ Keep these capabilities, but simplify their surface:
   - future modifier-state samples produce exact bind counts;
   - text-content product can be generated independently of keybind aggregates.
 - Regression checks:
-  - existing `materialization_status`, `mcp_capability_matrix`, artifact reads,
+  - existing `materialization_status`, `lynchpin_catalog(include_schema=True)`, artifact reads,
     current-state/context-pack, operator_daily, and machine status still work.
 
 ## Assumptions

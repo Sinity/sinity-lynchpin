@@ -123,6 +123,8 @@ def test_materialize_github_context_refreshes_open_lists_without_gh_cache(
     assert manifest["inventory_items_seen"] == 4
     assert manifest["detail_refreshes"] == 4
     assert manifest["detail_reuses"] == 0
+    assert manifest["detail_decision_reasons"] == {"missing_detail": 4}
+    assert manifest["project_detail_refreshes"] == {"lynchpin": 4}
     assert manifest["row_count"] == 4
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert {row["kind"] for row in rows} == {"issue", "pr"}
@@ -250,6 +252,8 @@ def test_materialize_github_context_reuses_existing_open_pr_details(monkeypatch,
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert detail_calls == 0
     assert manifest["detail_reuses"] == 1
+    assert manifest["detail_decision_reasons"] == {"unchanged_inventory": 1}
+    assert manifest["project_detail_reuses"] == {"lynchpin": 1}
     assert rows[0]["state"] == "open"
 
 
@@ -341,6 +345,7 @@ def test_materialize_github_context_hydrates_only_changed_inventory_rows(monkeyp
     assert detail_calls == [2]
     assert manifest["detail_reuses"] == 1
     assert manifest["detail_refreshes"] == 1
+    assert manifest["detail_decision_reasons"] == {"unchanged_inventory": 1, "inventory_newer": 1}
     assert rows[1]["title"] == "unchanged"
     assert rows[2]["title"] == "new"
 
@@ -481,7 +486,7 @@ def test_materialize_github_context_drops_stale_open_rows(monkeypatch, tmp_path:
     )
     monkeypatch.setattr(materializer, "fetch_issue", lambda path, number, **kwargs: _item(number=number))
 
-    materializer.materialize_github_context(
+    manifest = materializer.materialize_github_context(
         output=output,
         start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
         end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
@@ -493,6 +498,7 @@ def test_materialize_github_context_drops_stale_open_rows(monkeypatch, tmp_path:
         if row["kind"] == "issue"
     }
     assert by_number == {2: "open", 3: "closed"}
+    assert manifest["project_stale_open_removed"] == {"lynchpin": 1}
 
 
 def test_materialize_github_context_drops_stale_open_pr_rows(monkeypatch, tmp_path: Path) -> None:
@@ -539,7 +545,7 @@ def test_materialize_github_context_drops_stale_open_pr_rows(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(materializer, "fetch_pr", lambda path, number, **kwargs: _item(kind="pr", number=number))
 
-    materializer.materialize_github_context(
+    manifest = materializer.materialize_github_context(
         output=output,
         start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
         end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
@@ -551,6 +557,7 @@ def test_materialize_github_context_drops_stale_open_pr_rows(monkeypatch, tmp_pa
         if row["kind"] == "pr"
     }
     assert by_number == {2: "open"}
+    assert manifest["project_stale_open_removed"] == {"lynchpin": 1}
 
 
 def test_materialize_github_context_does_not_refetch_existing_commit_refs(monkeypatch, tmp_path: Path) -> None:

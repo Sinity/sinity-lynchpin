@@ -181,9 +181,10 @@ Derived products now live under `/realm/data/derived/lynchpin/`:
 
 Substrate promotion copies those products into DuckDB instead of rebuilding
 daily personal metrics at snapshot time. Missing derived products are repair
-signals; direct `substrate_snapshot` requires them to exist. MCP exposes
-`materialization_status`, `mcp_capability_matrix`, and `substrate_run_steps`
-for observability.
+signals for direct `substrate_snapshot` use; normal Lynchpin read surfaces should
+converge their owned products transparently before returning data. MCP exposes
+`lynchpin_status(view="materialization")`, `lynchpin_catalog(include_schema=True)`,
+and substrate run-step views for observability.
 
 The former `/realm/data/libraries/machine-recovery` staging tree has been
 dismantled. Semantically useful VCS/provenance rows were moved into canonical
@@ -200,10 +201,11 @@ typed analytic value.
 
 ### Context-Pack Substrate Refresh Semantics
 
-`lynchpin.graph.context_pack` now fails closed when a caller prefers substrate
-evidence and no materialized DuckDB graph matches. `--refresh-substrate` is the
-explicit live rebuild/materialize path; ordinary current-state reads no longer
-silently rebuild a live graph on substrate miss.
+`lynchpin.graph.context_pack` now fails closed when a caller explicitly asks for
+substrate-only evidence and no DuckDB graph matches. Ordinary current-state read
+surfaces should converge their owned derived products transparently; explicit
+refresh flags remain useful for debugging, forced rebuilds, and operator
+inspection.
 
 ### Analysis Artifact Loaders
 

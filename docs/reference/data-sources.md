@@ -46,8 +46,9 @@ products are derived read models.
 - Substrate tables are rebuildable indexes. Schema changes may reset DuckDB;
   raw captures and source modules remain authoritative.
 - Cross-source daily products are materialized under `/realm/data/derived/lynchpin`
-  and consumed directly by snapshot/substrate promotion. Query-time promotion
-  should not re-scan all raw personal exports.
+  and consumed directly by snapshot/substrate promotion. Query-time convergence
+  should ensure the relevant derived product exists and is fresh enough for the
+  read, while still avoiding broad raw-export rescans on every query.
 - Generated analysis artifacts are evidence products. They are inventoried by
   `lynchpin.sources.analysis_artifacts` and can become graph nodes, but they do
   not override source-level facts.

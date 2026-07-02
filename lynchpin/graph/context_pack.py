@@ -921,7 +921,7 @@ def _render_machine_analysis_artifacts(
             f"preflight_ready={_payload_count(preflight, 'ready_run_count')}; "
             f"handoff_ready={_payload_count(handoff, 'ready_group_count')}/{_payload_count(handoff, 'handoff_count')}; "
             f"executed_valid={_payload_count(manifests, 'controlled_benchmark_valid_count')}; "
-            f"legacy_observational={_payload_count(manifests, 'legacy_observational_count')}"
+            f"ad_hoc_observational={_payload_count(manifests, 'ad_hoc_observational_count')}"
         )
 
     devshell = artifacts.payloads.get("devshell_performance.json")

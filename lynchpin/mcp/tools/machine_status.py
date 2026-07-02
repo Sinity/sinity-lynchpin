@@ -5,7 +5,6 @@ from typing import Any
 
 from lynchpin.analysis.machine.status import machine_status_payload
 from lynchpin.core.errors import SchemaVersionError
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import (
     _analysis_artifact,
     _artifact_rows,
@@ -19,7 +18,6 @@ from lynchpin.mcp.tools._machine_helpers import (
 from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
 
-@app.tool()
 def machine_status() -> dict[str, Any]:
     """Summarize current machine-analysis readiness, support, claims, and blockers."""
     return _json_safe(machine_status_payload())
@@ -63,7 +61,6 @@ def machine_service_io_for_xtask_invocation(
     )
 
 
-@app.tool()
 def machine_xtask_contention(
     start: str | None = None,
     end: str | None = None,
@@ -296,13 +293,11 @@ def _machine_materialization_health_payload() -> dict[str, Any]:
     }
 
 
-@app.tool()
 def machine_materialization_health() -> dict[str, Any]:
     """Summarize machine-analysis materialization health from readiness dimensions."""
     return _machine_materialization_health_payload()
 
 
-@app.tool()
 def machine_calibration_fixtures(kind: str | None = None, status: str | None = None) -> dict[str, Any]:
     """Read deterministic calibration fixtures for causal-infra guardrails."""
     payload = _analysis_artifact("machine_calibration_fixtures.json")
@@ -325,7 +320,6 @@ def machine_calibration_fixtures(kind: str | None = None, status: str | None = N
     }
 
 
-@app.tool()
 def machine_measurement_system(kind: str | None = None, status: str | None = None) -> dict[str, Any]:
     """Read measurement-system diagnostics for machine causal analysis."""
     payload = _analysis_artifact("machine_measurement_system.json")
@@ -348,7 +342,6 @@ def machine_measurement_system(kind: str | None = None, status: str | None = Non
     }
 
 
-@app.tool()
 def machine_episodes(
     start: str | None = None,
     end: str | None = None,
@@ -407,7 +400,6 @@ def machine_context_windows(
     return rows[:max(limit, 0)]
 
 
-@app.tool()
 def machine_telemetry_analysis(section: str = "daily", limit: int = 100) -> dict[str, Any]:
     """Read the materialized machine telemetry analysis artifact."""
     payload = _analysis_artifact("machine_telemetry_analysis.json")
@@ -539,7 +531,6 @@ def _comparable_bound(bound: datetime) -> datetime:
     return bound.replace(tzinfo=datetime.now().astimezone().tzinfo)
 
 
-@app.tool()
 def machine_pressure_explain(
     start: str | None = None,
     end: str | None = None,
@@ -714,7 +705,6 @@ def _memory_accounting(latest: dict[str, Any], process_rows: list[dict[str, Any]
     }
 
 
-@app.tool()
 def machine_pressure_report(
     start: str | None = None,
     end: str | None = None,
@@ -1033,7 +1023,6 @@ def machine_service_state_summary(
     ]
 
 
-@app.tool()
 def borg_drill_history(
     limit: int = 50,
     status: str | None = None,
@@ -1078,7 +1067,6 @@ def borg_drill_history(
     }
 
 
-@app.tool()
 def sinnix_generation_history(
     limit: int = 50,
     host: str | None = None,
@@ -1115,7 +1103,6 @@ def sinnix_generation_history(
     ]
 
 
-@app.tool()
 def machine_bufferbloat_summary(
     start: str | None = None,
     end: str | None = None,
@@ -1235,7 +1222,6 @@ def machine_gap_summary(
     return {"summary": summary, "counts": counts, "regressions": regressions}
 
 
-@app.tool()
 def machine_metrics(
     by: str = "daily",
     start: str | None = None,
@@ -1272,7 +1258,6 @@ def machine_metrics(
     return {"error": f"unknown by {by!r}. choices: daily, context, memory, pressure, pressure_report"}
 
 
-@app.tool()
 def machine_below(
     view: str = "analysis",
     section: str = "system",
@@ -1295,7 +1280,6 @@ def machine_below(
     return {"error": f"unknown view {view!r}. choices: analysis, attributions, export_handoff"}
 
 
-@app.tool()
 def machine_service(
     view: str = "state_summary",
     invocation_id: int | None = None,
@@ -1325,7 +1309,6 @@ def machine_service(
     return {"error": f"unknown view {view!r}. choices: state_summary, io_for_xtask"}
 
 
-@app.tool()
 def machine_windows(
     view: str = "context",
     start: str | None = None,

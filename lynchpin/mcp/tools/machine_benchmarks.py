@@ -1,7 +1,6 @@
 """Machine benchmark, validation, matched experiment, and attribution-candidate tools."""
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import _analysis_artifact
 from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
@@ -497,7 +496,7 @@ def machine_experiment_manifest_diagnostics(
             "validation_issue_count": payload.get("validation_issue_count"),
             "promotion_issue_count": payload.get("promotion_issue_count"),
             "controlled_run_invalid_count": payload.get("controlled_run_invalid_count"),
-            "legacy_observational_count": payload.get("legacy_observational_count"),
+            "ad_hoc_observational_count": payload.get("ad_hoc_observational_count"),
             "by_kind": payload.get("by_kind", {}),
             "caveats": payload.get("caveats", []),
         },
@@ -505,7 +504,6 @@ def machine_experiment_manifest_diagnostics(
     }
 
 
-@app.tool()
 def machine_benchmark_readiness(
     payload_json: str | None = None,
     manifest_path: str | None = None,
@@ -695,7 +693,6 @@ def _count_manifest_validation_status(rows: list[dict[str, Any]]) -> dict[str, i
     return dict(sorted(counts.items()))
 
 
-@app.tool()
 def machine_benchmarks(
     view: str = "runs",
     limit: int = 100,
@@ -737,7 +734,6 @@ def machine_benchmarks(
     return {"error": f"unknown view {view!r}. choices: runs, phases, estimates, claims, plans, plan_template, manifest_bundle, execution_handoff, selected_runbook, manifest_diagnostics"}
 
 
-@app.tool()
 def machine_validation_design(
     view: str = "summary",
     limit: int = 100,
@@ -767,7 +763,6 @@ def machine_validation_design(
     return {"error": f"unknown view {view!r}. choices: summary, splits, boundaries"}
 
 
-@app.tool()
 def machine_matched(
     view: str = "designs",
     limit: int = 100,

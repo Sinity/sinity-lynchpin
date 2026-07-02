@@ -39,7 +39,7 @@ def test_experiment_manifest_diagnostics_separates_source_and_controlled_validit
     assert analysis.validation_issue_count == 3
     assert analysis.promotion_issue_count == 1
     assert analysis.controlled_run_invalid_count == 0
-    assert analysis.legacy_observational_count == 1
+    assert analysis.ad_hoc_observational_count == 1
     by_path = {row.relative_path: row for row in analysis.diagnostics}
     assert by_path["smoke/manifest.json"].source_loadable is True
     assert by_path["smoke/manifest.json"].controlled_benchmark_valid is False

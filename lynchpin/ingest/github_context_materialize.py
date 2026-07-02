@@ -6,6 +6,7 @@ import json
 import logging
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,12 @@ log = logging.getLogger(__name__)
 DEFAULT_GITHUB_LIST_LIMIT = 10_000
 
 
+@dataclass(frozen=True)
+class DetailDecision:
+    requires_detail: bool
+    reason: str
+
+
 def materialize_github_context(
     *,
     output: Path | None = None,
@@ -63,6 +70,10 @@ def materialize_github_context(
     detail_refreshes = 0
     detail_reuses = 0
     detail_misses = 0
+    detail_decision_reasons: Counter[str] = Counter()
+    project_refreshes: Counter[str] = Counter()
+    project_reuses: Counter[str] = Counter()
+    project_stale_open_removed: Counter[str] = Counter()
     inventory_items_seen = 0
     missing_commit_refs_seen = 0
     missing_commit_refs_attempted = 0
@@ -92,16 +103,21 @@ def materialize_github_context(
             if result.status != "ok":
                 continue
             inventory_items_seen += len(result.items)
-            _reconcile_current_open_rows(rows, project=project, kind=kind, items=result.items)
+            stale_removed = _reconcile_current_open_rows(rows, project=project, kind=kind, items=result.items)
+            if stale_removed:
+                project_stale_open_removed[project] += stale_removed
             for inventory in result.items:
                 key = (project, inventory.kind, inventory.number)
                 existing = rows.get(key)
-                if existing is not None and not _inventory_requires_detail(existing, inventory):
+                decision = _inventory_detail_decision(existing, inventory)
+                detail_decision_reasons[decision.reason] += 1
+                if existing is not None and not decision.requires_detail:
                     detail_reuses += 1
+                    project_reuses[project] += 1
                     _merge_inventory_metadata(existing, inventory)
                     continue
                 if progress is not None:
-                    progress(f"GitHub context: hydrating {project} {inventory.kind} #{inventory.number}")
+                    progress(f"GitHub context: hydrating {project} {inventory.kind} #{inventory.number} ({decision.reason})")
                 if inventory.kind == "pr":
                     item = fetch_pr(path, inventory.number, use_cache=False, include_review_comments=True)
                 else:
@@ -110,6 +126,7 @@ def materialize_github_context(
                     detail_misses += 1
                     continue
                 detail_refreshes += 1
+                project_refreshes[project] += 1
                 rows[key] = github_item_to_payload(project=project, item=item)
 
     for fact in commit_facts(start=start, end=end, all_refs=True, include_paths=False):
@@ -176,6 +193,10 @@ def materialize_github_context(
         "detail_refreshes": detail_refreshes,
         "detail_reuses": detail_reuses,
         "detail_misses": detail_misses,
+        "detail_decision_reasons": dict(detail_decision_reasons),
+        "project_detail_refreshes": dict(project_refreshes),
+        "project_detail_reuses": dict(project_reuses),
+        "project_stale_open_removed": dict(project_stale_open_removed),
         "missing_commit_refs_seen": missing_commit_refs_seen,
         "missing_commit_refs_attempted": missing_commit_refs_attempted,
         "missing_commit_refs_fetched": missing_commit_refs_fetched,
@@ -230,7 +251,7 @@ def _reconcile_current_open_rows(
     project: str,
     kind: str,
     items: tuple[Any, ...],
-) -> None:
+) -> int:
     if any(item.state != "open" for item in items):
         open_items = [item for item in items if item.state == "open"]
     else:
@@ -246,21 +267,30 @@ def _reconcile_current_open_rows(
     ]
     for key in stale_keys:
         del rows[key]
+    return len(stale_keys)
 
 
 def _inventory_requires_detail(existing: dict[str, Any], inventory: GitHubItemInventory) -> bool:
+    return _inventory_detail_decision(existing, inventory).requires_detail
+
+
+def _inventory_detail_decision(existing: dict[str, Any] | None, inventory: GitHubItemInventory) -> DetailDecision:
+    if existing is None:
+        return DetailDecision(True, "missing_detail")
     if str(existing.get("kind") or "") != inventory.kind:
-        return True
+        return DetailDecision(True, "kind_changed")
     if str(existing.get("state") or "").lower() != inventory.state:
-        return True
+        return DetailDecision(True, "state_changed")
     existing_updated = _payload_datetime(existing.get("updated_at"))
-    if inventory.updated_at is None or existing_updated is None:
-        return True
+    if inventory.updated_at is None:
+        return DetailDecision(True, "inventory_missing_updated_at")
+    if existing_updated is None:
+        return DetailDecision(True, "existing_missing_updated_at")
     if inventory.updated_at > existing_updated:
-        return True
+        return DetailDecision(True, "inventory_newer")
     if inventory.kind == "pr" and inventory.state == "open" and not _can_reuse_existing_pr(existing, inventory):
-        return True
-    return False
+        return DetailDecision(True, "open_pr_missing_detail_payload")
+    return DetailDecision(False, "unchanged_inventory")
 
 
 def _merge_inventory_metadata(existing: dict[str, Any], inventory: GitHubItemInventory) -> None:
@@ -472,7 +502,7 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
                     "url": rc.url,
                 })
 
-    with connect() as conn:
+    with connect(recover_corrupt_from_snapshot=True) as conn:
         n = 0
         n += promote_github_issues(conn, rows=issue_rows)
         n += promote_github_issue_comments(conn, rows=issue_comment_rows)

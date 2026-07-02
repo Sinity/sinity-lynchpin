@@ -14,7 +14,9 @@ is *derived* from sources, not authoritative. Re-promote is cheap.
 """
 from __future__ import annotations
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     import duckdb
@@ -45,7 +47,6 @@ def update_read_snapshot(path: Path | None=None) -> Path | None:
     invalidation. Either approach gives MCP readers a frozen view they
     can rely on during the next write window.
     """
-    import shutil
     canonical = path if path is not None else substrate_path()
     snapshot = substrate_read_snapshot_path()
     if not canonical.exists():
@@ -55,8 +56,28 @@ def update_read_snapshot(path: Path | None=None) -> Path | None:
     tmp.replace(snapshot)
     return snapshot
 
+def _quarantine_suffix() -> str:
+    return datetime.now().astimezone().strftime('.corrupt-%Y%m%dT%H%M%S%z')
+
+def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Path:
+    """Move an unreadable canonical aside and restore the last read snapshot.
+
+    DuckDB internal metadata-pointer errors can make the canonical file fail at
+    open time, while the read snapshot remains usable. The substrate is derived,
+    so preserving the broken file for inspection and resuming from the last
+    known-good snapshot is preferable to blocking every writer.
+    """
+    snapshot = substrate_read_snapshot_path()
+    if not snapshot.exists():
+        raise reason
+    quarantine = canonical.with_name(canonical.name + _quarantine_suffix())
+    if canonical.exists():
+        canonical.replace(quarantine)
+    shutil.copy2(snapshot, canonical)
+    return quarantine
+
 @contextmanager
-def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback: bool=True) -> Iterator['duckdb.DuckDBPyConnection']:
+def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback: bool=True, recover_corrupt_from_snapshot: bool=False) -> Iterator['duckdb.DuckDBPyConnection']:
     """Yield a DuckDB connection to the substrate.
 
     When ``read_only=True`` and the canonical substrate is held under an
@@ -74,13 +95,18 @@ def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback:
     target = path if path is not None else substrate_path()
     try:
         conn = duckdb.connect(str(target), read_only=read_only)
-    except (duckdb.IOException, duckdb.ConnectionException):
+    except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
         if not read_only or not snapshot_fallback:
-            raise
-        snapshot = substrate_read_snapshot_path()
-        if not snapshot.exists():
-            raise
-        conn = duckdb.connect(str(snapshot), read_only=True)
+            if recover_corrupt_from_snapshot and (not read_only) and isinstance(exc, duckdb.InternalException):
+                _restore_from_read_snapshot(target, reason=exc)
+                conn = duckdb.connect(str(target), read_only=False)
+            else:
+                raise
+        else:
+            snapshot = substrate_read_snapshot_path()
+            if not snapshot.exists():
+                raise
+            conn = duckdb.connect(str(snapshot), read_only=True)
     try:
         yield conn
     finally:

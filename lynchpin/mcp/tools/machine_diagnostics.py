@@ -1,7 +1,6 @@
 """Machine diagnostics, assumption checks, mechanism hypotheses, and attribution tools."""
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import _analysis_artifact
 
 
@@ -91,7 +90,6 @@ def machine_attribution_claims(
     }
 
 
-@app.tool()
 def machine_mechanism_hypotheses(
     limit: int = 25,
     family: str | None = None,
@@ -117,7 +115,6 @@ def machine_mechanism_hypotheses(
     }
 
 
-@app.tool()
 def machine_claim_evidence(claim_id: str) -> dict[str, Any]:
     """Join one machine attribution claim to assumptions and upstream evidence ids."""
     claims = _analysis_artifact("machine_attribution_claims.json") or {}
@@ -170,7 +167,6 @@ def machine_claim_evidence(claim_id: str) -> dict[str, Any]:
     }
 
 
-@app.tool()
 def machine_assumption_checks(limit: int = 50, status: str | None = None, claim_id: str | None = None) -> dict[str, Any]:
     """Read assumption checks limiting or supporting machine attribution claims."""
     payload = _analysis_artifact("machine_assumption_checks.json")
@@ -218,7 +214,6 @@ def _machine_attribution_summary(
     return {"error": f"unknown view {view!r}. choices: candidates, assessments, derivations"}
 
 
-@app.tool()
 def machine_attribution(
     view: str = "summary",
     project: str | None = None,

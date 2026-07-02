@@ -7,7 +7,28 @@ time; PEP 563 string annotations cause TypeError.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
+
+def code_snapshot_audit(project: str | None = None) -> dict[str, Any]:
+    """Read generated per-project snapshot audit files from the chisel output root."""
+    import json
+
+    from lynchpin.sources.code_snapshots import code_snapshots_path
+    from lynchpin.mcp.tools._utils import json_safe as _json_safe
+
+    root = code_snapshots_path()
+    audits: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*/*-snapshot-audit.json")):
+        if project and path.parent.name != project:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            audits.append({"project": path.parent.name, "path": str(path), "error": str(exc)})
+            continue
+        payload["path"] = str(path)
+        audits.append(_json_safe(payload))
+    return {"project_filter": project, "audit_count": len(audits), "audits": audits}
+
 
 
 def code_snapshot_status() -> dict[str, Any]:
@@ -15,7 +36,8 @@ def code_snapshot_status() -> dict[str, Any]:
 
     Queries code_snapshot_run in the substrate to show the current state of
     chisel-generated repomix XML slices, git bundles, and issue exports per project.
-    Surfaces staleness without triggering a re-run.
+    Ensures the derived snapshot product has converged before reading substrate
+    rows; manual ops remain available for forced rebuilds and diagnostics.
     """
     from lynchpin.materialization import ensure_materialized
     from lynchpin.substrate.code_snapshots import iter_code_snapshot_runs
@@ -71,14 +93,15 @@ def list_code_snapshot_slices(project: str | None = None) -> dict[str, Any]:
     }
 
 
-@app.tool()
 def code_snapshots(
     view: str = "status",
     project: str | None = None,
 ) -> Any:
-    """Code snapshot materialization status and slice discovery. view: status (materialization state and per-project summary), slices (list output files; use project to filter)."""
+    """Code snapshot materialization status and slice discovery. view: status, slices, audit."""
     if view == "status":
         return code_snapshot_status()
     if view == "slices":
         return list_code_snapshot_slices(project=project)
-    return {"error": f"unknown view {view!r}. choices: status, slices"}
+    if view == "audit":
+        return code_snapshot_audit(project=project)
+    return {"error": f"unknown view {view!r}. choices: status, slices, audit"}

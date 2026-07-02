@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import dataclass_to_json_dict
 from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
@@ -96,7 +95,6 @@ def _selector_materialization(
     return materialization
 
 
-@app.tool()
 def analysis_artifact_inventory(
     project: str | None = None,
     kind: str | None = None,
@@ -126,7 +124,6 @@ def analysis_artifact_inventory(
     }
 
 
-@app.tool()
 def read_analysis_artifact(
     name: str,
     max_bytes: int = 200_000,

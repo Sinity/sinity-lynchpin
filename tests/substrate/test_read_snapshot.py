@@ -111,3 +111,67 @@ def test_connect_raises_when_no_snapshot_and_locked(
                 reader.execute("SELECT 1").fetchone()
     finally:
         writer.close()
+
+
+def test_connect_read_only_falls_back_to_snapshot_on_internal_open_error(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DuckDB internal open failures on the canonical should still leave
+    read-only callers on the last known-good snapshot."""
+    canonical = isolated_substrate
+    with duckdb.connect(str(canonical)) as conn:
+        conn.execute("CREATE TABLE x (v INTEGER)")
+        conn.execute("INSERT INTO x VALUES (11)")
+    update_read_snapshot()
+
+    real_connect = duckdb.connect
+    calls = 0
+
+    def flaky_connect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise duckdb.InternalException("metadata pointer failed")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", flaky_connect)
+
+    with connect(read_only=True) as reader:
+        assert reader.execute("SELECT v FROM x").fetchone() == (11,)
+
+
+def test_connect_write_can_restore_corrupt_canonical_from_snapshot(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opt-in write recovery quarantines the unreadable canonical and resumes
+    from the read snapshot."""
+    canonical = isolated_substrate
+    with duckdb.connect(str(canonical)) as conn:
+        conn.execute("CREATE TABLE x (v INTEGER)")
+        conn.execute("INSERT INTO x VALUES (17)")
+    update_read_snapshot()
+    canonical.write_bytes(b"not a duckdb database")
+
+    real_connect = duckdb.connect
+    calls = 0
+
+    def flaky_connect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise duckdb.InternalException("metadata pointer failed")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", flaky_connect)
+
+    with connect(recover_corrupt_from_snapshot=True) as writer:
+        assert writer.execute("SELECT v FROM x").fetchone() == (17,)
+        writer.execute("UPDATE x SET v = 23")
+
+    quarantined = list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"not a duckdb database"
+    with duckdb.connect(str(canonical), read_only=True) as conn:
+        assert conn.execute("SELECT v FROM x").fetchone() == (23,)

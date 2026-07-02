@@ -105,7 +105,7 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
             "validation_issue_count": 1,
             "promotion_issue_count": 0,
             "controlled_run_invalid_count": 1,
-            "legacy_observational_count": 0,
+            "ad_hoc_observational_count": 0,
             "template_count": 1,
             "out_of_window_count": 0,
             "by_kind": {"executed_run": 1, "template": 1},

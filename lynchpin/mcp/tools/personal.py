@@ -9,7 +9,6 @@ from datetime import date as _date
 from datetime import timedelta as _timedelta
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     ensure_substrate_materialized_for_read,
@@ -36,7 +35,6 @@ def _exclusive_end(end: _date | None) -> _date | None:
     return end + _timedelta(days=1) if end is not None else None
 
 
-@app.tool()
 def spotify_daily(
     start: str | None = None,
     end: str | None = None,
@@ -300,7 +298,6 @@ def google_takeout_retrospective(
     ).to_json()
 
 
-@app.tool()
 def personal_interest_trace(
     start: str | None = None,
     end: str | None = None,
@@ -773,7 +770,6 @@ def communication_daily(start: str, end: str) -> list[dict[str, Any]]:
     return [_json_safe(row.__dict__) for row in daily_communication_activity(start=start_d, end=end_d, ensure=False)]
 
 
-@app.tool()
 def focus_daily(start: str, end: str) -> list[dict[str, Any]]:
     """Daily focus activity from whichever capture covered each date.
 
@@ -829,7 +825,6 @@ def arbtt_focus_daily(start: str, end: str) -> list[dict[str, Any]]:
     ]
 
 
-@app.tool()
 def personal_daily_signals(
     start: str | None = None,
     end: str | None = None,
@@ -889,7 +884,6 @@ def personal_daily_signals(
     ]
 
 
-@app.tool()
 def materialization_status() -> list[dict[str, Any]]:
     """Strict canonical materialization status for Lynchpin datasets."""
     from lynchpin.materialization import audit_materialization
@@ -1051,7 +1045,6 @@ def webhistory_provenance() -> dict[str, Any]:
     return {"status": "ready", "path": str(path), **payload}
 
 
-@app.tool()
 def activitywatch_archive_audit() -> dict[str, Any]:
     """Schema audit for processed historical ActivityWatch backup databases."""
     from lynchpin.cli.process_activitywatch_archives import audit_activitywatch_archive_dbs
@@ -1059,7 +1052,6 @@ def activitywatch_archive_audit() -> dict[str, Any]:
     return audit_activitywatch_archive_dbs()
 
 
-@app.tool()
 def analysis_artifact_status() -> list[dict[str, Any]]:
     """Inventory generated analysis artifacts with availability and shape status."""
     from lynchpin.core.io import materialize_analysis_artifacts
@@ -1410,7 +1402,6 @@ def operator_public_text_coverage(
         }
         for r in rows
     ]
-@app.tool()
 def keylog(
     view: str = "daily",
     start: str = "",
@@ -1432,7 +1423,6 @@ def keylog(
     return {"error": f"unknown view {view!r}. choices: daily, binds, shape, content"}
 
 
-@app.tool()
 def activity_content(
     view: str = "daily",
     start: str | None = None,
@@ -1455,7 +1445,6 @@ def activity_content(
     return {"error": f"unknown view {view!r}. choices: daily, titles, unmatched, coverage, semantic"}
 
 
-@app.tool()
 def google_takeout(
     view: str = "daily",
     start: str | None = None,
@@ -1476,7 +1465,6 @@ def google_takeout(
     return {"error": f"unknown view {view!r}. choices: daily, events, retrospective"}
 
 
-@app.tool()
 def communication(
     view: str = "events",
     start: str | None = None,
@@ -1491,7 +1479,6 @@ def communication(
     return {"error": f"unknown view {view!r}. choices: events, daily"}
 
 
-@app.tool()
 def operator(
     view: str = "rhythm",
     start: str = "",
@@ -1514,7 +1501,6 @@ def operator(
     return {"error": f"unknown view {view!r}. choices: rhythm, readiness, public_text, public_text_coverage"}
 
 
-@app.tool()
 def terminal(
     view: str = "daily",
     start: str = "",
@@ -1529,7 +1515,6 @@ def terminal(
     return {"error": f"unknown view {view!r}. choices: daily, sessions"}
 
 
-@app.tool()
 def title_metadata(
     view: str = "status",
     limit: int = 20,
@@ -1542,7 +1527,6 @@ def title_metadata(
     return {"error": f"unknown view {view!r}. choices: status, audit"}
 
 
-@app.tool()
 def bookmarks(
     view: str = "search",
     query: str = "",
@@ -1560,7 +1544,6 @@ def bookmarks(
     return {"error": f"unknown view {view!r}. choices: search, daily"}
 
 
-@app.tool()
 def web(
     view: str = "daily",
     start: str | None = None,

@@ -323,7 +323,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     (analysis_root / "machine_experiment_manifest_diagnostics.json").write_text(
-        '{"controlled_benchmark_valid_count":0,"legacy_observational_count":55,"diagnostics":[]}',
+        '{"controlled_benchmark_valid_count":0,"ad_hoc_observational_count":55,"diagnostics":[]}',
         encoding="utf-8",
     )
     (analysis_root / "devshell_performance.json").write_text(
@@ -405,7 +405,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Observational command deltas: 1 matched cohorts" in rendered
     assert "Attribution candidates: 1 non-causal candidates; frontier=1; validation=design_ready×1; families=stage_regression_or_workload_mix×1; top=command.pytest.duration_seconds" in rendered
     assert "Dataset mining infra: feature_rows=3525; feature_status=ready_for_mining; multiplicity=registered; cohorts=48; boundaries=12; matched_designs=9; contrasts=31" in rendered
-    assert "Controlled benchmark infra: derivations=7; ready_plans=10; run_templates=120; preflight_ready=120; handoff_ready=10/10; executed_valid=0; legacy_observational=55" in rendered
+    assert "Controlled benchmark infra: derivations=7; ready_plans=10; run_templates=120; preflight_ready=120; handoff_ready=10/10; executed_valid=0; ad_hoc_observational=55" in rendered
     assert "Devshell/Nix performance: 2 commands" in rendered
     assert "0 controlled / 4 observational" in rendered
     assert "estimates=1; top=grp1; estimator=stratified_bootstrap_mean_delta; delta=-2.5; ci95=[-4.0, -1.0]; p=0.125; p_method=exact_stratified_label_permutation_two_sided" in rendered

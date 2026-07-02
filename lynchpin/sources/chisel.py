@@ -212,12 +212,13 @@ class RepoPlan:
     extra_copy: tuple[tuple[str, str], ...] = ()
     stats_buckets: tuple[StatsBucket, ...] = ()
 REPO_PLANS: dict[str, RepoPlan] = {}
+SINEX_RUST_SPLIT_TEST_PATTERNS: tuple[str, ...] = ('crate/*/src/**/*_test.rs', 'crate/*/src/**/*_tests.rs', 'crate/*/src/**/tests.rs', 'crate/*/src/**/tests/**', 'xtask/src/**/*_test.rs', 'xtask/src/**/*_tests.rs', 'xtask/src/**/tests.rs', 'xtask/src/**/tests/**', 'xtask/macros/src/**/*_test.rs', 'xtask/macros/src/**/*_tests.rs', 'xtask/macros/src/**/tests.rs', 'xtask/macros/src/**/tests/**')
 
 def _plan(name: str, path: str, github_slug: str | None, *slices: Slice, compressed: bool=True, extra_ignore: tuple[str, ...]=(), extra_copy: tuple[tuple[str, str], ...]=(), stats_buckets: tuple[StatsBucket, ...]=()) -> RepoPlan:
     plan = RepoPlan(name, Path(path), tuple(slices), github_slug, compressed, extra_ignore, extra_copy, stats_buckets)
     REPO_PLANS[name] = plan
     return plan
-_plan('sinex', '/realm/project/sinex', 'Sinity/sinex', Slice('code-proper', 'Production Rust crates, CLI, daemon, schemas, and developer tooling source', ('crate/*/src/**', 'xtask/src/**', 'xtask/macros/src/**', 'Cargo.toml', 'crate/*/Cargo.toml', 'xtask/Cargo.toml', 'xtask/macros/Cargo.toml')), Slice('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', 'crate/*/fuzz/**', 'xtask/tests/**')), Slice('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), Slice('agent-instructions', 'Agent-facing instructions, includes, scripts, and GitHub coordination context', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), Slice('agent-devloop-and-demos', 'Agent devloop reports, handoffs, demos, and local generated evidence summaries', ('.agent/devloops/**', '.agent/demos/**', '.agent/handoff/**', '.agent/inbox/**'), extra_ignore=('.agent/artifacts/**',)), Slice('other-project-surface', 'Build, deployment, schemas, fixtures, configs, examples, and generated contracts', ('.config/**', 'flake.nix', 'rust-toolchain.toml', 'rustfmt.toml', 'rust-analyzer.toml', 'nixos/**', 'schemas/**', 'demo/**', 'xtask/cloud/**', 'xtask/config/**', 'tests/fixtures/**'), extra_ignore=('nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), stats_buckets=(StatsBucket('agent-instructions', 'Agent README, includes, scripts, dev bindings, and GitHub coordination metadata', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), StatsBucket('agent-devloop', 'Agent devloop raw exports, conductor handoffs, run logs, and inbox state', ('.agent/devloops/**', '.agent/handoff/**', '.agent/inbox/**')), StatsBucket('agent-demos', 'Agent demos and generated demo evidence', ('.agent/demos/**',)), StatsBucket('agent-artifacts', 'Large local agent artifact imports and downloads, separated from instructions', ('.agent/artifacts/**',)), StatsBucket('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', 'crate/*/fuzz/**', 'xtask/tests/**')), StatsBucket('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), StatsBucket('code-sinexd-runtime', 'sinexd runtime, parser, source driver, stream, and service internals', ('crate/sinexd/src/runtime/**', 'crate/sinexd/src/sources/**')), StatsBucket('code-sinexd-api', 'sinexd API handlers, RPC, SSE, gateway, and surface DTOs', ('crate/sinexd/src/api/**',)), StatsBucket('code-sinexd-event-engine', 'sinexd event engine, material assembly, policy, and automata', ('crate/sinexd/src/event_engine/**', 'crate/sinexd/src/automata/**')), StatsBucket('code-sinexd-other', 'remaining sinexd production source and manifest', ('crate/sinexd/src/**', 'crate/sinexd/Cargo.toml')), StatsBucket('code-db', 'database crate source and manifest', ('crate/sinex-db/src/**', 'crate/sinex-db/Cargo.toml')), StatsBucket('code-primitives', 'domain primitives crate source and manifest', ('crate/sinex-primitives/src/**', 'crate/sinex-primitives/Cargo.toml')), StatsBucket('code-cli', 'sinexctl CLI source and manifest', ('crate/sinexctl/src/**', 'crate/sinexctl/Cargo.toml')), StatsBucket('code-xtask', 'xtask command, sandbox, graph, and developer tooling source', ('xtask/src/**', 'xtask/Cargo.toml')), StatsBucket('code-schema-macros', 'schema and macro crates plus xtask macros', ('crate/sinex-schema/src/**', 'crate/sinex-schema/Cargo.toml', 'crate/sinex-macros/src/**', 'crate/sinex-macros/Cargo.toml', 'xtask/macros/src/**', 'xtask/macros/Cargo.toml')), StatsBucket('code-workspace', 'workspace-level Rust manifests and configuration', ('Cargo.toml',))))
+_plan('sinex', '/realm/project/sinex', 'Sinity/sinex', Slice('code-proper', 'Production Rust crates, CLI, daemon, schemas, and developer tooling source', ('crate/*/src/**', 'xtask/src/**', 'xtask/macros/src/**', 'Cargo.toml', 'crate/*/Cargo.toml', 'xtask/Cargo.toml', 'xtask/macros/Cargo.toml'), extra_ignore=SINEX_RUST_SPLIT_TEST_PATTERNS), Slice('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', *SINEX_RUST_SPLIT_TEST_PATTERNS, 'crate/*/fuzz/**', 'xtask/tests/**')), Slice('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), Slice('agent-instructions', 'Agent-facing instructions, includes, scripts, and GitHub coordination context', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), Slice('agent-devloop-and-demos', 'Agent devloop reports, handoffs, demos, and local generated evidence summaries', ('.agent/devloops/**', '.agent/demos/**', '.agent/handoff/**', '.agent/inbox/**'), extra_ignore=('.agent/artifacts/**',)), Slice('other-project-surface', 'Build, deployment, schemas, fixtures, configs, examples, and generated contracts', ('.config/**', 'flake.nix', 'rust-toolchain.toml', 'rustfmt.toml', 'rust-analyzer.toml', 'nixos/**', 'schemas/**', 'demo/**', 'xtask/cloud/**', 'xtask/config/**', 'tests/fixtures/**'), extra_ignore=('nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), stats_buckets=(StatsBucket('agent-instructions', 'Agent README, includes, scripts, dev bindings, and GitHub coordination metadata', ('.agent/DEVLOOP.md', '.agent/README.md', '.agent/includes/**', '.agent/scripts/**', '.agent/dev/**', '.github/**')), StatsBucket('agent-devloop', 'Agent devloop raw exports, conductor handoffs, run logs, and inbox state', ('.agent/devloops/**', '.agent/handoff/**', '.agent/inbox/**')), StatsBucket('agent-demos', 'Agent demos and generated demo evidence', ('.agent/demos/**',)), StatsBucket('agent-artifacts', 'Large local agent artifact imports and downloads, separated from instructions', ('.agent/artifacts/**',)), StatsBucket('test-suite', 'Workspace, per-crate, xtask, fuzz, fixture, and VM test surfaces', ('tests/**', 'crate/*/tests/**', *SINEX_RUST_SPLIT_TEST_PATTERNS, 'crate/*/fuzz/**', 'xtask/tests/**')), StatsBucket('docs', 'Root, architecture, design, per-crate, xtask, NixOS, schema, and test documentation', ('README.md', 'TESTING.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md', 'docs/**', 'design/**', 'crate/*/docs/**', 'crate/*/README.md', 'crate/*/DESIGN.md', 'crate/*/CHANGELOG.md', 'xtask/docs/**', 'xtask/README.md', 'tests/*/README.md', 'nixos/**/*.md', 'schemas/README.md', 'demo/**/README.md')), StatsBucket('code-sinexd-runtime', 'sinexd runtime, parser, source driver, stream, and service internals', ('crate/sinexd/src/runtime/**', 'crate/sinexd/src/sources/**')), StatsBucket('code-sinexd-api', 'sinexd API handlers, RPC, SSE, gateway, and surface DTOs', ('crate/sinexd/src/api/**',)), StatsBucket('code-sinexd-event-engine', 'sinexd event engine, material assembly, policy, and automata', ('crate/sinexd/src/event_engine/**', 'crate/sinexd/src/automata/**')), StatsBucket('code-sinexd-other', 'remaining sinexd production source and manifest', ('crate/sinexd/src/**', 'crate/sinexd/Cargo.toml')), StatsBucket('code-db', 'database crate source and manifest', ('crate/sinex-db/src/**', 'crate/sinex-db/Cargo.toml')), StatsBucket('code-primitives', 'domain primitives crate source and manifest', ('crate/sinex-primitives/src/**', 'crate/sinex-primitives/Cargo.toml')), StatsBucket('code-cli', 'sinexctl CLI source and manifest', ('crate/sinexctl/src/**', 'crate/sinexctl/Cargo.toml')), StatsBucket('code-xtask', 'xtask command, sandbox, graph, and developer tooling source', ('xtask/src/**', 'xtask/Cargo.toml')), StatsBucket('code-schema-macros', 'schema and macro crates plus xtask macros', ('crate/sinex-schema/src/**', 'crate/sinex-schema/Cargo.toml', 'crate/sinex-macros/src/**', 'crate/sinex-macros/Cargo.toml', 'xtask/macros/src/**', 'xtask/macros/Cargo.toml')), StatsBucket('code-workspace', 'workspace-level Rust manifests and configuration', ('Cargo.toml',))))
 _plan('sinnix', '/realm/project/sinnix', 'Sinity/sinnix', Slice('hosts-and-modules', 'Host profiles, Nix modules, flake composition', ('hosts/**', 'modules/**', 'flake/**', 'flake.nix')), Slice('scripts-and-dots', 'Scripts, dotfiles, agent control plane, CI', ('scripts/**', 'dots/**', '.github/**', 'README.md', 'CLAUDE.md')), stats_buckets=(StatsBucket('hosts', 'Host profiles', ('hosts/**',)), StatsBucket('modules', 'NixOS and Home Manager modules', ('modules/**',)), StatsBucket('flake', 'Flake parts, package data, overlays, and npm metadata', ('flake/**', 'flake.nix')), StatsBucket('dots', 'Home-manager dotfiles and agent configuration', ('dots/**',)), StatsBucket('scripts', 'Operational scripts', ('scripts/**',)), StatsBucket('pkgs', 'Local package sources and tests', ('pkgs/**',)), StatsBucket('docs', 'Repository documentation and incident notes', ('docs/**', 'README.md', 'CLAUDE.md')), StatsBucket('agent-context', 'Agent instructions and GitHub metadata', ('.agent/**', '.github/**', 'agent/**')), StatsBucket('assets-and-eval', 'Assets, evaluations, secrets scaffolding, and misc support', ('assets/**', 'eval/**', 'secret/**'))))
 _plan('polylogue', '/realm/project/polylogue', 'Sinity/polylogue', Slice('core-and-storage', 'Core library, storage backends, schemas, sources', ('polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'README.md')), Slice('cli-mcp-and-operations', 'CLI, MCP server, operational automation, UI glue', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/ui/**', 'scripts/**', '.github/**', 'AGENTS.md')), Slice('agent-devloop', 'Agent conductor devloop state, task ledgers, scripts, and tools', ('.agent/README.md', '.agent/conductor-devloop/**', '.agent/scripts/**', '.agent/task-history/**', '.agent/xtask/**', '.agent/tools/**', '.agent/learnings.local.md', '.github/**'), extra_ignore=('.agent/task-history/*.jsonl', '.agent/xtask/*.jsonl')), Slice('agent-demos-and-prompts', 'Agent demos, cloud prompts, and proposed issue packets', ('.agent/demos/**', '.agent/cloud-prompts/**', '.agent/proposed_issue_set/**'), extra_ignore=()), Slice('rendering-and-site', 'Rendering engine, site generation, demos, templates', ('polylogue/rendering/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'demos/**')), Slice('docs', 'Documentation', ('docs/**', 'CLAUDE.md', 'CHANGELOG.md')), Slice('tests-and-qa', 'Tests and QA campaigns', ('tests/**', 'qa/**')), stats_buckets=(StatsBucket('agent-devloop', 'Agent conductor devloop state, task ledgers, scripts, tools, and GitHub metadata', ('.agent/README.md', '.agent/conductor-devloop/**', '.agent/scripts/**', '.agent/task-history/**', '.agent/xtask/**', '.agent/tools/**', '.agent/learnings.local.md', '.github/**')), StatsBucket('agent-demos-prompts', 'Agent demos, cloud prompts, and proposed issue packets', ('.agent/demos/**', '.agent/cloud-prompts/**', '.agent/proposed_issue_set/**')), StatsBucket('agent-archive', 'Archived or retired agent workspace material, separated from active devloop state', ('.agent/archive/**',)), StatsBucket('tests-and-qa', 'Tests, QA, fixtures, visual and benchmark suites', ('tests/**', 'qa/**')), StatsBucket('docs', 'Documentation, plans, product notes, and markdown surfaces', ('docs/**', 'README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md')), StatsBucket('archive-query', 'Archive query and expression code', ('polylogue/archive/query/**',)), StatsBucket('archive-data', 'Archive data, semantic artifacts, and stored products', ('polylogue/archive/**', 'polylogue/artifacts/**')), StatsBucket('daemon', 'Daemon runtime, status, HTTP, metrics, and service code', ('polylogue/daemon/**',)), StatsBucket('api-and-surfaces', 'API, surfaces, browser capture, telemetry, and public payloads', ('polylogue/api/**', 'polylogue/surfaces/**', 'polylogue/browser_capture/**', 'polylogue/telemetry/**')), StatsBucket('core-and-storage', 'Core library, storage, schemas, sources, paths, and cost modules', ('polylogue/core/**', 'polylogue/lib/**', 'polylogue/storage/**', 'polylogue/schemas/**', 'polylogue/sources/**', 'polylogue/paths/**', 'polylogue/cost/**')), StatsBucket('pipeline-product-readiness', 'Pipeline, product, readiness, insight, and verification code', ('polylogue/pipeline/**', 'polylogue/product/**', 'polylogue/readiness/**', 'polylogue/insights/**', 'polylogue/verification/**')), StatsBucket('cli-mcp-operations', 'CLI, MCP, operations, maintenance, context, and scripts', ('polylogue/cli/**', 'polylogue/mcp/**', 'polylogue/operations/**', 'polylogue/maintenance/**', 'polylogue/context/**', 'scripts/**', 'systemd/**')), StatsBucket('rendering-and-site', 'Rendering, UI, site, showcase, templates, demos, and browser extension', ('polylogue/rendering/**', 'polylogue/ui/**', 'polylogue/site/**', 'polylogue/showcase/**', 'polylogue/templates/**', 'polylogue/demo/**', 'demos/**', 'browser-extension/**')), StatsBucket('devtools-packaging-nix', 'Developer tools, packaging, contrib, and Nix support', ('devtools/**', 'packaging/**', 'contrib/**', 'nix/**', 'pyproject.toml'))))
 _plan('knowledgebase', '/realm/data/knowledgebase', 'Sinity/knowledgebase', Slice('permanent', 'Authored knowledge: reflections, ideas, concepts, self-analysis, MOCs', ('permanent.*',)), Slice('extrinsic-chatlogs-reports', 'AI chatlogs and analysis reports', ('extrinsic.chatlog.*', 'extrinsic.report.*', 'extrinsic.psychometry.*')), Slice('extrinsic-docs-comms', 'External documents, psychometric tests, communications', ('extrinsic.doc.*', 'extrinsic.comms.*', 'extrinsic.misc.*')), Slice('logs-inbox-archive', 'Journals, raw logs, inbox captures, archived notes', ('logs.*', 'inbox.*', 'archive.*')), Slice('infrastructure', 'Vault machinery: schemas, scripts, templates, projects, config', ('schemas/**', 'scripts/**', 'templates.*', 'projects.*', 'root.md', 'root.schema.yml', 'CLAUDE.md', 'dendron.yml', 'plan.txt', 'README.md')), compressed=False, extra_ignore=('store/**', 'assets/**', '90_special/**', '.gitignore'), extra_copy=(('logs.raw-log.md', 'raw-log-copy.md'),))
@@ -374,7 +375,7 @@ def _collect_tokei_stats(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
             files.append({'path': rel_path, 'bucket': bucket_name, 'language': language, 'blanks': int(stats.get('blanks') or 0), 'code': int(stats.get('code') or 0), 'comments': int(stats.get('comments') or 0), 'lines': sum((int(stats.get(key) or 0) for key in _STAT_KEYS))})
     for bucket in buckets.values():
         bucket['languages'] = dict(sorted(bucket['languages'].items(), key=lambda item: (-item[1]['lines'], item[0])))
-    return {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'buckets': dict(sorted(buckets.items(), key=lambda item: (999 if item[0] == 'other' else list(bucket_descriptions).index(item[0]) if item[0] in bucket_descriptions else 998, item[0]))), 'files': sorted(files, key=lambda row: (row['bucket'], row['path'])), 'rust_inline_tests': _rust_inline_test_stats(plan)}
+    return {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'buckets': dict(sorted(buckets.items(), key=lambda item: (999 if item[0] == 'other' else list(bucket_descriptions).index(item[0]) if item[0] in bucket_descriptions else 998, item[0]))), 'files': sorted(files, key=lambda row: (row['bucket'], row['path'])), 'rust_inline_tests': _rust_inline_test_stats(plan), 'rust_split_test_files': _rust_split_test_file_stats(plan)}
 
 def _member_name(rel_path: str) -> str:
     parts = rel_path.split('/')
@@ -395,6 +396,8 @@ def _rust_inline_test_stats(plan: RepoPlan) -> dict[str, Any]:
             continue
         if _glob_any(rel_path, (*DEFAULT_IGNORE, *plan.extra_ignore)):
             continue
+        if _glob_any(rel_path, SINEX_RUST_SPLIT_TEST_PATTERNS):
+            continue
         if '/src/' not in rel_path:
             continue
         lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
@@ -412,6 +415,30 @@ def _rust_inline_test_stats(plan: RepoPlan) -> dict[str, Any]:
         entry['lines'] += file_lines
         largest.append({'path': rel_path, 'blocks': len(blocks), 'lines': file_lines, 'file_lines': len(lines)})
     return {'files': total_files, 'blocks': total_blocks, 'lines': total_lines, 'by_member': dict(sorted(by_member.items(), key=lambda item: (-item[1]['lines'], item[0]))), 'largest_files': sorted(largest, key=lambda row: (-row['lines'], row['path']))[:25], 'note': "These lines are inside #[cfg(test)] mod tests blocks in src files. They are counted by tokei in the owning source file's bucket because tokei is file-oriented, not Rust item-oriented."}
+
+def _rust_split_test_file_stats(plan: RepoPlan) -> dict[str, Any]:
+    by_member: dict[str, dict[str, Any]] = {}
+    largest: list[dict[str, Any]] = []
+    total_lines = 0
+    total_files = 0
+    for path in sorted(plan.path.rglob('*.rs')):
+        try:
+            rel_path = path.relative_to(plan.path).as_posix()
+        except ValueError:
+            continue
+        if _glob_any(rel_path, (*DEFAULT_IGNORE, *plan.extra_ignore)):
+            continue
+        if not _glob_any(rel_path, SINEX_RUST_SPLIT_TEST_PATTERNS):
+            continue
+        line_count = len(path.read_text(encoding='utf-8', errors='ignore').splitlines())
+        total_files += 1
+        total_lines += line_count
+        member = _member_name(rel_path)
+        entry = by_member.setdefault(member, {'files': 0, 'lines': 0})
+        entry['files'] += 1
+        entry['lines'] += line_count
+        largest.append({'path': rel_path, 'lines': line_count})
+    return {'files': total_files, 'lines': total_lines, 'by_member': dict(sorted(by_member.items(), key=lambda item: (-item[1]['lines'], item[0]))), 'largest_files': sorted(largest, key=lambda row: (-row['lines'], row['path']))[:25], 'note': 'These are Rust test-only files colocated under src/ and routed to the test-suite bucket instead of production code slices.'}
 
 def _rust_inline_test_blocks(lines: Sequence[str]) -> list[dict[str, int]]:
     blocks: list[dict[str, int]] = []
@@ -467,7 +494,19 @@ def _stats_markdown(plan: RepoPlan, stats: dict[str, Any]) -> str:
         lines.append('')
     else:
         lines.extend(('- No inline Rust test modules detected under `src/`.', ''))
-    lines.extend(('', '## Notes', '', '- Buckets are assigned by the first matching project-relative glob.', "- Embedded languages reported by tokei, such as fenced code in Markdown, are counted in the owning file's bucket.", '- The `other` bucket is intentionally explicit: it catches files outside the project-specific attribution model.', '- Inline Rust test modules are reported separately because tokei cannot split Rust source files by item.', ''))
+    split = stats.get('rust_split_test_files') or {}
+    lines.extend(('', '## Split Rust Test Files', ''))
+    if split.get('files'):
+        lines.extend((f"- Split test files under `src/`: {split['files']:,}", f"- Split test file lines: {split['lines']:,}", '', '| Member | Files | Lines |', '| --- | ---: | ---: |'))
+        for member, values in list((split.get('by_member') or {}).items())[:12]:
+            lines.append(f"| `{member}` | {values['files']:,} | {values['lines']:,} |")
+        lines.extend(('', 'Largest split test files:', '', '| File | Lines |', '| --- | ---: |'))
+        for row in list(split.get('largest_files') or [])[:12]:
+            lines.append(f"| `{row['path']}` | {row['lines']:,} |")
+        lines.append('')
+    else:
+        lines.extend(('- No split Rust test files detected under `src/`.', ''))
+    lines.extend(('', '## Notes', '', '- Buckets are assigned by the first matching project-relative glob.', "- Embedded languages reported by tokei, such as fenced code in Markdown, are counted in the owning file's bucket.", '- The `other` bucket is intentionally explicit: it catches files outside the project-specific attribution model.', '- Inline Rust test modules are reported separately because tokei cannot split Rust source files by item.', '- Split Rust test files under `src/` are routed to the `test-suite` bucket even though they live next to production modules.', ''))
     return '\n'.join(lines)
 
 def _generate_tokei_stats(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None=None) -> tuple[list[str], int]:
@@ -517,15 +556,22 @@ def _github_context_summary() -> str:
     refreshed = int(manifest.get('detail_refreshes') or 0)
     reused = int(manifest.get('detail_reuses') or 0)
     missed = int(manifest.get('detail_misses') or 0)
+    stale_open = sum((int(value or 0) for value in (manifest.get('project_stale_open_removed') or {}).values()))
     fetched_refs = int(manifest.get('missing_commit_refs_fetched') or 0)
     deferred_refs = int(manifest.get('missing_commit_refs_deferred') or 0)
     parts = [f'{inventory} inventory', f'{refreshed} detail refresh', f'{reused} reused']
     if missed:
         parts.append(f'{missed} missed')
+    if stale_open:
+        parts.append(f'{stale_open} stale open removed')
     if fetched_refs or deferred_refs:
         parts.append(f'{fetched_refs} commit refs fetched')
     if deferred_refs:
         parts.append(f'{deferred_refs} deferred')
+    reasons = manifest.get('detail_decision_reasons') or {}
+    noisy_reasons = {str(key): int(value) for key, value in reasons.items() if key != 'unchanged_inventory' and int(value or 0)}
+    if noisy_reasons:
+        parts.append('hydrate reasons ' + ', '.join((f'{key}={value}' for key, value in sorted(noisy_reasons.items()))))
     return '; '.join(parts)
 
 def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
@@ -1026,6 +1072,33 @@ def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str
     _emit(log, f'  [green]✓[/green] overview ({_fmt_bytes(size)})')
     return ([json_path.name, md_path.name], size)
 
+def _generate_snapshot_audit(plan: RepoPlan, out_dir: Path, generated_at: str, *, previous_manifest: dict[str, Any] | None=None, log: list[str] | None=None) -> tuple[list[str], int]:
+    artifacts = _artifact_rows(out_dir, plan)
+    agent_audit = _read_json_file(out_dir / f'{plan.name}-agent-audit.json')
+    ignore_audit = _read_json_file(out_dir / f'{plan.name}-ignore-audit.json')
+    overview = _read_json_file(out_dir / f'{plan.name}-overview.json')
+    previous_artifacts = {str(row.get('name')): int(row.get('bytes') or 0) for row in (previous_manifest or {}).get('artifacts', []) if row.get('name')}
+    size_delta = [{'name': row['name'], 'bytes': row['bytes'], 'previous_bytes': previous_artifacts.get(str(row['name'])), 'delta_bytes': None if str(row['name']) not in previous_artifacts else int(row['bytes']) - previous_artifacts[str(row['name'])]} for row in artifacts]
+    size_delta = sorted(size_delta, key=lambda item: abs(int(item['delta_bytes'] or 0)), reverse=True)[:12]
+    agent_summary = agent_audit.get('summary_by_class') or {}
+    github = _github_context_manifest or {}
+    audit = {'project': plan.name, 'generated_at': generated_at, 'status': 'attention' if (overview.get('attention') or {}).get('large_artifacts') else 'ok', 'counts': overview.get('counts') or {}, 'size': {'total_bytes': sum((int(row['bytes']) for row in artifacts)), 'largest_artifacts': sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True)[:12], 'largest_deltas': size_delta}, 'agent_workspace': {'summary_by_class': agent_summary, 'active_context_entries': int((agent_summary.get('active-context') or {}).get('entries') or 0), 'devloop_entries': int((agent_summary.get('transient-heavy') or {}).get('entries') or 0), 'archive_or_generated_bytes': int((agent_summary.get('archive-or-generated') or {}).get('bytes') or 0)}, 'local_state': {'ignored_local_state_bytes': int(ignore_audit.get('ignored_local_state_bytes') or 0), 'tracked_hidden_bytes': int(ignore_audit.get('tracked_hidden_bytes') or 0)}, 'branch_delta': {'patch_bytes': int((overview.get('attention') or {}).get('branch_delta_patch_bytes') or 0)}, 'github_context': {'inventory_items_seen': int(github.get('inventory_items_seen') or 0), 'detail_refreshes': int(github.get('detail_refreshes') or 0), 'detail_reuses': int(github.get('detail_reuses') or 0), 'detail_misses': int(github.get('detail_misses') or 0), 'detail_decision_reasons': github.get('detail_decision_reasons') or {}, 'project_detail_refreshes': github.get('project_detail_refreshes') or {}, 'project_detail_reuses': github.get('project_detail_reuses') or {}, 'project_stale_open_removed': github.get('project_stale_open_removed') or {}}, 'open_first': overview.get('open_first') or []}
+    json_path = out_dir / f'{plan.name}-snapshot-audit.json'
+    md_path = out_dir / f'{plan.name}-snapshot-audit.md'
+    json_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    lines = [f'# {plan.name} snapshot audit', '', f'Generated: {generated_at}', f"Status: `{audit['status']}`", '', '## Open First', '', *(f'- `{item}`' for item in audit['open_first']), '', '## GitHub Context', '', f"- Inventory items: {audit['github_context']['inventory_items_seen']}", f"- Detail refreshes/reuses: {audit['github_context']['detail_refreshes']} / {audit['github_context']['detail_reuses']}", f"- Stale open rows removed: {sum((int(v or 0) for v in audit['github_context']['project_stale_open_removed'].values()))}", '', '## Largest Artifacts', '', '| Artifact | Scope | Size |', '| --- | --- | ---: |']
+    for row in audit['size']['largest_artifacts']:
+        lines.append(f"| `{row['name']}` | `{row['scope']}` | {_fmt_bytes(int(row['bytes']))} |")
+    lines.extend(('', '## Largest Size Deltas', '', '| Artifact | Current | Delta |', '| --- | ---: | ---: |'))
+    for row in audit['size']['largest_deltas']:
+        delta = row['delta_bytes']
+        delta_text = 'new' if delta is None else _fmt_bytes(int(delta))
+        lines.append(f"| `{row['name']}` | {_fmt_bytes(int(row['bytes']))} | {delta_text} |")
+    md_path.write_text('\n'.join(lines), encoding='utf-8')
+    size = json_path.stat().st_size + md_path.stat().st_size
+    _emit(log, f'  [green]✓[/green] snapshot-audit ({_fmt_bytes(size)})')
+    return ([json_path.name, md_path.name], size)
+
 def _write_project_manifest(plan: RepoPlan, out_dir: Path, generated_at: str, git: dict[str, str | bool], xml_errors: list[str], log: list[str] | None=None) -> tuple[str, int]:
     manifest_path = out_dir / f'{plan.name}-manifest.json'
     artifacts = []
@@ -1049,23 +1122,26 @@ def _write_root_index(output_root: Path, plans: Sequence[RepoPlan], results: dic
         manifest_path = output_root / plan.name / f'{plan.name}-manifest.json'
         stats_path = output_root / plan.name / f'{plan.name}-tokei-stats.json'
         overview_path = output_root / plan.name / f'{plan.name}-overview.json'
+        audit_path = output_root / plan.name / f'{plan.name}-snapshot-audit.json'
         manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {}
         stats = json.loads(stats_path.read_text(encoding='utf-8')) if stats_path.exists() else {}
         overview = json.loads(overview_path.read_text(encoding='utf-8')) if overview_path.exists() else {}
+        audit = json.loads(audit_path.read_text(encoding='utf-8')) if audit_path.exists() else {}
         artifacts = manifest.get('artifacts') or []
         buckets = stats.get('buckets') or {}
-        projects.append({'name': plan.name, 'status': results.get(plan.name, {}).get('status', 'missing'), 'source': str(plan.path), 'git': manifest.get('git', results.get(plan.name, {}).get('git')), 'total_bytes': sum((int(a.get('bytes') or 0) for a in artifacts)), 'artifact_count': len(artifacts), 'largest_artifacts': sorted(artifacts, key=lambda artifact: int(artifact.get('bytes') or 0), reverse=True)[:10], 'buckets': buckets, 'inline_rust_tests': stats.get('rust_inline_tests'), 'overview': overview, 'manifest': str(manifest_path.relative_to(output_root)) if manifest_path.exists() else None, 'overview_markdown': f'{plan.name}/{plan.name}-overview.md' if (output_root / plan.name / f'{plan.name}-overview.md').exists() else None})
+        projects.append({'name': plan.name, 'status': results.get(plan.name, {}).get('status', 'missing'), 'source': str(plan.path), 'git': manifest.get('git', results.get(plan.name, {}).get('git')), 'total_bytes': sum((int(a.get('bytes') or 0) for a in artifacts)), 'artifact_count': len(artifacts), 'largest_artifacts': sorted(artifacts, key=lambda artifact: int(artifact.get('bytes') or 0), reverse=True)[:10], 'buckets': buckets, 'inline_rust_tests': stats.get('rust_inline_tests'), 'overview': overview, 'snapshot_audit': audit, 'manifest': str(manifest_path.relative_to(output_root)) if manifest_path.exists() else None, 'overview_markdown': f'{plan.name}/{plan.name}-overview.md' if (output_root / plan.name / f'{plan.name}-overview.md').exists() else None, 'snapshot_audit_markdown': f'{plan.name}/{plan.name}-snapshot-audit.md' if (output_root / plan.name / f'{plan.name}-snapshot-audit.md').exists() else None})
     index = {'generated_at': generated_at, 'repomix_version': repomix_version, 'output_root': str(output_root), 'total_elapsed_s': total_elapsed, 'projects': projects}
     json_path = output_root / 'index.json'
     md_path = output_root / 'index.md'
     json_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    lines = ['# Chisel Snapshot Index', '', f'Generated: {generated_at}', f'Repomix: `{repomix_version}`', f'Output root: `{output_root}`', '', '## Projects', '', '| Project | Status | Branch | Dirty | Open issues | Open PRs | Artifacts | Size | Overview | Manifest |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |']
+    lines = ['# Chisel Snapshot Index', '', f'Generated: {generated_at}', f'Repomix: `{repomix_version}`', f'Output root: `{output_root}`', '', '## Projects', '', '| Project | Status | Branch | Dirty | Open issues | Open PRs | Artifacts | Size | Overview | Audit | Manifest |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |']
     for project in projects:
         git = project.get('git') or {}
         manifest_link = project['manifest'] or '-'
         overview_link = project['overview_markdown'] or '-'
+        audit_link = project['snapshot_audit_markdown'] or '-'
         counts = (project.get('overview') or {}).get('counts') or {}
-        lines.append(f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | {str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | {counts.get('prs_open', 0)} | {project['artifact_count']} | {_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{manifest_link}` |")
+        lines.append(f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | {str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | {counts.get('prs_open', 0)} | {project['artifact_count']} | {_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{audit_link}` | `{manifest_link}` |")
     lines.extend(('', '## Attention Summary', '', '| Project | Large artifacts | Agent review | Agent archive/generated | Branch delta |', '| --- | ---: | ---: | ---: | ---: |'))
     for project in projects:
         attention = (project.get('overview') or {}).get('attention') or {}
@@ -1107,6 +1183,8 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         return {'project': plan.name, 'status': 'missing', 'log_lines': [f'[bold]{plan.name}[/bold]  [red]missing[/red]  [dim]{plan.path}[/dim]']}
     t0 = dt.datetime.now()
     out_dir = output_root / plan.name
+    previous_manifest_path = out_dir / f'{plan.name}-manifest.json'
+    previous_manifest = _read_json_file(previous_manifest_path) if previous_manifest_path.exists() else None
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1155,6 +1233,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         agent_audit_bytes = 0
         delta_files_done: list[str] = []
         delta_bytes = 0
+        snapshot_audit_files_done: list[str] = []
         for future in as_completed(futures):
             kind, label = futures[future]
             try:
@@ -1202,7 +1281,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
                 errors.append(f'{kind}: {msg}')
                 _emit(log, f'  [red]✗[/red] {kind}: {msg}')
                 _print_live(f'  ✗ {plan.name}: {kind} {label}: {msg}')
-    extra_bytes = _copy_extras(plan, out_dir, log)
+    _copy_extras(plan, out_dir, log)
     xml_errors: list[str] = []
     for xml_file in sorted(out_dir.glob('*.xml')):
         err = _validate_xml(xml_file)
@@ -1212,13 +1291,14 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         for e in xml_errors:
             _emit(log, f'  [red]✗ XML invalid:[/red] {e}')
     overview_files_done, overview_bytes = _generate_snapshot_overview(plan, out_dir, generated_at, git, issues_open=issues_open, issues_closed=issues_closed, prs_open=prs_open, prs_merged=prs_merged, gitlog_commits=gitlog_commits, xml_errors=xml_errors, log=log)
+    snapshot_audit_files_done, _snapshot_audit_bytes = _generate_snapshot_audit(plan, out_dir, generated_at, previous_manifest=previous_manifest, log=log)
     manifest_name, manifest_bytes = _write_project_manifest(plan, out_dir, generated_at, git, xml_errors, log)
     combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
     combined_tar_name = combined_tar_result[0] if combined_tar_result is not None else None
     combined_tar_bytes = combined_tar_result[1] if combined_tar_result is not None else 0
     elapsed = (dt.datetime.now() - t0).total_seconds()
     total_bytes = sum((path.stat().st_size for path in out_dir.iterdir() if path.is_file()))
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'stats_files': stats_files_done, 'audit_files': audit_files_done, 'agent_audit_files': agent_audit_files_done, 'delta_files': delta_files_done, 'overview_files': overview_files_done, 'manifest': manifest_name, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'stats_files': stats_files_done, 'audit_files': audit_files_done, 'agent_audit_files': agent_audit_files_done, 'delta_files': delta_files_done, 'overview_files': overview_files_done, 'snapshot_audit_files': snapshot_audit_files_done, 'manifest': manifest_name, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict[str, Any]:
     global _github_context_index, _github_context_manifest, _github_context_ready

@@ -42,7 +42,7 @@ class MachineExperimentManifestDiagnostics:
     validation_issue_count: int
     promotion_issue_count: int
     controlled_run_invalid_count: int
-    legacy_observational_count: int
+    ad_hoc_observational_count: int
     template_count: int
     out_of_window_count: int
     by_kind: dict[str, int]
@@ -98,9 +98,9 @@ def analyze_machine_experiment_manifest_diagnostics(
             1 for row in diagnostics
             if row.manifest_kind == "executed_run" and not row.controlled_benchmark_valid
         ),
-        legacy_observational_count=sum(
+        ad_hoc_observational_count=sum(
             1 for row in diagnostics
-            if row.manifest_kind == "legacy_or_ad_hoc_run" and row.source_loadable
+            if row.manifest_kind == "ad_hoc_run" and row.source_loadable
         ),
         template_count=sum(1 for row in diagnostics if row.manifest_kind == "template"),
         out_of_window_count=sum(1 for row in diagnostics if row.in_window is False),
@@ -228,7 +228,7 @@ def _manifest_kind(payload: dict[str, Any]) -> str:
         return "template"
     if schema == "lynchpin.machine_experiment.run.v1":
         return "executed_run"
-    return "legacy_or_ad_hoc_run"
+    return "ad_hoc_run"
 
 
 def _str(value: object) -> str | None:

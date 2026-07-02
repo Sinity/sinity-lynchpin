@@ -7,13 +7,24 @@ time; PEP 563 string annotations cause TypeError.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
+
+def _compact_issue_or_pr(row: dict[str, Any], *, body_preview_chars: int = 240) -> dict[str, Any]:
+    """Return a bounded list-row shape; full bodies live on get_* detail tools."""
+    compact = dict(row)
+    body = compact.pop("body", None)
+    if isinstance(body, str) and body:
+        compact["body_preview"] = body[:body_preview_chars]
+        compact["body_truncated"] = len(body) > body_preview_chars
+    else:
+        compact["body_preview"] = ""
+        compact["body_truncated"] = False
+    return compact
 
 
-@app.tool()
 def list_github_issues(
     project: str | None = None,
     state: str | None = None,
+    limit: int = 100,
 ) -> dict[str, Any]:
     """List GitHub issues from the substrate, optionally filtered by project and/or state.
 
@@ -21,8 +32,9 @@ def list_github_issues(
         project: Project name (e.g. "sinex", "sinity-lynchpin"). If omitted, all projects.
         state: Issue state filter: "open" or "closed". If omitted, all states.
 
-    Returns issues with number, title, body, labels, author, state, comment_count,
-    created_at, closed_at, and url. Does not include comment bodies — use
+    Returns compact issue rows with number, title, labels, author, state,
+    comment_count, created_at, closed_at, url, and a bounded body_preview. Does
+    not include full bodies or comment bodies — use
     get_github_issue() for full content including comments.
     """
     from lynchpin.mcp.tools._utils import json_safe as _json_safe
@@ -33,7 +45,9 @@ def list_github_issues(
     try:
         with connect(read_only=True) as conn:
             for row in iter_github_issues(conn, project=project, state=state):
-                issues.append(_json_safe(row))
+                if len(issues) >= max(int(limit), 0):
+                    break
+                issues.append(_json_safe(_compact_issue_or_pr(row)))
     except Exception as exc:
         return {"error": str(exc), "issues": []}
 
@@ -41,11 +55,12 @@ def list_github_issues(
         "project_filter": project,
         "state_filter": state,
         "total": len(issues),
+        "limit": limit,
+        "detail_hint": "Use get_github_issue(project, number) for the full body and comments.",
         "issues": issues,
     }
 
 
-@app.tool()
 def get_github_issue(project: str, number: int) -> dict[str, Any]:
     """Return a full GitHub issue including title, body, labels, and all comments.
 
@@ -75,10 +90,10 @@ def get_github_issue(project: str, number: int) -> dict[str, Any]:
     })
 
 
-@app.tool()
 def list_github_prs(
     project: str | None = None,
     state: str | None = None,
+    limit: int = 100,
 ) -> dict[str, Any]:
     """List GitHub PRs from the substrate, optionally filtered by project and/or state.
 
@@ -86,10 +101,11 @@ def list_github_prs(
         project: Project name (e.g. "sinex"). If omitted, all projects.
         state: PR state filter: "open", "closed", or "merged". If omitted, all states.
 
-    Returns PRs with number, title, state, author, labels, merge_commit, review_decision,
-    comment_count, review_count, review_comment_count, created_at, merged_at, and url.
-    The merge_commit SHA can be JOINed to commit_fact.sha to find the squash-merge commit.
-    For full content (body, comments, reviews), use get_github_pr().
+    Returns compact PR rows with number, title, state, author, labels,
+    merge_commit, review_decision, counts, dates, url, and a bounded
+    body_preview. The merge_commit SHA can be JOINed to commit_fact.sha to find
+    the squash-merge commit. For full content (body, comments, reviews), use
+    get_github_pr().
     """
     from lynchpin.mcp.tools._utils import json_safe as _json_safe
     from lynchpin.substrate.connection import connect
@@ -99,7 +115,9 @@ def list_github_prs(
     try:
         with connect(read_only=True) as conn:
             for row in iter_github_prs(conn, project=project, state=state):
-                prs.append(_json_safe(row))
+                if len(prs) >= max(int(limit), 0):
+                    break
+                prs.append(_json_safe(_compact_issue_or_pr(row)))
     except Exception as exc:
         return {"error": str(exc), "prs": []}
 
@@ -107,11 +125,12 @@ def list_github_prs(
         "project_filter": project,
         "state_filter": state,
         "total": len(prs),
+        "limit": limit,
+        "detail_hint": "Use get_github_pr(project, number) for the full body, comments, and reviews.",
         "prs": prs,
     }
 
 
-@app.tool()
 def get_github_pr(project: str, number: int) -> dict[str, Any]:
     """Return a full GitHub PR including title, body, labels, comments, reviews, and review comments.
 

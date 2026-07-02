@@ -8,7 +8,6 @@ cause ``issubclass('str', Context)`` → TypeError.
 
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import (
     ensure_substrate_materialized_for_read,
     half_open_date_window,
@@ -102,7 +101,6 @@ def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-@app.tool()
 def query_substrate(
     sql: str,
     parameters: list[Any] | None = None,
@@ -156,7 +154,6 @@ def query_substrate(
     }
 
 
-@app.tool()
 def list_substrate_tables() -> list[dict[str, Any]]:
     """List substrate tables with their column names and types.
 
@@ -446,7 +443,6 @@ def substrate_source_status(
     ]
 
 
-@app.tool()
 def contract_coverage(
     source: str | None = None,
     start: str | None = None,
@@ -1192,7 +1188,6 @@ def substrate_consistency_audit() -> dict[str, Any]:
 # ── Consolidated Dispatchers ────────────────────────────────────────────────
 
 
-@app.tool()
 def substrate_health(
     view: str = "readiness",
     refresh_id: str | None = None,
@@ -1225,7 +1220,6 @@ def substrate_health(
     return {"error": f"unknown view {view!r}. choices: readiness, sources, analysis, runs, steps, consistency"}
 
 
-@app.tool()
 def evidence_graph(
     view: str = "builds",
     refresh_id: str | None = None,
@@ -1245,7 +1239,6 @@ def evidence_graph(
     return {"error": f"unknown view {view!r}. choices: builds, summary"}
 
 
-@app.tool()
 def analysis_evidence(
     view: str = "claims",
     claim_id: str | None = None,

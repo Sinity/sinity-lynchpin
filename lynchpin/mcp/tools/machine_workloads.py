@@ -11,10 +11,8 @@ string annotations for tool parameters.
 from datetime import date
 from typing import Any
 
-from lynchpin.mcp.server import app
 
 
-@app.tool()
 def machine_workload_summary(
     start: str | None = None,
     end: str | None = None,
@@ -42,7 +40,6 @@ def machine_workload_summary(
     }
 
 
-@app.tool()
 def machine_orphan_processes(
     min_duration_hours: float = 4.0,
     start: str | None = None,
@@ -73,7 +70,6 @@ def machine_orphan_processes(
     }
 
 
-@app.tool()
 def machine_agent_sessions(
     start: str | None = None,
     end: str | None = None,
@@ -105,7 +101,6 @@ def machine_agent_sessions(
     }
 
 
-@app.tool()
 def machine_co_presence(
     min_kinds: int = 2,
     start: str | None = None,
@@ -138,7 +133,6 @@ def machine_co_presence(
     }
 
 
-@app.tool()
 def machine_session_profiles(
     start: str | None = None,
     end: str | None = None,
@@ -180,7 +174,6 @@ def machine_session_profiles(
     }
 
 
-@app.tool()
 def machine_scope_timeline(
     start: str | None = None,
     end: str | None = None,
@@ -211,7 +204,6 @@ def machine_scope_timeline(
     }
 
 
-@app.tool()
 def machine_day_report(
     target_date: str,
 ) -> dict[str, Any]:
@@ -234,7 +226,6 @@ def machine_day_report(
     return report.to_dict()
 
 
-@app.tool()
 def machine_hourly_heatmap(
     start: str | None = None,
     end: str | None = None,

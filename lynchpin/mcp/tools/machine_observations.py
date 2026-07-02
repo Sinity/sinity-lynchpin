@@ -1,7 +1,6 @@
 """Machine work observations, command performance, feature frames, and mining tools."""
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._machine_helpers import (
     _analysis_artifact,
     _artifact_rows,
@@ -14,7 +13,6 @@ from lynchpin.mcp.tools._machine_helpers import (
     _round,
     _workflow_mechanics_artifact_payload,
 )
-from lynchpin.mcp.tools._utils import json_safe as _json_safe
 
 
 def machine_observational_deltas(
@@ -256,7 +254,6 @@ def _merge_command_tool_summaries(
     return sorted(merged.values(), key=lambda row: (-int(row.get("command_count") or 0), str(row.get("tool") or "")))
 
 
-@app.tool()
 def machine_command_performance(
     tool: str | None = None,
     project: str | None = None,
@@ -326,7 +323,6 @@ def machine_command_performance(
     return {"summary": summary, "windows": rows[:max(limit, 0)]}
 
 
-@app.tool()
 def machine_devshell_performance(
     command_class: str | None = None,
     pressure_only: bool = False,
@@ -1026,7 +1022,6 @@ def machine_observation_cohorts(
     }
 
 
-@app.tool()
 def machine_work_observations(
     view: str = "daily",
     start: str | None = None,
@@ -1060,7 +1055,6 @@ def machine_work_observations(
     return {"error": f"unknown view {view!r}. choices: daily, mechanics, stage_summary, test_summary, artifact, slow_tests, stage_daily, failures"}
 
 
-@app.tool()
 def machine_mining(
     view: str = "scans",
     limit: int = 100,
@@ -1080,7 +1074,6 @@ def machine_mining(
     return {"error": f"unknown view {view!r}. choices: scans, exposures, clusters, cohorts"}
 
 
-@app.tool()
 def machine_observational(
     view: str = "deltas",
     tool: str | None = None,
@@ -1098,7 +1091,6 @@ def machine_observational(
     return {"error": f"unknown view {view!r}. choices: deltas, baselines"}
 
 
-@app.tool()
 def machine_feature_frames(
     view: str = "frames",
     limit: int = 100,

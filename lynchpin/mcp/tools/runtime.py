@@ -10,7 +10,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import latest_materialized_refresh_id
 from lynchpin.mcp.tools._utils import mcp_tool_registry_summary
 from lynchpin.mcp.tools._utils import registered_tool_names
@@ -118,7 +117,6 @@ def diagnostic_ledger_status() -> dict[str, Any]:
     return diagnostic_ledger_status_payload()
 
 
-@app.tool()
 def observability_status() -> dict[str, Any]:
     """Return compact live status for panels and operator prompts."""
 
@@ -188,21 +186,15 @@ def diagnostic_ledger_dependency_edges(
     return freshness_dependencies(target=target, receipt_id=receipt_id, limit=limit)
 
 
-@app.tool()
 def mcp_status(view: str = "runtime") -> dict[str, Any]:
-    """MCP server introspection. view: runtime (code path/git/substrate state), self_check (contract-declared vs live tools), guide (compact routing guide)."""
+    """MCP server introspection. view: runtime (code path/git/substrate state), self_check (contract-declared vs live tools)."""
     if view == "runtime":
         return mcp_runtime_status()
     if view == "self_check":
         return mcp_surface_self_check()
-    if view == "guide":
-        from lynchpin.mcp.tools.capability import mcp_guide
-
-        return mcp_guide()
-    return {"error": f"unknown view {view!r}. choices: runtime, self_check, guide"}
+    return {"error": f"unknown view {view!r}. choices: runtime, self_check"}
 
 
-@app.tool()
 def diagnostic_ledger(
     view: str = "status",
     target: str | None = None,
