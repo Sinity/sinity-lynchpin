@@ -164,7 +164,7 @@ def _fmt_bytes(n: int) -> str:
     return f'{n} B'
 
 def _planned_output_count(plan: RepoPlan) -> int:
-    return len(plan.slices) + int(plan.compressed) + 12 + len(plan.extra_copy)
+    return len(plan.slices) + int(plan.compressed) + 16 + len(plan.extra_copy)
 
 def _print_scope(plans: Sequence[RepoPlan], output_root: Path) -> None:
     if _console is not None:
@@ -702,6 +702,168 @@ def _generate_prs(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[st
     _emit(log, f'  [dim]prs: {len(open_prs)} open / {len(merged_prs)} merged[/dim]')
     return (len(open_prs), len(merged_prs))
 
+def _bd_json(cmd: Sequence[str], *, cwd: Path) -> Any:
+    result = _run(['bd', *cmd, '--json'], cwd=cwd)
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or 'bd command failed').strip()
+        raise SourceUnavailableError('beads', reason=details)
+    text = result.stdout.strip()
+    if not text:
+        return None
+    return json.loads(text)
+
+def _bd_export_rows(repo: Path) -> list[dict[str, Any]]:
+    result = _run(['bd', 'export', '--include-memories'], cwd=repo)
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or 'bd export failed').strip()
+        raise SourceUnavailableError('beads', reason=details)
+    rows: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        value = json.loads(line)
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+def _beads_issue_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get('_type', 'issue') == 'issue']
+
+def _beads_memory_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get('_type') == 'memory']
+
+def _beads_status_counts(issues: Sequence[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for issue in issues:
+        status = str(issue.get('status') or 'unknown')
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+def _beads_type_counts(issues: Sequence[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for issue in issues:
+        issue_type = str(issue.get('issue_type') or issue.get('type') or 'unknown')
+        counts[issue_type] = counts.get(issue_type, 0) + 1
+    return counts
+
+def _beads_dependency_edges(issues: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+    for issue in issues:
+        issue_id = str(issue.get('id') or '')
+        if not issue_id:
+            continue
+        for key in ('dependencies', 'depends_on', 'blocked_by'):
+            values = issue.get(key) or ()
+            if isinstance(values, str):
+                values = [values]
+            for value in values:
+                if isinstance(value, dict):
+                    target = value.get('id') or value.get('issue_id') or value.get('depends_on_id')
+                    relation = value.get('type') or key
+                else:
+                    target = value
+                    relation = key
+                if target:
+                    edges.append({'issue': issue_id, 'depends_on': str(target), 'type': str(relation)})
+        for key in ('dependents', 'blocks', 'blocking'):
+            values = issue.get(key) or ()
+            if isinstance(values, str):
+                values = [values]
+            for value in values:
+                if isinstance(value, dict):
+                    target = value.get('id') or value.get('issue_id') or value.get('dependent_id')
+                    relation = value.get('type') or key
+                else:
+                    target = value
+                    relation = key
+                if target:
+                    edges.append({'issue': str(target), 'depends_on': issue_id, 'type': str(relation)})
+    return edges
+
+def _beads_list_ids(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(item.get('id')) for item in value if isinstance(item, dict) and item.get('id')}
+
+def _build_beads_xml(issues: Sequence[dict[str, Any]], repo_path: Path, generated_at: str, *, ready_ids: set[str], blocked_ids: set[str], dependencies: Sequence[dict[str, str]]) -> str:
+    root = ET.Element('beads', {'repository': str(repo_path), 'generated-at': generated_at, 'count': str(len(issues)), 'ready-count': str(len(ready_ids)), 'blocked-count': str(len(blocked_ids))})
+    dep_map: dict[str, list[dict[str, str]]] = {}
+    for edge in dependencies:
+        dep_map.setdefault(edge['issue'], []).append(edge)
+    for issue in issues:
+        issue_id = str(issue.get('id') or '')
+        priority = issue.get('priority')
+        el = ET.SubElement(root, 'issue', {'id': issue_id, 'status': str(issue.get('status') or ''), 'type': str(issue.get('issue_type') or issue.get('type') or ''), 'priority': '' if priority is None else str(priority), 'assignee': str(issue.get('assignee') or ''), 'owner': str(issue.get('owner') or ''), 'ready': str(issue_id in ready_ids).lower(), 'blocked': str(issue_id in blocked_ids).lower(), 'created-at': str(issue.get('created_at') or ''), 'updated-at': str(issue.get('updated_at') or ''), 'closed-at': str(issue.get('closed_at') or '')})
+        title = ET.SubElement(el, 'title')
+        title.text = str(issue.get('title') or '')
+        description = ET.SubElement(el, 'description')
+        description.text = str(issue.get('description') or '')
+        labels = issue.get('labels') or ()
+        labels_el = ET.SubElement(el, 'labels')
+        if isinstance(labels, list):
+            labels_el.text = ', '.join((str(label.get('name') if isinstance(label, dict) else label) for label in labels))
+        deps_el = ET.SubElement(el, 'dependencies')
+        for edge in dep_map.get(issue_id, ()):
+            ET.SubElement(deps_el, 'dependency', {'depends-on': edge['depends_on'], 'type': edge['type']})
+        comments_el = ET.SubElement(el, 'comments')
+        comments = issue.get('comments') or ()
+        if isinstance(comments, list):
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                comment_el = ET.SubElement(comments_el, 'comment', {'author': str(comment.get('author') or comment.get('created_by') or ''), 'created-at': str(comment.get('created_at') or '')})
+                body = ET.SubElement(comment_el, 'body')
+                body.text = str(comment.get('body') or comment.get('text') or '')
+    ET.indent(root, space='  ')
+    return ET.tostring(root, encoding='unicode', xml_declaration=True)
+
+def _beads_markdown(plan: RepoPlan, generated_at: str, summary: dict[str, Any], issues: Sequence[dict[str, Any]], *, ready_ids: set[str], blocked_ids: set[str]) -> str:
+    openish = [issue for issue in issues if str(issue.get('status') or '') not in {'closed', 'done', 'resolved'}]
+    priority_rows = sorted(openish, key=lambda issue: (int(issue.get('priority') if issue.get('priority') is not None else 99), str(issue.get('updated_at') or '')))[:25]
+    lines = [f'# {plan.name} Beads context', '', f'Generated: {generated_at}', f'Repository: `{plan.path}`', '', '## Summary', '', '| Signal | Count |', '| --- | ---: |']
+    for key in ('total_issues', 'open_issues', 'in_progress_issues', 'blocked_issues', 'deferred_issues', 'closed_issues', 'ready_issues'):
+        if key in summary:
+            lines.append(f"| {key.replace('_', ' ').title()} | {int(summary.get(key) or 0)} |")
+    lines.extend((f'| Exported issues | {len(issues)} |', f'| Ready IDs | {len(ready_ids)} |', f'| Blocked IDs | {len(blocked_ids)} |', '', '## Active Work', '', '| ID | P | Status | Type | Ready | Blocked | Title |', '| --- | ---: | --- | --- | --- | --- | --- |'))
+    for issue in priority_rows:
+        issue_id = str(issue.get('id') or '')
+        title = str(issue.get('title') or '').replace('|', '\\|')
+        lines.append(f"| `{issue_id}` | {issue.get('priority', '')} | `{issue.get('status', '')}` | `{issue.get('issue_type') or issue.get('type') or ''}` | {str(issue_id in ready_ids).lower()} | {str(issue_id in blocked_ids).lower()} | {title} |")
+    lines.extend(('', '## Raw Artifacts', '', f'- `{plan.name}-beads.xml` renders issue descriptions, comments, readiness, and dependencies.', f'- `{plan.name}-beads.json` carries summary counts, dependency edges, and command metadata.', f'- `{plan.name}-beads-export.jsonl` is `bd export --include-memories` for durable task and memory context.'))
+    return '\n'.join(lines) + '\n'
+
+def _generate_beads(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None=None) -> tuple[list[str], int, dict[str, Any]]:
+    try:
+        workspace = _bd_json(['where'], cwd=plan.path)
+        stats = _bd_json(['stats'], cwd=plan.path) or {}
+        ready = _bd_json(['ready'], cwd=plan.path) or []
+        blocked = _bd_json(['blocked'], cwd=plan.path) or []
+        rows = _bd_export_rows(plan.path)
+    except (FileNotFoundError, json.JSONDecodeError, SourceUnavailableError) as exc:
+        _emit(log, f'  [dim]beads: unavailable ({exc})[/dim]')
+        return ([], 0, {'available': False, 'reason': str(exc)})
+    issues = _beads_issue_rows(rows)
+    memories = _beads_memory_rows(rows)
+    ready_ids = _beads_list_ids(ready)
+    blocked_ids = _beads_list_ids(blocked)
+    dependencies = _beads_dependency_edges(issues)
+    summary = stats.get('summary') if isinstance(stats, dict) else {}
+    summary = summary if isinstance(summary, dict) else {}
+    payload = {'available': True, 'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'workspace': workspace, 'stats': stats, 'summary': summary, 'counts': {'issues': len(issues), 'memories': len(memories), 'ready': len(ready_ids), 'blocked': len(blocked_ids), 'dependencies': len(dependencies), 'by_status': _beads_status_counts(issues), 'by_type': _beads_type_counts(issues)}, 'ready_ids': sorted(ready_ids), 'blocked_ids': sorted(blocked_ids), 'dependencies': dependencies}
+    json_path = out_dir / f'{plan.name}-beads.json'
+    xml_path = out_dir / f'{plan.name}-beads.xml'
+    md_path = out_dir / f'{plan.name}-beads.md'
+    export_path = out_dir / f'{plan.name}-beads-export.jsonl'
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    xml_path.write_text(_build_beads_xml(issues, plan.path, generated_at, ready_ids=ready_ids, blocked_ids=blocked_ids, dependencies=dependencies), encoding='utf-8')
+    md_path.write_text(_beads_markdown(plan, generated_at, summary, issues, ready_ids=ready_ids, blocked_ids=blocked_ids), encoding='utf-8')
+    export_path.write_text(''.join((json.dumps(row, sort_keys=True) + '\n' for row in rows)), encoding='utf-8')
+    names = [json_path.name, xml_path.name, md_path.name, export_path.name]
+    size = sum(((out_dir / name).stat().st_size for name in names))
+    _emit(log, f'  [green]✓[/green] beads: {len(issues)} issues / {len(ready_ids)} ready / {len(blocked_ids)} blocked ({_fmt_bytes(size)})')
+    return (names, size, payload)
+
 def _generate_git_log(plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None=None) -> int:
     result = _run(['git', 'log', '--all', '--reverse', '--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e'], cwd=plan.path)
     if result.returncode != 0:
@@ -818,6 +980,8 @@ def _sha256_file(path: Path) -> str:
 def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
     if name.endswith('-overview.json') or name.endswith('-overview.md'):
         return ('overview', 'Human-oriented snapshot guide and triage summary')
+    if name.endswith('-beads.xml') or name.endswith('-beads.json') or name.endswith('-beads.md') or name.endswith('-beads-export.jsonl'):
+        return ('beads-context', 'Rendered local Beads issue, dependency, readiness, and memory context')
     if name.endswith('-all-refs.bundle'):
         return ('all-refs', 'Git bundle containing all refs')
     if name.endswith('-git-log-all-refs.xml'):
@@ -1021,7 +1185,7 @@ def _artifact_rows(out_dir: Path, plan: RepoPlan) -> list[dict[str, Any]]:
         rows.append({'name': path.name, 'bytes': path.stat().st_size, 'scope': scope, 'purpose': purpose})
     return rows
 
-def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str, git: dict[str, str | bool], *, issues_open: int, issues_closed: int, prs_open: int, prs_merged: int, gitlog_commits: int, xml_errors: list[str], log: list[str] | None=None) -> tuple[list[str], int]:
+def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str, git: dict[str, str | bool], *, issues_open: int, issues_closed: int, prs_open: int, prs_merged: int, gitlog_commits: int, xml_errors: list[str], beads: dict[str, Any] | None=None, log: list[str] | None=None) -> tuple[list[str], int]:
     artifacts = _artifact_rows(out_dir, plan)
     stats = _read_json_file(out_dir / f'{plan.name}-tokei-stats.json')
     agent_audit = _read_json_file(out_dir / f'{plan.name}-agent-audit.json')
@@ -1036,13 +1200,21 @@ def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str
     branch_delta_patch = out_dir / f'{plan.name}-branch-delta.patch'
     branch_delta_size = branch_delta_patch.stat().st_size if branch_delta_patch.exists() else 0
     xml_snapshot_count = len(plan.slices) + int(plan.compressed) + 3
-    open_first = [f'{plan.name}-overview.md', f'{plan.name}-manifest.json', f'{plan.name}-prs-open.xml' if prs_open else None, f'{plan.name}-issues-open.xml' if issues_open else None, f'{plan.name}-branch-delta.md', f'{plan.name}-tokei-stats.md', f'{plan.name}-agent-audit.md' if agent_audit else None]
+    beads = beads or {}
+    beads_counts = beads.get('counts') if beads.get('available') else {}
+    beads_counts = beads_counts if isinstance(beads_counts, dict) else {}
+    beads_issues = int(beads_counts.get('issues') or 0)
+    beads_ready = int(beads_counts.get('ready') or 0)
+    beads_blocked = int(beads_counts.get('blocked') or 0)
+    beads_dependencies = int(beads_counts.get('dependencies') or 0)
+    beads_memories = int(beads_counts.get('memories') or 0)
+    open_first = [f'{plan.name}-overview.md', f'{plan.name}-manifest.json', f'{plan.name}-beads.md' if beads.get('available') else None, f'{plan.name}-prs-open.xml' if prs_open else None, f'{plan.name}-issues-open.xml' if issues_open else None, f'{plan.name}-branch-delta.md', f'{plan.name}-tokei-stats.md', f'{plan.name}-agent-audit.md' if agent_audit else None]
     open_first = [item for item in open_first if item]
-    overview = {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'git': git, 'counts': {'configured_slices': len(plan.slices), 'xml_snapshots': xml_snapshot_count, 'artifacts': len(artifacts) + 3, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'open_issue_xml_count': _xml_declared_count(out_dir / f'{plan.name}-issues-open.xml'), 'open_pr_xml_count': _xml_declared_count(out_dir / f'{plan.name}-prs-open.xml')}, 'attention': {'xml_errors': xml_errors, 'large_artifacts': large_artifacts, 'agent_review_entries': review_agent_entries, 'agent_archive_or_generated_bytes': archive_agent_bytes, 'ignored_local_state_bytes': ignored_local_state, 'tracked_hidden_bytes': tracked_hidden, 'branch_delta_patch_bytes': branch_delta_size}, 'top_buckets': [{'name': name, 'files': bucket.get('files'), 'lines': bucket.get('lines'), 'code': bucket.get('code'), 'comments': bucket.get('comments')} for name, bucket in top_buckets], 'open_first': open_first}
+    overview = {'project': plan.name, 'source': str(plan.path), 'generated_at': generated_at, 'git': git, 'counts': {'configured_slices': len(plan.slices), 'xml_snapshots': xml_snapshot_count, 'artifacts': len(artifacts) + 3, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'beads_available': bool(beads.get('available')), 'beads_issues': beads_issues, 'beads_ready': beads_ready, 'beads_blocked': beads_blocked, 'beads_dependencies': beads_dependencies, 'beads_memories': beads_memories, 'open_issue_xml_count': _xml_declared_count(out_dir / f'{plan.name}-issues-open.xml'), 'open_pr_xml_count': _xml_declared_count(out_dir / f'{plan.name}-prs-open.xml')}, 'attention': {'xml_errors': xml_errors, 'large_artifacts': large_artifacts, 'agent_review_entries': review_agent_entries, 'agent_archive_or_generated_bytes': archive_agent_bytes, 'ignored_local_state_bytes': ignored_local_state, 'tracked_hidden_bytes': tracked_hidden, 'branch_delta_patch_bytes': branch_delta_size, 'beads_blocked': beads_blocked}, 'top_buckets': [{'name': name, 'files': bucket.get('files'), 'lines': bucket.get('lines'), 'code': bucket.get('code'), 'comments': bucket.get('comments')} for name, bucket in top_buckets], 'open_first': open_first}
     json_path = out_dir / f'{plan.name}-overview.json'
     md_path = out_dir / f'{plan.name}-overview.md'
     json_path.write_text(json.dumps(overview, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    lines = [f'# {plan.name} Chisel overview', '', f'Generated: {generated_at}', f'Source: `{plan.path}`', f"Git: `{git.get('branch', '?')}` @ `{str(git.get('commit', ''))[:8]}` dirty={str(git.get('dirty', '?')).lower()}", '', '## Counts', '', '| Signal | Count |', '| --- | ---: |', f'| Configured slices | {len(plan.slices)} |', f'| XML snapshots | {xml_snapshot_count} |', f'| Artifacts | {len(artifacts) + 3} |', f'| Open issues | {issues_open} |', f'| Open PRs | {prs_open} |', f'| Merged PRs | {prs_merged} |', f'| All-ref git commits | {gitlog_commits} |', '', '## Open First', '']
+    lines = [f'# {plan.name} Chisel overview', '', f'Generated: {generated_at}', f'Source: `{plan.path}`', f"Git: `{git.get('branch', '?')}` @ `{str(git.get('commit', ''))[:8]}` dirty={str(git.get('dirty', '?')).lower()}", '', '## Counts', '', '| Signal | Count |', '| --- | ---: |', f'| Configured slices | {len(plan.slices)} |', f'| XML snapshots | {xml_snapshot_count} |', f'| Artifacts | {len(artifacts) + 3} |', f'| Open issues | {issues_open} |', f'| Open PRs | {prs_open} |', f'| Merged PRs | {prs_merged} |', f'| Beads issues | {beads_issues} |', f'| Beads ready | {beads_ready} |', f'| Beads blocked | {beads_blocked} |', f'| All-ref git commits | {gitlog_commits} |', '', '## Open First', '']
     lines.extend((f'- `{item}`' for item in open_first))
     attention_lines: list[str] = []
     if xml_errors:
@@ -1059,6 +1231,8 @@ def _generate_snapshot_overview(plan: RepoPlan, out_dir: Path, generated_at: str
         attention_lines.append(f'- Tracked hidden files/directories: {_fmt_bytes(tracked_hidden)}.')
     if branch_delta_size:
         attention_lines.append(f'- Current branch delta patch: {_fmt_bytes(branch_delta_size)}.')
+    if beads_blocked:
+        attention_lines.append(f"- Beads has {beads_blocked} blocked issue{('s' if beads_blocked != 1 else '')}.")
     lines.extend(('', '## Attention', '', *(attention_lines or ['- No attention flags.'])))
     lines.extend(('', '## Largest Artifacts', '', '| Artifact | Scope | Size |', '| --- | --- | ---: |'))
     for row in sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True)[:12]:
@@ -1082,11 +1256,12 @@ def _generate_snapshot_audit(plan: RepoPlan, out_dir: Path, generated_at: str, *
     size_delta = sorted(size_delta, key=lambda item: abs(int(item['delta_bytes'] or 0)), reverse=True)[:12]
     agent_summary = agent_audit.get('summary_by_class') or {}
     github = _github_context_manifest or {}
-    audit = {'project': plan.name, 'generated_at': generated_at, 'status': 'attention' if (overview.get('attention') or {}).get('large_artifacts') else 'ok', 'counts': overview.get('counts') or {}, 'size': {'total_bytes': sum((int(row['bytes']) for row in artifacts)), 'largest_artifacts': sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True)[:12], 'largest_deltas': size_delta}, 'agent_workspace': {'summary_by_class': agent_summary, 'active_context_entries': int((agent_summary.get('active-context') or {}).get('entries') or 0), 'devloop_entries': int((agent_summary.get('transient-heavy') or {}).get('entries') or 0), 'archive_or_generated_bytes': int((agent_summary.get('archive-or-generated') or {}).get('bytes') or 0)}, 'local_state': {'ignored_local_state_bytes': int(ignore_audit.get('ignored_local_state_bytes') or 0), 'tracked_hidden_bytes': int(ignore_audit.get('tracked_hidden_bytes') or 0)}, 'branch_delta': {'patch_bytes': int((overview.get('attention') or {}).get('branch_delta_patch_bytes') or 0)}, 'github_context': {'inventory_items_seen': int(github.get('inventory_items_seen') or 0), 'detail_refreshes': int(github.get('detail_refreshes') or 0), 'detail_reuses': int(github.get('detail_reuses') or 0), 'detail_misses': int(github.get('detail_misses') or 0), 'detail_decision_reasons': github.get('detail_decision_reasons') or {}, 'project_detail_refreshes': github.get('project_detail_refreshes') or {}, 'project_detail_reuses': github.get('project_detail_reuses') or {}, 'project_stale_open_removed': github.get('project_stale_open_removed') or {}}, 'open_first': overview.get('open_first') or []}
+    beads = overview.get('counts') or {}
+    audit = {'project': plan.name, 'generated_at': generated_at, 'status': 'attention' if (overview.get('attention') or {}).get('large_artifacts') else 'ok', 'counts': overview.get('counts') or {}, 'size': {'total_bytes': sum((int(row['bytes']) for row in artifacts)), 'largest_artifacts': sorted(artifacts, key=lambda item: int(item['bytes']), reverse=True)[:12], 'largest_deltas': size_delta}, 'agent_workspace': {'summary_by_class': agent_summary, 'active_context_entries': int((agent_summary.get('active-context') or {}).get('entries') or 0), 'devloop_entries': int((agent_summary.get('transient-heavy') or {}).get('entries') or 0), 'archive_or_generated_bytes': int((agent_summary.get('archive-or-generated') or {}).get('bytes') or 0)}, 'local_state': {'ignored_local_state_bytes': int(ignore_audit.get('ignored_local_state_bytes') or 0), 'tracked_hidden_bytes': int(ignore_audit.get('tracked_hidden_bytes') or 0)}, 'branch_delta': {'patch_bytes': int((overview.get('attention') or {}).get('branch_delta_patch_bytes') or 0)}, 'beads': {'available': bool(beads.get('beads_available')), 'issues': int(beads.get('beads_issues') or 0), 'ready': int(beads.get('beads_ready') or 0), 'blocked': int(beads.get('beads_blocked') or 0), 'dependencies': int(beads.get('beads_dependencies') or 0), 'memories': int(beads.get('beads_memories') or 0)}, 'github_context': {'inventory_items_seen': int(github.get('inventory_items_seen') or 0), 'detail_refreshes': int(github.get('detail_refreshes') or 0), 'detail_reuses': int(github.get('detail_reuses') or 0), 'detail_misses': int(github.get('detail_misses') or 0), 'detail_decision_reasons': github.get('detail_decision_reasons') or {}, 'project_detail_refreshes': github.get('project_detail_refreshes') or {}, 'project_detail_reuses': github.get('project_detail_reuses') or {}, 'project_stale_open_removed': github.get('project_stale_open_removed') or {}}, 'open_first': overview.get('open_first') or []}
     json_path = out_dir / f'{plan.name}-snapshot-audit.json'
     md_path = out_dir / f'{plan.name}-snapshot-audit.md'
     json_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    lines = [f'# {plan.name} snapshot audit', '', f'Generated: {generated_at}', f"Status: `{audit['status']}`", '', '## Open First', '', *(f'- `{item}`' for item in audit['open_first']), '', '## GitHub Context', '', f"- Inventory items: {audit['github_context']['inventory_items_seen']}", f"- Detail refreshes/reuses: {audit['github_context']['detail_refreshes']} / {audit['github_context']['detail_reuses']}", f"- Stale open rows removed: {sum((int(v or 0) for v in audit['github_context']['project_stale_open_removed'].values()))}", '', '## Largest Artifacts', '', '| Artifact | Scope | Size |', '| --- | --- | ---: |']
+    lines = [f'# {plan.name} snapshot audit', '', f'Generated: {generated_at}', f"Status: `{audit['status']}`", '', '## Open First', '', *(f'- `{item}`' for item in audit['open_first']), '', '## GitHub Context', '', f"- Inventory items: {audit['github_context']['inventory_items_seen']}", f"- Detail refreshes/reuses: {audit['github_context']['detail_refreshes']} / {audit['github_context']['detail_reuses']}", f"- Stale open rows removed: {sum((int(v or 0) for v in audit['github_context']['project_stale_open_removed'].values()))}", '', '## Beads Context', '', f"- Available: {str(audit['beads']['available']).lower()}", f"- Issues / ready / blocked: {audit['beads']['issues']} / {audit['beads']['ready']} / {audit['beads']['blocked']}", f"- Dependencies / memories: {audit['beads']['dependencies']} / {audit['beads']['memories']}", '', '## Largest Artifacts', '', '| Artifact | Scope | Size |', '| --- | --- | ---: |']
     for row in audit['size']['largest_artifacts']:
         lines.append(f"| `{row['name']}` | `{row['scope']}` | {_fmt_bytes(int(row['bytes']))} |")
     lines.extend(('', '## Largest Size Deltas', '', '| Artifact | Current | Delta |', '| --- | ---: | ---: |'))
@@ -1134,18 +1309,18 @@ def _write_root_index(output_root: Path, plans: Sequence[RepoPlan], results: dic
     json_path = output_root / 'index.json'
     md_path = output_root / 'index.md'
     json_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    lines = ['# Chisel Snapshot Index', '', f'Generated: {generated_at}', f'Repomix: `{repomix_version}`', f'Output root: `{output_root}`', '', '## Projects', '', '| Project | Status | Branch | Dirty | Open issues | Open PRs | Artifacts | Size | Overview | Audit | Manifest |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |']
+    lines = ['# Chisel Snapshot Index', '', f'Generated: {generated_at}', f'Repomix: `{repomix_version}`', f'Output root: `{output_root}`', '', '## Projects', '', '| Project | Status | Branch | Dirty | GitHub issues | Open PRs | Beads issues | Beads ready | Beads blocked | Artifacts | Size | Overview | Audit | Manifest |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |']
     for project in projects:
         git = project.get('git') or {}
         manifest_link = project['manifest'] or '-'
         overview_link = project['overview_markdown'] or '-'
         audit_link = project['snapshot_audit_markdown'] or '-'
         counts = (project.get('overview') or {}).get('counts') or {}
-        lines.append(f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | {str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | {counts.get('prs_open', 0)} | {project['artifact_count']} | {_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{audit_link}` | `{manifest_link}` |")
-    lines.extend(('', '## Attention Summary', '', '| Project | Large artifacts | Agent review | Agent archive/generated | Branch delta |', '| --- | ---: | ---: | ---: | ---: |'))
+        lines.append(f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | {str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | {counts.get('prs_open', 0)} | {counts.get('beads_issues', 0)} | {counts.get('beads_ready', 0)} | {counts.get('beads_blocked', 0)} | {project['artifact_count']} | {_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{audit_link}` | `{manifest_link}` |")
+    lines.extend(('', '## Attention Summary', '', '| Project | Large artifacts | Agent review | Agent archive/generated | Branch delta | Beads blocked |', '| --- | ---: | ---: | ---: | ---: | ---: |'))
     for project in projects:
         attention = (project.get('overview') or {}).get('attention') or {}
-        lines.append(f"| `{project['name']}` | {len(attention.get('large_artifacts') or [])} | {attention.get('agent_review_entries', 0)} | {_fmt_bytes(int(attention.get('agent_archive_or_generated_bytes') or 0))} | {_fmt_bytes(int(attention.get('branch_delta_patch_bytes') or 0))} |")
+        lines.append(f"| `{project['name']}` | {len(attention.get('large_artifacts') or [])} | {attention.get('agent_review_entries', 0)} | {_fmt_bytes(int(attention.get('agent_archive_or_generated_bytes') or 0))} | {_fmt_bytes(int(attention.get('branch_delta_patch_bytes') or 0))} | {attention.get('beads_blocked', 0)} |")
     lines.extend(('', '## Largest Artifacts', ''))
     for project in projects:
         lines.extend((f"### {project['name']}", '', '| Artifact | Scope | Size |', '| --- | --- | ---: |'))
@@ -1220,6 +1395,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         submit('ignore-audit', plan.name, _generate_ignore_audit, plan, out_dir, log)
         submit('agent-audit', plan.name, _generate_agent_audit, plan, out_dir, log)
         submit('branch-delta', plan.name, _generate_branch_delta, plan, out_dir, log)
+        submit('beads', plan.name, _generate_beads, plan, out_dir, generated_at, log)
         gitlog_commits = 0
         issues_open = issues_closed = 0
         prs_open = prs_merged = 0
@@ -1233,6 +1409,9 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
         agent_audit_bytes = 0
         delta_files_done: list[str] = []
         delta_bytes = 0
+        beads_files_done: list[str] = []
+        beads_bytes = 0
+        beads_context: dict[str, Any] = {'available': False}
         snapshot_audit_files_done: list[str] = []
         for future in as_completed(futures):
             kind, label = futures[future]
@@ -1274,6 +1453,10 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
                     names, size = result
                     delta_files_done.extend(names)
                     delta_bytes += size
+                elif kind == 'beads':
+                    names, size, beads_context = result
+                    beads_files_done.extend(names)
+                    beads_bytes += size
                 elapsed = (dt.datetime.now() - started).total_seconds()
                 _print_live(f'  ✓ {plan.name}: {kind} {label} ({elapsed:.1f}s)')
             except Exception as e:
@@ -1290,7 +1473,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
     if xml_errors:
         for e in xml_errors:
             _emit(log, f'  [red]✗ XML invalid:[/red] {e}')
-    overview_files_done, overview_bytes = _generate_snapshot_overview(plan, out_dir, generated_at, git, issues_open=issues_open, issues_closed=issues_closed, prs_open=prs_open, prs_merged=prs_merged, gitlog_commits=gitlog_commits, xml_errors=xml_errors, log=log)
+    overview_files_done, overview_bytes = _generate_snapshot_overview(plan, out_dir, generated_at, git, issues_open=issues_open, issues_closed=issues_closed, prs_open=prs_open, prs_merged=prs_merged, gitlog_commits=gitlog_commits, xml_errors=xml_errors, beads=beads_context, log=log)
     snapshot_audit_files_done, _snapshot_audit_bytes = _generate_snapshot_audit(plan, out_dir, generated_at, previous_manifest=previous_manifest, log=log)
     manifest_name, manifest_bytes = _write_project_manifest(plan, out_dir, generated_at, git, xml_errors, log)
     combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
@@ -1298,7 +1481,7 @@ def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at
     combined_tar_bytes = combined_tar_result[1] if combined_tar_result is not None else 0
     elapsed = (dt.datetime.now() - t0).total_seconds()
     total_bytes = sum((path.stat().st_size for path in out_dir.iterdir() if path.is_file()))
-    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'stats_files': stats_files_done, 'audit_files': audit_files_done, 'agent_audit_files': agent_audit_files_done, 'delta_files': delta_files_done, 'overview_files': overview_files_done, 'snapshot_audit_files': snapshot_audit_files_done, 'manifest': manifest_name, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
+    return {'project': plan.name, 'status': 'partial' if errors else 'generated', 'git': git, 'slices': len(slices_done), 'slice_names': [s[0] for s in slices_done], 'sidecars': sidecars_done, 'stats_files': stats_files_done, 'audit_files': audit_files_done, 'agent_audit_files': agent_audit_files_done, 'delta_files': delta_files_done, 'beads_files': beads_files_done, 'beads_bytes': beads_bytes, 'overview_files': overview_files_done, 'snapshot_audit_files': snapshot_audit_files_done, 'manifest': manifest_name, 'combined_tar': combined_tar_name, 'combined_tar_bytes': combined_tar_bytes, 'total_bytes': total_bytes, 'issues_open': issues_open, 'issues_closed': issues_closed, 'prs_open': prs_open, 'prs_merged': prs_merged, 'gitlog_commits': gitlog_commits, 'xml_valid': len(xml_errors) == 0, 'xml_errors': xml_errors or None, 'elapsed_s': round(elapsed, 1), 'errors': errors or None, 'log_lines': log}
 
 def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_root: Path | None=None, max_workers: int=DEFAULT_MAX_WORKERS) -> dict[str, Any]:
     global _github_context_index, _github_context_manifest, _github_context_ready

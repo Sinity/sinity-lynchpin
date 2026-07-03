@@ -41,3 +41,8 @@ AGENTS.override.md
 lynchpin.egg-info/
 usb.ids
 uv.lock
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

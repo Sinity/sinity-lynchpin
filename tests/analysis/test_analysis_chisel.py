@@ -221,6 +221,111 @@ def test_generate_prs_filters_non_open_items_from_open_snapshot(
     assert merged_root.attrib["count"] == "1"
 
 
+def test_generate_beads_exports_issue_dependency_and_memory_context(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = chisel.RepoPlan(name="example", path=repo, slices=())
+    exported = [
+        {
+            "_type": "issue",
+            "id": "example-a",
+            "title": "Blocked issue",
+            "description": "Needs foundation",
+            "status": "blocked",
+            "priority": 1,
+            "issue_type": "feature",
+            "assignee": "Sinity",
+            "dependencies": ["example-b"],
+            "comments": [{"author": "Reviewer", "body": "Still blocked", "created_at": "2026-07-01T00:00:00Z"}],
+            "created_at": "2026-07-01T00:00:00Z",
+            "updated_at": "2026-07-02T00:00:00Z",
+        },
+        {
+            "_type": "issue",
+            "id": "example-b",
+            "title": "Foundation",
+            "description": "Can start",
+            "status": "open",
+            "priority": 0,
+            "issue_type": "task",
+        },
+        {"_type": "memory", "id": "mem-1", "text": "Durable context"},
+    ]
+
+    def fake_run(cmd, *, cwd=None):
+        assert cwd == repo
+        if cmd == ["bd", "where", "--json"]:
+            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps({"path": str(repo / ".beads")}), "")
+        if cmd == ["bd", "stats", "--json"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                chisel.json.dumps({"summary": {"total_issues": 2, "blocked_issues": 1, "ready_issues": 1}}),
+                "",
+            )
+        if cmd == ["bd", "ready", "--json"]:
+            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps([{"id": "example-b"}]), "")
+        if cmd == ["bd", "blocked", "--json"]:
+            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps([{"id": "example-a"}]), "")
+        if cmd == ["bd", "export", "--include-memories"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "".join(chisel.json.dumps(row) + "\n" for row in exported),
+                "",
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(chisel, "_run", fake_run)
+
+    names, size, payload = chisel._generate_beads(plan, tmp_path, "2026-07-03T000000Z")
+
+    assert set(names) == {
+        "example-beads.json",
+        "example-beads.xml",
+        "example-beads.md",
+        "example-beads-export.jsonl",
+    }
+    assert size > 0
+    assert payload["available"] is True
+    assert payload["counts"]["issues"] == 2
+    assert payload["counts"]["memories"] == 1
+    assert payload["counts"]["ready"] == 1
+    assert payload["counts"]["blocked"] == 1
+    assert payload["dependencies"] == [{"issue": "example-a", "depends_on": "example-b", "type": "dependencies"}]
+
+    root = ET.parse(tmp_path / "example-beads.xml").getroot()
+    assert root.attrib["ready-count"] == "1"
+    blocked_issue = root.find("./issue[@id='example-a']")
+    assert blocked_issue is not None
+    assert blocked_issue.attrib["blocked"] == "true"
+    dependency = blocked_issue.find("dependencies/dependency")
+    assert dependency is not None
+    assert dependency.attrib["depends-on"] == "example-b"
+    markdown = (tmp_path / "example-beads.md").read_text(encoding="utf-8")
+    assert "`example-beads-export.jsonl`" in markdown
+
+
+def test_generate_beads_unavailable_is_nonfatal(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = chisel.RepoPlan(name="example", path=repo, slices=())
+
+    def fake_run(cmd, *, cwd=None):
+        return subprocess.CompletedProcess(cmd, 1, "", "no beads workspace")
+
+    monkeypatch.setattr(chisel, "_run", fake_run)
+
+    names, size, payload = chisel._generate_beads(plan, tmp_path, "2026-07-03T000000Z")
+
+    assert names == []
+    assert size == 0
+    assert payload["available"] is False
+    assert not list(tmp_path.glob("example-beads*"))
+
+
 def test_generate_issues_requires_existing_github_context_product(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -595,6 +700,16 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
         chisel.json.dumps({"ignored_local_state_bytes": 30, "tracked_hidden_bytes": 40}),
         encoding="utf-8",
     )
+    beads = {
+        "available": True,
+        "counts": {
+            "issues": 8,
+            "ready": 2,
+            "blocked": 1,
+            "dependencies": 3,
+            "memories": 1,
+        },
+    }
 
     names, size = chisel._generate_snapshot_overview(
         plan,
@@ -607,6 +722,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
         prs_merged=5,
         gitlog_commits=6,
         xml_errors=[],
+        beads=beads,
     )
 
     payload = chisel.json.loads((out_dir / "example-overview.json").read_text(encoding="utf-8"))
@@ -614,9 +730,15 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
     assert set(names) == {"example-overview.json", "example-overview.md"}
     assert size > 0
     assert payload["counts"]["open_pr_xml_count"] == 2
+    assert payload["counts"]["beads_issues"] == 8
+    assert payload["counts"]["beads_ready"] == 2
+    assert payload["counts"]["beads_blocked"] == 1
     assert payload["attention"]["agent_review_entries"] == 1
+    assert payload["attention"]["beads_blocked"] == 1
+    assert "example-beads.md" in payload["open_first"]
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
+    assert "| Beads blocked | 1 |" in markdown
 
     audit_names, audit_size = chisel._generate_snapshot_audit(
         plan,
@@ -633,6 +755,8 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
     assert audit_size > 0
     assert audit["size"]["largest_deltas"][0]["name"] == "example-core.xml"
     assert audit["local_state"]["tracked_hidden_bytes"] == 40
+    assert audit["beads"]["issues"] == 8
+    assert audit["beads"]["blocked"] == 1
 
 
 def test_portable_sidecars_name_all_refs_bundle(monkeypatch, tmp_path: Path) -> None:
@@ -728,8 +852,8 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     output = "\n".join(printed)
     assert "Repos:  2 selected — alpha, beta" in output
     assert "Pools:  2 across repos × 2 within each; 4 global repomix slots" in output
-    assert "[1/2] alpha: 1 configured slices, 5 XML snapshots, 9 sidecars" in output
-    assert "[2/2] beta: 2 configured slices, 5 XML snapshots, 10 sidecars" in output
+    assert "[1/2] alpha: 1 configured slices, 5 XML snapshots, 13 sidecars" in output
+    assert "[2/2] beta: 2 configured slices, 5 XML snapshots, 14 sidecars" in output
     assert "[1/2]" in output and "[2/2]" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output
@@ -763,6 +887,7 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: (["alpha-ignore-audit.md"], 4))
     monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: (["alpha-agent-audit.md"], 3))
     monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: (["alpha-branch-delta.md"], 5))
+    monkeypatch.setattr(chisel, "_generate_beads", lambda *_args: (["alpha-beads.md"], 7, {"available": True, "counts": {"issues": 1}}))
     monkeypatch.setattr(chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: (["alpha-overview.md"], 6))
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
@@ -780,7 +905,9 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     assert "→ alpha: start" in output
     assert "→ alpha: slice core" in output
     assert "✓ alpha: slice core" in output
+    assert "→ alpha: beads alpha" in output
     assert result["status"] == "generated"
+    assert result["beads_files"] == ["alpha-beads.md"]
     assert result["snapshot_audit_files"] == ["alpha-snapshot-audit.json", "alpha-snapshot-audit.md"]
 
 
@@ -813,6 +940,7 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: ([], 0))
+    monkeypatch.setattr(chisel, "_generate_beads", lambda *_args: ([], 0, {"available": False}))
     monkeypatch.setattr(chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: ([], 0))
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
@@ -829,3 +957,49 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     assert result["status"] == "generated"
     assert not stale.exists()
     assert (tmp_path / "out" / "alpha" / "alpha-snapshot-audit.json").exists()
+
+
+def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
+    plan = chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=())
+    out_dir = tmp_path / "out" / "alpha"
+    out_dir.mkdir(parents=True)
+    (out_dir / "alpha-manifest.json").write_text(
+        chisel.json.dumps({
+            "git": {"branch": "main", "commit": "abc123", "dirty": False},
+            "artifacts": [{"name": "alpha-beads.md", "bytes": 10, "scope": "beads-context"}],
+        }),
+        encoding="utf-8",
+    )
+    (out_dir / "alpha-tokei-stats.json").write_text(chisel.json.dumps({"buckets": {}}), encoding="utf-8")
+    (out_dir / "alpha-overview.json").write_text(
+        chisel.json.dumps({
+            "counts": {
+                "issues_open": 0,
+                "prs_open": 0,
+                "beads_issues": 4,
+                "beads_ready": 2,
+                "beads_blocked": 1,
+            },
+            "attention": {"beads_blocked": 1},
+        }),
+        encoding="utf-8",
+    )
+    (out_dir / "alpha-overview.md").write_text("overview", encoding="utf-8")
+    (out_dir / "alpha-snapshot-audit.json").write_text(chisel.json.dumps({"beads": {"issues": 4}}), encoding="utf-8")
+    (out_dir / "alpha-snapshot-audit.md").write_text("audit", encoding="utf-8")
+
+    chisel._write_root_index(
+        tmp_path / "out",
+        [plan],
+        {"alpha": {"status": "generated"}},
+        "2026-07-03T000000Z",
+        "repomix-test",
+        0.1,
+    )
+
+    index = chisel.json.loads((tmp_path / "out" / "index.json").read_text(encoding="utf-8"))
+    markdown = (tmp_path / "out" / "index.md").read_text(encoding="utf-8")
+    counts = index["projects"][0]["overview"]["counts"]
+    assert counts["beads_issues"] == 4
+    assert "Beads issues" in markdown
+    assert "| `alpha` | generated | `main` | false | 0 | 0 | 4 | 2 | 1 |" in markdown

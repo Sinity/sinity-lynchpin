@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "lynchpin",
+  "project_id": "b50a1c35-cec4-443e-8e0a-4526b2dfbf07"
+}
