@@ -993,6 +993,58 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     assert (tmp_path / "out" / "alpha" / "alpha-snapshot-audit.json").exists()
 
 
+def test_archive_existing_combined_tars_moves_selected_packages(tmp_path: Path) -> None:
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    (output_root / "index.json").write_text(
+        chisel.json.dumps({"generated_at": "2026-07-05T011944Z"}),
+        encoding="utf-8",
+    )
+    (output_root / "alpha-all.tar.gz").write_bytes(b"alpha-old")
+    (output_root / "beta-all.tar.gz").write_bytes(b"beta-old")
+    (output_root / "gamma-all.tar.gz").write_bytes(b"gamma-current")
+
+    archived = chisel._archive_existing_combined_tars(
+        [
+            chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=()),
+            chisel.RepoPlan(name="beta", path=tmp_path / "beta", slices=()),
+        ],
+        output_root,
+    )
+
+    assert archived == [
+        "archive/2026-07-05T011944Z/alpha-all.tar.gz",
+        "archive/2026-07-05T011944Z/beta-all.tar.gz",
+    ]
+    assert not (output_root / "alpha-all.tar.gz").exists()
+    assert not (output_root / "beta-all.tar.gz").exists()
+    assert (output_root / "gamma-all.tar.gz").read_bytes() == b"gamma-current"
+    assert (output_root / "archive" / "2026-07-05T011944Z" / "alpha-all.tar.gz").read_bytes() == b"alpha-old"
+    assert (output_root / "archive" / "2026-07-05T011944Z" / "beta-all.tar.gz").read_bytes() == b"beta-old"
+
+
+def test_archive_existing_combined_tars_avoids_collisions(tmp_path: Path) -> None:
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    (output_root / "index.json").write_text(
+        chisel.json.dumps({"generated_at": "2026-07-05T011944Z"}),
+        encoding="utf-8",
+    )
+    existing_archive = output_root / "archive" / "2026-07-05T011944Z"
+    existing_archive.mkdir(parents=True)
+    (existing_archive / "alpha-all.tar.gz").write_bytes(b"already-archived")
+    (output_root / "alpha-all.tar.gz").write_bytes(b"alpha-newer")
+
+    archived = chisel._archive_existing_combined_tars(
+        [chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=())],
+        output_root,
+    )
+
+    assert archived == ["archive/2026-07-05T011944Z-02/alpha-all.tar.gz"]
+    assert (existing_archive / "alpha-all.tar.gz").read_bytes() == b"already-archived"
+    assert (output_root / "archive" / "2026-07-05T011944Z-02" / "alpha-all.tar.gz").read_bytes() == b"alpha-newer"
+
+
 def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
     plan = chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=())
     out_dir = tmp_path / "out" / "alpha"

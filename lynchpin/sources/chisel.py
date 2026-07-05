@@ -7,8 +7,9 @@ By default outputs are written to the stable derived-data root returned by
 
     /realm/data/derived/lynchpin/code-snapshots
 
-Re-running chisel overwrites that stable snapshot set. Pass ``--output-root``
-only for explicit one-off exports.
+Re-running chisel keeps the stable snapshot set current and moves previous
+combined ``*-all.tar.gz`` packages into ``archive/<timestamp>/`` before
+overwriting them. Pass ``--output-root`` only for explicit one-off exports.
 """
 from __future__ import annotations
 import datetime as dt
@@ -1373,6 +1374,49 @@ def _make_combined_tar(plan: RepoPlan, out_dir: Path, output_root: Path, log: li
     _emit(log, f'  [yellow]⚠[/yellow] {plan.name}: combined tar: {details}')
     return None
 
+def _archive_timestamp_from_index(output_root: Path) -> str | None:
+    index_path = output_root / 'index.json'
+    if not index_path.exists():
+        return None
+    payload = _read_json_file(index_path)
+    if not isinstance(payload, dict):
+        return None
+    generated_at = payload.get('generated_at')
+    return generated_at if isinstance(generated_at, str) and generated_at else None
+
+def _combined_tar_archive_timestamp(paths: Sequence[Path], output_root: Path) -> str:
+    indexed = _archive_timestamp_from_index(output_root)
+    if indexed is not None:
+        return indexed
+    newest = max((path.stat().st_mtime for path in paths))
+    return dt.datetime.fromtimestamp(newest, dt.timezone.utc).strftime('%Y-%m-%dT%H%M%SZ')
+
+def _archive_dir_for_combined_tars(output_root: Path, timestamp: str, filenames: Sequence[str]) -> Path:
+    archive_root = output_root / 'archive'
+    candidate = archive_root / timestamp
+    suffix = 1
+    while any(((candidate / filename).exists() for filename in filenames)):
+        suffix += 1
+        candidate = archive_root / f'{timestamp}-{suffix:02d}'
+    return candidate
+
+def _archive_existing_combined_tars(plans: Sequence[RepoPlan], output_root: Path, log: list[str] | None=None) -> list[str]:
+    """Move previous root combined packages aside before this run overwrites them."""
+    existing = [output_root / f'{plan.name}-all.tar.gz' for plan in plans]
+    existing = [path for path in existing if path.exists()]
+    if not existing:
+        return []
+    timestamp = _combined_tar_archive_timestamp(existing, output_root)
+    archive_dir = _archive_dir_for_combined_tars(output_root, timestamp, [path.name for path in existing])
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived: list[str] = []
+    for path in existing:
+        target = archive_dir / path.name
+        shutil.move(str(path), str(target))
+        archived.append(str(target.relative_to(output_root)))
+    _emit(log, f'[dim]Archived previous combined packages:[/dim] {archive_dir.relative_to(output_root)}')
+    return archived
+
 def _build_one(plan: RepoPlan, output_root: Path, repomix_bin: str, generated_at: str, slice_workers: int) -> dict:
     """Build all slices, current-tree sidecars, and all-refs git history for one repo."""
     log: list[str] = []
@@ -1533,6 +1577,7 @@ def build_chisel_bundles(*, project_names: Sequence[str] | None=None, output_roo
     _print_scope(plans, output_root)
     _print()
     _ensure_chisel_prerequisites(plans)
+    _archive_existing_combined_tars(plans, output_root)
     _print()
     results: dict[str, Any] = {}
     t0 = dt.datetime.now()
