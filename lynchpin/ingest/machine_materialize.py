@@ -16,6 +16,7 @@ from ..sources.machine import (
     block_device_samples,
     canonical_machine_table_path,
     gpu_samples,
+    kill_events,
     metric_samples,
     network_samples,
     process_io_delta_samples,
@@ -42,6 +43,7 @@ MACHINE_TABLES = (
     "process_io_delta_sample",
     "process_memory_sample",
     "cgroup_memory_sample",
+    "kill_event",
 )
 
 
@@ -113,6 +115,12 @@ def materialize_machine_telemetry(
         "cgroup_memory_sample": _materialize_table(
             "cgroup_memory_sample",
             lambda: cgroup_memory_samples(start=start, end=source_end, path=cfg.machine_telemetry_db),
+            start=start,
+            end=end,
+        ),
+        "kill_event": _materialize_table(
+            "kill_event",
+            lambda: kill_events(start=start, end=source_end, path=cfg.machine_telemetry_db),
             start=start,
             end=end,
         ),

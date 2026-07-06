@@ -75,3 +75,52 @@ def test_failure_rolls_back_and_leaves_connection_usable() -> None:
     promote_rows(conn, table="t", columns=("v",), refresh_id="r4",
                  rows=[9], extractor=lambda x: (x,))
     assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+
+
+def test_interrupted_repromote_does_not_delete_old_data() -> None:
+    """sinnix-kx4 regression: a mid-generator failure must not wipe old rows.
+
+    Before the staged-swap fix, promote_rows DELETEd the target refresh_id's
+    rows in autocommit BEFORE consuming the row generator. A generator that
+    raised partway through (e.g. the process got OOM-killed, or the live
+    source hit a transient read error) left the target refresh_id with ZERO
+    rows and no exception ever surfaced past this point in some call chains —
+    this was the observed real-world failure on machine_cgroup_memory_sample.
+    The fix stages new rows under a private refresh_id first and only swaps
+    them onto the target after a full successful commit, so an interrupted
+    re-promote leaves the previous good data completely untouched.
+    """
+    conn = _conn()
+    promote_rows(conn, table="t", columns=("v",), refresh_id="r1",
+                 rows=[1, 2, 3], extractor=lambda x: (x,))
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+
+    def _flaky_rows():
+        yield 10
+        yield 11
+        raise RuntimeError("simulated interruption (e.g. OOM kill mid-generator)")
+
+    with pytest.raises(RuntimeError):
+        promote_rows(conn, table="t", columns=("v",), refresh_id="r1",
+                     rows=_flaky_rows(), extractor=lambda x: (x,))
+
+    # The old r1 rows must survive untouched — no DELETE for r1 ever committed
+    # because the staged insert under a private id never finished.
+    rows = conn.execute(
+        "SELECT v FROM t WHERE refresh_id = 'r1' ORDER BY v"
+    ).fetchall()
+    assert rows == [(1,), (2,), (3,)]
+
+    # No orphaned staging rows should be visible under any OTHER refresh_id
+    # either (the failed transaction rolled the staged insert back too).
+    total = conn.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+    assert total == 3
+
+    # A subsequent successful re-promote of r1 still works normally.
+    n = promote_rows(conn, table="t", columns=("v",), refresh_id="r1",
+                     rows=[20, 21], extractor=lambda x: (x,))
+    assert n == 2
+    rows = conn.execute(
+        "SELECT v FROM t WHERE refresh_id = 'r1' ORDER BY v"
+    ).fetchall()
+    assert rows == [(20,), (21,)]

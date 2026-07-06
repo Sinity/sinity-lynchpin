@@ -59,6 +59,38 @@ OPTIONAL_METRIC_COLUMNS = (
     "memory_psi_full_avg60",
     "memory_psi_full_avg300",
     "memory_psi_full_total_us",
+    # sinnix-fjq (schema v5): raw cumulative /proc/vmstat reclaim/OOM
+    # counters — consumers compute deltas, same convention as the PSI
+    # *_total_us columns above.
+    "vmstat_workingset_refault_file",
+    "vmstat_workingset_refault_anon",
+    "vmstat_workingset_activate_file",
+    "vmstat_workingset_activate_anon",
+    "vmstat_pgscan_kswapd",
+    "vmstat_pgscan_direct",
+    "vmstat_pgsteal_kswapd",
+    "vmstat_pgsteal_direct",
+    "vmstat_pswpin",
+    "vmstat_pswpout",
+    "vmstat_allocstall_normal",
+    "vmstat_allocstall_movable",
+    "vmstat_oom_kill",
+)
+
+VMSTAT_METRIC_COLUMNS = (
+    "vmstat_workingset_refault_file",
+    "vmstat_workingset_refault_anon",
+    "vmstat_workingset_activate_file",
+    "vmstat_workingset_activate_anon",
+    "vmstat_pgscan_kswapd",
+    "vmstat_pgscan_direct",
+    "vmstat_pgsteal_kswapd",
+    "vmstat_pgsteal_direct",
+    "vmstat_pswpin",
+    "vmstat_pswpout",
+    "vmstat_allocstall_normal",
+    "vmstat_allocstall_movable",
+    "vmstat_oom_kill",
 )
 
 EXPECTED_SERVICE_STATE_COLUMNS = (
@@ -263,6 +295,33 @@ EXPECTED_CGROUP_MEMORY_COLUMNS = (
     "cgroup_freeze",
 )
 
+OPTIONAL_CGROUP_MEMORY_COLUMNS = (
+    # sinnix-fjq (schema v5): cumulative cgroup v2 memory.events *counts*
+    # (distinct from memory_high_bytes/memory_max_bytes above, which are
+    # configured byte limits, not event counts). Optional because
+    # schema-v4 captures predate these columns.
+    "memory_events_high",
+    "memory_events_max",
+    "memory_events_oom",
+    "memory_events_oom_kill",
+)
+
+EXPECTED_KILL_EVENT_COLUMNS = (
+    "id",
+    "observed_at",
+    "host",
+    "boot_id",
+    "schema_version",
+    "killer",
+    "victim_comm",
+    "victim_pid",
+    "victim_rss_mib",
+    "cgroup_path",
+    "oom_score",
+    "raw_line",
+    "journal_cursor",
+)
+
 EXPECTED_GPU_COLUMNS = (
     "observed_at",
     "host",
@@ -372,8 +431,19 @@ def validate_cgroup_memory_schema(conn: sqlite3.Connection) -> None:
 
 
 def cgroup_memory_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
-    _table_columns(conn, "cgroup_memory_sample")
-    return EXPECTED_CGROUP_MEMORY_COLUMNS
+    columns = _table_columns(conn, "cgroup_memory_sample")
+    return EXPECTED_CGROUP_MEMORY_COLUMNS + tuple(
+        column for column in OPTIONAL_CGROUP_MEMORY_COLUMNS if column in columns
+    )
+
+
+def validate_kill_event_schema(conn: sqlite3.Connection) -> None:
+    _validate_columns(conn, "kill_event", EXPECTED_KILL_EVENT_COLUMNS)
+
+
+def kill_event_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    _table_columns(conn, "kill_event")
+    return EXPECTED_KILL_EVENT_COLUMNS
 
 
 def validate_gpu_schema(conn: sqlite3.Connection) -> None:

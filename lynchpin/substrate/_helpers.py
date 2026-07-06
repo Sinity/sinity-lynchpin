@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, TypeVar
 
 if TYPE_CHECKING:
@@ -25,6 +26,18 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 RefreshIdPosition = Literal["last", "first"]
+
+_STAGING_PREFIX = "\x00promote_rows_staging\x00"
+
+
+def _staging_refresh_id(refresh_id: str) -> str:
+    """A refresh_id value guaranteed not to collide with any real refresh_id.
+
+    The NUL-delimited prefix keeps it out of the human-facing refresh_id
+    vocabulary (real ids are colon-joined slugs), and the per-call UUID makes
+    it unique even across concurrent/retried promotions of the same target.
+    """
+    return f"{_STAGING_PREFIX}{refresh_id}\x00{uuid.uuid4().hex}"
 
 
 def promote_rows(
@@ -61,18 +74,36 @@ def promote_rows(
     prepends instead — required by evidence_node / evidence_edge whose
     schema places refresh_id as column 1.
 
+    **Interruption safety** (``delete_existing=True`` only): rows are first
+    inserted under a private staging refresh_id that cannot collide with any
+    real refresh_id, inside one transaction. Only after that transaction
+    commits does the function delete the target refresh_id's old rows and
+    rename the staged rows onto it. If the process dies (SIGKILL — e.g. an
+    OOM kill) or raises anywhere during row generation/insertion, the target
+    refresh_id's previously-promoted rows are completely untouched — a
+    generator/executemany failure can no longer silently delete good data and
+    then fail to replace it (see ``docs/`` history: this was an observed
+    real-world data-loss mode on machine telemetry tables, where the daily
+    promotion job intermittently died mid-run under host memory pressure).
+
     Returns the number of rows inserted (zero if ``rows`` was empty).
     """
     if refresh_id_position == "first":
         ordered_columns = ("refresh_id", *columns)
 
-        def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
-            return (refresh_id, *extracted)
+        def build_tuple(write_id: str, extracted: tuple[Any, ...]) -> tuple[Any, ...]:
+            return (write_id, *extracted)
     else:
         ordered_columns = (*columns, "refresh_id")
 
-        def build_tuple(extracted: tuple[Any, ...]) -> tuple[Any, ...]:
-            return (*extracted, refresh_id)
+        def build_tuple(write_id: str, extracted: tuple[Any, ...]) -> tuple[Any, ...]:
+            return (*extracted, write_id)
+
+    # When delete_existing, write under a staging id first and swap it onto
+    # the real refresh_id only after a full successful commit (see docstring).
+    # When not delete_existing (append-only callers that manage their own
+    # dedup, e.g. evidence-graph), write directly under refresh_id as before.
+    write_id = _staging_refresh_id(refresh_id) if delete_existing else refresh_id
 
     column_list = ", ".join(ordered_columns)
     placeholders = ", ".join(["?"] * (len(columns) + 1))
@@ -116,7 +147,7 @@ def promote_rows(
         if batch_size is not None:
             gc.collect()
 
-    # Wrap DELETE + every INSERT batch in ONE transaction. In DuckDB autocommit,
+    # Wrap every INSERT batch in ONE transaction. In DuckDB autocommit,
     # executemany commits (and fsyncs the WAL) per row — measured at ~120KB-1.8MB
     # written/row and ~99% of substrate-promote wall-time (the artifacts promote
     # wrote 20GB / took 14min for ~163k rows). A single explicit transaction
@@ -125,21 +156,11 @@ def promote_rows(
     # transaction (e.g. the evidence-graph promote) pass wrap_transaction=False;
     # we cannot probe-by-BEGIN because a nested BEGIN error aborts the caller's
     # open transaction.
-    #
-    # The DELETE stays in autocommit, BEFORE the INSERT transaction: DuckDB's
-    # primary-key index does not reflect an in-transaction DELETE, so a
-    # DELETE-then-INSERT of the same refresh_id within one transaction trips a
-    # phantom duplicate-key constraint (the same limitation evidence-graph works
-    # around). Committing the DELETE first keeps idempotent re-promotion correct;
-    # only the row-by-row INSERT churn needed batching.
-    if delete_existing:
-        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
-
     if wrap_transaction:
         conn.execute("BEGIN TRANSACTION")
     try:
         for row in rows:
-            buffer.append(build_tuple(extractor(row)))
+            buffer.append(build_tuple(write_id, extractor(row)))
             if batch_size is not None and len(buffer) >= batch_size:
                 flush()
         flush()
@@ -149,6 +170,25 @@ def promote_rows(
         if wrap_transaction:
             conn.execute("ROLLBACK")
         raise
+
+    if delete_existing:
+        # Swap the fully-committed staged rows onto the real refresh_id as two
+        # fast, separate autocommit statements (deliberately NOT one
+        # transaction): DuckDB's primary-key index does not reflect an
+        # in-transaction DELETE, so a DELETE-then-INSERT/UPDATE of the same
+        # key within one transaction trips a phantom duplicate-key constraint
+        # (the same limitation evidence-graph works around by disabling
+        # delete_existing entirely). Running the DELETE to completion first,
+        # as its own committed statement, means the UPDATE's key check sees a
+        # world that already lacks the old refresh_id rows. This shrinks the
+        # "old data already gone, new data not yet in" window from the entire
+        # row-generation + insert pass down to two near-instant metadata
+        # operations.
+        conn.execute(f"DELETE FROM {table} WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            f"UPDATE {table} SET refresh_id = ? WHERE refresh_id = ?",
+            [refresh_id, write_id],
+        )
 
     log.debug("promote_rows: %d rows into %s for refresh_id=%s", total, table, refresh_id)
     return total

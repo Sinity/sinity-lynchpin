@@ -609,3 +609,109 @@ def test_load_bufferbloat_daily_filters_refresh_id(tmp_path):
     assert len(rows) == 1
     assert rows[0][2] == 1
     assert rows[0][3] == 10.0
+
+
+def _seed_live_sqlite(path, tables_and_max_observed_at):
+    """Build a minimal live-source SQLite fixture for freshness checks.
+
+    ``load_machine_promotion_freshness`` only needs table presence + an
+    ``observed_at`` column with a MAX value per table — it doesn't validate
+    the full Sinnix producer schema, so this fixture stays deliberately
+    narrow rather than mirroring machine_schema.py's full column contract.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        for table, max_observed_at in tables_and_max_observed_at.items():
+            conn.execute(f"CREATE TABLE {table} (observed_at TEXT)")
+            # A couple of older rows plus the max, so MAX() is exercised.
+            conn.execute(
+                f"INSERT INTO {table} (observed_at) VALUES (?), (?)",
+                ["2026-01-01T00:00:00+00:00", max_observed_at],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_load_machine_promotion_freshness_flags_stale_table(tmp_path):
+    """sinnix-kx4 regression: a table whose substrate data lags the live
+    source by more than max_lag_hours must be flagged stale, while a table
+    that IS current must not be — this is the check that turns a silent
+    promotion stall into a visible readiness failure.
+    """
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_live_sqlite(
+        live_db,
+        {
+            # cgroup_memory: live source is fresh (today), but the substrate
+            # below will only have a row from 10 days ago — stale.
+            "cgroup_memory_sample": "2026-07-06T10:00:00+00:00",
+            # metric_sample: live AND substrate both fresh — not stale.
+            "metric_sample": "2026-07-06T10:00:00+00:00",
+        },
+    )
+
+    sub_db = tmp_path / "sub.duckdb"
+    with connect(sub_db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO machine_cgroup_memory_sample (
+                observed_at, host, boot_id, source_schema_version, label,
+                scope, control_group, refresh_id
+            ) VALUES (?, 'sinnix-prime', 'boot-a', 5, 'system.slice',
+                'system', '/system.slice', 'stale-run')
+            """,
+            [datetime(2026, 6, 26, 6, 0, tzinfo=timezone.utc)],
+        )
+        conn.execute(
+            """
+            INSERT INTO machine_metric_sample (
+                observed_at, host, source, source_schema_version, refresh_id
+            ) VALUES (?, 'sinnix-prime', 'machine.telemetry', 1, 'fresh-run')
+            """,
+            [datetime(2026, 7, 6, 9, 55, tzinfo=timezone.utc)],
+        )
+
+        reports = load_machine_promotion_freshness(
+            conn, max_lag_hours=24.0, live_db_path=live_db
+        )
+
+    by_table = {r["table"]: r for r in reports}
+    assert by_table["machine_cgroup_memory_sample"]["stale"] is True
+    assert by_table["machine_cgroup_memory_sample"]["lag_hours"] > 24.0
+    assert by_table["machine_metric_sample"]["stale"] is False
+    # Tables absent from the live source (e.g. kill_event on this fixture)
+    # are skipped entirely, not reported stale — missing is missing.
+    assert "machine_gpu_sample" not in by_table
+
+
+def test_load_machine_promotion_freshness_missing_substrate_rows_is_stale(tmp_path):
+    """A table with live data but ZERO substrate rows for it must be stale.
+
+    This is exactly the observed sinnix-kx4 shape: the live source kept
+    growing while the promoted substrate table had nothing for the current
+    refresh at all.
+    """
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import load_machine_promotion_freshness
+
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_live_sqlite(live_db, {"cgroup_memory_sample": "2026-07-06T10:00:00+00:00"})
+
+    sub_db = tmp_path / "sub.duckdb"
+    with connect(sub_db) as conn:
+        apply_schema(conn)
+        reports = load_machine_promotion_freshness(
+            conn, max_lag_hours=24.0, live_db_path=live_db
+        )
+
+    by_table = {r["table"]: r for r in reports}
+    assert by_table["machine_cgroup_memory_sample"]["stale"] is True
+    assert by_table["machine_cgroup_memory_sample"]["lag_hours"] is None
+    assert by_table["machine_cgroup_memory_sample"]["substrate_max_observed_at"] is None

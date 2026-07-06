@@ -1,16 +1,20 @@
 """Canonical contracts for Lynchpin datasets and substrate stages."""
+
 from __future__ import annotations
+
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
-SourceEmptiness = Literal['valid', 'degraded', 'invalid']
-DatasetStatus = Literal['ready', 'empty', 'missing', 'partial', 'degraded', 'error']
-SubstrateStatus = Literal['ok', 'empty', 'unavailable', 'error']
-ContractKind = Literal['dataset', 'stage']
-QueryMode = Literal['canonical', 'substrate', 'live']
-CollectionModel = Literal['continuous', 'event_export', 'derived', 'metadata', 'historical', 'stage']
-MaterializationMode = Literal['live', 'transparent', 'derived', 'coverage_bound', 'external']
-MaterializationExecutorKind = Literal['none', 'materializer']
+
+SourceEmptiness = Literal["valid", "degraded", "invalid"]
+DatasetStatus = Literal["ready", "empty", "missing", "partial", "degraded", "error"]
+SubstrateStatus = Literal["ok", "empty", "unavailable", "error"]
+ContractKind = Literal["dataset", "stage"]
+QueryMode = Literal["canonical", "substrate", "live"]
+CollectionModel = Literal["continuous", "event_export", "derived", "metadata", "historical", "stage"]
+MaterializationMode = Literal["live", "transparent", "derived", "coverage_bound", "external"]
+MaterializationExecutorKind = Literal["none", "materializer"]
 GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS = 5 * 60
+
 
 @dataclass(frozen=True)
 class MaterializationExecutor:
@@ -22,19 +26,21 @@ class MaterializationExecutor:
     freshness budget; this typed executor is contract metadata, not a separate
     queue-control API.
     """
-    kind: MaterializationExecutorKind = 'none'
+
+    kind: MaterializationExecutorKind = "none"
     ref: str | None = None
 
     @classmethod
-    def none(cls) -> 'MaterializationExecutor':
+    def none(cls) -> "MaterializationExecutor":
         return cls()
 
     @classmethod
-    def materializer(cls, name: str) -> 'MaterializationExecutor':
-        return cls(kind='materializer', ref=name)
+    def materializer(cls, name: str) -> "MaterializationExecutor":
+        return cls(kind="materializer", ref=name)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
+
 
 @dataclass(frozen=True)
 class SourceContract:
@@ -44,12 +50,12 @@ class SourceContract:
     materialization_hint: str
     materialization_executor: MaterializationExecutor = MaterializationExecutor()
     required: bool = True
-    empty: SourceEmptiness = 'invalid'
+    empty: SourceEmptiness = "invalid"
     substrate_daily_signal: bool = False
-    kind: ContractKind = 'dataset'
-    query_mode: QueryMode = 'canonical'
-    collection_model: CollectionModel = 'event_export'
-    materialization_mode: MaterializationMode = 'external'
+    kind: ContractKind = "dataset"
+    query_mode: QueryMode = "canonical"
+    collection_model: CollectionModel = "event_export"
+    materialization_mode: MaterializationMode = "external"
     materialization_target: str | None = None
     default_max_age_seconds: int | None = None
     substrate_tables: tuple[str, ...] = ()
@@ -57,58 +63,776 @@ class SourceContract:
     mcp_tools: tuple[str, ...] = ()
     caveats: tuple[str, ...] = ()
 
+
 @dataclass(frozen=True)
 class StageContract:
     name: str
     query_surface: str
     required: bool = True
-    kind: ContractKind = 'stage'
-SOURCE_CONTRACTS: tuple[SourceContract, ...] = (SourceContract(name='asciinema', authority='asciinema terminal recording captures', query_surface='lynchpin.sources.terminal.recordings', materialization_hint='asciinema recording capture writes under /realm/data/captures/asciinema', required=False), SourceContract(name='webhistory', authority='all canonical webhistory segment files plus raw Takeout archives', query_surface='lynchpin.sources.web', materialization_hint='python -m lynchpin.ingest.webhistory', materialization_executor=MaterializationExecutor.materializer('webhistory'), substrate_daily_signal=True), SourceContract(name='google_takeout', authority='raw Google Takeout archives', query_surface='lynchpin.sources.google_takeout plus lynchpin.sources.google_takeout_products', materialization_hint='python -m lynchpin.ingest.google_takeout_materialize && python -m lynchpin.ingest.google_takeout_products', materialization_executor=MaterializationExecutor.materializer('google_takeout'), substrate_daily_signal=True), SourceContract(name='polylogue', authority='Polylogue archive database', query_surface='lynchpin.sources.polylogue', materialization_hint='polylogue doctor --repair --target session_insights'), SourceContract(name='codex', authority='Codex session JSONL archive', query_surface='lynchpin.sources.polylogue once Polylogue has archived Codex sessions', materialization_hint='polylogued tails Codex session logs into the Polylogue archive', required=False), SourceContract(name='polylogue_devtools', authority='Polylogue repo-local devtools JSONL and .local/logs artifacts', query_surface='lynchpin.sources.polylogue_devtools', materialization_hint='Polylogue devtools records this live; Lynchpin reads repo-local ledgers'), SourceContract(name='activitywatch', authority='ActivityWatch live SQLite plus exported backup DBs', query_surface='lynchpin.sources.activitywatch', materialization_hint='python -m lynchpin.ingest.activitywatch_materialize', materialization_executor=MaterializationExecutor.materializer('activitywatch'), collection_model='continuous'), SourceContract(name='activitywatch_event_index', authority='canonical ActivityWatch event product', query_surface='lynchpin.sources.activitywatch_raw', materialization_hint='python -m lynchpin.ingest.activitywatch_event_index_materialize', materialization_executor=MaterializationExecutor.materializer('activitywatch_event_index'), collection_model='derived', materialization_mode='derived'), SourceContract(name='activitywatch_derived', authority='logical-day indexed ActivityWatch event product', query_surface='lynchpin.sources.activitywatch_derived', materialization_hint='python -m lynchpin.ingest.activitywatch_derived_materialize', materialization_executor=MaterializationExecutor.materializer('activitywatch_derived'), collection_model='derived', materialization_mode='derived', graph_node_kinds=('focus_span', 'focus_day', 'deep_work_block', 'circadian_profile', 'focus_loop', 'fragmentation_day', 'attention_day')), SourceContract(name='clipboard', authority='Clipse live clipboard history plus exported clipboard snapshots', query_surface='lynchpin.sources.clipboard', materialization_hint='clipse records live; export snapshots are read from configured raw files', required=False), SourceContract(name='title_metadata', authority='historical GPT/rules title classification DuckDB', query_surface='lynchpin.sources.title_metadata', materialization_hint='python -m lynchpin.ingest.title_metadata_materialize', materialization_executor=MaterializationExecutor.materializer('title_metadata'), substrate_daily_signal=False), SourceContract(name='activity_content', authority='canonical ActivityWatch events joined to canonical title metadata', query_surface='lynchpin.sources.activity_content.iter_activity_content_days', materialization_hint='python -m lynchpin.ingest.activity_content_materialize', materialization_executor=MaterializationExecutor.materializer('activity_content'), substrate_daily_signal=True), SourceContract(name='atuin', authority='Atuin live SQLite', query_surface='lynchpin.sources.terminal', materialization_hint='python -m lynchpin.ingest.terminal_materialize', materialization_executor=MaterializationExecutor.materializer('atuin')), SourceContract(name='dendron', authority='knowledgebase/Dendron markdown notes', query_surface='lynchpin.sources.exports_dendron', materialization_hint='edit knowledgebase notes; Lynchpin reads the note tree directly', required=False), SourceContract(name='evidence_graph_substrate', authority='source modules promoted into DuckDB', query_surface='lynchpin.graph.context_pack', materialization_hint='python -m lynchpin.cli.substrate_snapshot --start 2013-01-01 --end $(date +%F)', query_mode='substrate'), SourceContract(name='github_context', authority='GitHub issue/PR lifecycle API plus local commit references', query_surface='lynchpin.sources.github_context.iter_github_context', materialization_hint='python -m lynchpin.analysis refresh', materialization_executor=MaterializationExecutor.materializer('github_context'), query_mode='canonical', collection_model='derived', materialization_mode='derived', default_max_age_seconds=GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS, graph_node_kinds=('github_issue', 'github_pr'), mcp_tools=('lynchpin_project', 'lynchpin_status', 'lynchpin_ops'), caveats=('network-backed GitHub lifecycle product; open frontier reads should refresh from the remote API',)), SourceContract(name='analysis_artifacts', authority='generated Lynchpin analysis products under the configured analysis output directory', query_surface='lynchpin.sources.analysis_artifacts', materialization_hint='python -m lynchpin.analysis materialize', required=False, empty='valid', query_mode='live', collection_model='derived'), SourceContract(name='health', authority='Samsung Health raw exports', query_surface='lynchpin.sources.health', materialization_hint='python -m lynchpin.cli.process_health', substrate_daily_signal=True), SourceContract(name='goodreads', authority='Goodreads library export CSV', query_surface='lynchpin.sources.exports_goodreads', materialization_hint='replace /realm/data/exports/goodreads/raw/library_export.csv', required=False), SourceContract(name='keylog', authority='scribe-tap keylog captures', query_surface='lynchpin.sources.keylog', materialization_hint='scribe-tap records live keylog captures', required=False, substrate_daily_signal=True), SourceContract(name='keylog_analysis', authority='scribe-tap keylog captures plus Hyprland binding config', query_surface='lynchpin.analysis.keylog and MCP keybind/text tools', materialization_hint='python -m lynchpin.analysis keylog-analysis --start <date> --end <date>', materialization_executor=MaterializationExecutor.materializer('keylog_analysis'), required=False, empty='valid', collection_model='derived', materialization_mode='derived'), SourceContract(name='raw_log', authority='operator raw-log file', query_surface='lynchpin.sources.raw_log', materialization_hint='append operator raw-log entries', required=False), SourceContract(name='sleep', authority='Samsung Health/Sleep-as-Android exports', query_surface='lynchpin.sources.sleep', materialization_hint='python -m lynchpin.cli.process_health', substrate_daily_signal=True), SourceContract(name='substance', authority='processed substance log CSV', query_surface='lynchpin.sources.substance', materialization_hint='edit /realm/data/exports/health/processed/substance_log_unified.csv', substrate_daily_signal=True), SourceContract(name='spotify', authority='Spotify GDPR export directories', query_surface='lynchpin.sources.spotify', materialization_hint='python -m lynchpin.ingest.exports_materialize spotify', materialization_executor=MaterializationExecutor.materializer('spotify'), substrate_daily_signal=True), SourceContract(name='reddit', authority='Reddit GDPR export directories', query_surface='lynchpin.sources.reddit', materialization_hint='python -m lynchpin.ingest.exports_materialize reddit', materialization_executor=MaterializationExecutor.materializer('reddit'), substrate_daily_signal=True), SourceContract(name='samsung_gdpr_cloud', authority='Samsung GDPR cloud export', query_surface='lynchpin.sources.samsung_gdpr_cloud', materialization_hint='replace Samsung GDPR cloud export under /realm/data/exports/samsung', required=False), SourceContract(name='sinnix_runtime_inventory', authority='Sinnix runtime inventory JSON', query_surface='lynchpin.sources.sinnix_runtime_inventory', materialization_hint='update Sinnix runtime inventory from the Sinnix capture pipeline', required=False), SourceContract(name='facebook_messenger', authority='Facebook Messenger GDPR export', query_surface='lynchpin.sources.exports', materialization_hint='python -m lynchpin.ingest.exports_materialize facebook-messenger', materialization_executor=MaterializationExecutor.materializer('facebook_messenger'), substrate_daily_signal=True), SourceContract(name='communications', authority='canonical Messenger plus parseable Outlook communication exports', query_surface='lynchpin.sources.communications', materialization_hint='python -m lynchpin.ingest.communications_materialize', materialization_executor=MaterializationExecutor.materializer('communications'), substrate_daily_signal=True), SourceContract(name='raindrop', authority='Raindrop export CSVs', query_surface='lynchpin.sources.exports', materialization_hint='python -m lynchpin.ingest.exports_materialize raindrop', materialization_executor=MaterializationExecutor.materializer('raindrop'), substrate_daily_signal=True), SourceContract(name='browser_bookmarks', authority='browser bookmark exports and Firefox/Vivaldi profile data', query_surface='lynchpin.sources.bookmarks', materialization_hint='python -m lynchpin.ingest.bookmarks_materialize', materialization_executor=MaterializationExecutor.materializer('browser_bookmarks'), substrate_daily_signal=True), SourceContract(name='arbtt', authority='ARBTT capture.log files', query_surface='lynchpin.sources.arbtt', materialization_hint='python -m lynchpin.ingest.arbtt_materialize', materialization_executor=MaterializationExecutor.materializer('arbtt'), substrate_daily_signal=True), SourceContract(name='machine', authority='machine telemetry SQLite/JSONL captures', query_surface='lynchpin.sources.machine plus analysis machine artifacts', materialization_hint='python -m lynchpin.ingest.machine_materialize', materialization_executor=MaterializationExecutor.materializer('machine')), SourceContract(name='xtask_history', authority='Sinex xtask-history SQLite ledger', query_surface='lynchpin.sources.xtask_history.iter_invocations', materialization_hint='xtask records this live; no Lynchpin materializer'), SourceContract(name='spotify_daily', authority='canonical Spotify stream materialization', query_surface='lynchpin.sources.personal_signals.iter_spotify_daily_signals', materialization_hint='python -m lynchpin.ingest.personal_signals_materialize spotify-daily', materialization_executor=MaterializationExecutor.materializer('spotify_daily'), query_mode='canonical'), SourceContract(name='personal_daily_signals', authority='canonical personal-source products', query_surface='lynchpin.sources.personal_signals.iter_personal_daily_signals', materialization_hint='python -m lynchpin.ingest.personal_signals_materialize personal-daily-signals', materialization_executor=MaterializationExecutor.materializer('personal_daily_signals'), query_mode='canonical'), SourceContract(name='temporal_signals', authority='canonical deterministic temporal signal product', query_surface='lynchpin.sources.temporal_signals.iter_temporal_signals', materialization_hint='python -m lynchpin.ingest.temporal_signals_materialize', materialization_executor=MaterializationExecutor.materializer('temporal_signals'), query_mode='canonical'), SourceContract(name='sleep_productivity', authority='canonical sleep-to-productivity derived product', query_surface='lynchpin.sources.sleep_productivity.iter_sleep_productivity', materialization_hint='python -m lynchpin.ingest.sleep_productivity_materialize', materialization_executor=MaterializationExecutor.materializer('sleep_productivity'), query_mode='canonical'), SourceContract(name='irc', authority='raw WeeChat IRC logs under irc_root/_raw', query_surface='lynchpin.sources.irc_raw', materialization_hint='python -m lynchpin.ingest.irc_materialize', materialization_executor=MaterializationExecutor.materializer('irc'), required=False), SourceContract(name='wykop', authority='Wykop GDPR export', query_surface='lynchpin.sources.wykop', materialization_hint='replace Wykop GDPR export under /realm/data/exports/wykop/raw', required=False, substrate_daily_signal=True), SourceContract(name='themotte', authority='TheMotte authenticated browser sync', query_surface='lynchpin.sources.themotte', materialization_hint='python -m lynchpin.ingest.themotte_sync', required=False, substrate_daily_signal=True), SourceContract(name='code_snapshots', authority='local git repositories defined in REPO_PLANS (chisel/repomix)', query_surface='lynchpin.substrate.code_snapshots.iter_code_snapshot_runs', materialization_hint='python -m lynchpin.analysis projects chisel', materialization_executor=MaterializationExecutor.materializer('code_snapshots'), required=False, empty='valid', collection_model='derived', materialization_mode='derived', substrate_tables=('code_snapshot_run', 'code_snapshot_slice'), mcp_tools=('lynchpin_project', 'lynchpin_status', 'lynchpin_ops'), caveats=('snapshot freshness tracks registered repo HEADs and transparently rebuilds when a snapshot is requested', 'XML slices are large filesystem files; use list_code_snapshot_slices for discovery')))
-_CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {'asciinema': {'collection_model': 'continuous', 'caveats': ('recordings are raw terminal casts; semantic work attribution comes from shell sessions and evidence graph joins',)}, 'webhistory': {'collection_model': 'continuous', 'graph_node_kinds': ('web_domain_day',), 'mcp_tools': ('lynchpin_personal', 'lynchpin_query'), 'caveats': ('graph layer emits daily domain aggregates rather than per-visit nodes', 'weak_* web buckets are host/path matches, not semantic classification')}, 'google_takeout': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('google_activity_day',), 'mcp_tools': ('lynchpin_personal', 'lynchpin_query'), 'caveats': ('typed activity/event surface excludes contacts and asset inventories', 'YouTube subscription/export rows without timestamps are inventory, not activity')}, 'polylogue': {'collection_model': 'continuous', 'graph_node_kinds': ('ai_session', 'ai_work_event'), 'mcp_tools': ('lynchpin_personal', 'lynchpin_evidence'), 'caveats': ('deep Polylogue analytics live on the Polylogue MCP server',)}, 'codex': {'collection_model': 'continuous', 'graph_node_kinds': ('ai_session', 'ai_work_event'), 'mcp_tools': ('lynchpin_personal', 'lynchpin_evidence'), 'caveats': ('raw Codex JSONL is not a separate semantic source once Polylogue archives it', 'use Polylogue session products for project/work attribution rather than raw JSONL parsing')}, 'activitywatch': {'collection_model': 'continuous', 'substrate_tables': ('activity_content_day', 'activity_content_bucket', 'activity_title_usage'), 'graph_node_kinds': ('focus_span', 'focus_day', 'deep_work_block', 'focus_loop', 'attention_day', 'circadian_profile', 'fragmentation_day', 'activity_content_day'), 'mcp_tools': ('lynchpin_personal', 'lynchpin_evidence')}, 'title_metadata': {'collection_model': 'metadata', 'substrate_tables': ('title_classification',), 'mcp_tools': ('lynchpin_personal', 'lynchpin_catalog'), 'caveats': ('historical GPT/rules classifications; inspect coverage before semantic use',)}, 'activity_content': {'collection_model': 'derived', 'substrate_tables': ('activity_content_day', 'activity_content_bucket', 'activity_title_usage'), 'graph_node_kinds': ('activity_content_day',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('coverage is bounded by title metadata matches; unmatched-title queue is the audit surface',)}, 'clipboard': {'collection_model': 'continuous', 'graph_node_kinds': ('clipboard_entry',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('clipboard text is sensitive and should be queried through aggregate/provenance-aware views by default',)}, 'atuin': {'collection_model': 'continuous', 'graph_node_kinds': ('terminal_session', 'terminal_pattern'), 'mcp_tools': ('lynchpin_personal',)}, 'evidence_graph_substrate': {'collection_model': 'stage', 'substrate_tables': ('commit_fact', 'file_change_fact', 'symbol_change', 'ai_work_event', 'pr_review_row', 'evidence_graph_build', 'evidence_node', 'evidence_edge', 'analysis_claim', 'substrate_promotion_run', 'substrate_source_status'), 'graph_node_kinds': ('commit', 'ai_work_event', 'ai_session', 'analysis_claim'), 'mcp_tools': ('lynchpin_query', 'lynchpin_evidence', 'lynchpin_project', 'lynchpin_personal', 'lynchpin_machine', 'lynchpin_status', 'lynchpin_ops')}, 'github_context': {'collection_model': 'derived', 'graph_node_kinds': ('github_issue', 'github_pr'), 'mcp_tools': ('lynchpin_project', 'lynchpin_status', 'lynchpin_ops'), 'caveats': ('GitHub lifecycle context refreshes through live gh reads with a short product freshness window',)}, 'analysis_artifacts': {'collection_model': 'derived', 'mcp_tools': ('lynchpin_catalog', 'lynchpin_status', 'lynchpin_ops'), 'caveats': ('generated products are derived and rebuildable; inspect metadata and source claims before treating them as evidence', 'MCP reads may trigger bounded product convergence; benchmark execution remains an explicit operation')}, 'health': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('health_metric',), 'mcp_tools': ('lynchpin_personal', 'lynchpin_query'), 'caveats': ('export-backed; absence of recent rows may mean no export, not necessarily zero activity',)}, 'goodreads': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('library export has coarse reading-state timestamps; it is better for long-horizon interest traces than daily behavior',)}, 'keylog': {'collection_model': 'continuous', 'substrate_tables': ('personal_daily_signal',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('keystroke counts are activity intensity, not task semantics; never infer content from counts alone',)}, 'raw_log': {'collection_model': 'continuous', 'graph_node_kinds': ('raw_log',), 'caveats': ('operator-entered notes are high-signal but sparse and self-report biased',)}, 'sleep': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('sleep_quality', 'readiness_forecast'), 'mcp_tools': ('lynchpin_personal',)}, 'sleep_productivity': {'collection_model': 'derived', 'graph_node_kinds': ('sleep_productivity_link',), 'mcp_tools': ('lynchpin_status', 'lynchpin_personal')}, 'substance': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('manual processed CSV; coverage shows recorded rows only',)}, 'spotify': {'collection_model': 'event_export', 'substrate_tables': ('spotify_daily', 'personal_daily_signal'), 'graph_node_kinds': ('listening_session',), 'mcp_tools': ('lynchpin_personal',)}, 'reddit': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('export-backed; no rows in a window can mean no use or no export coverage',)}, 'samsung_gdpr_cloud': {'collection_model': 'event_export', 'caveats': ('raw Samsung cloud export inventory; promoted physiological signals live under health/sleep when parsed',)}, 'sinnix_runtime_inventory': {'collection_model': 'metadata', 'mcp_tools': ('lynchpin_machine',), 'caveats': ('runtime inventory is a snapshot, not a time series unless captured repeatedly',)}, 'facebook_messenger': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('communication_activity',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('superseded for unified access by communications',)}, 'communications': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('communication_activity',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('Teams candidate files are not promoted unless real message/call exports are found',)}, 'raindrop': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('bookmark_activity',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('dedup with browser bookmarks is coarse',)}, 'browser_bookmarks': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('bookmark_activity',), 'mcp_tools': ('lynchpin_personal',)}, 'arbtt': {'collection_model': 'historical', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('arbtt_focus_activity',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('historical focus source; weaker title/category attribution than ActivityWatch',)}, 'machine': {'collection_model': 'continuous', 'substrate_tables': ('machine_metric_sample', 'machine_gpu_sample', 'machine_service_state', 'machine_network_sample', 'machine_process_io_delta_sample', 'machine_process_memory_sample', 'machine_cgroup_memory_sample', 'machine_experiment_run'), 'mcp_tools': ('lynchpin_machine', 'lynchpin_status', 'lynchpin_ops')}, 'xtask_history': {'collection_model': 'continuous', 'substrate_tables': ('work_observation', 'work_observation_stage', 'work_observation_test_result'), 'caveats': ('Sinex xtask invocation ledger; observational runtime/resource windows, not controlled experiments',)}, 'polylogue_devtools': {'collection_model': 'continuous', 'substrate_tables': ('work_observation',), 'mcp_tools': ('lynchpin_machine',), 'caveats': ('Polylogue repo-local development tooling history; distinct from the Polylogue chat archive DB', '.agent/xtask rows are invocation events; .local/logs metrics can provide resource windows for machine attribution')}, 'spotify_daily': {'collection_model': 'derived', 'substrate_tables': ('spotify_daily',), 'mcp_tools': ('lynchpin_personal', 'lynchpin_status')}, 'personal_daily_signals': {'collection_model': 'derived', 'substrate_tables': ('personal_daily_signal', 'activity_content_day', 'activity_content_bucket', 'activity_title_usage'), 'graph_node_kinds': ('personal_daily_signal', 'health_metric', 'sleep_quality', 'communication_activity', 'bookmark_activity', 'activity_content_day'), 'mcp_tools': ('lynchpin_personal', 'lynchpin_evidence', 'lynchpin_status', 'lynchpin_ops')}, 'temporal_signals': {'collection_model': 'derived', 'graph_node_kinds': ('temporal_changepoint', 'temporal_trend', 'temporal_anomaly', 'temporal_rhythm'), 'mcp_tools': ('lynchpin_personal', 'lynchpin_status')}, 'irc': {'collection_model': 'continuous', 'graph_node_kinds': ('communication_activity',), 'caveats': ('WeeChat raw log parsing; meta/server lines flagged separately', 'nick normalization is heuristic; see _KNOWN_ALIASES for explicit mappings')}, 'wykop': {'collection_model': 'event_export', 'substrate_tables': ('personal_daily_signal',), 'graph_node_kinds': ('communication_activity',), 'mcp_tools': ('lynchpin_personal',), 'caveats': ('public-social export; daily counts are stable, semantic topic inference needs text-level review',)}}
-SOURCE_CONTRACT_ALIASES: dict[str, str] = {'fbmessenger': 'facebook_messenger', 'gmail_takeout': 'google_takeout', 'irc_raw': 'irc'}
+    kind: ContractKind = "stage"
+
+
+SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
+    SourceContract(
+        name="asciinema",
+        authority="asciinema terminal recording captures",
+        query_surface="lynchpin.sources.terminal.recordings",
+        materialization_hint="asciinema recording capture writes under /realm/data/captures/asciinema",
+        required=False,
+    ),
+    SourceContract(
+        name="webhistory",
+        authority="all canonical webhistory segment files plus raw Takeout archives",
+        query_surface="lynchpin.sources.web",
+        materialization_hint="python -m lynchpin.ingest.webhistory",
+        materialization_executor=MaterializationExecutor.materializer("webhistory"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="google_takeout",
+        authority="raw Google Takeout archives",
+        query_surface="lynchpin.sources.google_takeout plus lynchpin.sources.google_takeout_products",
+        materialization_hint="python -m lynchpin.ingest.google_takeout_materialize && python -m lynchpin.ingest.google_takeout_products",
+        materialization_executor=MaterializationExecutor.materializer("google_takeout"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="polylogue",
+        authority="Polylogue archive database",
+        query_surface="lynchpin.sources.polylogue",
+        materialization_hint="polylogue doctor --repair --target session_insights",
+    ),
+    SourceContract(
+        name="codex",
+        authority="Codex session JSONL archive",
+        query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
+        materialization_hint="polylogued tails Codex session logs into the Polylogue archive",
+        required=False,
+    ),
+    SourceContract(
+        name="polylogue_devtools",
+        authority="Polylogue repo-local devtools JSONL and .local/logs artifacts",
+        query_surface="lynchpin.sources.polylogue_devtools",
+        materialization_hint="Polylogue devtools records this live; Lynchpin reads repo-local ledgers",
+    ),
+    SourceContract(
+        name="activitywatch",
+        authority="ActivityWatch live SQLite plus exported backup DBs",
+        query_surface="lynchpin.sources.activitywatch",
+        materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
+        materialization_executor=MaterializationExecutor.materializer("activitywatch"),
+        collection_model="continuous",
+    ),
+    SourceContract(
+        name="activitywatch_event_index",
+        authority="canonical ActivityWatch event product",
+        query_surface="lynchpin.sources.activitywatch_raw",
+        materialization_hint="python -m lynchpin.ingest.activitywatch_event_index_materialize",
+        materialization_executor=MaterializationExecutor.materializer("activitywatch_event_index"),
+        collection_model="derived",
+        materialization_mode="derived",
+    ),
+    SourceContract(
+        name="activitywatch_derived",
+        authority="logical-day indexed ActivityWatch event product",
+        query_surface="lynchpin.sources.activitywatch_derived",
+        materialization_hint="python -m lynchpin.ingest.activitywatch_derived_materialize",
+        materialization_executor=MaterializationExecutor.materializer("activitywatch_derived"),
+        collection_model="derived",
+        materialization_mode="derived",
+        graph_node_kinds=(
+            "focus_span",
+            "focus_day",
+            "deep_work_block",
+            "circadian_profile",
+            "focus_loop",
+            "fragmentation_day",
+            "attention_day",
+        ),
+    ),
+    SourceContract(
+        name="clipboard",
+        authority="Clipse live clipboard history plus exported clipboard snapshots",
+        query_surface="lynchpin.sources.clipboard",
+        materialization_hint="clipse records live; export snapshots are read from configured raw files",
+        required=False,
+    ),
+    SourceContract(
+        name="title_metadata",
+        authority="historical GPT/rules title classification DuckDB",
+        query_surface="lynchpin.sources.title_metadata",
+        materialization_hint="python -m lynchpin.ingest.title_metadata_materialize",
+        materialization_executor=MaterializationExecutor.materializer("title_metadata"),
+        substrate_daily_signal=False,
+    ),
+    SourceContract(
+        name="activity_content",
+        authority="canonical ActivityWatch events joined to canonical title metadata",
+        query_surface="lynchpin.sources.activity_content.iter_activity_content_days",
+        materialization_hint="python -m lynchpin.ingest.activity_content_materialize",
+        materialization_executor=MaterializationExecutor.materializer("activity_content"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="atuin",
+        authority="Atuin live SQLite",
+        query_surface="lynchpin.sources.terminal",
+        materialization_hint="python -m lynchpin.ingest.terminal_materialize",
+        materialization_executor=MaterializationExecutor.materializer("atuin"),
+    ),
+    SourceContract(
+        name="dendron",
+        authority="knowledgebase/Dendron markdown notes",
+        query_surface="lynchpin.sources.exports_dendron",
+        materialization_hint="edit knowledgebase notes; Lynchpin reads the note tree directly",
+        required=False,
+    ),
+    SourceContract(
+        name="evidence_graph_substrate",
+        authority="source modules promoted into DuckDB",
+        query_surface="lynchpin.graph.context_pack",
+        materialization_hint="python -m lynchpin.cli.substrate_snapshot --start 2013-01-01 --end $(date +%F)",
+        query_mode="substrate",
+    ),
+    SourceContract(
+        name="github_context",
+        authority="GitHub issue/PR lifecycle API plus local commit references",
+        query_surface="lynchpin.sources.github_context.iter_github_context",
+        materialization_hint="python -m lynchpin.analysis refresh",
+        materialization_executor=MaterializationExecutor.materializer("github_context"),
+        query_mode="canonical",
+        collection_model="derived",
+        materialization_mode="derived",
+        default_max_age_seconds=GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS,
+        graph_node_kinds=("github_issue", "github_pr"),
+        mcp_tools=("lynchpin_project", "lynchpin_status", "lynchpin_ops"),
+        caveats=("network-backed GitHub lifecycle product; open frontier reads should refresh from the remote API",),
+    ),
+    SourceContract(
+        name="analysis_artifacts",
+        authority="generated Lynchpin analysis products under the configured analysis output directory",
+        query_surface="lynchpin.sources.analysis_artifacts",
+        materialization_hint="python -m lynchpin.analysis materialize",
+        required=False,
+        empty="valid",
+        query_mode="live",
+        collection_model="derived",
+    ),
+    SourceContract(
+        name="health",
+        authority="Samsung Health raw exports",
+        query_surface="lynchpin.sources.health",
+        materialization_hint="python -m lynchpin.cli.process_health",
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="goodreads",
+        authority="Goodreads library export CSV",
+        query_surface="lynchpin.sources.exports_goodreads",
+        materialization_hint="replace /realm/data/exports/goodreads/raw/library_export.csv",
+        required=False,
+    ),
+    SourceContract(
+        name="keylog",
+        authority="scribe-tap keylog captures",
+        query_surface="lynchpin.sources.keylog",
+        materialization_hint="scribe-tap records live keylog captures",
+        required=False,
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="keylog_analysis",
+        authority="scribe-tap keylog captures plus Hyprland binding config",
+        query_surface="lynchpin.analysis.keylog and MCP keybind/text tools",
+        materialization_hint="python -m lynchpin.analysis keylog-analysis --start <date> --end <date>",
+        materialization_executor=MaterializationExecutor.materializer("keylog_analysis"),
+        required=False,
+        empty="valid",
+        collection_model="derived",
+        materialization_mode="derived",
+    ),
+    SourceContract(
+        name="raw_log",
+        authority="operator raw-log file",
+        query_surface="lynchpin.sources.raw_log",
+        materialization_hint="append operator raw-log entries",
+        required=False,
+    ),
+    SourceContract(
+        name="sleep",
+        authority="Samsung Health/Sleep-as-Android exports",
+        query_surface="lynchpin.sources.sleep",
+        materialization_hint="python -m lynchpin.cli.process_health",
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="substance",
+        authority="processed substance log CSV",
+        query_surface="lynchpin.sources.substance",
+        materialization_hint="edit /realm/data/exports/health/processed/substance_log_unified.csv",
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="spotify",
+        authority="Spotify GDPR export directories",
+        query_surface="lynchpin.sources.spotify",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize spotify",
+        materialization_executor=MaterializationExecutor.materializer("spotify"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="reddit",
+        authority="Reddit GDPR export directories",
+        query_surface="lynchpin.sources.reddit",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize reddit",
+        materialization_executor=MaterializationExecutor.materializer("reddit"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="samsung_gdpr_cloud",
+        authority="Samsung GDPR cloud export",
+        query_surface="lynchpin.sources.samsung_gdpr_cloud",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
+        required=False,
+    ),
+    SourceContract(
+        name="sinnix_runtime_inventory",
+        authority="Sinnix runtime inventory JSON",
+        query_surface="lynchpin.sources.sinnix_runtime_inventory",
+        materialization_hint="update Sinnix runtime inventory from the Sinnix capture pipeline",
+        required=False,
+    ),
+    SourceContract(
+        name="facebook_messenger",
+        authority="Facebook Messenger GDPR export",
+        query_surface="lynchpin.sources.exports",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize facebook-messenger",
+        materialization_executor=MaterializationExecutor.materializer("facebook_messenger"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="communications",
+        authority="canonical Messenger plus parseable Outlook communication exports",
+        query_surface="lynchpin.sources.communications",
+        materialization_hint="python -m lynchpin.ingest.communications_materialize",
+        materialization_executor=MaterializationExecutor.materializer("communications"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="raindrop",
+        authority="Raindrop export CSVs",
+        query_surface="lynchpin.sources.exports",
+        materialization_hint="python -m lynchpin.ingest.exports_materialize raindrop",
+        materialization_executor=MaterializationExecutor.materializer("raindrop"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="browser_bookmarks",
+        authority="browser bookmark exports and Firefox/Vivaldi profile data",
+        query_surface="lynchpin.sources.bookmarks",
+        materialization_hint="python -m lynchpin.ingest.bookmarks_materialize",
+        materialization_executor=MaterializationExecutor.materializer("browser_bookmarks"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="arbtt",
+        authority="ARBTT capture.log files",
+        query_surface="lynchpin.sources.arbtt",
+        materialization_hint="python -m lynchpin.ingest.arbtt_materialize",
+        materialization_executor=MaterializationExecutor.materializer("arbtt"),
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="machine",
+        authority="machine telemetry SQLite/JSONL captures",
+        query_surface="lynchpin.sources.machine plus analysis machine artifacts",
+        materialization_hint="python -m lynchpin.ingest.machine_materialize",
+        materialization_executor=MaterializationExecutor.materializer("machine"),
+    ),
+    SourceContract(
+        name="xtask_history",
+        authority="Sinex xtask-history SQLite ledger",
+        query_surface="lynchpin.sources.xtask_history.iter_invocations",
+        materialization_hint="xtask records this live; no Lynchpin materializer",
+    ),
+    SourceContract(
+        name="spotify_daily",
+        authority="canonical Spotify stream materialization",
+        query_surface="lynchpin.sources.personal_signals.iter_spotify_daily_signals",
+        materialization_hint="python -m lynchpin.ingest.personal_signals_materialize spotify-daily",
+        materialization_executor=MaterializationExecutor.materializer("spotify_daily"),
+        query_mode="canonical",
+    ),
+    SourceContract(
+        name="personal_daily_signals",
+        authority="canonical personal-source products",
+        query_surface="lynchpin.sources.personal_signals.iter_personal_daily_signals",
+        materialization_hint="python -m lynchpin.ingest.personal_signals_materialize personal-daily-signals",
+        materialization_executor=MaterializationExecutor.materializer("personal_daily_signals"),
+        query_mode="canonical",
+    ),
+    SourceContract(
+        name="temporal_signals",
+        authority="canonical deterministic temporal signal product",
+        query_surface="lynchpin.sources.temporal_signals.iter_temporal_signals",
+        materialization_hint="python -m lynchpin.ingest.temporal_signals_materialize",
+        materialization_executor=MaterializationExecutor.materializer("temporal_signals"),
+        query_mode="canonical",
+    ),
+    SourceContract(
+        name="sleep_productivity",
+        authority="canonical sleep-to-productivity derived product",
+        query_surface="lynchpin.sources.sleep_productivity.iter_sleep_productivity",
+        materialization_hint="python -m lynchpin.ingest.sleep_productivity_materialize",
+        materialization_executor=MaterializationExecutor.materializer("sleep_productivity"),
+        query_mode="canonical",
+    ),
+    SourceContract(
+        name="irc",
+        authority="raw WeeChat IRC logs under irc_root/_raw",
+        query_surface="lynchpin.sources.irc_raw",
+        materialization_hint="python -m lynchpin.ingest.irc_materialize",
+        materialization_executor=MaterializationExecutor.materializer("irc"),
+        required=False,
+    ),
+    SourceContract(
+        name="wykop",
+        authority="Wykop GDPR export",
+        query_surface="lynchpin.sources.wykop",
+        materialization_hint="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
+        required=False,
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="themotte",
+        authority="TheMotte authenticated browser sync",
+        query_surface="lynchpin.sources.themotte",
+        materialization_hint="python -m lynchpin.ingest.themotte_sync",
+        required=False,
+        substrate_daily_signal=True,
+    ),
+    SourceContract(
+        name="code_snapshots",
+        authority="local git repositories defined in REPO_PLANS (chisel/repomix)",
+        query_surface="lynchpin.substrate.code_snapshots.iter_code_snapshot_runs",
+        materialization_hint="python -m lynchpin.analysis projects chisel",
+        materialization_executor=MaterializationExecutor.materializer("code_snapshots"),
+        required=False,
+        empty="valid",
+        collection_model="derived",
+        materialization_mode="derived",
+        substrate_tables=("code_snapshot_run", "code_snapshot_slice"),
+        mcp_tools=("lynchpin_project", "lynchpin_status", "lynchpin_ops"),
+        caveats=(
+            "snapshot freshness tracks registered repo HEADs and transparently rebuilds when a snapshot is requested",
+            "XML slices are large filesystem files; use list_code_snapshot_slices for discovery",
+        ),
+    ),
+)
+
+_CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "asciinema": {
+        "collection_model": "continuous",
+        "caveats": ("recordings are raw terminal casts; semantic work attribution comes from shell sessions and evidence graph joins",),
+    },
+    "webhistory": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("web_domain_day",),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_query"),
+        "caveats": (
+            "graph layer emits daily domain aggregates rather than per-visit nodes",
+            "weak_* web buckets are host/path matches, not semantic classification",
+        ),
+    },
+    "google_takeout": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("google_activity_day",),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_query"),
+        "caveats": (
+            "typed activity/event surface excludes contacts and asset inventories",
+            "YouTube subscription/export rows without timestamps are inventory, not activity",
+        ),
+    },
+    "polylogue": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("ai_session", "ai_work_event"),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence"),
+        "caveats": ("deep Polylogue analytics live on the Polylogue MCP server",),
+    },
+    "codex": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("ai_session", "ai_work_event"),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence"),
+        "caveats": (
+            "raw Codex JSONL is not a separate semantic source once Polylogue archives it",
+            "use Polylogue session products for project/work attribution rather than raw JSONL parsing",
+        ),
+    },
+    "activitywatch": {
+        "collection_model": "continuous",
+        "substrate_tables": ("activity_content_day", "activity_content_bucket", "activity_title_usage"),
+        "graph_node_kinds": (
+            "focus_span", "focus_day", "deep_work_block", "focus_loop",
+            "attention_day", "circadian_profile", "fragmentation_day", "activity_content_day",
+        ),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence"),
+    },
+    "title_metadata": {
+        "collection_model": "metadata",
+        "substrate_tables": ("title_classification",),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_catalog"),
+        "caveats": ("historical GPT/rules classifications; inspect coverage before semantic use",),
+    },
+    "activity_content": {
+        "collection_model": "derived",
+        "substrate_tables": ("activity_content_day", "activity_content_bucket", "activity_title_usage"),
+        "graph_node_kinds": ("activity_content_day",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("coverage is bounded by title metadata matches; unmatched-title queue is the audit surface",),
+    },
+    "clipboard": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("clipboard_entry",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("clipboard text is sensitive and should be queried through aggregate/provenance-aware views by default",),
+    },
+    "atuin": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("terminal_session", "terminal_pattern"),
+        "mcp_tools": ("lynchpin_personal",),
+    },
+    "dendron": {
+        "collection_model": "historical",
+        "graph_node_kinds": (),
+        "caveats": ("settled knowledge notes are background context, not timestamp-dense activity evidence",),
+    },
+    "evidence_graph_substrate": {
+        "collection_model": "stage",
+        "substrate_tables": (
+            "commit_fact", "file_change_fact", "symbol_change", "ai_work_event",
+            "pr_review_row", "evidence_graph_build", "evidence_node",
+            "evidence_edge", "analysis_claim", "substrate_promotion_run",
+            "substrate_source_status",
+        ),
+        "graph_node_kinds": ("commit", "ai_work_event", "ai_session", "analysis_claim"),
+        "mcp_tools": (
+            "lynchpin_query",
+            "lynchpin_evidence",
+            "lynchpin_project",
+            "lynchpin_personal",
+            "lynchpin_machine",
+            "lynchpin_status",
+            "lynchpin_ops",
+        ),
+    },
+    "github_context": {
+        "collection_model": "derived",
+        "graph_node_kinds": ("github_issue", "github_pr"),
+        "mcp_tools": ("lynchpin_project", "lynchpin_status", "lynchpin_ops"),
+        "caveats": ("GitHub lifecycle context refreshes through live gh reads with a short product freshness window",),
+    },
+    "analysis_artifacts": {
+        "collection_model": "derived",
+        "mcp_tools": ("lynchpin_catalog", "lynchpin_status", "lynchpin_ops"),
+        "caveats": (
+            "generated products are derived and rebuildable; inspect metadata and source claims before treating them as evidence",
+            "MCP reads may trigger bounded product convergence; benchmark execution remains an explicit operation",
+        ),
+    },
+    "health": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("health_metric",),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_query"),
+        "caveats": ("export-backed; absence of recent rows may mean no export, not necessarily zero activity",),
+    },
+    "goodreads": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("library export has coarse reading-state timestamps; it is better for long-horizon interest traces than daily behavior",),
+    },
+    "keylog": {
+        "collection_model": "continuous",
+        "substrate_tables": ("personal_daily_signal",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("keystroke counts are activity intensity, not task semantics; never infer content from counts alone",),
+    },
+    "raw_log": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("raw_log",),
+        "caveats": ("operator-entered notes are high-signal but sparse and self-report biased",),
+    },
+    "sleep": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("sleep_quality", "readiness_forecast"),
+        "mcp_tools": ("lynchpin_personal",),
+    },
+    "sleep_productivity": {
+        "collection_model": "derived",
+        "graph_node_kinds": ("sleep_productivity_link",),
+        "mcp_tools": ("lynchpin_status", "lynchpin_personal"),
+    },
+    "substance": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("manual processed CSV; coverage shows recorded rows only",),
+    },
+    "spotify": {
+        "collection_model": "event_export",
+        "substrate_tables": ("spotify_daily", "personal_daily_signal"),
+        "graph_node_kinds": ("listening_session",),
+        "mcp_tools": ("lynchpin_personal",),
+    },
+    "reddit": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("export-backed; no rows in a window can mean no use or no export coverage",),
+    },
+    "samsung_gdpr_cloud": {
+        "collection_model": "event_export",
+        "caveats": ("raw Samsung cloud export inventory; promoted physiological signals live under health/sleep when parsed",),
+    },
+    "sinnix_runtime_inventory": {
+        "collection_model": "metadata",
+        "mcp_tools": ("lynchpin_machine",),
+        "caveats": ("runtime inventory is a snapshot, not a time series unless captured repeatedly",),
+    },
+    "facebook_messenger": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("communication_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("superseded for unified access by communications",),
+    },
+    "communications": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("communication_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("Teams candidate files are not promoted unless real message/call exports are found",),
+    },
+    "raindrop": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("bookmark_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("dedup with browser bookmarks is coarse",),
+    },
+    "browser_bookmarks": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("bookmark_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+    },
+    "arbtt": {
+        "collection_model": "historical",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("arbtt_focus_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("historical focus source; weaker title/category attribution than ActivityWatch",),
+    },
+    "machine": {
+        "collection_model": "continuous",
+        "substrate_tables": (
+            "machine_metric_sample", "machine_gpu_sample",
+            "machine_service_state", "machine_network_sample",
+            "machine_process_io_delta_sample", "machine_process_memory_sample",
+            "machine_cgroup_memory_sample", "machine_kill_event",
+            "machine_experiment_run",
+        ),
+        "mcp_tools": ("lynchpin_machine", "lynchpin_status", "lynchpin_ops"),
+    },
+    "xtask_history": {
+        "collection_model": "continuous",
+        "substrate_tables": (
+            "work_observation",
+            "work_observation_stage",
+            "work_observation_test_result",
+        ),
+        "caveats": (
+            "Sinex xtask invocation ledger; observational runtime/resource windows, not controlled experiments",
+        ),
+    },
+    "polylogue_devtools": {
+        "collection_model": "continuous",
+        "substrate_tables": ("work_observation",),
+        "mcp_tools": ("lynchpin_machine",),
+        "caveats": (
+            "Polylogue repo-local development tooling history; distinct from the Polylogue chat archive DB",
+            ".agent/xtask rows are invocation events; .local/logs metrics can provide resource windows for machine attribution",
+        ),
+    },
+    "spotify_daily": {
+        "collection_model": "derived",
+        "substrate_tables": ("spotify_daily",),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_status"),
+    },
+    "personal_daily_signals": {
+        "collection_model": "derived",
+        "substrate_tables": ("personal_daily_signal", "activity_content_day", "activity_content_bucket", "activity_title_usage"),
+        "graph_node_kinds": ("personal_daily_signal", "health_metric", "sleep_quality", "communication_activity", "bookmark_activity", "activity_content_day"),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_evidence", "lynchpin_status", "lynchpin_ops"),
+    },
+    "temporal_signals": {
+        "collection_model": "derived",
+        "graph_node_kinds": ("temporal_changepoint", "temporal_trend", "temporal_anomaly", "temporal_rhythm"),
+        "mcp_tools": ("lynchpin_personal", "lynchpin_status"),
+    },
+    "irc": {
+        "collection_model": "continuous",
+        "graph_node_kinds": ("communication_activity",),
+        "caveats": (
+            "WeeChat raw log parsing; meta/server lines flagged separately",
+            "nick normalization is heuristic; see _KNOWN_ALIASES for explicit mappings",
+        ),
+    },
+    "wykop": {
+        "collection_model": "event_export",
+        "substrate_tables": ("personal_daily_signal",),
+        "graph_node_kinds": ("communication_activity",),
+        "mcp_tools": ("lynchpin_personal",),
+        "caveats": ("public-social export; daily counts are stable, semantic topic inference needs text-level review",),
+    },
+}
+
+SOURCE_CONTRACT_ALIASES: dict[str, str] = {
+    "fbmessenger": "facebook_messenger",
+    "gmail_takeout": "google_takeout",
+    "irc_raw": "irc",
+}
+
 
 def _with_materialization_defaults(contract: SourceContract) -> SourceContract:
     if contract.materialization_target is not None:
         return contract
-    if contract.collection_model in {'derived', 'stage'} or contract.query_mode == 'substrate':
-        kind = 'substrate' if contract.query_mode == 'substrate' else 'artifact'
-        return replace(contract, materialization_mode='derived', materialization_target=f'{kind}:{contract.name}', default_max_age_seconds=30 * 60)
-    if contract.materialization_executor.kind != 'none':
-        return replace(contract, materialization_mode='transparent', materialization_target=f'source:{contract.name}', default_max_age_seconds=5 * 60)
-    if contract.collection_model == 'continuous':
-        return replace(contract, materialization_mode='live', materialization_target=f'source:{contract.name}')
-    if contract.collection_model == 'event_export':
-        return replace(contract, materialization_mode='coverage_bound', materialization_target=f'source:{contract.name}')
-    return replace(contract, materialization_mode='external', materialization_target=f'source:{contract.name}')
-SOURCE_CONTRACTS = tuple((_with_materialization_defaults(replace(contract, **_CONTRACT_CAPABILITIES.get(contract.name, {}))) for contract in SOURCE_CONTRACTS))
-PROMOTION_STAGE_CONTRACTS: tuple[StageContract, ...] = (StageContract('commits', 'commit_fact'), StageContract('file_changes', 'file_change_fact'), StageContract('symbols', 'symbol_change', required=False), StageContract('ai_work_events', 'ai_work_event'), StageContract('polylogue_timeline', 'polylogue_session_time_composition', required=False), StageContract('evidence_graph', 'evidence_graph_build'), StageContract('pr_review', 'pr_review_row', required=False), StageContract('spotify_daily', 'spotify_daily', required=False), StageContract('personal_daily_signal', 'personal_daily_signal'), StageContract('title_classification', 'title_classification', required=False), StageContract('activity_content', 'activity_content_day', required=False), StageContract('machine', 'machine_metric_sample', required=False), StageContract('machine_gpu_sample', 'machine_gpu_sample', required=False), StageContract('machine_network_sample', 'machine_network_sample', required=False), StageContract('machine_service_state', 'machine_service_state', required=False), StageContract('machine_process_io_delta_sample', 'machine_process_io_delta_sample', required=False), StageContract('machine_process_memory_sample', 'machine_process_memory_sample', required=False), StageContract('machine_cgroup_memory_sample', 'machine_cgroup_memory_sample', required=False), StageContract('machine_experiments', 'machine_experiment_run', required=False), StageContract('sinnix_generation', 'sinnix_generation', required=False), StageContract('borg_drill_run', 'borg_drill_run', required=False), StageContract('work_observations', 'work_observation', required=False))
+    if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
+        kind = "substrate" if contract.query_mode == "substrate" else "artifact"
+        return replace(
+            contract,
+            materialization_mode="derived",
+            materialization_target=f"{kind}:{contract.name}",
+            default_max_age_seconds=30 * 60,
+        )
+    if contract.materialization_executor.kind != "none":
+        return replace(
+            contract,
+            materialization_mode="transparent",
+            materialization_target=f"source:{contract.name}",
+            default_max_age_seconds=5 * 60,
+        )
+    if contract.collection_model == "continuous":
+        return replace(
+            contract,
+            materialization_mode="live",
+            materialization_target=f"source:{contract.name}",
+        )
+    if contract.collection_model == "event_export":
+        return replace(
+            contract,
+            materialization_mode="coverage_bound",
+            materialization_target=f"source:{contract.name}",
+        )
+    return replace(
+        contract,
+        materialization_mode="external",
+        materialization_target=f"source:{contract.name}",
+    )
+
+
+SOURCE_CONTRACTS = tuple(
+    _with_materialization_defaults(replace(contract, **_CONTRACT_CAPABILITIES.get(contract.name, {})))
+    for contract in SOURCE_CONTRACTS
+)
+
+PROMOTION_STAGE_CONTRACTS: tuple[StageContract, ...] = (
+    StageContract("commits", "commit_fact"),
+    StageContract("file_changes", "file_change_fact"),
+    StageContract("symbols", "symbol_change", required=False),
+    StageContract("ai_work_events", "ai_work_event"),
+    StageContract("polylogue_timeline", "polylogue_session_time_composition", required=False),
+    StageContract("evidence_graph", "evidence_graph_build"),
+    StageContract("pr_review", "pr_review_row", required=False),
+    StageContract("spotify_daily", "spotify_daily", required=False),
+    StageContract("personal_daily_signal", "personal_daily_signal"),
+    StageContract("title_classification", "title_classification", required=False),
+    StageContract("activity_content", "activity_content_day", required=False),
+    StageContract("machine", "machine_metric_sample", required=False),
+    StageContract("machine_gpu_sample", "machine_gpu_sample", required=False),
+    StageContract("machine_network_sample", "machine_network_sample", required=False),
+    StageContract("machine_service_state", "machine_service_state", required=False),
+    StageContract("machine_process_io_delta_sample", "machine_process_io_delta_sample", required=False),
+    StageContract("machine_process_memory_sample", "machine_process_memory_sample", required=False),
+    StageContract("machine_cgroup_memory_sample", "machine_cgroup_memory_sample", required=False),
+    StageContract("machine_kill_event", "machine_kill_event", required=False),
+    StageContract("machine_experiments", "machine_experiment_run", required=False),
+    StageContract("sinnix_generation", "sinnix_generation", required=False),
+    StageContract("borg_drill_run", "borg_drill_run", required=False),
+    StageContract("work_observations", "work_observation", required=False),
+)
+
 SOURCE_CONTRACT_BY_NAME = {contract.name: contract for contract in SOURCE_CONTRACTS}
-SOURCE_CONTRACT_NAMES = tuple((contract.name for contract in SOURCE_CONTRACTS))
-PROMOTION_STAGE_CONTRACT_BY_NAME = {contract.name: contract for contract in PROMOTION_STAGE_CONTRACTS}
-PROMOTION_STAGE_NAMES = tuple((contract.name for contract in PROMOTION_STAGE_CONTRACTS))
-DAILY_SIGNAL_SOURCE_NAMES = tuple((contract.name for contract in SOURCE_CONTRACTS if contract.substrate_daily_signal))
+SOURCE_CONTRACT_NAMES = tuple(contract.name for contract in SOURCE_CONTRACTS)
+PROMOTION_STAGE_CONTRACT_BY_NAME = {
+    contract.name: contract for contract in PROMOTION_STAGE_CONTRACTS
+}
+PROMOTION_STAGE_NAMES = tuple(contract.name for contract in PROMOTION_STAGE_CONTRACTS)
+DAILY_SIGNAL_SOURCE_NAMES = tuple(
+    contract.name for contract in SOURCE_CONTRACTS if contract.substrate_daily_signal
+)
+
 
 def source_contract(name: str) -> SourceContract:
     return SOURCE_CONTRACT_BY_NAME[SOURCE_CONTRACT_ALIASES.get(name, name)]
 
+
 def stage_contract(name: str) -> StageContract:
     return PROMOTION_STAGE_CONTRACT_BY_NAME[name]
 
+
 def dataset_status_to_substrate_status(status: DatasetStatus | str) -> SubstrateStatus:
     """Map dataset audit statuses to substrate readiness statuses."""
-    if status == 'ready':
-        return 'ok'
-    if status == 'empty':
-        return 'empty'
-    if status in {'missing', 'partial'}:
-        return 'unavailable'
-    return 'error'
+    if status == "ready":
+        return "ok"
+    if status == "empty":
+        return "empty"
+    if status in {"missing", "partial"}:
+        return "unavailable"
+    return "error"
+
 
 def source_empty_substrate_status(empty: SourceEmptiness) -> SubstrateStatus:
     """Return the readiness status for a source that ran and produced zero rows."""
-    if empty == 'valid':
-        return 'empty'
-    if empty == 'degraded':
-        return 'unavailable'
-    return 'error'
-__all__ = ['DAILY_SIGNAL_SOURCE_NAMES', 'CollectionModel', 'DatasetStatus', 'PROMOTION_STAGE_CONTRACTS', 'PROMOTION_STAGE_CONTRACT_BY_NAME', 'PROMOTION_STAGE_NAMES', 'SOURCE_CONTRACTS', 'SOURCE_CONTRACT_BY_NAME', 'SOURCE_CONTRACT_NAMES', 'SOURCE_CONTRACT_ALIASES', 'SourceContract', 'StageContract', 'SubstrateStatus', 'MaterializationMode', 'MaterializationExecutor', 'MaterializationExecutorKind', 'dataset_status_to_substrate_status', 'source_empty_substrate_status', 'source_contract', 'stage_contract']
+    if empty == "valid":
+        return "empty"
+    if empty == "degraded":
+        return "unavailable"
+    return "error"
+
+
+__all__ = [
+    "DAILY_SIGNAL_SOURCE_NAMES",
+    "CollectionModel",
+    "DatasetStatus",
+    "PROMOTION_STAGE_CONTRACTS",
+    "PROMOTION_STAGE_CONTRACT_BY_NAME",
+    "PROMOTION_STAGE_NAMES",
+    "SOURCE_CONTRACTS",
+    "SOURCE_CONTRACT_BY_NAME",
+    "SOURCE_CONTRACT_NAMES",
+    "SOURCE_CONTRACT_ALIASES",
+    "SourceContract",
+    "StageContract",
+    "SubstrateStatus",
+    "MaterializationMode",
+    "MaterializationExecutor",
+    "MaterializationExecutorKind",
+    "dataset_status_to_substrate_status",
+    "source_empty_substrate_status",
+    "source_contract",
+    "stage_contract",
+]

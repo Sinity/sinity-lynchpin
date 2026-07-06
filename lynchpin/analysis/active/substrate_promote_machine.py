@@ -22,12 +22,14 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_GPU,
     SOURCE_MACHINE_NETWORK,
     SOURCE_MACHINE_CGROUP_MEMORY,
+    SOURCE_MACHINE_KILL_EVENT,
     SOURCE_MACHINE_PROCESS_IO_DELTA,
     SOURCE_MACHINE_PROCESS_MEMORY,
     SOURCE_MACHINE_SERVICE_STATE,
     SourceSelection,
     record_source_status,
 )
+from lynchpin.substrate._helpers import _staging_refresh_id
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +48,7 @@ def promote_machine_tables(
         SOURCE_MACHINE_GPU,
         SOURCE_MACHINE_NETWORK,
         SOURCE_MACHINE_CGROUP_MEMORY,
+        SOURCE_MACHINE_KILL_EVENT,
         SOURCE_MACHINE_PROCESS_IO_DELTA,
         SOURCE_MACHINE_PROCESS_MEMORY,
         SOURCE_MACHINE_SERVICE_STATE,
@@ -53,7 +56,7 @@ def promote_machine_tables(
     )):
         return
 
-    # ── fast path: DuckDB SQLite ATTACH ──────────────────────────────────
+    # ── fast path: DuckDB SQLite ATTACH (metric/gpu/network/service_state) ──
     sqlite_path = _machine_sqlite_path()
     if sqlite_path and sqlite_path.exists():
         try:
@@ -66,27 +69,39 @@ def promote_machine_tables(
                 counts=counts,
                 selection=selection,
             )
-            _promote_machine_process_io_slow(
-                conn, refresh_id, window_start, window_end, counts, selection
-            )
-            _promote_machine_process_memory_slow(
-                conn, refresh_id, window_start, window_end, counts, selection
-            )
-            _promote_machine_cgroup_memory_slow(
-                conn, refresh_id, window_start, window_end, counts, selection
-            )
-            _promote_experiments(conn, refresh_id, window_start, window_end, counts, selection)
-            return
         except Exception as exc:
             log.warning(
                 "substrate_promote: fast machine promotion failed, "
                 "falling back to Python iterator path: %s",
                 exc,
             )
+            # ── slow path: Python row-by-row (fallback for metric/gpu/
+            # network/service_state/process_io/process_memory/cgroup_memory) ──
+            _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
+    else:
+        _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
 
-    # ── slow path: Python row-by-row (fallback) ─────────────────────────
-    _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
-    _promote_experiments(conn, refresh_id, window_start, window_end, counts, selection)
+    # Each of the remaining per-table promoters already records its own
+    # success/error status internally; call them as INDEPENDENT steps
+    # (not chained inside one shared try/except) so a bug in one — including
+    # one whose own exception handler itself raises, e.g. because a prior
+    # DuckDB internal error left the connection aborted — cannot silently
+    # skip the promotion attempt (and status write) for every source called
+    # after it. This was an observed real failure shape (sinnix-kx4):
+    # machine_experiments' substrate_source_status row went stale in
+    # lockstep with machine_cgroup_memory_sample's, both stuck on the same
+    # date, while sibling sources kept refreshing daily.
+    for step in (
+        _promote_machine_process_io_slow,
+        _promote_machine_process_memory_slow,
+        _promote_machine_cgroup_memory_slow,
+        _promote_machine_kill_event_slow,
+        _promote_experiments,
+    ):
+        try:
+            step(conn, refresh_id, window_start, window_end, counts, selection)
+        except Exception as exc:
+            log.warning("substrate_promote: %s failed: %s", step.__name__, exc)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -205,13 +220,20 @@ def _promote_machine_fast(
         if not enabled:
             continue
         t0 = time.monotonic()
+        # Stage into a private refresh_id first; only swap it onto the real
+        # refresh_id once every day-chunk has landed. This mirrors
+        # lynchpin.substrate._helpers.promote_rows's interruption-safety
+        # design: a DELETE-then-INSERT of the SAME refresh_id (the previous
+        # design here) commits the DELETE immediately in DuckDB autocommit, so
+        # a process death (e.g. an OOM kill) or a mid-loop exception partway
+        # through the day-chunk INSERTs left the target refresh_id with STALE
+        # or ZERO rows and no error ever recorded — the exact "silent
+        # promotion stall" observed on machine_cgroup_memory_sample /
+        # machine_service_state (sinnix-kx4). Staging first means the target
+        # refresh_id's existing rows are untouched until the new data is
+        # fully written.
+        write_id = _staging_refresh_id(refresh_id)
         try:
-            # Idempotent: DELETE existing rows for this refresh_id,
-            # then INSERT fresh.
-            conn.execute(
-                f"DELETE FROM {dst_table} WHERE refresh_id = ?",
-                [refresh_id],
-            )
             columns, overrides = projections[src_table]
             select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
             for chunk_start, chunk_end in _iter_day_windows(window_start, window_end):
@@ -220,9 +242,19 @@ def _promote_machine_fast(
                     f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
                     f"SELECT {select_exprs}, ? AS refresh_id "
                     f"FROM machine_src.{src_table} {date_filter}",
-                    [refresh_id, *date_params],
+                    [write_id, *date_params],
                 )
                 gc.collect()
+            # Full window staged successfully — swap onto the real
+            # refresh_id as two fast, separate autocommit statements (NOT one
+            # transaction: DuckDB's PK index does not see an in-transaction
+            # DELETE, so DELETE+INSERT of the same key in one transaction
+            # trips a phantom duplicate-key error).
+            conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
+            conn.execute(
+                f"UPDATE {dst_table} SET refresh_id = ? WHERE refresh_id = ?",
+                [refresh_id, write_id],
+            )
             row_count = conn.execute(
                 f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
                 [refresh_id],
@@ -245,6 +277,13 @@ def _promote_machine_fast(
             )
         except Exception as exc:
             log.warning("substrate_promote: %s promotion failed: %s", dst_table, exc)
+            try:
+                # Best-effort: drop any partially-staged rows from this
+                # attempt. The target refresh_id's prior data was never
+                # touched, so this is pure cleanup, not recovery.
+                conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [write_id])
+            except Exception:
+                pass
             record_source_status(
                 conn,
                 refresh_id=refresh_id,
@@ -565,6 +604,56 @@ def _promote_machine_cgroup_memory_slow(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_MACHINE_CGROUP_MEMORY,
+            status="error",
+            reason=str(exc),
+            row_count=0,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+
+def _promote_machine_kill_event_slow(
+    conn: Any,
+    refresh_id: str,
+    window_start: date,
+    window_end: date,
+    counts: dict[str, int],
+    selection: SourceSelection,
+) -> None:
+    if not selection.includes(SOURCE_MACHINE_KILL_EVENT):
+        return
+    try:
+        from lynchpin.sources.machine import (
+            kill_events,
+            readiness as machine_readiness,
+        )
+        from lynchpin.substrate.machine import promote_machine_kill_events
+
+        machine_ready = machine_readiness()
+        kill_event_count = promote_machine_kill_events(
+            conn,
+            refresh_id=refresh_id,
+            events=kill_events(start=window_start, end=window_end),
+        )
+        counts["machine_kill_events"] = kill_event_count
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_KILL_EVENT,
+            status="ok"
+            if kill_event_count
+            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+            reason=machine_ready.reason,
+            row_count=kill_event_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except Exception as exc:
+        log.warning("substrate_promote: kill event promotion skipped: %s", exc)
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_KILL_EVENT,
             status="error",
             reason=str(exc),
             row_count=0,

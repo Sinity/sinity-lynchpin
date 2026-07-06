@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from lynchpin.substrate._filters import add_date_filter, add_in_filter, build_where
@@ -78,7 +79,15 @@ def load_machine_metric_samples(
             cpu_psi_some_avg60, cpu_psi_some_avg300, cpu_psi_some_total_us,
             memory_psi_some_avg60, memory_psi_some_avg300, memory_psi_some_total_us,
             memory_psi_full_avg60, memory_psi_full_avg300, memory_psi_full_total_us,
-            latency_oversleep_ms, dstate_task_count, gap_codes
+            latency_oversleep_ms, dstate_task_count, gap_codes,
+            vmstat_workingset_refault_file, vmstat_workingset_refault_anon,
+            vmstat_workingset_activate_file, vmstat_workingset_activate_anon,
+            vmstat_pgscan_kswapd, vmstat_pgscan_direct,
+            vmstat_pgsteal_kswapd, vmstat_pgsteal_direct,
+            vmstat_pswpin, vmstat_pswpout,
+            vmstat_allocstall_normal, vmstat_allocstall_movable,
+            vmstat_oom_kill,
+            memory_psi_some_avg10, memory_psi_full_avg10
         FROM machine_metric_sample
         {where}
         ORDER BY observed_at
@@ -136,6 +145,21 @@ def load_machine_metric_samples(
             latency_oversleep_ms=row[45],
             dstate_task_count=row[46],
             gap_codes=tuple(row[47] or []),
+            vmstat_workingset_refault_file=row[48],
+            vmstat_workingset_refault_anon=row[49],
+            vmstat_workingset_activate_file=row[50],
+            vmstat_workingset_activate_anon=row[51],
+            vmstat_pgscan_kswapd=row[52],
+            vmstat_pgscan_direct=row[53],
+            vmstat_pgsteal_kswapd=row[54],
+            vmstat_pgsteal_direct=row[55],
+            vmstat_pswpin=row[56],
+            vmstat_pswpout=row[57],
+            vmstat_allocstall_normal=row[58],
+            vmstat_allocstall_movable=row[59],
+            vmstat_oom_kill=row[60],
+            memory_psi_some_avg10=row[61],
+            memory_psi_full_avg10=row[62],
         )
         for row in rows
     ]
@@ -532,7 +556,9 @@ def load_machine_cgroup_memory_samples(
             memory_kernel_bytes, memory_slab_bytes, memory_sock_bytes,
             memory_shmem_bytes, memory_swapcached_bytes, memory_zswap_bytes,
             memory_zswapped_bytes, cgroup_populated, cgroup_frozen,
-            cgroup_freeze
+            cgroup_freeze,
+            memory_events_high, memory_events_max,
+            memory_events_oom, memory_events_oom_kill
         FROM machine_cgroup_memory_sample
         {where}
         ORDER BY observed_at, label
@@ -568,6 +594,10 @@ def load_machine_cgroup_memory_samples(
             cgroup_populated=row[22],
             cgroup_frozen=row[23],
             cgroup_freeze=row[24],
+            memory_events_high=row[25],
+            memory_events_max=row[26],
+            memory_events_oom=row[27],
+            memory_events_oom_kill=row[28],
         )
         for row in rows
     ]
@@ -590,6 +620,14 @@ _METRIC_SAMPLE_COLUMNS = (
     "memory_psi_some_avg60", "memory_psi_some_avg300", "memory_psi_some_total_us",
     "memory_psi_full_avg60", "memory_psi_full_avg300", "memory_psi_full_total_us",
     "latency_oversleep_ms", "dstate_task_count", "gap_codes",
+    "vmstat_workingset_refault_file", "vmstat_workingset_refault_anon",
+    "vmstat_workingset_activate_file", "vmstat_workingset_activate_anon",
+    "vmstat_pgscan_kswapd", "vmstat_pgscan_direct",
+    "vmstat_pgsteal_kswapd", "vmstat_pgsteal_direct",
+    "vmstat_pswpin", "vmstat_pswpout",
+    "vmstat_allocstall_normal", "vmstat_allocstall_movable",
+    "vmstat_oom_kill",
+    "memory_psi_some_avg10", "memory_psi_full_avg10",
 )
 
 
@@ -623,6 +661,14 @@ def promote_machine_metric_samples(
             s.memory_psi_some_avg60, s.memory_psi_some_avg300, s.memory_psi_some_total_us,
             s.memory_psi_full_avg60, s.memory_psi_full_avg300, s.memory_psi_full_total_us,
             s.latency_oversleep_ms, s.dstate_task_count, list(s.gap_codes),
+            s.vmstat_workingset_refault_file, s.vmstat_workingset_refault_anon,
+            s.vmstat_workingset_activate_file, s.vmstat_workingset_activate_anon,
+            s.vmstat_pgscan_kswapd, s.vmstat_pgscan_direct,
+            s.vmstat_pgsteal_kswapd, s.vmstat_pgsteal_direct,
+            s.vmstat_pswpin, s.vmstat_pswpout,
+            s.vmstat_allocstall_normal, s.vmstat_allocstall_movable,
+            s.vmstat_oom_kill,
+            s.memory_psi_some_avg10, s.memory_psi_full_avg10,
         ),
         batch_size=10_000,
     )
@@ -665,6 +711,14 @@ _CGROUP_MEMORY_COLUMNS = (
     "memory_shmem_bytes", "memory_swapcached_bytes", "memory_zswap_bytes",
     "memory_zswapped_bytes", "cgroup_populated", "cgroup_frozen",
     "cgroup_freeze",
+    "memory_events_high", "memory_events_max",
+    "memory_events_oom", "memory_events_oom_kill",
+)
+
+_KILL_EVENT_COLUMNS = (
+    "observed_at", "host", "boot_id", "source_schema_version", "killer",
+    "victim_comm", "victim_pid", "victim_rss_mib", "cgroup_path",
+    "oom_score", "raw_line", "source_row_id", "journal_cursor",
 )
 
 
@@ -716,9 +770,91 @@ def promote_machine_cgroup_memory_samples(
             s.memory_swapcached_bytes, s.memory_zswap_bytes,
             s.memory_zswapped_bytes, s.cgroup_populated, s.cgroup_frozen,
             s.cgroup_freeze,
+            s.memory_events_high, s.memory_events_max,
+            s.memory_events_oom, s.memory_events_oom_kill,
         ),
         batch_size=10_000,
     )
+
+
+def promote_machine_kill_events(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    events: Iterable[Any],
+) -> int:
+    """INSERT machine_kill_event rows, idempotent on refresh_id."""
+    return promote_rows(
+        conn,
+        table="machine_kill_event",
+        columns=_KILL_EVENT_COLUMNS,
+        refresh_id=refresh_id,
+        rows=events,
+        extractor=lambda e: (
+            e.observed_at, e.host, e.boot_id, int(e.source_schema_version),
+            e.killer, e.victim_comm, e.victim_pid, e.victim_rss_mib,
+            e.cgroup_path, e.oom_score, e.raw_line, int(e.source_row_id),
+            e.journal_cursor,
+        ),
+        batch_size=10_000,
+    )
+
+
+def load_machine_kill_events(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    hosts: tuple[str, ...] | None = None,
+    killers: tuple[str, ...] | None = None,
+    refresh_id: str | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """SELECT and hydrate OOM/earlyoom kill events from ``machine_kill_event``."""
+    from lynchpin.sources.machine import MachineKillEvent
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    add_date_filter("observed_at", start, end, clauses, params)
+    add_in_filter("host", hosts, clauses, params)
+    add_in_filter("killer", killers, clauses, params)
+    if refresh_id is not None:
+        clauses.append("refresh_id = ?")
+        params.append(refresh_id)
+
+    where = build_where(clauses, params)
+    sql = f"""
+        SELECT
+            observed_at, host, boot_id, source_schema_version, killer,
+            victim_comm, victim_pid, victim_rss_mib, cgroup_path,
+            oom_score, raw_line, source_row_id, journal_cursor
+        FROM machine_kill_event
+        {where}
+        ORDER BY observed_at
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(int(limit), 0))
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        MachineKillEvent(
+            observed_at=row[0],
+            host=row[1],
+            boot_id=row[2],
+            source_schema_version=int(row[3]),
+            killer=row[4],
+            victim_comm=row[5],
+            victim_pid=row[6],
+            victim_rss_mib=row[7],
+            cgroup_path=row[8],
+            oom_score=row[9],
+            raw_line=row[10],
+            source_row_id=int(row[11]),
+            journal_cursor=row[12],
+        )
+        for row in rows
+    ]
 
 
 def promote_machine_process_io_delta_samples(
@@ -1436,6 +1572,124 @@ def load_bufferbloat_daily(
     return conn.execute(sql, params).fetchall()
 
 
+MACHINE_PROMOTION_FRESHNESS_TABLES: tuple[tuple[str, str], ...] = (
+    ("machine_metric_sample", "metric_sample"),
+    ("machine_service_state", "service_state"),
+    ("machine_gpu_sample", "gpu_sample"),
+    ("machine_network_sample", "network_sample"),
+    ("machine_cgroup_memory_sample", "cgroup_memory_sample"),
+    ("machine_process_io_delta_sample", "process_io_delta_sample"),
+    ("machine_process_memory_sample", "process_memory_sample"),
+    ("machine_kill_event", "kill_event"),
+)
+
+
+def load_machine_promotion_freshness(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    max_lag_hours: float = 24.0,
+    live_db_path: Any = None,
+) -> list[dict[str, Any]]:
+    """Compare each machine substrate table's newest row against the live source.
+
+    Returns one entry per table in ``MACHINE_PROMOTION_FRESHNESS_TABLES`` with
+    the live SQLite source's ``MAX(observed_at)``, the DuckDB substrate's
+    ``MAX(observed_at)`` across ALL refresh_ids (i.e. whatever is actually
+    persisted right now, not scoped to one refresh attempt), the lag in
+    hours, and a ``stale`` flag when the lag exceeds ``max_lag_hours``. A
+    table missing from the live source (not yet captured on this host/schema
+    version) is skipped entirely rather than reported stale — missing is
+    missing, never zero (see ``lynchpin/core/coverage.py``).
+
+    This exists because substrate promotion can fail silently per-table
+    (sinnix-kx4): a promotion crash (e.g. an OOM kill mid-run, or a DuckDB
+    write corruption) can leave one table stale for days while sibling
+    tables keep refreshing, with no error ever recorded in
+    ``substrate_source_status`` — the crash happens before any status write.
+    Comparing the substrate directly against the live source catches that
+    even when the promotion pipeline itself never got a chance to record a
+    failure.
+    """
+    from pathlib import Path as _Path
+
+    from lynchpin.core.config import get_config
+    from lynchpin.sources.machine_sqlite import as_utc, connect_readonly
+
+    cfg = get_config()
+    db_path = _Path(live_db_path) if live_db_path is not None else cfg.machine_telemetry_db
+    results: list[dict[str, Any]] = []
+    if db_path is None or not db_path.exists():
+        return results
+
+    sconn = connect_readonly(db_path)
+    try:
+        live_tables = {
+            row[0]
+            for row in sconn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        for duck_table, live_table in MACHINE_PROMOTION_FRESHNESS_TABLES:
+            if live_table not in live_tables:
+                continue
+            try:
+                live_max_raw = sconn.execute(
+                    f"SELECT MAX(observed_at) FROM {live_table}"
+                ).fetchone()[0]
+            except sqlite3.Error as exc:
+                results.append(
+                    {
+                        "table": duck_table,
+                        "live_table": live_table,
+                        "error": str(exc),
+                        "stale": False,
+                    }
+                )
+                continue
+            live_max = as_utc(live_max_raw) if live_max_raw else None
+            if live_max is None:
+                continue
+
+            try:
+                duck_row = conn.execute(f"SELECT MAX(observed_at) FROM {duck_table}").fetchone()
+            except Exception as exc:  # e.g. table not yet created by apply_schema
+                results.append(
+                    {
+                        "table": duck_table,
+                        "live_table": live_table,
+                        "error": str(exc),
+                        "stale": False,
+                    }
+                )
+                continue
+            duck_max = duck_row[0] if duck_row else None
+            if isinstance(duck_max, datetime) and duck_max.tzinfo is None:
+                duck_max = duck_max.replace(tzinfo=timezone.utc)
+
+            lag_hours: float | None
+            if duck_max is None:
+                lag_hours = None
+                stale = True
+            else:
+                lag_value = (live_max - duck_max).total_seconds() / 3600.0
+                lag_hours = lag_value
+                stale = lag_value > max_lag_hours
+
+            results.append(
+                {
+                    "table": duck_table,
+                    "live_table": live_table,
+                    "live_max_observed_at": live_max.isoformat(),
+                    "substrate_max_observed_at": duck_max.isoformat() if duck_max else None,
+                    "lag_hours": lag_hours,
+                    "stale": stale,
+                }
+            )
+    finally:
+        sconn.close()
+    return results
+
+
 __all__ = [
     "load_bufferbloat_daily",
     "load_borg_drill_runs",
@@ -1451,11 +1705,15 @@ __all__ = [
     "load_machine_process_io_delta_samples",
     "load_machine_process_memory_samples",
     "load_machine_cgroup_memory_samples",
+    "load_machine_kill_events",
+    "load_machine_promotion_freshness",
     "load_machine_service_state_summary",
     "load_machine_service_states",
     "load_sinnix_generation_rows",
+    "MACHINE_PROMOTION_FRESHNESS_TABLES",
     "promote_machine_experiment_runs",
     "promote_machine_gpu_samples",
+    "promote_machine_kill_events",
     "promote_machine_metric_samples",
     "promote_machine_network_samples",
     "promote_machine_process_io_delta_samples",

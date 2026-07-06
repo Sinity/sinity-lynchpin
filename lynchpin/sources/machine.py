@@ -23,6 +23,7 @@ from .machine_models import (
     MachineBlockDeviceSample,
     MachineCgroupMemorySample,
     MachineGpuSample,
+    MachineKillEvent,
     MachineMetricSample,
     MachineNetworkSample,
     MachineProcessIODeltaSample,
@@ -39,6 +40,7 @@ from .machine_schema import (
     EXPECTED_NETWORK_COLUMNS,
     EXPECTED_SERVICE_CGROUP_IO_COLUMNS,
     EXPECTED_SERVICE_CGROUP_PRESSURE_COLUMNS,
+    kill_event_columns,
     metric_columns,
     process_io_delta_columns,
     process_memory_columns,
@@ -47,6 +49,7 @@ from .machine_schema import (
     table_exists,
     validate_block_device_schema,
     validate_gpu_schema,
+    validate_kill_event_schema,
     validate_metric_schema,
     validate_network_schema,
     validate_process_io_delta_schema,
@@ -68,6 +71,7 @@ __all__ = [
     "MachineBlockDeviceSample",
     "MachineCgroupMemorySample",
     "MachineGpuSample",
+    "MachineKillEvent",
     "MachineMetricSample",
     "MachineNetworkSample",
     "MachineProcessIODeltaSample",
@@ -78,6 +82,7 @@ __all__ = [
     "MachineSourceReadiness",
     "MachineTelemetrySchemaError",
     "gpu_samples",
+    "kill_events",
     "latest_metric_sample",
     "block_device_samples",
     "readiness",
@@ -121,6 +126,7 @@ def readiness() -> MachineSourceReadiness:
     process_memory_rows = count_sqlite_rows(
         cfg.machine_telemetry_db, "process_memory_sample"
     )
+    kill_event_rows = count_sqlite_rows(cfg.machine_telemetry_db, "kill_event")
     if live_rows:
         status = "ready"
         reason = (
@@ -130,7 +136,8 @@ def readiness() -> MachineSourceReadiness:
             f"service_cgroup_io_samples={cgroup_io_rows}; "
             f"service_cgroup_pressure_samples={cgroup_pressure_rows}; "
             f"process_io_delta_samples={process_io_delta_rows}; "
-            f"process_memory_samples={process_memory_rows}"
+            f"process_memory_samples={process_memory_rows}; "
+            f"kill_events={kill_event_rows}"
         )
     else:
         status = "unavailable"
@@ -307,6 +314,39 @@ def _metric_sample_from_sqlite_row(row: sqlite3.Row) -> MachineMetricSample | No
         latency_oversleep_ms=row["latency_oversleep_ms"],
         dstate_task_count=row["dstate_task_count"],
         gap_codes=gaps,
+        vmstat_workingset_refault_file=row["vmstat_workingset_refault_file"]
+        if "vmstat_workingset_refault_file" in row_keys
+        else None,
+        vmstat_workingset_refault_anon=row["vmstat_workingset_refault_anon"]
+        if "vmstat_workingset_refault_anon" in row_keys
+        else None,
+        vmstat_workingset_activate_file=row["vmstat_workingset_activate_file"]
+        if "vmstat_workingset_activate_file" in row_keys
+        else None,
+        vmstat_workingset_activate_anon=row["vmstat_workingset_activate_anon"]
+        if "vmstat_workingset_activate_anon" in row_keys
+        else None,
+        vmstat_pgscan_kswapd=row["vmstat_pgscan_kswapd"]
+        if "vmstat_pgscan_kswapd" in row_keys
+        else None,
+        vmstat_pgscan_direct=row["vmstat_pgscan_direct"]
+        if "vmstat_pgscan_direct" in row_keys
+        else None,
+        vmstat_pgsteal_kswapd=row["vmstat_pgsteal_kswapd"]
+        if "vmstat_pgsteal_kswapd" in row_keys
+        else None,
+        vmstat_pgsteal_direct=row["vmstat_pgsteal_direct"]
+        if "vmstat_pgsteal_direct" in row_keys
+        else None,
+        vmstat_pswpin=row["vmstat_pswpin"] if "vmstat_pswpin" in row_keys else None,
+        vmstat_pswpout=row["vmstat_pswpout"] if "vmstat_pswpout" in row_keys else None,
+        vmstat_allocstall_normal=row["vmstat_allocstall_normal"]
+        if "vmstat_allocstall_normal" in row_keys
+        else None,
+        vmstat_allocstall_movable=row["vmstat_allocstall_movable"]
+        if "vmstat_allocstall_movable" in row_keys
+        else None,
+        vmstat_oom_kill=row["vmstat_oom_kill"] if "vmstat_oom_kill" in row_keys else None,
     )
 
 
@@ -794,6 +834,7 @@ def cgroup_memory_samples(
             observed_at = as_utc(row["observed_at"])
             if observed_at is None:
                 continue
+            row_keys = row.keys()
             yield MachineCgroupMemorySample(
                 observed_at=observed_at,
                 host=row["host"],
@@ -820,6 +861,80 @@ def cgroup_memory_samples(
                 cgroup_populated=row["cgroup_populated"],
                 cgroup_frozen=row["cgroup_frozen"],
                 cgroup_freeze=row["cgroup_freeze"],
+                memory_events_high=row["memory_events_high"]
+                if "memory_events_high" in row_keys
+                else None,
+                memory_events_max=row["memory_events_max"]
+                if "memory_events_max" in row_keys
+                else None,
+                memory_events_oom=row["memory_events_oom"]
+                if "memory_events_oom" in row_keys
+                else None,
+                memory_events_oom_kill=row["memory_events_oom_kill"]
+                if "memory_events_oom_kill" in row_keys
+                else None,
+            )
+
+
+def kill_events(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    path: Path | None = None,
+) -> Iterator[MachineKillEvent]:
+    """Iterate OOM/earlyoom kill events (sinnix-fjq, schema v5, new table).
+
+    ``killer`` in {``earlyoom``, ``kernel-oom``, ``memcg-oom``,
+    ``systemd-oomd``}; only ``earlyoom`` has been observed with real rows on
+    this host so far — the others are schema-supported, not yet populated.
+    """
+    if path is None:
+        if db := _default_machine_db():
+            yield from kill_events(start=start, end=end, path=db)
+            return
+        ndjson = canonical_machine_table_path("kill_event")
+        if ndjson.exists():
+            yield from _kill_events_from_ndjson(ndjson, start=start, end=end)
+        return
+    db = path
+    if not db.exists():
+        return
+    with connect_readonly(db) as conn:
+        if not table_exists(conn, "kill_event"):
+            return
+        validate_kill_event_schema(conn)
+        columns = kill_event_columns(conn)
+        where: list[str] = []
+        params: list[object] = []
+        if start is not None:
+            where.append("date(observed_at) >= ?")
+            params.append(start.isoformat())
+        if end is not None:
+            where.append("date(observed_at) <= ?")
+            params.append(end.isoformat())
+        sql = "SELECT " + ", ".join(columns) + " FROM kill_event"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY observed_at"
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(sql, params):
+            observed_at = as_utc(row["observed_at"])
+            if observed_at is None:
+                continue
+            yield MachineKillEvent(
+                observed_at=observed_at,
+                host=row["host"],
+                boot_id=row["boot_id"],
+                source_schema_version=int(row["schema_version"]),
+                killer=row["killer"],
+                victim_comm=row["victim_comm"],
+                victim_pid=row["victim_pid"],
+                victim_rss_mib=row["victim_rss_mib"],
+                cgroup_path=row["cgroup_path"],
+                oom_score=row["oom_score"],
+                raw_line=row["raw_line"],
+                source_row_id=int(row["id"]),
+                journal_cursor=row["journal_cursor"],
             )
 
 
@@ -1190,6 +1305,13 @@ def _cgroup_memory_samples_from_ndjson(
 ) -> Iterator[MachineCgroupMemorySample]:
     for row in _load_machine_rows(path, start=start, end=end):
         yield MachineCgroupMemorySample(**row)
+
+
+def _kill_events_from_ndjson(
+    path: Path, *, start: date | None, end: date | None
+) -> Iterator[MachineKillEvent]:
+    for row in _load_machine_rows(path, start=start, end=end):
+        yield MachineKillEvent(**row)
 
 
 def _gpu_samples_from_ndjson(

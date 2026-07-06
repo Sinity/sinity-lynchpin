@@ -163,7 +163,44 @@ def _machine_source() -> SourceReadiness:
         status = 'missing'
         path = ready.live_db
         caveats = ()
+    stale = _machine_promotion_staleness()
+    if stale:
+        if status == 'available':
+            status = 'partial'
+        caveats = (*caveats, *stale)
     return SourceReadiness(source='machine', status=status, reason=ready.reason, cost='materialized', path=str(path), count=ready.live_rows if ready.live_rows else None, last_date=_mtime_date(path), caveats=caveats)
+
+def _machine_promotion_staleness(*, max_lag_hours: float=24.0) -> tuple[str, ...]:
+    """Return one caveat string per machine substrate table lagging live data.
+
+    Reads the substrate read-only (falls back to the read-snapshot if the
+    canonical is write-locked, same as any other MCP-style read) so calling
+    this from a readiness check never blocks on or interferes with an
+    in-flight promotion.
+    """
+    try:
+        from ..substrate.connection import connect, substrate_path
+        from ..substrate.machine import load_machine_promotion_freshness
+    except Exception:
+        return ()
+    try:
+        with connect(substrate_path(), read_only=True) as conn:
+            reports = load_machine_promotion_freshness(conn, max_lag_hours=max_lag_hours)
+    except Exception as exc:
+        return (f'machine promotion freshness check failed: {exc}',)
+    caveats: list[str] = []
+    for report in reports:
+        if report.get('error'):
+            caveats.append(f"{report['table']}: freshness check error ({report['error']})")
+            continue
+        if not report.get('stale'):
+            continue
+        lag = report.get('lag_hours')
+        if lag is None:
+            caveats.append(f"{report['table']}: substrate has no rows but live source does (live max {report.get('live_max_observed_at')})")
+        else:
+            caveats.append(f"{report['table']}: substrate promotion is {lag:.1f}h behind live telemetry (live max {report.get('live_max_observed_at')}, substrate max {report.get('substrate_max_observed_at')})")
+    return tuple(caveats)
 
 def _xtask_history_source() -> SourceReadiness:
     from sqlite3 import connect as sqlite_connect

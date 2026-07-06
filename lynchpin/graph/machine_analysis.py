@@ -50,6 +50,7 @@ def add_machine_analysis_nodes(
         "below_export_handoff": "machine_below_export_handoff.json",
         "baselines": "machine_observational_baselines.json",
         "claims": "machine_experiment_claims.json",
+        "pressure_incidents": "machine_pressure_incidents.json",
     }
     payloads = {
         key: _load_machine_graph_artifact(name)
@@ -298,6 +299,15 @@ def add_machine_analysis_nodes(
     _add_machine_measurement_nodes(nodes, payloads.get("measurement_system"), start=start, artifact_name=artifacts["measurement_system"])
     _add_machine_attribution_claim_nodes(nodes, edges, payloads.get("attribution_claims"), start=start, selected=selected, artifact_name=artifacts["attribution_claims"])
     _add_machine_assumption_check_nodes(nodes, edges, payloads.get("assumption_checks"), start=start, selected=selected, artifact_name=artifacts["assumption_checks"])
+    _add_machine_pressure_incident_nodes(
+        nodes,
+        payloads.get("pressure_incidents"),
+        start=start,
+        end=end,
+        selected=selected,
+        episode_ids=episode_ids,
+        artifact_name=artifacts["pressure_incidents"],
+    )
 
 
 def _add_machine_baseline_nodes(
@@ -1530,6 +1540,82 @@ def _add_machine_assumption_check_nodes(
         claim_id = row.get("claim_id")
         if claim_id:
             edges.append(EvidenceEdge(node_id, f"machine-attribution-claim:{claim_id}", "assumption_check_limits_claim", "assumption check constrains claim support", 1.0))
+
+
+def _add_machine_pressure_incident_nodes(
+    nodes: list[EvidenceNode],
+    payload: object,
+    *,
+    start: date,
+    end: date,
+    selected: set[str],
+    episode_ids: dict[tuple[str, str, str, str], str],
+    artifact_name: str,
+) -> None:
+    """sinnix-kx4: pressure-incident nodes (sustained PSI spikes enriched with
+    reclaim/kill telemetry and active-workload overlap; see
+    ``lynchpin.analysis.machine.pressure_incidents``).
+
+    Distinct from ``machine_episode`` (broader kind coverage at avg60/avg300
+    PSI resolution, no reclaim/kill join) — the two detectors use different
+    thresholds/windows so their boundaries rarely align exactly; incidents
+    stand alone rather than forcing a speculative edge to an episode.
+    ``episode_ids`` is accepted for interface symmetry with the other
+    machine-analysis adders and reserved for a future exact-key join.
+    """
+    del episode_ids
+    for row in _machine_rows(payload, "incidents"):
+        started_at = _machine_dt(row.get("started_at"))
+        ended_at = _machine_dt(row.get("ended_at")) or started_at
+        if started_at is None or not _machine_overlaps(started_at, ended_at, start=start, end=end):
+            continue
+        workloads = _dict_rows(row.get("active_workloads"))
+        projects = tuple(
+            dict.fromkeys(
+                project
+                for workload in workloads
+                for value in (workload.get("projects") or ())
+                if (project := canonical_project_name(str(value))) is not None
+            )
+        )
+        if selected and not set(projects).intersection(selected) and projects:
+            continue
+        incident_id = f"machine-pressure-incident:{row.get('incident_id') or started_at.isoformat()}"
+        kill_events = _dict_rows(row.get("kill_events"))
+        cgroup_deltas = _dict_rows(row.get("top_cgroup_memory_deltas"))
+        vmstat_deltas = _dict_rows(row.get("vmstat_deltas"))
+        summary = (
+            f"{row.get('focus', 'pressure')} spike on {row.get('host')}: "
+            f"peak memory PSI {row.get('peak_memory_psi_some_avg10')}, "
+            f"peak io PSI {row.get('peak_io_psi_some_avg10')}"
+            + (f", {len(kill_events)} kill event(s)" if kill_events else "")
+        )
+        nodes.append(
+            EvidenceNode(
+                id=incident_id,
+                kind="machine_pressure_incident",
+                source="machine",
+                date=logical_date(started_at),
+                project=projects[0] if len(projects) == 1 else None,
+                start=started_at,
+                end=ended_at,
+                summary=summary,
+                payload={
+                    "host": row.get("host"),
+                    "focus": row.get("focus"),
+                    "sample_count": row.get("sample_count"),
+                    "peak_memory_psi_some_avg10": row.get("peak_memory_psi_some_avg10"),
+                    "peak_io_psi_some_avg10": row.get("peak_io_psi_some_avg10"),
+                    "vmstat_deltas": vmstat_deltas,
+                    "top_cgroup_memory_deltas": cgroup_deltas,
+                    "kill_events": kill_events,
+                    "active_workloads": workloads,
+                    "projects": projects,
+                },
+                provenance=EvidenceProvenance("machine", "materialized", path=artifact_name),
+                caveats=tuple(EvidenceCaveat("machine", "partial", str(c)) for c in row.get("caveats", ()) if c),
+            )
+        )
 
 
 def _machine_claim_date(row: dict[str, Any]) -> date | None:

@@ -77,6 +77,22 @@ class MachineMetricSample:
     latency_oversleep_ms: float | None = None
     dstate_task_count: int | None = None
     gap_codes: tuple[str, ...] = ()
+    # sinnix-fjq (schema v5): raw cumulative /proc/vmstat reclaim/OOM
+    # counters. Consumers compute deltas, same convention as the PSI
+    # *_total_us fields above. None on pre-v5 captures.
+    vmstat_workingset_refault_file: int | None = None
+    vmstat_workingset_refault_anon: int | None = None
+    vmstat_workingset_activate_file: int | None = None
+    vmstat_workingset_activate_anon: int | None = None
+    vmstat_pgscan_kswapd: int | None = None
+    vmstat_pgscan_direct: int | None = None
+    vmstat_pgsteal_kswapd: int | None = None
+    vmstat_pgsteal_direct: int | None = None
+    vmstat_pswpin: int | None = None
+    vmstat_pswpout: int | None = None
+    vmstat_allocstall_normal: int | None = None
+    vmstat_allocstall_movable: int | None = None
+    vmstat_oom_kill: int | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +297,46 @@ class MachineCgroupMemorySample:
     cgroup_populated: int | None
     cgroup_frozen: int | None
     cgroup_freeze: int | None
+    # sinnix-fjq (schema v5): cumulative cgroup v2 memory.events *counts*
+    # (distinct from memory_high_bytes/memory_max_bytes above, which are
+    # configured byte limits, not event counts). None on pre-v5 captures.
+    memory_events_high: int | None = None
+    memory_events_max: int | None = None
+    memory_events_oom: int | None = None
+    memory_events_oom_kill: int | None = None
+
+
+@dataclass(frozen=True)
+class MachineKillEvent:
+    """A single OOM/earlyoom kill event parsed from the journal.
+
+    ``killer`` distinguishes the actuator: ``earlyoom`` is well-populated on
+    this host; ``kernel-oom``, ``memcg-oom``, and ``systemd-oomd`` are
+    schema-supported but may have zero rows if never observed. ``raw_line``
+    always carries the full original journal message even when structured
+    field extraction was only best-effort.
+
+    ``source_row_id`` is the live SQLite table's own autoincrement ``id`` —
+    the only genuinely unique-per-row field. earlyoom emits repeated
+    escalating SIGTERM warnings against the SAME victim pid within the same
+    observed_at second (with identical or near-identical killer/victim_pid/
+    oom_score/raw_line as the victim's RSS shrinks between warnings), so
+    ``(observed_at, host, killer, victim_pid)`` alone is not a safe dedup key.
+    """
+
+    observed_at: datetime
+    host: str
+    boot_id: str | None
+    source_schema_version: int
+    killer: str
+    victim_comm: str | None
+    victim_pid: int | None
+    victim_rss_mib: int | None
+    cgroup_path: str | None
+    oom_score: int | None
+    raw_line: str
+    source_row_id: int
+    journal_cursor: str | None = None
 
 
 @dataclass(frozen=True)

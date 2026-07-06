@@ -41,6 +41,7 @@ from .substrate_promote_status import (
     SOURCE_MACHINE_GPU,
     SOURCE_MACHINE_NETWORK,
     SOURCE_MACHINE_CGROUP_MEMORY,
+    SOURCE_MACHINE_KILL_EVENT,
     SOURCE_MACHINE_PROCESS_IO_DELTA,
     SOURCE_MACHINE_PROCESS_MEMORY,
     SOURCE_MACHINE_SERVICE_STATE,
@@ -167,7 +168,17 @@ def _do_promote(
         window_start = window_start or prev_month_start
         window_end = window_end or today
 
-    with connect(substrate_path()) as conn:
+    # recover_corrupt_from_snapshot=True: this is the main writer for every
+    # substrate-promoted source (commits, AI events, machine telemetry, ...).
+    # A DuckDB internal metadata-pointer corruption on the canonical file (a
+    # real, observed failure mode — see .lynchpin/duck/substrate.duckdb.corrupt-*
+    # quarantine files and commit 31065834) previously only had an opt-in
+    # recovery path wired into the code-snapshot and GitHub-context
+    # materializers; the main promotion path silently raised/aborted instead.
+    # Restoring from the last read-snapshot and retrying here means a
+    # recurrence of that corruption self-heals instead of quietly stalling
+    # every source's promotion (sinnix-kx4).
+    with connect(substrate_path(), recover_corrupt_from_snapshot=True) as conn:
         apply_schema(conn)
 
         _run_stage(
@@ -500,6 +511,8 @@ __all__ = [
     "SOURCE_MACHINE",
     "SOURCE_MACHINE_GPU",
     "SOURCE_MACHINE_NETWORK",
+    "SOURCE_MACHINE_CGROUP_MEMORY",
+    "SOURCE_MACHINE_KILL_EVENT",
     "SOURCE_MACHINE_PROCESS_IO_DELTA",
     "SOURCE_MACHINE_PROCESS_MEMORY",
     "SOURCE_MACHINE_SERVICE_STATE",
