@@ -548,13 +548,11 @@ def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
     plan = chisel.REPO_PLANS["sinex"]
 
     assert chisel._classify_stats_bucket(plan, ".agent/README.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/DEVLOOP.md") == "agent-instructions"
     assert chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/devloop-contract.json") == "agent-instructions"
     assert chisel._classify_stats_bucket(plan, ".agent/tools/gh_pr_safety.sh") == "agent-instructions"
     assert chisel._classify_stats_bucket(plan, ".github/ci-policy.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/conductor-devloop/OPERATING-LOG.md") == "agent-devloop"
-    assert chisel._classify_stats_bucket(plan, ".agent/devloops/sinex/reports/summary.md") == "agent-devloop"
+    assert chisel._classify_stats_bucket(plan, ".agent/archive/devloop-2026-07/OPERATING-LOG.md") == "agent-archive"
+    assert chisel._classify_stats_bucket(plan, ".agent/inbox/INDEX.md") == "agent-archive"
     assert chisel._classify_stats_bucket(plan, ".agent/demos/sinex/CURATED_CATALOG.md") == "agent-demos"
     assert chisel._classify_stats_bucket(plan, ".agent/artifacts/sinex/export.json") == "agent-artifacts"
     assert chisel._classify_stats_bucket(plan, "crate/sinexd/tests/api/auth_test.rs") == "test-suite"
@@ -572,22 +570,22 @@ def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
     assert chisel._classify_stats_bucket(plan, "demo/sinex-recall/recall.sh") == "other-project-surface"
     code_slice = next(slice for slice in plan.slices if slice.name == "code-proper")
     test_slice = next(slice for slice in plan.slices if slice.name == "test-suite")
-    agent_devloop_slice = next(slice for slice in plan.slices if slice.name == "agent-devloop")
+    agent_archive_slice = next(slice for slice in plan.slices if slice.name == "agent-archive")
     agent_demo_slice = next(slice for slice in plan.slices if slice.name == "agent-demos")
     assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(code_slice.extra_ignore)
     assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(test_slice.include)
-    assert ".agent/conductor-devloop/**" in agent_devloop_slice.include
-    assert ".agent/demos/**" not in agent_devloop_slice.include
+    assert ".agent/archive/**" in agent_archive_slice.include
+    assert ".agent/demos/**" not in agent_archive_slice.include
     assert agent_demo_slice.include == (".agent/demos/**",)
 
 
 def test_polylogue_stats_buckets_split_agent_devloop_and_archive_query() -> None:
     plan = chisel.REPO_PLANS["polylogue"]
 
-    assert chisel._classify_stats_bucket(plan, ".agent/DEVLOOP.md") == "agent-devloop"
-    assert chisel._classify_stats_bucket(plan, ".agent/includes/devloop-conventions.md") == "agent-devloop"
-    assert chisel._classify_stats_bucket(plan, ".agent/conductor-devloop/RUNBOOK.md") == "agent-devloop"
-    assert chisel._classify_stats_bucket(plan, ".agent/task-history/tasks.jsonl") == "agent-devloop"
+    assert chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md") == "agent-workspace"
+    assert chisel._classify_stats_bucket(plan, ".agent/archive/devloop-2026-07/RUNBOOK.md") == "agent-archive"
+    assert chisel._classify_stats_bucket(plan, ".agent/archive/includes-2026-07/fables-poly-findings.md") == "agent-archive"
+    assert chisel._classify_stats_bucket(plan, ".agent/task-history/tasks.jsonl") == "agent-workspace"
     assert chisel._classify_stats_bucket(plan, ".agent/demos/chatlog-exports/current/demo/full-chatlog/messages-full.json") == "agent-demo-raw-exports"
     assert chisel._classify_stats_bucket(plan, ".agent/demos/chatlog-exports/current/index.md") == "agent-demos-prompts"
     assert chisel._classify_stats_bucket(plan, ".agent/cloud-prompts/2026-06-22-polylogue-turbo/prompt.md") == "agent-demos-prompts"
@@ -604,8 +602,8 @@ def test_polylogue_stats_buckets_split_agent_devloop_and_archive_query() -> None
 def test_agent_audit_classifies_active_transient_and_archive(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     agent = repo / ".agent"
-    (agent / "includes").mkdir(parents=True)
-    (agent / "includes" / "architecture.md").write_text("keep", encoding="utf-8")
+    (agent / "reports").mkdir(parents=True)
+    (agent / "reports" / "architecture.md").write_text("keep", encoding="utf-8")
     (agent / "archive" / "retired").mkdir(parents=True)
     (agent / "archive" / "retired" / "export.jsonl").write_text("archive", encoding="utf-8")
     (agent / "xtask").mkdir()
@@ -616,8 +614,8 @@ def test_agent_audit_classifies_active_transient_and_archive(tmp_path: Path) -> 
     rows = chisel._agent_audit_rows(agent, repo)
     by_path = {row["path"]: row for row in rows}
 
-    assert by_path[".agent/includes"]["class"] == "active-context"
-    assert chisel._agent_audit_class(".agent/DEVLOOP.md")[0] == "active-context"
+    assert by_path[".agent/reports"]["class"] == "active-context"
+    assert chisel._agent_audit_class(".agent/CONVENTIONS.md")[0] == "active-context"
     assert by_path[".agent/archive"]["class"] == "archive-or-generated"
     assert by_path[".agent/xtask"]["class"] == "review"
     assert chisel._agent_audit_class(".agent/xtask/tasks.jsonl")[0] == "transient-heavy"
