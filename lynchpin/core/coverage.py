@@ -63,7 +63,7 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "webhistory",
         # Machine telemetry SQLite/JSONL — sinex daemon
         "machine",
-        # SVN commit log (JBR workplace) — continuous during work hours
+        # SVN commit log (historical workplace) — continuous during work hours
         "svn",
         # Keystroke capture log files — scribe-tap daemon
         "keylog",

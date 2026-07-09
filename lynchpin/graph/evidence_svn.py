@@ -20,7 +20,7 @@ def add_svn(
 ) -> None:
     """Emit one EvidenceNode per day with SVN commit activity.
 
-    SVN data covers the JBR workplace period (2017-07 → 2022-09).
+    SVN data covers a historical workplace period (2017-07 → 2022-09).
     Nodes are not project-specific; they are skipped when a project filter is
     active that would exclude workplace-era commits.
     """

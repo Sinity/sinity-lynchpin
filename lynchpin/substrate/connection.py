@@ -12,29 +12,45 @@ Schema versioning: we track ``SUBSTRATE_VERSION``. When it changes, the
 ``apply_schema`` step drops + recreates rather than migrating — the substrate
 is *derived* from sources, not authoritative. Re-promote is cheap.
 """
+
 from __future__ import annotations
+
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, Iterator
+
 if TYPE_CHECKING:
     import duckdb
-SUBSTRATE_VERSION = 40
-'Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote.'
+
+SUBSTRATE_VERSION = 41
+"""Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
+
 
 def substrate_path() -> Path:
     """Return the canonical DuckDB substrate file path."""
     from lynchpin.core.config import get_config
+
     cfg = get_config()
-    duck_dir = cfg.local_root / 'duck'
+    duck_dir = cfg.local_root / "duck"
     duck_dir.mkdir(parents=True, exist_ok=True)
-    return duck_dir / 'substrate.duckdb'
+    return duck_dir / "substrate.duckdb"
+
 
 def substrate_read_snapshot_path() -> Path:
-    return substrate_path().with_suffix('.read-snapshot.duckdb')
+    """Return the path to the read-only snapshot of the substrate.
 
-def update_read_snapshot(path: Path | None=None) -> Path | None:
+    The snapshot is a point-in-time hard copy used by MCP read tools when
+    the canonical substrate is held under an exclusive write lock
+    (materializations can hold the lock for 30-60+ minutes). The snapshot
+    file is updated by ``update_read_snapshot()`` and stays available
+    to readers regardless of the canonical's lock state.
+    """
+    return substrate_path().with_suffix(".read-snapshot.duckdb")
+
+
+def update_read_snapshot(path: Path | None = None) -> Path | None:
     """Copy the current canonical substrate to its read-snapshot location.
 
     Idempotent: overwrites any prior snapshot. Returns the snapshot path
@@ -51,13 +67,18 @@ def update_read_snapshot(path: Path | None=None) -> Path | None:
     snapshot = substrate_read_snapshot_path()
     if not canonical.exists():
         return None
-    tmp = snapshot.with_suffix('.tmp')
+    # Use shutil.copy2 to preserve mtime; DuckDB doesn't keep external
+    # state in extended attributes so this is safe. Atomic-rename pattern:
+    # write to .tmp first, then rename — readers never see a partial copy.
+    tmp = snapshot.with_suffix(".tmp")
     shutil.copy2(canonical, tmp)
     tmp.replace(snapshot)
     return snapshot
 
+
 def _quarantine_suffix() -> str:
-    return datetime.now().astimezone().strftime('.corrupt-%Y%m%dT%H%M%S%z')
+    return datetime.now().astimezone().strftime(".corrupt-%Y%m%dT%H%M%S%z")
+
 
 def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Path:
     """Move an unreadable canonical aside and restore the last read snapshot.
@@ -66,18 +87,37 @@ def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Pa
     open time, while the read snapshot remains usable. The substrate is derived,
     so preserving the broken file for inspection and resuming from the last
     known-good snapshot is preferable to blocking every writer.
+
+    Also quarantines any stale ``.wal`` sitting next to the corrupt canonical:
+    that WAL holds uncheckpointed writes against the *broken* base file, and
+    DuckDB replays it by file position on next open. Copying an older,
+    unrelated snapshot into place while leaving that WAL behind would replay
+    mismatched transactions on top of it — reintroducing corruption instead
+    of recovering from it.
     """
     snapshot = substrate_read_snapshot_path()
     if not snapshot.exists():
         raise reason
-    quarantine = canonical.with_name(canonical.name + _quarantine_suffix())
+
+    suffix = _quarantine_suffix()
+    quarantine = canonical.with_name(canonical.name + suffix)
     if canonical.exists():
         canonical.replace(quarantine)
+    wal = canonical.with_name(canonical.name + ".wal")
+    if wal.exists():
+        wal.replace(wal.with_name(wal.name + suffix))
     shutil.copy2(snapshot, canonical)
     return quarantine
 
+
 @contextmanager
-def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback: bool=True, recover_corrupt_from_snapshot: bool=False) -> Iterator['duckdb.DuckDBPyConnection']:
+def connect(
+    path: Path | None = None,
+    *,
+    read_only: bool = False,
+    snapshot_fallback: bool = True,
+    recover_corrupt_from_snapshot: bool = False,
+) -> Iterator["duckdb.DuckDBPyConnection"]:
     """Yield a DuckDB connection to the substrate.
 
     When ``read_only=True`` and the canonical substrate is held under an
@@ -92,12 +132,18 @@ def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback:
     point-in-time and may trail the canonical by one promote cycle.
     """
     import duckdb
+
     target = path if path is not None else substrate_path()
+    # DuckDB raises IOException for cross-process write-lock conflicts
+    # and ConnectionException for same-process config conflicts (e.g.
+    # an existing writer in the same interpreter). Both signal "canonical
+    # is unavailable in our preferred mode"; fall back to the snapshot
+    # in either case.
     try:
         conn = duckdb.connect(str(target), read_only=read_only)
     except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
         if not read_only or not snapshot_fallback:
-            if recover_corrupt_from_snapshot and (not read_only) and isinstance(exc, duckdb.InternalException):
+            if recover_corrupt_from_snapshot and not read_only and isinstance(exc, duckdb.InternalException):
                 _restore_from_read_snapshot(target, reason=exc)
                 conn = duckdb.connect(str(target), read_only=False)
             else:
@@ -112,13 +158,15 @@ def connect(path: Path | None=None, *, read_only: bool=False, snapshot_fallback:
     finally:
         conn.close()
 
-def reset_substrate(path: Path | None=None) -> None:
+
+def reset_substrate(path: Path | None = None) -> None:
     """Delete the substrate file. Used by tests and on schema-version bump."""
     target = path if path is not None else substrate_path()
     if target.exists():
         target.unlink()
 
-def apply_schema(conn: 'duckdb.DuckDBPyConnection') -> None:
+
+def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     """Apply the substrate DDL idempotently.
 
     Reads ``SUBSTRATE_VERSION`` from a ``substrate_meta`` table. If absent
@@ -126,18 +174,35 @@ def apply_schema(conn: 'duckdb.DuckDBPyConnection') -> None:
     """
     from lynchpin.substrate.schema import DDL_STATEMENTS, DROP_STATEMENTS
     from lynchpin.substrate.views import ensure_views
-    conn.execute('\n        CREATE TABLE IF NOT EXISTS substrate_meta (\n            key   VARCHAR PRIMARY KEY,\n            value VARCHAR NOT NULL\n        )\n        ')
-    row = conn.execute("SELECT value FROM substrate_meta WHERE key = 'version'").fetchone()
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS substrate_meta (
+            key   VARCHAR PRIMARY KEY,
+            value VARCHAR NOT NULL
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT value FROM substrate_meta WHERE key = 'version'"
+    ).fetchone()
     current = int(row[0]) if row else None
+
     if current != SUBSTRATE_VERSION:
         for stmt in DROP_STATEMENTS:
             conn.execute(stmt)
         for stmt in DDL_STATEMENTS:
             conn.execute(stmt)
-        conn.execute("INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)", [str(SUBSTRATE_VERSION)])
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
+            [str(SUBSTRATE_VERSION)],
+        )
     ensure_views(conn)
 
-def prune_commit_history(keep_latest_n: int=1, dry_run: bool=True, path: Path | None=None) -> dict[str, int]:
+
+def prune_commit_history(
+    keep_latest_n: int = 1, dry_run: bool = True, path: Path | None = None
+) -> dict[str, int]:
     """Remove stale refresh_ids from commit_fact and related tables.
 
     Identifies refresh_ids in commit_fact ordered by materialized_at desc,
@@ -162,32 +227,97 @@ def prune_commit_history(keep_latest_n: int=1, dry_run: bool=True, path: Path | 
         }
     """
     target = path if path is not None else substrate_path()
-    read_only = dry_run
+    read_only = dry_run  # Use read_only for dry_run mode
+
     with connect(target, read_only=read_only) as conn:
-        refresh_ids_result = conn.execute('\n            SELECT DISTINCT refresh_id, MAX(materialized_at) as latest\n            FROM commit_fact\n            WHERE refresh_id IS NOT NULL\n            GROUP BY refresh_id\n            ORDER BY latest DESC\n            ').fetchall()
+        # Get all distinct refresh_ids from commit_fact, ordered by materialized_at DESC
+        refresh_ids_result = conn.execute(
+            """
+            SELECT DISTINCT refresh_id, MAX(materialized_at) as latest
+            FROM commit_fact
+            WHERE refresh_id IS NOT NULL
+            GROUP BY refresh_id
+            ORDER BY latest DESC
+            """
+        ).fetchall()
+
         if not refresh_ids_result:
-            return {'commit_fact': 0, 'file_change_fact': 0, 'symbol_change': 0, 'refresh_ids_deleted': [], 'refresh_ids_kept': [], 'dry_run': dry_run, 'message': 'No refresh_ids found in commit_fact'}
+            # No refresh_ids to prune
+            return {
+                "commit_fact": 0,
+                "file_change_fact": 0,
+                "symbol_change": 0,
+                "refresh_ids_deleted": [],
+                "refresh_ids_kept": [],
+                "dry_run": dry_run,
+                "message": "No refresh_ids found in commit_fact",
+            }
+
         all_refresh_ids = [row[0] for row in refresh_ids_result]
         refresh_ids_to_keep = all_refresh_ids[:keep_latest_n]
         refresh_ids_to_delete = all_refresh_ids[keep_latest_n:]
+
         if not refresh_ids_to_delete:
-            return {'commit_fact': 0, 'file_change_fact': 0, 'symbol_change': 0, 'refresh_ids_deleted': [], 'refresh_ids_kept': refresh_ids_to_keep, 'dry_run': dry_run, 'message': f'No stale refresh_ids (keeping latest {keep_latest_n})'}
-        counts = {'commit_fact': 0, 'file_change_fact': 0, 'symbol_change': 0}
+            # Nothing to delete
+            return {
+                "commit_fact": 0,
+                "file_change_fact": 0,
+                "symbol_change": 0,
+                "refresh_ids_deleted": [],
+                "refresh_ids_kept": refresh_ids_to_keep,
+                "dry_run": dry_run,
+                "message": f"No stale refresh_ids (keeping latest {keep_latest_n})",
+            }
+
+        counts = {
+            "commit_fact": 0,
+            "file_change_fact": 0,
+            "symbol_change": 0,
+        }
+
         if not dry_run:
-            for table in ['commit_fact', 'file_change_fact', 'symbol_change']:
-                exists = conn.execute(f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'").fetchone()
+            # Perform actual deletion
+            for table in ["commit_fact", "file_change_fact", "symbol_change"]:
+                # Check if table exists
+                exists = conn.execute(
+                    f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'"
+                ).fetchone()
                 if not exists or exists[0] == 0:
                     continue
-                placeholders = ', '.join('?' * len(refresh_ids_to_delete))
-                count_before = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id IN ({placeholders})', refresh_ids_to_delete).fetchone()[0]
-                conn.execute(f'DELETE FROM {table} WHERE refresh_id IN ({placeholders})', refresh_ids_to_delete)
+
+                # Delete rows for old refresh_ids - count them first, then delete
+                placeholders = ", ".join("?" * len(refresh_ids_to_delete))
+                count_before = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE refresh_id IN ({placeholders})",
+                    refresh_ids_to_delete,
+                ).fetchone()[0]
+
+                conn.execute(
+                    f"DELETE FROM {table} WHERE refresh_id IN ({placeholders})",
+                    refresh_ids_to_delete,
+                )
                 counts[table] = count_before
         else:
-            for table in ['commit_fact', 'file_change_fact', 'symbol_change']:
-                exists = conn.execute(f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'").fetchone()
+            # Dry run: count rows that WOULD be deleted
+            for table in ["commit_fact", "file_change_fact", "symbol_change"]:
+                # Check if table exists
+                exists = conn.execute(
+                    f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{table}'"
+                ).fetchone()
                 if not exists or exists[0] == 0:
                     continue
-                placeholders = ', '.join('?' * len(refresh_ids_to_delete))
-                result = conn.execute(f'SELECT COUNT(*) FROM {table} WHERE refresh_id IN ({placeholders})', refresh_ids_to_delete).fetchone()
+
+                # Count rows for old refresh_ids
+                placeholders = ", ".join("?" * len(refresh_ids_to_delete))
+                result = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE refresh_id IN ({placeholders})",
+                    refresh_ids_to_delete,
+                ).fetchone()
                 counts[table] = result[0] if result else 0
-    return {**counts, 'refresh_ids_deleted': refresh_ids_to_delete, 'refresh_ids_kept': refresh_ids_to_keep, 'dry_run': dry_run}
+
+    return {
+        **counts,
+        "refresh_ids_deleted": refresh_ids_to_delete,
+        "refresh_ids_kept": refresh_ids_to_keep,
+        "dry_run": dry_run,
+    }
