@@ -43,6 +43,14 @@ class DetailDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class SubstratePromotionResult:
+    rows: int
+    status: str
+    attempts: int
+    error: str | None = None
+
+
 def materialize_github_context(
     *,
     output: Path | None = None,
@@ -206,12 +214,12 @@ def materialize_github_context(
     }
     _write_product(output=output, rows=ordered, manifest=manifest)
 
-    try:
-        substrate_rows = _promote_github_context_to_substrate(output)
-        manifest["substrate_rows"] = substrate_rows
-    except Exception as exc:
-        log.warning("github_context substrate promotion failed: %s", exc)
-        manifest["substrate_rows"] = 0
+    promotion = _promote_github_context_with_retry(output)
+    manifest["substrate_rows"] = promotion.rows
+    manifest["substrate_status"] = promotion.status
+    manifest["substrate_attempts"] = promotion.attempts
+    if promotion.error is not None:
+        manifest["substrate_error"] = promotion.error
 
     return manifest
 
@@ -519,3 +527,44 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
         len(pr_comment_rows), len(pr_review_rows), len(pr_review_comment_rows),
     )
     return n
+
+
+def _is_duckdb_fatal_connection_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "database has been invalidated" in message
+        or "Corrupted ART index" in message
+        or "Invalid node type for TransformToDeprecated" in message
+    )
+
+
+def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionResult:
+    """Promote GitHub context, reopening DuckDB once after a fatal writer error.
+
+    DuckDB invalidates the current database instance after some internal
+    checkpoint failures. The canonical file can still be readable by a new
+    process/connection, so one fresh-connection retry is safe here: every
+    GitHub promoter replaces the fixed ``latest`` refresh partition.
+    """
+    attempts = 0
+    while attempts < 2:
+        attempts += 1
+        try:
+            rows = _promote_github_context_to_substrate(ndjson_path)
+            return SubstratePromotionResult(rows=rows, status="ok", attempts=attempts)
+        except Exception as exc:
+            if attempts == 1 and _is_duckdb_fatal_connection_error(exc):
+                log.warning(
+                    "github_context substrate promotion invalidated DuckDB; "
+                    "retrying with a fresh connection: %s",
+                    exc,
+                )
+                continue
+            log.warning("github_context substrate promotion failed: %s", exc)
+            return SubstratePromotionResult(
+                rows=0,
+                status="degraded",
+                attempts=attempts,
+                error=str(exc),
+            )
+    raise AssertionError("unreachable")

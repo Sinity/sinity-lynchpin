@@ -413,6 +413,30 @@ def test_chisel_refreshes_github_context_for_selected_projects(monkeypatch) -> N
     assert calls == [({"alpha", "beta"}, True)]
 
 
+def test_chisel_reports_degraded_substrate_without_blocking_snapshots(monkeypatch) -> None:
+    printed: list[str] = []
+
+    monkeypatch.setattr(
+        "lynchpin.ingest.github_context_materialize.materialize_github_context",
+        lambda **_kwargs: {
+            "row_count": 1,
+            "substrate_status": "degraded",
+            "substrate_attempts": 2,
+            "substrate_error": "database has been invalidated",
+        },
+    )
+    monkeypatch.setattr(chisel, "_build_github_context_index", lambda: {})
+    monkeypatch.setattr(chisel, "_print_live", lambda message="", **_kwargs: printed.append(str(message)))
+    monkeypatch.setattr(chisel, "_github_context_ready", None)
+    monkeypatch.setattr(chisel, "_github_context_index", None)
+    plan = chisel.RepoPlan(name="example", path=Path("/tmp/example"), slices=(), github_slug="Sinity/example")
+
+    chisel._ensure_chisel_prerequisites([plan])
+
+    assert any("ready with degraded substrate promotion" in line for line in printed)
+    assert any("degraded after 2 attempt(s)" in line for line in printed)
+
+
 def test_chisel_uses_existing_github_context_when_refresh_fails(monkeypatch) -> None:
     calls: list[tuple[set[str] | None, bool]] = []
     printed: list[str] = []

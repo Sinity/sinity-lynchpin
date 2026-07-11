@@ -54,6 +54,48 @@ def _inventory(
     )
 
 
+def test_substrate_promotion_retries_fatal_connection_with_fresh_call(monkeypatch, tmp_path: Path) -> None:
+    calls = 0
+
+    def promote(_path: Path) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError(
+                "database has been invalidated; Failed to create checkpoint: "
+                "Invalid node type for TransformToDeprecated: 0"
+            )
+        return 17
+
+    monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+
+    result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
+
+    assert result == materializer.SubstratePromotionResult(rows=17, status="ok", attempts=2)
+    assert calls == 2
+
+
+def test_substrate_promotion_reports_persistent_failure_as_degraded(monkeypatch, tmp_path: Path) -> None:
+    calls = 0
+
+    def promote(_path: Path) -> int:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("database has been invalidated")
+
+    monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+
+    result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
+
+    assert result == materializer.SubstratePromotionResult(
+        rows=0,
+        status="degraded",
+        attempts=2,
+        error="database has been invalidated",
+    )
+    assert calls == 2
+
+
 def test_materialize_github_context_refreshes_open_lists_without_gh_cache(
     monkeypatch, tmp_path: Path
 ) -> None:
