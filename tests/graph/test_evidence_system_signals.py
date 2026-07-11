@@ -27,7 +27,10 @@ def test_add_health_materialized_uses_direct_health_and_sleep(monkeypatch) -> No
             ),
         ),
     )
-    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda name, *, window: None)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window, budget="inline": None,
+    )
     monkeypatch.setattr("lynchpin.sources.sleep_productivity.iter_sleep_productivity", lambda *, start, end, ensure=True: ())
 
     nodes = []
@@ -47,7 +50,7 @@ def test_add_health_materialized_includes_ensured_sleep_productivity(monkeypatch
     monkeypatch.setattr("lynchpin.graph.health_bridge.build_health_evidence", lambda **kwargs: ())
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window: calls.append((name, window)),
+        lambda name, *, window, budget="inline": calls.append((name, window)),
     )
     monkeypatch.setattr(
         "lynchpin.sources.sleep_productivity.iter_sleep_productivity",
@@ -103,7 +106,7 @@ def test_add_health_uses_sleep_productivity_product_in_network_mode(monkeypatch)
     calls: list[tuple[str, tuple[date, date]]] = []
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window: calls.append((name, window)),
+        lambda name, *, window, budget="inline": calls.append((name, window)),
     )
     monkeypatch.setattr(
         "lynchpin.sources.sleep_productivity.iter_sleep_productivity",

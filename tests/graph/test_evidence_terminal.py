@@ -25,7 +25,7 @@ def test_add_terminal_includes_patterns_in_materialized_mode(monkeypatch) -> Non
     ensure_calls = []
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window: ensure_calls.append((name, window)),
+        lambda name, *, window, budget="inline": ensure_calls.append((name, window)),
     )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_terminal.shell_sessions", lambda **kwargs: (_session(),)
@@ -68,7 +68,7 @@ def test_add_terminal_includes_patterns_in_network_mode(monkeypatch) -> None:
     ensure_calls = []
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window: ensure_calls.append((name, window)),
+        lambda name, *, window, budget="inline": ensure_calls.append((name, window)),
     )
     monkeypatch.setattr(
         "lynchpin.graph.evidence_terminal.shell_sessions", lambda **kwargs: (_session(),)

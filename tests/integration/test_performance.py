@@ -9,6 +9,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 def _timeit(fn, label: str, baseline_s: float) -> None:
     """Run fn, print timing, warn if >2× baseline."""

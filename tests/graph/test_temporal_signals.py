@@ -239,7 +239,10 @@ def test_evidence_graph_includes_temporal_product_nodes(monkeypatch: pytest.Monk
 
     window_start = date(2026, 4, 29)
     end = date(2026, 5, 5)
-    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", lambda name, *, window: None)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window, budget="inline": None,
+    )
     monkeypatch.setattr(
         "lynchpin.sources.temporal_signals.iter_temporal_signals",
         lambda *, start, end, ensure=True: (
@@ -265,7 +268,7 @@ def test_materialized_temporal_signals_ensure_and_read_product(monkeypatch: pyte
     calls: list[tuple[str, tuple[date, date]]] = []
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window: calls.append((name, window)),
+        lambda name, *, window, budget="inline": calls.append((name, window)),
     )
     monkeypatch.setattr(
         "lynchpin.sources.temporal_signals.iter_temporal_signals",
