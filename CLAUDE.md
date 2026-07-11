@@ -33,13 +33,14 @@ GitHub discussion is public.
   narratives or transcripts, and unrelated personal information do not.
 - Operator datasets, identities, vocabularies, life events, classifications,
   and narrative evidence stay under externally configured data roots.
-- `.agent/{reports,scratch,handoff,ops}/`, root `.claude/`, and
-  `.beads/interactions.jsonl` are local-only.
+- `.agent/`, root `.claude/`, and `.beads/interactions.jsonl` are local-only.
+  Reusable tools must be moved into a normal source directory and reviewed;
+  their presence under `.agent/` never makes them publishable by default.
 - Beads `issues.jsonl` is public technical archaeology; all of its fields must
   satisfy the same publication boundary as source and documentation.
-- Before every commit, review the complete staged diff and run
-  `scripts/check-publication-boundary`. The checker only catches known path and
-  file shapes; it cannot judge prose, fixtures, or arbitrary data.
+- Before every commit, review the complete staged diff as public content;
+  filenames and regexes cannot determine whether prose, fixtures, or arbitrary
+  data cross the publication boundary.
 - If there is any doubt whether content belongs in the public repository,
   confirm with the operator before committing it.
 - Publish only `master`. Never push `--mirror`, `--all`, or `--tags`; any new

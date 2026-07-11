@@ -23,16 +23,9 @@ __pycache__/
 # Local raw datasets (heavy, non-versioned)
 data/raw/
 
-# Local agent scratch and personal-analysis reports (financial data, private
-# chat excerpts — reviewed content-by-content, genuinely private). Kept on
-# disk and covered by the regular backup, not git. .agent/tools/ is NOT
-# listed here (git can't un-ignore a path under an ignored parent dir):
-# reviewed content-by-content and found to be generic, reusable, non-personal
-# tooling, so it stays trackable.
-.agent/reports/
-.agent/scratch/
-.agent/handoff/
-.agent/ops/
+# Local agent state is never project source. Reusable tooling belongs under
+# scripts/ or tools/ after an explicit publication review.
+.agent/
 .claude/settings.local.json
 .claude/*.lock
 
