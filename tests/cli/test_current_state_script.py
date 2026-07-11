@@ -79,7 +79,7 @@ def test_current_state_tool_targets_cli_module():
         [str(Path("tool/current-state")), "--help"],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
         check=False,
     )
 

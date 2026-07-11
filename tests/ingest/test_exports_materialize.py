@@ -25,16 +25,21 @@ def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> 
         {
             "exports_root": tmp_path / "exports",
             "teams_root": tmp_path / "teams",
+            "themotte_root": tmp_path / "themotte",
             "themotte_username": "Sinity",
         },
     )()
     monkeypatch.setattr(communications_materialize, "get_config", lambda: cfg)
     monkeypatch.setattr(communications_materialize, "communication_manifest_path", lambda: manifest)
-    monkeypatch.setattr(communications_materialize, "themotte_input_files", lambda: ())
+    monkeypatch.setattr(
+        communications_materialize,
+        "themotte_input_files",
+        lambda *, root, username: (),
+    )
     monkeypatch.setattr(
         communications_materialize,
         "iter_themotte_messages",
-        lambda username: iter(
+        lambda *, root, username: iter(
             (
                 TheMotteMessage(
                     id="1",
@@ -52,7 +57,7 @@ def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(
         communications_materialize,
         "iter_themotte_notifications",
-        lambda username: iter(
+        lambda *, root, username: iter(
             (
                 TheMotteNotification(
                     id="n1",
