@@ -136,6 +136,8 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
             "teams_root": tmp_path / "teams",
             "fbmessenger_gdpr_root": tmp_path / "messenger",
             "fbmessenger_db": tmp_path / "messenger.sqlite",
+            "themotte_root": tmp_path / "themotte",
+            "themotte_username": "operator",
         },
     )()
     monkeypatch.setattr("lynchpin.ingest.communications_materialize.get_config", lambda: cfg)

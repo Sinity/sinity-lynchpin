@@ -74,14 +74,19 @@ def communication_input_files(cfg: Any) -> tuple[Path, ...]:
         paths.extend(path for path in outlook.rglob("*.CSV") if path.is_file())
     if teams.exists():
         paths.extend(path for path in teams.rglob("*.txt") if path.is_file())
-    paths.extend(themotte_input_files())
+    paths.extend(
+        themotte_input_files(
+            root=cfg.themotte_root,
+            username=cfg.themotte_username,
+        )
+    )
     return tuple(sorted(paths))
 
 
 def _iter_all_events(cfg: Any) -> Iterator[CommunicationEvent]:
     yield from _messenger_events(cfg.exports_root / "comms/facebook-messenger/processed/canonical/messages.ndjson")
     yield from _outlook_events(cfg.exports_root / "comms/outlook")
-    yield from _themotte_events()
+    yield from _themotte_events(cfg)
 
 
 def _messenger_events(path: Path) -> Iterator[CommunicationEvent]:
@@ -154,10 +159,9 @@ def _outlook_events(*roots: Path) -> Iterator[CommunicationEvent]:
                     )
 
 
-def _themotte_events() -> Iterator[CommunicationEvent]:
-    cfg = get_config()
+def _themotte_events(cfg: Any) -> Iterator[CommunicationEvent]:
     operator = cfg.themotte_username
-    for msg in iter_themotte_messages(username=operator):
+    for msg in iter_themotte_messages(root=cfg.themotte_root, username=operator):
         peer = msg.peer or msg.recipient or msg.author
         yield _event(
             source="themotte",
@@ -175,7 +179,7 @@ def _themotte_events() -> Iterator[CommunicationEvent]:
             confidence="high",
             caveats=(),
         )
-    for notif in iter_themotte_notifications(username=operator):
+    for notif in iter_themotte_notifications(root=cfg.themotte_root, username=operator):
         yield _event(
             source="themotte",
             account=operator,
