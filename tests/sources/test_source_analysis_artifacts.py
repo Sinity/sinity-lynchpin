@@ -322,6 +322,19 @@ def test_artifact_inventory_extracts_generated_artifact_references(tmp_path):
     assert by_name["analysis_status.json"].references == ("commit_facts.json",)
 
 
+def test_artifact_inventory_ignores_multiline_prose_ending_like_a_path(tmp_path):
+    status = tmp_path / "analysis_status.json"
+    status.write_text(
+        '{"summary":"Notes from review:\\n• Edited .agent/scratch/findings.md"}',
+        encoding="utf-8",
+    )
+
+    artifact = artifact_inventory(tmp_path)[0]
+
+    assert artifact.status == "available"
+    assert artifact.references == ()
+
+
 def test_artifact_inventory_keeps_parse_failures_visible(tmp_path):
     broken = tmp_path / "polylogue_metrics.json"
     broken.write_text("{not json", encoding="utf-8")

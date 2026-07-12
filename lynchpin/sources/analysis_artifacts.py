@@ -745,13 +745,19 @@ def _artifact_references(
 
 
 def _artifact_reference(value: str, *, base: Path) -> str | None:
+    if any(char in value for char in ("\n", "\r", "\x00")):
+        return None
     suffix = Path(value).suffix.lower()
     if suffix not in {".json", ".md", ".html"}:
         return None
     path = Path(value)
     if not path.is_absolute():
         candidate = base / path
-        if not candidate.is_file():
+        try:
+            is_file = candidate.is_file()
+        except OSError:
+            return None
+        if not is_file:
             return None
         return path.as_posix()
     try:
