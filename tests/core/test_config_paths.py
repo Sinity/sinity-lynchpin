@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lynchpin.core.config import LynchpinConfig, _default_polylogue_db, resolve_latest_dated_dir
+from lynchpin.core.config import LynchpinConfig, _default_polylogue_db, get_config, resolve_latest_dated_dir
+
+
+def test_default_pytest_config_isolated_from_operator_data(tmp_path: Path) -> None:
+    cfg = get_config()
+
+    assert cfg.data_root.is_relative_to(tmp_path)
+    assert cfg.local_root.is_relative_to(tmp_path)
+    assert cfg.activitywatch_db.is_relative_to(tmp_path)
+    assert cfg.atuin_db.is_relative_to(tmp_path)
+    assert cfg.polylogue_db.is_relative_to(tmp_path)
+    assert cfg.raw_log_file.is_relative_to(tmp_path)
 
 
 def test_generated_roots_default_to_repo_local_dotfolder(monkeypatch, tmp_path: Path) -> None:

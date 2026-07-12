@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from lynchpin.analysis.operator_daily import operator_daily_matrix
+from lynchpin.analysis import operator_daily as od
 from lynchpin.substrate.connection import apply_schema, connect
 
 
@@ -39,6 +39,26 @@ def _kill(conn: Any, day: int, hour: int, source_row_id: int, refresh_id: str) -
     )
 
 
+def _machine_rows(start: date, end: date) -> dict[date, od.OperatorDay]:
+    rows = {
+        start + timedelta(days=offset): od.OperatorDay(date=start + timedelta(days=offset))
+        for offset in range((end - start).days + 1)
+    }
+    present = {day: set() for day in rows}
+    ctx = od._FillContext(
+        rows=rows,
+        present=present,
+        bounds={},
+        start=start,
+        end=end,
+        source="machine",
+    )
+    od._fill_machine_pressure(ctx)
+    for day, row in rows.items():
+        row.sources_present = frozenset(present[day])
+    return rows
+
+
 def test_machine_kill_and_psi_daily_fill(tmp_path, monkeypatch):
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
@@ -53,10 +73,7 @@ def test_machine_kill_and_psi_daily_fill(tmp_path, monkeypatch):
         # Day 3: not captured by machine telemetry at all.
 
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: db)
-    rows = {
-        r.date: r
-        for r in operator_daily_matrix(date(2026, 7, 1), date(2026, 7, 3), skip_slow=True)
-    }
+    rows = _machine_rows(date(2026, 7, 1), date(2026, 7, 3))
 
     assert rows[date(2026, 7, 1)].has_source("machine")
     assert rows[date(2026, 7, 1)].machine_kill_events == 2
@@ -86,10 +103,7 @@ def test_overlapping_refresh_ids_do_not_double_count_kills(tmp_path, monkeypatch
         _kill(conn, 5, 0, source_row_id=42, refresh_id="rolling:today")
 
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: db)
-    rows = {
-        r.date: r
-        for r in operator_daily_matrix(date(2026, 7, 5), date(2026, 7, 5), skip_slow=True)
-    }
+    rows = _machine_rows(date(2026, 7, 5), date(2026, 7, 5))
 
     # Same source_row_id promoted under two refresh_ids for the same live
     # event — latest_machine_rows collapses it to one row.

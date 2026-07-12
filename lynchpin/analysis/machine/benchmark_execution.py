@@ -95,12 +95,11 @@ def run_selected_benchmark_group(
         candidate_id=candidate_id,
         require_ready=require_ready,
     )
-    bundle = analyze_machine_benchmark_manifest_bundle(
-        plans_path=None,
-        limit=0,
+    bundle = (
+        _bundle_from_payload(manifest_bundle_path)
+        if manifest_bundle_path is not None
+        else analyze_machine_benchmark_manifest_bundle(plans_path=None, limit=0)
     )
-    if manifest_bundle_path is not None:
-        bundle = _bundle_from_payload(manifest_bundle_path)
     group = next(
         (row for row in bundle.groups if row.run_group_id == item["run_group_id"]),
         None,

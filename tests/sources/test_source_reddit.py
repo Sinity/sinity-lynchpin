@@ -37,7 +37,12 @@ def test_reddit_reads_comments_and_daily_activity(tmp_path, monkeypatch):
 
     days = reddit.daily_activity(start=date(2026, 5, 5), end=date(2026, 5, 6))
     distribution = reddit.subreddit_distribution(start=date(2026, 5, 5), end=date(2026, 5, 6))
-    summary = reddit.summarize_activity("2026-05", "2026-05", comments_paths=(comments,))
+    summary = reddit.summarize_activity(
+        "2026-05",
+        "2026-05",
+        comments_paths=(comments,),
+        message_paths=(),
+    )
 
     assert [row.id for row in rows] == ["c1", "c2", "c3"]
     assert summary.comment_counts == {"2026-05": 3}

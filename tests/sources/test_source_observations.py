@@ -216,7 +216,8 @@ def test_every_available_source_resolves_to_at_least_one_observable() -> None:
     materialized = source_observations._materialized_last_dates()
     unresolved = [
         source
-        for source in cfg.available_sources()
+        for source, available in cfg.available_sources().items()
+        if available
         if source not in materialized
         and source_observations._configured_path(source) is None
     ]

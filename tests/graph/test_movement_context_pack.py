@@ -386,6 +386,10 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         "lynchpin.core.io.get_config",
         lambda: type("Cfg", (), {"analysis_output_dir": analysis_root})(),
     )
+    monkeypatch.setattr(
+        "lynchpin.sources.activity_content.iter_activity_content_days",
+        lambda **_kwargs: iter(()),
+    )
 
     rendered = render_context_pack(context_pack(start=start, end=end, projects=("sinity-lynchpin",)))
 

@@ -2,8 +2,10 @@
 
 from datetime import date
 
+import pytest
 
 
+@pytest.mark.slow
 def test_operator_daily_matrix_basic():
     """Smoke test: operator_daily_matrix builds on a narrow window."""
     from lynchpin.analysis.operator_daily import operator_daily_matrix
@@ -31,6 +33,7 @@ def test_operator_daily_empty_window():
         assert r.total_known_source_count <= 1
 
 
+@pytest.mark.slow
 def test_health_modeling_report():
     """Health modeling report runs without crashing."""
     from lynchpin.sources.samsung_binning import iter_stress_bins, iter_hrv_bins, iter_hr_bins
