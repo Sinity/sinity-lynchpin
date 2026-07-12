@@ -49,6 +49,8 @@ class SubstratePromotionResult:
     status: str
     attempts: int
     error: str | None = None
+    rebuilt_after_corruption: bool = False
+    quarantined_path: str | None = None
 
 
 def materialize_github_context(
@@ -218,6 +220,9 @@ def materialize_github_context(
     manifest["substrate_rows"] = promotion.rows
     manifest["substrate_status"] = promotion.status
     manifest["substrate_attempts"] = promotion.attempts
+    manifest["substrate_rebuilt_after_corruption"] = promotion.rebuilt_after_corruption
+    if promotion.quarantined_path is not None:
+        manifest["substrate_quarantined_path"] = promotion.quarantined_path
     if promotion.error is not None:
         manifest["substrate_error"] = promotion.error
 
@@ -510,7 +515,7 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
                     "url": rc.url,
                 })
 
-    with connect(recover_corrupt_from_snapshot=True) as conn:
+    with connect(rebuild_corrupt=True) as conn:
         n = 0
         n += promote_github_issues(conn, rows=issue_rows)
         n += promote_github_issue_comments(conn, rows=issue_comment_rows)
@@ -539,25 +544,47 @@ def _is_duckdb_fatal_connection_error(exc: Exception) -> bool:
 
 
 def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionResult:
-    """Promote GitHub context, reopening DuckDB once after a fatal writer error.
+    """Promote GitHub context, rebuilding the derived DB after a fatal write.
 
-    DuckDB invalidates the current database instance after some internal
-    checkpoint failures. The canonical file can still be readable by a new
-    process/connection, so one fresh-connection retry is safe here: every
-    GitHub promoter replaces the fixed ``latest`` refresh partition.
+    Some checkpoint corruptions leave canonical and snapshot files readable but
+    unsafe under promotion. Retrying or copying either generation cannot recover
+    that state. Atomically install a clean schema before the single retry; every
+    GitHub promoter then idempotently replaces the fixed ``latest`` partition.
     """
     attempts = 0
+    rebuilt_after_corruption = False
+    quarantined_path: str | None = None
     while attempts < 2:
         attempts += 1
         try:
             rows = _promote_github_context_to_substrate(ndjson_path)
-            return SubstratePromotionResult(rows=rows, status="ok", attempts=attempts)
+            return SubstratePromotionResult(
+                rows=rows,
+                status="ok",
+                attempts=attempts,
+                rebuilt_after_corruption=rebuilt_after_corruption,
+                quarantined_path=quarantined_path,
+            )
         except Exception as exc:
             if attempts == 1 and _is_duckdb_fatal_connection_error(exc):
+                from ..substrate.connection import rebuild_corrupt_substrate
+
+                try:
+                    quarantine = rebuild_corrupt_substrate()
+                except Exception as recovery_exc:
+                    log.warning("github_context substrate recovery failed: %s", recovery_exc)
+                    return SubstratePromotionResult(
+                        rows=0,
+                        status="degraded",
+                        attempts=attempts,
+                        error=str(recovery_exc),
+                    )
+                rebuilt_after_corruption = True
+                quarantined_path = str(quarantine)
                 log.warning(
-                    "github_context substrate promotion invalidated DuckDB; "
-                    "retrying with a fresh connection: %s",
-                    exc,
+                    "github_context substrate checkpoint failed; installed clean "
+                    "derived schema and quarantined canonical at %s",
+                    quarantine,
                 )
                 continue
             log.warning("github_context substrate promotion failed: %s", exc)
@@ -566,5 +593,7 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
                 status="degraded",
                 attempts=attempts,
                 error=str(exc),
+                rebuilt_after_corruption=rebuilt_after_corruption,
+                quarantined_path=quarantined_path,
             )
     raise AssertionError("unreachable")

@@ -168,7 +168,7 @@ def _do_promote(
         window_start = window_start or prev_month_start
         window_end = window_end or today
 
-    # recover_corrupt_from_snapshot=True: this is the main writer for every
+    # rebuild_corrupt=True: this is the main writer for every
     # substrate-promoted source (commits, AI events, machine telemetry, ...).
     # A DuckDB internal metadata-pointer corruption on the canonical file (a
     # real, observed failure mode — see .lynchpin/duck/substrate.duckdb.corrupt-*
@@ -178,7 +178,7 @@ def _do_promote(
     # Restoring from the last read-snapshot and retrying here means a
     # recurrence of that corruption self-heals instead of quietly stalling
     # every source's promotion (sinnix-kx4).
-    with connect(substrate_path(), recover_corrupt_from_snapshot=True) as conn:
+    with connect(substrate_path(), rebuild_corrupt=True) as conn:
         apply_schema(conn)
 
         _run_stage(

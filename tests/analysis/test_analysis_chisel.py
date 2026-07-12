@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from lynchpin.sources import chisel
 from lynchpin.sources.github import GitHubActor, GitHubItem
 from lynchpin.sources.github_context import GitHubContextRow
@@ -413,9 +415,7 @@ def test_chisel_refreshes_github_context_for_selected_projects(monkeypatch) -> N
     assert calls == [({"alpha", "beta"}, True)]
 
 
-def test_chisel_reports_degraded_substrate_without_blocking_snapshots(monkeypatch) -> None:
-    printed: list[str] = []
-
+def test_chisel_blocks_snapshots_when_substrate_recovery_remains_degraded(monkeypatch) -> None:
     monkeypatch.setattr(
         "lynchpin.ingest.github_context_materialize.materialize_github_context",
         lambda **_kwargs: {
@@ -426,15 +426,12 @@ def test_chisel_reports_degraded_substrate_without_blocking_snapshots(monkeypatc
         },
     )
     monkeypatch.setattr(chisel, "_build_github_context_index", lambda: {})
-    monkeypatch.setattr(chisel, "_print_live", lambda message="", **_kwargs: printed.append(str(message)))
     monkeypatch.setattr(chisel, "_github_context_ready", None)
     monkeypatch.setattr(chisel, "_github_context_index", None)
     plan = chisel.RepoPlan(name="example", path=Path("/tmp/example"), slices=(), github_slug="Sinity/example")
 
-    chisel._ensure_chisel_prerequisites([plan])
-
-    assert any("ready with degraded substrate promotion" in line for line in printed)
-    assert any("degraded after 2 attempt(s)" in line for line in printed)
+    with pytest.raises(chisel.MaterializationError, match="remained degraded after recovery"):
+        chisel._ensure_chisel_prerequisites([plan])
 
 
 def test_chisel_uses_existing_github_context_when_refresh_fails(monkeypatch) -> None:

@@ -141,12 +141,12 @@ def test_connect_read_only_falls_back_to_snapshot_on_internal_open_error(
         assert reader.execute("SELECT v FROM x").fetchone() == (11,)
 
 
-def test_connect_write_can_restore_corrupt_canonical_from_snapshot(
+def test_connect_write_can_rebuild_corrupt_canonical(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Opt-in write recovery quarantines the unreadable canonical and resumes
-    from the read snapshot."""
+    """Opt-in write recovery quarantines an unreadable derived canonical and
+    resumes from a clean schema rather than reusing a suspect snapshot."""
     canonical = isolated_substrate
     with duckdb.connect(str(canonical)) as conn:
         conn.execute("CREATE TABLE x (v INTEGER)")
@@ -166,12 +166,59 @@ def test_connect_write_can_restore_corrupt_canonical_from_snapshot(
 
     monkeypatch.setattr(duckdb, "connect", flaky_connect)
 
-    with connect(recover_corrupt_from_snapshot=True) as writer:
-        assert writer.execute("SELECT v FROM x").fetchone() == (17,)
-        writer.execute("UPDATE x SET v = 23")
+    with connect(rebuild_corrupt=True) as writer:
+        assert writer.execute(
+            "SELECT value FROM substrate_meta WHERE key = 'version'"
+        ).fetchone() is not None
 
     quarantined = list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
     assert len(quarantined) == 1
     assert quarantined[0].read_bytes() == b"not a duckdb database"
     with duckdb.connect(str(canonical), read_only=True) as conn:
-        assert conn.execute("SELECT v FROM x").fetchone() == (23,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables"
+        ).fetchone()[0] > 1
+
+
+def test_rebuild_corrupt_substrate_installs_clean_schema(
+    isolated_substrate: Path,
+) -> None:
+    from lynchpin.substrate.connection import rebuild_corrupt_substrate
+
+    canonical = isolated_substrate
+    with duckdb.connect(str(canonical)) as conn:
+        conn.execute("CREATE TABLE x (v INTEGER)")
+        conn.execute("INSERT INTO x VALUES (17)")
+    canonical.write_bytes(b"broken canonical")
+
+    quarantine = rebuild_corrupt_substrate(canonical)
+
+    assert quarantine.read_bytes() == b"broken canonical"
+    with duckdb.connect(str(canonical), read_only=True) as conn:
+        assert conn.execute(
+            "SELECT value FROM substrate_meta WHERE key = 'version'"
+        ).fetchone() is not None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables"
+        ).fetchone()[0] > 1
+
+
+def test_rebuild_keeps_canonical_when_clean_schema_creation_fails(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lynchpin.substrate.connection import rebuild_corrupt_substrate
+
+    canonical = isolated_substrate
+    canonical.write_bytes(b"canonical retained")
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.apply_schema",
+        lambda _conn: (_ for _ in ()).throw(RuntimeError("schema failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="failed before canonical replacement"):
+        rebuild_corrupt_substrate(canonical)
+
+    assert canonical.read_bytes() == b"canonical retained"
+    assert not list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
+    assert not canonical.with_suffix(".rebuild.tmp").exists()

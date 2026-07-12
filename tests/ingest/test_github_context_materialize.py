@@ -54,8 +54,9 @@ def _inventory(
     )
 
 
-def test_substrate_promotion_retries_fatal_connection_with_fresh_call(monkeypatch, tmp_path: Path) -> None:
+def test_substrate_promotion_rebuilds_corrupt_db_before_retry(monkeypatch, tmp_path: Path) -> None:
     calls = 0
+    recovered: list[str] = []
 
     def promote(_path: Path) -> int:
         nonlocal calls
@@ -68,14 +69,25 @@ def test_substrate_promotion_retries_fatal_connection_with_fresh_call(monkeypatc
         return 17
 
     monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.rebuild_corrupt_substrate",
+        lambda: recovered.append("called") or Path("/tmp/substrate.corrupt"),
+    )
 
     result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
 
-    assert result == materializer.SubstratePromotionResult(rows=17, status="ok", attempts=2)
+    assert result == materializer.SubstratePromotionResult(
+        rows=17,
+        status="ok",
+        attempts=2,
+        rebuilt_after_corruption=True,
+        quarantined_path="/tmp/substrate.corrupt",
+    )
     assert calls == 2
+    assert len(recovered) == 1
 
 
-def test_substrate_promotion_reports_persistent_failure_as_degraded(monkeypatch, tmp_path: Path) -> None:
+def test_substrate_promotion_reports_failed_rebuild_as_degraded(monkeypatch, tmp_path: Path) -> None:
     calls = 0
 
     def promote(_path: Path) -> int:
@@ -84,16 +96,20 @@ def test_substrate_promotion_reports_persistent_failure_as_degraded(monkeypatch,
         raise RuntimeError("database has been invalidated")
 
     monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.rebuild_corrupt_substrate",
+        lambda: (_ for _ in ()).throw(RuntimeError("clean rebuild failed")),
+    )
 
     result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
 
     assert result == materializer.SubstratePromotionResult(
         rows=0,
         status="degraded",
-        attempts=2,
-        error="database has been invalidated",
+        attempts=1,
+        error="clean rebuild failed",
     )
-    assert calls == 2
+    assert calls == 1
 
 
 def test_materialize_github_context_refreshes_open_lists_without_gh_cache(

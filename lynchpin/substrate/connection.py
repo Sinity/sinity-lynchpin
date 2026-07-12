@@ -80,13 +80,17 @@ def _quarantine_suffix() -> str:
     return datetime.now().astimezone().strftime(".corrupt-%Y%m%dT%H%M%S%z")
 
 
-def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Path:
-    """Move an unreadable canonical aside and restore the last read snapshot.
+def rebuild_corrupt_substrate(
+    canonical: Path | None = None,
+) -> Path:
+    """Atomically replace a broken derived substrate with a clean schema.
 
-    DuckDB internal metadata-pointer errors can make the canonical file fail at
-    open time, while the read snapshot remains usable. The substrate is derived,
-    so preserving the broken file for inspection and resuming from the last
-    known-good snapshot is preferable to blocking every writer.
+    DuckDB internal metadata/checkpoint errors can leave both canonical and
+    read-snapshot generations readable while making promotion abort inside the
+    engine. Reusing either file is therefore unsafe. Build and checkpoint a
+    fresh temporary database first; only then quarantine canonical and WAL and
+    atomically install the clean derived store. The old read snapshot remains
+    available to readers until the next successful promotion replaces it.
 
     Also quarantines any stale ``.wal`` sitting next to the corrupt canonical:
     that WAL holds uncheckpointed writes against the *broken* base file, and
@@ -95,9 +99,23 @@ def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Pa
     mismatched transactions on top of it — reintroducing corruption instead
     of recovering from it.
     """
-    snapshot = substrate_read_snapshot_path()
-    if not snapshot.exists():
-        raise reason
+    canonical = canonical if canonical is not None else substrate_path()
+    rebuilt = canonical.with_suffix(".rebuild.tmp")
+    if rebuilt.exists():
+        rebuilt.unlink()
+    try:
+        import duckdb
+
+        with duckdb.connect(str(rebuilt)) as conn:
+            apply_schema(conn)
+            conn.execute("CHECKPOINT")
+    except Exception as rebuild_exc:
+        if rebuilt.exists():
+            rebuilt.unlink()
+        raise RuntimeError(
+            "clean substrate rebuild failed before canonical replacement; "
+            "canonical database was left in place"
+        ) from rebuild_exc
 
     suffix = _quarantine_suffix()
     quarantine = canonical.with_name(canonical.name + suffix)
@@ -106,7 +124,7 @@ def _restore_from_read_snapshot(canonical: Path, *, reason: BaseException) -> Pa
     wal = canonical.with_name(canonical.name + ".wal")
     if wal.exists():
         wal.replace(wal.with_name(wal.name + suffix))
-    shutil.copy2(snapshot, canonical)
+    rebuilt.replace(canonical)
     return quarantine
 
 
@@ -116,7 +134,7 @@ def connect(
     *,
     read_only: bool = False,
     snapshot_fallback: bool = True,
-    recover_corrupt_from_snapshot: bool = False,
+    rebuild_corrupt: bool = False,
 ) -> Iterator["duckdb.DuckDBPyConnection"]:
     """Yield a DuckDB connection to the substrate.
 
@@ -143,8 +161,8 @@ def connect(
         conn = duckdb.connect(str(target), read_only=read_only)
     except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
         if not read_only or not snapshot_fallback:
-            if recover_corrupt_from_snapshot and not read_only and isinstance(exc, duckdb.InternalException):
-                _restore_from_read_snapshot(target, reason=exc)
+            if rebuild_corrupt and not read_only and isinstance(exc, duckdb.InternalException):
+                rebuild_corrupt_substrate(target)
                 conn = duckdb.connect(str(target), read_only=False)
             else:
                 raise

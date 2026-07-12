@@ -1518,6 +1518,15 @@ def _ensure_github_context_for_chisel(projects: set[str] | None = None) -> None:
                 f"for issue/PR snapshots ({exc})[/yellow]"
             )
             return
+        if (_github_context_manifest or {}).get("substrate_status") == "degraded":
+            _github_context_ready = False
+            raise MaterializationError(
+                "github_context",
+                reason=(
+                    "GitHub context substrate promotion remained degraded after recovery: "
+                    f"{(_github_context_manifest or {}).get('substrate_error') or 'unknown error'}"
+                ),
+            )
         _github_context_index = _build_github_context_index()
         _github_context_ready = True
 
@@ -1567,10 +1576,7 @@ def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
     t0 = dt.datetime.now()
     _ensure_github_context_for_chisel({plan.name for plan in plans})
     elapsed = (dt.datetime.now() - t0).total_seconds()
-    readiness = "ready"
-    if (_github_context_manifest or {}).get("substrate_status") == "degraded":
-        readiness = "ready with degraded substrate promotion"
-    _print_live(f"GitHub context: {readiness} ({elapsed:.1f}s; {_github_context_summary()})")
+    _print_live(f"GitHub context: ready ({elapsed:.1f}s; {_github_context_summary()})")
 
 
 def _build_github_context_index() -> dict[tuple[str, str, str, str], list[Any]]:
