@@ -12,11 +12,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .core.dag import DAG, Step
-from .core import canonical as canonical_module
 from lynchpin.core.io import resolve_analysis_path, save_json
-from .ecosystem.polylogue_archive_shape import run_polylogue_archive_shape
-from .ecosystem.polylogue_time_composition import run_polylogue_time_composition
-from .ecosystem.polylogue_metrics import run_polylogue_metrics
 from .ecosystem.current_state import run_current_state_analysis
 from .active.ai_attribution import run_active_ai_attribution
 from .active.git_facts import run_active_git_facts
@@ -55,9 +51,7 @@ from .interpretation.semantic_static_findings import run_active_semantic_static_
 from .interpretation.shape import run_active_guardrails, run_active_hotspots
 from .interpretation.structural_findings import run_active_structural_findings
 from .interpretation.velocity_windows import run_project_velocity_windows
-from .claim_calibration import write_claim_calibration
 from .code_history_claims import write_code_history_claims
-from .google_takeout_mining import write_google_takeout_retrospective
 from .keylog import write_keylog_analysis
 from .machine.attribution import write_below_attribution_analysis
 from .machine.attribution_candidates import write_machine_attribution_candidates
@@ -96,7 +90,6 @@ from .machine.support_assessment import write_machine_support_assessment
 from .machine.telemetry import write_machine_telemetry_analysis
 from .machine.validation_design import write_machine_validation_design
 from .machine.work_observations import write_work_observation_analysis
-from .personal_interest_fusion import write_personal_interest_trace
 from .anomaly_crossref import write_report as write_anomaly_crossref_report
 from .life_phase import write_report as write_life_phase_report
 from .productivity_predictors import write_report as write_productivity_predictors_report
@@ -104,8 +97,6 @@ from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
 from .ai_session_efficiency import write_report as write_ai_session_efficiency_report
 from .operator_daily import operator_daily_matrix
-from .projects import metrics as project_metrics
-from .sinex.structure import run_sinex_analysis
 from .sinex import temporal as sinex_temporal
 from .workflow_mechanics import write_workflow_mechanics_report
 

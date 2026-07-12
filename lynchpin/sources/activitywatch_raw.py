@@ -15,10 +15,10 @@ import functools
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+from .activitywatch_event_index import iter_indexed_activitywatch_events
+from .activitywatch_models import AWEvent
 
 log = logging.getLogger(__name__)
-from .activitywatch_models import AWEvent
-from .activitywatch_event_index import iter_indexed_activitywatch_events
 
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:

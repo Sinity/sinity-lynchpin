@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
 
 
 def test_add_substance_emits_one_node_per_day() -> None:

@@ -1244,7 +1244,7 @@ def load_machine_pressure_explainer(
     top_n: int = 8,
 ) -> list[dict[str, Any]]:
     """Join memory, PSI, service RSS split, and process I/O around pressure windows."""
-    metric_sql = f"""
+    metric_sql = """
         SELECT
             observed_at, host, source_schema_version,
             mem_total_mb, mem_used_mb, mem_avail_mb,

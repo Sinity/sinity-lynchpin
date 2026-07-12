@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 

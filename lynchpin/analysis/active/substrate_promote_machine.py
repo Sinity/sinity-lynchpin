@@ -14,7 +14,7 @@ import logging
 import time
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .substrate_promote_status import (
     SOURCE_MACHINE,
@@ -299,7 +299,7 @@ def _promote_machine_fast(
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
 
 
-def _iter_day_windows(window_start: date, window_end: date) -> "Iterator[tuple[date, date]]":
+def _iter_day_windows(window_start: date, window_end: date) -> Iterator[tuple[date, date]]:
     current = window_start
     while current <= window_end:
         yield current, current
