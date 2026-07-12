@@ -1,59 +1,47 @@
-# Data Sources
+# Data sources
 
-Lynchpin source modules are the canonical read APIs over raw local data. The
-shape is intentionally simple: raw exports and captures stay in their owning
-locations, source modules expose typed/lazy iterators, and substrate/analysis
-products are derived read models.
+Lynchpin source modules are typed read APIs over owner-native data. Raw
+captures and exports stay in their configured locations; source modules expose
+availability, coverage, provenance, iterators, and source-local summaries.
 
 ## Roles
 
-| Role | Owner | Examples | Lynchpin contract |
-| --- | --- | --- | --- |
-| Raw capture/export | External service, Sinnix, or provider export | ActivityWatch DB, Atuin DB, Samsung exports, machine telemetry SQLite | Read in place; do not rewrite as part of analysis. |
-| Source API | `lynchpin.sources.*` | `activitywatch`, `terminal`, `polylogue`, `machine`, `health` | Typed Python access with provenance, caveats, and lazy parsing. |
-| Substrate table | `lynchpin.substrate.*` | `commit_fact`, `ai_work_event`, `machine_metric_sample` | Derived, rebuildable DuckDB read model with `refresh_id`. |
-| Derived product | `/realm/data/derived/lynchpin` | `personal/daily_signals.ndjson`, `spotify/daily.ndjson` | Cross-source canonical products materialized once, then copied into substrate/query surfaces. |
-| Analysis artifact | `lynchpin.analysis.*` | `project_velocity_windows.json`, `machine_telemetry_analysis.json` | Generated summaries under `.lynchpin/generated/analysis/`. |
-| Context pack | `lynchpin.graph.context_pack` | current-state packs and narratives | LLM-facing synthesis over graph/source evidence, not raw truth. |
-
-## Active Source Modules
-
-| Module | Primary input | Main output shape |
+| Role | Examples | Contract |
 | --- | --- | --- |
-| `lynchpin.sources.activitywatch` | ActivityWatch SQLite | events, focus spans, sessions, deep-work blocks, daily activity |
-| `lynchpin.sources.terminal` | Atuin SQLite and asciinema captures | shell commands, shell sessions, terminal recordings |
-| `lynchpin.sources.git` | Local repos and baseline JSONL | commits, file changes, sessions, repo metadata |
-| `lynchpin.sources.polylogue` | Polylogue archive DB / chatlog exports | session profiles, daily chat activity, work patterns, cost summaries |
-| `lynchpin.sources.machine` | `/realm/data/captures/machine/telemetry.sqlite` | metric, GPU, service, and network samples |
-| `lynchpin.sources.machine_experiments` | `/realm/data/captures/machine/experiments` | benchmark/workload manifests |
-| `lynchpin.sources.health` | processed Samsung Health exports | daily health, stress, HR, HRV, SpO2, weight, movement |
-| `lynchpin.sources.sleep` | processed sleep exports | sleep entries and sleep/productivity joins |
-| `lynchpin.sources.substance` | processed substance CSV | dose entries and daily/monthly summaries |
-| `lynchpin.sources.web` | browser history captures/exports | visits, daily browsing, domain breakdowns |
-| `lynchpin.sources.takeout_chrome` | Google Takeout Chrome JSON | normalized web history visits |
-| `lynchpin.sources.google_takeout_products` | canonical Google Takeout product NDJSON | typed contacts, Keep notes, My Activity, purchases, Play Store, tasks, YouTube rows, asset inventory, and timestamped daily activity events |
-| `lynchpin.sources.personal_signals` | `/realm/data/derived/lynchpin` | derived daily personal and Spotify signal products |
-| `lynchpin.sources.spotify` | Spotify processed exports | streams, listening sessions, daily listening |
-| `lynchpin.sources.reddit` | Reddit processed export | posts, comments, votes, daily activity |
-| `lynchpin.sources.exports` | Goodreads, Raindrop, Messenger, Wykop, notes exports | per-export iterators and daily summaries |
-| `lynchpin.sources.analysis_artifacts` | `.lynchpin/generated/analysis` | generated artifact inventory and extracted claims |
-| `lynchpin.sources.observability_catalog` | code-defined operational catalog | machine/performance observability input roles |
+| Owner-native input | Application database, append-only capture, provider export, repository | Remains authoritative and is not rewritten by analysis. |
+| Source API | `lynchpin.sources.*` | Parses lazily, preserves source caveats, and exposes typed values. |
+| Canonical product | Derived NDJSON/manifest under the configured data root | Rebuildable normalization for formats that are expensive or ambiguous to query repeatedly. |
+| Substrate table | `lynchpin.substrate.*` | Windowed DuckDB read model tied to a coherent `refresh_id`. |
+| Analysis artifact | `lynchpin.analysis.*` output | Generated metric, map, diagnostic, or claim product with provenance. |
+| Context pack | `lynchpin.graph.context_pack` | Bounded synthesis over graph/substrate evidence. |
 
-## Dataflow Invariants
+## Source families
 
-- Source modules read raw data or owner-native ledgers; they do not become a
-  second warehouse.
-- Substrate tables are rebuildable indexes. Schema changes may reset DuckDB;
-  raw captures and source modules remain authoritative.
-- Cross-source daily products are materialized under `/realm/data/derived/lynchpin`
-  and consumed directly by snapshot/substrate promotion. Query-time convergence
-  should ensure the relevant derived product exists and is fresh enough for the
-  read, while still avoiding broad raw-export rescans on every query.
-- Generated analysis artifacts are evidence products. They are inventoried by
-  `lynchpin.sources.analysis_artifacts` and can become graph nodes, but they do
-  not override source-level facts.
-- Legacy/intermediate formats should leave active namespaces after successful
-  one-shot backfill. Quarantined raw artifacts belong under `/realm/inbox`.
-- Machine/process troubleshooting preserves dimensions: machine metrics,
-  service state, experiment manifests, and `below` process/cgroup windows are
-  separate joined surfaces, not one collapsed scalar.
+| Family | Representative modules | Evidence exposed |
+| --- | --- | --- |
+| Workstation activity | `activitywatch`, `terminal`, `clipboard`, `keylog`, `arbtt` | Focus spans, commands, sessions, recordings, input/activity events. |
+| Code and delivery | `git`, `github`, `github_context`, `code_snapshots`, `xtask_history` | Commits, files, reviews, issues/PRs, snapshots, build/test history. |
+| AI work | `polylogue`, `polylogue_timeline` | Session profiles, work events, costs, provider activity, timelines. |
+| Machine state | `machine`, `machine_experiments`, `service_health`, `sinnix_generations` | Metrics, pressure, services, experiments, backups, generations. |
+| Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
+| Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
+| Health and daily signals | `health`, `sleep`, `personal_signals`, `weather` | Measurements, coverage-aware daily products, longitudinal signals. |
+| Media and libraries | `spotify`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, library records, daily media signals. |
+| Generated evidence | `analysis_artifacts`, `source_observations`, `observability_catalog` | Artifact inventory, extracted claims, source/role definitions. |
+
+The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
+roots and neutral fixtures; the public source tree does not depend on one
+operator's data layout.
+
+## Invariants
+
+- Missing coverage is not zero activity. Sources report observed bounds and
+  whether they are continuous captures or bounded exports.
+- Source-local normalization belongs in the source module; cross-source joins
+  belong downstream.
+- Cached values are invalidated by source signatures or explicit freshness
+  contracts.
+- Substrate rows and summaries are indexes, not replacements for raw logs.
+- Generated analysis claims carry their artifact and refresh provenance.
+- A legacy format leaves active discovery only after its canonical replacement
+  is verified and the migration is complete.

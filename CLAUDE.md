@@ -78,9 +78,8 @@ cross-reference instead of inventing parallel vocabulary layers.
 |-------|----------|
 | Data source contracts + coverage | `docs/reference/data-sources.md` |
 | Observability model (machine telemetry) | `docs/reference/observability-model.md` |
-| Materialization audit | `docs/reference/data-materialization-audit.md` |
+| Architecture and materialization lifecycle | `docs/architecture.md` |
 | Polylogue/Lynchpin ownership boundary | `docs/lynchpin-polylogue-boundary.md` |
-| Active plans | `docs/plans/` |
 | Analysis methodology contract | `lynchpin/analysis/METHODOLOGY.md` |
 
 ## Architecture

@@ -1,67 +1,51 @@
-# Observability Model
+# Observability model
 
-This document is the concrete map for machine/performance observability. It is
-not a new data lake. Each surface below must have one role: canonical raw
-capture, project-native ledger, derived substrate, operational view, or legacy
-backfill.
+Machine and performance analysis is a join across workload, host, service, and
+data-quality state. Lynchpin preserves these dimensions instead of collapsing
+them into one health or speed score.
 
-Raw precision is a hard invariant. Summaries, daily rollups, event windows,
-and search indexes are derived accelerators; they must never be the only copy
-of a high-entropy source such as journald, asciinema, screenshots, audio,
-keylogs, or raw provider exports.
+## Evidence dimensions
 
-## Problem Model
+1. **Workload:** command/task, repository revision, inputs, cache profile,
+   service profile, timestamps, and outcome.
+2. **Machine:** CPU/GPU power and thermals, pressure stall information,
+   memory/swap, scheduler delay, storage/network observations, and cgroup
+   counters.
+3. **Service:** systemd/user-unit state, runtime inventory, resource class,
+   capture health, backups, and dependent service readiness.
+4. **Data quality:** collector gaps, sampling cadence, schema version, coverage,
+   clock alignment, and benchmark validity.
 
-Performance questions are joins over four kinds of state:
+Observational evidence can support an association. Causal language requires a
+controlled treatment or a design that explicitly justifies it.
 
-1. Workload state: command, repo revision, inputs, cache profile, service
-   profile, start/end time, exit status.
-2. Machine state: CPU/GPU power, thermals, PCIe link, PSI, D-state tasks,
-   scheduler oversleep, memory and swap.
-3. Service state: systemd/user-unit active state, resource counters, backup and
-   capture services, Sinex/Polylogue runtime state.
-4. Data-quality state: collector gaps, schema version, legacy field loss,
-   cache contamination, missing backup/migration evidence.
+## Ownership
 
-The substrate should preserve those dimensions rather than collapse them into a
-single "fast/slow" number. Causal claims require controlled treatment manifests;
-observational claims must say "associated with".
+| Surface | Owner | Lynchpin role |
+| --- | --- | --- |
+| Machine telemetry SQLite | Sinnix | Promote canonical metric, GPU, network, process, cgroup, and service samples. |
+| `below` recordings | Sinnix | Use as a time-travel microscope and import bounded workload windows. |
+| Runtime inventory | Sinnix | Read service/resource metadata as deployment context. |
+| `sinnix-observe` | Sinnix | Treat as an operator report, not a fact database. |
+| Sinex runtime ledgers | Sinex | Read stable project-native rollups; do not copy internal state ownership into Sinnix. |
+| Polylogue work/session ledgers | Polylogue | Join AI workload evidence to machine and service windows. |
+| Experiment manifests | Capture/benchmark runner | Promote immutable run design, treatment, environment, and outcome metadata. |
+| Cross-source attribution | Lynchpin | Build workload windows, matched evidence, diagnostics, and calibrated claims. |
 
-## Current Input Roles
+## Analysis contract
 
-The machine-readable version lives in
-`lynchpin.sources.observability_catalog`.
+- Keep high-frequency raw measurements at their owning capture source.
+- Materialize typed rows with explicit timestamps, host, unit, and refresh
+  provenance.
+- Preserve gaps; do not interpolate through collector outages without marking
+  the result.
+- Separate pre-treatment context from post-treatment outcomes.
+- Record cache/warmup state and reject contaminated benchmark comparisons.
+- Use process/cgroup windows for attribution rather than assigning all host
+  pressure to the most visible foreground command.
+- Report unsupported assumptions and refusal reasons alongside successful
+  claims.
 
-| Input | Owner | Role | Current action |
-| --- | --- | --- | --- |
-| `machine.telemetry` | Sinnix | Canonical raw capture | Promote live SQLite samples into `machine_metric_sample` and `machine_service_state`. |
-| `machine.power_watchdog_legacy` | Sinnix | Legacy backfill | Backfilled into `machine_metric_sample`; migrated parquet/manifests moved out of active captures into `/realm/inbox/quarantine/20260515/machine-legacy-power-watchdog-unified/`. |
-| `machine.below` | Sinnix | Operational view | Keep time-travel history; export bounded experiment windows only. |
-| `machine.network` | Sinnix | Canonical raw capture | Integrated into `captures/machine/telemetry.sqlite` as `network_sample`, promoted into `machine_network_sample`. |
-| `machine.sinnix_observe` | Sinnix | Derived/operator report | Keep as a report, not a canonical dataset. Shrink as sources get first-class tables. |
-| `machine.sinnix_runtime_inventory` | Sinnix | Generated inventory | Read `/etc/sinnix/runtime-inventory.json` as reference context, not as a fact table. |
-| `sinex.self_observation` | Sinex | Project-native ledger | Read Sinex rollups from Lynchpin; do not copy Sinex internals into Sinnix. |
-| `polylogue.run_ledger` | Polylogue | Project-native ledger | Join to machine/service windows for agent-load experiments. |
-| `machine.experiment_run` | Sinnix | Canonical raw capture | Promote immutable run manifests into `machine_experiment_run`. |
-
-## Integration Rules
-
-- Sinnix captures host facts and operator smoke checks.
-- Sinex and Polylogue own their native runtime ledgers.
-- Lynchpin owns cross-source modelling, promotion, joins, readiness, and
-  statistical analysis.
-- `below` is a microscope, not a lake. Promote bounded windows when needed.
-- `sinnix-observe` is an operator view, not an authority.
-- Legacy raw data may leave a live namespace only when it is duplicated by a
-  canonical raw location or is a confirmed corrupt/derived/intermediate
-  byproduct. Typed substrate rows and summaries are indexes, not replacements
-  for raw logs.
-
-## Near-Term Work Queue
-
-1. Keep network probing inside machine telemetry; `/realm/data/captures/network`
-   is a retired source after historical JSONL is imported.
-2. Add a Sinex self-observation source and substrate table that reads stable telemetry rollups.
-3. Reduce `sinnix-observe` to a thin report over first-class sources.
-4. For benchmark claims, use randomized run manifests and join telemetry by
-   timestamp. Do not compare uncontrolled time periods causally.
+Machine-facing MCP actions expose status, metrics, pressure, services,
+workloads, observations, benchmark runs, diagnostics, and context windows over
+this model.

@@ -1,91 +1,68 @@
-# Methodology Contract
+# Analysis methodology
 
-This repository operates in hard-data mode.
+Lynchpin's canonical analysis products are deterministic, provenance-carrying
+artifacts. Interpretation may build on them, but it may not silently redefine
+their measurements.
 
-Canonical truth:
-- deterministic metrics computed from code/git artifacts,
-- formulas traceable in code,
-- validated by `python -m lynchpin.analysis analysis-validate`.
+## Evidence classes
 
-Portable history cleanup:
-- housed canonically under [history cleanup README](/realm/project/sinnix/dots/codex/skills/history-cleanup/README.md),
-- used when a project needs commit-message rewrite, atomicity analysis, and
-  structural split/merge/reorder prep,
-- never allowed to silently redefine the canonical metric layer in this repo.
+- **Measured fact:** parsed from a named source or computed by a traceable
+  formula.
+- **Association:** a relationship over an explicit time window and coverage
+  set, without causal language.
+- **Qualified inference:** a rule/model result with method, confidence, and
+  fallback state.
+- **Causal claim:** supported by an experiment or identification strategy that
+  states treatment, outcome, assumptions, and falsification checks.
+- **Narrative:** bounded synthesis that cites the evidence products it uses.
 
-Contextual interpretation:
-- allowed for maps, validation heuristics, and behavioral joins,
-- never allowed to override canonical denominators without explicit contract change.
+## Canonical contract
 
-Operational command spine:
-- `python -m lynchpin.analysis materialize`
-- `python -m lynchpin.analysis analysis-validate`
-- `python -m lynchpin.analysis project-maps`
-- `python -m lynchpin.analysis dependency-map`
-- `python -m lynchpin.analysis change-surface-map`
+Every top-line metric must identify:
 
-Generated markdown map summaries belong under
-`.lynchpin/generated/analysis/maps/`,
-not tracked docs.
+1. the artifact or substrate refresh that produced it;
+2. the timeframe and coverage boundary;
+3. the denominator and unit;
+4. the method or formula;
+5. any missing-source or fallback condition that changes interpretation.
 
-## Canonical Artifact Set
-
-Source of truth contract:
-- `analysis_spec.json`
-
-Required artifacts:
-- `.lynchpin/generated/analysis/sinex_structure_metrics.json`
-- `.lynchpin/generated/analysis/sinex_temporal_metrics.json`
-- `.lynchpin/generated/analysis/ecosystem_comparison.json`
-- `.lynchpin/generated/analysis/cross_project_metrics.json`
-- `.lynchpin/generated/analysis/analysis_snapshot.json`
+Ambiguous metrics should be corrected or removed rather than defended through
+prose.
 
 ## Regeneration
 
-Preferred (DAG-orchestrated):
-```sh
+The normal command spine is:
+
+```bash
 python -m lynchpin.analysis materialize
 python -m lynchpin.analysis analysis-validate
 ```
 
-The DAG handles dependency ordering and parallelism automatically.
-Individual steps can be run for debugging via `python -m lynchpin.analysis <step>`.
+The analysis DAG owns dependency ordering. Individual steps remain available
+for focused debugging, including project maps, dependency maps, and change
+surface maps.
 
-## Explicitly Forbidden for Canonical Claims
+Generated map summaries and personal results belong under the ignored local
+analysis root, not tracked documentation.
 
-1. Commit-message-only semantic intent inference.
-2. Ticket-ID/message-snippet LLM adjudication.
-3. Promoting external contextual packets to top-line truth without contract revision.
+## Canonical code-analysis artifacts
 
-## Reporting Requirements
+`lynchpin/analysis/analysis_spec.json` defines the required code-analysis
+artifact set. The maintained products include structure, temporal,
+cross-project, ecosystem, and coherent snapshot metrics under
+`.lynchpin/generated/analysis/`.
 
-Every top-line number must include:
-1. artifact path,
-2. timeframe/window,
-3. denominator/unit.
+## Forbidden shortcuts
 
-Ambiguous metrics should be removed, not defended.
+Canonical claims must not rely on:
 
-## Relationship to History Cleanup
+- commit-message-only intent inference;
+- LLM adjudication of ticket snippets as a metric denominator;
+- external narrative packets promoted to fact without a contract change;
+- treating missing coverage as zero;
+- causal wording for an uncontrolled before/after comparison;
+- mixing rows from incompatible substrate refreshes.
 
-This repo carries two distinct methods:
-
-1. deterministic codebase analysis
-2. portable history cleanup
-
-They can inform each other, but they are not the same thing.
-
-Deterministic analysis remains the source of truth for:
-
-- counts
-- denominators
-- commit-surface metrics
-- cross-project comparisons
-
-History cleanup improves the analysis layer by making commit history more
-atomic, messages more semantically useful, and readiness/blocker state
-machine-readable.
-
-When a repo has undergone the history-cleanup process, the analysis suite can trust
-its launch pack and audit-grade message corpus more than ordinary raw git
-history. Until then, commit messages remain secondary evidence only.
+LLMs are useful for bounded synthesis, hypothesis generation, and explaining
+measured artifacts. They are not an authority that can override the metric
+layer.

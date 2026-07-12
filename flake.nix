@@ -1,5 +1,5 @@
 {
-  description = "Longitudinal activity analysis workspace for Sinity";
+  description = "Local-first evidence and analysis platform for personal data exports and activity captures";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
