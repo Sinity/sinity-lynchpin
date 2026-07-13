@@ -197,6 +197,10 @@ reports which live datasets are available.
 
 ## Documentation
 
+The [documentation map](docs/README.md) groups the current system, source,
+project-analysis, machine-evidence, and cross-project contracts.
+
+- [`docs/README.md`](docs/README.md) — reader-facing documentation index.
 - [`docs/architecture.md`](docs/architecture.md) — layer boundaries,
   materialization lifecycle, and product contracts.
 - [`docs/reference/data-sources.md`](docs/reference/data-sources.md) — source
