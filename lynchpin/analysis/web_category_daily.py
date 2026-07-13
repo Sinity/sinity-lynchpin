@@ -2,7 +2,7 @@
 
 Joins raw browser visits (:mod:`lynchpin.sources.web`) to domain
 classifications (:mod:`lynchpin.sources.web_categories`) and aggregates into one
-typed record per logical day: visits and estimated minutes per category, the
+typed record per logical day: visits and estimated minutes per category, a
 sensitive-content visit share, and a coarse distraction ratio.
 
 Minutes are *estimated*, not measured: browser history records point-in-time
@@ -56,9 +56,10 @@ class WebCategoryDay:
     """Categorized browsing for one logical day.
 
     visits_by_category / minutes_by_category map every category that occurred on
-    the day to its exact visit count and estimated dwell minutes. nsfw_visits is
-    the count of visits to nsfw-flagged domains; nsfw_visit_share is that over
-    total visits. distraction_ratio is distraction-category visits over total.
+    the day to its exact visit count and estimated dwell minutes. The
+    ``nsfw_*`` compatibility fields summarize visits carrying the dedicated
+    sensitive-content flag without retaining their URLs. ``distraction_ratio``
+    is distraction-category visits over total visits.
     """
 
     date: _date_type
