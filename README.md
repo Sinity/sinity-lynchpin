@@ -201,6 +201,8 @@ reports which live datasets are available.
   roles and active adapter families.
 - [`docs/reference/observability-model.md`](docs/reference/observability-model.md)
   — machine/performance evidence model.
+- [`docs/reference/chisel.md`](docs/reference/chisel.md) — repository snapshots,
+  growth/change-shape reports, LOC policy, and the static Beads browser.
 - [`docs/lynchpin-polylogue-boundary.md`](docs/lynchpin-polylogue-boundary.md)
   — ownership boundary with Polylogue.
 - [`lynchpin/analysis/METHODOLOGY.md`](lynchpin/analysis/METHODOLOGY.md) —

@@ -74,8 +74,12 @@ def test_generate_issues_uses_full_limit_for_open_and_closed(
         chisel,
         "_github_context_index",
         {
-            ("example", "sinity/example", "issue", "open"): [row.item for row in rows if row.item.state == "open"],
-            ("example", "sinity/example", "issue", "closed"): [row.item for row in rows if row.item.state == "closed"],
+            ("example", "sinity/example", "issue", "open"): [
+                row.item for row in rows if row.item.state == "open"
+            ],
+            ("example", "sinity/example", "issue", "closed"): [
+                row.item for row in rows if row.item.state == "closed"
+            ],
         },
     )
 
@@ -92,7 +96,9 @@ def test_generate_issues_uses_full_limit_for_open_and_closed(
     assert closed_tree.getroot().attrib["count"] == "101"
 
 
-def test_generate_issues_does_not_mix_same_slug_aliases(monkeypatch, tmp_path: Path) -> None:
+def test_generate_issues_does_not_mix_same_slug_aliases(
+    monkeypatch, tmp_path: Path
+) -> None:
     wanted = _issue(1, "open")
     alias = _issue(2, "open")
 
@@ -138,7 +144,9 @@ def test_generate_issues_replaces_stale_open_xml_with_empty_snapshot(
         chisel,
         "_github_context_index",
         {
-            ("example", "sinity/example", "issue", "closed"): [_issue(1, "closed").item],
+            ("example", "sinity/example", "issue", "closed"): [
+                _issue(1, "closed").item
+            ],
         },
     )
 
@@ -239,8 +247,20 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
             "priority": 1,
             "issue_type": "feature",
             "assignee": "Sinity",
-            "dependencies": ["example-b"],
-            "comments": [{"author": "Reviewer", "body": "Still blocked", "created_at": "2026-07-01T00:00:00Z"}],
+            "dependencies": [
+                {
+                    "issue_id": "example-a",
+                    "depends_on_id": "example-b",
+                    "type": "blocks",
+                }
+            ],
+            "comments": [
+                {
+                    "author": "Reviewer",
+                    "body": "Still blocked",
+                    "created_at": "2026-07-01T00:00:00Z",
+                }
+            ],
             "created_at": "2026-07-01T00:00:00Z",
             "updated_at": "2026-07-02T00:00:00Z",
         },
@@ -252,6 +272,8 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
             "status": "open",
             "priority": 0,
             "issue_type": "task",
+            "created_at": "2026-06-28T00:00:00Z",
+            "closed_at": "2026-07-02T00:00:00Z",
         },
         {"_type": "memory", "id": "mem-1", "text": "Durable context"},
     ]
@@ -259,18 +281,32 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
     def fake_run(cmd, *, cwd=None):
         assert cwd == repo
         if cmd == ["bd", "where", "--json"]:
-            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps({"path": str(repo / ".beads")}), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, chisel.json.dumps({"path": str(repo / ".beads")}), ""
+            )
         if cmd == ["bd", "stats", "--json"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
-                chisel.json.dumps({"summary": {"total_issues": 2, "blocked_issues": 1, "ready_issues": 1}}),
+                chisel.json.dumps(
+                    {
+                        "summary": {
+                            "total_issues": 2,
+                            "blocked_issues": 1,
+                            "ready_issues": 1,
+                        }
+                    }
+                ),
                 "",
             )
         if cmd == ["bd", "ready", "--json"]:
-            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps([{"id": "example-b"}]), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, chisel.json.dumps([{"id": "example-b"}]), ""
+            )
         if cmd == ["bd", "blocked", "--json"]:
-            return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps([{"id": "example-a"}]), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, chisel.json.dumps([{"id": "example-a"}]), ""
+            )
         if cmd == ["bd", "export", "--include-memories"]:
             return subprocess.CompletedProcess(
                 cmd,
@@ -288,6 +324,8 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
         "example-beads.json",
         "example-beads.xml",
         "example-beads.md",
+        "example-beads.html",
+        "example-beads-history.csv",
         "example-beads-export.jsonl",
     }
     assert size > 0
@@ -296,7 +334,9 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
     assert payload["counts"]["memories"] == 1
     assert payload["counts"]["ready"] == 1
     assert payload["counts"]["blocked"] == 1
-    assert payload["dependencies"] == [{"issue": "example-a", "depends_on": "example-b", "type": "dependencies"}]
+    assert payload["dependencies"] == [
+        {"issue": "example-a", "depends_on": "example-b", "type": "blocks"}
+    ]
 
     root = ET.parse(tmp_path / "example-beads.xml").getroot()
     assert root.attrib["ready-count"] == "1"
@@ -308,6 +348,15 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
     assert dependency.attrib["depends-on"] == "example-b"
     markdown = (tmp_path / "example-beads.md").read_text(encoding="utf-8")
     assert "`example-beads-export.jsonl`" in markdown
+    board = (tmp_path / "example-beads.html").read_text(encoding="utf-8")
+    assert "Blocked issue" in board
+    assert "Needs foundation" in board
+    assert "Still blocked" in board
+    assert "Durable context" in board
+    assert '"assignee": "Sinity"' in board
+    assert payload["board_issue_fields"]
+    assert payload["history"]["summary"]["closed"] == 1
+    assert payload["history"]["summary"]["median_lead_days"] == 4
 
 
 def test_generate_beads_unavailable_is_nonfatal(monkeypatch, tmp_path: Path) -> None:
@@ -381,13 +430,15 @@ def test_generate_git_log_names_all_refs_scope(monkeypatch, tmp_path: Path) -> N
     count = chisel._generate_git_log(plan, tmp_path, "2026-06-30T000000Z")
 
     assert count == 1
-    assert commands == [[
-        "git",
-        "log",
-        "--all",
-        "--reverse",
-        "--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e",
-    ]]
+    assert commands == [
+        [
+            "git",
+            "log",
+            "--all",
+            "--reverse",
+            "--format=format:%x00%H%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1f%B%x1e",
+        ]
+    ]
     root = ET.parse(tmp_path / "example-git-log-all-refs.xml").getroot()
     assert root.attrib["refs"] == "all"
     assert root.attrib["style"] == "all-refs"
@@ -415,7 +466,9 @@ def test_chisel_refreshes_github_context_for_selected_projects(monkeypatch) -> N
     assert calls == [({"alpha", "beta"}, True)]
 
 
-def test_chisel_blocks_snapshots_when_substrate_recovery_remains_degraded(monkeypatch) -> None:
+def test_chisel_blocks_snapshots_when_substrate_recovery_remains_degraded(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "lynchpin.ingest.github_context_materialize.materialize_github_context",
         lambda **_kwargs: {
@@ -428,9 +481,16 @@ def test_chisel_blocks_snapshots_when_substrate_recovery_remains_degraded(monkey
     monkeypatch.setattr(chisel, "_build_github_context_index", lambda: {})
     monkeypatch.setattr(chisel, "_github_context_ready", None)
     monkeypatch.setattr(chisel, "_github_context_index", None)
-    plan = chisel.RepoPlan(name="example", path=Path("/tmp/example"), slices=(), github_slug="Sinity/example")
+    plan = chisel.RepoPlan(
+        name="example",
+        path=Path("/tmp/example"),
+        slices=(),
+        github_slug="Sinity/example",
+    )
 
-    with pytest.raises(chisel.MaterializationError, match="remained degraded after recovery"):
+    with pytest.raises(
+        chisel.MaterializationError, match="remained degraded after recovery"
+    ):
         chisel._ensure_chisel_prerequisites([plan])
 
 
@@ -448,7 +508,11 @@ def test_chisel_uses_existing_github_context_when_refresh_fails(monkeypatch) -> 
         fake_materialize_github_context,
     )
     monkeypatch.setattr(chisel, "_build_github_context_index", lambda: index)
-    monkeypatch.setattr(chisel, "_print_live", lambda message="", **_kwargs: printed.append(str(message)))
+    monkeypatch.setattr(
+        chisel,
+        "_print_live",
+        lambda message="", **_kwargs: printed.append(str(message)),
+    )
     monkeypatch.setattr(chisel, "_github_context_ready", None)
     monkeypatch.setattr(chisel, "_github_context_index", None)
 
@@ -460,7 +524,9 @@ def test_chisel_uses_existing_github_context_when_refresh_fails(monkeypatch) -> 
     assert any("using existing context product" in line for line in printed)
 
 
-def test_chisel_reports_missing_existing_github_context_after_refresh_failure(monkeypatch) -> None:
+def test_chisel_reports_missing_existing_github_context_after_refresh_failure(
+    monkeypatch,
+) -> None:
     def fake_materialize_github_context(*, projects=None, progress=None):
         raise chisel.MaterializationError("github_context", reason="HTTP 502")
 
@@ -500,7 +566,11 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
             chisel.StatsBucket(
                 "test-suite",
                 "Tests",
-                ("tests/**", "crate/*/tests/**", *chisel.SINEX_RUST_SPLIT_TEST_PATTERNS),
+                (
+                    "tests/**",
+                    "crate/*/tests/**",
+                    *chisel.SINEX_RUST_SPLIT_TEST_PATTERNS,
+                ),
             ),
             chisel.StatsBucket("docs", "Docs", ("README.md", "docs/**")),
             chisel.StatsBucket("code-proper", "Code", ("src/**", "crate/*/src/**")),
@@ -512,36 +582,70 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
     payload = {
         "Markdown": {
             "reports": [
-                {"name": str(repo / ".agent" / "README.md"), "stats": {"blanks": 1, "code": 0, "comments": 9}},
-                {"name": str(repo / "README.md"), "stats": {"blanks": 2, "code": 0, "comments": 18}},
+                {
+                    "name": str(repo / ".agent" / "README.md"),
+                    "stats": {"blanks": 1, "code": 0, "comments": 9},
+                },
+                {
+                    "name": str(repo / "README.md"),
+                    "stats": {"blanks": 2, "code": 0, "comments": 18},
+                },
             ],
         },
         "Rust": {
             "reports": [
-                {"name": str(repo / "src" / "lib.rs"), "stats": {"blanks": 3, "code": 30, "comments": 4}},
-                {"name": str(repo / "crate" / "demo" / "tests" / "flow.rs"), "stats": {"blanks": 5, "code": 40, "comments": 1}},
-                {"name": str(split_test), "stats": {"blanks": 0, "code": 2, "comments": 0}},
+                {
+                    "name": str(repo / "src" / "lib.rs"),
+                    "stats": {"blanks": 3, "code": 30, "comments": 4},
+                },
+                {
+                    "name": str(repo / "crate" / "demo" / "tests" / "flow.rs"),
+                    "stats": {"blanks": 5, "code": 40, "comments": 1},
+                },
+                {
+                    "name": str(split_test),
+                    "stats": {"blanks": 0, "code": 2, "comments": 0},
+                },
             ],
         },
         "JSON": {
             "reports": [
-                {"name": str(repo / "schemas" / "event.json"), "stats": {"blanks": 0, "code": 50, "comments": 0}},
+                {
+                    "name": str(repo / "schemas" / "event.json"),
+                    "stats": {"blanks": 0, "code": 50, "comments": 0},
+                },
             ],
         },
         "Total": {},
     }
 
     commands: list[list[str]] = []
+    visible_paths = [
+        ".agent/README.md",
+        "README.md",
+        "src/lib.rs",
+        "crate/demo/tests/flow.rs",
+        "crate/demo/src/api/flow_test.rs",
+        "schemas/event.json",
+    ]
 
     def fake_run(cmd, *, cwd=None):
         commands.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, chisel.json.dumps(payload), "")
 
     monkeypatch.setattr(chisel, "_run", fake_run)
+    monkeypatch.setattr(
+        chisel,
+        "_tokei_input_paths",
+        lambda _plan: (visible_paths, "git-tracked-and-nonignored-working-tree"),
+    )
 
     stats = chisel._collect_tokei_stats(plan, "2026-06-30T000000Z")
 
     assert "--no-ignore" in commands[0]
+    assert commands[0][commands[0].index("--") + 1 :] == visible_paths
+    assert stats["input_policy"] == "git-tracked-and-nonignored-working-tree"
+    assert stats["input_files"] == len(visible_paths)
     assert stats["buckets"]["agent-context"]["files"] == 1
     assert stats["buckets"]["agent-context"]["comments"] == 9
     assert stats["buckets"]["docs"]["files"] == 1
@@ -554,13 +658,244 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
     assert stats["rust_inline_tests"]["files"] == 0
 
 
+def test_tokei_inputs_exclude_ignored_local_corpora_but_keep_tracked_agent_files(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    tracked_agent = repo / ".agent" / "README.md"
+    private_export = repo / ".agent" / "demos" / "full-chatlog" / "messages-full.json"
+    source = repo / "src" / "main.py"
+    generated = repo / "docs" / "generated" / "schema.json"
+    for path in (tracked_agent, private_export, source, generated):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("content\n", encoding="utf-8")
+    (repo / ".tokeignore").write_text("docs/generated/\n", encoding="utf-8")
+    plan = chisel.RepoPlan(name="example", path=repo, slices=())
+    git_visible = (
+        "\0".join((".agent/README.md", "src/main.py", "docs/generated/schema.json"))
+        + "\0"
+    )
+
+    def fake_run(cmd, *, cwd=None):
+        assert cmd == [
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]
+        assert cwd == repo
+        return subprocess.CompletedProcess(cmd, 0, git_visible, "")
+
+    monkeypatch.setattr(chisel, "_run", fake_run)
+
+    paths, policy = chisel._tokei_input_paths(plan)
+
+    assert policy == "git-tracked-and-nonignored-working-tree"
+    assert paths == [".agent/README.md", "src/main.py"]
+    assert ".agent/demos/full-chatlog/messages-full.json" not in paths
+
+
+def test_sinnix_stats_buckets_separate_verification_from_implementation() -> None:
+    plan = chisel.REPO_PLANS["sinnix"]
+
+    for path in (
+        "flake/test-lib.nix",
+        "flake/tests.nix",
+        "flake/tests/backup.nix",
+        "pkgs/machine-telemetry/tests/test_parser.py",
+        "pkgs/sinnix-agent-gateway/test_smoke.py",
+        "dots/_ai/skills/agent-orchestration/tests/test_agent_job_handles.sh",
+    ):
+        assert chisel._classify_stats_bucket(plan, path) == "tests"
+    assert chisel._classify_stats_bucket(plan, "flake/command-registry.nix") == "flake"
+    assert (
+        chisel._classify_stats_bucket(plan, "pkgs/sinnix-observe/server.py") == "pkgs"
+    )
+    assert chisel._classify_stats_bucket(plan, "dots/claude/CLAUDE.md") == "dots"
+
+
+def test_git_growth_uses_default_branch_and_attributes_historical_churn(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        )
+
+    git("init", "-b", "master")
+    git("config", "user.name", "Example")
+    git("config", "user.email", "example@example.test")
+    source = repo / "src" / "main.py"
+    source.parent.mkdir()
+    source.write_text("def one():\n    return 1\n", encoding="utf-8")
+    git("add", "src/main.py")
+    git("commit", "--date=2026-01-01T12:00:00+00:00", "-m", "feat: add runtime")
+    test_file = repo / "tests" / "test_main.py"
+    test_file.parent.mkdir()
+    test_file.write_text("def test_one():\n    assert True\n", encoding="utf-8")
+    source.write_text(
+        "def one():\n    return 2\n\ndef two():\n    return 2\n", encoding="utf-8"
+    )
+    git("add", "src/main.py", "tests/test_main.py")
+    git("commit", "--date=2026-02-01T12:00:00+00:00", "-m", "test: cover runtime")
+    source.write_text("def two():\n    return 2\n", encoding="utf-8")
+    git("add", "src/main.py")
+    git("commit", "--date=2026-03-01T12:00:00+00:00", "-m", "refactor: narrow runtime")
+
+    plan = chisel.RepoPlan(
+        name="example",
+        path=repo,
+        slices=(),
+        stats_buckets=(
+            chisel.StatsBucket("tests", "Tests", ("tests/**",)),
+            chisel.StatsBucket("production", "Production", ("src/**",)),
+        ),
+    )
+
+    growth = chisel._collect_git_growth(plan, "2026-03-02T000000Z")
+
+    assert growth["summary"]["default_branch_ref"] == "master"
+    assert growth["summary"]["default_branch_commits"] == 3
+    assert growth["summary"]["active_days"] == 3
+    assert len(growth["monthly"]) == 3
+    assert {row["kind"] for row in growth["commit_kinds"]} == {
+        "feat",
+        "test",
+        "refactor",
+    }
+    by_bucket = {row["bucket"]: row for row in growth["bucket_churn"]}
+    assert by_bucket["tests"]["additions"] == 2
+    assert by_bucket["production"]["gross"] > by_bucket["tests"]["gross"]
+    assert (
+        growth["daily"][-1]["cumulative_net"]
+        == growth["summary"]["net_tracked_text_lines"]
+    )
+
+
+def test_numstat_rename_classification_uses_destination_path() -> None:
+    assert chisel._numstat_destination_path("old.py => new.py") == "new.py"
+    assert (
+        chisel._numstat_destination_path("src/{legacy => current}/module.py")
+        == "src/current/module.py"
+    )
+
+
+def test_growth_portfolio_writes_charts_data_and_beads_trajectory(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "out"
+    out_dir = output_root / "alpha"
+    out_dir.mkdir(parents=True)
+    growth = {
+        "summary": {
+            "net_tracked_text_lines": 10,
+            "gross_line_churn": 14,
+            "gross_to_net_ratio": 1.4,
+            "default_branch_commits": 2,
+            "active_days": 2,
+            "last_30_days": {"net": 4},
+            "last_90_days": {"net": 10},
+            "date_reached_50pct_current_size": "2026-01-02",
+        },
+        "daily": [
+            {
+                "day": "2026-01-01",
+                "cumulative_net": 6,
+                "rolling_28d_relative_to_final_net": 0.6,
+            },
+            {
+                "day": "2026-01-02",
+                "cumulative_net": 10,
+                "rolling_28d_relative_to_final_net": 1.4,
+            },
+        ],
+        "weekly": [{"week": "2025-12-29", "commits": 2}],
+        "monthly": [{"month": "2026-01-01", "net": 10}],
+    }
+    (out_dir / "alpha-growth.json").write_text(
+        chisel.json.dumps(growth), encoding="utf-8"
+    )
+    (out_dir / "alpha-tokei-stats.json").write_text(
+        chisel.json.dumps(
+            {
+                "buckets": {
+                    "production": {"code": 80},
+                    "tests": {"code": 20},
+                    "docs": {"code": 5},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (out_dir / "alpha-beads.json").write_text(
+        chisel.json.dumps(
+            {
+                "available": True,
+                "counts": {
+                    "issues": 2,
+                    "ready": 1,
+                    "blocked": 0,
+                    "by_status": {"closed": 1, "open": 1},
+                },
+                "history": {
+                    "summary": {
+                        "median_lead_days": 2.0,
+                        "p90_lead_days": 2.0,
+                        "closed_last_30_days": 1,
+                        "closed_last_90_days": 1,
+                    },
+                    "daily": [
+                        {
+                            "day": "2026-01-01",
+                            "created": 1,
+                            "closed": 0,
+                            "net": 1,
+                            "open_snapshot": 1,
+                        },
+                        {
+                            "day": "2026-01-02",
+                            "created": 1,
+                            "closed": 1,
+                            "net": 0,
+                            "open_snapshot": 1,
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=())
+
+    result = chisel._write_growth_portfolio(output_root, [plan], "2026-01-02T000000Z")
+
+    assert "README.md" in result["files"]
+    assert "07-beads-backlog-trajectory.svg" in result["files"]
+    assert "beads-history.csv" in result["files"]
+    readme = (output_root / "growth" / "README.md").read_text(encoding="utf-8")
+    assert "tracked-text history" in readme
+    assert "ignored local evidence exports" in readme
+    assert "Beads delivery history" in readme
+
+
 def test_tokei_path_normalization_preserves_dot_directories(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     plan = chisel.RepoPlan(name="example", path=repo, slices=())
 
-    assert chisel._relative_tokei_report_name(plan, str(repo / ".agent" / "README.md")) == ".agent/README.md"
-    assert chisel._relative_tokei_report_name(plan, "./.agent/README.md") == ".agent/README.md"
+    assert (
+        chisel._relative_tokei_report_name(plan, str(repo / ".agent" / "README.md"))
+        == ".agent/README.md"
+    )
+    assert (
+        chisel._relative_tokei_report_name(plan, "./.agent/README.md")
+        == ".agent/README.md"
+    )
     assert chisel._glob_matches(".agent/README.md", ".agent/**")
     assert not chisel._glob_matches("agent/README.md", ".agent/**")
 
@@ -568,31 +903,96 @@ def test_tokei_path_normalization_preserves_dot_directories(tmp_path: Path) -> N
 def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
     plan = chisel.REPO_PLANS["sinex"]
 
-    assert chisel._classify_stats_bucket(plan, ".agent/README.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/tools/gh_pr_safety.sh") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".github/ci-policy.md") == "agent-instructions"
-    assert chisel._classify_stats_bucket(plan, ".agent/archive/devloop-2026-07/OPERATING-LOG.md") == "agent-archive"
-    assert chisel._classify_stats_bucket(plan, ".agent/inbox/INDEX.md") == "agent-archive"
-    assert chisel._classify_stats_bucket(plan, ".agent/demos/sinex/CURATED_CATALOG.md") == "agent-demos"
-    assert chisel._classify_stats_bucket(plan, ".agent/artifacts/sinex/export.json") == "agent-artifacts"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexd/tests/api/auth_test.rs") == "test-suite"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/api/handlers/source_status_test.rs") == "test-suite"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/api/replay_control/tests/mod.rs") == "test-suite"
-    assert chisel._classify_stats_bucket(plan, "xtask/src/process/tests.rs") == "test-suite"
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/README.md") == "agent-instructions"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md")
+        == "agent-instructions"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/tools/gh_pr_safety.sh")
+        == "agent-instructions"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".github/ci-policy.md")
+        == "agent-instructions"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, ".agent/archive/devloop-2026-07/OPERATING-LOG.md"
+        )
+        == "agent-archive"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/inbox/INDEX.md") == "agent-archive"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/demos/sinex/CURATED_CATALOG.md")
+        == "agent-demos"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/artifacts/sinex/export.json")
+        == "agent-artifacts"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "crate/sinexd/tests/api/auth_test.rs")
+        == "test-suite"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, "crate/sinexd/src/api/handlers/source_status_test.rs"
+        )
+        == "test-suite"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, "crate/sinexd/src/api/replay_control/tests/mod.rs"
+        )
+        == "test-suite"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "xtask/src/process/tests.rs")
+        == "test-suite"
+    )
     assert chisel._classify_stats_bucket(plan, "tests/e2e/README.md") == "test-suite"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexd/docs/runtime_qos.md") == "docs"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexd/src/main.rs") == "code-sinexd-other"
-    assert chisel._classify_stats_bucket(plan, "crate/sinex-db/sql/monitoring.sql") == "code-db"
-    assert chisel._classify_stats_bucket(plan, "crate/sinexctl/config.example.toml") == "code-cli"
+    assert (
+        chisel._classify_stats_bucket(plan, "crate/sinexd/docs/runtime_qos.md")
+        == "docs"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "crate/sinexd/src/main.rs")
+        == "code-sinexd-other"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "crate/sinex-db/sql/monitoring.sql")
+        == "code-db"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "crate/sinexctl/config.example.toml")
+        == "code-cli"
+    )
     assert chisel._classify_stats_bucket(plan, "xtask/build.rs") == "code-xtask"
-    assert chisel._classify_stats_bucket(plan, ".config/ast-grep/rules/raw-sqlx-query.yml") == "other-project-surface"
-    assert chisel._classify_stats_bucket(plan, "schemas/v2/registry.json") == "other-project-surface"
-    assert chisel._classify_stats_bucket(plan, "demo/sinex-recall/recall.sh") == "other-project-surface"
+    assert (
+        chisel._classify_stats_bucket(plan, ".config/ast-grep/rules/raw-sqlx-query.yml")
+        == "other-project-surface"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "schemas/v2/registry.json")
+        == "other-project-surface"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "demo/sinex-recall/recall.sh")
+        == "other-project-surface"
+    )
     code_slice = next(slice for slice in plan.slices if slice.name == "code-proper")
     test_slice = next(slice for slice in plan.slices if slice.name == "test-suite")
-    agent_archive_slice = next(slice for slice in plan.slices if slice.name == "agent-archive")
-    agent_demo_slice = next(slice for slice in plan.slices if slice.name == "agent-demos")
+    agent_archive_slice = next(
+        slice for slice in plan.slices if slice.name == "agent-archive"
+    )
+    agent_demo_slice = next(
+        slice for slice in plan.slices if slice.name == "agent-demos"
+    )
     assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(code_slice.extra_ignore)
     assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(test_slice.include)
     assert ".agent/archive/**" in agent_archive_slice.include
@@ -603,19 +1003,66 @@ def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
 def test_polylogue_stats_buckets_split_agent_devloop_and_archive_query() -> None:
     plan = chisel.REPO_PLANS["polylogue"]
 
-    assert chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md") == "agent-workspace"
-    assert chisel._classify_stats_bucket(plan, ".agent/archive/devloop-2026-07/RUNBOOK.md") == "agent-archive"
-    assert chisel._classify_stats_bucket(plan, ".agent/archive/includes-2026-07/fables-poly-findings.md") == "agent-archive"
-    assert chisel._classify_stats_bucket(plan, ".agent/task-history/tasks.jsonl") == "agent-workspace"
-    assert chisel._classify_stats_bucket(plan, ".agent/demos/chatlog-exports/current/demo/full-chatlog/messages-full.json") == "agent-demo-raw-exports"
-    assert chisel._classify_stats_bucket(plan, ".agent/demos/chatlog-exports/current/index.md") == "agent-demos-prompts"
-    assert chisel._classify_stats_bucket(plan, ".agent/cloud-prompts/2026-06-22-polylogue-turbo/prompt.md") == "agent-demos-prompts"
-    assert chisel._classify_stats_bucket(plan, ".agent/archive/retired-demos/export.jsonl") == "agent-archive"
-    assert chisel._classify_stats_bucket(plan, "polylogue/archive/query/parser.py") == "archive-query"
-    assert chisel._classify_stats_bucket(plan, "polylogue/archive/session.py") == "archive-data"
-    assert chisel._classify_stats_bucket(plan, "polylogue/config.py") == "core-and-storage"
-    assert chisel._classify_stats_bucket(plan, "polylogue/publication/__init__.py") == "core-and-storage"
-    assert chisel._classify_stats_bucket(plan, "polylogue/scenarios/corpus.py") == "rendering-and-site"
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/CONVENTIONS.md")
+        == "agent-workspace"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/archive/devloop-2026-07/RUNBOOK.md")
+        == "agent-archive"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, ".agent/archive/includes-2026-07/fables-poly-findings.md"
+        )
+        == "agent-archive"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/task-history/tasks.jsonl")
+        == "agent-workspace"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan,
+            ".agent/demos/chatlog-exports/current/demo/full-chatlog/messages-full.json",
+        )
+        == "agent-demo-raw-exports"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, ".agent/demos/chatlog-exports/current/index.md"
+        )
+        == "agent-demos-prompts"
+    )
+    assert (
+        chisel._classify_stats_bucket(
+            plan, ".agent/cloud-prompts/2026-06-22-polylogue-turbo/prompt.md"
+        )
+        == "agent-demos-prompts"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, ".agent/archive/retired-demos/export.jsonl")
+        == "agent-archive"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "polylogue/archive/query/parser.py")
+        == "archive-query"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "polylogue/archive/session.py")
+        == "archive-data"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "polylogue/config.py") == "core-and-storage"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "polylogue/publication/__init__.py")
+        == "core-and-storage"
+    )
+    assert (
+        chisel._classify_stats_bucket(plan, "polylogue/scenarios/corpus.py")
+        == "rendering-and-site"
+    )
     assert chisel._classify_stats_bucket(plan, "CONTRIBUTING.md") == "docs"
     assert chisel._classify_stats_bucket(plan, "flake.nix") == "devtools-packaging-nix"
 
@@ -626,7 +1073,9 @@ def test_agent_audit_classifies_active_transient_and_archive(tmp_path: Path) -> 
     (agent / "reports").mkdir(parents=True)
     (agent / "reports" / "architecture.md").write_text("keep", encoding="utf-8")
     (agent / "archive" / "retired").mkdir(parents=True)
-    (agent / "archive" / "retired" / "export.jsonl").write_text("archive", encoding="utf-8")
+    (agent / "archive" / "retired" / "export.jsonl").write_text(
+        "archive", encoding="utf-8"
+    )
     (agent / "xtask").mkdir()
     (agent / "xtask" / "tasks.jsonl").write_text("tasks", encoding="utf-8")
     (agent / "scratch" / "current").mkdir(parents=True)
@@ -640,31 +1089,54 @@ def test_agent_audit_classifies_active_transient_and_archive(tmp_path: Path) -> 
     assert by_path[".agent/archive"]["class"] == "archive-or-generated"
     assert by_path[".agent/xtask"]["class"] == "review"
     assert chisel._agent_audit_class(".agent/xtask/tasks.jsonl")[0] == "transient-heavy"
-    assert chisel._agent_audit_class(".agent/task-history/live-baselines/summary.md")[0] == "active-context"
+    assert (
+        chisel._agent_audit_class(".agent/task-history/live-baselines/summary.md")[0]
+        == "active-context"
+    )
     assert by_path[".agent/scratch"]["class"] == "scratchpad-managed"
     assert by_path[".agent/scratch/current"]["class"] == "scratchpad-managed"
 
 
-def test_run_slice_disables_gitignore_for_agent_slices(monkeypatch, tmp_path: Path) -> None:
+def test_run_slice_disables_gitignore_for_agent_slices(
+    monkeypatch, tmp_path: Path
+) -> None:
     plan = chisel.RepoPlan(name="example", path=tmp_path, slices=())
     git = {"branch": "main", "commit": "abc123", "dirty": False}
     calls: list[list[str]] = []
 
-    def fake_run_repomix(_bin, output_path, _plan, args, _git, _generated_at, _log=None):
+    def fake_run_repomix(
+        _bin, output_path, _plan, args, _git, _generated_at, _log=None
+    ):
         calls.append(args)
         output_path.write_text("<xml />", encoding="utf-8")
         return output_path.stem, output_path.stat().st_size
 
     monkeypatch.setattr(chisel, "_run_repomix", fake_run_repomix)
 
-    chisel._run_slice("repomix", tmp_path, plan, chisel.Slice("agent", "Agent", (".agent/demos/**",)), git, "now")
-    chisel._run_slice("repomix", tmp_path, plan, chisel.Slice("src", "Source", ("src/**",)), git, "now")
+    chisel._run_slice(
+        "repomix",
+        tmp_path,
+        plan,
+        chisel.Slice("agent", "Agent", (".agent/demos/**",)),
+        git,
+        "now",
+    )
+    chisel._run_slice(
+        "repomix",
+        tmp_path,
+        plan,
+        chisel.Slice("src", "Source", ("src/**",)),
+        git,
+        "now",
+    )
 
     assert "--no-gitignore" in calls[0]
     assert "--no-gitignore" not in calls[1]
 
 
-def test_run_scratchpad_uses_curated_include_without_skip_manifest(monkeypatch, tmp_path: Path) -> None:
+def test_run_scratchpad_uses_curated_include_without_skip_manifest(
+    monkeypatch, tmp_path: Path
+) -> None:
     repo = tmp_path / "repo"
     scratch = repo / ".agent" / "scratch" / "current"
     scratch.mkdir(parents=True)
@@ -673,7 +1145,9 @@ def test_run_scratchpad_uses_curated_include_without_skip_manifest(monkeypatch, 
     git = {"branch": "main", "commit": "abc123", "dirty": False}
     calls: list[list[str]] = []
 
-    def fake_run_repomix(_bin, output_path, _plan, args, _git, _generated_at, _log=None):
+    def fake_run_repomix(
+        _bin, output_path, _plan, args, _git, _generated_at, _log=None
+    ):
         calls.append(args)
         output_path.write_text("<xml />", encoding="utf-8")
         return output_path.stem, output_path.stat().st_size
@@ -712,7 +1186,9 @@ def test_default_ignore_excludes_local_runtime_state() -> None:
         assert chisel._glob_any(path, chisel.DEFAULT_IGNORE), path
 
 
-def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path) -> None:
+def test_generate_snapshot_overview_surfaces_counts_and_attention(
+    tmp_path: Path,
+) -> None:
     plan = chisel.RepoPlan(
         name="example",
         path=tmp_path / "example",
@@ -733,24 +1209,30 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
     )
     (out_dir / "example-branch-delta.patch").write_text("diff", encoding="utf-8")
     (out_dir / "example-tokei-stats.json").write_text(
-        chisel.json.dumps({
-            "buckets": {
-                "core": {"files": 2, "lines": 100, "code": 80, "comments": 5},
+        chisel.json.dumps(
+            {
+                "buckets": {
+                    "core": {"files": 2, "lines": 100, "code": 80, "comments": 5},
+                }
             }
-        }),
+        ),
         encoding="utf-8",
     )
     (out_dir / "example-agent-audit.json").write_text(
-        chisel.json.dumps({
-            "summary_by_class": {
-                "review": {"entries": 1, "files": 1, "bytes": 10},
-                "archive-or-generated": {"entries": 1, "files": 1, "bytes": 20},
+        chisel.json.dumps(
+            {
+                "summary_by_class": {
+                    "review": {"entries": 1, "files": 1, "bytes": 10},
+                    "archive-or-generated": {"entries": 1, "files": 1, "bytes": 20},
+                }
             }
-        }),
+        ),
         encoding="utf-8",
     )
     (out_dir / "example-ignore-audit.json").write_text(
-        chisel.json.dumps({"ignored_local_state_bytes": 30, "tracked_hidden_bytes": 40}),
+        chisel.json.dumps(
+            {"ignored_local_state_bytes": 30, "tracked_hidden_bytes": 40}
+        ),
         encoding="utf-8",
     )
     beads = {
@@ -778,7 +1260,9 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
         beads=beads,
     )
 
-    payload = chisel.json.loads((out_dir / "example-overview.json").read_text(encoding="utf-8"))
+    payload = chisel.json.loads(
+        (out_dir / "example-overview.json").read_text(encoding="utf-8")
+    )
     markdown = (out_dir / "example-overview.md").read_text(encoding="utf-8")
     assert set(names) == {"example-overview.json", "example-overview.md"}
     assert size > 0
@@ -803,8 +1287,13 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(tmp_path: Path
             ]
         },
     )
-    audit = chisel.json.loads((out_dir / "example-snapshot-audit.json").read_text(encoding="utf-8"))
-    assert set(audit_names) == {"example-snapshot-audit.json", "example-snapshot-audit.md"}
+    audit = chisel.json.loads(
+        (out_dir / "example-snapshot-audit.json").read_text(encoding="utf-8")
+    )
+    assert set(audit_names) == {
+        "example-snapshot-audit.json",
+        "example-snapshot-audit.md",
+    }
     assert audit_size > 0
     assert audit["size"]["largest_deltas"][0]["name"] == "example-core.xml"
     assert audit["local_state"]["tracked_hidden_bytes"] == 40
@@ -893,7 +1382,9 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
         }
 
     monkeypatch.setattr(chisel, "_console", None)
-    monkeypatch.setattr(chisel, "_print", lambda message="", **_kwargs: printed.append(str(message)))
+    monkeypatch.setattr(
+        chisel, "_print", lambda message="", **_kwargs: printed.append(str(message))
+    )
     monkeypatch.setattr(chisel, "REPO_PLANS", {"alpha": plan_a, "beta": plan_b})
     monkeypatch.setattr(chisel, "_require_repomix", lambda: "repomix")
     monkeypatch.setattr(chisel, "_repomix_version", lambda _bin: "test-version")
@@ -905,8 +1396,8 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     output = "\n".join(printed)
     assert "Repos:  2 selected — alpha, beta" in output
     assert "Pools:  2 across repos × 2 within each; 4 global repomix slots" in output
-    assert "[1/2] alpha: 1 configured slices, 5 XML snapshots, 13 sidecars" in output
-    assert "[2/2] beta: 2 configured slices, 5 XML snapshots, 14 sidecars" in output
+    assert "[1/2] alpha: 1 configured slices, 5 XML snapshots, 21 sidecars" in output
+    assert "[2/2] beta: 2 configured slices, 5 XML snapshots, 22 sidecars" in output
     assert "[1/2]" in output and "[2/2]" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output
@@ -924,7 +1415,9 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     printed: list[str] = []
 
     monkeypatch.setattr(chisel, "_console", None)
-    monkeypatch.setattr(chisel, "_print", lambda message="", **_kwargs: printed.append(str(message)))
+    monkeypatch.setattr(
+        chisel, "_print", lambda message="", **_kwargs: printed.append(str(message))
+    )
     monkeypatch.setattr(
         chisel,
         "_git_state",
@@ -936,12 +1429,35 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(chisel, "_generate_issues", lambda *_args: (0, 0))
     monkeypatch.setattr(chisel, "_generate_prs", lambda *_args: (0, 0))
     monkeypatch.setattr(chisel, "_generate_portable_sidecars", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_tokei_stats", lambda *_args: (["alpha-tokei-stats.md"], 8))
-    monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: (["alpha-ignore-audit.md"], 4))
-    monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: (["alpha-agent-audit.md"], 3))
-    monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: (["alpha-branch-delta.md"], 5))
-    monkeypatch.setattr(chisel, "_generate_beads", lambda *_args: (["alpha-beads.md"], 7, {"available": True, "counts": {"issues": 1}}))
-    monkeypatch.setattr(chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: (["alpha-overview.md"], 6))
+    monkeypatch.setattr(
+        chisel, "_generate_tokei_stats", lambda *_args: (["alpha-tokei-stats.md"], 8)
+    )
+    monkeypatch.setattr(
+        chisel, "_generate_growth_analysis", lambda *_args: (["alpha-growth.md"], 8)
+    )
+    monkeypatch.setattr(
+        chisel, "_generate_ignore_audit", lambda *_args: (["alpha-ignore-audit.md"], 4)
+    )
+    monkeypatch.setattr(
+        chisel, "_generate_agent_audit", lambda *_args: (["alpha-agent-audit.md"], 3)
+    )
+    monkeypatch.setattr(
+        chisel, "_generate_branch_delta", lambda *_args: (["alpha-branch-delta.md"], 5)
+    )
+    monkeypatch.setattr(
+        chisel,
+        "_generate_beads",
+        lambda *_args: (
+            ["alpha-beads.md"],
+            7,
+            {"available": True, "counts": {"issues": 1}},
+        ),
+    )
+    monkeypatch.setattr(
+        chisel,
+        "_generate_snapshot_overview",
+        lambda *_args, **_kwargs: (["alpha-overview.md"], 6),
+    )
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
     monkeypatch.setattr(chisel, "_make_combined_tar", lambda *_args: None)
@@ -961,7 +1477,10 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     assert "→ alpha: beads alpha" in output
     assert result["status"] == "generated"
     assert result["beads_files"] == ["alpha-beads.md"]
-    assert result["snapshot_audit_files"] == ["alpha-snapshot-audit.json", "alpha-snapshot-audit.md"]
+    assert result["snapshot_audit_files"] == [
+        "alpha-snapshot-audit.json",
+        "alpha-snapshot-audit.md",
+    ]
 
 
 def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> None:
@@ -990,11 +1509,16 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(chisel, "_generate_prs", lambda *_args: (0, 0))
     monkeypatch.setattr(chisel, "_generate_portable_sidecars", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_tokei_stats", lambda *_args: ([], 0))
+    monkeypatch.setattr(chisel, "_generate_growth_analysis", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_beads", lambda *_args: ([], 0, {"available": False}))
-    monkeypatch.setattr(chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: ([], 0))
+    monkeypatch.setattr(
+        chisel, "_generate_beads", lambda *_args: ([], 0, {"available": False})
+    )
+    monkeypatch.setattr(
+        chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: ([], 0)
+    )
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
     monkeypatch.setattr(chisel, "_make_combined_tar", lambda *_args: None)
@@ -1038,8 +1562,12 @@ def test_archive_existing_combined_tars_moves_selected_packages(tmp_path: Path) 
     assert not (output_root / "alpha-all.tar.gz").exists()
     assert not (output_root / "beta-all.tar.gz").exists()
     assert (output_root / "gamma-all.tar.gz").read_bytes() == b"gamma-current"
-    assert (output_root / "archive" / "2026-07-05T011944Z" / "alpha-all.tar.gz").read_bytes() == b"alpha-old"
-    assert (output_root / "archive" / "2026-07-05T011944Z" / "beta-all.tar.gz").read_bytes() == b"beta-old"
+    assert (
+        output_root / "archive" / "2026-07-05T011944Z" / "alpha-all.tar.gz"
+    ).read_bytes() == b"alpha-old"
+    assert (
+        output_root / "archive" / "2026-07-05T011944Z" / "beta-all.tar.gz"
+    ).read_bytes() == b"beta-old"
 
 
 def test_archive_existing_combined_tars_avoids_collisions(tmp_path: Path) -> None:
@@ -1061,7 +1589,9 @@ def test_archive_existing_combined_tars_avoids_collisions(tmp_path: Path) -> Non
 
     assert archived == ["archive/2026-07-05T011944Z-02/alpha-all.tar.gz"]
     assert (existing_archive / "alpha-all.tar.gz").read_bytes() == b"already-archived"
-    assert (output_root / "archive" / "2026-07-05T011944Z-02" / "alpha-all.tar.gz").read_bytes() == b"alpha-newer"
+    assert (
+        output_root / "archive" / "2026-07-05T011944Z-02" / "alpha-all.tar.gz"
+    ).read_bytes() == b"alpha-newer"
 
 
 def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
@@ -1069,28 +1599,38 @@ def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
     out_dir = tmp_path / "out" / "alpha"
     out_dir.mkdir(parents=True)
     (out_dir / "alpha-manifest.json").write_text(
-        chisel.json.dumps({
-            "git": {"branch": "main", "commit": "abc123", "dirty": False},
-            "artifacts": [{"name": "alpha-beads.md", "bytes": 10, "scope": "beads-context"}],
-        }),
+        chisel.json.dumps(
+            {
+                "git": {"branch": "main", "commit": "abc123", "dirty": False},
+                "artifacts": [
+                    {"name": "alpha-beads.md", "bytes": 10, "scope": "beads-context"}
+                ],
+            }
+        ),
         encoding="utf-8",
     )
-    (out_dir / "alpha-tokei-stats.json").write_text(chisel.json.dumps({"buckets": {}}), encoding="utf-8")
+    (out_dir / "alpha-tokei-stats.json").write_text(
+        chisel.json.dumps({"buckets": {}}), encoding="utf-8"
+    )
     (out_dir / "alpha-overview.json").write_text(
-        chisel.json.dumps({
-            "counts": {
-                "issues_open": 0,
-                "prs_open": 0,
-                "beads_issues": 4,
-                "beads_ready": 2,
-                "beads_blocked": 1,
-            },
-            "attention": {"beads_blocked": 1},
-        }),
+        chisel.json.dumps(
+            {
+                "counts": {
+                    "issues_open": 0,
+                    "prs_open": 0,
+                    "beads_issues": 4,
+                    "beads_ready": 2,
+                    "beads_blocked": 1,
+                },
+                "attention": {"beads_blocked": 1},
+            }
+        ),
         encoding="utf-8",
     )
     (out_dir / "alpha-overview.md").write_text("overview", encoding="utf-8")
-    (out_dir / "alpha-snapshot-audit.json").write_text(chisel.json.dumps({"beads": {"issues": 4}}), encoding="utf-8")
+    (out_dir / "alpha-snapshot-audit.json").write_text(
+        chisel.json.dumps({"beads": {"issues": 4}}), encoding="utf-8"
+    )
     (out_dir / "alpha-snapshot-audit.md").write_text("audit", encoding="utf-8")
 
     chisel._write_root_index(
@@ -1102,7 +1642,9 @@ def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
         0.1,
     )
 
-    index = chisel.json.loads((tmp_path / "out" / "index.json").read_text(encoding="utf-8"))
+    index = chisel.json.loads(
+        (tmp_path / "out" / "index.json").read_text(encoding="utf-8")
+    )
     markdown = (tmp_path / "out" / "index.md").read_text(encoding="utf-8")
     counts = index["projects"][0]["overview"]["counts"]
     assert counts["beads_issues"] == 4
