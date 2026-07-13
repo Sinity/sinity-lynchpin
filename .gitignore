@@ -5,6 +5,7 @@ result
 # Repo-local generated working state. New ad hoc caches, temporary outputs,
 # rescued material, and handoff bundles belong here.
 .lynchpin/
+/.cache/
 
 # Python user installs / caches
 .pyuser/
