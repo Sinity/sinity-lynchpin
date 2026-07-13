@@ -57,11 +57,20 @@ The HTML, Markdown, XML, and JSONL outputs are private analysis artifacts. They
 make a Chisel package browsable without throwing away the context that makes
 the tracker useful.
 
-For a public GitHub Pages board, generate a separate projection from the
-committed issue records and omit only low-value interaction or memory chatter.
-Because the underlying Beads corpus is already committed, that public render
-can be regenerated automatically rather than requiring a second manual review
-ceremony. Chisel itself does not publish its private packages.
+The public repositories expose a separate GitHub Pages projection directly
+from their committed `.beads/issues.jsonl` files:
+
+- [Polylogue](https://sinity.github.io/polylogue/main/beads/)
+- [Sinex](https://sinity.github.io/sinex/beads/)
+- [Sinnix](https://sinity.github.io/sinnix/beads/)
+- [Lynchpin](https://sinity.github.io/sinity-lynchpin/beads/)
+
+Those boards retain issue descriptions, designs, acceptance criteria, notes,
+dependencies, and closure records, but do not ingest the interaction stream or
+memory export. A pinned composite action in Polylogue assembles the shared
+visual shell, copies the current branch's committed issue JSONL, and validates
+local links on every Pages deployment. Chisel itself does not publish its
+private packages.
 
 ## Historical caveats
 

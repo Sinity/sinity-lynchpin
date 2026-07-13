@@ -12,6 +12,8 @@ repository contains the reusable parsers, schemas, analyses, query tools, and
 neutral fixtures; identities, vocabularies, private classifications, raw
 exports, and generated personal narratives are supplied externally.
 
+[Project overview](https://sinity.github.io/sinity-lynchpin/) · [Roadmap and work graph](https://sinity.github.io/sinity-lynchpin/beads/)
+
 ## Why it exists
 
 Most personal evidence is individually legible but collectively difficult to
