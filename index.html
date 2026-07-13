@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Lynchpin turns heterogeneous local evidence into typed source APIs, reproducible materialized products, DuckDB analysis, evidence graphs, and bounded context packs.">
+  <title>Lynchpin — cross-source evidence and analysis</title>
+  <link rel="stylesheet" href="assets/project.css">
+  <script defer src="assets/project.js"></script>
+</head>
+<body>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="./">lynch<span>pin</span></a><nav class="header-nav"><a href="#architecture">Architecture</a><a href="#documentation">Documentation</a><a href="beads/">Roadmap</a><a href="https://github.com/Sinity/sinity-lynchpin">GitHub</a></nav><button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle color theme">◐</button></div></header>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">Local-first · cross-source · provenance-bounded</p>
+      <h1>Make heterogeneous evidence answerable.</h1>
+      <p class="lede">Lynchpin joins activity captures, exports, code history, AI-session archives, and machine telemetry without turning them into one opaque database. Sources remain owned; materialized products remain rebuildable; conclusions retain coverage and provenance.</p>
+      <div class="actions"><a class="button primary" href="#architecture">Follow the evidence path →</a><a class="button" href="beads/">Browse the work graph</a><a class="button" href="https://github.com/Sinity/sinity-lynchpin">Read the source</a></div>
+    </section>
+    <section class="section" id="architecture">
+      <p class="eyebrow">Evidence architecture</p>
+      <h2>Keep the sources distinct; make the joins reproducible</h2>
+      <p class="section-intro">The analytical substrate accelerates cross-source questions. It is not a second raw archive and does not erase each source’s observation window, missingness, or trust boundary.</p>
+      <div class="flow">
+        <article class="card"><span class="label">01 · Adapters</span><h3>Read owner-native data</h3><p>Typed, lazy APIs preserve provider semantics, coverage, and source-specific caveats.</p></article>
+        <article class="card"><span class="label">02 · Materialize</span><h3>Build canonical products</h3><p>A dependency planner rebuilds missing or stale products and records complete manifests.</p></article>
+        <article class="card"><span class="label">03 · Substrate</span><h3>Promote a coherent window</h3><p>DuckDB joins source products under one refresh identity with stable readers and views.</p></article>
+        <article class="card"><span class="label">04 · Evidence</span><h3>Graph, analyze, compile</h3><p>Graphs, deterministic metrics, context packs, CLI, and MCP expose bounded answers.</p></article>
+      </div>
+    </section>
+    <section class="section">
+      <p class="eyebrow">What it provides</p>
+      <h2>An analysis system with explicit epistemic edges</h2>
+      <div class="grid">
+        <article class="card"><span class="label">Source APIs</span><h3>One interface, preserved differences</h3><p>ActivityWatch, Atuin, Git, Polylogue, browser exports, health data, machine metrics, and other sources stay typed and lazy.</p></article>
+        <article class="card"><span class="label">Evidence graph</span><h3>Connect work across systems</h3><p>Projects, commits, files, sessions, terminal activity, focus spans, GitHub items, signals, and claims become traversable evidence.</p></article>
+        <article class="card"><span class="label">Deterministic analysis</span><h3>Metrics carry their denominator</h3><p>Velocity, change surfaces, work rhythms, longitudinal signals, machine pressure, and calibrated attribution retain timeframe and unit.</p></article>
+        <article class="card"><span class="label">Agent contract</span><h3>Eight stable MCP tools</h3><p>Status, catalog, query, evidence, project, personal, machine, and operations domains hide internal churn behind typed actions.</p></article>
+      </div>
+    </section>
+    <section class="section" id="documentation">
+      <p class="eyebrow">Documentation</p>
+      <h2>Choose the layer that owns the question</h2>
+      <div class="docs">
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin#quick-start">Quick start<small>Enter the Nix environment, test, materialize, and query.</small></a>
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin/blob/master/docs/architecture.md">Architecture<small>Layer boundaries, product contracts, and materialization lifecycle.</small></a>
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin/blob/master/docs/reference/data-sources.md">Data sources<small>Adapter families, source roles, and ownership.</small></a>
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin/blob/master/docs/reference/observability-model.md">Observability model<small>Machine and performance evidence semantics.</small></a>
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin/blob/master/docs/reference/chisel.md">Chisel<small>Repository snapshots, growth analysis, LOC policy, and private project packages.</small></a>
+        <a class="doc-link" href="https://github.com/Sinity/sinity-lynchpin/blob/master/docs/lynchpin-polylogue-boundary.md">Polylogue boundary<small>Archive-native inference versus cross-source correlation.</small></a>
+      </div>
+    </section>
+  </main>
+  <footer class="footer"><div class="footer-inner"><span>Lynchpin · cross-source local evidence</span><span><a href="beads/">Roadmap</a> · <a href="https://github.com/Sinity/sinity-lynchpin">Source</a></span></div></footer>
+</body>
+</html>
