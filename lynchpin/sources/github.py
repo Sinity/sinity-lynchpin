@@ -433,6 +433,8 @@ def _fetch_inventory(
     result = _run_cached(args, repo_path, runner=runner, use_cache=use_cache)
     if result.returncode != 0:
         reason = result.stderr.strip() or f"gh_{kind}_inventory_failed"
+        if kind == "issue" and "repository has disabled issues" in reason.casefold():
+            return GitHubInventoryResult("ok", repo_path.name, slug, (), "issues_disabled")
         return GitHubInventoryResult("error", repo_path.name, slug, (), reason)
     try:
         payload = json.loads(result.stdout)

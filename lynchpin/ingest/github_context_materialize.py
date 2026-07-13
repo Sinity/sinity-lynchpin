@@ -84,6 +84,7 @@ def materialize_github_context(
     project_refreshes: Counter[str] = Counter()
     project_reuses: Counter[str] = Counter()
     project_stale_open_removed: Counter[str] = Counter()
+    project_disabled_issue_rows_removed: Counter[str] = Counter()
     inventory_items_seen = 0
     missing_commit_refs_seen = 0
     missing_commit_refs_attempted = 0
@@ -111,6 +112,11 @@ def materialize_github_context(
             if result.reason:
                 reasons[result.reason] += 1
             if result.status != "ok":
+                continue
+            if kind == "issue" and result.reason == "issues_disabled":
+                removed = _remove_project_kind_rows(rows, project=project, kind=kind)
+                if removed:
+                    project_disabled_issue_rows_removed[project] += removed
                 continue
             inventory_items_seen += len(result.items)
             stale_removed = _reconcile_current_open_rows(rows, project=project, kind=kind, items=result.items)
@@ -207,6 +213,7 @@ def materialize_github_context(
         "project_detail_refreshes": dict(project_refreshes),
         "project_detail_reuses": dict(project_reuses),
         "project_stale_open_removed": dict(project_stale_open_removed),
+        "project_disabled_issue_rows_removed": dict(project_disabled_issue_rows_removed),
         "missing_commit_refs_seen": missing_commit_refs_seen,
         "missing_commit_refs_attempted": missing_commit_refs_attempted,
         "missing_commit_refs_fetched": missing_commit_refs_fetched,
@@ -278,6 +285,18 @@ def _reconcile_current_open_rows(
         and str(row.get("state") or "").lower() == "open"
         and key[2] not in live_open_numbers
     ]
+    for key in stale_keys:
+        del rows[key]
+    return len(stale_keys)
+
+
+def _remove_project_kind_rows(
+    rows: dict[tuple[str, str, int], dict[str, Any]],
+    *,
+    project: str,
+    kind: str,
+) -> int:
+    stale_keys = [key for key in rows if key[0] == project and key[1] == kind]
     for key in stale_keys:
         del rows[key]
     return len(stale_keys)

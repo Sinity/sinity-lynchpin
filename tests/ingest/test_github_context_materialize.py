@@ -801,6 +801,50 @@ def test_materialize_github_context_preserves_previous_product_on_network_failur
     assert manifest_path.read_text(encoding="utf-8") == '{"row_count": 1}\n'
 
 
+def test_materialize_github_context_removes_rows_for_disabled_issues(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    output = tmp_path / "github" / "context.ndjson"
+    output.parent.mkdir()
+    rows = [
+        {"project": "lynchpin", "kind": "issue", "number": 1, "state": "open"},
+        {"project": "lynchpin", "kind": "issue", "number": 2, "state": "closed"},
+        {"project": "lynchpin", "kind": "pr", "number": 3, "state": "merged"},
+    ]
+    output.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
+    monkeypatch.setattr(materializer, "repo_slug", lambda path: "Sinity/lynchpin")
+    monkeypatch.setattr(materializer, "commit_facts", lambda *, start, end, all_refs, include_paths: ())
+    monkeypatch.setattr(
+        materializer,
+        "fetch_issue_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult(
+            "ok", "lynchpin", "Sinity/lynchpin", (), "issues_disabled"
+        ),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr_inventory",
+        lambda path, *, state, limit, use_cache: GitHubInventoryResult(
+            "ok", "lynchpin", "Sinity/lynchpin", ()
+        ),
+    )
+
+    manifest = materializer.materialize_github_context(
+        output=output,
+        start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
+        end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
+    )
+
+    rendered = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [(row["kind"], row["number"]) for row in rendered] == [("pr", 3)]
+    assert manifest["fetch_status_counts"] == {"ok": 2}
+    assert manifest["fetch_reason_counts"] == {"issues_disabled": 1}
+    assert manifest["project_disabled_issue_rows_removed"] == {"lynchpin": 2}
+
+
 def test_materialize_github_context_preserves_previous_product_on_detail_miss(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     output = tmp_path / "github" / "context.ndjson"

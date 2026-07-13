@@ -195,6 +195,26 @@ def test_fetch_issue_inventory_uses_issue_supported_fields(tmp_path: Path):
     assert result.items[0].closed_at is not None
 
 
+def test_fetch_issue_inventory_treats_disabled_issues_as_empty(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+
+    def runner(args, cwd):
+        if args[:4] == ["git", "remote", "get-url", "origin"]:
+            return _completed(args, cwd, stdout="git@github.com:Sinity/lynchpin.git\n")
+        return _completed(
+            args,
+            cwd,
+            stderr="the 'Sinity/lynchpin' repository has disabled issues",
+            returncode=1,
+        )
+
+    result = fetch_issue_inventory(tmp_path, runner=runner)
+
+    assert result.status == "ok"
+    assert result.reason == "issues_disabled"
+    assert result.items == ()
+
+
 def test_fetch_pr_refreshes_cache_after_48h(monkeypatch, tmp_path: Path):
     (tmp_path / ".git").mkdir()
     cache_dir = tmp_path / "cache"
