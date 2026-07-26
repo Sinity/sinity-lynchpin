@@ -46,6 +46,20 @@ captures / exports / repositories / service ledgers
 Raw data remains in its owning system. Materialized datasets and the substrate
 are rebuildable read models with coverage, freshness, and provenance attached.
 Narrative output is downstream of evidence rather than a replacement for it.
+The public repository is an independently runnable analysis platform, not only
+a design archive or a staging area for future migration.
+
+### Current source boundary
+
+Lynchpin currently reads Polylogue's stable AI-session products and a broad set
+of owner-native captures, exports, repositories, and service ledgers. The
+public tree does **not** currently ship a general adapter over Sinex's
+PostgreSQL event store. Sinnix can deploy both projects on the same machines,
+but operational composition does not merge their data-authority boundaries.
+
+A future Sinex integration should therefore arrive as an explicit typed source
+adapter with coverage, provenance, and freshness semantics - not as an implied
+shared database or a silent replacement for the existing owner-native inputs.
 
 ## What Lynchpin provides
 
@@ -84,7 +98,7 @@ activity, focus spans, GitHub items, analysis claims, personal signals, and
 machine context. It supports:
 
 - project/day and session/commit correlation;
-- issue → pull request → commit closure chains;
+- issue -> pull request -> commit closure chains;
 - file- and symbol-overlap evidence;
 - source readiness and confidence matrices;
 - chronological current-state timelines;
@@ -190,8 +204,11 @@ reports which live datasets are available.
   surface.
 - Polylogue owns AI-session ingestion and archive-native inference; Lynchpin
   owns cross-source promotion and correlation.
+- Sinex owns its event capture, admission, persistence, and replay substrate;
+  Lynchpin does not currently treat the Sinex database as its general source
+  of truth.
 - Sinnix owns host capture and service deployment; Lynchpin owns analytical
-  read models over those signals.
+  read models over the signals it explicitly adapts.
 - Context packs and LLM-assisted interpretations cite evidence and expose
   missing or weak coverage.
 
@@ -200,16 +217,16 @@ reports which live datasets are available.
 The [documentation map](docs/README.md) groups the current system, source,
 project-analysis, machine-evidence, and cross-project contracts.
 
-- [`docs/README.md`](docs/README.md) — reader-facing documentation index.
-- [`docs/architecture.md`](docs/architecture.md) — layer boundaries,
+- [`docs/README.md`](docs/README.md) - reader-facing documentation index.
+- [`docs/architecture.md`](docs/architecture.md) - layer boundaries,
   materialization lifecycle, and product contracts.
-- [`docs/reference/data-sources.md`](docs/reference/data-sources.md) — source
+- [`docs/reference/data-sources.md`](docs/reference/data-sources.md) - source
   roles and active adapter families.
 - [`docs/reference/observability-model.md`](docs/reference/observability-model.md)
-  — machine/performance evidence model.
-- [`docs/reference/chisel.md`](docs/reference/chisel.md) — repository snapshots,
+  - machine/performance evidence model.
+- [`docs/reference/chisel.md`](docs/reference/chisel.md) - repository snapshots,
   growth/change-shape reports, LOC policy, and the static Beads browser.
 - [`docs/lynchpin-polylogue-boundary.md`](docs/lynchpin-polylogue-boundary.md)
-  — ownership boundary with Polylogue.
-- [`lynchpin/analysis/METHODOLOGY.md`](lynchpin/analysis/METHODOLOGY.md) —
+  - ownership boundary with Polylogue.
+- [`lynchpin/analysis/METHODOLOGY.md`](lynchpin/analysis/METHODOLOGY.md) -
   evidence and reporting rules for canonical analysis.
