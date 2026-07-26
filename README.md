@@ -1,144 +1,159 @@
 # Lynchpin
 
-Lynchpin is a local-first evidence and analysis platform for personal data
-exports, activity captures, code history, AI-session archives, and machine
-telemetry. It turns heterogeneous records into typed source APIs, reproducible
-materialized products, a DuckDB evidence substrate, cross-source graphs, and
-bounded context packs for analysis and agent use.
+Lynchpin joins personal data that normally lives in separate systems. It reads
+activity captures, terminal history, Git and GitHub data, AI-session archives,
+browser and communication exports, health records, and machine telemetry. It
+turns them into reproducible DuckDB datasets, evidence graphs, analysis
+products, and bounded context packs for humans and agents.
 
-The project is designed for a single operator with a long-running local data
-lake. It is not a hosted service and it does not put private data in Git. The
-repository contains the reusable parsers, schemas, analyses, query tools, and
-neutral fixtures; identities, vocabularies, private classifications, raw
-exports, and generated personal narratives are supplied externally.
+Raw data stays in the system that owns it. Lynchpin builds read models with
+explicit coverage, freshness, and provenance, so a result can be traced back to
+the captures and exports that support it.
 
-[Project overview](https://sinity.github.io/sinity-lynchpin/) · [Roadmap and work graph](https://sinity.github.io/sinity-lynchpin/beads/)
+The project is built for one operator with a long-running local data lake. It is
+not a hosted service, and private data does not belong in the repository. The
+public tree contains reusable parsers, schemas, analyses, query tools, tests,
+and neutral fixtures. Private identities, vocabularies, classifications,
+exports, and generated narratives are supplied through external configuration.
 
-## Why it exists
+[Project overview](https://sinity.github.io/sinity-lynchpin/) | [Documentation](docs/README.md) | [Roadmap](https://sinity.github.io/sinity-lynchpin/beads/)
 
-Most personal evidence is individually legible but collectively difficult to
-use. A Git commit, terminal command, focus interval, health measurement,
-machine-pressure sample, and AI work event may describe the same hour while
-living in unrelated databases and export formats.
+## What Lynchpin can answer
 
-Lynchpin preserves those sources and adds the joins:
+Lynchpin is useful when one question depends on several sources. Examples
+include:
+
+- Which AI sessions and terminal commands preceded a commit?
+- What was happening on the machine when a build or service failed?
+- How did time, focus, and change volume differ across projects?
+- Which evidence supports a claim about work, health, sleep, or system load?
+- Which sources are missing, stale, or too weak to support a conclusion?
+- What bounded context should an agent receive for a particular project or time
+  window?
+
+Source-specific tools remain authoritative. Lynchpin makes their records
+joinable without erasing source boundaries.
+
+## How it works
 
 ```text
-captures / exports / repositories / service ledgers
-                       │
-                       ▼
-              typed source adapters
-                       │
-                       ▼
-        canonical materialized products + manifests
-                       │
-                       ▼
-              DuckDB evidence substrate
-                 │              │
-                 ▼              ▼
-          evidence graph    analysis products
-                 │              │
-                 └──────┬───────┘
-                        ▼
-            context packs, CLI, and MCP
+captures, exports, repositories, service ledgers
+                         |
+                         v
+                typed source adapters
+                         |
+                         v
+          canonical datasets and manifests
+                         |
+                         v
+                       DuckDB
+                 |                 |
+                 v                 v
+          evidence graph      analysis products
+                 |                 |
+                 +--------+--------+
+                          v
+                  context packs, CLI, MCP
 ```
 
-Raw data remains in its owning system. Materialized datasets and the substrate
-are rebuildable read models with coverage, freshness, and provenance attached.
-Narrative output is downstream of evidence rather than a replacement for it.
-The public repository is an independently runnable analysis platform, not only
-a design archive or a staging area for future migration.
+A materialization planner determines which datasets are missing or stale,
+rebuilds them in dependency order, and records a manifest for each result. A
+coherent time window can then be promoted into DuckDB for SQL, graph
+construction, analysis, and context generation.
 
-### Current source boundary
+Refresh IDs connect graphs and reports to one specific DuckDB snapshot.
+Narrative output remains downstream of the evidence rather than replacing it.
 
-Lynchpin currently reads Polylogue's stable AI-session products and a broad set
-of owner-native captures, exports, repositories, and service ledgers. The
-public tree does **not** currently ship a general adapter over Sinex's
-PostgreSQL event store. Sinnix can deploy both projects on the same machines,
-but operational composition does not merge their data-authority boundaries.
+## Current sources
 
-A future Sinex integration should therefore arrive as an explicit typed source
-adapter with coverage, provenance, and freshness semantics - not as an implied
-shared database or a silent replacement for the existing owner-native inputs.
+`lynchpin.sources` provides typed, lazy access to sources including:
 
-## What Lynchpin provides
-
-### Source adapters
-
-`lynchpin.sources` exposes lazy, typed access to sources including:
-
-- ActivityWatch focus and application events;
-- Atuin commands and asciinema terminal recordings;
-- Git repositories, GitHub context, code snapshots, and review history;
+- ActivityWatch application and focus events;
+- Atuin commands and asciinema recordings;
+- Git repositories, GitHub activity, code snapshots, and reviews;
 - Polylogue session profiles and work events;
 - browser history, bookmarks, clipboard, and communication exports;
 - wearable health, sleep, media, and other provider exports;
-- machine metrics, service state, benchmark manifests, and system generations.
+- machine metrics, service state, benchmarks, and system generations.
 
-Adapters preserve source-specific caveats and coverage. Missing observations
-are not silently converted to zero, and export-bounded datasets remain
-distinguishable from continuous captures.
+Adapters preserve source-specific caveats. Missing observations do not become
+zero, and export-bounded datasets remain distinguishable from continuous
+capture.
 
-### Materialization and substrate
+### Polylogue, Sinex, and Sinnix
 
-The materialization planner determines which canonical products are missing or
-stale, rebuilds them in dependency order, records their manifests, and can
-promote a coherent time window into DuckDB. Refresh IDs make graph and analysis
-products traceable to one substrate snapshot.
+Lynchpin reads Polylogue's stable AI-session products and a broad set of
+owner-native captures and exports.
 
-The substrate supports ordinary SQL as well as stable readers for commits,
-files, symbols, work events, personal signals, machine state, evidence claims,
-and graph edges. It is an acceleration and join layer, not a second raw-data
-archive.
+The public repository does not currently include a general adapter for Sinex's
+PostgreSQL event store. Sinnix can deploy both projects on the same hosts, but
+shared deployment does not merge their storage or provenance rules. A future
+Sinex integration should arrive as an explicit typed source adapter with its own
+coverage and freshness contract.
 
-### Evidence graphs and context packs
+## Datasets and queries
 
-The graph layer connects projects, commits, files, AI work events, terminal
-activity, focus spans, GitHub items, analysis claims, personal signals, and
-machine context. It supports:
+The DuckDB layer provides ordinary SQL and stable readers for:
 
-- project/day and session/commit correlation;
-- issue -> pull request -> commit closure chains;
-- file- and symbol-overlap evidence;
-- source readiness and confidence matrices;
+- commits, files, symbols, and review history;
+- AI work events and session profiles;
+- activity, focus, health, and communication signals;
+- machine state, pressure, services, and experiments;
+- evidence claims, graph edges, and source readiness.
+
+It is a join and acceleration layer, not a second archive of raw data.
+
+## Evidence graphs and context packs
+
+The graph layer connects projects, commits, files, AI work, terminal activity,
+focus spans, GitHub items, machine context, personal signals, and analysis
+claims.
+
+Current uses include:
+
+- project and day correlation;
+- session to commit correlation;
+- issue, pull request, and commit closure chains;
+- file and symbol overlap;
+- source-readiness and confidence matrices;
 - chronological current-state timelines;
-- bounded Markdown or JSON context packs with explicit weak-evidence options.
+- Markdown and JSON context packs with explicit weak-evidence options.
 
-### Analysis
+## Analysis
 
-The analysis package covers both the codebase and the operator's evidence:
+The analysis package covers both repositories and operator data:
 
 - code velocity, change surfaces, dependency maps, refactor candidates, and
   cross-project comparison;
 - work rhythms, focus fragmentation, AI-session efficiency, and workflow
   mechanics;
-- health, sleep, mood, and other longitudinal signal analyses;
-- machine pressure, workload co-presence, service behavior, experiments, and
-  calibrated attribution claims;
-- analysis-artifact inventories and claim/evidence promotion.
+- health, sleep, mood, and other longitudinal signals;
+- machine pressure, workload overlap, service behavior, experiments, and
+  calibrated attribution;
+- inventories of analysis artifacts and promotion of claims into evidence-backed
+  products.
 
-Canonical metrics are deterministic and carry a timeframe, unit/denominator,
-and artifact path. Interpretive products must retain those boundaries.
+Canonical metrics carry a timeframe, unit or denominator, and artifact path.
+Interpretive reports are expected to retain those boundaries.
 
-### A compact MCP contract
+## MCP
 
-The MCP server presents eight stable public tools rather than exposing every
-internal function directly:
+The MCP server exposes eight public tools. Each tool groups related actions
+instead of exposing every internal Python function.
 
-| Tool | Domain |
-| --- | --- |
-| `lynchpin_status` | Runtime, readiness, materialization, and operational status. |
-| `lynchpin_catalog` | Tool actions, source contracts, schemas, and examples. |
-| `lynchpin_query` | Read-only structured queries and SELECT-only SQL. |
-| `lynchpin_evidence` | Graphs, claims, walks, coverage, confidence, and cross-references. |
-| `lynchpin_project` | Repositories, velocity, hotspots, GitHub, reviews, and snapshots. |
-| `lynchpin_personal` | Activity, signals, health, communication, web, media, and reports. |
-| `lynchpin_machine` | Telemetry, pressure, services, workloads, benchmarks, and diagnostics. |
-| `lynchpin_ops` | Auditable convergence operations, dry-run by default. |
+| Tool | Purpose |
+|---|---|
+| `lynchpin_status` | runtime, readiness, materialization, and operational status |
+| `lynchpin_catalog` | actions, source contracts, schemas, and examples |
+| `lynchpin_query` | structured read queries and SELECT-only SQL |
+| `lynchpin_evidence` | graphs, claims, coverage, confidence, and cross-references |
+| `lynchpin_project` | repositories, velocity, hotspots, GitHub, reviews, and snapshots |
+| `lynchpin_personal` | activity, health, communication, web, media, and reports |
+| `lynchpin_machine` | telemetry, pressure, services, workloads, benchmarks, and diagnostics |
+| `lynchpin_ops` | auditable materialization and cleanup operations, dry-run by default |
 
-Each tool contains named actions with typed metadata. Read paths remain
-read-only; operations that materialize or prune state require an explicit
-`execute` decision and write receipts.
+Read paths remain read-only. Operations that materialize or remove local state
+require an explicit `execute` decision and produce receipts.
 
 ## Quick start
 
@@ -150,20 +165,20 @@ direnv allow
 nix develop
 ```
 
-Run the default test suite:
+Run the tests:
 
 ```bash
 pytest -q
 ```
 
-Materialize all locally rebuildable products and promote an evidence window:
+Materialize all locally available products and promote a time window:
 
 ```bash
 python -m lynchpin.cli.materialize --all --promote \
   --start 2026-07-01 --end 2026-07-07
 ```
 
-Render a current-state context pack from the promoted substrate:
+Render a current-state context pack:
 
 ```bash
 python -m lynchpin.cli.current_state \
@@ -176,57 +191,56 @@ Start the stdio MCP server:
 python -m lynchpin.mcp
 ```
 
-Commands discover their input roots through `LynchpinConfig` and environment
-variables. A checkout without the private profile can still run unit tests,
-inspect schemas and tool catalogs, and use neutral fixtures; source readiness
-reports which live datasets are available.
+Commands discover data roots through `LynchpinConfig` and environment
+variables. A checkout without the private profile can still run tests, inspect
+schemas and tool catalogs, and use neutral fixtures. Source-readiness output
+shows which live datasets are available.
 
 ## Repository guide
 
-| Path | Responsibility |
-| --- | --- |
-| `lynchpin/core/` | Configuration, provenance, coverage, parsing, freshness, serialization, and shared analytical primitives. |
-| `lynchpin/sources/` | Typed read APIs over owner-native data. |
-| `lynchpin/ingest/` | Explicit import and canonical-product materializers. |
-| `lynchpin/substrate/` | DuckDB schema, promoters, snapshots, readers, and views. |
-| `lynchpin/graph/` | Evidence construction, correlations, readiness, timelines, and context packs. |
-| `lynchpin/analysis/` | Code, project, personal, machine, and knowledge-analysis products. |
-| `lynchpin/mcp/` | Consolidated public MCP registry, server, and internal tool implementations. |
-| `lynchpin/cli/` | Stable command-line entry points. |
-| `tests/` | Synthetic unit, contract, integration, and regression coverage. |
-| `.lynchpin/` | Ignored local cache, substrate, generated artifacts, and operation receipts. |
+| Path | Purpose |
+|---|---|
+| `lynchpin/core/` | configuration, provenance, coverage, parsing, freshness, and shared analysis primitives |
+| `lynchpin/sources/` | typed read APIs over owner-native data |
+| `lynchpin/ingest/` | imports and canonical dataset materializers |
+| `lynchpin/substrate/` | DuckDB schema, promotion, snapshots, readers, and views |
+| `lynchpin/graph/` | evidence graphs, correlations, readiness, timelines, and context packs |
+| `lynchpin/analysis/` | code, project, personal, machine, and knowledge analyses |
+| `lynchpin/mcp/` | public MCP registry, server, and tool implementations |
+| `lynchpin/cli/` | command-line entry points |
+| `tests/` | synthetic unit, contract, integration, and regression tests |
+| `.lynchpin/` | ignored local cache, DuckDB state, artifacts, and operation receipts |
 
-## Data and trust boundaries
+## Data boundaries
 
-- Source modules do not mutate raw exports or capture databases.
-- Operator-specific configuration lives under external configured roots.
-- `.lynchpin/` contains regenerable local state and is not a publication
-  surface.
-- Polylogue owns AI-session ingestion and archive-native inference; Lynchpin
-  owns cross-source promotion and correlation.
-- Sinex owns its event capture, admission, persistence, and replay substrate;
-  Lynchpin does not currently treat the Sinex database as its general source
-  of truth.
-- Sinnix owns host capture and service deployment; Lynchpin owns analytical
-  read models over the signals it explicitly adapts.
-- Context packs and LLM-assisted interpretations cite evidence and expose
-  missing or weak coverage.
+- Source adapters do not mutate raw exports or capture databases.
+- Operator-specific configuration lives outside the repository.
+- `.lynchpin/` contains rebuildable local state and is not published.
+- Polylogue owns AI-session ingestion and archive-specific interpretation.
+  Lynchpin owns cross-source correlation and analysis.
+- Sinex owns event capture, admission, persistence, and replay. Lynchpin does not
+  currently treat the Sinex database as a general source of truth.
+- Sinnix owns host configuration and service deployment. Lynchpin owns the read
+  models it explicitly builds from adapted sources.
+- Context packs and model-assisted reports cite evidence and expose missing or
+  weak coverage.
 
 ## Documentation
 
-The [documentation map](docs/README.md) groups the current system, source,
-project-analysis, machine-evidence, and cross-project contracts.
+- [Documentation map](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Data sources](docs/reference/data-sources.md)
+- [Machine and performance evidence](docs/reference/observability-model.md)
+- [Repository snapshots and LOC policy](docs/reference/chisel.md)
+- [Polylogue boundary](docs/lynchpin-polylogue-boundary.md)
+- [Analysis methodology](lynchpin/analysis/METHODOLOGY.md)
 
-- [`docs/README.md`](docs/README.md) - reader-facing documentation index.
-- [`docs/architecture.md`](docs/architecture.md) - layer boundaries,
-  materialization lifecycle, and product contracts.
-- [`docs/reference/data-sources.md`](docs/reference/data-sources.md) - source
-  roles and active adapter families.
-- [`docs/reference/observability-model.md`](docs/reference/observability-model.md)
-  - machine/performance evidence model.
-- [`docs/reference/chisel.md`](docs/reference/chisel.md) - repository snapshots,
-  growth/change-shape reports, LOC policy, and the static Beads browser.
-- [`docs/lynchpin-polylogue-boundary.md`](docs/lynchpin-polylogue-boundary.md)
-  - ownership boundary with Polylogue.
-- [`lynchpin/analysis/METHODOLOGY.md`](lynchpin/analysis/METHODOLOGY.md) -
-  evidence and reporting rules for canonical analysis.
+## Status
+
+Lynchpin is a working personal analysis platform with public tests and neutral
+fixtures. Its live usefulness depends on the sources configured on the
+operator's machine.
+
+## License
+
+MIT
