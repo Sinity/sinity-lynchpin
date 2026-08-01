@@ -210,6 +210,18 @@ DEFAULT_IGNORE = (
     "*.db-shm",
 )
 
+# Paths excluded from git growth accounting, in addition to DEFAULT_IGNORE and
+# each plan's extra_ignore. These are tracked in git but are agent-coordination
+# payloads and machine-written ledgers, not maintained project text: session
+# transcripts, handoff dumps, task-packet corpora, bead JSONL state. Without
+# this filter a repo that commits large agent handoff corpora reports absurd
+# "code growth" (polylogue: ~1.0M tracked lines under .agent/handoffs alone
+# pushed net_tracked_text_lines to 1.75M vs ~0.95M of real project text).
+GROWTH_IGNORE: tuple[str, ...] = (
+    ".agent/**",
+    "**/.agent/**",
+)
+
 
 def _utc_ts() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
@@ -2096,12 +2108,15 @@ def _collect_git_growth(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
             plan.name, reason=(result.stderr or "git log failed").strip()
         )
 
+    growth_ignore = tuple(DEFAULT_IGNORE) + GROWTH_IGNORE + tuple(plan.extra_ignore)
     daily_map: dict[str, dict[str, Any]] = {}
     bucket_churn: dict[str, dict[str, int]] = {}
     kind_counts: dict[str, int] = {}
     heatmap = [[0 for _hour in range(24)] for _day in range(7)]
     commit_changes: list[int] = []
     commits: list[dict[str, Any]] = []
+    excluded_additions = 0
+    excluded_deletions = 0
 
     for raw_record in result.stdout.split("\x1e"):
         record = raw_record.strip("\n")
@@ -2128,6 +2143,10 @@ def _collect_git_growth(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
             except ValueError:
                 continue
             path = _normalize_rel_pattern(_numstat_destination_path(parts[2]))
+            if _glob_any(path, growth_ignore):
+                excluded_additions += added
+                excluded_deletions += deleted
+                continue
             bucket = _classify_stats_bucket(plan, path)
             target = per_bucket.setdefault(
                 bucket, {"files": 0, "additions": 0, "deletions": 0}
@@ -2304,6 +2323,8 @@ def _collect_git_growth(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
             "rolling_28d_relative_to_final_net"
         ],
         "weekly_gross_churn_gini": _gini([int(row["gross"]) for row in weekly]),
+        "excluded_data_additions": excluded_additions,
+        "excluded_data_deletions": excluded_deletions,
         "last_30_days": window_summary(cutoff_30),
         "last_90_days": window_summary(cutoff_90),
     }
@@ -2315,6 +2336,11 @@ def _collect_git_growth(plan: RepoPlan, generated_at: str) -> dict[str, Any]:
             "history_scope": ref,
             "history_command": "git log <default-ref> --reverse --find-renames --numstat",
             "binary_numstat_rows": "excluded",
+            "path_exclusions": (
+                "DEFAULT_IGNORE + GROWTH_IGNORE + plan.extra_ignore; agent "
+                "coordination payloads, bead ledgers, lockfiles, and databases "
+                "do not count toward growth"
+            ),
             "date_basis": "author date",
             "bucket_policy": "first matching current Chisel attribution glob",
         },
@@ -2434,7 +2460,11 @@ def _growth_markdown(growth: dict[str, Any]) -> str:
             "",
             "## Interpretation limits",
             "",
-            "- Git `numstat` measures tracked text: implementation, tests, documentation, configuration, schemas, and data all contribute.",
+            "- Git `numstat` measures tracked text: implementation, tests, documentation, configuration, and schemas all contribute.",
+            (
+                "- Agent coordination payloads (`.agent/**`), bead ledgers (`.beads/**`), lockfiles, and databases are excluded from growth accounting"
+                f" ({summary.get('excluded_data_additions', 0):,} added / {summary.get('excluded_data_deletions', 0):,} deleted lines excluded)."
+            ),
             "- Gross churn captures replacement and refactoring as well as expansion; it is not a waste metric.",
             "- Historical files are assigned using today's Chisel bucket model. Renames across conceptual boundaries can therefore land in `other`.",
             "- Commit counts are integration events, not estimates of human effort or independent review.",

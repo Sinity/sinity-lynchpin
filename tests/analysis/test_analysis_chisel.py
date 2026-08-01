@@ -746,6 +746,19 @@ def test_git_growth_uses_default_branch_and_attributes_historical_churn(
     source.write_text("def two():\n    return 2\n", encoding="utf-8")
     git("add", "src/main.py")
     git("commit", "--date=2026-03-01T12:00:00+00:00", "-m", "refactor: narrow runtime")
+    handoff = repo / ".agent" / "handoffs" / "session-dump.json"
+    handoff.parent.mkdir(parents=True)
+    handoff.write_text("{}\n" * 500, encoding="utf-8")
+    beads = repo / ".beads" / "issues.jsonl"
+    beads.parent.mkdir()
+    beads.write_text("{}\n" * 40, encoding="utf-8")
+    git("add", "-f", ".agent/handoffs/session-dump.json", ".beads/issues.jsonl")
+    git(
+        "commit",
+        "--date=2026-03-01T13:00:00+00:00",
+        "-m",
+        "chore: land agent coordination payloads",
+    )
 
     plan = chisel.RepoPlan(
         name="example",
@@ -760,17 +773,27 @@ def test_git_growth_uses_default_branch_and_attributes_historical_churn(
     growth = chisel._collect_git_growth(plan, "2026-03-02T000000Z")
 
     assert growth["summary"]["default_branch_ref"] == "master"
-    assert growth["summary"]["default_branch_commits"] == 3
+    assert growth["summary"]["default_branch_commits"] == 4
     assert growth["summary"]["active_days"] == 3
     assert len(growth["monthly"]) == 3
     assert {row["kind"] for row in growth["commit_kinds"]} == {
         "feat",
         "test",
         "refactor",
+        "chore",
     }
     by_bucket = {row["bucket"]: row for row in growth["bucket_churn"]}
     assert by_bucket["tests"]["additions"] == 2
     assert by_bucket["production"]["gross"] > by_bucket["tests"]["gross"]
+    # Agent coordination payloads and bead ledgers never count toward growth:
+    # additions/net reflect only maintained project text, and the excluded
+    # volume is reported explicitly instead of silently vanishing.
+    assert growth["summary"]["additions"] == sum(
+        row["additions"] for row in growth["bucket_churn"]
+    )
+    assert growth["summary"]["excluded_data_additions"] == 540
+    assert growth["summary"]["excluded_data_deletions"] == 0
+    assert "other" not in by_bucket
     assert (
         growth["daily"][-1]["cumulative_net"]
         == growth["summary"]["net_tracked_text_lines"]
