@@ -600,13 +600,29 @@ def classify_nap(record: Record, naps: list[tuple[datetime, datetime]]) -> None:
 # ── Proxy score ──────────────────────────────────────────────────────────────
 
 
-def compute_proxy_score(record: Record) -> float | None:
-    """Heuristic 0-100 quality score for records Samsung never scored.
+# Least-squares fit against Samsung's own sleep_score on the 1,205 nights
+# that carry both a real score and stage aggregates (fitted 2026-08-03;
+# 5-fold cross-validated Pearson r = 0.823, MAE = 6.6 score points; refit
+# procedure preserved at /realm/tmp/work/proxy_fit2.py lineage and described
+# in the sleep-pipeline audit report). Feature order matters below.
+_PROXY_COEF = {
+    "asleep_sat": 24.831873,   # min(asleep/450, 1)
+    "deep_sat": 9.816288,      # min(deep share of asleep / 20%, 1)
+    "rem_sat": 15.510639,      # min(rem share of asleep / 22%, 1)
+    "eff": 15.190455,          # asleep / time-in-bed
+    "awake_min": 0.037172,     # scored awake minutes inside the session
+    "frag": -0.775678,         # stage records per hour of span (fragmentation)
+}
+_PROXY_INTERCEPT = 18.956087
 
-    Monotone in the same factors Samsung's model rewards: enough sleep
-    (asleep minutes vs 7.5 h), deep share, REM share, and efficiency
-    (asleep vs time in bed). It is deliberately simple and documented rather
-    than a re-creation of Samsung's proprietary model; consumers see it in
+
+def compute_proxy_score(record: Record) -> float | None:
+    """Estimated 0-100 quality score for records Samsung never scored.
+
+    A linear model fitted to Samsung's own scores on the scored population
+    (see ``_PROXY_COEF``): sleep amount saturating at 7.5 h, deep/REM shares
+    saturating at typical-architecture levels, efficiency, awake minutes, and
+    stage fragmentation per hour. Consumers see it in
     ``sleep_metrics.proxy_score``, never in ``sleep_score``.
     """
     metrics = record.get("sleep_metrics") or {}
@@ -621,12 +637,22 @@ def compute_proxy_score(record: Record) -> float | None:
     if asleep <= 0:
         return None
     span = record.get("duration_minutes") or asleep
-    duration_c = min(asleep / 450.0, 1.0) * 45.0
-    deep_c = min(((deep or 0.0) / asleep * 100) / 20.0, 1.0) * 20.0
-    rem_c = min(((rem or 0.0) / asleep * 100) / 22.0, 1.0) * 20.0
-    efficiency = asleep / span if span > 0 else 0.0
-    efficiency_c = max(min((efficiency - 0.5) / 0.45, 1.0), 0.0) * 15.0
-    return round(duration_c + deep_c + rem_c + efficiency_c, 1)
+    awake = metrics.get("total_awake_duration")
+    if awake is None:
+        awake = max(span - asleep, 0.0)
+    stage_count = record.get("stage_count") or 0
+    features = {
+        "asleep_sat": min(asleep / 450.0, 1.0),
+        "deep_sat": min(((deep or 0.0) / asleep * 100) / 20.0, 1.0),
+        "rem_sat": min(((rem or 0.0) / asleep * 100) / 22.0, 1.0),
+        "eff": asleep / span if span > 0 else 0.0,
+        "awake_min": float(awake),
+        "frag": stage_count / max(span / 60.0, 0.5),
+    }
+    score = _PROXY_INTERCEPT + sum(
+        _PROXY_COEF[name] * value for name, value in features.items()
+    )
+    return round(max(0.0, min(100.0, score)), 1)
 
 
 # ── Signal fusion ────────────────────────────────────────────────────────────
