@@ -28,6 +28,20 @@ def process_respiratory_rate(dry_run: bool = False) -> int:
         avg_rate = try_float(row.get("average"))
         if avg_rate is None:
             continue
+        # Preserve per-minute respiratory_rate bins (rate 0.0 = no reading in
+        # that minute; kept as-is, consumers filter).
+        binning = try_json(row.get("binning_data"))
+        if isinstance(binning, list):
+            binning = [
+                b
+                for b in binning
+                if isinstance(b, dict)
+                and isinstance(b.get("respiratory_rate"), (int, float))
+                and isinstance(b.get("start_time"), (int, float))
+            ] or None
+        else:
+            binning = None
+
         records[uuid] = {
             "datauuid": uuid,
             "start_time": parse_gdpr_dt(row.get("start_time"), offset_ms),
@@ -35,6 +49,7 @@ def process_respiratory_rate(dry_run: bool = False) -> int:
             "avg_rate": avg_rate,
             "lower_limit": try_float(row.get("lower_limit")),
             "upper_limit": try_float(row.get("upper_limit")),
+            "binning_data": binning,
         }
 
     sorted_recs = sorted(records.values(), key=lambda r: r.get("start_time") or "")

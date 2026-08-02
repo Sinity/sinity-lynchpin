@@ -131,12 +131,24 @@ def _load_hrv_binning(export_dir: Path, binning_ref: str) -> dict | None:
         w["rmssd"] for w in windows if "rmssd" in w and w["rmssd"] is not None
     ]
     n = len(windows)
+    kept = [
+        {
+            "start_time": w.get("start_time"),
+            "end_time": w.get("end_time"),
+            "sdnn": w.get("sdnn"),
+            "rmssd": w.get("rmssd"),
+        }
+        for w in windows
+        if isinstance(w, dict)
+        and (w.get("sdnn") is not None or w.get("rmssd") is not None)
+    ]
     return {
         "sdnn_avg": round(sum(sdnn_vals) / len(sdnn_vals), 2) if sdnn_vals else None,
         "rmssd_avg": round(sum(rmssd_vals) / len(rmssd_vals), 2)
         if rmssd_vals
         else None,
         "n_windows": n,
+        "windows": kept or None,
     }
 
 
@@ -155,12 +167,24 @@ def _parse_hrv_binning_json(binning_str: str) -> dict | None:
         w["rmssd"] for w in windows if "rmssd" in w and w["rmssd"] is not None
     ]
     n = len(windows)
+    kept = [
+        {
+            "start_time": w.get("start_time"),
+            "end_time": w.get("end_time"),
+            "sdnn": w.get("sdnn"),
+            "rmssd": w.get("rmssd"),
+        }
+        for w in windows
+        if isinstance(w, dict)
+        and (w.get("sdnn") is not None or w.get("rmssd") is not None)
+    ]
     return {
         "sdnn_avg": round(sum(sdnn_vals) / len(sdnn_vals), 2) if sdnn_vals else None,
         "rmssd_avg": round(sum(rmssd_vals) / len(rmssd_vals), 2)
         if rmssd_vals
         else None,
         "n_windows": n,
+        "windows": kept or None,
     }
 
 
@@ -189,6 +213,7 @@ def process_hrv(dry_run: bool = False) -> int:
                 "sdnn_avg": binning["sdnn_avg"] if binning else None,
                 "rmssd_avg": binning["rmssd_avg"] if binning else None,
                 "n_windows": binning["n_windows"] if binning else None,
+                "binning_data": binning.get("windows") if binning else None,
             }
             # Keep enriched record if we already have one with binning data
             existing = records.get(uuid)
@@ -215,6 +240,7 @@ def process_hrv(dry_run: bool = False) -> int:
             "sdnn_avg": binning["sdnn_avg"] if binning else None,
             "rmssd_avg": binning["rmssd_avg"] if binning else None,
             "n_windows": binning["n_windows"] if binning else None,
+            "binning_data": binning.get("windows") if binning else None,
         }
 
     # Merge: prefer whichever has binning data
@@ -393,12 +419,27 @@ def process_skin_temperature(dry_run: bool = False) -> int:
         temp = try_float(row.get("temperature"))
         if temp is None:
             continue
+        # Preserve per-minute mean/min/max temperature bins.
+        binning = try_json(row.get("binning_data"))
+        if isinstance(binning, list):
+            binning = [
+                b
+                for b in binning
+                if isinstance(b, dict)
+                and isinstance(b.get("mean"), (int, float))
+                and isinstance(b.get("start_time"), (int, float))
+            ] or None
+        else:
+            binning = None
+
         gdpr_records[uuid] = {
             "datauuid": uuid,
             "start_time": parse_gdpr_dt(row.get("start_time"), offset_ms),
+            "end_time": parse_gdpr_dt(row.get("end_time"), offset_ms),
             "temperature": temp,
             "min": try_float(row.get("min")),
             "max": try_float(row.get("max")),
+            "binning_data": binning,
         }
 
     records = merge_by_datauuid(records, gdpr_records)
