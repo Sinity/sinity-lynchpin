@@ -520,11 +520,13 @@ def _merge_covered_dates(
     start: date,
     end: date,
 ) -> tuple[date, ...]:
+    logical_dates = [logical_date(timestamp) for timestamp, _url, _title, _source in rows]
     return merge_manifest_covered_dates(
         manifest=manifest,
-        observed_dates=(logical_date(timestamp) for timestamp, _url, _title, _source in rows),
+        observed_dates=logical_dates,
         start=start,
         end=end,
+        verified_bounds=(min(logical_dates), max(logical_dates)) if logical_dates else None,
     )
 
 

@@ -88,6 +88,7 @@ def materialize_activitywatch_events(
         observed_dates=set(logical_starts),
         start=start,
         end=end,
+        verified_bounds=(min(logical_starts), max(logical_starts)) if logical_starts else None,
     )
     manifest = {
         "dataset": "activitywatch.events",
@@ -188,6 +189,7 @@ def _merge_covered_dates(
     observed_dates: set[date],
     start: date | None,
     end: date | None,
+    verified_bounds: tuple[date, date] | None = None,
 ) -> tuple[date, ...]:
     if start is None or end is None:
         return tuple(sorted(observed_dates))
@@ -196,6 +198,7 @@ def _merge_covered_dates(
         observed_dates=observed_dates,
         start=start,
         end=end,
+        verified_bounds=verified_bounds,
     )
 
 

@@ -45,10 +45,12 @@ def materialize_personal_daily_signals(
             end=end,
             window_rows=window_rows,
         )
+        signal_dates = [row[1] for row in rows]
         covered_dates = _merge_covered_dates(
             manifest=output.with_suffix(".manifest.json"),
             start=start,
             end=end,
+            verified_bounds=(min(signal_dates), max(signal_dates)) if signal_dates else None,
         )
     else:
         rows, input_files = _personal_daily_signal_rows_with_inputs()
@@ -139,10 +141,12 @@ def materialize_spotify_daily(
             end=end,
             window_rows=window_rows,
         )
+        spotify_dates = [date.fromisoformat(str(row["date"])) for row in rows]
         covered_dates = _merge_covered_dates(
             manifest=output.with_suffix(".manifest.json"),
             start=start,
             end=end,
+            verified_bounds=(min(spotify_dates), max(spotify_dates)) if spotify_dates else None,
         )
     else:
         rows = window_rows
@@ -452,8 +456,14 @@ def _read_existing_signal_rows(path: Path) -> list[SignalRow]:
     return rows
 
 
-def _merge_covered_dates(*, manifest: Path, start: date, end: date) -> tuple[date, ...]:
-    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end)
+def _merge_covered_dates(
+    *,
+    manifest: Path,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
+    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end, verified_bounds=verified_bounds)
 
 
 def _inclusive_end(window_end: date) -> date:

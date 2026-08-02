@@ -51,7 +51,13 @@ def materialize_atuin_history(
 
     if start is not None and end is not None:
         rows = _merge_existing_rows(output=output, start=start, end=end, window_rows=window_rows)
-        covered_dates = _merge_covered_dates(manifest=output.with_suffix(".manifest.json"), start=start, end=end)
+        logical_dates = [_row_logical_date(row) for row in rows]
+        covered_dates = _merge_covered_dates(
+            manifest=output.with_suffix(".manifest.json"),
+            start=start,
+            end=end,
+            verified_bounds=(min(logical_dates), max(logical_dates)) if logical_dates else None,
+        )
     else:
         rows = window_rows
         covered_dates = tuple(sorted({_row_logical_date(row) for row in rows}))
@@ -137,8 +143,14 @@ def _row_logical_date(row: CommandRow) -> date:
     return logical_date(_row_timestamp(row))
 
 
-def _merge_covered_dates(*, manifest: Path, start: date, end: date) -> tuple[date, ...]:
-    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end)
+def _merge_covered_dates(
+    *,
+    manifest: Path,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
+    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end, verified_bounds=verified_bounds)
 
 
 def _query_window(start: date | None, end: date | None) -> tuple[datetime, datetime] | None:

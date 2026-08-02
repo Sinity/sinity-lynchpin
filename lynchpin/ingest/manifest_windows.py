@@ -39,7 +39,26 @@ def merge_manifest_covered_dates(
     end: date,
     observed_dates: Iterable[date] = (),
     fallback_to_bounds: bool = True,
+    verified_bounds: tuple[date, date] | None = None,
 ) -> tuple[date, ...]:
+    """Merge a manifest's recorded ``covered_dates`` with this run's window.
+
+    ``verified_bounds`` is the cheap corruption guard: pass the
+    ``(min, max)`` logical-date span actually present in the full row set
+    this run just wrote (kept rows outside the window plus newly observed
+    rows inside it) whenever the caller has that in hand -- which every
+    materializer that rewrites its full canonical file already does. Any
+    carried-forward date from a *previous* run that falls outside that span
+    is dropped instead of being silently re-affirmed forever.
+
+    This does not re-validate every historical day (that would mean
+    re-scanning the full source on every run); it only enforces that no
+    claimed coverage can extend further than the true min/max of data this
+    run can currently see. A day inside the span with no backing row is
+    still trusted as "scanned, found nothing" -- only claims *outside* the
+    span (e.g. a decade-old placeholder date with zero real events behind
+    it, see lynchpin-jzb) get purged.
+    """
     existing = {
         day
         for day in read_manifest_covered_dates(manifest)
@@ -51,6 +70,11 @@ def merge_manifest_covered_dates(
             for day in _manifest_bound_dates(manifest)
             if not (start <= day < end)
         )
+    if verified_bounds is not None:
+        lower, upper = verified_bounds
+        if lower > upper:
+            lower, upper = upper, lower
+        existing = {day for day in existing if lower <= day <= upper}
     existing.update(day for day in observed_dates if not (start <= day < end))
     existing.update(half_open_dates(start, end))
     return tuple(sorted(existing))

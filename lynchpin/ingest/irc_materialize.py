@@ -52,7 +52,13 @@ def materialize_irc_events(
 
     if start is not None and end is not None:
         rows = _merge_existing_rows(output=output, start=start, end=end, window_rows=window_rows)
-        covered_dates = _merge_covered_dates(manifest=irc_manifest_path(), start=start, end=end)
+        logical_dates = [_row_logical_date(row) for row in rows]
+        covered_dates = _merge_covered_dates(
+            manifest=irc_manifest_path(),
+            start=start,
+            end=end,
+            verified_bounds=(min(logical_dates), max(logical_dates)) if logical_dates else None,
+        )
     else:
         rows = window_rows
         covered_dates = tuple(sorted({_row_logical_date(row) for row in rows}))
@@ -147,8 +153,14 @@ def _row_logical_date(row: IRCRow) -> date:
     return logical_date(_row_timestamp(row))
 
 
-def _merge_covered_dates(*, manifest: Path, start: date, end: date) -> tuple[date, ...]:
-    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end)
+def _merge_covered_dates(
+    *,
+    manifest: Path,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
+    return merge_manifest_covered_dates(manifest=manifest, start=start, end=end, verified_bounds=verified_bounds)
 
 
 def irc_input_files(root: Path | None = None) -> tuple[Path, ...]:

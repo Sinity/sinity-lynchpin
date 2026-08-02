@@ -55,7 +55,13 @@ def materialize_temporal_signals(
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
     input_files = _temporal_input_files(start, end)
-    covered_dates = _merge_covered_dates(manifest=output.with_suffix(".manifest.json"), start=start, end=end)
+    event_dates = [date.fromisoformat(str(row["event_date"])) for row in rows]
+    covered_dates = _merge_covered_dates(
+        manifest=output.with_suffix(".manifest.json"),
+        start=start,
+        end=end,
+        verified_bounds=(min(event_dates), max(event_dates)) if event_dates else None,
+    )
     counts = Counter(str(row["kind"]) for row in rows)
     # window_semantics: [start, end) — start is inclusive, end is exclusive.
     # inclusive_end = end - 1 day is passed to detect_temporal_signals() so the
@@ -145,12 +151,19 @@ def _read_existing_rows(path: Path) -> list[SignalRow]:
     return rows
 
 
-def _merge_covered_dates(*, manifest: Path, start: date, end: date) -> tuple[date, ...]:
+def _merge_covered_dates(
+    *,
+    manifest: Path,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
     return merge_manifest_covered_dates(
         manifest=manifest,
         start=start,
         end=end,
         fallback_to_bounds=False,
+        verified_bounds=verified_bounds,
     )
 
 

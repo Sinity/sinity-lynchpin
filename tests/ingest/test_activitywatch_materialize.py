@@ -190,13 +190,22 @@ def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypat
     output = tmp_path / "events.ndjson"
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
     output.write_text(
-        json.dumps(
-            {
-                "bucket": "aw-watcher-window_host",
-                "start": "2026-06-05T08:00:00+00:00",
-                "end": "2026-06-05T09:00:00+00:00",
-                "data": {"app": "before"},
-            }
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "bucket": "aw-watcher-window_host",
+                    "start": "2026-06-05T08:00:00+00:00",
+                    "end": "2026-06-05T09:00:00+00:00",
+                    "data": {"app": "before"},
+                },
+                {
+                    "bucket": "aw-watcher-window_host",
+                    "start": "2026-06-09T08:00:00+00:00",
+                    "end": "2026-06-09T09:00:00+00:00",
+                    "data": {"app": "after"},
+                },
+            )
         )
         + "\n",
         encoding="utf-8",
@@ -224,3 +233,61 @@ def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypat
         "2026-06-07",
         "2026-06-09",
     ]
+
+
+def test_materialize_activitywatch_events_purges_phantom_covered_dates(monkeypatch, tmp_path):
+    """Regression test for lynchpin-jzb.
+
+    A manifest carrying stale placeholder/bad-merge covered_dates (e.g. a
+    default 2010-01-01 date and a false 2017-2018 span) with zero backing
+    events must not have that claim re-affirmed on the next incremental
+    materialization run just because the run's own window lies elsewhere.
+    """
+    from lynchpin.ingest import activitywatch_materialize
+
+    output = tmp_path / "events.ndjson"
+    cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
+    output.write_text(
+        json.dumps(
+            {
+                "bucket": "aw-watcher-window_host",
+                "start": "2026-06-05T08:00:00+00:00",
+                "end": "2026-06-05T09:00:00+00:00",
+                "data": {"app": "real"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "first_date": "2010-01-01",
+                "last_date": "2026-06-05",
+                "covered_dates": ["2010-01-01", "2010-01-02", "2017-01-30", "2026-06-05"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    event = AWEvent(
+        bucket="aw-watcher-window_host",
+        start=datetime(2026, 6, 6, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 6, 10, 5, tzinfo=timezone.utc),
+        data={"app": "kitty"},
+    )
+
+    monkeypatch.setattr(activitywatch_materialize, "get_config", lambda: cfg)
+    monkeypatch.setattr(activitywatch_materialize, "events_from_activitywatch_dbs", lambda _prefix, **_kw: iter([event]))
+
+    manifest = activitywatch_materialize.materialize_activitywatch_events(
+        output=output,
+        start=date(2026, 6, 6),
+        end=date(2026, 6, 7),
+    )
+
+    assert "2010-01-01" not in manifest["covered_dates"]
+    assert "2010-01-02" not in manifest["covered_dates"]
+    assert "2017-01-30" not in manifest["covered_dates"]
+    assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06"]
+    assert manifest["first_date"] == "2026-06-05"

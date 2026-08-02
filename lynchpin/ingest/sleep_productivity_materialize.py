@@ -45,7 +45,13 @@ def materialize_sleep_productivity(
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
     input_files = _sleep_productivity_input_files(start, end)
-    covered_dates = _merge_covered_dates(manifest=output.with_suffix(".manifest.json"), start=start, end=end)
+    sleep_dates = [date.fromisoformat(str(row["sleep_date"])) for row in rows]
+    covered_dates = _merge_covered_dates(
+        manifest=output.with_suffix(".manifest.json"),
+        start=start,
+        end=end,
+        verified_bounds=(min(sleep_dates), max(sleep_dates)) if sleep_dates else None,
+    )
     manifest = {
         "dataset": "lynchpin.sleep_productivity",
         "schema_version": SLEEP_PRODUCTIVITY_SCHEMA_VERSION,
@@ -122,12 +128,19 @@ def _read_existing_rows(path: Path) -> list[ProductivityRow]:
     return rows
 
 
-def _merge_covered_dates(*, manifest: Path, start: date, end: date) -> tuple[date, ...]:
+def _merge_covered_dates(
+    *,
+    manifest: Path,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
     return merge_manifest_covered_dates(
         manifest=manifest,
         start=start,
         end=end,
         fallback_to_bounds=False,
+        verified_bounds=verified_bounds,
     )
 
 

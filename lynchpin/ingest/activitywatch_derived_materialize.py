@@ -89,7 +89,17 @@ def materialize_activitywatch_derived(
         paths[kind] = str(path)
 
     input_files = activitywatch_derived_input_files()
-    covered_dates = _merge_covered_dates(root=root, start=start, end=end)
+    all_logical_dates = [
+        _row_logical_date(kind, row)
+        for kind in PRODUCT_KINDS
+        for row in rows[kind]
+    ]
+    covered_dates = _merge_covered_dates(
+        root=root,
+        start=start,
+        end=end,
+        verified_bounds=(min(all_logical_dates), max(all_logical_dates)) if all_logical_dates else None,
+    )
     manifest = {
         "dataset": "lynchpin.activitywatch_derived",
         "schema_version": ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
@@ -154,11 +164,18 @@ def _merge_existing_rows(
     )
 
 
-def _merge_covered_dates(*, root: Path | None, start: date, end: date) -> tuple[date, ...]:
+def _merge_covered_dates(
+    *,
+    root: Path | None,
+    start: date,
+    end: date,
+    verified_bounds: tuple[date, date] | None = None,
+) -> tuple[date, ...]:
     return merge_manifest_covered_dates(
         manifest=activitywatch_derived_manifest_path(root),
         start=start,
         end=end,
+        verified_bounds=verified_bounds,
     )
 
 
