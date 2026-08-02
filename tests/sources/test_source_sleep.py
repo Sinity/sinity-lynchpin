@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from lynchpin.sources.sleep import (
     SleepEntry,
     SleepMetrics,
+    canonical_entries,
+    daily_activity,
     entries,
     sleep_architecture,
     sleep_stages,
@@ -128,3 +130,91 @@ def test_sleep_architecture_uses_logical_sleep_date(monkeypatch):
     assert result[0].date == date(2026, 3, 14)
     assert result[0].deep_min == 60.0
     assert result[0].rem_min == 60.0
+
+
+def _write_rows(path, rows):
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_entries_hydrate_fusion_fields(tmp_path, monkeypatch):
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    _write_rows(sleep_file, [{
+        "start_local": "2026-03-15T02:00:00+01:00",
+        "end_local": "2026-03-15T10:00:00+01:00",
+        "source": "stage_derived",
+        "nap_evidence": None,
+        "saa_relation": None,
+        "sleep_metrics": {
+            "sleep_score": None,
+            "sleep_duration": 420,
+            "proxy_score": 71.5,
+        },
+        "signals": {
+            "hr_avg": 55.2, "hr_min": 47.0, "hr_max": 80.0, "hr_samples": 120,
+            "hrv_rmssd": 31.0, "respiratory_rate": 14.2,
+            "snoring_seconds": 120.0, "skin_temp_c": 33.1,
+        },
+    }])
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+
+    (entry,) = list(entries())
+    assert entry.metrics.proxy_score == 71.5
+    assert entry.avg_score is None
+    assert entry.effective_score == 71.5
+    assert entry.score_estimated is True
+    assert entry.quality_label == "fair"
+    assert entry.is_nap is False
+    assert entry.signals.hr_avg == 55.2
+    assert entry.signals.respiratory_rate == 14.2
+
+
+def test_canonical_entries_prefer_night_over_nap(tmp_path, monkeypatch):
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    _write_rows(sleep_file, [
+        {
+            # merged midday nap: highest source priority, but a nap
+            "start_local": "2026-03-15T14:00:00+01:00",
+            "end_local": "2026-03-15T14:40:00+01:00",
+            "source": "merged",
+            "nap_evidence": "vitality_nap",
+            "sleep_metrics": {"sleep_duration": 40},
+        },
+        {
+            # the actual night: lower priority tier, must win the date
+            "start_local": "2026-03-15T23:00:00+01:00",
+            "end_local": "2026-03-16T07:00:00+01:00",
+            "source": "stage_derived",
+            "nap_evidence": None,
+            "sleep_metrics": {"sleep_duration": 430},
+        },
+    ])
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+
+    canonical = list(canonical_entries())
+    assert len(canonical) == 1
+    assert canonical[0].source == "stage_derived"
+    assert canonical[0].is_nap is False
+
+
+def test_daily_activity_populates_signal_fields(tmp_path, monkeypatch):
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    _write_rows(sleep_file, [{
+        "start_local": "2026-03-15T23:30:00+01:00",
+        "end_local": "2026-03-16T07:30:00+01:00",
+        "source": "merged",
+        "sleep_metrics": {"sleep_score": 82, "sleep_duration": 460},
+        "signals": {
+            "hr_avg": 54.0, "hr_min": 46.0, "hr_max": 90.0,
+            "respiratory_rate": 13.8, "snoring_seconds": 30.0,
+            "skin_temp_c": 33.4,
+        },
+    }])
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+
+    (day,) = daily_activity(start=date(2026, 3, 15), end=date(2026, 3, 16))
+    assert day.hr_avg_bpm == 54.0
+    assert day.hr_min_bpm == 46.0
+    assert day.respiratory_rate == 13.8
+    assert day.snoring_seconds == 30.0
+    assert day.skin_temp_c == 33.4
+    assert day.score == 82.0

@@ -36,7 +36,11 @@ def add_sleep(
 
     for entry in entries:
         total_hours = entry.total_minutes / 60.0
-        score_str = f"{entry.avg_score:.0f}" if entry.avg_score is not None else "n/a"
+        score = entry.effective_score
+        if score is None:
+            score_str = "n/a"
+        else:
+            score_str = f"{score:.0f}~" if entry.score_estimated else f"{score:.0f}"
         summary = f"Sleep: {total_hours:.1f}h, score {score_str} ({entry.quality_label})"
         nodes.append(
             EvidenceNode(
@@ -49,7 +53,8 @@ def add_sleep(
                 payload={
                     "date": entry.date.isoformat(),
                     "total_hours": round(total_hours, 2),
-                    "score": entry.avg_score,
+                    "score": score,
+                    "score_estimated": entry.score_estimated,
                     "quality_label": entry.quality_label,
                     "segments": len(entry.segments),
                 },

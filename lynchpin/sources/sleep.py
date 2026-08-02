@@ -20,6 +20,7 @@ from ..core.source import read_jsonl_with
 __all__ = [
     "SleepSegment",
     "SleepMetrics",
+    "NightSignals",
     "SleepEntry",
     "SleepStageRecord",
     "SleepArchitecture",
@@ -50,6 +51,29 @@ class SleepSegment:
 
 
 @dataclass(frozen=True)
+class NightSignals:
+    """Adjacent-sensor summary for one sleep record's window.
+
+    Materialized by the sleep fusion processor from the normalized signal
+    products (heart rate, HRV, respiratory, SpO2, skin temperature, snoring,
+    movement) overlapping the record's start/end window.
+    """
+
+    hr_avg: Optional[float] = None
+    hr_min: Optional[float] = None
+    hr_max: Optional[float] = None
+    hr_samples: Optional[int] = None
+    hrv_rmssd: Optional[float] = None
+    hrv_sdnn: Optional[float] = None
+    respiratory_rate: Optional[float] = None
+    spo2_avg: Optional[float] = None
+    spo2_min: Optional[float] = None
+    skin_temp_c: Optional[float] = None
+    snoring_seconds: Optional[float] = None
+    movement_min: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class SleepMetrics:
     sleep_score: Optional[float]
     sleep_duration: Optional[float]
@@ -67,6 +91,7 @@ class SleepMetrics:
     deep_pct: Optional[float]
     rem_pct: Optional[float]
     stage_count: Optional[int]
+    proxy_score: Optional[float] = None  # heuristic score for unscored nights
 
 
 @dataclass(frozen=True)
@@ -77,14 +102,35 @@ class SleepEntry:
     avg_score: Optional[float]
     metrics: Optional[SleepMetrics] = None
     source: Optional[str] = None  # 'merged' | 'combined_only' | 'saa_only' | 'samsung_only' | 'stage_derived'
+    nap_evidence: Optional[str] = None  # 'vitality_nap' | 'short_daytime'
+    signals: Optional[NightSignals] = None
+    saa_relation: Optional[str] = None  # 'mirror' | 'independent' (merged only)
+
+    @property
+    def is_nap(self) -> bool:
+        return self.nap_evidence is not None
+
+    @property
+    def effective_score(self) -> Optional[float]:
+        """Samsung's real score when present, else the fusion proxy score."""
+        if self.avg_score is not None:
+            return self.avg_score
+        if self.metrics is not None:
+            return self.metrics.proxy_score
+        return None
+
+    @property
+    def score_estimated(self) -> bool:
+        return self.avg_score is None and self.effective_score is not None
 
     @property
     def quality_label(self) -> str:
-        if self.avg_score is None:
+        score = self.effective_score
+        if score is None:
             return "unknown"
-        if self.avg_score >= 80:
+        if score >= 80:
             return "good"
-        if self.avg_score >= 60:
+        if score >= 60:
             return "fair"
         return "poor"
 
@@ -198,11 +244,32 @@ def _hydrate_entry(rec: dict[str, Any]) -> SleepEntry | None:
         deep_pct=_safe_float(metrics.get("deep_pct")),
         rem_pct=_safe_float(metrics.get("rem_pct")),
         stage_count=rec.get("stage_count"),
+        proxy_score=_safe_float(metrics.get("proxy_score")),
     )
+    raw_signals = rec.get("signals")
+    signals: NightSignals | None = None
+    if isinstance(raw_signals, dict):
+        signals = NightSignals(
+            hr_avg=_safe_float(raw_signals.get("hr_avg")),
+            hr_min=_safe_float(raw_signals.get("hr_min")),
+            hr_max=_safe_float(raw_signals.get("hr_max")),
+            hr_samples=raw_signals.get("hr_samples") if isinstance(raw_signals.get("hr_samples"), int) else None,
+            hrv_rmssd=_safe_float(raw_signals.get("hrv_rmssd")),
+            hrv_sdnn=_safe_float(raw_signals.get("hrv_sdnn")),
+            respiratory_rate=_safe_float(raw_signals.get("respiratory_rate")),
+            spo2_avg=_safe_float(raw_signals.get("spo2_avg")),
+            spo2_min=_safe_float(raw_signals.get("spo2_min")),
+            skin_temp_c=_safe_float(raw_signals.get("skin_temp_c")),
+            snoring_seconds=_safe_float(raw_signals.get("snoring_seconds")),
+            movement_min=_safe_float(raw_signals.get("movement_min")),
+        )
     return SleepEntry(
         date=d, total_minutes=total_min, segments=tuple(segments),
         avg_score=avg, metrics=sleep_metrics,
         source=rec.get("source") if isinstance(rec.get("source"), str) else None,
+        nap_evidence=rec.get("nap_evidence") if isinstance(rec.get("nap_evidence"), str) else None,
+        signals=signals,
+        saa_relation=rec.get("saa_relation") if isinstance(rec.get("saa_relation"), str) else None,
     )
 
 
@@ -243,6 +310,12 @@ def canonical_entries() -> Iterator[SleepEntry]:
         prev = by_date.get(e.date)
         if prev is None:
             by_date[e.date] = e
+            continue
+        # A full night beats a nap regardless of source tier: a merged midday
+        # nap must not displace the actual night's record for that date.
+        if prev.is_nap != e.is_nap:
+            if prev.is_nap:
+                by_date[e.date] = e
             continue
         prio_new = _SOURCE_PRIORITY.get(e.source, 5)
         prio_old = _SOURCE_PRIORITY.get(prev.source, 5)
@@ -291,11 +364,19 @@ def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
     """Per-day sleep activity summary."""
     result: list[SleepDayActivity] = []
     for entry in entries_in_range(start=start, end=end, canonical=True):
+        sig = entry.signals
+        score = entry.effective_score
         result.append(SleepDayActivity(
             date=entry.date,
             total_hours=round(entry.total_minutes / 60, 2) if entry.total_minutes else None,
-            score=round(entry.avg_score, 2) if entry.avg_score else None,
+            score=round(score, 2) if score is not None else None,
             quality=entry.quality_label,
+            hr_min_bpm=sig.hr_min if sig else None,
+            hr_max_bpm=sig.hr_max if sig else None,
+            hr_avg_bpm=sig.hr_avg if sig else None,
+            respiratory_rate=sig.respiratory_rate if sig else None,
+            snoring_seconds=sig.snoring_seconds if sig else None,
+            skin_temp_c=sig.skin_temp_c if sig else None,
         ))
     return result
 
@@ -460,7 +541,7 @@ def sleep_productivity(*, start: date, end: date) -> list[SleepProductivity]:
         vs_baseline = active_h / baseline_hours if baseline_hours > 0 else 0
         result.append(SleepProductivity(
             sleep_date=entry.date, sleep_hours=round(entry.total_minutes / 60, 2),
-            sleep_score=entry.avg_score, sleep_quality=entry.quality_label,
+            sleep_score=entry.effective_score, sleep_quality=entry.quality_label,
             workday_active_hours=round(active_h, 2),
             workday_deep_work_min=round(dw_min, 1),
             productivity_vs_baseline=round(vs_baseline, 2),
