@@ -158,11 +158,28 @@ def process_movement(dry_run: bool = False) -> int:
             except (ValueError, TypeError):
                 pass
 
+        # Preserve the per-minute activity_level bins: they discriminate
+        # Samsung's own sleep-stage calls (awake vs deep AUC 0.773, measured
+        # 2026-08-03) and feed the stage-consistency read API in
+        # sources/sleep.py. Same shape as heart rate's binning_data.
+        binning = try_json(row.get("binning_data")) or None
+        if isinstance(binning, list):
+            binning = [
+                b
+                for b in binning
+                if isinstance(b, dict)
+                and isinstance(b.get("activity_level"), (int, float))
+                and isinstance(b.get("start_time"), (int, float))
+            ] or None
+        else:
+            binning = None
+
         records[uuid] = {
             "datauuid": uuid,
             "start_time": start,
             "end_time": end,
             "duration_ms": duration_ms,
+            "binning_data": binning,
         }
 
     sorted_recs = sorted(records.values(), key=lambda r: r.get("start_time") or "")

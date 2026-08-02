@@ -30,6 +30,8 @@ __all__ = [
     "entries_in_range",
     "sleep_stages",
     "sleep_architecture",
+    "StageMovementCheck",
+    "sleep_stage_movement",
     "sleep_productivity",
     "daily_activity",
     "coverage_bounds",
@@ -493,6 +495,84 @@ def sleep_architecture(*, start: Optional[date] = None, end: Optional[date] = No
 
     result.sort(key=lambda a: a.date)
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage-call consistency against per-minute movement
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class StageMovementCheck:
+    """One stage record judged against the watch's per-minute activity bins.
+
+    This is a consistency check, not independent fusion: the movement bins
+    come from the same worn device whose accelerometer fed Samsung's stage
+    classifier. It still catches implausible calls (a "deep" interval with
+    awake-level movement) introduced by Samsung's scoring/export pipeline.
+    Measured basis (2026-08-03, 11,127 stage records with movement coverage):
+    mean activity awake 3.39 / rem 1.46 / light 1.26 / deep 0.47; awake-vs-deep
+    AUC 0.773.
+    """
+
+    record: SleepStageRecord
+    movement_mean: Optional[float]  # mean activity_level; None = no coverage
+    contradicted: bool
+
+
+# Above this mean activity_level, a deep/light sleep call is implausible:
+# awake intervals measure median 1.24 / p90 8.96, deep p90 is 1.07.
+STAGE_MOVEMENT_CONTRADICTION_LEVEL = 2.0
+
+
+def sleep_stage_movement(
+    *, start: Optional[date] = None, end: Optional[date] = None
+) -> list[StageMovementCheck]:
+    """Judge Samsung stage calls against per-minute movement activity bins.
+
+    Coverage is bounded by the movement product (2025-05 onward); records
+    without overlapping bins get ``movement_mean=None`` and are never flagged.
+    """
+    from bisect import bisect_left
+
+    stages = sleep_stages(start=start, end=end)
+    if not stages:
+        return []
+
+    bins: list[tuple[float, float]] = []
+    for row in _load_jsonl("health_movement.jsonl"):
+        raw = row.get("binning_data")
+        if not isinstance(raw, list):
+            continue
+        for b in raw:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("start_time")
+            v = b.get("activity_level")
+            if isinstance(t, (int, float)) and isinstance(v, (int, float)):
+                bins.append((t / 1000.0, float(v)))
+    bins.sort()
+    times = [t for t, _ in bins]
+
+    checks: list[StageMovementCheck] = []
+    for rec in stages:
+        lo = bisect_left(times, rec.start.timestamp())
+        # bisect_left on the end: a bin starting exactly at the record end
+        # belongs to the next interval, not this one.
+        hi = bisect_left(times, rec.end.timestamp())
+        values = [bins[i][1] for i in range(lo, hi)]
+        mean = sum(values) / len(values) if values else None
+        contradicted = (
+            mean is not None
+            and rec.stage in ("deep", "light")
+            and mean >= STAGE_MOVEMENT_CONTRADICTION_LEVEL
+        )
+        checks.append(
+            StageMovementCheck(record=rec, movement_mean=(
+                round(mean, 3) if mean is not None else None
+            ), contradicted=contradicted)
+        )
+    return checks
 
 
 # ══════════════════════════════════════════════════════════════════════════════

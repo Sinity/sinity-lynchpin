@@ -218,3 +218,52 @@ def test_daily_activity_populates_signal_fields(tmp_path, monkeypatch):
     assert day.snoring_seconds == 30.0
     assert day.skin_temp_c == 33.4
     assert day.score == 82.0
+
+
+def test_sleep_stage_movement_flags_contradicted_deep(monkeypatch):
+    from lynchpin.sources.sleep import sleep_stage_movement, STAGE_MOVEMENT_CONTRADICTION_LEVEL
+    from datetime import datetime, timezone, timedelta
+
+    tz = timezone(timedelta(hours=1))
+    t0 = datetime(2026, 3, 15, 2, 0, tzinfo=tz)
+
+    stage_rows = [
+        {"start_time": t0.isoformat(), "end_time": (t0 + timedelta(minutes=10)).isoformat(),
+         "stage": "deep", "sleep_id": "s1", "duration_minutes": 10},
+        {"start_time": (t0 + timedelta(minutes=10)).isoformat(),
+         "end_time": (t0 + timedelta(minutes=20)).isoformat(),
+         "stage": "deep", "sleep_id": "s1", "duration_minutes": 10},
+        {"start_time": (t0 + timedelta(minutes=20)).isoformat(),
+         "end_time": (t0 + timedelta(minutes=30)).isoformat(),
+         "stage": "awake", "sleep_id": "s1", "duration_minutes": 10},
+    ]
+
+    def bins(window_start, minutes, level):
+        return [
+            {"start_time": int((window_start + timedelta(minutes=i)).timestamp() * 1000),
+             "end_time": int((window_start + timedelta(minutes=i + 1)).timestamp() * 1000),
+             "activity_level": level}
+            for i in range(minutes)
+        ]
+
+    movement_rows = [
+        # quiet during first deep interval, thrashing during the second
+        {"start_time": t0.isoformat(), "end_time": (t0 + timedelta(minutes=20)).isoformat(),
+         "binning_data": bins(t0, 10, 0.1) + bins(t0 + timedelta(minutes=10), 10, 6.0)},
+    ]
+
+    def fake_load(filename):
+        if filename == "health_sleep_stages.jsonl":
+            return iter(stage_rows)
+        assert filename == "health_movement.jsonl"
+        return iter(movement_rows)
+
+    monkeypatch.setattr("lynchpin.sources.sleep._load_jsonl", fake_load)
+    checks = sleep_stage_movement(start=date(2026, 3, 14), end=date(2026, 3, 15))
+    assert len(checks) == 3
+    quiet, thrash, awake = checks
+    assert quiet.movement_mean == 0.1 and not quiet.contradicted
+    assert thrash.movement_mean == 6.0 and thrash.contradicted
+    # awake interval has no bins -> None, never contradicted
+    assert awake.movement_mean is None and not awake.contradicted
+    assert STAGE_MOVEMENT_CONTRADICTION_LEVEL == 2.0
