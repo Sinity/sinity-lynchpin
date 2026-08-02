@@ -200,7 +200,10 @@ def _read_existing_spotify_daily_rows(path: Path) -> list[dict[str, Any]]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if isinstance(payload, dict) and payload.get("date"):
                 rows.append(payload)
     return rows
@@ -440,14 +443,21 @@ def _read_existing_signal_rows(path: Path) -> list[SignalRow]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if not isinstance(payload, dict):
+                continue
+            try:
+                row_date = date.fromisoformat(str(payload["date"]))
+            except (KeyError, ValueError):
                 continue
             dimensions = payload.get("dimensions")
             rows.append(
                 (
                     str(payload.get("source") or ""),
-                    date.fromisoformat(str(payload["date"])),
+                    row_date,
                     str(payload.get("metric") or ""),
                     float(payload.get("value") or 0.0),
                     dimensions if isinstance(dimensions, dict) else {},

@@ -469,7 +469,10 @@ def _load_existing_full_history(path: Path) -> list[WebHistoryRow]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if not isinstance(payload, dict):
                 continue
             timestamp = payload_timestamp(payload)

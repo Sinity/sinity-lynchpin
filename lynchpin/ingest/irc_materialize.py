@@ -133,7 +133,10 @@ def _read_existing_rows(path: Path) -> list[IRCRow]:
         for line in handle:
             if not line.strip():
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if isinstance(payload, dict) and payload.get("timestamp"):
                 rows.append(payload)
     return rows
