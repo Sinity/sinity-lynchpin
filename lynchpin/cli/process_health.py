@@ -64,7 +64,6 @@ from lynchpin.cli.health_signal_processors import (
 Processor = Callable[[bool], int]
 
 MERGED_PROCESSORS: tuple[Processor, ...] = (
-    process_sleep,
     process_stress,
     process_steps,
     process_hrv,
@@ -96,7 +95,10 @@ def main():
     dry_run = "--dry-run" in sys.argv
     PROCESSED.mkdir(parents=True, exist_ok=True)
 
-    for processor in (*MERGED_PROCESSORS, *GDPR_ONLY_PROCESSORS):
+    # Sleep fusion runs last: it consumes the signal products (heart rate,
+    # HRV, respiratory, SpO2, skin temperature, snoring, movement) written by
+    # the processors above.
+    for processor in (*MERGED_PROCESSORS, *GDPR_ONLY_PROCESSORS, process_sleep):
         processor(dry_run)
 
 
