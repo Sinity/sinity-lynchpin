@@ -20,7 +20,7 @@ from ..sources.activitywatch_raw import (
     events_from_activitywatch_dbs,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
@@ -163,9 +163,7 @@ def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_ndjson(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _row_logical_date(row: dict[str, Any]) -> date | None:

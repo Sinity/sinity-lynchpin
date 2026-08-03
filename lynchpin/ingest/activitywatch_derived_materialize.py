@@ -32,7 +32,7 @@ from ..sources.activitywatch_derived import (
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from .activitywatch_event_index_materialize import activitywatch_event_index_input_files
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
@@ -210,9 +210,7 @@ def _row_sort_key(kind: str, row: dict[str, object]) -> tuple[str, str, str]:
 
 def _write_ndjson(path: Path, rows: Iterable[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _focus_span_row(span: Any) -> dict[str, object]:

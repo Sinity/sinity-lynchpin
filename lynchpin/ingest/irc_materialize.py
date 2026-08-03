@@ -19,7 +19,7 @@ from ..sources.irc_raw import (
     normalize_nick,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 IRC_EVENTS_SCHEMA_VERSION = 1
@@ -143,9 +143,7 @@ def _read_existing_rows(path: Path) -> list[IRCRow]:
 
 
 def _write_ndjson(path: Path, rows: list[IRCRow]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _row_timestamp(row: IRCRow) -> datetime:

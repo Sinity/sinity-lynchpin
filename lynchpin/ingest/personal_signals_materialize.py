@@ -18,7 +18,7 @@ from ..sources.personal_signals import (
 )
 from .exports_materialize import spotify_streams_path
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 SignalRow = tuple[str, date, str, float, dict[str, Any]]
@@ -57,22 +57,19 @@ def materialize_personal_daily_signals(
         covered_dates = tuple(sorted({row[1] for row in rows}))
     rows.sort(key=lambda row: (row[1], row[0], row[2], json.dumps(row[4], sort_keys=True)))
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for source, day, metric, value, dimensions in rows:
-            handle.write(
-                json.dumps(
-                    {
-                        "source": source,
-                        "date": day.isoformat(),
-                        "metric": metric,
-                        "value": value,
-                        "dimensions": dimensions,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
+    atomic_write_ndjson(
+        output,
+        (
+            {
+                "source": source,
+                "date": day.isoformat(),
+                "metric": metric,
+                "value": value,
+                "dimensions": dimensions,
+            }
+            for source, day, metric, value, dimensions in rows
+        ),
+    )
     counts = Counter(source for source, *_ in rows)
     manifest = _manifest(
         dataset="lynchpin.personal_daily_signals",
@@ -154,9 +151,7 @@ def materialize_spotify_daily(
     rows.sort(key=lambda row: str(row["date"]))
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(output, rows)
     manifest = _manifest(
         dataset="lynchpin.spotify_daily",
         schema_version=SPOTIFY_DAILY_SCHEMA_VERSION,

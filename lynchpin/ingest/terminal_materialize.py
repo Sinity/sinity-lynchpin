@@ -15,7 +15,7 @@ from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.terminal import canonical_atuin_history_path, commands_from_atuin_db
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 ATUIN_HISTORY_SCHEMA_VERSION = 1
@@ -133,9 +133,7 @@ def _read_existing_rows(path: Path) -> list[CommandRow]:
 
 
 def _write_ndjson(path: Path, rows: list[CommandRow]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _row_timestamp(row: CommandRow) -> datetime:

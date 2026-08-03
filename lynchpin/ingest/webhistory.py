@@ -352,6 +352,7 @@ def build_full_history(
 
     visits.sort(key=lambda item: item[0])
 
+    tmp_output = output.with_name(f".{output.name}.tmp")
     if not dry_run:
         output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -360,7 +361,7 @@ def build_full_history(
     duplicate_count = 0
     output_source_counts: dict[str, int] = {}
 
-    handle = None if dry_run else output.open("w", encoding="utf-8")
+    handle = None if dry_run else tmp_output.open("w", encoding="utf-8")
     try:
         for timestamp, url, title, source in visits:
             norm = normalize_url(url)
@@ -394,6 +395,8 @@ def build_full_history(
     finally:
         if handle is not None:
             handle.close()
+    if not dry_run:
+        tmp_output.replace(output)
 
     report = {
         "output": str(output),

@@ -17,7 +17,7 @@ from ..sources.temporal_signals import (
     detect_temporal_signals,
     temporal_signals_path,
 )
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 from .manifest_windows import merge_manifest_covered_dates
 
 
@@ -50,9 +50,7 @@ def materialize_temporal_signals(
     rows.sort(key=lambda row: (row["event_date"], row["kind"], row["signal"], json.dumps(row["payload"], sort_keys=True)))
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(output, rows)
 
     input_files = _temporal_input_files(start, end)
     event_dates = [date.fromisoformat(str(row["event_date"])) for row in rows]
