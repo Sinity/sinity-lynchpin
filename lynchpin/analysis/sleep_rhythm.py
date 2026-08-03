@@ -71,7 +71,7 @@ class PhaseResult:
 
 
 def _night_intervals(
-    start: date, end: date, *, composite: bool = True
+    start: date, end: date, *, composite: bool = True, evidence: bool = False
 ) -> list[tuple[datetime, datetime, date]]:
     """Sleep intervals per logical date.
 
@@ -82,6 +82,10 @@ def _night_intervals(
     one-canonical-record-per-date behaviour for comparison.
     """
     intervals: list[tuple[datetime, datetime, date]] = []
+    if evidence:
+        from .sleep_gap_evidence import evidence_validated_intervals
+
+        return evidence_validated_intervals(start=start, end=end)
     if composite:
         from ..sources.sleep_composite import night_composites
 
@@ -132,15 +136,23 @@ def _circular_stats(hours: list[float]) -> tuple[Optional[float], Optional[float
 
 
 def sleep_regularity(
-    *, start: date, end: date, composite: bool = True
+    *, start: date, end: date, composite: bool = True, evidence: bool = False
 ) -> RegularityResult:
     """Sleep Regularity Index, midpoint stability, and social jetlag.
 
-    ``composite=True`` measures each night as the union of its main-episode
-    segments (see sources/sleep_composite); ``False`` uses one canonical record
-    per date, which understates fragmented nights.
+    Three modes, in increasing order of how much evidence they demand:
+
+    - ``composite=False`` — one canonical record per date (understates
+      fragmented nights).
+    - ``composite=True`` (default) — union of main-episode segments, treating
+      every inter-segment gap as real wakefulness.
+    - ``evidence=True`` — as composite, but gaps the sensors attribute to
+      detection failure or missed sleep are filled back in, so only
+      evidence-confirmed transitions count (see analysis/sleep_gap_evidence).
     """
-    intervals = _night_intervals(start, end, composite=composite)
+    intervals = _night_intervals(
+        start, end, composite=composite, evidence=evidence
+    )
     if not intervals:
         return RegularityResult(
             start=start, end=end, sri=None, sri_minute_pairs=0,
@@ -204,8 +216,13 @@ def sleep_regularity(
     caveats = [
         "SRI compares only day pairs where BOTH days have a tracked night; "
         "untracked days are excluded, not scored as wake.",
-        ("night intervals are main-episode composites (fragmented nights keep "
-         "every segment)" if composite else
+        ("night intervals are evidence-validated composites: gaps the sensors "
+         "attribute to detection failure or missed sleep are filled back in, so "
+         "only evidence-confirmed sleep/wake transitions are counted"
+         if evidence else
+         "night intervals are main-episode composites (fragmented nights keep "
+         "every segment); inter-segment gaps are ASSUMED to be real wakefulness"
+         if composite else
          "night intervals are single canonical records; fragmented nights are "
          "understated"),
         "Sleep intervals come from canonical (one-per-date) non-nap records, so "
