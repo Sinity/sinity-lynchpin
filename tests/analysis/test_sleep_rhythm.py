@@ -16,14 +16,17 @@ class _Seg:
 
 
 class _Entry:
-    def __init__(self, d: date, start: datetime, end: datetime, *, nap: bool = False) -> None:
+    def __init__(self, d: date, start: datetime, end: datetime, *, nap: bool = False,
+                 source: str = "merged") -> None:
         self.date = d
         self.segments = (_Seg(start, end),)
         self.is_nap = nap
+        self.source = source
         self.metrics = None
         self.signals = None
         self.total_minutes = (end - start).total_seconds() / 60.0
         self.effective_score = None
+        self.score_estimated = False
 
 
 def _regular_nights(days: int, *, bedtime_hour: int = 23) -> list[_Entry]:

@@ -70,10 +70,29 @@ class PhaseResult:
 # ── Sleep regularity ─────────────────────────────────────────────────────────
 
 
-def _night_intervals(start: date, end: date) -> list[tuple[datetime, datetime, date]]:
+def _night_intervals(
+    start: date, end: date, *, composite: bool = True
+) -> list[tuple[datetime, datetime, date]]:
+    """Sleep intervals per logical date.
+
+    ``composite=True`` (default) unions same-date records into the main sleep
+    episode, so a fragmented night contributes every one of its segments and a
+    night whose longest record lost the canonical source-priority tiebreak is
+    still measured at its real length. ``composite=False`` reproduces the older
+    one-canonical-record-per-date behaviour for comparison.
+    """
+    intervals: list[tuple[datetime, datetime, date]] = []
+    if composite:
+        from ..sources.sleep_composite import night_composites
+
+        for night in night_composites(start=start, end=end):
+            for seg_start, seg_end in night.main.segments:
+                intervals.append((seg_start, seg_end, night.date))
+        intervals.sort()
+        return intervals
+
     from ..sources.sleep import entries_in_range
 
-    intervals: list[tuple[datetime, datetime, date]] = []
     for entry in entries_in_range(start=start, end=end, canonical=True):
         if entry.is_nap or not entry.segments:
             continue
@@ -112,9 +131,16 @@ def _circular_stats(hours: list[float]) -> tuple[Optional[float], Optional[float
     return round(mean_hour, 2), round(sd_hours * 60.0, 1)
 
 
-def sleep_regularity(*, start: date, end: date) -> RegularityResult:
-    """Sleep Regularity Index, midpoint stability, and social jetlag."""
-    intervals = _night_intervals(start, end)
+def sleep_regularity(
+    *, start: date, end: date, composite: bool = True
+) -> RegularityResult:
+    """Sleep Regularity Index, midpoint stability, and social jetlag.
+
+    ``composite=True`` measures each night as the union of its main-episode
+    segments (see sources/sleep_composite); ``False`` uses one canonical record
+    per date, which understates fragmented nights.
+    """
+    intervals = _night_intervals(start, end, composite=composite)
     if not intervals:
         return RegularityResult(
             start=start, end=end, sri=None, sri_minute_pairs=0,
@@ -148,9 +174,19 @@ def sleep_regularity(*, start: date, end: date) -> RegularityResult:
                 agree += 1
     sri = round(200.0 * (agree / total) - 100.0, 1) if total else None
 
-    midpoints: list[tuple[date, float]] = []
+    # One midpoint per DATE, spanning that date's first segment start to its
+    # last segment end — otherwise a fragmented night would contribute several
+    # midpoints and inflate apparent variability.
+    per_date: dict[date, tuple[datetime, datetime]] = {}
     for begin, finish, d in intervals:
-        mid = begin + (finish - begin) / 2
+        if d in per_date:
+            lo, hi = per_date[d]
+            per_date[d] = (min(lo, begin), max(hi, finish))
+        else:
+            per_date[d] = (begin, finish)
+    midpoints: list[tuple[date, float]] = []
+    for d, (lo, hi) in sorted(per_date.items()):
+        mid = lo + (hi - lo) / 2
         midpoints.append((d, mid.hour + mid.minute / 60.0))
     mean_hour, sd_minutes = _circular_stats([h for _, h in midpoints])
 
@@ -168,6 +204,10 @@ def sleep_regularity(*, start: date, end: date) -> RegularityResult:
     caveats = [
         "SRI compares only day pairs where BOTH days have a tracked night; "
         "untracked days are excluded, not scored as wake.",
+        ("night intervals are main-episode composites (fragmented nights keep "
+         "every segment)" if composite else
+         "night intervals are single canonical records; fragmented nights are "
+         "understated"),
         "Sleep intervals come from canonical (one-per-date) non-nap records, so "
         "unlogged naps and untracked nights are invisible.",
     ]
@@ -179,7 +219,7 @@ def sleep_regularity(*, start: date, end: date) -> RegularityResult:
     return RegularityResult(
         start=start, end=end, sri=sri, sri_minute_pairs=total,
         midpoint_mean_hour=mean_hour, midpoint_sd_minutes=sd_minutes,
-        social_jetlag_minutes=jetlag, nights=len(intervals),
+        social_jetlag_minutes=jetlag, nights=len(per_date),
         covered_days=covered_days, caveats=tuple(caveats),
     )
 
