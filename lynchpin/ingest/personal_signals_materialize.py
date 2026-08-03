@@ -263,7 +263,6 @@ def _window_personal_daily_signal_rows(
     audit_by_name: dict[str, Any],
 ) -> list[SignalRow]:
     rows: list[SignalRow] = []
-    inclusive_end = _inclusive_end(window_end)
 
     def add(source: str, day: date, metric: str, value: float, **dimensions: Any) -> None:
         if window_start <= day < window_end:
@@ -271,33 +270,43 @@ def _window_personal_daily_signal_rows(
 
     from ..sources.web import daily_browsing
 
-    if _overlaps(audit_by_name, "webhistory", window_start, window_end):
-        for web_row in daily_browsing(start=window_start, end=inclusive_end, ensure=False):
+    clip = _clip_window(audit_by_name, "webhistory", window_start, window_end)
+    if clip is not None:
+        clip_start, clip_end = clip
+        for web_row in daily_browsing(start=clip_start, end=_inclusive_end(clip_end), ensure=False):
             top_domain = web_row.top_domains[0][0] if web_row.top_domains else ""
             add("webhistory", web_row.date, "visit_count", web_row.visit_count, domain_count=web_row.unique_domains, top_domain=top_domain)
 
-    if _overlaps(audit_by_name, "browser_bookmarks", window_start, window_end):
+    clip = _clip_window(audit_by_name, "browser_bookmarks", window_start, window_end)
+    if clip is not None:
         from ..sources.bookmarks import daily_bookmark_activity
 
-        for bookmark_row in daily_bookmark_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for bookmark_row in daily_bookmark_activity(start=clip_start, end=clip_end, ensure=False):
             add("browser_bookmarks", bookmark_row.date, "bookmark_count", bookmark_row.bookmark_count, domain_count=bookmark_row.domain_count, top_domain=bookmark_row.top_domain)
 
-    if _overlaps(audit_by_name, "communications", window_start, window_end):
+    clip = _clip_window(audit_by_name, "communications", window_start, window_end)
+    if clip is not None:
         from ..sources.communications import daily_communication_activity
 
-        for comm_row in daily_communication_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for comm_row in daily_communication_activity(start=clip_start, end=clip_end, ensure=False):
             add("communications", comm_row.date, "event_count", comm_row.event_count, outbound_count=comm_row.outbound_count, source_count=comm_row.source_count)
 
-    if _overlaps(audit_by_name, "arbtt", window_start, window_end):
+    clip = _clip_window(audit_by_name, "arbtt", window_start, window_end)
+    if clip is not None:
         from ..sources.arbtt import daily_arbtt_activity
 
-        for arbtt_row in daily_arbtt_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for arbtt_row in daily_arbtt_activity(start=clip_start, end=clip_end, ensure=False):
             add("arbtt", arbtt_row.date, "active_minutes", arbtt_row.active_minutes, event_count=arbtt_row.event_count, program_count=arbtt_row.program_count)
 
-    if _overlaps(audit_by_name, "activity_content", window_start, window_end):
+    clip = _clip_window(audit_by_name, "activity_content", window_start, window_end)
+    if clip is not None:
         from ..sources.activity_content import iter_activity_content_days
 
-        for content_row in iter_activity_content_days(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for content_row in iter_activity_content_days(start=clip_start, end=clip_end, ensure=False):
             add("activity_content", content_row.date, "focused_minutes", content_row.focused_seconds / 60.0)
             add("activity_content", content_row.date, "title_metadata_matched_ratio", content_row.matched_ratio)
             add("activity_content", content_row.date, "gpt_title_matched_ratio", content_row.gpt_matched_ratio)
@@ -306,10 +315,12 @@ def _window_personal_daily_signal_rows(
             for topic, seconds in content_row.topic_seconds.items():
                 add("activity_content", content_row.date, "topic_minutes", seconds / 60.0, topic=topic)
 
-    if _overlaps(audit_by_name, "health", window_start, window_end):
+    clip = _clip_window(audit_by_name, "health", window_start, window_end)
+    if clip is not None:
         from ..sources.health import daily_health_summary
 
-        for health_row in daily_health_summary(start=window_start, end=inclusive_end):
+        clip_start, clip_end = clip
+        for health_row in daily_health_summary(start=clip_start, end=_inclusive_end(clip_end)):
             if health_row.steps is not None:
                 add("health", health_row.date, "steps", float(health_row.steps))
             if health_row.stress_avg is not None:
@@ -325,10 +336,12 @@ def _window_personal_daily_signal_rows(
             if health_row.vitality_score is not None:
                 add("health", health_row.date, "vitality_score", float(health_row.vitality_score), calories=health_row.calories)
 
-    if _overlaps(audit_by_name, "keylog", window_start, window_end):
+    clip = _clip_window(audit_by_name, "keylog", window_start, window_end)
+    if clip is not None:
         from ..sources.keylog import daily_activity as keylog_daily_activity
 
-        for keylog_row in keylog_daily_activity(start=window_start, end=inclusive_end):
+        clip_start, clip_end = clip
+        for keylog_row in keylog_daily_activity(start=clip_start, end=_inclusive_end(clip_end)):
             add("keylog", keylog_row.date, "keypress_count", float(keylog_row.keypress_count))
             add(
                 "keylog",
@@ -339,14 +352,16 @@ def _window_personal_daily_signal_rows(
             add("keylog", keylog_row.date, "event_count", float(keylog_row.event_count))
             add("keylog", keylog_row.date, "session_count", float(keylog_row.session_count))
 
-    if _overlaps(audit_by_name, "sleep", window_start, window_end):
+    clip = _clip_window(audit_by_name, "sleep", window_start, window_end)
+    if clip is not None:
         from ..sources.sleep import entries_in_range, sleep_architecture
 
-        for entry in entries_in_range(start=window_start, end=inclusive_end):
+        clip_start, clip_end = clip
+        for entry in entries_in_range(start=clip_start, end=_inclusive_end(clip_end)):
             add("sleep", entry.date, "sleep_minutes", float(entry.total_minutes), quality=entry.quality_label)
             if entry.avg_score is not None:
                 add("sleep", entry.date, "sleep_score", float(entry.avg_score))
-        for arch in sleep_architecture(start=window_start, end=inclusive_end):
+        for arch in sleep_architecture(start=clip_start, end=_inclusive_end(clip_end)):
             add("sleep", arch.date, "sleep_arch_total_minutes", float(arch.total_min), sleep_id=arch.sleep_id)
             add("sleep", arch.date, "sleep_awake_minutes", float(arch.awake_min), sleep_id=arch.sleep_id)
             add("sleep", arch.date, "sleep_light_minutes", float(arch.light_min), sleep_id=arch.sleep_id)
@@ -358,30 +373,38 @@ def _window_personal_daily_signal_rows(
             if arch.first_rem_min is not None:
                 add("sleep", arch.date, "sleep_first_rem_minutes", float(arch.first_rem_min), sleep_id=arch.sleep_id)
 
-    if _overlaps(audit_by_name, "substance", window_start, window_end):
+    clip = _clip_window(audit_by_name, "substance", window_start, window_end)
+    if clip is not None:
         from ..sources.substance import daily_summary as substance_daily_summary
 
-        for substance_row in substance_daily_summary(start=window_start, end=inclusive_end):
+        clip_start, clip_end = clip
+        for substance_row in substance_daily_summary(start=clip_start, end=_inclusive_end(clip_end)):
             add("substance", substance_row.date, "dose_count", substance_row.dose_count, substances=",".join(substance_row.substances))
 
-    if _overlaps(audit_by_name, "spotify", window_start, window_end):
+    clip = _clip_window(audit_by_name, "spotify", window_start, window_end)
+    if clip is not None:
         from ..sources.spotify import daily_listening
 
-        for spotify_row in daily_listening(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for spotify_row in daily_listening(start=clip_start, end=clip_end, ensure=False):
             add("spotify", spotify_row.date, "minutes_played", spotify_row.hours * 60.0, stream_count=spotify_row.stream_count)
 
-    if _overlaps(audit_by_name, "reddit", window_start, window_end):
+    clip = _clip_window(audit_by_name, "reddit", window_start, window_end)
+    if clip is not None:
         from ..sources.reddit import daily_activity as reddit_daily_activity
 
-        for reddit_row in reddit_daily_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for reddit_row in reddit_daily_activity(start=clip_start, end=clip_end, ensure=False):
             add("reddit", reddit_row.date, "activity_count", reddit_row.comment_count + reddit_row.post_count, top_subreddits=",".join(reddit_row.top_subreddits))
 
-    if _overlaps(audit_by_name, "wykop", window_start, window_end):
+    clip = _clip_window(audit_by_name, "wykop", window_start, window_end)
+    if clip is not None:
         from ..sources.wykop import daily_activity as wykop_daily_activity
 
+        clip_start, clip_end = clip
         for wykop_row in wykop_daily_activity(
-            start=window_start,
-            end=inclusive_end,
+            start=clip_start,
+            end=_inclusive_end(clip_end),
         ):
             day = wykop_row.date
             add("wykop", day, "comment_count", float(wykop_row.comments))
@@ -390,29 +413,37 @@ def _window_personal_daily_signal_rows(
             add("wykop", day, "upvote_count", float(wykop_row.upvotes))
             add("wykop", day, "downvote_count", float(wykop_row.downvotes))
 
-    if _overlaps(audit_by_name, "themotte", window_start, window_end):
+    clip = _clip_window(audit_by_name, "themotte", window_start, window_end)
+    if clip is not None:
         from ..sources.themotte import daily_activity as themotte_daily_activity
 
-        for themotte_row in themotte_daily_activity(start=window_start, end=window_end):
+        clip_start, clip_end = clip
+        for themotte_row in themotte_daily_activity(start=clip_start, end=clip_end):
             day = themotte_row.date
             add("themotte", day, "message_count", float(themotte_row.messages), peers=",".join(themotte_row.peers))
             add("themotte", day, "outbound_message_count", float(themotte_row.outbound_messages))
             add("themotte", day, "notification_count", float(themotte_row.notifications))
 
-    if _overlaps(audit_by_name, "facebook_messenger", window_start, window_end):
+    clip = _clip_window(audit_by_name, "facebook_messenger", window_start, window_end)
+    if clip is not None:
         from ..sources.exports import daily_messenger_activity
 
-        for messenger_row in daily_messenger_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for messenger_row in daily_messenger_activity(start=clip_start, end=clip_end, ensure=False):
             add("facebook_messenger", messenger_row.date, "message_count", messenger_row.message_count, thread_count=messenger_row.thread_count)
 
-    if _overlaps(audit_by_name, "raindrop", window_start, window_end):
+    clip = _clip_window(audit_by_name, "raindrop", window_start, window_end)
+    if clip is not None:
         from ..sources.exports import daily_raindrop_activity
 
-        for raindrop_row in daily_raindrop_activity(start=window_start, end=window_end, ensure=False):
+        clip_start, clip_end = clip
+        for raindrop_row in daily_raindrop_activity(start=clip_start, end=clip_end, ensure=False):
             add("raindrop", raindrop_row.date, "bookmarks_added", raindrop_row.bookmarks_added, unique_tags=raindrop_row.unique_tags)
 
-    if _overlaps(audit_by_name, "google_takeout", window_start, window_end):
-        rows.extend(_google_takeout_signal_rows(window_start, window_end))
+    clip = _clip_window(audit_by_name, "google_takeout", window_start, window_end)
+    if clip is not None:
+        clip_start, clip_end = clip
+        rows.extend(_google_takeout_signal_rows(clip_start, clip_end))
     return rows
 
 
@@ -500,6 +531,38 @@ def _overlaps(audit_by_name: dict[str, Any], source: str, window_start: date, wi
 
     row = audit_by_name.get(source)
     return bool(row and materialized_dataset_overlaps(row, start=window_start, end=window_end))
+
+
+def _clip_window(
+    audit_by_name: dict[str, Any],
+    source: str,
+    window_start: date,
+    window_end: date,
+) -> tuple[date, date] | None:
+    """Intersect ``[window_start, window_end)`` with ``source``'s own known
+    real coverage bounds (``first_date``..``last_date + 1``). Returns
+    ``None`` when there is no overlap.
+
+    Without this, a source with a dense/always-emits per-day reader (e.g.
+    ``keylog.daily_activity()``, which builds an explicit zero-filled dict
+    for every day in the requested range regardless of whether keylog was
+    capturing that day) silently manufactures placeholder rows for dates
+    outside its real capture window whenever the *outer* window it's asked
+    about is wider than its own coverage -- which happens on every
+    full/default-window run of ``materialize_personal_daily_signals``,
+    since that window is the union of every ready source's bounds, not any
+    single source's own bounds (lynchpin-ee9: 23,016 of 24,136 keylog rows
+    in daily_signals.ndjson were zero-value placeholders for 2010-2025,
+    before keylog's real 2025-10-06 capture start).
+    """
+    row = audit_by_name.get(source)
+    if row is None or row.first_date is None or row.last_date is None:
+        return None
+    clip_start = max(window_start, row.first_date)
+    clip_end = min(window_end, row.last_date + timedelta(days=1))
+    if clip_start >= clip_end:
+        return None
+    return clip_start, clip_end
 
 
 def _personal_daily_signal_input_files(

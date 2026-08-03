@@ -5,7 +5,7 @@ import inspect
 import json
 import sqlite3
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from lynchpin.ingest.bookmarks_materialize import (
@@ -530,6 +530,92 @@ def test_personal_daily_signal_rows_include_keylog_metrics(monkeypatch) -> None:
     ]
 
 
+def test_personal_daily_signal_rows_clip_source_window_to_real_coverage(monkeypatch) -> None:
+    """Regression test for lynchpin-ee9.
+
+    keylog.daily_activity() (like several other per-day readers) builds a
+    dense, zero-filled row for every day in the range it's asked about,
+    regardless of whether keylog was actually capturing that day. A full
+    default-window run of materialize_personal_daily_signals asks
+    _window_personal_daily_signal_rows about the *union* of every ready
+    source's bounds -- which can be much wider than any single source's
+    own real coverage. Without clipping, this manufactures placeholder
+    rows for dates outside a source's real capture window (confirmed:
+    23,016 of 24,136 keylog rows in daily_signals.ndjson were zero-value
+    placeholders predating keylog's real 2025-10-06 capture start).
+
+    This test simulates that shape directly: keylog's real coverage is
+    2026-05-10..2026-05-12, but the outer window requested spans
+    2010-01-01..2026-05-15. The fake reader below emits one row per day
+    for whatever range it's called with (reproducing the dense-fill
+    behavior) -- the fix must call it only with the clipped
+    2026-05-10..2026-05-15 range, not the full outer window.
+    """
+    from dataclasses import dataclass
+
+    from lynchpin.materialization import MaterializedDataset
+    from lynchpin.ingest.personal_signals_materialize import _window_personal_daily_signal_rows
+
+    @dataclass
+    class KeylogRow:
+        date: date
+        event_count: int
+        keypress_count: int
+        changed_keypress_count: int
+        session_count: int
+        first_ts: datetime | None = None
+        last_ts: datetime | None = None
+
+    calls: list[tuple[date, date]] = []
+
+    def fake_daily_activity(*, start: date, end: date):
+        # keylog.daily_activity()'s real end semantics are inclusive
+        # (lynchpin.core.parse.iter_dates), matching the _inclusive_end()
+        # conversion the production code applies before calling it.
+        calls.append((start, end))
+        cursor = start
+        while cursor <= end:
+            yield KeylogRow(
+                date=cursor,
+                event_count=1,
+                keypress_count=1,
+                changed_keypress_count=1,
+                session_count=1,
+            )
+            cursor += timedelta(days=1)
+
+    monkeypatch.setattr("lynchpin.sources.keylog.daily_activity", fake_daily_activity)
+
+    rows = _window_personal_daily_signal_rows(
+        date(2010, 1, 1),
+        date(2026, 5, 15),
+        {
+            "keylog": MaterializedDataset(
+                name="keylog",
+                status="ready",
+                authority="fixture",
+                query_surface="fixture",
+                materialized_paths=(),
+                raw_roots=(),
+                row_count=3,
+                first_date=date(2026, 5, 10),
+                last_date=date(2026, 5, 12),
+                materialization_hint="fixture",
+                reason="fixture",
+            )
+        },
+    )
+
+    # The dense reader must only have been asked about keylog's own real
+    # coverage (inclusive end = last real day), never the full 2010..2026
+    # outer window.
+    assert calls == [(date(2026, 5, 10), date(2026, 5, 12))]
+
+    keylog_dates = sorted({day for source, day, *_ in rows if source == "keylog"})
+    assert keylog_dates == [date(2026, 5, 10), date(2026, 5, 11), date(2026, 5, 12)]
+    assert date(2010, 1, 1) not in keylog_dates
+
+
 def test_personal_daily_signal_rows_include_rich_physiology_metrics(monkeypatch) -> None:
     from lynchpin.materialization import MaterializedDataset
     from lynchpin.ingest.personal_signals_materialize import _window_personal_daily_signal_rows
@@ -742,6 +828,6 @@ def test_daily_signal_contract_sources_have_materializer_branches() -> None:
     from lynchpin.ingest.personal_signals_materialize import _window_personal_daily_signal_rows
 
     source = inspect.getsource(_window_personal_daily_signal_rows)
-    materialized_sources = set(re.findall(r'_overlaps\(audit_by_name, "([^"]+)"', source))
+    materialized_sources = set(re.findall(r'_clip_window\(audit_by_name, "([^"]+)"', source))
 
     assert set(DAILY_SIGNAL_SOURCE_NAMES) <= materialized_sources
