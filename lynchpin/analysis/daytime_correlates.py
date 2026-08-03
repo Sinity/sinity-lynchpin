@@ -345,23 +345,56 @@ def _load_ai_load() -> dict[str, dict[date, float]]:
     """Daily AI-session load from the polylogue index DB (read-only).
 
     ``ai_sessions``: sessions started per logical day; ``ai_user_words``:
-    operator-authored words sent to agents per logical day (prompt effort).
+    operator-authored words sent to agents per logical day (prompt effort);
+    ``ai_active_hours``: unioned session wall-clock ([created, updated]
+    interval union per day — overlapping concurrent sessions count once), the
+    closest available proxy for "agents were running";
+    ``ai_commits_linked``: commits the index attributes to sessions that day
+    (session_commits, high-confidence parser evidence).
     """
     poly_db = get_config().polylogue_db
-    out: dict[str, dict[date, float]] = {"ai_sessions": {}, "ai_user_words": {}}
+    out: dict[str, dict[date, float]] = {
+        "ai_sessions": {},
+        "ai_user_words": {},
+        "ai_active_hours": {},
+        "ai_commits_linked": {},
+    }
     if not poly_db.exists():
         return out
     conn = sqlite3.connect(f"file:{poly_db}?mode=ro", uri=True)
     try:
-        for created_ms, words in conn.execute(
-            "SELECT created_at_ms, COALESCE(authored_user_word_count, 0) "
+        intervals_by_day: dict[date, list[tuple[float, float]]] = defaultdict(list)
+        for created_ms, updated_ms, words in conn.execute(
+            "SELECT created_at_ms, updated_at_ms, "
+            "COALESCE(authored_user_word_count, 0) "
             "FROM sessions WHERE created_at_ms IS NOT NULL"
         ):
-            day = logical_date(
-                datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc)
-            )
+            start_dt = datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc)
+            day = logical_date(start_dt)
             out["ai_sessions"][day] = out["ai_sessions"].get(day, 0.0) + 1.0
             out["ai_user_words"][day] = out["ai_user_words"].get(day, 0.0) + float(words)
+            if updated_ms and updated_ms > created_ms:
+                # Whole interval attributed to the start's logical day; sessions
+                # spanning the 06:00 boundary are rare and short relative to
+                # daily totals.
+                intervals_by_day[day].append((created_ms / 1000.0, updated_ms / 1000.0))
+        for day, ivs in intervals_by_day.items():
+            ivs.sort()
+            total = 0.0
+            cur_s, cur_e = ivs[0]
+            for s, e in ivs[1:]:
+                if s <= cur_e:
+                    cur_e = max(cur_e, e)
+                else:
+                    total += cur_e - cur_s
+                    cur_s, cur_e = s, e
+            total += cur_e - cur_s
+            out["ai_active_hours"][day] = round(total / 3600.0, 3)
+        for (created_ms,) in conn.execute(
+            "SELECT created_at_ms FROM session_commits WHERE created_at_ms IS NOT NULL"
+        ):
+            day = logical_date(datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc))
+            out["ai_commits_linked"][day] = out["ai_commits_linked"].get(day, 0.0) + 1.0
     finally:
         conn.close()
     return out
@@ -491,11 +524,13 @@ def analyze(start: date, end: date) -> DaytimeCorrelatesReport:
 
     # AI-session load vs operator state: does heavy delegation fragment
     # attention or free it; prompt effort vs typing and commit output.
+    # lag +1 asks whether a heavy-delegation day PRECEDES a productive day
+    # (agents finishing overnight) rather than coinciding with one.
     for a_name, a in sorted(ai_load.items()):
         for out_name in ("deep_work_min", "fragmentation"):
             specs.append(("ai_load", a_name, a, out_name, aw[out_name], (0,)))
         specs.append(("ai_load", a_name, a, "keypress", keypress, (0,)))
-        specs.append(("ai_load", a_name, a, "git_commits", git, (0,)))
+        specs.append(("ai_load", a_name, a, "git_commits", git, (0, 1)))
 
     raw: list[tuple[str, str, str, int, EffectiveCorrelation]] = []
     fam_span: dict[str, tuple[Optional[date], Optional[date]]] = {}
