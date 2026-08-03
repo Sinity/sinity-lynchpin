@@ -357,3 +357,56 @@ def test_active_intervals_accepts_date_for_inclusive_day_window(monkeypatch) -> 
     assert len(intervals) == 1
     # The window passed to afk_events must be a full day, not zero-width.
     assert captured_bounds["end"] > captured_bounds["start"]
+
+
+def test_daily_activity_drops_outage_only_days_before_real_coverage_floor(monkeypatch) -> None:
+    """lynchpin-3yp: outage/presence detectors alone must not fabricate a day.
+
+    Regression for the 2013-window request: a caller (an ensure-cascade from
+    a dependent materializer) can ask daily_activity() about a range that
+    predates ActivityWatch entirely. _daily_outage_hours/_daily_presence_summary
+    happily report a "gap" for any day they're asked about, even one AW never
+    ran on — daily_activity() must not turn that alone into a fabricated
+    zero-activity row. A genuine full-outage day INSIDE real coverage (the
+    watcher crashed for a day) must still be reported.
+    """
+    import lynchpin.sources.activitywatch as aw
+
+    floor = date(2024, 2, 15)
+    phantom_day = date(2013, 1, 15)  # before AW ever existed on this machine
+    real_outage_day = date(2026, 3, 1)  # inside coverage, watcher was down all day
+
+    monkeypatch.setattr(aw, "active_seconds_by_date", lambda start, end: {})
+    monkeypatch.setattr(aw, "focus_spans", lambda **kwargs: ())
+    monkeypatch.setattr(
+        aw,
+        "_daily_outage_hours",
+        lambda **kwargs: {phantom_day: 86400.0, real_outage_day: 86400.0},
+    )
+    monkeypatch.setattr(aw, "_daily_presence_summary", lambda **kwargs: {})
+    monkeypatch.setattr(aw, "_activitywatch_real_coverage_floor", lambda: floor)
+
+    result = aw.daily_activity(start=date(2013, 1, 1), end=date(2026, 3, 2), ensure=False)
+    result_dates = {row.date for row in result}
+
+    assert phantom_day not in result_dates
+    assert real_outage_day in result_dates
+    real_row = next(row for row in result if row.date == real_outage_day)
+    assert real_row.active_hours == 0.0
+    assert real_row.outage_hours == 24.0
+
+
+def test_daily_activity_no_floor_filters_nothing(monkeypatch) -> None:
+    """When the canonical AW manifest doesn't exist yet, don't invent a filter."""
+    import lynchpin.sources.activitywatch as aw
+
+    some_day = date(2013, 1, 15)
+
+    monkeypatch.setattr(aw, "active_seconds_by_date", lambda start, end: {})
+    monkeypatch.setattr(aw, "focus_spans", lambda **kwargs: ())
+    monkeypatch.setattr(aw, "_daily_outage_hours", lambda **kwargs: {some_day: 3600.0})
+    monkeypatch.setattr(aw, "_daily_presence_summary", lambda **kwargs: {})
+    monkeypatch.setattr(aw, "_activitywatch_real_coverage_floor", lambda: None)
+
+    result = aw.daily_activity(start=date(2013, 1, 1), end=date(2013, 1, 31), ensure=False)
+    assert {row.date for row in result} == {some_day}

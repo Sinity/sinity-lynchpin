@@ -57,14 +57,56 @@ def materialize_activitywatch_derived(
         raise MaterializationError("activitywatch_derived_materialize", reason="ActivityWatch derived materialization end must be after start")
     if chunk_days < 1:
         raise MaterializationError("activitywatch_derived_materialize", reason="chunk_days must be at least 1")
+    clipped_start, clipped_end = _clip_to_real_coverage(start, end)
+    if clipped_end <= clipped_start:
+        # The requested window has no overlap with the canonical AW events
+        # product's real coverage (lynchpin-3yp: an ensure-cascade from a
+        # dependent materializer forwarded a window reaching back to 2013,
+        # and the generators dutifully computed "outages" for days
+        # ActivityWatch never ran on). There is nothing to materialize —
+        # return the existing product unchanged rather than fabricate rows.
+        existing_path = activitywatch_derived_manifest_path(root)
+        if existing_path.exists():
+            return json.loads(existing_path.read_text(encoding="utf-8"))
+        raise MaterializationError(
+            "activitywatch_derived_materialize",
+            reason=f"requested window {start}..{end} has no overlap with canonical ActivityWatch coverage",
+        )
     manifest: dict[str, Any] | None = None
-    chunk_start = start
-    while chunk_start < end:
-        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+    chunk_start = clipped_start
+    while chunk_start < clipped_end:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), clipped_end)
         manifest = _materialize_window(start=chunk_start, end=chunk_end, root=root)
         chunk_start = chunk_end
-    assert manifest is not None  # loop runs at least once (end > start)
+    assert manifest is not None  # loop runs at least once (clipped_end > clipped_start)
     return manifest
+
+
+def _clip_to_real_coverage(start: date, end: date) -> tuple[date, date]:
+    """Clip the half-open ``[start, end)`` request to canonical AW coverage.
+
+    Outside the canonical events product's real span there is no source
+    data at all, so materializing there means asking the generators "what
+    happened on this day" for a day ActivityWatch never recorded. This is
+    the single choke point every caller routes through — the CLI, the
+    ensure-cascade from other materializers (temporal_signals etc.), ad-hoc
+    backfills — so clipping here is sufficient without patching each caller.
+    """
+    manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    if not manifest.exists():
+        # No canonical product to clip against — nothing to enforce, and
+        # nothing wrong with proceeding (this is the normal state for tests
+        # that monkeypatch the generators directly, bypassing the canonical
+        # events file entirely).
+        return start, end
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    first_raw = payload.get("first_date")
+    last_raw = payload.get("last_date")
+    if not first_raw or not last_raw:
+        return start, end
+    floor = date.fromisoformat(str(first_raw))
+    ceiling = date.fromisoformat(str(last_raw)) + timedelta(days=1)  # end is exclusive
+    return max(start, floor), min(end, ceiling)
 
 
 def _materialize_window(

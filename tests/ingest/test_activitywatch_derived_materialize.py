@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+import json
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 
@@ -231,3 +232,95 @@ def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypat
         assert chunked[key] == single[key]
     assert chunked["window_start"] == "2026-06-07"  # last chunk's window
     assert single["window_start"] == "2026-06-01"
+
+
+def test_materialize_activitywatch_derived_clips_window_to_real_coverage(monkeypatch, tmp_path):
+    """lynchpin-3yp: an ensure-cascade window reaching before AW's real
+    coverage (e.g. temporal_signals asking for its own 2013-era history)
+    must be clipped to the canonical product's real span before generators
+    ever see it — otherwise they compute "outages" for days AW never ran.
+    """
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+
+    canonical = tmp_path / "canonical-events.ndjson"
+    canonical.write_text("{}\n", encoding="utf-8")
+    canonical_manifest = canonical.with_suffix(".manifest.json")
+    real_first, real_last = date(2024, 2, 15), date(2026, 7, 12)
+    canonical_manifest.write_text(
+        json.dumps({"first_date": real_first.isoformat(), "last_date": real_last.isoformat()}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (canonical,))
+
+    seen_windows: list[tuple[date, date]] = []
+
+    def record(**kwargs):
+        seen_windows.append((kwargs.get("start"), kwargs.get("end")))
+        return ()
+
+    for name in (
+        "focus_spans", "project_focus_days", "daily_activity", "deep_work",
+        "circadian", "loops", "fragmentation", "attention",
+    ):
+        monkeypatch.setattr(mod, name, record)
+
+    # Requested window reaches back to 2013 — years before real AW coverage —
+    # mirroring the actual mis-scoped ensure-cascade window that produced
+    # the 184 phantom rows.
+    manifest = mod.materialize_activitywatch_derived(
+        start=date(2013, 1, 1), end=date(2024, 3, 1), root=tmp_path / "out",
+    )
+
+    # covered_dates marks the CLIPPED window as verified, never the raw
+    # pre-2024 request the ensure-cascade actually asked for.
+    assert manifest["covered_dates"]
+    assert min(manifest["covered_dates"]) == real_first.isoformat()
+
+    def as_date(value):
+        return value.date() if isinstance(value, datetime) else value
+
+    for w_start, w_end in seen_windows:
+        assert as_date(w_start) >= real_first
+        assert as_date(w_end) <= real_last + timedelta(days=1)
+    # Every generator call must reflect the clipped floor, never the raw request.
+    assert seen_windows
+    assert all(as_date(w_start) == real_first for w_start, _ in seen_windows)
+
+
+def test_materialize_activitywatch_derived_noop_when_window_entirely_before_coverage(monkeypatch, tmp_path):
+    """A request wholly before real AW coverage must not touch the generators."""
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+
+    canonical = tmp_path / "canonical-events.ndjson"
+    canonical.write_text("{}\n", encoding="utf-8")
+    canonical_manifest = canonical.with_suffix(".manifest.json")
+    canonical_manifest.write_text(
+        json.dumps({"first_date": "2024-02-15", "last_date": "2026-07-12"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+
+    called = False
+
+    def fail_if_called(**kwargs):
+        nonlocal called
+        called = True
+        return ()
+
+    for name in (
+        "focus_spans", "project_focus_days", "daily_activity", "deep_work",
+        "circadian", "loops", "fragmentation", "attention",
+    ):
+        monkeypatch.setattr(mod, name, fail_if_called)
+
+    out_root = tmp_path / "out"
+    import pytest
+    from lynchpin.core.errors import MaterializationError
+
+    with pytest.raises(MaterializationError):
+        mod.materialize_activitywatch_derived(
+            start=date(2013, 1, 1), end=date(2013, 6, 1), root=out_root,
+        )
+
+    assert not called

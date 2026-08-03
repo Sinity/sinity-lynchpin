@@ -1302,6 +1302,18 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[AWDay
     # Cross-source presence (keylog + AW, resilience against AW outages)
     presence_map = _daily_presence_summary(start=start, end=end)
 
+    # Outage/presence detectors report a "gap" for any day they're asked
+    # about, even one before ActivityWatch ever ran on this machine — a day
+    # AW never recorded is not an "outage", it's out of scope. Without this
+    # floor, those two maps alone can pull dataless pre-history days into
+    # all_dates and daily_activity fabricates a zero-activity row for them
+    # (lynchpin-3yp). active_map/dw_by_day/frag_by_day are exempt: they
+    # derive from focus_spans, which is already empty outside real coverage.
+    floor = _activitywatch_real_coverage_floor()
+    if floor is not None:
+        outage_map = {d: v for d, v in outage_map.items() if d >= floor}
+        presence_map = {d: v for d, v in presence_map.items() if d >= floor}
+
     all_dates = sorted(
         set(active_map) | set(dw_by_day) | set(frag_by_day)
         | set(outage_map) | set(presence_map)
@@ -1387,6 +1399,31 @@ def _daily_presence_summary(
         if h.derived_state == "data_gap":
             by_day[d]["data_gap_hours"] += 1
     return dict(by_day)
+
+
+@functools.lru_cache(maxsize=1)
+def _activitywatch_real_coverage_floor() -> date | None:
+    """Earliest date the canonical AW events product actually covers.
+
+    Read fresh each process (cached only within it — this module has no
+    signature-based invalidation for the canonical manifest, and a CLI
+    invocation is short-lived enough that staleness within one run isn't a
+    concern). Returns None when the canonical product doesn't exist yet, in
+    which case callers should not filter on it.
+    """
+    from .activitywatch_raw import canonical_activitywatch_events_path
+
+    manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    if not manifest.exists():
+        return None
+    import json
+
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    first = payload.get("first_date")
+    return date.fromisoformat(str(first)) if first else None
 
 
 def _daily_outage_hours(*, start: datetime, end: datetime) -> dict[date, float]:
