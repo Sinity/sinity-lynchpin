@@ -161,6 +161,17 @@ Status = DatasetStatus
 MaterializationStatus = Literal["ready", "updated", "blocked", "failed", "coverage_bound", "manual"]
 MaterializationBudget = Literal["inline", "background", "manual"]
 
+#: Dataset names whose tail has already been force-refreshed once THIS
+#: process. A read path that touches "today" (repair_afk_events over many
+#: not-afk events, each a distinct window) would otherwise trigger a full
+#: product rebuild on every single call, because a continuously-writing
+#: live source (aw-server) makes the tail permanently stale by the time the
+#: rebuild finishes (lynchpin-0s7). One guaranteed refresh per process is
+#: enough: later calls with a different window still won't see the events
+#: written in the last few seconds, which is an acceptable trade for not
+#: rebuilding a hundreds-of-MB product dozens of times in one CLI run.
+_TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
+
 
 @dataclass(frozen=True)
 class MaterializedDataset:
@@ -523,7 +534,9 @@ def ensure_materialized(
     if (
         not force
         and (before.status == "ready" or before.tail_stale)
-        and _materialized_enough_for_window(before, window)
+        and _materialized_enough_for_window(
+            before, window, already_refreshed_this_process=name in _TAIL_REFRESHED_THIS_PROCESS
+        )
     ):
         return _materialization_result(
             before,
@@ -609,6 +622,10 @@ def ensure_materialized(
         )
 
     after = _audit_one(name, cfg=cfg)
+    if after.tail_stale:
+        # A live-tail rebuild was attempted for this dataset; whatever the
+        # outcome, later same-process reads should not pay for another one.
+        _TAIL_REFRESHED_THIS_PROCESS.add(name)
     # just_refreshed: the live source may gain rows DURING the rebuild we just
     # ran, flipping the audit straight back to tail-stale; that is success,
     # not failure — the product is as fresh as a rebuild can make it.
@@ -724,6 +741,7 @@ def _materialized_enough_for_window(
     window: tuple[date, date] | None,
     *,
     just_refreshed: bool = False,
+    already_refreshed_this_process: bool = False,
 ) -> bool:
     if window is None:
         return True
@@ -739,8 +757,11 @@ def _materialized_enough_for_window(
     if row.status != "ready" and row.tail_stale and not just_refreshed:
         # A stale tail only affects the present: new live rows cannot change
         # history, so a fully-covered window that ends before today's logical
-        # date needs no refresh. Windows touching today still re-materialize.
-        return window[1] < logical_date(datetime.now().astimezone())
+        # date needs no refresh. Windows touching today still re-materialize —
+        # unless this process already paid for one live-tail refresh of this
+        # dataset (lynchpin-0s7), in which case a few more seconds of live
+        # drift isn't worth another full rebuild.
+        return already_refreshed_this_process or window[1] < logical_date(datetime.now().astimezone())
     return True
 
 

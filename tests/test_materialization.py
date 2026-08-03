@@ -4115,3 +4115,105 @@ def test_tail_stale_coverage_reports_dated_relation(tmp_path) -> None:
     row = _tail_stale_aw_row(tmp_path)
     coverage = materialized_dataset_coverage(row, start=date(2024, 3, 2), end=date(2024, 3, 5))
     assert coverage["fully_covers_requested_window"] is True
+
+
+def test_ensure_materialized_tail_stale_process_memo_avoids_repeat_rebuild(monkeypatch) -> None:
+    """lynchpin-0s7: repeated windows touching "today" from one process must
+    pay for a single live-tail rebuild, not one per distinct window.
+
+    repair_afk_events calls window_events()/ensure_materialized() once per
+    not-afk event with a DIFFERENT window each time; without the memo every
+    one of those (all touching today, since the live source is always newer
+    than the product) triggers a full canonical-product rebuild.
+    """
+    from lynchpin import materialization
+    from lynchpin.core.primitives import logical_date
+
+    today = logical_date(datetime.now().astimezone())
+    covered = tuple(today - timedelta(days=i) for i in range(5))
+
+    def builder(_cfg):
+        return MaterializedDataset(
+            name="activitywatch",
+            status="partial",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=min(covered),
+            last_date=max(covered),
+            materialization_hint="fixture",
+            reason="tail stale",
+            covered_dates=covered,
+            tail_stale=True,
+        )
+
+    calls = {"materialize": 0}
+
+    def materializer():
+        calls["materialize"] += 1
+        return {"row_count": 1}
+
+    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activitywatch": builder})
+    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch": materializer})
+    monkeypatch.setattr(materialization, "_TAIL_REFRESHED_THIS_PROCESS", set())
+
+    window_a = (today - timedelta(days=1), today)
+    window_b = (today - timedelta(days=2), today)  # a DIFFERENT window, still touching today
+
+    result_a = ensure_materialized("activitywatch", window=window_a, cfg=SimpleNamespace())
+    assert result_a.status == "updated"
+    assert calls["materialize"] == 1
+
+    result_b = ensure_materialized("activitywatch", window=window_b, cfg=SimpleNamespace())
+    assert result_b.status == "ready"
+    assert result_b.changed is False
+    assert calls["materialize"] == 1  # no second rebuild
+
+
+def test_ensure_materialized_tail_stale_new_process_still_refreshes(monkeypatch) -> None:
+    """The memo is process-scoped: a fresh process (empty memo set) must
+    still pay for the first live-tail rebuild rather than trusting a stale
+    product forever.
+    """
+    from lynchpin import materialization
+    from lynchpin.core.primitives import logical_date
+
+    today = logical_date(datetime.now().astimezone())
+    covered = tuple(today - timedelta(days=i) for i in range(5))
+
+    def builder(_cfg):
+        return MaterializedDataset(
+            name="activitywatch",
+            status="partial",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=min(covered),
+            last_date=max(covered),
+            materialization_hint="fixture",
+            reason="tail stale",
+            covered_dates=covered,
+            tail_stale=True,
+        )
+
+    calls = {"materialize": 0}
+
+    def materializer():
+        calls["materialize"] += 1
+        return {"row_count": 1}
+
+    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activitywatch": builder})
+    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch": materializer})
+    # Simulate another dataset already having refreshed — "activitywatch"
+    # itself must NOT be pre-populated.
+    monkeypatch.setattr(materialization, "_TAIL_REFRESHED_THIS_PROCESS", {"unrelated_dataset"})
+
+    window = (today - timedelta(days=1), today)
+    result = ensure_materialized("activitywatch", window=window, cfg=SimpleNamespace())
+
+    assert result.status == "updated"
+    assert calls["materialize"] == 1
