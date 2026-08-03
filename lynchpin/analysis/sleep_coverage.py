@@ -45,7 +45,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 __all__ = [
     "CoverageVerdict",
@@ -96,6 +96,8 @@ class CoverageVerdict:
     pc_quiet_minutes: Optional[float]
     keypresses: Optional[int]
     evidence: tuple[str, ...]
+    #: Minutes of model-predicted sleep on an otherwise unrecorded date.
+    predicted_sleep_minutes: Optional[float] = None
 
     @property
     def is_unknown(self) -> bool:
@@ -203,6 +205,7 @@ def classify_coverage(
     sleep_quiet_minutes: float = _SLEEP_QUIET_MINUTES,
     awake_active_minutes: float = _AWAKE_ACTIVE_MINUTES,
     include_activitywatch: bool = False,
+    predicted_blocks: Optional[list[Any]] = None,
 ) -> CoverageSummary:
     """Classify every logical date in range by what is actually known about it.
 
@@ -272,6 +275,16 @@ def classify_coverage(
     if hr_stamps:
         hr_window = (hr_stamps[0].date(), hr_stamps[-1].date())
 
+    predicted_by_night: dict[date, float] = {}
+    for block in predicted_blocks or ():
+        night = getattr(block, "night", None)
+        minutes = getattr(block, "minutes", None)
+        if night is None or minutes is None:
+            continue
+        if not getattr(block, "is_recovered", True):
+            continue
+        predicted_by_night[night] = predicted_by_night.get(night, 0.0) + float(minutes)
+
     verdicts: list[CoverageVerdict] = []
     day = start
     while day <= end:
@@ -294,7 +307,10 @@ def classify_coverage(
             pc_quiet = _longest_quiet(clipped, (lo, hi))
 
         keypresses = key_by_date.get(day)
+        predicted = predicted_by_night.get(day)
         evidence: list[str] = [f"hr_minutes={hr_count}"]
+        if predicted:
+            evidence.append(f"model_sleep={predicted:.0f}m")
         if pc_active is not None:
             evidence.append(f"pc_active={pc_active:.0f}m")
             evidence.append(f"pc_quiet={pc_quiet:.0f}m")
@@ -321,6 +337,11 @@ def classify_coverage(
         elif pc_active is not None and pc_active >= awake_active_minutes:
             verdict = EVIDENCED_AWAKE
             evidence.append(f"PC active {pc_active:.0f}m, no long quiet block")
+        elif predicted and predicted >= sleep_quiet_minutes / 2:
+            verdict = EVIDENCED_SLEEP_UNRECORDED
+            evidence.append(
+                f"model predicts {predicted:.0f}m of sustained sleep"
+            )
         else:
             verdict = AMBIGUOUS
             evidence.append("PC evidence inconclusive")
@@ -335,6 +356,7 @@ def classify_coverage(
                 pc_quiet_minutes=round(pc_quiet, 1) if pc_quiet is not None else None,
                 keypresses=keypresses,
                 evidence=tuple(evidence),
+                predicted_sleep_minutes=round(predicted, 1) if predicted else None,
             )
         )
         day += timedelta(days=1)
@@ -353,6 +375,9 @@ def classify_coverage(
         "a date outside PC coverage is unknown, not evidence of anything.",
         "A day with almost no computer use at all is AMBIGUOUS, not slept: silence "
         "only implies sleep against a backdrop of ordinary PC activity.",
+        "Model-predicted sleep is a WEAKER evidence tier: it can promote an "
+        "ambiguous date or refine a recovered duration, but never overrides "
+        "keystroke-confirmed wakefulness and never rescues a watch-off date.",
     ]
     if evidence_error:
         caveats.append(f"PC evidence degraded ({evidence_error}).")
