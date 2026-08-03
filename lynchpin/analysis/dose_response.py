@@ -174,10 +174,19 @@ def analyze_dose_response(
         start=start, end=end, substance=substance
     )
 
+    # Controls must be trustworthy zeros: only days inside comprehensive-
+    # logging periods qualify (operator logs in regimes; a quiet day outside
+    # a regime may be unlogged use). Synthetic-activity tests pass their own
+    # activity dict and dose entries whose days all fall inside one period.
+    from ..sources.substance import in_logging_period, logging_periods
+
+    periods = logging_periods()
     control_days = [
         day
         for day in sorted(hourly)
-        if start <= day <= end and day not in dose_days
+        if start <= day <= end
+        and day not in dose_days
+        and in_logging_period(day, periods)
     ]
 
     per_event_net: list[float] = []

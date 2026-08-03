@@ -19,9 +19,9 @@ def _bumped_day(dose_hour: int, base: float = 10.0, bump: float = 30.0) -> dict[
 def _patch_doses(monkeypatch, events):
     from types import SimpleNamespace
 
-    def fake_entries_in_range(*, start, end):
-        for day, hour in events:
-            yield SimpleNamespace(
+    def _rows():
+        return [
+            SimpleNamespace(
                 date=day,
                 time=None if hour is None else time(hour, 5),
                 substance="test",
@@ -29,10 +29,15 @@ def _patch_doses(monkeypatch, events):
                 source="t",
                 note="",
             )
+            for day, hour in events
+        ]
 
     import lynchpin.sources.substance as sub
 
-    monkeypatch.setattr(sub, "entries_in_range", fake_entries_in_range)
+    monkeypatch.setattr(sub, "entries_in_range", lambda *, start, end: iter(_rows()))
+    # logging_periods() derives regimes from entries(); feed it the same
+    # synthetic data so control gating is deterministic in tests.
+    monkeypatch.setattr(sub, "entries", lambda: iter(_rows()))
 
 
 def test_detects_constructed_uplift(monkeypatch):
@@ -72,7 +77,9 @@ def test_untimed_days_excluded_from_events_and_controls(monkeypatch):
     )
     assert report.n_events == 0
     assert report.n_days_excluded_untimed == 1
-    assert report.n_control_days == 1  # the untimed dose day is not a control
+    # One dose-day is below the logging-regime floor (min_dose_days), so no
+    # comprehensive-logging period exists and NO day qualifies as a control.
+    assert report.n_control_days == 0
 
 
 def test_edge_windows_dropped(monkeypatch):
@@ -83,3 +90,28 @@ def test_edge_windows_dropped(monkeypatch):
     )
     assert report.n_events == 0
     assert report.n_events_dropped_edge == 1
+
+
+def test_logging_periods_split_on_large_gaps(monkeypatch):
+    from datetime import timedelta
+    import lynchpin.sources.substance as sub
+    from types import SimpleNamespace
+
+    days = [date(2026, 1, 1) + timedelta(days=i) for i in range(6)]  # dense era
+    days += [date(2026, 3, 1)]  # isolated singleton after a 53-day gap
+    days += [date(2026, 5, 1) + timedelta(days=i * 2) for i in range(6)]  # second era
+    monkeypatch.setattr(
+        sub,
+        "entries",
+        lambda: iter(
+            SimpleNamespace(date=d, time=None, substance="t", amount_mg=1.0, source="t", note="")
+            for d in days
+        ),
+    )
+    periods = sub.logging_periods()
+    assert [(p.start, p.end) for p in periods] == [
+        (date(2026, 1, 1), date(2026, 1, 6)),
+        (date(2026, 5, 1), date(2026, 5, 11)),
+    ]
+    assert sub.in_logging_period(date(2026, 1, 3), periods)
+    assert not sub.in_logging_period(date(2026, 3, 1), periods)  # singleton era dropped

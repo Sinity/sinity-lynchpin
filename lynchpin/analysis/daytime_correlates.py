@@ -224,33 +224,36 @@ def _load_spotify_minutes() -> dict[date, float]:
 def _load_substance_daily() -> dict[str, dict[date, float]]:
     """Dose series from the substance log: total mg, dose count, per-substance mg.
 
-    Within the log's [first, last] entry dates, days without entries are
-    genuine 0 mg / 0 dose days (complete event log); outside, days are absent.
-    Per-substance series are emitted only for substances with at least
-    ``MIN_SUBSTANCE_DOSES`` logged doses.
+    Zero days are emitted ONLY inside comprehensive-logging periods
+    (``sources.substance.logging_periods``): the operator logs in regimes, and
+    a quiet day outside a regime is indeterminate (possibly unlogged use), not
+    abstinence — those days are absent from every series so they can enter
+    neither arm of a correlation. Per-substance series are emitted only for
+    substances with at least ``MIN_SUBSTANCE_DOSES`` logged doses.
     """
-    from ..sources.substance import entries
+    from ..sources.substance import entries, logging_periods
 
     rows = list(entries())
     out: dict[str, dict[date, float]] = {"total_mg": {}, "dose_count": {}}
     if not rows:
         return out
-    first = min(r.date for r in rows)
-    last = max(r.date for r in rows)
     dose_counts: dict[str, int] = defaultdict(int)
     for r in rows:
         dose_counts[r.substance] += 1
     major = {s for s, n in dose_counts.items() if n >= MIN_SUBSTANCE_DOSES}
     for s in major:
         out[f"mg[{s}]"] = {}
-    day = first
-    while day <= last:
-        out["total_mg"][day] = 0.0
-        out["dose_count"][day] = 0.0
-        for s in major:
-            out[f"mg[{s}]"][day] = 0.0
-        day += timedelta(days=1)
+    for period in logging_periods():
+        day = period.start
+        while day <= period.end:
+            out["total_mg"][day] = 0.0
+            out["dose_count"][day] = 0.0
+            for s in major:
+                out[f"mg[{s}]"][day] = 0.0
+            day += timedelta(days=1)
     for r in rows:
+        if r.date not in out["total_mg"]:
+            continue  # entry outside any period (min_dose_days singleton)
         if r.amount_mg is not None:
             out["total_mg"][r.date] += r.amount_mg
             if r.substance in major:

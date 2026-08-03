@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from ..core.config import get_config
 from ..core.parse import parse_date_from_any, safe_float
@@ -154,3 +154,61 @@ def monthly_summary(*, start: date, end: date) -> list[SubstanceMonthlySummary]:
             )
         )
     return summaries
+
+
+@dataclass(frozen=True)
+class LoggingPeriod:
+    """A maximal span of continuous substance logging.
+
+    Consecutive dose-days ≤ ``max_gap_days`` apart belong to one period. The
+    gap histogram is decisively bimodal (360/372 gaps ≤ 4 days, nothing in
+    5-6 or 8, every gap ≥ 9 a singleton era boundary), so the default sits in
+    the empty region rather than on a judgment call. Within a period the
+    operator logs comprehensively (their stated practice), so a day with no
+    entry is a trustworthy zero; days OUTSIDE any period are indeterminate
+    (possibly unlogged use) and must not serve as abstinence controls.
+    """
+
+    start: date
+    end: date
+    dose_days: int
+
+
+def logging_periods(
+    *,
+    max_gap_days: int = 8,
+    min_dose_days: int = 5,
+) -> list[LoggingPeriod]:
+    """Maximal comprehensive-logging spans inferred from dose-day gaps.
+
+    ``min_dose_days`` drops isolated ancient singletons (2020-06, 2022-01)
+    that are not logging regimes.
+    """
+    days = sorted({e.date for e in entries()})
+    periods: list[LoggingPeriod] = []
+    if not days:
+        return periods
+    run_start = days[0]
+    run_days = 1
+    for prev, cur in zip(days, days[1:]):
+        if (cur - prev).days <= max_gap_days:
+            run_days += 1
+            continue
+        if run_days >= min_dose_days:
+            periods.append(LoggingPeriod(start=run_start, end=prev, dose_days=run_days))
+        run_start = cur
+        run_days = 1
+    if run_days >= min_dose_days:
+        periods.append(LoggingPeriod(start=run_start, end=days[-1], dose_days=run_days))
+    return periods
+
+
+def in_logging_period(
+    day: date,
+    periods: Sequence[LoggingPeriod] | None = None,
+) -> bool:
+    """True when ``day`` falls inside a comprehensive-logging span."""
+    for period in periods if periods is not None else logging_periods():
+        if period.start <= day <= period.end:
+            return True
+    return False
