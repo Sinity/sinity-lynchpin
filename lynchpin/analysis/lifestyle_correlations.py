@@ -45,7 +45,15 @@ every reported association carries the machinery to avoid false LLM claims:
   not just in a docstring. Multi-year windows additionally inherit the
   analytics' even-sampling / autocorrelation contiguity caveats.
 
-Method: lagged Pearson cross-correlation, FDR-corrected (Benjamini-Hochberg).
+* **Autocorrelation.** Day series are positively autocorrelated (consecutive
+  days are not independent), which makes the naive ``df = n-2`` t-test
+  anti-conservative. Each correlation's ``p_value`` is computed against the
+  Quenouille/Bartlett effective sample size (``n_eff``, reported per pair) and
+  the FDR pass consumes those corrected p-values; the uncorrected p is kept as
+  ``p_naive`` for transparency. See ``core.analytics.EffectiveCorrelation``.
+
+Method: lagged Pearson cross-correlation, autocorrelation-corrected p-values,
+FDR-corrected (Benjamini-Hochberg).
 """
 
 from __future__ import annotations
@@ -57,7 +65,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
+from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p, autocorr_corrected_pearson
 from ..core.coverage import CoverageBounds
 from .operator_daily import OperatorDay, operator_daily_matrix
 
@@ -92,8 +100,9 @@ _GIT_KEY: Optional[str] = None  # live source; not clamped.
 class LagCorrelation:
     """One (predictor → outcome) correlation at a specific lag.
 
-    ``p_value`` is the raw two-tailed t-test p-value at this lag. ``q_value`` is
-    the Benjamini-Hochberg FDR-adjusted p-value across the *entire* family of
+    ``p_value`` is the two-tailed t-test p-value at the autocorr-corrected
+    effective sample size (``n_eff``; uncorrected p in ``p_naive``). ``q_value``
+    is the Benjamini-Hochberg FDR-adjusted p-value across the *entire* family of
     correlations evaluated by a single ``analyze`` call (all pairs × all lags),
     and ``significant`` is ``q_value < FDR_TARGET``. ``n`` is the number of
     paired, in-coverage observations behind ``r``.
@@ -106,9 +115,11 @@ class LagCorrelation:
     r: float  # Pearson correlation coefficient
     n: int  # number of paired observations
     label: str  # human-readable, e.g. "spotify_hours → aw_deep_work_min (lag=0d)"
-    p_value: float = 1.0  # raw two-tailed t-test p-value at this lag
-    q_value: float = 1.0  # BH FDR-adjusted p across the full test family
+    p_value: float = 1.0  # two-tailed p at the autocorr-corrected effective n
+    q_value: float = 1.0  # BH FDR-adjusted p (from p_value) across the family
     significant: bool = False  # q_value < FDR_TARGET
+    n_eff: float = 0.0  # Quenouille/Bartlett effective sample size
+    p_naive: float = 1.0  # uncorrected df=n-2 p (transparency only)
 
 
 @dataclass(frozen=True)
@@ -311,6 +322,8 @@ def analyze(
                     p_value=round(rc.p, 4),
                     q_value=round(q, 4),
                     significant=q < FDR_TARGET,
+                    n_eff=round(rc.n_eff, 1),
+                    p_naive=round(rc.p_naive, 4),
                 )
             )
 
@@ -333,7 +346,9 @@ class _RawCorr:
     lag: int
     r: float
     n: int
-    p: float
+    p: float  # autocorr-corrected p (feeds FDR)
+    n_eff: float = 0.0
+    p_naive: float = 1.0
 
 
 @dataclass
@@ -386,8 +401,10 @@ def _build_family(
                     out_present,
                 )
                 if stat is not None:
-                    r, n, p = stat
-                    raw.append(_RawCorr(name, pred_name, out_name, lag, r, n, p))
+                    r, n, n_eff, p, p_naive = stat
+                    raw.append(
+                        _RawCorr(name, pred_name, out_name, lag, r, n, p, n_eff, p_naive)
+                    )
 
     covered_start, covered_end = _family_window(rows_by_date, bounds, used_keys)
     provenance = _provenance_lines(bounds, used_keys)
@@ -410,8 +427,8 @@ def _lag_correlation(
     out_bounds: Optional[CoverageBounds],
     pred_present: str,
     out_present: str,
-) -> Optional[tuple[float, int, float]]:
-    """Pearson r + raw two-tailed p between predictor day D and outcome day D+lag.
+) -> Optional[tuple[float, int, float, float, float]]:
+    """Pearson r + p-values between predictor day D and outcome day D+lag.
 
     A day pair contributes only when:
       * the predictor day is in predictor coverage AND carries the predictor's
@@ -420,13 +437,17 @@ def _lag_correlation(
         presence label;
       * both accessors return a non-None value.
     ``None`` coverage bounds (live git) skip the coverage gate but the presence
-    gate still applies. Returns ``(r, n, p)`` or ``None`` when fewer than
-    ``MIN_PAIRS`` valid pairs survive.
+    gate still applies. Returns ``(r, n, n_eff, p_corrected, p_naive)`` — the
+    corrected p uses the Quenouille/Bartlett effective sample size (day series
+    are autocorrelated; see ``core.analytics.EffectiveCorrelation``) — or
+    ``None`` when fewer than ``MIN_PAIRS`` valid pairs survive. Day pairs are
+    accumulated in ascending date order so the lag-1 autocorrelation estimate
+    is meaningful.
     """
     xs: list[float] = []
     ys: list[float] = []
 
-    for d, pred_row in rows_by_date.items():
+    for d, pred_row in sorted(rows_by_date.items()):
         out_day = d + timedelta(days=lag)
         out_row = rows_by_date.get(out_day)
         if out_row is None:
@@ -445,17 +466,10 @@ def _lag_correlation(
     if len(xs) < MIN_PAIRS:
         return None
 
-    r = _pearson_r(xs, ys)
-    if r is None:
+    stat = autocorr_corrected_pearson(xs, ys)
+    if stat is None:
         return None
-
-    n = len(xs)
-    if abs(r) >= 1.0:
-        p = 0.0
-    else:
-        t_stat = r * math.sqrt((n - 2) / (1 - r ** 2))
-        p = _t_test_p(t_stat, n - 2)
-    return (r, n, p)
+    return (stat.r, stat.n, stat.n_eff, stat.p_value, stat.p_naive)
 
 
 def _observed(
@@ -640,13 +654,14 @@ def _build_summary(report: LifestyleCorrelationReport) -> str:
         if significant:
             lines.append(
                 f"FDR-significant lagged associations "
-                f"(Benjamini-Hochberg q<{FDR_TARGET:g} across {report.n_tests} tests):"
+                f"(Benjamini-Hochberg q<{FDR_TARGET:g} across {report.n_tests} tests; "
+                "p autocorr-corrected via effective n):"
             )
             for c in significant:
                 direction = "↑" if c.r > 0 else "↓"
                 lines.append(
                     f"  r={c.r:+.3f} {direction}  [{c.family}] {c.label} "
-                    f"(n={c.n}, p={c.p_value:.4f}, q={c.q_value:.4f})"
+                    f"(n={c.n}, n_eff={c.n_eff:.0f}, p={c.p_value:.4f}, q={c.q_value:.4f})"
                 )
         else:
             lines.append(
@@ -709,7 +724,6 @@ def genre_deep_work_correlation(
     FDR-corrected p-value across the genre family. Same-day ASSOCIATION, not
     causation. Requires SPOTIFY_CLIENT_ID/SECRET (raises SourceUnavailableError).
     """
-    import math
 
     from ..sources.spotify import daily_genre_minutes
 
@@ -778,7 +792,6 @@ def audio_feature_deep_work_correlation(
     resurrects the energy/mood analysis Spotify's deprecated Audio Features endpoint
     would have enabled. Raises SourceUnavailableError if the dataset is absent.
     """
-    import math
 
     from ..sources.audio_features import NUMERIC_FEATURES, daily_audio_features
 

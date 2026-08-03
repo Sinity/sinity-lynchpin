@@ -203,3 +203,38 @@ def test_summary_frames_association_not_causation(monkeypatch):
     report = analyze(start, end, substances=("test_substance",), health_signals=("stress_mean",))
     assert "not causation" in report.summary.lower()
     assert "association" in report.summary.lower()
+
+
+def test_in_coverage_zero_dose_days_participate(monkeypatch):
+    """Days inside substance coverage without a logged dose are genuine 0 mg
+    days and must enter the lag correlations (use-vs-abstinence contrast).
+
+    Regression for the 2026-08-03 audit finding: ``.get(name)`` (None on
+    zero-dose days) silently conditioned every correlation on USE DAYS ONLY —
+    measured on the live lake, 2-FMA→same-day HR flipped from r=+0.244 (n=221,
+    use days) to r=+0.011 (n=958, all in-coverage days).
+    """
+    start = date(2024, 1, 1)
+    rng = random.Random(3)
+    rows = []
+    for i in range(100):
+        d = start + timedelta(days=i)
+        mg = 100.0 if i % 2 == 0 else 0.0  # half the days are zero-dose
+        rows.append(_day(d, mg=mg, stress=rng.uniform(20.0, 80.0)))
+    end = rows[-1].date
+    _patch(monkeypatch, rows, substance_cov=(start, end), health_cov=(start, end))
+
+    report = analyze(
+        start, end,
+        substances=("test_substance",),
+        health_signals=("stress_mean",),
+        max_lag=0,
+    )
+
+    assert report.lag_correlations, "expected a lag-0 correlation"
+    lag0 = report.lag_correlations[0]
+    # All 100 in-coverage days participate, not only the 50 dose days.
+    assert lag0.n == 100
+    # The autocorr-correction fields are populated.
+    assert lag0.n_eff > 0
+    assert 0.0 <= lag0.p_naive <= 1.0

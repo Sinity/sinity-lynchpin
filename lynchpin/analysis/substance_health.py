@@ -13,10 +13,12 @@ carry the machinery needed to avoid false claims:
 
 * **Multiple comparisons.** ``analyze`` evaluates ~|substances| × |signals| ×
   (max_lag+1) correlations. Reporting raw ``|r| > 0.2`` over that family inflates
-  false positives. Every ``LagCorrelation`` now carries a raw two-tailed
-  ``p_value``, a Benjamini-Hochberg FDR ``q_value`` computed across the *entire*
-  test family, and an ``significant`` flag derived from that q-value. The summary
-  separates FDR-significant associations from exploratory ones.
+  false positives. Every ``LagCorrelation`` carries an autocorrelation-corrected
+  two-tailed ``p_value`` (Quenouille/Bartlett effective n — day series are not
+  independent observations; the uncorrected p stays in ``p_naive``), a
+  Benjamini-Hochberg FDR ``q_value`` computed across the *entire* test family,
+  and a ``significant`` flag derived from that q-value. The summary separates
+  FDR-significant associations from exploratory ones.
 
 * **Missing ≠ zero.** Substance mg columns default to ``0.0`` on absent days, so a
   window past the substance log's coverage would fabricate "abstinence"
@@ -46,7 +48,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
+from ..core.analytics import _benjamini_hochberg, autocorr_corrected_pearson
 from ..core.coverage import CoverageBounds, partition_by_coverage
 from .operator_daily import OperatorDay, operator_daily_matrix
 
@@ -75,8 +77,10 @@ _HEALTH_DATASET = {
 class LagCorrelation:
     """Correlation at a specific time lag, with significance machinery.
 
-    ``p_value`` is the raw two-tailed t-test p-value at this lag. ``q_value`` is
-    the Benjamini-Hochberg FDR-adjusted p-value across the *entire* family of
+    ``p_value`` is the two-tailed t-test p-value at this lag computed against
+    the Quenouille/Bartlett autocorr-corrected effective sample size (``n_eff``;
+    the uncorrected p is preserved as ``p_naive``). ``q_value`` is the
+    Benjamini-Hochberg FDR-adjusted p-value across the *entire* family of
     correlations evaluated by a single ``analyze`` call (all substance × signal ×
     lag combinations), and ``significant`` is ``q_value < FDR_TARGET``. ``n`` is
     the number of paired, in-coverage observations behind ``r``.
@@ -86,9 +90,11 @@ class LagCorrelation:
     r: float  # Pearson correlation coefficient
     n: int  # number of paired observations
     label: str  # e.g. "caffeine mg → next-day stress"
-    p_value: float = 1.0  # raw two-tailed t-test p-value at this lag
+    p_value: float = 1.0  # autocorr-corrected two-tailed p at this lag
     q_value: float = 1.0  # BH FDR-adjusted p across the full test family
     significant: bool = False  # q_value < FDR_TARGET
+    n_eff: float = 0.0  # Quenouille/Bartlett effective sample size
+    p_naive: float = 1.0  # uncorrected df=n-2 p (transparency)
 
 
 @dataclass(frozen=True)
@@ -185,8 +191,18 @@ def analyze(
         coverage_provenance=_provenance_lines(substance_bounds, bounds, health_signals),
     )
 
+    # In-coverage days where a substance was not logged are genuine 0 mg days
+    # (the substance log is a complete event log inside its coverage window),
+    # so the accessor defaults to 0.0 rather than None. The previous
+    # ``.get(name)`` (None → pair dropped) silently conditioned every lag
+    # correlation on USE DAYS ONLY, which measures dose-response among doses
+    # and cannot see use-vs-abstinence contrast at all — while the abstinence
+    # detector below simultaneously treated the same days as genuine zero.
+    # Measured consequence (2026-08-03 recomputation, 2-FMA mg → same-day
+    # mean HR): use-days-only r=+0.244 (n=221) vs with-zeros r=+0.011 (n=958).
+    # Coverage clamping still excludes out-of-coverage days (missing ≠ zero).
     substance_map: dict[str, Callable[[OperatorDay], Optional[float]]] = {
-        name: (lambda r, name=name: r.substance_mg_by_name.get(name)) for name in substances
+        name: (lambda r, name=name: r.substance_mg_by_name.get(name, 0.0)) for name in substances
     }
     health_map: dict[str, Callable[[OperatorDay], Optional[float]]] = {
         "stress_mean": lambda r: r.stress_mean,
@@ -207,7 +223,8 @@ def analyze(
     report.covered_end = covered_end
 
     # ── Lag correlations (collect raw r/p, then one FDR pass over the family) ──
-    raw: list[tuple[str, str, int, float, int, float]] = []  # label-parts + r/n/p
+    # label-parts + r / n / n_eff / p_corrected / p_naive
+    raw: list[tuple[str, str, int, float, int, float, float, float]] = []
     for sub_name in substances:
         sub_fn = substance_map.get(sub_name)
         if sub_fn is None:
@@ -230,14 +247,15 @@ def analyze(
                     health_cov,
                 )
                 if stat is not None:
-                    r, n, p = stat
-                    raw.append((sub_name, health_name, lag, r, n, p))
+                    r, n, n_eff, p, p_naive = stat
+                    raw.append((sub_name, health_name, lag, r, n, n_eff, p, p_naive))
 
     report.n_tests = len(raw)
     if raw:
-        # Benjamini-Hochberg FDR across the ENTIRE family (all sub×signal×lag).
-        q_by_idx = _benjamini_hochberg({i: row[5] for i, row in enumerate(raw)})
-        for i, (sub_name, health_name, lag, r, n, p) in enumerate(raw):
+        # Benjamini-Hochberg FDR across the ENTIRE family (all sub×signal×lag),
+        # over autocorr-corrected p-values.
+        q_by_idx = _benjamini_hochberg({i: row[6] for i, row in enumerate(raw)})
+        for i, (sub_name, health_name, lag, r, n, n_eff, p, p_naive) in enumerate(raw):
             q = q_by_idx[i]
             report.lag_correlations.append(
                 LagCorrelation(
@@ -248,6 +266,8 @@ def analyze(
                     p_value=round(p, 4),
                     q_value=round(q, 4),
                     significant=q < FDR_TARGET,
+                    n_eff=round(n_eff, 1),
+                    p_naive=round(p_naive, 4),
                 )
             )
 
@@ -318,13 +338,15 @@ def _lag_correlation(
     lag: int,
     substance_bounds: CoverageBounds,
     health_bounds: Optional[CoverageBounds],
-) -> Optional[tuple[float, int, float]]:
-    """Pearson r + raw two-tailed p between substance day D and health day D+lag.
+) -> Optional[tuple[float, int, float, float, float]]:
+    """Pearson r + p-values between substance day D and health day D+lag.
 
     Only pairs where the substance day is within substance coverage AND the
     health day is within that signal's coverage are used — absent days are
-    excluded rather than coerced to 0 (missing ≠ zero). Returns ``(r, n, p)`` or
-    ``None`` when fewer than ``MIN_PAIRS`` valid pairs survive.
+    excluded rather than coerced to 0 (missing ≠ zero). Pairs accumulate in
+    ascending date order so the lag-1 autocorrelation estimate is meaningful.
+    Returns ``(r, n, n_eff, p_corrected, p_naive)`` or ``None`` when fewer
+    than ``MIN_PAIRS`` valid pairs survive.
     """
     xs: list[float] = []
     ys: list[float] = []
@@ -358,20 +380,10 @@ def _lag_correlation(
     if len(xs) < MIN_PAIRS:
         return None
 
-    r = _pearson_r(xs, ys)
-    if r is None:
+    stat = autocorr_corrected_pearson(xs, ys)
+    if stat is None:
         return None
-
-    n = len(xs)
-    # Two-tailed t-test p-value (Student's t via scipy; see analytics._t_test_p).
-    import math
-
-    if abs(r) >= 1.0:
-        p = 0.0
-    else:
-        t_stat = r * math.sqrt((n - 2) / (1 - r ** 2))
-        p = _t_test_p(t_stat, n - 2)
-    return (r, n, p)
+    return (stat.r, stat.n, stat.n_eff, stat.p_value, stat.p_naive)
 
 
 def _coverage_bounds_for(

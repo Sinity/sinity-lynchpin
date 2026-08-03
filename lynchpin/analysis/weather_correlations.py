@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
+from ..core.analytics import _benjamini_hochberg, autocorr_corrected_pearson
 from ..sources.weather import WeatherDay, daily_weather
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,8 @@ def _weather_value(day: WeatherDay, field: str) -> Optional[float]:
 class WeatherCorrelation:
     """One (weather field → operator signal) Pearson correlation.
 
-    ``p_value`` is the raw two-tailed t-test p. ``q_value`` is the
+    ``p_value`` is the two-tailed t-test p at the autocorr-corrected effective
+    sample size (``n_eff``; uncorrected p in ``p_naive``). ``q_value`` is the
     Benjamini-Hochberg FDR-adjusted p across the full field family in one
     ``weather_signals_correlation`` call. ``significant`` means ``q_value <
     FDR_TARGET``.
@@ -84,10 +85,12 @@ class WeatherCorrelation:
     lag_days: int         # 0 = same-day; +1 = weather today → signal tomorrow
     r: float              # Pearson r
     n: int                # paired observations
-    p_value: float        # raw two-tailed t-test p
+    p_value: float        # autocorr-corrected two-tailed p
     q_value: float        # BH FDR-adjusted p across the field family
     significant: bool     # q_value < FDR_TARGET
     label: str            # "{field} → {signal} (lag={lag}d)"
+    n_eff: float = 0.0    # Quenouille/Bartlett effective sample size
+    p_naive: float = 1.0  # uncorrected df=n-2 p (transparency)
 
 
 @dataclass
@@ -194,14 +197,15 @@ def weather_signals_correlation(
     lags = list(range(0, max_lag + 1))
 
     # ── Build raw (r, n, p) triples ───────────────────────────────────────────
-    raw: list[tuple[str, str, int, float, int, float]] = []  # field, signal, lag, r, n, p
+    # field, signal, lag, r, n, n_eff, p_corrected, p_naive
+    raw: list[tuple[str, str, int, float, int, float, float, float]] = []
 
     for field_name in fields:
         for sig in signals:
             for lag in lags:
                 xs: list[float] = []
                 ys: list[float] = []
-                for weather_date, wday in weather_by_date.items():
+                for weather_date, wday in sorted(weather_by_date.items()):
                     wx = _weather_value(wday, field_name)
                     if wx is None:
                         continue
@@ -222,23 +226,20 @@ def weather_signals_correlation(
 
                 if len(xs) < MIN_PAIRS:
                     continue
-                r = _pearson_r(xs, ys)
-                if r is None or not math.isfinite(r):
+                stat = autocorr_corrected_pearson(xs, ys)
+                if stat is None or not math.isfinite(stat.r):
                     continue
-                n = len(xs)
-                if abs(r) >= 1.0:
-                    p = 0.0
-                else:
-                    t_stat = r * math.sqrt((n - 2) / (1.0 - r * r))
-                    p = _t_test_p(t_stat, n - 2)
-                raw.append((field_name, sig, lag, r, n, p))
+                raw.append(
+                    (field_name, sig, lag, stat.r, stat.n, stat.n_eff,
+                     stat.p_value, stat.p_naive)
+                )
 
     report.n_tests = len(raw)
 
     if raw:
-        pval_map = {i: entry[5] for i, entry in enumerate(raw)}
+        pval_map = {i: entry[6] for i, entry in enumerate(raw)}
         q_map = _benjamini_hochberg(pval_map)
-        for i, (field_name, sig, lag, r, n, p) in enumerate(raw):
+        for i, (field_name, sig, lag, r, n, n_eff, p, p_naive) in enumerate(raw):
             q = q_map[i]
             report.correlations.append(
                 WeatherCorrelation(
@@ -251,6 +252,8 @@ def weather_signals_correlation(
                     q_value=round(q, 4),
                     significant=q < FDR_TARGET,
                     label=f"{field_name} → {sig} (lag={lag}d)",
+                    n_eff=round(n_eff, 1),
+                    p_naive=round(p_naive, 4),
                 )
             )
 
@@ -263,7 +266,8 @@ def weather_signals_correlation(
         "correlation does not establish that weather drives focus or sleep.",
         "Only days where both the weather value AND the operator signal are "
         "present contribute (missing != zero).",
-        f"p-values FDR-corrected (Benjamini-Hochberg) across all "
+        f"p-values autocorrelation-corrected (Quenouille/Bartlett effective n) "
+        f"then FDR-corrected (Benjamini-Hochberg) across all "
         f"{len(fields)} weather fields × {len(signals)} signals × {len(lags)} lag(s) = "
         f"{report.n_tests} tests.",
         "ActivityWatch coverage is required for aw_deep_work_min; "

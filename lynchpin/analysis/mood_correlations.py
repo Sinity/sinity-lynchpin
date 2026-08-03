@@ -9,10 +9,12 @@ STATISTICAL INTEGRITY CONTRACT
 This mirrors the established pattern in ``substance_health.py`` and
 ``lifestyle_correlations.py`` (the gold-standard templates):
 
-* **Multiple comparisons** — every reported association carries a raw two-tailed
-  Pearson ``p_value`` and a Benjamini-Hochberg FDR-corrected ``q_value``
-  computed across the *entire* test family (all signal × lag combinations in
-  one ``mood_health_correlation`` call). The ``significant`` flag is derived
+* **Multiple comparisons + autocorrelation** — every reported association
+  carries an autocorrelation-corrected two-tailed Pearson ``p_value``
+  (Quenouille/Bartlett effective n; the uncorrected p stays in ``p_naive``)
+  and a Benjamini-Hochberg FDR-corrected ``q_value`` computed across the
+  *entire* test family (all signal × lag combinations in one
+  ``mood_health_correlation`` call). The ``significant`` flag is derived
   from ``q_value < 0.05``.
 
 * **Missing ≠ zero** — days with no operator text are absent from ``daily_mood``
@@ -37,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Optional
 
-from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
+from ..core.analytics import _benjamini_hochberg, autocorr_corrected_pearson
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,9 @@ class MoodLagCorrelation:
     ``predictor`` is always "mean_sentiment" (the only numeric mood signal
     from ``MoodDay``). ``outcome`` is the health or productivity signal name.
     ``lag_days`` is the temporal offset: 0 = same day, 1 = next day.
-    ``p_value`` is raw two-tailed; ``q_value`` is BH FDR-corrected across the
-    full test family; ``significant`` := q_value < FDR_TARGET.
+    ``p_value`` is two-tailed at the autocorr-corrected effective n (``n_eff``;
+    ``p_naive`` keeps the uncorrected value); ``q_value`` is BH FDR-corrected
+    across the full test family; ``significant`` := q_value < FDR_TARGET.
     """
 
     predictor: str      # "mean_sentiment"
@@ -71,9 +74,11 @@ class MoodLagCorrelation:
     r: float            # Pearson r
     n: int              # paired observations
     label: str          # human-readable
-    p_value: float = 1.0
-    q_value: float = 1.0
+    p_value: float = 1.0   # autocorr-corrected (effective-n) two-tailed p
+    q_value: float = 1.0   # BH FDR over corrected p-values
     significant: bool = False
+    n_eff: float = 0.0     # Quenouille/Bartlett effective sample size
+    p_naive: float = 1.0   # uncorrected df=n-2 p (transparency)
 
 
 @dataclass
@@ -171,7 +176,9 @@ def mood_health_correlation(
         lag: int
         r: float
         n: int
-        p: float
+        p: float  # autocorr-corrected p (feeds FDR)
+        n_eff: float
+        p_naive: float
 
     raw_all: list[_Raw] = []
 
@@ -180,7 +187,7 @@ def mood_health_correlation(
             xs: list[float] = []
             ys: list[float] = []
 
-            for mood_date, mood_day in mood_by_date.items():
+            for mood_date, mood_day in sorted(mood_by_date.items()):
                 outcome_date = mood_date + timedelta(days=lag)
                 outcome_row = rows_by_date.get(outcome_date)
                 if outcome_row is None:
@@ -197,18 +204,21 @@ def mood_health_correlation(
             if len(xs) < min_pairs:
                 continue
 
-            r = _pearson_r(xs, ys)
-            if r is None or not math.isfinite(r):
+            stat = autocorr_corrected_pearson(xs, ys)
+            if stat is None or not math.isfinite(stat.r):
                 continue
 
-            n = len(xs)
-            if abs(r) >= 1.0:
-                p = 0.0
-            else:
-                t_stat = r * math.sqrt((n - 2) / (1.0 - r * r))
-                p = _t_test_p(t_stat, n - 2)
-
-            raw_all.append(_Raw(outcome=signal_name, lag=lag, r=r, n=n, p=p))
+            raw_all.append(
+                _Raw(
+                    outcome=signal_name,
+                    lag=lag,
+                    r=stat.r,
+                    n=stat.n,
+                    p=stat.p_value,
+                    n_eff=stat.n_eff,
+                    p_naive=stat.p_naive,
+                )
+            )
 
     # FDR correction across the entire family.
     report.n_tests = len(raw_all)
@@ -228,6 +238,8 @@ def mood_health_correlation(
                     p_value=round(raw.p, 4),
                     q_value=round(q, 4),
                     significant=q < FDR_TARGET,
+                    n_eff=round(raw.n_eff, 1),
+                    p_naive=round(raw.p_naive, 4),
                 )
             )
 
@@ -257,8 +269,10 @@ def _build_caveats(
         "Health signals (HRV, stress, sleep) have export cutoffs; "
         "the available overlap window may be short.",
         f"Window: {start} → {end}. Days with text: {len(mood_by_date)}.",
-        "p-values FDR-corrected (Benjamini-Hochberg) across all "
-        "(signal × lag) pairs in this call.",
+        "p-values are autocorrelation-corrected (Quenouille/Bartlett "
+        "effective n; day series are not independent observations) and then "
+        "FDR-corrected (Benjamini-Hochberg) across all (signal × lag) pairs "
+        "in this call.",
         "The twitter-roberta model was trained on English tweets; "
         "multilingual text (Polish on Wykop) will score less reliably.",
     ]
