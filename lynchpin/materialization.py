@@ -29,6 +29,7 @@ from .core.cache import files_signature
 from .core.config import LynchpinConfig, get_config
 from .core.errors import MaterializationError
 from .core.parse import iter_dates
+from .core.primitives import logical_date
 from .core.source_contracts import (
     DatasetStatus,
     GITHUB_CONTEXT_DEFAULT_MAX_AGE_SECONDS,
@@ -175,6 +176,11 @@ class MaterializedDataset:
     materialization_hint: str
     reason: str
     covered_dates: tuple[date, ...] = ()
+    #: True when the ONLY defect is that live inputs have rows newer than the
+    #: product (a continuously-writing source daemon makes this permanent on a
+    #: live host). Historical windows fully inside ``covered_dates`` are still
+    #: trustworthy; only reads that include the present need a refresh.
+    tail_stale: bool = False
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
@@ -182,6 +188,7 @@ class MaterializedDataset:
         return {
             "name": self.name,
             "status": self.status,
+            "tail_stale": self.tail_stale,
             "substrate_status": dataset_status_to_substrate_status(self.status),
             "kind": contract.kind,
             "required": contract.required,
@@ -513,7 +520,11 @@ def ensure_materialized(
     materializers = _materializers()
     before = _audit_one(name, cfg=cfg)
 
-    if not force and before.status == "ready" and _materialized_enough_for_window(before, window):
+    if (
+        not force
+        and (before.status == "ready" or before.tail_stale)
+        and _materialized_enough_for_window(before, window)
+    ):
         return _materialization_result(
             before,
             status="ready",
@@ -598,9 +609,13 @@ def ensure_materialized(
         )
 
     after = _audit_one(name, cfg=cfg)
-    enough_for_window = _materialized_enough_for_window(after, window)
-    status = "updated" if after.status == "ready" and enough_for_window else "failed"
-    if after.status != "ready":
+    # just_refreshed: the live source may gain rows DURING the rebuild we just
+    # ran, flipping the audit straight back to tail-stale; that is success,
+    # not failure — the product is as fresh as a rebuild can make it.
+    enough_for_window = _materialized_enough_for_window(after, window, just_refreshed=True)
+    after_usable = after.status == "ready" or after.tail_stale
+    status = "updated" if after_usable and enough_for_window else "failed"
+    if not after_usable:
         reason = f"materializer ran but product is still {after.status}: {after.reason}"
     elif not enough_for_window:
         reason = "materializer ran but continuous product still does not cover the requested window"
@@ -707,6 +722,8 @@ def _materialization_result(
 def _materialized_enough_for_window(
     row: MaterializedDataset,
     window: tuple[date, date] | None,
+    *,
+    just_refreshed: bool = False,
 ) -> bool:
     if window is None:
         return True
@@ -717,7 +734,14 @@ def _materialized_enough_for_window(
     elif contract.collection_model != "continuous":
         return True
     coverage = materialized_dataset_coverage(row, start=window[0], end=window[1])
-    return coverage["fully_covers_requested_window"] is True
+    if coverage["fully_covers_requested_window"] is not True:
+        return False
+    if row.status != "ready" and row.tail_stale and not just_refreshed:
+        # A stale tail only affects the present: new live rows cannot change
+        # history, so a fully-covered window that ends before today's logical
+        # date needs no refresh. Windows touching today still re-materialize.
+        return window[1] < logical_date(datetime.now().astimezone())
+    return True
 
 
 def _can_read_stale_github_context(row: MaterializedDataset, window: tuple[date, date] | None) -> bool:
@@ -948,7 +972,7 @@ def materialized_dataset_coverage(
         if row.first_date is None or (row.first_date <= day <= (row.last_date or day))
     )
     requested_days = _requested_day_count(start, end)
-    if row.status != "ready":
+    if row.status != "ready" and not row.tail_stale:
         relation = "unavailable"
         covered_days = 0
         overlaps = False
@@ -1251,11 +1275,16 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     product_ready = _product_with_manifest_exists(path, manifest)
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENTS_SCHEMA_VERSION
+    tail_stale = False
     if product_ready and not schema_current:
         status = "partial"
         reason = "canonical ActivityWatch event schema is older than the current reader contract"
     elif product_ready and not inputs_current:
+        # The live aw-server DB gains rows every few seconds, so on a running
+        # desktop this branch is permanent. Only the present-day tail is
+        # affected; history inside covered_dates stays trustworthy.
         status = "partial"
+        tail_stale = True
         reason = "canonical ActivityWatch event NDJSON was built from older local input databases"
     elif product_ready:
         status = "ready"
@@ -1279,6 +1308,7 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         covered_dates=_manifest_covered_dates(meta),
         materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
         reason=reason,
+        tail_stale=tail_stale,
     )
 
 

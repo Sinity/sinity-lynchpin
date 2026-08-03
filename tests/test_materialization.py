@@ -4046,3 +4046,72 @@ def test_csv_date_bounds_are_signature_cached_and_invalidated(tmp_path) -> None:
         date(2026, 6, 5),
         date(2026, 6, 5),
     )
+
+
+def _tail_stale_aw_row(tmp_path, *, tail_stale: bool = True) -> MaterializedDataset:
+    covered = tuple(date(2024, 3, 1) + timedelta(days=i) for i in range(10))
+    return MaterializedDataset(
+        name="activitywatch",
+        status="partial",
+        authority="fixture",
+        query_surface="lynchpin.sources.activitywatch",
+        materialized_paths=(tmp_path / "events.ndjson",),
+        raw_roots=(tmp_path / "raw",),
+        row_count=100,
+        first_date=covered[0],
+        last_date=covered[-1],
+        materialization_hint="fixture",
+        reason="canonical ActivityWatch event NDJSON was built from older local input databases",
+        covered_dates=covered,
+        tail_stale=tail_stale,
+    )
+
+
+def test_tail_stale_historical_window_is_enough(tmp_path) -> None:
+    from lynchpin.materialization import _materialized_enough_for_window
+
+    row = _tail_stale_aw_row(tmp_path)
+    assert _materialized_enough_for_window(row, (date(2024, 3, 2), date(2024, 3, 5)))
+
+
+def test_tail_stale_present_window_still_refreshes(tmp_path) -> None:
+    from lynchpin.core.primitives import logical_date
+    from lynchpin.materialization import _materialized_enough_for_window
+
+    today = logical_date(datetime.now().astimezone())
+    covered = tuple(today - timedelta(days=i) for i in range(5))
+    row = MaterializedDataset(
+        name="activitywatch",
+        status="partial",
+        authority="fixture",
+        query_surface="lynchpin.sources.activitywatch",
+        materialized_paths=(tmp_path / "events.ndjson",),
+        raw_roots=(tmp_path / "raw",),
+        row_count=100,
+        first_date=min(covered),
+        last_date=max(covered),
+        materialization_hint="fixture",
+        reason="tail stale",
+        covered_dates=covered,
+        tail_stale=True,
+    )
+    window = (today - timedelta(days=1), today)
+    assert not _materialized_enough_for_window(row, window)
+    # ...but immediately after a rebuild the same window counts as satisfied:
+    # the live source may gain rows during the rebuild itself.
+    assert _materialized_enough_for_window(row, window, just_refreshed=True)
+
+
+def test_partial_without_tail_stale_is_not_enough(tmp_path) -> None:
+    from lynchpin.materialization import _materialized_enough_for_window
+
+    row = _tail_stale_aw_row(tmp_path, tail_stale=False)
+    assert not _materialized_enough_for_window(row, (date(2024, 3, 2), date(2024, 3, 5)))
+
+
+def test_tail_stale_coverage_reports_dated_relation(tmp_path) -> None:
+    from lynchpin.materialization import materialized_dataset_coverage
+
+    row = _tail_stale_aw_row(tmp_path)
+    coverage = materialized_dataset_coverage(row, start=date(2024, 3, 2), end=date(2024, 3, 5))
+    assert coverage["fully_covers_requested_window"] is True
