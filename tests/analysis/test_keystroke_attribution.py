@@ -120,3 +120,30 @@ def test_keystrokes_daily_offline_threshold_is_configurable(monkeypatch):
         start=date(2026, 2, 10), end=date(2026, 2, 11), offline_hours_threshold=0.5,
     )
     assert rows_loose[0]["is_offline"] is False
+
+
+def test_iter_keyed_spans_buckets_by_logical_day(monkeypatch):
+    """A span starting between 00:00 and 06:00 local belongs to the previous
+    logical day, matching active_seconds_by_date's keying."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    import lynchpin.analysis.keystroke_attribution as ka
+    import lynchpin.sources.activitywatch as aw
+
+    tz = ZoneInfo("Europe/Warsaw")
+    span = SimpleNamespace(
+        start=datetime(2026, 6, 2, 1, 30, tzinfo=tz),  # 01:30 -> logical 2026-06-01
+        end=datetime(2026, 6, 2, 1, 45, tzinfo=tz),
+        keylog_state="covered",
+        keypress_count=42,
+        app="kitty",
+        title="Work",
+        project="lynchpin",
+        mode="code",
+    )
+    monkeypatch.setattr(aw, "focus_spans", lambda **kwargs: iter([span]))
+
+    rows = list(ka._iter_keyed_spans(date(2026, 6, 1), date(2026, 6, 3)))
+    assert rows == [(date(2026, 6, 1), "kitty", "Work", "lynchpin", "code", 42)]

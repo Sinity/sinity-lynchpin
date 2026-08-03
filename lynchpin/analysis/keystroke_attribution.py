@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 from typing import Iterator, Optional
 
 
@@ -67,15 +67,16 @@ def _iter_keyed_spans(
     for spans within [start, end) that have keylog observations.
 
     Spans crossing midnight are not split here — each is attributed to
-    its start date. Keypress volume in a single span is small enough
-    (typically seconds to minutes) that this is fine.
+    the logical (06:00-boundary) day of its start, matching every other
+    daily AW product. Keypress volume in a single span is small enough
+    (typically seconds to minutes) that not splitting is fine. Calendar
+    bucketing here previously misattributed 31.7% of focus-span time
+    (the 00:00-06:00 share) relative to active_seconds_by_date.
     """
     from ..sources.activitywatch import focus_spans
-    from ..core.parse import local_tz
+    from ..core.primitives import date_to_dt_range, logical_date
 
-    tz = local_tz()
-    span_start = datetime.combine(start, time.min, tzinfo=tz)
-    span_end = datetime.combine(end, time.min, tzinfo=tz)
+    span_start, span_end = date_to_dt_range(start, end)
     for span in focus_spans(start=span_start, end=span_end):
         # Actual keylog_state values in aw-server-rust's keylog enrichment
         # are "covered" (capture is present for the span's time window) and
@@ -86,7 +87,7 @@ def _iter_keyed_spans(
         if not span.keypress_count or span.keypress_count <= 0:
             continue
         yield (
-            span.start.date(),
+            logical_date(span.start),
             span.app or "",
             span.title or "",
             span.project or "",
@@ -304,8 +305,7 @@ def keystrokes_daily(
     ``is_offline`` flag was a methodology gap in the prior shape.
     """
     from ..sources.activitywatch import active_seconds_by_date, focus_spans
-    from ..core.parse import local_tz
-    from datetime import datetime, time as _time
+    from ..core.primitives import date_to_dt_range, logical_date
 
     daily_keys: dict[date, int] = defaultdict(int)
     for d, _app, _title, _project, _mode, keys in _iter_keyed_spans(start, end):
@@ -315,14 +315,14 @@ def keystrokes_daily(
 
     # Count spinner-prefixed kitty title-span events per day. These are
     # claude-code task indicators that fire even when the operator isn't
-    # typing — high count + zero keystrokes = AI delegation.
+    # typing — high count + zero keystrokes = AI delegation. Bucketed by
+    # logical day so the per-day join with active_seconds_by_date (which
+    # keys by logical_date) compares the same day on both sides.
     daily_spinner: dict[date, int] = defaultdict(int)
-    tz = local_tz()
-    span_start = datetime.combine(start, _time.min, tzinfo=tz)
-    span_end = datetime.combine(end, _time.min, tzinfo=tz)
+    span_start, span_end = date_to_dt_range(start, end)
     for sp in focus_spans(start=span_start, end=span_end):
         if sp.app == "kitty" and sp.title and sp.title[0] in _CLAUDE_CODE_SPINNER:
-            daily_spinner[sp.start.date()] += 1
+            daily_spinner[logical_date(sp.start)] += 1
 
     threshold_seconds = offline_hours_threshold * 3600
     out: list[dict] = []
