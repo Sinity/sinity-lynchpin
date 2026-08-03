@@ -170,3 +170,79 @@ class TestAnomalyScore:
     def test_too_few(self):
         r = anomaly_score(5.0, [1.0, 2.0])
         assert not r.is_anomaly
+
+
+class TestAutocorrCorrectedPearson:
+    """Autocorrelation-aware correlation helpers (validity audit 2026-08-03).
+
+    Anti-vacuity: these exercise the production ``autocorr_corrected_pearson``
+    route that lifestyle/mood/substance/weather/daytime correlation modules
+    now feed into their FDR passes. Removing the effective-n correction (e.g.
+    returning ``n`` from ``effective_sample_size``) fails
+    ``test_autocorrelated_noise_gets_larger_p``.
+    """
+
+    def test_lag1_autocorrelation_of_persistent_series(self):
+        from lynchpin.core.analytics import lag1_autocorrelation
+
+        # AR(1)-style persistent series: high positive lag-1 autocorrelation.
+        random.seed(7)
+        x = [0.0]
+        for _ in range(299):
+            x.append(0.9 * x[-1] + random.gauss(0, 1))
+        r1 = lag1_autocorrelation(x)
+        assert r1 is not None and r1 > 0.7
+
+    def test_lag1_autocorrelation_short_or_constant(self):
+        from lynchpin.core.analytics import lag1_autocorrelation
+
+        assert lag1_autocorrelation([1.0, 2.0, 3.0]) is None
+        assert lag1_autocorrelation([5.0] * 50) is None
+
+    def test_effective_sample_size_shrinks_only_when_persistent(self):
+        from lynchpin.core.analytics import effective_sample_size
+
+        assert effective_sample_size(100, 0.5, 0.5) == 100 * 0.75 / 1.25
+        # Unknown or anti-persistent autocorrelation: no correction applied.
+        assert effective_sample_size(100, None, 0.5) == 100.0
+        assert effective_sample_size(100, -0.4, 0.5) == 100.0
+        # Floor keeps df positive.
+        assert effective_sample_size(6, 0.99, 0.99) == 5.0
+
+    def test_autocorrelated_noise_gets_larger_p(self):
+        from lynchpin.core.analytics import autocorr_corrected_pearson
+
+        random.seed(11)
+        # Two independent AR(1) series: any sample correlation is spurious.
+        def ar1(n, phi):
+            out = [0.0]
+            for _ in range(n - 1):
+                out.append(phi * out[-1] + random.gauss(0, 1))
+            return out
+
+        x = ar1(120, 0.85)
+        y = ar1(120, 0.85)
+        stat = autocorr_corrected_pearson(x, y)
+        assert stat is not None
+        assert stat.n == 120
+        assert stat.n_eff < 60  # heavy persistence roughly halves the sample
+        assert stat.p_value >= stat.p_naive  # correction is conservative
+
+    def test_iid_series_unchanged(self):
+        from lynchpin.core.analytics import autocorr_corrected_pearson
+
+        random.seed(3)
+        x = [random.gauss(0, 1) for _ in range(150)]
+        y = [xi * 0.8 + random.gauss(0, 0.5) for xi in x]
+        stat = autocorr_corrected_pearson(x, y)
+        assert stat is not None
+        # IID noise: measured autocorrelation is near zero, so n_eff ~ n and
+        # a genuinely strong relationship stays strongly significant.
+        assert stat.n_eff > 100
+        assert stat.r > 0.6
+        assert stat.p_value < 0.001
+
+    def test_constant_series_returns_none(self):
+        from lynchpin.core.analytics import autocorr_corrected_pearson
+
+        assert autocorr_corrected_pearson([1.0] * 30, [2.0] * 30) is None

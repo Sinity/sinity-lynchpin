@@ -428,6 +428,97 @@ def _benjamini_hochberg(pvals: dict[int, float]) -> dict[int, float]:
     return adjusted
 
 
+@dataclass(frozen=True)
+class EffectiveCorrelation:
+    """Pearson correlation with a first-order autocorrelation-corrected p-value.
+
+    Day-series correlations in this repo violate the independence assumption of
+    the standard ``df = n - 2`` t-test: consecutive days are positively
+    autocorrelated (measured 2026-08-03 on the live products: git commits/day
+    r1=+0.57, focus fragmentation r1=+0.48, web visits r1=+0.48, Spotify minutes
+    r1=+0.44, stress r1=+0.41, keypress volume r1=+0.40), which makes naive
+    p-values anti-conservative. ``p_value`` here is computed against the
+    Quenouille/Bartlett effective sample size
+
+        n_eff = n * (1 - r1x * r1y) / (1 + r1x * r1y)
+
+    and is the value FDR passes should consume. ``p_naive`` preserves the
+    uncorrected ``df = n - 2`` p for transparency/back-compat.
+    """
+
+    r: float          # Pearson correlation coefficient
+    n: int            # paired observations
+    n_eff: float      # effective sample size after lag-1 autocorr correction
+    p_value: float    # two-tailed p at df = n_eff - 2 (use THIS for FDR)
+    p_naive: float    # two-tailed p at df = n - 2 (uncorrected, transparency)
+    r1x: float | None  # lag-1 autocorrelation of x (None if series too short)
+    r1y: float | None  # lag-1 autocorrelation of y
+
+
+def lag1_autocorrelation(values: Sequence[float], *, min_samples: int = 10) -> float | None:
+    """Lag-1 Pearson autocorrelation of an ordered series.
+
+    ``values`` must be in temporal order. Returns ``None`` below
+    ``min_samples`` points or when the series is constant. Gaps in the
+    underlying day grid shrink the measured autocorrelation (a pair spanning a
+    gap is not a true consecutive-day pair), which under-corrects; callers
+    passing gappy series get a conservative-looking r1 and should say so.
+    """
+    if len(values) < min_samples:
+        return None
+    return _pearson_r(list(values[:-1]), list(values[1:]))
+
+
+def effective_sample_size(n: int, r1x: float | None, r1y: float | None) -> float:
+    """Quenouille/Bartlett first-order effective sample size for Pearson r.
+
+    ``n_eff = n * (1 - r1x*r1y) / (1 + r1x*r1y)``. When either lag-1
+    autocorrelation is unknown, or their product is negative (anti-persistent
+    series would *raise* the effective n), the uncorrected ``n`` is returned —
+    the correction is only ever applied in the conservative direction. The
+    result is floored at 5 so downstream t-tests keep positive df.
+    """
+    if r1x is None or r1y is None:
+        return float(n)
+    prod = r1x * r1y
+    if prod <= 0.0:
+        return float(n)
+    n_eff = n * (1.0 - prod) / (1.0 + prod)
+    return max(min(n_eff, float(n)), 5.0)
+
+
+def autocorr_corrected_pearson(
+    x: Sequence[float], y: Sequence[float]
+) -> EffectiveCorrelation | None:
+    """Pearson r with naive AND lag-1-autocorrelation-corrected p-values.
+
+    ``x``/``y`` must be paired observations in temporal order (day-ordered).
+    Returns ``None`` when Pearson r is undefined (constant series, n < 3).
+    See ``EffectiveCorrelation`` for the correction rationale.
+    """
+    xs, ys = list(x), list(y)
+    r = _pearson_r(xs, ys)
+    if r is None or not math.isfinite(r):
+        return None
+    n = len(xs)
+
+    def _p_at(df: int) -> float:
+        if abs(r) >= 1.0:
+            return 0.0
+        t_stat = r * math.sqrt(df / (1.0 - r * r))
+        return _t_test_p(t_stat, df)
+
+    p_naive = _p_at(n - 2) if n > 2 else 1.0
+    r1x = lag1_autocorrelation(xs)
+    r1y = lag1_autocorrelation(ys)
+    n_eff = effective_sample_size(n, r1x, r1y)
+    df_eff = max(int(round(n_eff)) - 2, 1)
+    p_corr = _p_at(df_eff)
+    return EffectiveCorrelation(
+        r=r, n=n, n_eff=n_eff, p_value=p_corr, p_naive=p_naive, r1x=r1x, r1y=r1y
+    )
+
+
 def _pearson_r(x: list[float], y: list[float]) -> float | None:
     n = len(x)
     if n < 3:
