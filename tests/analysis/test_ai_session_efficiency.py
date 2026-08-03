@@ -380,3 +380,26 @@ class TestSummaryContent:
         # Summary must name the abandoned states so the LLM doesn't omit them.
         for state in ABANDONED_STATES:
             assert state in report.summary
+
+
+class TestPooledEfficiency:
+    def test_pooled_ratio_is_duration_weighted(self, monkeypatch):
+        """A short high-efficiency session must not dominate the pooled ratio.
+
+        Session A: 10h wall, 2h engaged (0.2). Session B: 2min wall, 2min
+        engaged (1.0). Per-session mean = 0.6; wall-time pooled ~= 0.2 — the
+        divergence is exactly why both are reported.
+        """
+        d = date(2025, 6, 1)
+        profiles = [
+            _profile(d=d, engaged_ms=7_200_000, wall_ms=36_000_000),
+            _profile(d=d, engaged_ms=120_000, wall_ms=120_000, provider="codex"),
+        ]
+        _patch(monkeypatch, profiles)
+        report = analyze(start=d, end=d)
+
+        assert report.efficiency_overall_mean == pytest.approx(0.6, abs=0.01)
+        assert report.efficiency_overall_pooled == pytest.approx(
+            (7_200_000 + 120_000) / (36_000_000 + 120_000), abs=0.001
+        )
+        assert "pooled" in report.summary

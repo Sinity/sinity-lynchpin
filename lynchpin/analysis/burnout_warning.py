@@ -374,22 +374,27 @@ def _detect_risk_windows(
     windows: list[RiskWindow] = []
 
     # --- Changepoint detection on the risk series ---
+    # NOTE: ``scores`` strips no-score days, so changepoint indices live on the
+    # scored subsequence; when coverage collapses (e.g. a health-export
+    # cutoff), consecutive indices can be weeks apart in calendar time.
     changepoints = detect_changepoints(scores, min_segment=5, max_changepoints=5)
+    cp_indices = sorted(cp.index for cp in changepoints)
     for cp in changepoints:
         # Only flag changepoints that represent a shift *upward* in risk.
         if cp.after_mean <= cp.before_mean:
             continue
-        # The risk window runs from the changepoint to the next changepoint (or end).
+        # The risk window runs from the changepoint to the next changepoint
+        # (or the end of the scored series). A prior dead-loop always extended
+        # every window to the series end, overlapping later windows.
         cp_date = scored[cp.index][0]
-        end_idx = cp.index + 1
-        while end_idx < len(scored):
-            end_idx += 1
-        end_date = scored[-1][0]
-        window_scores = [s for _, s in scored[cp.index:]]
+        later = [i for i in cp_indices if i > cp.index]
+        end_idx = later[0] if later else len(scored)
+        window = scored[cp.index:end_idx]
+        window_scores = [s for _, s in window]
         peak = max(window_scores) if window_scores else cp.after_mean
         windows.append(RiskWindow(
             start=cp_date,
-            end=end_date,
+            end=window[-1][0] if window else cp_date,
             kind="changepoint",
             peak_score=round(peak, 3),
             n_days=len(window_scores),

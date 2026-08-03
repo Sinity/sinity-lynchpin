@@ -5,8 +5,18 @@ Can we predict deep-work hours from prior-day data?
 Features: sleep (duration, score), substance (doses, mg), stress (mean),
 prior-day deep work, day of week, git churn.
 
-Model: RandomForest regression with temporal CV.
-Feature importance tells us what drives productivity.
+Model: RandomForest regression evaluated on a SINGLE temporal 80/20 split
+(not k-fold CV): the last 20% of days is the held-out test set. R² on that
+split is an honest but high-variance estimate.
+
+Known limitations (validity audit 2026-08-03):
+- Feature ``None`` values are coerced to 0 (``stress_mean or 0`` etc.), so
+  days outside a source's coverage enter as fabricated zeros; after a health
+  export cutoff the model can learn the coverage regime instead of the
+  physiology. Tracked as a Beads follow-up; interpret feature importances for
+  export-bounded features only within their covered windows.
+- ``yesterday_deep_work`` dominates importance largely through day-to-day
+  persistence (autocorrelation), not causal influence.
 """
 
 from __future__ import annotations

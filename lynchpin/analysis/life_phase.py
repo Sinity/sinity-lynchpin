@@ -166,6 +166,17 @@ class _Metric:
     accessor: Callable[[OperatorDay], float]
     weight: float
     coverage_key: str
+    # ``sources_present`` label required for a day to contribute, or None.
+    # Coverage bounds are only first/last dates, so capture gaps INSIDE the
+    # bounds (or phantom manifest rows widening them — bead lynchpin-jzb) would
+    # otherwise let ``accessor`` read an unobserved day as a fabricated 0.
+    # Measured 2026-08-03: AW bounds claimed 2013-01-15.. while real capture
+    # starts 2026-02-15, so 776/924 days (84%) of a 2024-01..2026-07 window
+    # entered the composite as zero-activity days. Presence labels are only
+    # set for observation-backed sources; counter exports (git/wykop/reddit/
+    # substance) mark presence on activity days only, so they keep the
+    # bounds-only gate (a genuine zero-activity day must still contribute).
+    presence: Optional[str] = None
 
 
 def _web_distraction_ratio(r: "OperatorDay") -> float:
@@ -184,11 +195,12 @@ def _web_distraction_ratio(r: "OperatorDay") -> float:
 
 _METRICS: tuple[_Metric, ...] = (
     # ── Productivity / coding ────────────────────────────────────────────
-    _Metric("aw_active", lambda r: r.aw_active_hours or 0.0, 1.0, "activitywatch"),
+    _Metric("aw_active", lambda r: r.aw_active_hours or 0.0, 1.0, "activitywatch",
+            presence="activitywatch"),
     _Metric("git_commits", lambda r: float(r.git_commits), 0.5, "git_baseline"),
     # ── Wellbeing ────────────────────────────────────────────────────────
-    _Metric("stress", lambda r: r.stress_mean or 0.0, 0.5, "stress"),
-    _Metric("sleep", lambda r: r.sleep_hours or 0.0, 1.0, "sleep"),
+    _Metric("stress", lambda r: r.stress_mean or 0.0, 0.5, "stress", presence="health"),
+    _Metric("sleep", lambda r: r.sleep_hours or 0.0, 1.0, "sleep", presence="sleep"),
     # ── Substance ────────────────────────────────────────────────────────
     _Metric("substance_mg", lambda r: sum(r.substance_mg_by_name.values()), 0.3, "substance"),
     # ── Social ───────────────────────────────────────────────────────────
@@ -201,13 +213,14 @@ _METRICS: tuple[_Metric, ...] = (
     # web_distraction: social-visits / total-visits ratio (0–1). Captures days
     # dominated by distraction browsing regardless of absolute visit volume.
     # Coverage follows webhistory so it is present only when web data exists.
-    _Metric("web_distraction", _web_distraction_ratio, 0.4, "webhistory"),
+    _Metric("web_distraction", _web_distraction_ratio, 0.4, "webhistory", presence="web"),
     # ── Music ────────────────────────────────────────────────────────────
     # spotify_hours: hours of music/podcast listening. A high-spotify,
     # low-git phase is a "media/leisure phase" and should form a distinct
     # cluster from a focused coding phase. Weight 0.5 — on par with git so
     # it can pull its own weight as a phase discriminator.
-    _Metric("spotify", lambda r: r.spotify_hours or 0.0, 0.5, "spotify"),
+    _Metric("spotify", lambda r: r.spotify_hours or 0.0, 0.5, "spotify",
+            presence="spotify"),
 )
 
 
@@ -244,7 +257,7 @@ def analyze(
     report.boundaries, report.event_annotations = _align_with_events(detected, events)
 
     # Build phases between *detected* boundaries.
-    report.phases = _build_phases(rows, report.boundaries)
+    report.phases = _build_phases(rows, report.boundaries, metric_bounds)
 
     report.summary = _summarize_phases(report)
     return report
@@ -365,10 +378,15 @@ def _build_composite_signal(
     for r in rows:
         row_vals: dict[str, float] = {}
         for m in _METRICS:
-            if r.date in covered_dates[m.name]:
-                v = m.accessor(r)
-                metric_values[m.name].append(v)
-                row_vals[m.name] = v
+            if r.date not in covered_dates[m.name]:
+                continue
+            if m.presence is not None and m.presence not in r.sources_present:
+                # In-bounds but not observed that day (capture gap / phantom
+                # manifest coverage): absent, never a fabricated 0.
+                continue
+            v = m.accessor(r)
+            metric_values[m.name].append(v)
+            row_vals[m.name] = v
         metric_per_row.append(row_vals)
 
     # Z-normalize each metric over its covered-day distribution.
@@ -495,8 +513,10 @@ def _align_with_events(
 def _build_phases(
     rows: list[OperatorDay],
     boundaries: list[PhaseBoundary],
+    metric_bounds: dict[str, CoverageBounds],
 ) -> list[LifePhase]:
     """Build LifePhase objects for each period between detected boundaries."""
+    reddit_cov = metric_bounds.get("reddit")
     if not boundaries:
         return []
 
@@ -541,9 +561,18 @@ def _build_phases(
             ) if any(r.sleep_hours is not None for r in phase_rows) else None,
             substance_mg_per_day=sum(sum(r.substance_mg_by_name.values()) for r in phase_rows) / n,
             wykop_comments_per_day=sum(r.wykop_comments for r in phase_rows) / n,
-            # Social / music: per-phase means where covered (None = not in coverage).
-            reddit_comments_per_day=statistics.mean(
-                [float(r.reddit_comments) for r in phase_rows]
+            # Social / music: per-phase means where covered (None = not in
+            # coverage). Reddit previously averaged over ALL phase rows, which
+            # coerced out-of-coverage days (export ends 2025-03) to zero and
+            # diluted every later phase's rate toward 0.
+            reddit_comments_per_day=(
+                statistics.mean(reddit_rows)
+                if (reddit_rows := [
+                    float(r.reddit_comments)
+                    for r in phase_rows
+                    if reddit_cov is not None and reddit_cov.covers(r.date)
+                ])
+                else None
             ),
             web_distraction_ratio=web_dist,
             spotify_hours_per_day=statistics.mean(

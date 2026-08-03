@@ -174,6 +174,14 @@ class AiSessionEfficiencyReport:
     terminal_known_n: int  # sessions with any non-None terminal_state
     abandonment_rate: Optional[float]  # None if terminal_known_n == 0
 
+    # Duration-weighted pooled ratio: sum(engaged_ms) / sum(wall_ms) over the
+    # eligible sessions. ``efficiency_overall_mean`` gives a 2-minute session
+    # the same vote as a 10-hour one, so it answers "what does a typical
+    # SESSION look like"; this pooled ratio answers "what fraction of
+    # AI-session WALL TIME was engaged". They diverge when short sessions have
+    # systematically different efficiency than long ones — report both.
+    efficiency_overall_pooled: Optional[float] = None
+
     # Per-day series (includes no-data days as zero-session rows)
     daily: list[EfficiencyDay] = field(default_factory=list)
 
@@ -266,14 +274,21 @@ def analyze(*, start: date, end: date) -> AiSessionEfficiencyReport:
     # Efficiency: collect per-session ratios for eligible sessions
     eff_ratios: list[float] = []
     eff_eligible = 0
+    pooled_engaged_ms = 0
+    pooled_wall_ms = 0
     for p in in_window:
         r = _session_efficiency(p)
         if r is not None:
             eff_ratios.append(r)
             eff_eligible += 1
+            pooled_engaged_ms += p.engaged_duration_ms
+            pooled_wall_ms += p.wall_duration_ms
 
     eff_overall: Optional[float] = (
         statistics.mean(eff_ratios) if eff_ratios else None
+    )
+    eff_pooled: Optional[float] = (
+        pooled_engaged_ms / pooled_wall_ms if pooled_wall_ms > 0 else None
     )
 
     # Abandonment totals
@@ -324,6 +339,7 @@ def analyze(*, start: date, end: date) -> AiSessionEfficiencyReport:
         total_sessions=total_sessions,
         efficiency_eligible_sessions=eff_eligible,
         efficiency_overall_mean=round(eff_overall, 4) if eff_overall is not None else None,
+        efficiency_overall_pooled=round(eff_pooled, 4) if eff_pooled is not None else None,
         abandoned_n=aband_n,
         terminal_known_n=known_n,
         abandonment_rate=round(aband_rate, 4) if aband_rate is not None else None,
@@ -549,11 +565,18 @@ def _build_summary(report: AiSessionEfficiencyReport) -> str:
 
     # ── Efficiency ────────────────────────────────────────────────────────────
     if report.efficiency_overall_mean is not None:
+        pooled_str = (
+            f", wall-time-weighted pooled={report.efficiency_overall_pooled:.3f}"
+            if report.efficiency_overall_pooled is not None
+            else ""
+        )
         lines.append(
             f"Engagement efficiency (engaged/wall ms): "
-            f"mean={report.efficiency_overall_mean:.3f} "
+            f"per-session mean={report.efficiency_overall_mean:.3f}{pooled_str} "
             f"({report.efficiency_eligible_sessions}/{report.total_sessions} "
-            f"sessions had valid wall_ms)."
+            f"sessions had valid wall_ms). The per-session mean weights a "
+            f"2-minute session equally with a 10-hour one; the pooled ratio "
+            f"is the engaged fraction of total wall time."
         )
     else:
         lines.append(

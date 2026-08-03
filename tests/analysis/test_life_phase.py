@@ -33,7 +33,15 @@ def _day(
     web_total: int = 0,
     reddit: int = 0,
 ) -> OperatorDay:
-    return OperatorDay(
+    # Presence labels mirror what operator_daily writes when it fills a day:
+    # capture-backed metrics are presence-gated in the composite (in-bounds
+    # days without the label are capture gaps, not zeros).
+    present = {"activitywatch"}
+    if spotify is not None:
+        present.add("spotify")
+    if web_total > 0:
+        present.add("web")
+    row = OperatorDay(
         date=d,
         aw_active_hours=aw,
         git_commits=git,
@@ -42,6 +50,8 @@ def _day(
         web_visits=web_total,
         reddit_comments=reddit,
     )
+    row.sources_present = frozenset(present)
+    return row
 
 
 def _full_coverage_bounds(first: date, last: date) -> dict[str, CoverageBounds]:
@@ -291,3 +301,38 @@ def test_social_phase_distinguishable_from_coding_phase(
         assert hasattr(phase, "spotify_hours_per_day")
         assert hasattr(phase, "reddit_comments_per_day")
         assert hasattr(phase, "web_distraction_ratio")
+
+
+def test_in_bounds_capture_gap_is_absent_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A day inside AW coverage BOUNDS but without the presence label (capture
+    gap / phantom manifest coverage, bead lynchpin-jzb) must be absent from the
+    composite — not a fabricated zero-activity day.
+
+    Measured consequence this pins: with bounds-only gating, phantom 2013 rows
+    widened AW bounds so 776/924 days (84%) of a 2024-01..2026-07 window
+    entered the composite as zeros (audit 2026-08-03).
+    """
+    start = date(2025, 1, 1)
+    rows: list[OperatorDay] = []
+    for i in range(120):
+        d = start + timedelta(days=i)
+        if i < 60:
+            # In-bounds but NOT observed: no presence label, value None.
+            row = OperatorDay(date=d)
+            row.sources_present = frozenset()
+            rows.append(row)
+        else:
+            rows.append(_day(d, aw=5.0))
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+
+    metric_bounds = lp._resolve_metric_bounds(rows)
+    signal = lp._build_composite_signal(rows, metric_bounds)
+
+    # First 60 days contribute nothing; observed days are constant → z=0.
+    # If the gap days were read as aw=0.0, the observed stretch would z-score
+    # positive and a fabricated boundary would appear at day 60.
+    assert all(abs(v) < 1e-9 for v in signal)
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+    assert report.boundaries == []

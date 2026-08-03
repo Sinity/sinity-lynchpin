@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Iterator, Optional
 
 
@@ -386,35 +386,44 @@ def compare_ai_tool_attribution(*, start: date, end: date) -> AIToolAttributionC
     keyword.
     """
     import sqlite3
-    from pathlib import Path
+
+    from ..core.config import get_config
 
     # Keystroke side
     rollup = keystrokes_by(dimension="ai_tool", start=start, end=end)
 
-    # Polylogue side — direct sqlite read.
-    poly_db = Path("/realm/data/captures/polylogue/polylogue.db")
+    # Polylogue side — direct read of the configured index DB. (The previous
+    # hardcoded ``captures/polylogue/polylogue.db`` path and ``conversations``
+    # table no longer exist; the function silently returned zero sessions and
+    # therefore never flagged a discrepancy.)
+    poly_db = get_config().polylogue_db
     polylogue_counts: dict[str, int] = {}
     if poly_db.exists():
+        conn = sqlite3.connect(f"file:{poly_db}?mode=ro", uri=True)
         try:
-            conn = sqlite3.connect(poly_db)
-            rows = conn.execute("""
-                SELECT source_name, COUNT(*)
-                FROM conversations
-                WHERE DATE(created_at) >= ? AND DATE(created_at) < ?
-                GROUP BY source_name
-            """, [start.isoformat(), end.isoformat()]).fetchall()
+            start_ms = int(datetime.combine(start, time.min).timestamp() * 1000)
+            end_ms = int(datetime.combine(end, time.min).timestamp() * 1000)
+            rows = conn.execute(
+                """
+                SELECT origin, COUNT(*)
+                FROM sessions
+                WHERE created_at_ms >= ? AND created_at_ms < ?
+                GROUP BY origin
+                """,
+                [start_ms, end_ms],
+            ).fetchall()
             polylogue_counts = dict(rows)
         finally:
             conn.close()
 
-    # The two vocabularies don't share names. Map polylogue source_name
+    # The two vocabularies don't share names. Map polylogue session ``origin``
     # → classifier ai_tool name where they correspond, then look for gaps.
     poly_to_keystroke = {
-        "claude-code": "claude-code",
-        "codex": "codex",
-        "hermes": "hermes",
-        "antigravity": "antigravity",
-        "gemini-cli": "gemini-cli",
+        "claude-code-session": "claude-code",
+        "codex-session": "codex",
+        "hermes-session": "hermes",
+        "antigravity-session": "antigravity",
+        "gemini-cli-session": "gemini-cli",
     }
 
     discrepancies = []

@@ -322,3 +322,27 @@ def test_empty_range_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.n_days == 0
     assert report.daily_risk == []
     assert report.risk_windows == []
+
+
+def test_changepoint_window_ends_at_next_changepoint() -> None:
+    """An upward changepoint's risk window must stop at the NEXT changepoint,
+    not extend to the series end (a dead loop previously forced every window
+    to the last scored day, overlapping later windows)."""
+    from lynchpin.analysis.burnout_warning import _detect_risk_windows
+
+    start = date(2025, 1, 1)
+    # Three regimes: low (20d) → high (20d) → low again (20d).
+    scores = [0.0] * 20 + [2.0] * 20 + [0.0] * 20
+    scored = [(start + timedelta(days=i), s) for i, s in enumerate(scores)]
+
+    windows = _detect_risk_windows(scored, [s for _, s in scored])
+
+    cp_windows = [w for w in windows if w.kind == "changepoint"]
+    assert cp_windows, "the upward shift at day 20 should be flagged"
+    for w in cp_windows:
+        # The upward window must end where the series drops back (day ~40),
+        # not at the final scored day.
+        assert w.end < scored[-1][0], (
+            f"changepoint window {w.start}..{w.end} ran to the series end"
+        )
+        assert w.n_days <= 25
