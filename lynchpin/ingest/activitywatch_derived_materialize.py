@@ -37,16 +37,42 @@ from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_m
 
 ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
 
+# Bound on how many days of source events a single pass may hold in memory.
+# The heavy allocations are the AWEvent objects and span intermediates inside
+# the source generators, which scale with the requested window; chunking keeps
+# the footprint window-length-independent (lynchpin-soa: a 760-day window
+# reached ~5.6G resident and livelocked under a 2G cgroup cap).
+DEFAULT_CHUNK_DAYS = 92
+
 
 def materialize_activitywatch_derived(
     *,
     start: date | None = None,
     end: date | None = None,
     root: Path | None = None,
+    chunk_days: int = DEFAULT_CHUNK_DAYS,
 ) -> dict[str, Any]:
     start, end = _default_window(start, end)
     if end <= start:
         raise MaterializationError("activitywatch_derived_materialize", reason="ActivityWatch derived materialization end must be after start")
+    if chunk_days < 1:
+        raise MaterializationError("activitywatch_derived_materialize", reason="chunk_days must be at least 1")
+    manifest: dict[str, Any] | None = None
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+        manifest = _materialize_window(start=chunk_start, end=chunk_end, root=root)
+        chunk_start = chunk_end
+    assert manifest is not None  # loop runs at least once (end > start)
+    return manifest
+
+
+def _materialize_window(
+    *,
+    start: date,
+    end: date,
+    root: Path | None,
+) -> dict[str, Any]:
     output_dir = activitywatch_derived_dir(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     start_dt = datetime.combine(start, time.min, tzinfo=local_tz())
@@ -320,8 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", type=date.fromisoformat, default=None)
     parser.add_argument("--end", type=date.fromisoformat, default=None)
     parser.add_argument("--root", type=Path, default=None)
+    parser.add_argument("--chunk-days", type=int, default=DEFAULT_CHUNK_DAYS)
     args = parser.parse_args(argv)
-    report = materialize_activitywatch_derived(start=args.start, end=args.end, root=args.root)
+    report = materialize_activitywatch_derived(
+        start=args.start, end=args.end, root=args.root, chunk_days=args.chunk_days
+    )
     sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 0
 
