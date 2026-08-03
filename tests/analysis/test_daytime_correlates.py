@@ -41,6 +41,9 @@ def _patch_loaders(
     git: dict[date, float] | None = None,
     sleep_min: dict[date, float] | None = None,
     spotify: dict[date, float] | None = None,
+    typing: dict[str, dict[date, float]] | None = None,
+    ytmusic: dict[date, float] | None = None,
+    ai_load: dict[str, dict[date, float]] | None = None,
 ) -> None:
     empty_aw = {"deep_work_min": {}, "active_hours": {}, "fragmentation": {}}
     monkeypatch.setattr(dc, "_aw_loader", lambda: aw if aw is not None else empty_aw)
@@ -51,6 +54,9 @@ def _patch_loaders(
     monkeypatch.setattr(dc, "_git_loader", lambda s, e: git or {})
     monkeypatch.setattr(dc, "_sleep_loader", lambda: sleep_min or {})
     monkeypatch.setattr(dc, "_spotify_loader", lambda: spotify or {})
+    monkeypatch.setattr(dc, "_typing_loader", lambda s, e: typing or {})
+    monkeypatch.setattr(dc, "_ytmusic_loader", lambda s, e: ytmusic or {})
+    monkeypatch.setattr(dc, "_ai_load_loader", lambda: ai_load or {})
 
 
 def test_planted_substance_focus_signal_survives_fdr(
@@ -205,3 +211,59 @@ def test_keystroke_physiology_bidirectional_lags(
 def test_min_detectable_r_monotone() -> None:
     assert dc.min_detectable_r(10) > dc.min_detectable_r(50) > dc.min_detectable_r(500)
     assert dc.min_detectable_r(3) == 1.0
+
+
+def test_ytmusic_and_ai_load_families(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The revived music family and the AI-load family run through the same
+    production route (pair construction, corrected p, one FDR family)."""
+    rng = random.Random(77)
+    days = _days()
+    deep = {d: rng.uniform(0, 240) for d in days}
+    plays = {}
+    ai_sessions = {}
+    for i, d in enumerate(days):
+        plays[d] = float(rng.randint(0, 120))
+        # planted: heavy AI-delegation days have low fragmentation
+        ai_sessions[d] = float(rng.randint(0, 90))
+    frag = {d: max(0.0, 1.0 - ai_sessions[d] / 100.0 + rng.uniform(-0.05, 0.05)) for d in days}
+    _patch_loaders(
+        monkeypatch,
+        aw={"deep_work_min": deep, "fragmentation": frag, "active_hours": {}},
+        ytmusic=plays,
+        ai_load={"ai_sessions": ai_sessions, "ai_user_words": {}},
+    )
+
+    report = analyze(days[0], days[-1])
+
+    fams = {f.name: f for f in report.families}
+    assert fams["ytmusic_focus"].status == "computed"
+    assert fams["ai_load"].status == "computed"
+    planted = [
+        c for c in report.correlations
+        if c.family == "ai_load" and c.predictor == "ai_sessions"
+        and c.outcome == "fragmentation" and c.significant
+    ]
+    assert planted and planted[0].r < -0.5
+
+
+def test_typing_dynamics_family_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    rng = random.Random(31)
+    days = _days()
+    iki = {d: rng.uniform(120, 260) for d in days}
+    stress = {d: rng.uniform(20, 80) for d in days}
+    _patch_loaders(
+        monkeypatch,
+        typing={"iki_median_ms": iki, "typing_minutes": {d: rng.uniform(5, 90) for d in days}},
+        physio={"stress": stress},
+        substance={"total_mg": {d: float(rng.choice([0, 20, 40])) for d in days}},
+    )
+
+    report = analyze(days[0], days[-1])
+
+    pairs = {
+        (c.predictor, c.outcome)
+        for c in report.correlations
+        if c.family == "typing_dynamics"
+    }
+    assert ("iki_median_ms", "stress") in pairs
+    assert ("total_mg", "iki_median_ms") in pairs

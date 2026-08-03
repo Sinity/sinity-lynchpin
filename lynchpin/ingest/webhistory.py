@@ -124,6 +124,27 @@ def extract_browser_data(
         report["kind"] = kind
         reports.append(report)
 
+    # Live Chromium-family profiles (Chrome retains only ~90 days of visits;
+    # snapshotting them into raw on every ingest run is what makes the history
+    # durable). The profile DB is locked while the browser runs, so extraction
+    # reads a temp copy. Configure via LYNCHPIN_CHROME_PROFILE_DBS.
+    from ..sources.chrome_profile import discover_profile_history_dbs, snapshot_history_db
+
+    for path, profile_label in discover_profile_history_dbs():
+        with snapshot_history_db(path) as snap:
+            visits = list(
+                iter_browser_db_visits(
+                    snap, kind="chromium", source_label=f"live_profile:{profile_label}"
+                )
+            )
+        report = _write_raw_batch(
+            raw_dir, f"live_{profile_label}_history", visits, dry_run=dry_run
+        )
+        report["kind"] = "live_profile"
+        report["profile"] = profile_label
+        report["source_path"] = str(path)
+        reports.append(report)
+
     for batch in iter_chrome_history_batches():
         report = _write_raw_batch(
             raw_dir,

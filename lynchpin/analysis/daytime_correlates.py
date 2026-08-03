@@ -18,6 +18,17 @@ have BEFORE any correlation is reported:
                            family is young; it is emitted with its
                            min-detectable |r| so early noise cannot be read as
                            findings.
+  typing_dynamics        — HOW the typing happened (within-burst inter-key
+                           interval, burst structure, typing minutes from raw
+                           scribe-tap timing) vs dose load, physiology, and
+                           fragmentation.
+  ytmusic_focus          — music × focus revived on YouTube Music (live Chrome
+                           profile history; the Spotify export ended 2025-12).
+                           Sliding ~90-day retention window, made durable by
+                           the webhistory ingest's live-profile snapshots.
+  ai_load                — AI-session load (sessions/day, operator-authored
+                           prompt words/day from the polylogue index) vs
+                           focus, typing, and commit output.
 
 STATISTICAL INTEGRITY CONTRACT
 ------------------------------
@@ -52,7 +63,7 @@ import sqlite3
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from ..core.analytics import (
@@ -301,6 +312,58 @@ def _load_machine_daily() -> dict[str, dict[date, float]]:
     return out
 
 
+def _load_typing_dynamics(start: date, end: date) -> dict[str, dict[date, float]]:
+    """Daily typing-dynamics series from the raw keylog capture."""
+    from ..sources.keylog_dynamics import daily_dynamics
+
+    out: dict[str, dict[date, float]] = {
+        "iki_median_ms": {}, "iki_p90_ms": {}, "typing_minutes": {}, "burst_count": {},
+    }
+    for row in daily_dynamics(start, end):
+        out["iki_median_ms"][row.date] = row.median_iki_ms
+        out["iki_p90_ms"][row.date] = row.p90_iki_ms
+        out["typing_minutes"][row.date] = row.typing_minutes
+        out["burst_count"][row.date] = float(row.burst_count)
+    return out
+
+
+def _load_ytmusic_daily(start: date, end: date) -> dict[date, float]:
+    """Daily YouTube Music play counts from the live Chrome profile.
+
+    Sliding ~90-day retention window: absent days before coverage are
+    unobserved, not silent (missing ≠ zero).
+    """
+    from ..sources.ytmusic import daily_listening
+
+    return {row.date: float(row.play_count) for row in daily_listening(start, end)}
+
+
+def _load_ai_load() -> dict[str, dict[date, float]]:
+    """Daily AI-session load from the polylogue index DB (read-only).
+
+    ``ai_sessions``: sessions started per logical day; ``ai_user_words``:
+    operator-authored words sent to agents per logical day (prompt effort).
+    """
+    poly_db = get_config().polylogue_db
+    out: dict[str, dict[date, float]] = {"ai_sessions": {}, "ai_user_words": {}}
+    if not poly_db.exists():
+        return out
+    conn = sqlite3.connect(f"file:{poly_db}?mode=ro", uri=True)
+    try:
+        for created_ms, words in conn.execute(
+            "SELECT created_at_ms, COALESCE(authored_user_word_count, 0) "
+            "FROM sessions WHERE created_at_ms IS NOT NULL"
+        ):
+            day = logical_date(
+                datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc)
+            )
+            out["ai_sessions"][day] = out["ai_sessions"].get(day, 0.0) + 1.0
+            out["ai_user_words"][day] = out["ai_user_words"].get(day, 0.0) + float(words)
+    finally:
+        conn.close()
+    return out
+
+
 # Test override hooks (None = use the production loader).
 _aw_loader: Optional[Callable[[], dict[str, dict[date, float]]]] = None
 _physio_loader: Optional[Callable[[], dict[str, dict[date, float]]]] = None
@@ -310,6 +373,9 @@ _machine_loader: Optional[Callable[[], dict[str, dict[date, float]]]] = None
 _git_loader: Optional[Callable[[date, date], dict[date, float]]] = None
 _sleep_loader: Optional[Callable[[], dict[date, float]]] = None
 _spotify_loader: Optional[Callable[[], dict[date, float]]] = None
+_typing_loader: Optional[Callable[[date, date], dict[str, dict[date, float]]]] = None
+_ytmusic_loader: Optional[Callable[[date, date], dict[date, float]]] = None
+_ai_load_loader: Optional[Callable[[], dict[str, dict[date, float]]]] = None
 
 
 # ── power helper ─────────────────────────────────────────────────────────────
@@ -364,6 +430,9 @@ def analyze(start: date, end: date) -> DaytimeCorrelatesReport:
     git = (_git_loader or _load_git_commits)(start, end)
     sleep_min = (_sleep_loader or _load_sleep_minutes)()
     spotify = (_spotify_loader or _load_spotify_minutes)()
+    typing = (_typing_loader or _load_typing_dynamics)(start, end)
+    ytmusic = (_ytmusic_loader or _load_ytmusic_daily)(start, end)
+    ai_load = (_ai_load_loader or _load_ai_load)()
 
     aw = {k: _clamp(v, start, end) for k, v in aw.items()}
     physio = {k: _clamp(v, start, end) for k, v in physio.items()}
@@ -372,6 +441,9 @@ def analyze(start: date, end: date) -> DaytimeCorrelatesReport:
     git = _clamp(git, start, end)
     sleep_min = _clamp(sleep_min, start, end)
     spotify = _clamp(spotify, start, end)
+    typing = {k: _clamp(v, start, end) for k, v in typing.items()}
+    ytmusic = _clamp(ytmusic, start, end)
+    ai_load = {k: _clamp(v, start, end) for k, v in ai_load.items()}
 
     if aw["deep_work_min"]:
         aw_last = max(aw["deep_work_min"])
@@ -396,6 +468,31 @@ def analyze(start: date, end: date) -> DaytimeCorrelatesReport:
         for out_name in ("deep_work_min", "fragmentation"):
             specs.append(("machine_pressure_focus", m_name, m, out_name, aw[out_name], (0,)))
         specs.append(("machine_pressure_focus", m_name, m, "git_commits", git, (0,)))
+
+    # Typing dynamics: how typing happened (speed/burst structure) vs dose
+    # load and physiology. IKI metrics are relative signals (see source).
+    for t_name in ("iki_median_ms", "typing_minutes"):
+        t = typing.get(t_name, {})
+        if "total_mg" in substance:
+            specs.append(("typing_dynamics", "total_mg", substance["total_mg"], t_name, t, (0,)))
+        for phys_name in ("stress", "hr_mean"):
+            phys = physio.get(phys_name, {})
+            specs.append(("typing_dynamics", t_name, t, phys_name, phys, (0,)))
+        specs.append(("typing_dynamics", t_name, t, "aw_frag", aw["fragmentation"], (0,)))
+
+    # Music × focus, revived on YouTube Music (live Chrome profile) after the
+    # Spotify export ended: plays vs same-day focus.
+    for out_name in ("deep_work_min", "fragmentation", "active_hours"):
+        specs.append(("ytmusic_focus", "ytmusic_plays", ytmusic, out_name, aw[out_name], (0,)))
+    specs.append(("ytmusic_focus", "ytmusic_plays", ytmusic, "keypress", keypress, (0,)))
+
+    # AI-session load vs operator state: does heavy delegation fragment
+    # attention or free it; prompt effort vs typing and commit output.
+    for a_name, a in sorted(ai_load.items()):
+        for out_name in ("deep_work_min", "fragmentation"):
+            specs.append(("ai_load", a_name, a, out_name, aw[out_name], (0,)))
+        specs.append(("ai_load", a_name, a, "keypress", keypress, (0,)))
+        specs.append(("ai_load", a_name, a, "git_commits", git, (0,)))
 
     raw: list[tuple[str, str, str, int, EffectiveCorrelation]] = []
     fam_span: dict[str, tuple[Optional[date], Optional[date]]] = {}
@@ -438,7 +535,14 @@ def analyze(start: date, end: date) -> DaytimeCorrelatesReport:
             )
 
     # Family coverage rows (computed families + power verdicts).
-    for fam in ("substance_focus", "keystroke_physiology", "machine_pressure_focus"):
+    for fam in (
+        "substance_focus",
+        "keystroke_physiology",
+        "machine_pressure_focus",
+        "typing_dynamics",
+        "ytmusic_focus",
+        "ai_load",
+    ):
         fam_corrs = [c for c in report.correlations if c.family == fam]
         if fam_corrs:
             n_max = max(c.n for c in fam_corrs)
