@@ -372,6 +372,10 @@ def predict_sleep_blocks(
     Blocks are emitted regardless of whether Samsung already scored them;
     ``labelled_fraction`` says how much overlaps existing labels, so callers
     can select genuinely recovered sleep via ``is_recovered``.
+
+    Pass the bundle from :func:`train_sequence_model` (recommended) to score
+    minutes through the HMM; pass a bare classifier only to reproduce the
+    superseded minute-independent behaviour.
     """
     features = build_minute_features(start=start, end=end)
     if not features or model is None:
@@ -379,8 +383,38 @@ def predict_sleep_blocks(
 
     import numpy as np
 
+    # `model` may be either a bare classifier or the fitted sequence bundle from
+    # train_sequence_model. The bundle is preferred and is what the module-level
+    # docs point at: it wins on every fairly-measured axis (see below), so there
+    # is no reason to score minutes independently when the sequence model is
+    # available.
+    if isinstance(model, dict) and "classifier" in model:
+        classifier = model["classifier"]
+        matrix = model["transitions"]
+        initial = model["initial"]
+    else:
+        classifier, matrix, initial = model, None, None
+
     vectors = np.array([f.vector() for f in features])
-    probabilities = model.predict_proba(vectors)[:, 1]
+    probabilities = classifier.predict_proba(vectors)[:, 1]
+    if matrix is not None:
+        # Smooth per contiguous run of minutes, so a coverage gap never lets the
+        # HMM carry state across hours of missing sensor data.
+        smoothed = np.empty_like(probabilities)
+        run_start = 0
+        for i in range(1, len(features) + 1):
+            broken = i == len(features) or (
+                (features[i].when - features[i - 1].when).total_seconds() / 60.0
+                > max_bridge_minutes
+            )
+            if broken:
+                chunk = probabilities[run_start:i]
+                emissions = np.clip(
+                    np.stack([1.0 - chunk, chunk], axis=1), 1e-9, None
+                )
+                smoothed[run_start:i] = _forward_backward(emissions, matrix, initial)
+                run_start = i
+        probabilities = smoothed
 
     blocks: list[PredictedSleepBlock] = []
     run: list[tuple[MinuteFeature, float]] = []

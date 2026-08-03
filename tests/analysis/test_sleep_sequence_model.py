@@ -136,3 +136,32 @@ def test_threshold_for_precision_is_monotone_in_target(monkeypatch):
     )
     assert lenient is not None and strict is not None
     assert strict >= lenient
+
+
+def test_blocks_can_be_scored_through_the_hmm_bundle(monkeypatch):
+    """The sequence bundle is an accepted model for block prediction."""
+    movement, heart, stages = _separable_world()
+    _patch(monkeypatch, movement, heart, stages)
+    bundle, _ = ssm.train_sequence_model(start=D, end=D + timedelta(days=31))
+    assert bundle is not None
+
+    blocks = ssm.predict_sleep_blocks(
+        start=D, end=D + timedelta(days=31), model=bundle,
+        min_probability=0.9, min_block_minutes=60,
+    )
+    assert blocks
+    assert all(b.minutes >= 60 for b in blocks)
+    # HMM smoothing must not bridge across a coverage gap between nights
+    for block in blocks:
+        assert (block.end - block.start).total_seconds() / 3600 <= 24
+
+
+def test_bare_classifier_still_accepted_for_comparison(monkeypatch):
+    movement, heart, stages = _separable_world()
+    _patch(monkeypatch, movement, heart, stages)
+    model, _ = ssm.train_sleep_wake_model(start=D, end=D + timedelta(days=31))
+    blocks = ssm.predict_sleep_blocks(
+        start=D, end=D + timedelta(days=31), model=model,
+        min_probability=0.5, min_block_minutes=60,
+    )
+    assert blocks
