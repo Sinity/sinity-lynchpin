@@ -211,3 +211,184 @@ def active_level_health_correlation(
             "p-values FDR-corrected across the substance x signal family.",
         ],
     }
+
+
+def substance_sleep_night_correlation(
+    start: date,
+    end: date,
+    *,
+    half_lives: Optional[dict[str, tuple[float, str]]] = None,
+    min_nights: int = 10,
+) -> dict[str, object]:
+    """Modeled active level at sleep onset vs that same night's sleep.
+
+    For each canonical non-nap night, computes the one-compartment active
+    level (mg) of every modeled substance at the moment of sleep onset, then
+    correlates it against same-night outcomes: effective quality score
+    (real or proxy), deep/REM share, sleep duration, nocturnal mean HR, and
+    onset clock hour. Complements ``active_level_health_correlation``, which
+    only looks at day-level lag-1 effects.
+
+    Association, not causation; nights and doses share obvious confounders
+    (a late dose and a late night have a common cause more often than not).
+    """
+    import math as _math
+
+    from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
+    from ..sources.sleep import entries_in_range as sleep_entries_in_range
+    from ..sources.substance import entries_in_range as dose_entries_in_range
+
+    table = {k.lower(): v for k, v in (half_lives or HALF_LIVES_HOURS).items()}
+
+    doses: dict[str, list[tuple[datetime, float]]] = {}
+    skipped_untimed = 0
+    for entry in dose_entries_in_range(start=start - timedelta(days=3), end=end):
+        if entry.amount_mg is None:
+            continue
+        key = entry.substance.strip().lower()
+        if key not in table:
+            continue
+        if entry.time is None:
+            skipped_untimed += 1
+            continue
+        doses.setdefault(key, []).append(
+            (datetime.combine(entry.date, entry.time), float(entry.amount_mg))
+        )
+    for events in doses.values():
+        events.sort()
+
+    nights: list[dict[str, object]] = []
+    for night in sleep_entries_in_range(start=start, end=end, canonical=True):
+        if night.is_nap or not night.segments:
+            continue
+        onset = night.segments[0].start
+        if onset == datetime.min:
+            continue
+        onset_naive = onset.replace(tzinfo=None)
+        metrics = night.metrics
+        row: dict[str, object] = {
+            "onset": onset_naive,
+            "score": night.effective_score,
+            "deep_pct": metrics.deep_pct if metrics else None,
+            "rem_pct": metrics.rem_pct if metrics else None,
+            "duration_min": night.total_minutes or None,
+            "hr_avg": night.signals.hr_avg if night.signals else None,
+            "onset_hour": onset_naive.hour + onset_naive.minute / 60.0,
+        }
+        nights.append(row)
+
+    outcome_names = ("score", "deep_pct", "rem_pct", "duration_min", "hr_avg", "onset_hour")
+    findings: list[dict[str, object]] = []
+    pvals: dict[int, float] = {}
+    group_pvals: dict[int, float] = {}
+    for substance, events in doses.items():
+        k = _math.log(2.0) / table[substance][0]
+        active = [
+            (_active_mg(events, row["onset"], k), row)  # type: ignore[arg-type]
+            for row in nights
+        ]
+        for outcome in outcome_names:
+            pairs = [
+                (mg, float(row[outcome]))  # type: ignore[arg-type]
+                for mg, row in active
+                if row[outcome] is not None
+            ]
+            if len(pairs) < min_nights:
+                continue
+            xs = [p[0] for p in pairs]
+            ys = [p[1] for p in pairs]
+            r = _pearson_r(xs, ys)
+            if r is None or not _math.isfinite(r):
+                continue
+            n = len(pairs)
+            p = 0.0 if abs(r) >= 0.99999 else _t_test_p(
+                r * _math.sqrt((n - 2) / (1.0 - r * r)), n - 2
+            )
+            active_vals = [y for x, y in pairs if x > 1.0]
+            sober_vals = [y for x, y in pairs if x <= 1.0]
+            # A monotone dose-response r can be near zero while the
+            # active-vs-sober contrast is real (threshold effects), so report
+            # Welch's t and Hedges' g for the split as well as the correlation.
+            group_p, hedges_g = _welch_group_test(active_vals, sober_vals)
+            pvals[len(findings)] = p
+            findings.append(
+                {
+                    "substance": substance,
+                    "outcome": outcome,
+                    "r": round(r, 4),
+                    "n": n,
+                    "active_nights": len(active_vals),
+                    "active_mean": round(sum(active_vals) / len(active_vals), 2)
+                    if active_vals
+                    else None,
+                    "sober_mean": round(sum(sober_vals) / len(sober_vals), 2)
+                    if sober_vals
+                    else None,
+                    "group_p_value": round(group_p, 4) if group_p is not None else None,
+                    "hedges_g": round(hedges_g, 3) if hedges_g is not None else None,
+                }
+            )
+            if group_p is not None:
+                group_pvals[len(findings) - 1] = group_p
+
+    qmap = _benjamini_hochberg(pvals) if pvals else {}
+    gqmap = _benjamini_hochberg(group_pvals) if group_pvals else {}
+    for idx, finding in enumerate(findings):
+        finding["p_value"] = round(pvals[idx], 4)
+        finding["q_value"] = round(qmap[idx], 4)
+        finding["significant"] = qmap[idx] < 0.05
+        if idx in gqmap:
+            finding["group_q_value"] = round(gqmap[idx], 4)
+            finding["group_significant"] = gqmap[idx] < 0.05
+    findings.sort(key=lambda f: abs(float(f["r"])), reverse=True)  # type: ignore[arg-type]
+
+    return {
+        "findings": findings,
+        "nights": len(nights),
+        "skipped_untimed_doses": skipped_untimed,
+        "caveats": [
+            "Same-night association at sleep onset, NOT causation; dose timing and "
+            "bedtime share confounders.",
+            "Active level = one-compartment decay with estimated half-lives "
+            "(research chemicals especially uncertain).",
+            "active/sober means split at 1 mg modeled active level; group_p/hedges_g "
+            "test that contrast (Welch) because a threshold effect can show a real "
+            "group difference with a near-zero dose-response correlation.",
+            "p-values FDR-corrected across the substance x outcome family.",
+        ],
+    }
+
+
+def _welch_group_test(
+    a: list[float], b: list[float], *, min_group: int = 5
+) -> tuple[Optional[float], Optional[float]]:
+    """Welch's unequal-variance t-test p-value and Hedges' g for two samples."""
+    import math as _math
+
+    from ..core.analytics import _t_test_p
+
+    if len(a) < min_group or len(b) < min_group:
+        return None, None
+    na, nb = len(a), len(b)
+    ma, mb = sum(a) / na, sum(b) / nb
+    va = sum((x - ma) ** 2 for x in a) / (na - 1)
+    vb = sum((x - mb) ** 2 for x in b) / (nb - 1)
+    if va <= 0 and vb <= 0:
+        return None, None
+    se2 = va / na + vb / nb
+    if se2 <= 0:
+        return None, None
+    t = (ma - mb) / _math.sqrt(se2)
+    df_num = se2 ** 2
+    df_den = (va / na) ** 2 / (na - 1) + (vb / nb) ** 2 / (nb - 1)
+    df = df_num / df_den if df_den > 0 else float(na + nb - 2)
+    p = _t_test_p(t, max(int(df), 1))
+    pooled_sd = _math.sqrt(
+        ((na - 1) * va + (nb - 1) * vb) / max(na + nb - 2, 1)
+    )
+    if pooled_sd <= 0:
+        return p, None
+    d = (ma - mb) / pooled_sd
+    # Hedges' small-sample correction
+    g = d * (1 - 3 / (4 * (na + nb) - 9)) if (na + nb) > 3 else d
+    return p, g
