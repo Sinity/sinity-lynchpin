@@ -15,7 +15,7 @@ from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.terminal import canonical_atuin_history_path, commands_from_atuin_db
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
 ATUIN_HISTORY_SCHEMA_VERSION = 1
@@ -63,6 +63,8 @@ def materialize_atuin_history(
         covered_dates = tuple(sorted({_row_logical_date(row) for row in rows}))
 
     rows.sort(key=lambda row: str(row["timestamp"]))
+    if start is not None and end is not None:
+        guard_incremental_shrinkage(output.with_suffix(".manifest.json"), len(rows), dataset="atuin.history")
     _write_ndjson(output, rows)
 
     timestamps = [_row_timestamp(row) for row in rows]

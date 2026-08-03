@@ -14,7 +14,7 @@ from ..core.io import latest_mtime_iso
 from ..sources.sleep import sleep_productivity
 from ..sources.sleep_productivity import sleep_productivity_path
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
 ProductivityRow = dict[str, Any]
@@ -40,6 +40,7 @@ def materialize_sleep_productivity(
     rows.sort(key=lambda row: row["sleep_date"])
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    guard_incremental_shrinkage(output.with_suffix(".manifest.json"), len(rows), dataset="lynchpin.sleep_productivity")
     atomic_write_ndjson(output, rows)
 
     input_files = _sleep_productivity_input_files(start, end)

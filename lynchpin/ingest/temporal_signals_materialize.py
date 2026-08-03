@@ -17,7 +17,7 @@ from ..sources.temporal_signals import (
     detect_temporal_signals,
     temporal_signals_path,
 )
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 from .manifest_windows import merge_manifest_covered_dates
 
 
@@ -50,6 +50,7 @@ def materialize_temporal_signals(
     rows.sort(key=lambda row: (row["event_date"], row["kind"], row["signal"], json.dumps(row["payload"], sort_keys=True)))
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    guard_incremental_shrinkage(output.with_suffix(".manifest.json"), len(rows), dataset="lynchpin.temporal_signals")
     atomic_write_ndjson(output, rows)
 
     input_files = _temporal_input_files(start, end)

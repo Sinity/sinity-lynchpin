@@ -15,13 +15,75 @@ the old complete file or the new complete file, never a partial one.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..core.errors import MaterializationError
+
+_SHRINK_GUARD_MIN_ROWS = 1000
+_SHRINK_GUARD_THRESHOLD = 0.5
+
 
 def _tmp_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.tmp")
+
+
+def guard_incremental_shrinkage(
+    manifest: Path,
+    new_row_count: int,
+    *,
+    dataset: str,
+) -> None:
+    """Refuse a suspiciously large row-count drop in an incremental run.
+
+    Incremental (windowed) materialization keeps every existing row outside
+    the window and replaces only the window itself, so total row count
+    should never collapse. When it does, the most likely cause is that the
+    "existing rows" read saw a torn/partial file (confirmed incident,
+    lynchpin-9tw: concurrent pre-atomic-write rewriters shrank the
+    canonical AW events file from 2.47M to 206K rows because each writer
+    trusted whatever fragment it managed to read as the complete existing
+    row set). Atomic writes (this module) sever the torn-read vector, but
+    this guard also stops any *other* cause of silent mass row loss --
+    an accidentally-truncated input, a bad merge -- from being persisted
+    over the canonical file.
+
+    Only meaningful for windowed runs; callers on a full-rebuild path
+    should not call it. Override deliberately with
+    ``LYNCHPIN_ALLOW_SHRINK=1`` when a large shrink is intended (e.g.
+    a purge of known-bad rows).
+    """
+    if os.environ.get("LYNCHPIN_ALLOW_SHRINK") == "1":
+        return
+    payload = _read_manifest_dict(manifest)
+    previous_raw = payload.get("row_count")
+    if not isinstance(previous_raw, int) or previous_raw < _SHRINK_GUARD_MIN_ROWS:
+        return
+    if new_row_count >= previous_raw * _SHRINK_GUARD_THRESHOLD:
+        return
+    raise MaterializationError(
+        dataset,
+        reason=(
+            f"incremental materialization would shrink {dataset} from "
+            f"{previous_raw} to {new_row_count} rows (>50% loss); an "
+            "incremental run keeps all rows outside its window, so this "
+            "usually means the existing-rows read was torn or truncated. "
+            "Refusing to persist. Set LYNCHPIN_ALLOW_SHRINK=1 to override "
+            "deliberately."
+        ),
+    )
+
+
+def _read_manifest_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def atomic_write_text(path: Path, text: str) -> None:

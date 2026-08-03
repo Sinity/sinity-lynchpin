@@ -37,7 +37,7 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import write_manifest
+from ._manifest import guard_incremental_shrinkage, write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +396,12 @@ def build_full_history(
         if handle is not None:
             handle.close()
     if not dry_run:
+        if start is not None and end is not None:
+            guard_incremental_shrinkage(
+                full_history_manifest_path(output),
+                row_count,
+                dataset="webhistory.full_history",
+            )
         tmp_output.replace(output)
 
     report = {

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 
-from lynchpin.ingest._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
+import pytest
+
+from lynchpin.core.errors import MaterializationError
+from lynchpin.ingest._manifest import (
+    atomic_write_ndjson,
+    atomic_write_text,
+    guard_incremental_shrinkage,
+    write_manifest,
+)
 
 
 def test_atomic_write_text_leaves_no_tmp_sibling(tmp_path) -> None:
@@ -74,3 +82,45 @@ def test_write_manifest_is_atomic_and_adds_materialized_at(tmp_path) -> None:
     assert payload["dataset"] == "x"
     assert "materialized_at" in payload
     assert not (tmp_path / ".x.manifest.json.tmp").exists()
+
+
+def test_guard_incremental_shrinkage_rejects_mass_row_loss(tmp_path) -> None:
+    """Regression test for lynchpin-9tw.
+
+    An incremental run keeps all rows outside its window, so total row
+    count collapsing (here: 2,468,166 -> 206,098, the real incident
+    numbers) means the existing-rows read was torn/truncated. The guard
+    must refuse to persist that state.
+    """
+
+    manifest = tmp_path / "events.manifest.json"
+    manifest.write_text(json.dumps({"row_count": 2_468_166}), encoding="utf-8")
+
+    with pytest.raises(MaterializationError, match="shrink"):
+        guard_incremental_shrinkage(manifest, 206_098, dataset="activitywatch.events")
+
+
+def test_guard_incremental_shrinkage_allows_normal_growth_and_small_shrink(tmp_path) -> None:
+    manifest = tmp_path / "events.manifest.json"
+    manifest.write_text(json.dumps({"row_count": 10_000}), encoding="utf-8")
+
+    guard_incremental_shrinkage(manifest, 12_000, dataset="x")  # growth
+    guard_incremental_shrinkage(manifest, 9_000, dataset="x")  # mild shrink
+    guard_incremental_shrinkage(manifest, 5_000, dataset="x")  # exactly at threshold
+
+
+def test_guard_incremental_shrinkage_skips_small_or_absent_baselines(tmp_path) -> None:
+    missing = tmp_path / "missing.manifest.json"
+    guard_incremental_shrinkage(missing, 0, dataset="x")
+
+    small = tmp_path / "small.manifest.json"
+    small.write_text(json.dumps({"row_count": 500}), encoding="utf-8")
+    guard_incremental_shrinkage(small, 0, dataset="x")
+
+
+def test_guard_incremental_shrinkage_env_override(tmp_path, monkeypatch) -> None:
+    manifest = tmp_path / "events.manifest.json"
+    manifest.write_text(json.dumps({"row_count": 100_000}), encoding="utf-8")
+
+    monkeypatch.setenv("LYNCHPIN_ALLOW_SHRINK", "1")
+    guard_incremental_shrinkage(manifest, 10, dataset="x")

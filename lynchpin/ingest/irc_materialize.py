@@ -19,7 +19,7 @@ from ..sources.irc_raw import (
     normalize_nick,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
 IRC_EVENTS_SCHEMA_VERSION = 1
@@ -70,6 +70,8 @@ def materialize_irc_events(
         channel = str(row.get("channel") or "")
         channel_counts[channel] = channel_counts.get(channel, 0) + 1
 
+    if start is not None and end is not None:
+        guard_incremental_shrinkage(irc_manifest_path(), len(rows), dataset="comms.irc.events")
     _write_ndjson(output, rows)
 
     manifest = {

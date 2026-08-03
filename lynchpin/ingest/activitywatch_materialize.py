@@ -20,7 +20,7 @@ from ..sources.activitywatch_raw import (
     events_from_activitywatch_dbs,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
@@ -76,6 +76,12 @@ def materialize_activitywatch_events(
         _add_event(rows, event)
 
     ordered = [rows[key] for key in sorted(rows)]
+    if start is not None and end is not None:
+        guard_incremental_shrinkage(
+            output.with_suffix(".manifest.json"),
+            len(ordered),
+            dataset="activitywatch.events",
+        )
     _write_ndjson(output, ordered)
 
     starts = [

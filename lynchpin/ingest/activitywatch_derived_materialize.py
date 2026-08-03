@@ -32,7 +32,7 @@ from ..sources.activitywatch_derived import (
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from .activitywatch_event_index_materialize import activitywatch_event_index_input_files
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
 ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
@@ -80,6 +80,11 @@ def materialize_activitywatch_derived(
         for kind in PRODUCT_KINDS
     }
 
+    guard_incremental_shrinkage(
+        activitywatch_derived_manifest_path(root),
+        sum(len(rows[kind]) for kind in PRODUCT_KINDS),
+        dataset="lynchpin.activitywatch_derived",
+    )
     row_counts: dict[str, int] = {}
     paths: dict[str, str] = {}
     for kind in PRODUCT_KINDS:
