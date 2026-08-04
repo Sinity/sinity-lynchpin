@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import sys
 from datetime import date, datetime, timedelta
@@ -51,60 +52,68 @@ def materialize_activitywatch_events(
 
     window = _exclusive_window(start, end)
 
-    # Collect raw events first, then apply dedup per bucket. The dedup
-    # function expects events to be grouped by bucket; sorting by
-    # (bucket, start) achieves that.
-    kwargs = {"start": window[0], "end": window[1]} if window is not None else {}
-    raw = list(events_from_activitywatch_dbs(BUCKET_PREFIXES, **kwargs))
-    raw.sort(key=lambda e: (e.bucket, e.start, e.end))
+    # Request bucket order so deduplication can consume one bucket at a time.
+    kwargs = {"order": "bucket", "dedupe": False}
+    if window is not None:
+        kwargs.update(start=window[0], end=window[1])
+    raw = events_from_activitywatch_dbs(BUCKET_PREFIXES, **kwargs)
+    cleaned = dedup_and_merge(raw) if dedupe else raw
+    existing = (
+        _iter_existing_rows(output, start=start, end=end)
+        if start is not None and end is not None and output.exists()
+        else iter(())
+    )
+    ordered = _merge_existing_rows(existing, cleaned)
+    row_count = 0
+    observed_dates: set[date] = set()
+    first_start: datetime | None = None
+    last_start: datetime | None = None
 
-    if dedupe:
-        cleaned = list(dedup_and_merge(raw))
-    else:
-        cleaned = raw
+    def tracked_rows():
+        nonlocal row_count, first_start, last_start
+        for row in ordered:
+            try:
+                start_dt = datetime.fromisoformat(str(row["start"]).replace("Z", "+00:00"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            row_count += 1
+            first_start = start_dt if first_start is None else min(first_start, start_dt)
+            last_start = start_dt if last_start is None else max(last_start, start_dt)
+            observed_dates.add(logical_date(start_dt))
+            yield row
 
-    # Sort the cleaned events by (bucket, start) for stable output, then
-    # dedupe via dict-by-key in case dedup_and_merge left any logical
-    # duplicates (it shouldn't, but keep the defensive layer).
-    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    if start is not None and end is not None and output.exists():
-        for row in _read_existing_rows(output):
-            day = _row_logical_date(row)
-            if day is not None and not (start <= day < end):
-                _add_row(rows, row)
-    for event in cleaned:
-        _add_event(rows, event)
-
-    ordered = [rows[key] for key in sorted(rows)]
-    if start is not None and end is not None:
-        guard_incremental_shrinkage(
-            output.with_suffix(".manifest.json"),
-            len(ordered),
-            dataset="activitywatch.events",
-        )
-    _write_ndjson(output, ordered)
-
-    starts = [
-        datetime.fromisoformat(str(row["start"]).replace("Z", "+00:00"))
-        for row in ordered
-    ]
-    logical_starts = [logical_date(start_dt) for start_dt in starts]
+    temporary_output = output.with_name(f".{output.name}.materialize-tmp")
+    try:
+        _write_ndjson(temporary_output, tracked_rows())
+        if start is not None and end is not None:
+            guard_incremental_shrinkage(
+                output.with_suffix(".manifest.json"),
+                row_count,
+                dataset="activitywatch.events",
+            )
+        temporary_output.replace(output)
+    except Exception:
+        temporary_output.unlink(missing_ok=True)
+        raise
+    verified_bounds = (
+        (min(observed_dates), max(observed_dates)) if observed_dates else None
+    )
     covered_dates = _merge_covered_dates(
         manifest=output.with_suffix(".manifest.json"),
-        observed_dates=set(logical_starts),
+        observed_dates=observed_dates,
         start=start,
         end=end,
-        verified_bounds=(min(logical_starts), max(logical_starts)) if logical_starts else None,
+        verified_bounds=verified_bounds,
     )
     manifest = {
         "dataset": "activitywatch.events",
         "schema_version": ACTIVITYWATCH_EVENTS_SCHEMA_VERSION,
         "materialized_path": str(output),
-        "row_count": len(ordered),
+        "row_count": row_count,
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
         "last_date": covered_dates[-1].isoformat() if covered_dates else None,
-        "first_timestamp_date": min(starts).date().isoformat() if starts else None,
-        "last_timestamp_date": max(starts).date().isoformat() if starts else None,
+        "first_timestamp_date": first_start.date().isoformat() if first_start else None,
+        "last_timestamp_date": last_start.date().isoformat() if last_start else None,
         "covered_dates": [day.isoformat() for day in covered_dates],
         "covered_date_count": len(covered_dates),
         "date_boundary": "logical_06:00_local",
@@ -120,15 +129,8 @@ def materialize_activitywatch_events(
     return manifest
 
 
-def _add_event(rows: dict[tuple[str, str, str, str], dict[str, Any]], event: AWEvent) -> None:
-    data_json = json.dumps(event.data, ensure_ascii=False, sort_keys=True)
-    key = (
-        event.bucket,
-        event.start.isoformat(),
-        event.end.isoformat(),
-        data_json,
-    )
-    rows[key] = {
+def _event_row(event: AWEvent) -> dict[str, Any]:
+    return {
         "bucket": event.bucket,
         "start": event.start.isoformat(),
         "end": event.end.isoformat(),
@@ -136,25 +138,18 @@ def _add_event(rows: dict[tuple[str, str, str, str], dict[str, Any]], event: AWE
     }
 
 
-def _add_row(rows: dict[tuple[str, str, str, str], dict[str, Any]], row: dict[str, Any]) -> None:
+def _row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     data = row.get("data")
     data_json = json.dumps(data if isinstance(data, dict) else {}, ensure_ascii=False, sort_keys=True)
-    key = (
+    return (
         str(row.get("bucket") or ""),
         str(row.get("start") or ""),
         str(row.get("end") or ""),
         data_json,
     )
-    rows[key] = {
-        "bucket": key[0],
-        "start": key[1],
-        "end": key[2],
-        "data": data if isinstance(data, dict) else {},
-    }
 
 
-def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _iter_existing_rows(path: Path, *, start: date, end: date):
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
@@ -164,11 +159,27 @@ def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             if isinstance(payload, dict):
-                rows.append(payload)
-    return rows
+                day = _row_logical_date(payload)
+                if day is not None and not (start <= day < end):
+                    yield payload
 
 
-def _write_ndjson(path: Path, rows: list[dict[str, Any]]) -> None:
+def _merge_existing_rows(existing, cleaned):
+    rows = heapq.merge(
+        existing,
+        (_event_row(event) for event in cleaned),
+        key=_row_key,
+    )
+    previous_key = None
+    for row in rows:
+        key = _row_key(row)
+        if key == previous_key:
+            continue
+        previous_key = key
+        yield row
+
+
+def _write_ndjson(path: Path, rows) -> None:
     atomic_write_ndjson(path, rows)
 
 

@@ -26,7 +26,7 @@ def test_materialize_activitywatch_events_records_input_high_water(monkeypatch, 
     monkeypatch.setattr(
         activitywatch_materialize,
         "events_from_activitywatch_dbs",
-        lambda _prefix: iter([event]),
+        lambda _prefix, **_kwargs: iter([event]),
     )
 
     manifest = activitywatch_materialize.materialize_activitywatch_events(output=output)
@@ -53,7 +53,7 @@ def test_materialize_activitywatch_events_reports_logical_date_bounds(monkeypatc
     monkeypatch.setattr(
         activitywatch_materialize,
         "events_from_activitywatch_dbs",
-        lambda _prefix: iter([event]),
+        lambda _prefix, **_kwargs: iter([event]),
     )
 
     manifest = activitywatch_materialize.materialize_activitywatch_events(output=output)
@@ -110,7 +110,7 @@ def test_materialize_activitywatch_events_replaces_only_requested_window(monkeyp
     )
     calls: list[tuple[object, datetime | None, datetime | None]] = []
 
-    def fake_events(prefix, *, start=None, end=None):
+    def fake_events(prefix, *, start=None, end=None, **_kwargs):
         calls.append((prefix, start, end))
         assert prefix == activitywatch_materialize.BUCKET_PREFIXES
         return iter([replacement])
@@ -170,7 +170,7 @@ def test_materialize_activitywatch_events_skips_corrupt_existing_rows_for_window
     monkeypatch.setattr(
         activitywatch_materialize,
         "events_from_activitywatch_dbs",
-        lambda prefix, *, start=None, end=None: iter([replacement]),
+        lambda prefix, *, start=None, end=None, **_kwargs: iter([replacement]),
     )
 
     manifest = activitywatch_materialize.materialize_activitywatch_events(
@@ -215,7 +215,7 @@ def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypat
         encoding="utf-8",
     )
 
-    def fake_events(prefix, *, start=None, end=None):
+    def fake_events(prefix, *, start=None, end=None, **_kwargs):
         return iter(())
 
     monkeypatch.setattr(activitywatch_materialize, "get_config", lambda: cfg)

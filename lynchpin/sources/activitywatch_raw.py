@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import heapq
 import logging
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from bisect import bisect_left
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Sequence
+from typing import Any, Dict, Iterator, Literal, Optional, Sequence
 
 import functools
 
@@ -90,6 +91,8 @@ def events_from_activitywatch_dbs(
     start: datetime | None = None,
     end: datetime | None = None,
     db_path: Optional[Path] = None,
+    order: Literal["start", "bucket"] = "start",
+    dedupe: bool = True,
 ) -> Iterator[AWEvent]:
     prefixes = (bucket_prefix,) if isinstance(bucket_prefix, str) else tuple(bucket_prefix)
     if not prefixes:
@@ -108,43 +111,66 @@ def events_from_activitywatch_dbs(
         since_ns = int(start.timestamp() * 1_000_000_000)
         query += " AND e.endtime > ?"
         params.append(since_ns)
-    query += " ORDER BY e.starttime"
-    seen: set[tuple[str, int, int, str]] = set()
-    rows: list[AWEvent] = []
+    if order == "bucket":
+        query += " ORDER BY b.name, e.starttime, e.endtime, e.data"
+    else:
+        query += " ORDER BY e.starttime"
+    streams: list[Iterator[AWEvent]] = []
     for candidate in _candidate_dbs(db_path):
         if not _candidate_may_overlap(candidate, prefixes=prefixes, start=start, end=end):
             continue
-        # `with conn:` only manages the transaction, not the handle; closing()
-        # guarantees the sqlite connection is released per archive DB so we do
-        # not leak file handles across the (potentially many) candidate DBs.
-        with closing(_connect(candidate)) as conn:
-            cursor = conn.execute(query, params)
-            for bucket, start_ns, end_ns, payload in cursor:
-                if start_ns is None or end_ns is None:
-                    continue
-                # Window-watcher events from aw-server-rust are stored
-                # zero-duration: end == start. The effective duration is
-                # implicit (until the next event for the same bucket).
-                # _window_spans handles this downstream. Dropping these
-                # silently destroyed ~4M events in Feb-May 2026 alone.
-                # Keep zero-duration; only drop genuinely-invalid (end < start).
-                if end_ns < start_ns:
-                    continue
-                payload_text = payload if isinstance(payload, str) else payload.decode("utf-8") if payload else ""
-                key = (str(bucket), int(start_ns), int(end_ns), payload_text)
-                if key in seen:
-                    continue
-                seen.add(key)
-                data: Dict[str, object] = {}
-                if payload_text:
-                    try:
-                        data = json.loads(payload_text)
-                    except json.JSONDecodeError:
-                        pass
-                s = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
-                e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
-                rows.append(AWEvent(bucket=bucket, start=s, end=e, data=data))
-    yield from sorted(rows, key=lambda event: event.start)
+        streams.append(_iter_activitywatch_db_events(candidate, query, params))
+
+    merged = heapq.merge(*streams, key=lambda event: _event_sort_key(event, order=order))
+    seen: set[tuple[str, int, int, str]] = set()
+    previous_key: tuple[str, int, int, str] | None = None
+    for event in merged:
+        key = _event_key(event)
+        if dedupe:
+            if key in seen:
+                continue
+            seen.add(key)
+        elif order == "bucket" and key == previous_key:
+            continue
+        previous_key = key
+        yield event
+
+
+def _iter_activitywatch_db_events(
+    candidate: Path,
+    query: str,
+    params: list[object],
+) -> Iterator[AWEvent]:
+    # Keep each connection alive for its cursor, but release it as soon as the
+    # stream is exhausted. The merge above holds only one row per database.
+    with closing(_connect(candidate)) as conn:
+        for bucket, start_ns, end_ns, payload in conn.execute(query, params):
+            if start_ns is None or end_ns is None or end_ns < start_ns:
+                continue
+            payload_text = payload if isinstance(payload, str) else payload.decode("utf-8") if payload else ""
+            data: Dict[str, object] = {}
+            if payload_text:
+                try:
+                    data = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    pass
+            s = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+            e = datetime.fromtimestamp(end_ns / 1_000_000_000, tz=timezone.utc)
+            yield AWEvent(bucket=bucket, start=s, end=e, data=data)
+
+
+def _event_key(event: AWEvent) -> tuple[str, int, int, str]:
+    return (
+        event.bucket,
+        int(event.start.timestamp() * 1_000_000_000),
+        int(event.end.timestamp() * 1_000_000_000),
+        json.dumps(event.data, ensure_ascii=False, sort_keys=True),
+    )
+
+
+def _event_sort_key(event: AWEvent, *, order: Literal["start", "bucket"]) -> tuple[object, ...]:
+    key = _event_key(event)
+    return key if order == "bucket" else (key[1],)
 
 
 def _candidate_may_overlap(
