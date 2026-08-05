@@ -343,6 +343,8 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
     blocked_issue = root.find("./issue[@id='example-a']")
     assert blocked_issue is not None
     assert blocked_issue.attrib["blocked"] == "true"
+    assert blocked_issue.findtext("title") == "Blocked issue"
+    assert blocked_issue.findtext("description") == "Needs foundation"
     dependency = blocked_issue.find("dependencies/dependency")
     assert dependency is not None
     assert dependency.attrib["depends-on"] == "example-b"
@@ -357,6 +359,44 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
     assert payload["board_issue_fields"]
     assert payload["history"]["summary"]["closed"] == 1
     assert payload["history"]["summary"]["median_lead_days"] == 4
+
+
+def test_generate_beads_strips_xml_disallowed_controls(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = chisel.RepoPlan(name="example", path=repo, slices=())
+    issue = {
+        "_type": "issue",
+        "id": "example-a",
+        "title": "Bad\x08 title",
+        "description": "line\tone",
+        "status": "open",
+        "issue_type": "task",
+        "created_at": "2026-07-01T00:00:00Z",
+    }
+
+    def fake_bd_json(cmd, *, cwd):
+        assert cwd == repo
+        if cmd == ["where"]:
+            return {"path": str(repo / ".beads")}
+        if cmd == ["stats"]:
+            return {"summary": {}}
+        if cmd in (["ready"], ["blocked"]):
+            return []
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(chisel, "_bd_json", fake_bd_json)
+    monkeypatch.setattr(chisel, "_bd_export_rows", lambda path: [issue])
+
+    chisel._generate_beads(plan, tmp_path, "2026-07-03T000000Z")
+
+    xml_path = tmp_path / "example-beads.xml"
+    assert b"\x08" not in xml_path.read_bytes()
+    root = ET.parse(xml_path).getroot()
+    assert root.findtext("./issue/title") == "Bad title"
+    assert root.findtext("./issue/description") == "line\tone"
 
 
 def test_generate_beads_unavailable_is_nonfatal(monkeypatch, tmp_path: Path) -> None:

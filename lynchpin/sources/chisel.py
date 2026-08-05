@@ -3481,6 +3481,12 @@ def _generate_beads(
         ),
         encoding="utf-8",
     )
+    stripped = _sanitize_xml(xml_path)
+    if stripped:
+        _emit(
+            log,
+            f"  [dim]┄ {xml_path.name}: {stripped:,} ctrl bytes stripped[/dim]",
+        )
     md_path.write_text(
         _beads_markdown(
             plan,
