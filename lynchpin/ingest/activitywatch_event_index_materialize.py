@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -45,33 +46,11 @@ def materialize_activitywatch_event_index(
     output_dir.mkdir(parents=True, exist_ok=True)
     window_dates = _exclusive_window_dates(start, end)
 
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    with canonical.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict) or not payload.get("bucket"):
-                continue
-            event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
-            day = logical_date(event_start)
-            if window_dates is not None and day not in window_dates:
-                continue
-            grouped.setdefault(day.isoformat(), []).append(payload)
-
+    previous: dict[str, Any] = {}
     if window_dates is None:
-        for stale in output_dir.glob("*.ndjson"):
-            stale.unlink()
         paths: dict[str, str] = {}
         row_counts: dict[str, int] = {}
     else:
-        for day in window_dates:
-            path = activitywatch_event_index_path(day, root)
-            if path.exists():
-                path.unlink()
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
         paths = _string_dict(previous.get("product_paths"))
         row_counts = _int_dict(previous.get("row_counts"))
@@ -80,12 +59,64 @@ def materialize_activitywatch_event_index(
             paths.pop(raw_day, None)
             row_counts.pop(raw_day, None)
 
-    for raw_day, rows in sorted(grouped.items()):
+    temporary_dir = output_dir / ".materialize-tmp"
+    shutil.rmtree(temporary_dir, ignore_errors=True)
+    temporary_dir.mkdir(parents=True, exist_ok=True)
+    temporary_paths: dict[str, Path] = {}
+    temporary_handles: dict[str, Any] = {}
+    observed_counts: dict[str, int] = {}
+    try:
+        with canonical.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict) or not payload.get("bucket"):
+                    continue
+                try:
+                    event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                day = logical_date(event_start)
+                raw_day = day.isoformat()
+                if window_dates is not None and day not in window_dates:
+                    continue
+                temporary_path = temporary_dir / f"{raw_day}.ndjson"
+                output = temporary_handles.get(raw_day)
+                if output is None:
+                    temporary_paths[raw_day] = temporary_path
+                    output = temporary_path.open("w", encoding="utf-8")
+                    temporary_handles[raw_day] = output
+                output.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+                observed_counts[raw_day] = observed_counts.get(raw_day, 0) + 1
+    finally:
+        for output in temporary_handles.values():
+            output.close()
+
+    for raw_day, temporary_path in temporary_paths.items():
         day = datetime.strptime(raw_day, "%Y-%m-%d").date()
         path = activitywatch_event_index_path(day, root)
-        _write_ndjson(path, sorted(rows, key=_row_sort_key))
+        temporary_path.replace(path)
         paths[raw_day] = str(path)
-        row_counts[raw_day] = len(rows)
+        row_counts[raw_day] = observed_counts[raw_day]
+
+    if window_dates is not None:
+        for day in window_dates:
+            raw_day = day.isoformat()
+            if raw_day in temporary_paths:
+                continue
+            path = activitywatch_event_index_path(day, root)
+            path.unlink(missing_ok=True)
+            paths.pop(raw_day, None)
+            row_counts.pop(raw_day, None)
+    else:
+        for stale in output_dir.glob("*.ndjson"):
+            if stale.name not in {path.name for path in temporary_paths.values()}:
+                stale.unlink()
+    shutil.rmtree(temporary_dir, ignore_errors=True)
 
     covered_dates = tuple(sorted(row_counts))
     input_files = activitywatch_event_index_input_files()
