@@ -332,16 +332,20 @@ def analyze_keylog(
     """Analyze keylog metadata over an inclusive date window."""
 
     start_dt, end_dt = date_to_dt_range(start, end)
-    presses = list(keylog.events(start=start_dt, end=end_dt, kinds={"press"}))
     bind_rows = parse_hyprland_keybinds(bindings_path)
     by_chord = {row.chord: row for row in bind_rows}
     usage_counter: Counter[tuple[date, str, str]] = Counter()
     temporal_counter: Counter[tuple[str, int, int]] = Counter()
     shape_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    source_event_count = 0
 
     recent_modifiers: dict[str, datetime] = {}
     chord_window = timedelta(milliseconds=chord_window_ms)
-    for event in sorted(presses, key=lambda row: row.ts):
+    # Keylog files are append-only daily JSONL products, and ``keylog.events``
+    # yields them in UTC filename order. Process the stream directly so the
+    # analysis does not retain and sort millions of press events at once.
+    for event in keylog.events(start=start_dt, end=end_dt, kinds={"press"}):
+        source_event_count += 1
         day = logical_date(event.ts)
         key = _normalize_event_key(event.keycode)
         if key is None:
@@ -415,8 +419,8 @@ def analyze_keylog(
     return KeylogAnalysis(
         start=start,
         end=end,
-        source_event_count=len(presses),
-        keypress_count=len(presses),
+        source_event_count=source_event_count,
+        keypress_count=source_event_count,
         matched_keybind_count=sum(row.count for row in usage),
         keybinds=bind_rows,
         keybind_usage=usage,
