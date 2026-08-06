@@ -14,7 +14,7 @@ import logging
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -1219,7 +1219,9 @@ def work_events(
 _cached_day_summaries: list[DaySessionSummary] | None = None
 
 
-def _day_summaries_from_facade() -> list[DaySessionSummary]:
+def _day_summaries_from_facade(
+    *, start: Optional[date] = None, end: Optional[date] = None
+) -> list[DaySessionSummary]:
     """Read daily archive coverage rows via the typed Polylogue facade.
 
     Lynchpin keeps its DaySessionSummary dataclass as a local reader shape,
@@ -1232,7 +1234,12 @@ def _day_summaries_from_facade() -> list[DaySessionSummary]:
         from polylogue.insights.archive import ArchiveCoverageInsightQuery
 
         insights = _polylogue_client().list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="day", limit=None)
+            ArchiveCoverageInsightQuery(
+                group_by="day",
+                since=start.isoformat() if start is not None else None,
+                until=(end + timedelta(days=1)).isoformat() if end is not None else None,
+                limit=None,
+            )
         )
     except Exception as exc:
         raise PolylogueMaterializationError(
@@ -1249,13 +1256,13 @@ def _day_summaries_from_facade() -> list[DaySessionSummary]:
         summaries.append(
             DaySessionSummary(
                 date=day,
-                session_count=int(insight.conversation_count),
+                session_count=int(insight.session_count),
                 total_cost_usd=float(insight.total_cost_usd),
                 total_messages=int(insight.message_count),
                 total_words=int(insight.total_words),
                 work_event_breakdown=dict(insight.work_event_breakdown),
                 repos_active=tuple(insight.repos_active),
-                providers=dict(insight.provider_breakdown),
+                providers=dict(insight.origin_breakdown),
             )
         )
     return summaries
@@ -1265,6 +1272,13 @@ def day_session_summaries(
     *, start: Optional[date] = None, end: Optional[date] = None
 ) -> list[DaySessionSummary]:
     """Daily session aggregation from Polylogue's durable product tables."""
+    if start is not None or end is not None:
+        try:
+            return _day_summaries_from_facade(start=start, end=end)
+        except PolylogueMaterializationError as exc:
+            logger.warning("polylogue day summaries unavailable: %s", exc)
+            return []
+
     global _cached_day_summaries
     if _cached_day_summaries is None:
         try:

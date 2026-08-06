@@ -475,6 +475,56 @@ def test_daily_activity_uses_day_summaries_without_profile_query(monkeypatch):
     assert result[0].projects == ("sinity-lynchpin", "polylogue")
 
 
+def test_day_session_summaries_bounds_archive_coverage_query(monkeypatch):
+    calls = []
+
+    class Client:
+        def list_archive_coverage_insights(self, query):
+            calls.append(query)
+            return []
+
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: Client())
+    monkeypatch.setattr(polylogue, "_require_materialized_products", lambda: None)
+
+    rows = polylogue.day_session_summaries(
+        start=date(2026, 5, 1), end=date(2026, 5, 3)
+    )
+
+    assert rows == []
+    assert len(calls) == 1
+    assert calls[0].group_by == "day"
+    assert calls[0].since == "2026-05-01"
+    assert calls[0].until == "2026-05-04"
+    assert calls[0].limit is None
+
+
+def test_day_session_summaries_reads_current_archive_coverage_dto(monkeypatch):
+    class Client:
+        def list_archive_coverage_insights(self, query):
+            return [
+                SimpleNamespace(
+                    bucket="2026-05-02",
+                    session_count=4,
+                    total_cost_usd=1.5,
+                    message_count=20,
+                    total_words=200,
+                    work_event_breakdown={"implementation": 3},
+                    repos_active=("sinity-lynchpin",),
+                    origin_breakdown={"codex": 4},
+                )
+            ]
+
+    monkeypatch.setattr(polylogue, "_polylogue_client", lambda: Client())
+    monkeypatch.setattr(polylogue, "_require_materialized_products", lambda: None)
+
+    [row] = polylogue.day_session_summaries(
+        start=date(2026, 5, 2), end=date(2026, 5, 2)
+    )
+
+    assert row.session_count == 4
+    assert row.providers == {"codex": 4}
+
+
 def test_daily_activity_includes_codex_sessions_with_null_timestamps(monkeypatch):
     """Regression test: codex sessions have canonical_session_date but null timestamps.
 
@@ -867,7 +917,7 @@ def test_daily_activity_gracefully_degrades_on_missing_products(monkeypatch, cap
 
 def test_day_session_summaries_gracefully_degrades_on_missing_products(monkeypatch, caplog):
     """Test that day_session_summaries returns empty list when products are missing."""
-    def fail_facade():
+    def fail_facade(*, start=None, end=None):
         raise polylogue.PolylogueMaterializationError(
             "Polylogue insight products are not materialized"
         )
