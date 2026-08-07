@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..core.config import get_config
-from ..core.io import resolve_analysis_path, save_json
-from ..sources.polylogue import session_profiles_for_date
+from ..core.io import save_json
+from ..sources.polylogue import conversation_transcripts
 
 FEATURES = (
     "uncached_input",
@@ -220,10 +220,10 @@ def _load_quota_windows() -> list[dict[str, Any]]:
 def _polylogue_token_index() -> dict[str, dict[str, Any]]:
     try:
         end = datetime.now(timezone.utc).date()
-        profiles = session_profiles_for_date(start=end, end=end)
+        transcripts = conversation_transcripts(start=end, end=end)
     except Exception:
         return {}
-    return {p.conversation_id: {"all_message_tokens": p.message_count} for p in profiles}
+    return {t.conversation_id: {"all_message_tokens": t.all_message_tokens} for t in transcripts}
 
 
 def _duration_seconds(job: Mapping[str, Any], completion: Mapping[str, Any]) -> float | None:
