@@ -97,6 +97,7 @@ from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
 from .ai_session_efficiency import write_report as write_ai_session_efficiency_report
 from .quota_advisory import write_quota_advisory
+from .ambient_intelligence import write_ambient_intelligence
 from .operator_daily import operator_daily_matrix
 from .sinex import temporal as sinex_temporal
 from .workflow_mechanics import write_workflow_mechanics_report
@@ -527,6 +528,10 @@ def _add_personal_analysis_steps(
         "personal_operator_day",
         fn=lambda: _promote_operator_day(start=start, end=end),
     ))
+    dag.add(Step(
+        "personal_ambient_intelligence",
+        fn=lambda: write_ambient_intelligence(Path(_out("ambient_intelligence.json"))),
+    ))
     return [
         "personal_anomaly_crossref",
         "personal_life_phase",
@@ -536,6 +541,7 @@ def _add_personal_analysis_steps(
         "personal_ai_session_efficiency",
         "personal_quota_advisory",
         "personal_operator_day",
+        "personal_ambient_intelligence",
     ]
 
 
