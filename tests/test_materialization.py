@@ -2308,6 +2308,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
     monkeypatch.setattr(materialization, "activitywatch_event_index_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "activitywatch_event_index_path", lambda day: root / f"{day.isoformat()}.ndjson")
     monkeypatch.setattr(materialization, "activitywatch_event_index_input_files", lambda: (canonical, canonical_manifest))
+    monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
 
     row = materialization._activitywatch_event_index_dataset(
         SimpleNamespace(captures_root=tmp_path / "captures")
@@ -2315,6 +2316,71 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
 
     assert row.status == "ready"
     assert row.covered_dates == (date(2026, 6, 5),)
+
+
+def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp_path) -> None:
+    from lynchpin import materialization
+    from lynchpin.sources.activitywatch_event_index import ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+
+    root = tmp_path / "captures/activitywatch/events_by_day"
+    root.mkdir(parents=True)
+    (root / "2026-06-05.ndjson").write_text("{}\n", encoding="utf-8")
+    canonical = tmp_path / "captures/activitywatch/events.ndjson"
+    canonical.write_text("{}\n", encoding="utf-8")
+    canonical_manifest = canonical.with_suffix(".manifest.json")
+    canonical_manifest.write_text('{"row_count": 2}\n', encoding="utf-8")
+    manifest = root / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "row_count": 1,
+                "first_date": "2026-06-05",
+                "last_date": "2026-06-05",
+                "covered_dates": ["2026-06-05"],
+                "input_file_count": 2,
+                "input_latest_mtime": datetime.fromtimestamp(
+                    canonical_manifest.stat().st_mtime, timezone.utc
+                ).astimezone().isoformat(),
+                "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(materialization, "activitywatch_event_index_manifest_path", lambda: manifest)
+    monkeypatch.setattr(materialization, "activitywatch_event_index_path", lambda day: root / f"{day.isoformat()}.ndjson")
+    monkeypatch.setattr(materialization, "activitywatch_event_index_input_files", lambda: (canonical, canonical_manifest))
+    monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
+
+    row = materialization._activitywatch_event_index_dataset(
+        SimpleNamespace(captures_root=tmp_path / "captures")
+    )
+
+    assert row.status == "partial"
+    assert "row count differs" in row.reason
+
+
+def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
+    from lynchpin.materialization import _materialized_enough_for_window
+
+    row = MaterializedDataset(
+        name="activitywatch_event_index",
+        status="ready",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=2,
+        first_date=date(2026, 6, 5),
+        last_date=date(2026, 6, 7),
+        covered_dates=(date(2026, 6, 5), date(2026, 6, 7)),
+        materialization_hint="fixture",
+        reason="ready",
+    )
+
+    assert _materialized_enough_for_window(
+        row, (date(2026, 6, 5), date(2026, 6, 8))
+    )
 
 
 def test_activitywatch_derived_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:

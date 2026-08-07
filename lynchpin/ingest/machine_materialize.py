@@ -172,14 +172,18 @@ def _materialize_table(
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp_output = output.with_name(output.name + ".tmp")
     row_count = 0
-    timestamps: list[datetime] = []
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
     observed_dates: set[date] = set()
 
     def write_row(handle: Any, row: MachineRow) -> None:
-        nonlocal row_count
+        nonlocal first_timestamp, last_timestamp, row_count
         row_count += 1
         timestamp = _row_timestamp(row)
-        timestamps.append(timestamp)
+        if first_timestamp is None or timestamp < first_timestamp:
+            first_timestamp = timestamp
+        if last_timestamp is None or timestamp > last_timestamp:
+            last_timestamp = timestamp
         observed_dates.add(timestamp.date())
         handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
@@ -209,8 +213,8 @@ def _materialize_table(
         "row_count": row_count,
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
         "last_date": covered_dates[-1].isoformat() if covered_dates else None,
-        "first_timestamp_date": min(timestamps).date().isoformat() if timestamps else None,
-        "last_timestamp_date": max(timestamps).date().isoformat() if timestamps else None,
+        "first_timestamp_date": first_timestamp.date().isoformat() if first_timestamp else None,
+        "last_timestamp_date": last_timestamp.date().isoformat() if last_timestamp else None,
         "covered_dates": [day.isoformat() for day in covered_dates],
         "covered_date_count": len(covered_dates),
     }

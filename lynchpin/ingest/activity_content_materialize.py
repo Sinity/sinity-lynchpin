@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
@@ -22,6 +23,149 @@ from ._manifest import write_manifest
 
 
 ACTIVITY_CONTENT_SCHEMA_VERSION = 1
+DEFAULT_CHUNK_DAYS = 30
+RECENT_CHUNK_DAYS = 1
+RECENT_WINDOW_DAYS = 30
+
+
+class _TitleUsageStore:
+    """Disk-backed accumulator for high-cardinality title usage rows."""
+
+    _columns = (
+        "title_hash",
+        "app",
+        "normalized_title",
+        "example_title",
+        "focused_seconds",
+        "span_count",
+        "first_date",
+        "last_date",
+        "matched",
+        "classification_source",
+        "confidence",
+        "activity",
+        "content_type",
+        "attention_level",
+        "topic_category",
+        "platform",
+    )
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.unlink(missing_ok=True)
+        self.connection = sqlite3.connect(path)
+        self.connection.execute(
+            """
+            CREATE TABLE title_usage (
+                title_hash TEXT NOT NULL,
+                app TEXT NOT NULL,
+                normalized_title TEXT NOT NULL,
+                example_title TEXT NOT NULL,
+                focused_seconds REAL NOT NULL,
+                span_count INTEGER NOT NULL,
+                first_date TEXT NOT NULL,
+                last_date TEXT NOT NULL,
+                matched INTEGER NOT NULL,
+                classification_source TEXT,
+                confidence REAL,
+                activity TEXT,
+                content_type TEXT,
+                attention_level TEXT,
+                topic_category TEXT,
+                platform TEXT,
+                PRIMARY KEY (title_hash, app)
+            )
+            """
+        )
+
+    def ensure_row(
+        self,
+        *,
+        title_hash: str,
+        app: str,
+        normalized_title: str,
+        example_title: str,
+        classification: Any,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO title_usage (
+                title_hash, app, normalized_title, example_title,
+                focused_seconds, span_count, first_date, last_date, matched,
+                classification_source, confidence, activity, content_type,
+                attention_level, topic_category, platform
+            ) VALUES (?, ?, ?, ?, 0.0, 0, '', '', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title_hash,
+                app,
+                normalized_title,
+                example_title,
+                int(classification is not None),
+                getattr(classification, "classification_source", None),
+                getattr(classification, "confidence", None),
+                getattr(classification, "activity", None),
+                getattr(classification, "content_type", None),
+                getattr(classification, "attention_level", None),
+                getattr(classification, "topic_category", None),
+                getattr(classification, "platform", None),
+            ),
+        )
+
+    def add(self, *, title_hash: str, app: str, day: date, seconds: float) -> None:
+        day_s = day.isoformat()
+        self.connection.execute(
+            """
+            UPDATE title_usage
+            SET focused_seconds = focused_seconds + ?,
+                span_count = span_count + 1,
+                first_date = CASE WHEN first_date = '' OR first_date > ? THEN ? ELSE first_date END,
+                last_date = CASE WHEN last_date = '' OR last_date < ? THEN ? ELSE last_date END
+            WHERE title_hash = ? AND app = ?
+            """,
+            (seconds, day_s, day_s, day_s, day_s, title_hash, app),
+        )
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def iter_rows(self) -> Any:
+        query = "SELECT * FROM title_usage ORDER BY focused_seconds DESC, app, normalized_title"
+        for values in self.connection.execute(query):
+            row = dict(zip(self._columns, values, strict=True))
+            row["matched"] = bool(row["matched"])
+            yield {key: value for key, value in row.items() if value is not None}
+
+    def count(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM title_usage").fetchone()[0])
+
+    def unmatched_count(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM title_usage WHERE matched = 0").fetchone()[0])
+
+    def top_unmatched(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT app, normalized_title, focused_seconds, span_count
+            FROM title_usage
+            WHERE matched = 0
+            ORDER BY focused_seconds DESC
+            LIMIT 20
+            """
+        )
+        return [
+            {
+                "app": app,
+                "normalized_title": normalized_title,
+                "focused_seconds": round(float(focused_seconds), 3),
+                "span_count": span_count,
+            }
+            for app, normalized_title, focused_seconds, span_count in rows
+        ]
+
+    def close(self) -> None:
+        self.connection.commit()
+        self.connection.close()
+        self.path.unlink(missing_ok=True)
 
 
 def materialize_activity_content(
@@ -40,14 +184,18 @@ def materialize_activity_content(
     classifications = load_title_classification_map()
 
     by_day: dict[date, dict[str, Any]] = {}
-    title_usage: dict[tuple[str, str], dict[str, Any]] = {}
+    title_usage = _TitleUsageStore(usage_output.with_name(f".{usage_output.name}.sqlite.tmp"))
     source_counts: Counter[str] = Counter()
     matched_seconds_total = 0.0
     focused_seconds_total = 0.0
     cursor = start
     processed_days = 0
+    recent_start = end - timedelta(days=RECENT_WINDOW_DAYS)
     while cursor < end:
-        chunk_end = min(cursor + timedelta(days=30), end)
+        if cursor < recent_start:
+            chunk_end = min(cursor + timedelta(days=DEFAULT_CHUNK_DAYS), recent_start)
+        else:
+            chunk_end = min(cursor + timedelta(days=RECENT_CHUNK_DAYS), end)
         span_start = datetime.combine(cursor, time.min, tzinfo=local_tz())
         span_end = datetime.combine(chunk_end, time.min, tzinfo=local_tz())
         for span in focus_spans(start=span_start, end=span_end, enrich_polylogue=False):
@@ -60,16 +208,12 @@ def materialize_activity_content(
                 # Fallback: in-Lynchpin rules layer. Covers kitty + project-slug,
                 # Claude Code session-prefix sentinels, and topic slugs.
                 classification = classify_title_via_rules(span.app, span.title, normalized)
-            usage_key = (span.app, key)
-            usage_row = title_usage.setdefault(
-                usage_key,
-                _empty_title_usage(
-                    title_hash=key,
-                    app=span.app,
-                    normalized_title=normalize_title(span.app, span.title),
-                    example_title=span.title,
-                    classification=classification,
-                ),
+            title_usage.ensure_row(
+                title_hash=key,
+                app=span.app,
+                normalized_title=normalized,
+                example_title=span.title,
+                classification=classification,
             )
             for day, segment in split_by_day(span.start, span.end):
                 if day < start or day >= end:
@@ -77,7 +221,7 @@ def materialize_activity_content(
                 seconds = duration_s(segment)
                 if seconds <= 0:
                     continue
-                _update_title_usage(usage_row, day=day, seconds=seconds)
+                title_usage.add(title_hash=key, app=span.app, day=day, seconds=seconds)
                 focused_seconds_total += seconds
                 day_row = by_day.setdefault(day, _empty_day(day))
                 day_row["focused_seconds"] += seconds
@@ -97,6 +241,7 @@ def materialize_activity_content(
                 _add_bucket(day_row["platform_seconds"], classification.platform, seconds)
         cursor = chunk_end
         processed_days += (chunk_end - span_start.date()).days
+        title_usage.commit()
         _progress(f"processed {processed_days} day(s) through {chunk_end.isoformat()}")
 
     for day_row in by_day.values():
@@ -106,9 +251,14 @@ def materialize_activity_content(
         for day in sorted(by_day):
             handle.write(json.dumps(by_day[day], ensure_ascii=False, sort_keys=True) + "\n")
     with usage_output.open("w", encoding="utf-8") as handle:
-        for row in sorted(title_usage.values(), key=lambda item: (-float(item["focused_seconds"]), item["app"], item["normalized_title"])):
+        for row in title_usage.iter_rows():
             row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    title_usage_count = title_usage.count()
+    unmatched_title_count = title_usage.unmatched_count()
+    top_unmatched_titles = title_usage.top_unmatched()
+    title_usage.close()
 
     manifest = {
         "dataset": "lynchpin.activity_content_daily",
@@ -116,17 +266,9 @@ def materialize_activity_content(
         "materialized_path": str(output),
         "title_usage_path": str(usage_output),
         "row_count": len(by_day),
-        "title_usage_count": len(title_usage),
-        "unmatched_title_count": sum(1 for row in title_usage.values() if not row["matched"]),
-        "top_unmatched_titles": [
-            {
-                "app": row["app"],
-                "normalized_title": row["normalized_title"],
-                "focused_seconds": round(float(row["focused_seconds"]), 3),
-                "span_count": row["span_count"],
-            }
-            for row in sorted((row for row in title_usage.values() if not row["matched"]), key=lambda item: -float(item["focused_seconds"]))[:20]
-        ],
+        "title_usage_count": title_usage_count,
+        "unmatched_title_count": unmatched_title_count,
+        "top_unmatched_titles": top_unmatched_titles,
         "first_date": min(by_day).isoformat() if by_day else None,
         "last_date": max(by_day).isoformat() if by_day else None,
         "window_start": start.isoformat(),
@@ -188,50 +330,6 @@ def _empty_day(day: date) -> dict[str, Any]:
         "platform_seconds": defaultdict(float),
         "source_counts": Counter(),
     }
-
-
-def _empty_title_usage(
-    *,
-    title_hash: str,
-    app: str,
-    normalized_title: str,
-    example_title: str,
-    classification: Any,
-) -> dict[str, Any]:
-    row = {
-        "title_hash": title_hash,
-        "app": app,
-        "normalized_title": normalized_title,
-        "example_title": example_title,
-        "focused_seconds": 0.0,
-        "span_count": 0,
-        "first_date": None,
-        "last_date": None,
-        "matched": classification is not None,
-    }
-    if classification is not None:
-        row.update(
-            {
-                "classification_source": classification.classification_source,
-                "confidence": classification.confidence,
-                "activity": classification.activity,
-                "content_type": classification.content_type,
-                "attention_level": classification.attention_level,
-                "topic_category": classification.topic_category,
-                "platform": classification.platform,
-            }
-        )
-    return {key: value for key, value in row.items() if value is not None}
-
-
-def _update_title_usage(row: dict[str, Any], *, day: date, seconds: float) -> None:
-    row["focused_seconds"] = float(row.get("focused_seconds") or 0.0) + seconds
-    row["span_count"] = int(row.get("span_count") or 0) + 1
-    day_s = day.isoformat()
-    first = row.get("first_date")
-    last = row.get("last_date")
-    row["first_date"] = day_s if first is None or day_s < str(first) else first
-    row["last_date"] = day_s if last is None or day_s > str(last) else last
 
 
 def _finish_day(row: dict[str, Any]) -> None:

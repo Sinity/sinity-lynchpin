@@ -16,6 +16,7 @@ import functools
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+from ..core.parse import as_local
 from .activitywatch_event_index import iter_indexed_activitywatch_events
 from .activitywatch_models import AWEvent
 
@@ -58,6 +59,8 @@ def events(
     end: datetime,
     db_path: Optional[Path] = None,
 ) -> Iterator[AWEvent]:
+    start = as_local(start)
+    end = as_local(end)
     if db_path is None:
         from ..materialization import ensure_materialized
 
@@ -94,6 +97,10 @@ def events_from_activitywatch_dbs(
     order: Literal["start", "bucket"] = "start",
     dedupe: bool = True,
 ) -> Iterator[AWEvent]:
+    if start is not None:
+        start = as_local(start)
+    if end is not None:
+        end = as_local(end)
     prefixes = (bucket_prefix,) if isinstance(bucket_prefix, str) else tuple(bucket_prefix)
     if not prefixes:
         return

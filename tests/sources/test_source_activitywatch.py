@@ -276,6 +276,56 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
     assert [event.data for event in web] == [{"url": "https://example.com"}]
 
 
+def test_activitywatch_ndjson_fallback_normalizes_naive_bounds(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "activitywatch/events.ndjson"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "bucket": "aw-watcher-window_host",
+                "start": "2026-03-15T09:00:00+00:00",
+                "end": "2026-03-15T10:00:00+00:00",
+                "data": {"app": "kitty"},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    class Config:
+        captures_root = tmp_path
+
+    monkeypatch.setattr("lynchpin.sources.activitywatch_raw.get_config", lambda: Config())
+
+    def fake_ensure(name, *, window=None):
+        del window
+        return SimpleNamespace(status="ready" if name == "activitywatch" else "failed")
+
+    monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._load_events_by_bucket",
+        lambda _path: {
+            "aw-watcher-window_host": (
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=dt(9),
+                    end=dt(10),
+                    data={"app": "kitty"},
+                ),
+            )
+        },
+    )
+
+    rows = list(
+        events(
+            "aw-watcher-window_",
+            start=datetime(2026, 3, 15, 8),
+            end=datetime(2026, 3, 15, 11),
+        )
+    )
+
+    assert [row.data["app"] for row in rows] == ["kitty"]
+
+
 def test_activitywatch_raw_falls_back_to_live_db_when_canonical_refresh_fails(
     monkeypatch, tmp_path: Path
 ) -> None:

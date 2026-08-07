@@ -42,7 +42,7 @@ ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
 # the source generators, which scale with the requested window; chunking keeps
 # the footprint window-length-independent (lynchpin-soa: a 760-day window
 # reached ~5.6G resident and livelocked under a 2G cgroup cap).
-DEFAULT_CHUNK_DAYS = 92
+DEFAULT_CHUNK_DAYS = 1
 
 
 def materialize_activitywatch_derived(

@@ -746,6 +746,15 @@ def _materialized_enough_for_window(
     if window is None:
         return True
     contract = source_contract(row.name)
+    if row.name == "activitywatch_event_index":
+        # The index is a sparse accelerator over a complete canonical event
+        # product.  A missing partition means that day had no events, not that
+        # the index is missing coverage.  Require the requested bounds to sit
+        # inside the indexed bounds, while completeness and input freshness are
+        # checked by the dataset audit.
+        if row.first_date is None or row.last_date is None:
+            return False
+        return row.first_date <= window[0] and row.last_date >= window[1] - timedelta(days=1)
     if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
         if not row.covered_dates and (row.first_date is None or row.last_date is None):
             return False
@@ -1009,7 +1018,12 @@ def materialized_dataset_coverage(
         overlaps = None
         fully_covers = None
     else:
-        if precise_dates:
+        if row.name == "activitywatch_event_index":
+            # Empty logical days are valid for this sparse index.  Its bounded
+            # date span is meaningful because the audit verifies it against the
+            # complete canonical event row count.
+            covered_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
+        elif precise_dates:
             requested = _requested_dates(start, end)
             covered_set = set(precise_dates)
             covered_days = sum(1 for day in requested if day in covered_set)
@@ -1347,12 +1361,20 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+    canonical_manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    canonical_meta = _load_json(canonical_manifest)
+    canonical_row_count = _int_or_none(canonical_meta.get("row_count"))
+    index_row_count = _int_or_none(meta.get("row_count"))
+    row_count_current = canonical_row_count is None or index_row_count == canonical_row_count
     if products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"
     elif products_ready and not inputs_current:
         status = "partial"
         reason = "ActivityWatch event index was built from an older canonical event product"
+    elif products_ready and not row_count_current:
+        status = "partial"
+        reason = "ActivityWatch event index row count differs from the canonical event product"
     elif products_ready:
         status = "ready"
         reason = "ActivityWatch logical-day event index is present"

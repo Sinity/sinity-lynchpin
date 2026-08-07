@@ -41,6 +41,7 @@ ALLOWED_CALENDAR_DATE_CALLS = {
     "sleep_coverage.py": 3,
     "sleep_stage_model.py": 1,
     "url_crossref.py": 4,  # lynchpin-t3a
+    "quota_advisory.py": 1,  # provider/archive calendar query, not a daily join key
 }
 
 

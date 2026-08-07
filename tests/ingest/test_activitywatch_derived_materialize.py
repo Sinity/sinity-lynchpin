@@ -234,6 +234,33 @@ def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypat
     assert single["window_start"] == "2026-06-01"
 
 
+def test_materialize_activitywatch_derived_default_chunk_bounds_generators(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+
+    canonical = tmp_path / "events.ndjson"
+    canonical.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (canonical,))
+
+    seen_windows: list[tuple[date, date]] = []
+
+    def fake_daily_activity(*, start, end):
+        seen_windows.append((start, end))
+        return ()
+
+    for name in ("focus_spans", "project_focus_days", "deep_work", "circadian", "loops", "fragmentation", "attention"):
+        monkeypatch.setattr(mod, name, lambda **kwargs: ())
+    monkeypatch.setattr(mod, "daily_activity", fake_daily_activity)
+
+    mod.materialize_activitywatch_derived(
+        start=date(2026, 6, 1),
+        end=date(2026, 7, 1),
+        root=tmp_path,
+    )
+
+    assert len(seen_windows) == 30
+    assert all((end - start).days <= mod.DEFAULT_CHUNK_DAYS for start, end in seen_windows)
+
+
 def test_materialize_activitywatch_derived_clips_window_to_real_coverage(monkeypatch, tmp_path):
     """lynchpin-3yp: an ensure-cascade window reaching before AW's real
     coverage (e.g. temporal_signals asking for its own 2013-era history)
@@ -283,9 +310,10 @@ def test_materialize_activitywatch_derived_clips_window_to_real_coverage(monkeyp
     for w_start, w_end in seen_windows:
         assert as_date(w_start) >= real_first
         assert as_date(w_end) <= real_last + timedelta(days=1)
-    # Every generator call must reflect the clipped floor, never the raw request.
+    # The first generator call must reflect the clipped floor, never the raw
+    # request. Later calls may begin at subsequent chunk boundaries.
     assert seen_windows
-    assert all(as_date(w_start) == real_first for w_start, _ in seen_windows)
+    assert as_date(seen_windows[0][0]) == real_first
 
 
 def test_materialize_activitywatch_derived_noop_when_window_entirely_before_coverage(monkeypatch, tmp_path):
