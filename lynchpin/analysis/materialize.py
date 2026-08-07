@@ -96,6 +96,7 @@ from .productivity_predictors import write_report as write_productivity_predicto
 from .substance_health import write_report as write_substance_health_report
 from .burnout_warning import write_report as write_burnout_warning_report
 from .ai_session_efficiency import write_report as write_ai_session_efficiency_report
+from .quota_advisory import write_quota_advisory
 from .operator_daily import operator_daily_matrix
 from .sinex import temporal as sinex_temporal
 from .workflow_mechanics import write_workflow_mechanics_report
@@ -519,6 +520,10 @@ def _add_personal_analysis_steps(
         fn=lambda: write_ai_session_efficiency_report(Path(_out("ai_session_efficiency.json")), start=personal_start, end=personal_end),
     ))
     dag.add(Step(
+        "personal_quota_advisory",
+        fn=lambda: write_quota_advisory(Path(_out("quota_advisory.json"))),
+    ))
+    dag.add(Step(
         "personal_operator_day",
         fn=lambda: _promote_operator_day(start=start, end=end),
     ))
@@ -529,6 +534,7 @@ def _add_personal_analysis_steps(
         "personal_substance_health",
         "personal_burnout_warning",
         "personal_ai_session_efficiency",
+        "personal_quota_advisory",
         "personal_operator_day",
     ]
 
