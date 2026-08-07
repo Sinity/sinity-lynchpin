@@ -71,6 +71,8 @@ class LynchpinConfig:
     dendron_root: Path
     raindrop_dir: Path
     raindrop_csv: Optional[Path]
+    substack_root: Path
+    substack_downloader: Path
     goodreads_library: Path
     wykop_root: Path
     wykop_username: str
@@ -117,6 +119,7 @@ class LynchpinConfig:
             "keylog": (self.keylog_root / "logs").exists(),
             "goodreads": self.goodreads_library.exists(),
             "raindrop": self.raindrop_csv is not None and self.raindrop_csv.exists(),
+            "substack": self.substack_root.exists(),
             "wykop": self.wykop_root.exists(),
             "themotte": self.themotte_root.exists(),
             "dendron": self.dendron_root.exists(),
@@ -247,6 +250,10 @@ class LynchpinConfig:
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
+        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/media/substack"))
+        substack_downloader = Path(os.environ.get(
+            "LYNCHPIN_SUBSTACK_DOWNLOADER", substack_root / "sbstck-dl/sbstck-dl"
+        ))
         goodreads_library = Path(os.environ.get(
             "LYNCHPIN_GOODREADS_LIBRARY", exports_root / "goodreads/raw/library_export.csv"
         ))
@@ -341,6 +348,7 @@ class LynchpinConfig:
             screenshot_root=screenshot_root, keylog_root=keylog_root,
             cache_dir=cache_dir, dendron_root=dendron_root,
             raindrop_dir=raindrop_dir, raindrop_csv=raindrop_csv,
+            substack_root=substack_root, substack_downloader=substack_downloader,
             goodreads_library=goodreads_library, wykop_root=wykop_root,
             wykop_username=wykop_username,
             themotte_root=themotte_root,

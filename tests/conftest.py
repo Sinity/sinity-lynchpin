@@ -46,6 +46,8 @@ def isolate_operator_data(
         "LYNCHPIN_CLIPBOARD_LIVE_FILE": root / "clipboard.json",
         "LYNCHPIN_RAW_LOG_FILE": root / "raw-log.md",
         "LYNCHPIN_DENDRON_ROOT": root / "knowledgebase",
+        "LYNCHPIN_SUBSTACK_ROOT": root / "substack",
+        "LYNCHPIN_SUBSTACK_DOWNLOADER": root / "substack/sbstck-dl",
         "LYNCHPIN_SINNIX_RUNTIME_INVENTORY_JSON": root / "runtime-inventory.json",
         "LYNCHPIN_XTASK_HISTORY_DB": root / "xtask-history.db",
         "XDG_DATA_HOME": root / "xdg-data",

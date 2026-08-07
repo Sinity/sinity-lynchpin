@@ -4347,3 +4347,25 @@ def test_activity_content_partial_materialization_is_not_replayed(monkeypatch) -
     assert second.changed is False
     assert "already ran in this process" in second.reason
     assert calls["materialize"] == 1
+
+
+def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -> None:
+    from lynchpin import materialization
+    from lynchpin.ingest.substack_materialize import materialize_substack
+
+    root = tmp_path / "substack"
+    publication = root / "acx"
+    publication.mkdir(parents=True)
+    post = publication / "20260102_120000_example.html"
+    post.write_text("<h1>Example</h1><p>Body</p>", encoding="utf-8")
+    output = tmp_path / "derived/substack/posts.ndjson"
+    manifest = materialize_substack(root=root, output=output)
+
+    monkeypatch.setattr(materialization, "substack_path", lambda: output)
+    monkeypatch.setattr(materialization, "substack_manifest_path", lambda: output.with_suffix(".manifest.json"))
+    row = materialization._substack_dataset(SimpleNamespace(substack_root=root))
+
+    assert manifest["row_count"] == 1
+    assert row.status == "ready"
+    assert row.row_count == 1
+    assert row.first_date == date(2026, 1, 2)

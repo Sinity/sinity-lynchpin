@@ -26,12 +26,25 @@ availability, coverage, provenance, iterators, and source-local summaries.
 | Web and reading | `web`, `takeout_chrome`, `bookmarks`, `raindrop_live` | Visits, domains, bookmarks, content metadata, daily activity. |
 | Communications | `communications`, `gmail_takeout`, `irc`, `outlook`, `sms`, export adapters | Events, threads, daily counts, provenance. |
 | Health and daily signals | `health`, `sleep`, `personal_signals`, `weather` | Measurements, coverage-aware daily products, longitudinal signals. |
-| Media and libraries | `spotify`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, library records, daily media signals. |
+| Media and libraries | `spotify`, `substack`, `spotify_genres`, `audio_features`, export adapters | Streams, sessions, downloaded publication archives, library records, daily media signals. |
 | Generated evidence | `analysis_artifacts`, `source_observations`, `observability_catalog` | Artifact inventory, extracted claims, source/role definitions. |
 
 The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
+
+## Substack archives
+
+The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/media/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
+
+The downloader is configured through `LYNCHPIN_SUBSTACK_DOWNLOADER`, defaulting to `/realm/media/substack/sbstck-dl/sbstck-dl`. The integrated command derives the publication directory and then materializes the index:
+
+```bash
+lynchpin-substack download --url https://www.astralcodexten.com/ --publication acx --format html --rate 2
+lynchpin-substack materialize
+```
+
+`_md` publication directory suffixes are treated as alternate format downloads of the same publication key. HTML wins over Markdown and text when the same publication and slug appear more than once. The original files and all input paths remain preserved for auditability.
 
 ## Invariants
 

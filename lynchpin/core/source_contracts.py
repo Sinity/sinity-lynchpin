@@ -188,6 +188,16 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         required=False,
     ),
     SourceContract(
+        name="substack",
+        authority="downloaded Substack HTML and Markdown archives",
+        query_surface="lynchpin.sources.substack",
+        materialization_hint="python -m lynchpin.cli.substack materialize",
+        materialization_executor=MaterializationExecutor.materializer("substack"),
+        required=False,
+        empty="valid",
+        collection_model="historical",
+    ),
+    SourceContract(
         name="evidence_graph_substrate",
         authority="source modules promoted into DuckDB",
         query_surface="lynchpin.graph.context_pack",
@@ -434,6 +444,13 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
     "asciinema": {
         "collection_model": "continuous",
         "caveats": ("recordings are raw terminal casts; semantic work attribution comes from shell sessions and evidence graph joins",),
+    },
+    "substack": {
+        "collection_model": "historical",
+        "caveats": (
+            "downloaded archive coverage is bounded by the publisher sitemap and downloader access; missing posts are not evidence of non-publication",
+            "publication aliases ending in _md are normalized to the same publication key while source paths remain preserved",
+        ),
     },
     "webhistory": {
         "collection_model": "continuous",

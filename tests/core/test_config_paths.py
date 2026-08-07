@@ -16,6 +16,8 @@ def test_default_pytest_config_isolated_from_operator_data(tmp_path: Path) -> No
     assert cfg.atuin_db.is_relative_to(tmp_path)
     assert cfg.polylogue_db.is_relative_to(tmp_path)
     assert cfg.raw_log_file.is_relative_to(tmp_path)
+    assert cfg.substack_root.is_relative_to(tmp_path)
+    assert cfg.substack_downloader.is_relative_to(tmp_path)
 
 
 def test_generated_roots_default_to_repo_local_dotfolder(monkeypatch, tmp_path: Path) -> None:

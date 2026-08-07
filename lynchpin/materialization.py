@@ -86,6 +86,7 @@ from .ingest.machine_materialize import (
     machine_input_files,
     materialize_machine_telemetry,
 )
+from .ingest.substack_materialize import SUBSTACK_SCHEMA_VERSION, materialize_substack
 from .ingest.personal_signals_materialize import (
     PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
     SPOTIFY_DAILY_SCHEMA_VERSION,
@@ -151,6 +152,7 @@ from .sources.bookmarks import bookmarks_manifest_path, bookmarks_path
 from .sources.communications import communication_events_path, communication_manifest_path
 from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
 from .sources.irc_raw import irc_events_path, irc_manifest_path, irc_raw_root
+from .sources.substack import substack_input_files, substack_manifest_path, substack_path
 from .sources.personal_signals import (
     personal_daily_signals_manifest_path,
     personal_daily_signals_path,
@@ -316,6 +318,7 @@ def _dataset_builders() -> dict[str, Any]:
         "activity_content": _activity_content_dataset,
         "atuin": _atuin_dataset,
         "dendron": _dendron_dataset,
+        "substack": _substack_dataset,
         "evidence_graph_substrate": _git_substrate_dataset,
         "github_context": _github_context_dataset,
         "analysis_artifacts": _analysis_artifacts_dataset,
@@ -374,6 +377,7 @@ def _materializers() -> dict[str, Callable[..., Any]]:
         "sleep_productivity": materialize_sleep_productivity,
         "irc": materialize_irc_events,
         "code_snapshots": materialize_code_snapshots,
+        "substack": materialize_substack,
     }
 
 
@@ -1684,6 +1688,44 @@ def _dendron_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         query_surface="lynchpin.sources.exports_dendron",
         materialization_hint="edit knowledgebase notes; Lynchpin reads the note tree directly",
         row_count=_count_files(cfg.dendron_root, suffixes=(".md",)),
+    )
+
+
+def _substack_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    path = substack_path()
+    manifest = substack_manifest_path()
+    meta = _load_json(manifest)
+    input_files = substack_input_files(cfg.substack_root)
+    product_ready = _product_with_manifest_exists(path, manifest)
+    inputs_current = _manifest_inputs_current(meta, input_files)
+    schema_current = meta.get("schema_version") == SUBSTACK_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "canonical Substack product schema is older than the current reader contract"
+    elif product_ready and inputs_current:
+        status = "ready" if input_files else "empty"
+        reason = "canonical Substack post index is current"
+    elif product_ready:
+        status = "partial"
+        reason = "canonical Substack post index was built from older archive inputs"
+    elif cfg.substack_root.exists():
+        status = "partial"
+        reason = "canonical Substack post index or manifest is missing"
+    else:
+        status = "missing"
+        reason = "configured Substack archive root is missing"
+    return MaterializedDataset(
+        name="substack",
+        status=status,
+        authority="downloaded Substack HTML and Markdown archives",
+        query_surface="lynchpin.sources.substack",
+        materialized_paths=(path, manifest),
+        raw_roots=(cfg.substack_root,),
+        row_count=_int_or_none(meta.get("row_count")),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
+        materialization_hint="python -m lynchpin.cli.substack materialize",
+        reason=reason,
     )
 
 
