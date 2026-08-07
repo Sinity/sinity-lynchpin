@@ -189,17 +189,26 @@ def _materialize_table(
 
     with tmp_output.open("w", encoding="utf-8") as handle:
         if start is not None and end is not None:
-            for row in _iter_existing_rows(output):
-                if _row_date(row) < start:
+            existing_rows = iter(_iter_existing_rows(output))
+            first_after_window: MachineRow | None = None
+            for row in existing_rows:
+                row_date = _row_date(row)
+                if row_date < start:
                     write_row(handle, row)
+                elif row_date >= end:
+                    first_after_window = row
+                    break
 
-        for sample in rows_fn():
-            write_row(handle, sample_to_json(sample))
+            for sample in rows_fn():
+                write_row(handle, sample_to_json(sample))
 
-        if start is not None and end is not None:
-            for row in _iter_existing_rows(output):
-                if _row_date(row) >= end:
-                    write_row(handle, row)
+            if first_after_window is not None:
+                write_row(handle, first_after_window)
+            for row in existing_rows:
+                write_row(handle, row)
+        else:
+            for sample in rows_fn():
+                write_row(handle, sample_to_json(sample))
 
     tmp_output.replace(output)
     covered_dates = _covered_dates_for_table(

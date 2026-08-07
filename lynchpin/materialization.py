@@ -80,7 +80,12 @@ from .ingest.activitywatch_derived_materialize import (
 )
 from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files, materialize_atuin_history
 from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION, materialize_title_metadata
-from .ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION, machine_input_files, materialize_machine_telemetry
+from .ingest.machine_materialize import (
+    MACHINE_TABLES,
+    MACHINE_TELEMETRY_SCHEMA_VERSION,
+    machine_input_files,
+    materialize_machine_telemetry,
+)
 from .ingest.personal_signals_materialize import (
     PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
     SPOTIFY_DAILY_SCHEMA_VERSION,
@@ -171,6 +176,13 @@ MaterializationBudget = Literal["inline", "background", "manual"]
 #: written in the last few seconds, which is an acceptable trade for not
 #: rebuilding a hundreds-of-MB product dozens of times in one CLI run.
 _TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
+
+# Activity-content is a sparse derived product: a day with no focused spans is
+# absent from the product, not missing coverage. A single process can ask for
+# it through several downstream materializers, and retrying a partial audit
+# would replay the full history each time. Keep the honest partial status, but
+# allow an explicit ``force`` call to opt into another rebuild.
+_ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = False
 
 
 @dataclass(frozen=True)
@@ -525,11 +537,31 @@ def ensure_materialized(
     the product locally.
     """
 
+    global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
+
     started = datetime.now(timezone.utc)
     cfg = cfg or get_config()
     contract = source_contract(name)
     materializers = _materializers()
     before = _audit_one(name, cfg=cfg)
+
+    if (
+        name == "activity_content"
+        and _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
+        and not force
+    ):
+        status = "ready" if before.status == "ready" else "failed"
+        return _materialization_result(
+            before,
+            status=status,
+            changed=False,
+            reason=(
+                "activity-content materialization already ran in this process; "
+                f"retaining current {before.status} product: {before.reason}"
+            ),
+            started=started,
+            window=window,
+        )
 
     if (
         not force
@@ -622,6 +654,8 @@ def ensure_materialized(
         )
 
     after = _audit_one(name, cfg=cfg)
+    if name == "activity_content":
+        _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
     if after.tail_stale:
         # A live-tail rebuild was attempted for this dataset; whatever the
         # outcome, later same-process reads should not pay for another one.
@@ -2394,19 +2428,7 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     meta = _load_json(manifest)
     input_files = machine_input_files(cfg)
     tables = meta.get("tables") if isinstance(meta.get("tables"), dict) else {}
-    paths = tuple(
-        canonical_machine_table_path(name)
-        for name in (
-            "metric_sample",
-            "gpu_sample",
-            "network_sample",
-            "service_state",
-            "block_device_sample",
-            "service_cgroup_io_sample",
-            "service_cgroup_pressure_sample",
-            "process_io_delta_sample",
-        )
-    )
+    paths = tuple(canonical_machine_table_path(name) for name in MACHINE_TABLES)
     ready = _manifest_valid(manifest) and all(path.exists() for path in paths)
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == MACHINE_TELEMETRY_SCHEMA_VERSION

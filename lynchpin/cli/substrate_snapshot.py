@@ -220,68 +220,67 @@ def _promote_snapshot_daily_signals(
     ]
     with connect(substrate_path()) as conn:
         apply_schema(conn)
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            title_count = promote_title_classifications_from_path(
-                conn,
-                refresh_id=refresh_id,
-                path=str(title_metadata_path()),
-            )
-            content_rows = list(iter_activity_content_days(start=start, end=end, ensure=False))
-            content_count = promote_activity_content_days(
-                conn,
-                refresh_id=refresh_id,
-                rows=content_rows,
-            )
-            bucket_count = promote_activity_content_buckets(
-                conn,
-                refresh_id=refresh_id,
-                rows=content_rows,
-            )
-            usage_count = promote_activity_title_usage(
-                conn,
-                refresh_id=refresh_id,
-                rows=(
-                    row
-                    for row in iter_activity_title_usage(start=start, end=end, ensure=False)
-                    if row.last_date is not None and row.first_date is not None
-                ),
-            )
-            count = promote_personal_daily_signals(conn, refresh_id=refresh_id, rows=rows)
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source="title_classification",
-                status="ok" if title_count else "empty",
-                reason=None if title_count else "no title classifications available",
-                row_count=title_count,
-                window_start=start,
-                window_end=end,
-            )
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source="activity_content",
-                status="ok" if content_count else "empty",
-                reason=None if content_count else "no activity-content rows in window",
-                row_count=content_count + bucket_count + usage_count,
-                window_start=start,
-                window_end=end,
-            )
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source=SOURCE_PERSONAL_DAILY_SIGNAL,
-                status="ok" if count else "empty",
-                reason=None if count else "no daily personal-source signals in window",
-                row_count=count,
-                window_start=start,
-                window_end=end,
-            )
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
+        # The substrate personal promoters own their transactions through
+        # promote_rows(). Starting an outer transaction here would nest those
+        # transactions and abort as soon as the first non-empty product is
+        # promoted. Each product is therefore committed independently, while
+        # the source-status rows record the resulting counts.
+        title_count = promote_title_classifications_from_path(
+            conn,
+            refresh_id=refresh_id,
+            path=str(title_metadata_path()),
+        )
+        content_rows = list(iter_activity_content_days(start=start, end=end, ensure=False))
+        content_count = promote_activity_content_days(
+            conn,
+            refresh_id=refresh_id,
+            rows=content_rows,
+        )
+        bucket_count = promote_activity_content_buckets(
+            conn,
+            refresh_id=refresh_id,
+            rows=content_rows,
+        )
+        usage_count = promote_activity_title_usage(
+            conn,
+            refresh_id=refresh_id,
+            rows=(
+                row
+                for row in iter_activity_title_usage(start=start, end=end, ensure=False)
+                if row.last_date is not None and row.first_date is not None
+            ),
+        )
+        count = promote_personal_daily_signals(conn, refresh_id=refresh_id, rows=rows)
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source="title_classification",
+            status="ok" if title_count else "empty",
+            reason=None if title_count else "no title classifications available",
+            row_count=title_count,
+            window_start=start,
+            window_end=end,
+        )
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source="activity_content",
+            status="ok" if content_count else "empty",
+            reason=None if content_count else "no activity-content rows in window",
+            row_count=content_count + bucket_count + usage_count,
+            window_start=start,
+            window_end=end,
+        )
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_PERSONAL_DAILY_SIGNAL,
+            status="ok" if count else "empty",
+            reason=None if count else "no daily personal-source signals in window",
+            row_count=count,
+            window_start=start,
+            window_end=end,
+        )
 
 
 def _record_snapshot_promotion_run(

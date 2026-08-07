@@ -69,9 +69,11 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
 
     ensure_calls: list[tuple[str, tuple[date, date] | None]] = []
     read_state = {"ensured": False}
+    executed_sql: list[object] = []
 
     class Conn:
         def execute(self, *_args, **_kwargs):
+            executed_sql.append(_args[0] if _args else None)
             return self
 
         def fetchone(self):
@@ -156,3 +158,4 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
         ("activity_content_days", date(2026, 5, 1), date(2026, 5, 2), False),
         ("activity_title_usage", date(2026, 5, 1), date(2026, 5, 2), False),
     ]
+    assert "BEGIN TRANSACTION" not in executed_sql

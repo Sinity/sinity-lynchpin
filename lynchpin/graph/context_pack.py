@@ -706,8 +706,11 @@ def _render_content_metadata_coverage(*, start: date, end: date) -> str:
     from ..materialization import ensure_materialized
     from ..sources.activity_content import iter_activity_content_days, iter_activity_title_usage
 
-    ensure_materialized("activity_content", window=(start, end))
-    days = list(iter_activity_content_days(start=start, end=end, ensure=False))
+    try:
+        ensure_materialized("activity_content", window=(start, end))
+        days = list(iter_activity_content_days(start=start, end=end, ensure=False))
+    except FileNotFoundError:
+        return "- Activity-content metadata coverage unavailable: canonical product is missing."
     if not days:
         return ""
     focused = sum(row.focused_seconds for row in days)
