@@ -1,7 +1,7 @@
 """Tests for sources/sleep.py."""
 
 import json
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 from lynchpin.sources.sleep import (
@@ -12,6 +12,7 @@ from lynchpin.sources.sleep import (
     entries,
     sleep_architecture,
     sleep_stages,
+    sleep_productivity,
     _parse_dt,
     _safe_float,
 )
@@ -130,6 +131,49 @@ def test_sleep_architecture_uses_logical_sleep_date(monkeypatch):
     assert result[0].date == date(2026, 3, 14)
     assert result[0].deep_min == 60.0
     assert result[0].rem_min == 60.0
+
+
+def test_sleep_productivity_chunks_activitywatch_and_uses_logical_deep_work_day(monkeypatch):
+    from lynchpin.sources import sleep as mod
+
+    entries = [
+        SimpleNamespace(
+            date=date(2026, 3, 1),
+            total_minutes=420.0,
+            effective_score=80.0,
+            quality_label="good",
+        ),
+        SimpleNamespace(
+            date=date(2026, 3, 2),
+            total_minutes=390.0,
+            effective_score=70.0,
+            quality_label="fair",
+        ),
+    ]
+    active_calls = []
+
+    def fake_active_seconds_by_date(start, end):
+        active_calls.append((start, end))
+        return {start: 3600.0}
+
+    def fake_deep_work(*, start, end):
+        if start.date() == date(2026, 3, 3):
+            return (SimpleNamespace(start=datetime(2026, 3, 3, 5), duration_min=10.0),)
+        return ()
+
+    monkeypatch.setattr(mod, "entries_in_range", lambda *, start, end: entries)
+    monkeypatch.setattr(mod, "_activitywatch_derived_bounds", lambda: (None, None))
+    monkeypatch.setattr("lynchpin.sources.activitywatch.active_seconds_by_date", fake_active_seconds_by_date)
+    monkeypatch.setattr("lynchpin.sources.activitywatch.deep_work", fake_deep_work)
+
+    rows = sleep_productivity(start=date(2026, 3, 1), end=date(2026, 3, 2), chunk_days=1)
+
+    assert active_calls == [
+        (date(2026, 3, 2), date(2026, 3, 3)),
+        (date(2026, 3, 3), date(2026, 3, 4)),
+    ]
+    assert [row.workday_deep_work_min for row in rows] == [10.0, 0]
+    assert [row.productivity_vs_baseline for row in rows] == [1.0, 1.0]
 
 
 def _write_rows(path, rows):

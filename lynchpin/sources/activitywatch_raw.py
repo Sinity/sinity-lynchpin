@@ -17,7 +17,11 @@ import functools
 from ..core.cache import file_signature
 from ..core.config import get_config
 from ..core.parse import as_local
-from .activitywatch_event_index import iter_indexed_activitywatch_events
+from ..core.primitives import logical_date
+from .activitywatch_event_index import (
+    activitywatch_event_index_manifest_path,
+    iter_indexed_activitywatch_events,
+)
 from .activitywatch_models import AWEvent
 
 log = logging.getLogger(__name__)
@@ -65,7 +69,17 @@ def events(
         from ..materialization import ensure_materialized
 
         window = _datetime_window(start, end)
-        canonical_result = ensure_materialized("activitywatch", window=window)
+        indexed_last = _indexed_last_date()
+        if indexed_last is not None and logical_date(start) > indexed_last:
+            # The sparse index is intentionally refreshed separately from the
+            # live tail. Reading that tail from SQLite avoids reparsing the
+            # multi-million-row canonical NDJSON inside every derived pass.
+            yield from events_from_activitywatch_dbs(
+                bucket_prefix,
+                start=start,
+                end=end,
+            )
+            return
         index_result = ensure_materialized("activitywatch_event_index", window=window)
         if index_result.status in {"ready", "updated"}:
             yield from iter_indexed_activitywatch_events(
@@ -74,6 +88,7 @@ def events(
                 end=end,
             )
             return
+        canonical_result = ensure_materialized("activitywatch", window=window)
         if canonical_result.status not in {"ready", "updated"}:
             yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end)
             return
@@ -86,6 +101,18 @@ def events(
         yield from _events_from_ndjson(path, bucket_prefix=bucket_prefix, start=start, end=end)
         return
     yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end, db_path=db_path)
+
+
+def _indexed_last_date() -> date | None:
+    manifest = activitywatch_event_index_manifest_path()
+    if not manifest.exists():
+        return None
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        value = payload.get("last_date")
+        return date.fromisoformat(str(value)) if value else None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def events_from_activitywatch_dbs(

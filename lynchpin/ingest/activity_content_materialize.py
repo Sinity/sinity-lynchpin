@@ -177,6 +177,7 @@ def materialize_activity_content(
     start, end = _default_window(start, end)
     default_output = activity_content_daily_path()
     output = output or default_output
+    start, end = _expand_existing_window(start, end, output)
     usage_output = activity_title_usage_path() if output == default_output else output.with_name("title_usage.ndjson")
     input_files = activity_content_input_files()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +313,29 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     first = start or date.fromisoformat(str(payload["first_date"]))
     last_inclusive = date.fromisoformat(str(payload["last_date"]))
     return first, end or (last_inclusive + timedelta(days=1))
+
+
+def _expand_existing_window(
+    start: date, end: date, output: Path
+) -> tuple[date, date]:
+    """Keep global title-usage aggregates complete on windowed requests.
+
+    Title usage has no per-day contribution table, so a partial rebuild cannot
+    safely merge with the existing aggregate. Expand a request to the prior
+    product bounds and let the canonical input manifest extend the right edge.
+    Fresh outputs retain the caller's narrow window for focused tests and
+    explicit backfills.
+    """
+    manifest = output.with_suffix(".manifest.json")
+    if not output.exists() or not manifest.exists():
+        return start, end
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        first = date.fromisoformat(str(payload["first_date"]))
+        last = date.fromisoformat(str(payload["last_date"]))
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return start, end
+    return min(start, first), max(end, last + timedelta(days=1))
 
 
 def _empty_day(day: date) -> dict[str, Any]:

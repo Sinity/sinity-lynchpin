@@ -267,13 +267,46 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
     web = list(events("aw-watcher-web-", start=dt(8), end=dt(13)))
 
     assert calls == [
-        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
         ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
-        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
         ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
     ]
     assert [event.data for event in window] == [{"app": "kitty"}]
     assert [event.data for event in web] == [{"url": "https://example.com"}]
+
+
+def test_activitywatch_events_use_live_db_after_index_tail(monkeypatch) -> None:
+    """A request after the indexed tail must avoid rebuilding canonical NDJSON."""
+    live_event = SimpleNamespace(
+        bucket="aw-watcher-window_host",
+        start=dt(10),
+        end=dt(10, 5),
+        data={"app": "kitty"},
+    )
+
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._indexed_last_date",
+        lambda: date(2026, 3, 14),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw.events_from_activitywatch_dbs",
+        lambda *args, **kwargs: iter((live_event,)),
+    )
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("live-tail reads must not refresh canonical products")
+        ),
+    )
+
+    rows = list(
+        events(
+            "aw-watcher-window_",
+            start=datetime(2026, 3, 15, 8, tzinfo=UTC),
+            end=datetime(2026, 3, 16, 8, tzinfo=UTC),
+        )
+    )
+
+    assert rows == [live_event]
 
 
 def test_activitywatch_ndjson_fallback_normalizes_naive_bounds(monkeypatch, tmp_path: Path) -> None:
@@ -350,8 +383,8 @@ def test_activitywatch_raw_falls_back_to_live_db_when_canonical_refresh_fails(
     rows = list(events("aw-watcher-window_", start=dt(9), end=dt(11)))
 
     assert calls == [
-        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
         ("activitywatch_event_index", (date(2026, 3, 15), date(2026, 3, 16))),
+        ("activitywatch", (date(2026, 3, 15), date(2026, 3, 16))),
     ]
     assert [row.data["app"] for row in rows] == ["kitty"]
 

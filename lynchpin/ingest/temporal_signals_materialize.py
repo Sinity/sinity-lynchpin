@@ -186,7 +186,28 @@ def _temporal_input_files(start: date, end: date) -> tuple[Path, ...]:
 
 
 def _ensure_temporal_inputs(start: date, end: date) -> None:
-    from ..materialization import ensure_materialized
+    from ..materialization import audit_materialization, ensure_materialized
+
+    activitywatch_window = (start, end + timedelta(days=1))
+    try:
+        activitywatch = next(
+            row for row in audit_materialization()
+            if row.name == "activitywatch_derived"
+        )
+    except (StopIteration, OSError, RuntimeError):
+        activitywatch = None
+    if (
+        activitywatch is not None
+        and activitywatch.tail_stale
+        and activitywatch.last_date is not None
+    ):
+        # ActivityWatch is append-oriented on the live host. Recompute the
+        # last materialized logical day as well as any new tail, while keeping
+        # the already verified history out of the high-memory source path.
+        activitywatch_window = (
+            max(start, activitywatch.last_date),
+            end + timedelta(days=1),
+        )
 
     for name in (
         "activitywatch_derived",
@@ -200,7 +221,8 @@ def _ensure_temporal_inputs(start: date, end: date) -> None:
         "sleep",
         "health",
     ):
-        ensure_materialized(name, window=(start, end + timedelta(days=1)))
+        window = activitywatch_window if name == "activitywatch_derived" else (start, end + timedelta(days=1))
+        ensure_materialized(name, window=window)
 
 
 def main(argv: list[str] | None = None) -> int:

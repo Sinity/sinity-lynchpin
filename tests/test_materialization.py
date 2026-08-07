@@ -2358,6 +2358,7 @@ def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp
 
     assert row.status == "partial"
     assert "row count differs" in row.reason
+    assert row.tail_stale
 
 
 def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
@@ -2380,6 +2381,28 @@ def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
 
     assert _materialized_enough_for_window(
         row, (date(2026, 6, 5), date(2026, 6, 8))
+    )
+
+
+def test_activitywatch_historical_window_before_known_coverage_is_enough() -> None:
+    from lynchpin.materialization import _materialized_enough_for_window
+
+    row = MaterializedDataset(
+        name="activitywatch",
+        status="ready",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=2,
+        first_date=date(2024, 2, 15),
+        last_date=date(2026, 8, 6),
+        materialization_hint="fixture",
+        reason="ready",
+    )
+
+    assert _materialized_enough_for_window(
+        row, (date(2017, 1, 29), date(2017, 2, 28))
     )
 
 

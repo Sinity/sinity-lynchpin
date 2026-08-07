@@ -67,3 +67,36 @@ def test_materialize_activity_content_bounds_focus_windows(monkeypatch, tmp_path
         (call["end"] - call["start"]).days <= activity_content_materialize.RECENT_CHUNK_DAYS
         for call in focus_calls[1:]
     )
+
+
+def test_materialize_activity_content_expands_existing_global_product(monkeypatch, tmp_path):
+    from lynchpin.ingest import activity_content_materialize
+
+    aw = tmp_path / "events.ndjson"
+    titles = tmp_path / "title_metadata.ndjson"
+    aw.write_text("{}\n", encoding="utf-8")
+    titles.write_text("{}\n", encoding="utf-8")
+    output = tmp_path / "activity_content_daily.ndjson"
+    output.write_text("{}\n", encoding="utf-8")
+    output.with_suffix(".manifest.json").write_text(
+        '{"first_date": "2026-01-01", "last_date": "2026-02-28"}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(activity_content_materialize, "activity_content_input_files", lambda: (aw, titles))
+    monkeypatch.setattr(activity_content_materialize, "load_title_classification_map", lambda: {})
+    focus_calls = []
+    monkeypatch.setattr(
+        activity_content_materialize,
+        "focus_spans",
+        lambda **kwargs: focus_calls.append(kwargs) or iter(()),
+    )
+
+    activity_content_materialize.materialize_activity_content(
+        start=date(2026, 2, 15),
+        end=date(2026, 3, 2),
+        output=output,
+    )
+
+    assert focus_calls[0]["start"].date() == date(2026, 1, 1)
+    assert focus_calls[-1]["end"].date() == date(2026, 3, 2)

@@ -746,15 +746,24 @@ def _materialized_enough_for_window(
     if window is None:
         return True
     contract = source_contract(row.name)
-    if row.name == "activitywatch_event_index":
-        # The index is a sparse accelerator over a complete canonical event
-        # product.  A missing partition means that day had no events, not that
-        # the index is missing coverage.  Require the requested bounds to sit
-        # inside the indexed bounds, while completeness and input freshness are
-        # checked by the dataset audit.
+    if row.name in {"activitywatch", "activitywatch_event_index"}:
+        # ActivityWatch products have a known first and last date. A request
+        # ending before the first date is provably empty, and a request ending
+        # within the known span needs no rebuild even when it starts earlier
+        # than the first recorded day. The index is sparse, so empty logical
+        # days are valid partitions rather than missing coverage.
         if row.first_date is None or row.last_date is None:
             return False
-        return row.first_date <= window[0] and row.last_date >= window[1] - timedelta(days=1)
+        if row.status != "ready" and not row.tail_stale:
+            return False
+        requested_last = window[1] - timedelta(days=1)
+        if requested_last > row.last_date:
+            if row.status != "ready" and row.tail_stale:
+                return just_refreshed or already_refreshed_this_process
+            return False
+        if row.status != "ready" and row.tail_stale and not just_refreshed:
+            return already_refreshed_this_process or window[1] < logical_date(datetime.now().astimezone())
+        return True
     if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
         if not row.covered_dates and (row.first_date is None or row.last_date is None):
             return False
@@ -1364,16 +1373,21 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     canonical_manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
     canonical_meta = _load_json(canonical_manifest)
     canonical_row_count = _int_or_none(canonical_meta.get("row_count"))
+    canonical_first_date = _date_from_iso(canonical_meta.get("first_date"))
+    canonical_last_date = _date_from_iso(canonical_meta.get("last_date"))
     index_row_count = _int_or_none(meta.get("row_count"))
     row_count_current = canonical_row_count is None or index_row_count == canonical_row_count
+    tail_stale = False
     if products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"
     elif products_ready and not inputs_current:
         status = "partial"
+        tail_stale = True
         reason = "ActivityWatch event index was built from an older canonical event product"
     elif products_ready and not row_count_current:
         status = "partial"
+        tail_stale = True
         reason = "ActivityWatch event index row count differs from the canonical event product"
     elif products_ready:
         status = "ready"
@@ -1392,11 +1406,12 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         materialized_paths=(*product_paths, manifest),
         raw_roots=(cfg.captures_root / "activitywatch",),
         row_count=_int_or_none(meta.get("row_count")),
-        first_date=_date_from_iso(meta.get("first_date")),
-        last_date=_date_from_iso(meta.get("last_date")),
+        first_date=canonical_first_date or _date_from_iso(meta.get("first_date")),
+        last_date=canonical_last_date or _date_from_iso(meta.get("last_date")),
         materialization_hint=contract.materialization_hint,
         reason=reason,
         covered_dates=covered_dates,
+        tail_stale=tail_stale,
     )
 
 
@@ -1409,11 +1424,13 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     products_ready = manifest.exists() and all(path.exists() for path in paths)
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    tail_stale = False
     if products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch derived graph product schema is older than the current reader contract"
     elif products_ready and not inputs_current:
         status: Status = "partial"
+        tail_stale = True
         reason = "ActivityWatch derived graph products were built from an older canonical event product"
     elif products_ready:
         status = "ready"
@@ -1437,6 +1454,7 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         materialization_hint=contract.materialization_hint,
         reason=reason,
         covered_dates=_manifest_covered_dates(meta),
+        tail_stale=tail_stale,
     )
 
 

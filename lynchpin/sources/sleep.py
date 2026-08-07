@@ -5,6 +5,7 @@ Absorbs: exports/health, exports/sleep, processed/sleep_correlation, metrics/hea
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -591,27 +592,89 @@ class SleepProductivity:
     productivity_vs_baseline: float
 
 
-def sleep_productivity(*, start: date, end: date) -> list[SleepProductivity]:
-    """Join sleep data with next-day AW active hours and deep work. Lazy import to avoid circular."""
+SLEEP_PRODUCTIVITY_CHUNK_DAYS = 30
+
+
+def sleep_productivity(
+    *, start: date, end: date, chunk_days: int = SLEEP_PRODUCTIVITY_CHUNK_DAYS
+) -> list[SleepProductivity]:
+    """Join sleep data with next-day ActivityWatch activity and deep work.
+
+    ActivityWatch reads are bounded by ``chunk_days``. The baseline is
+    accumulated across all chunks so the output retains the full-range
+    denominator used by the original implementation.
+    """
+    if chunk_days < 1:
+        raise ValueError("chunk_days must be at least 1")
     sleep_data = entries_in_range(start=start, end=end)
     if not sleep_data:
         return []
 
-    # Lazy import — AW is a peer source, not a dependency at module level
+    # Lazy import — ActivityWatch is a peer source, not a module-level
+    # dependency. Prefer its bounded canonical products when available.
     from .activitywatch import active_seconds_by_date, deep_work
+    from .activitywatch_derived import (
+        iter_derived_daily_activity,
+        iter_derived_deep_work,
+    )
     from datetime import timedelta
 
     aw_start = min(e.date for e in sleep_data) + timedelta(days=1)
-    aw_end = max(e.date for e in sleep_data) + timedelta(days=1)
-    active_map = active_seconds_by_date(aw_start, aw_end)
+    aw_end = max(e.date for e in sleep_data) + timedelta(days=2)
+    derived_first, derived_last = _activitywatch_derived_bounds()
+    active_map: dict[date, float] = {}
+    cursor = aw_start
+    active_total = 0.0
+    active_days = 0
+    while cursor < aw_end:
+        chunk_end = min(cursor + timedelta(days=chunk_days), aw_end)
+        if derived_first is not None and derived_last is not None and cursor <= derived_last:
+            if chunk_end <= derived_first:
+                chunk_active = {}
+            else:
+                derived_start = max(cursor, derived_first)
+                derived_end = min(chunk_end, derived_last + timedelta(days=1))
+                chunk_active = {
+                    row.date: row.active_hours * 3600
+                    for row in iter_derived_daily_activity(
+                        start=derived_start,
+                        end=derived_end - timedelta(days=1),
+                        ensure=False,
+                    )
+                }
+        else:
+            chunk_active = active_seconds_by_date(cursor, chunk_end)
+        active_map.update(chunk_active)
+        active_total += sum(chunk_active.values())
+        active_days += len(chunk_active)
+        cursor = chunk_end
 
     from datetime import time as time_cls
-    dw_blocks = deep_work(start=datetime.combine(aw_start, time_cls.min), end=datetime.combine(aw_end + timedelta(days=1), time_cls.min))
     dw_by_day: dict[date, float] = {}
-    for b in dw_blocks:
-        dw_by_day[b.start.date()] = dw_by_day.get(b.start.date(), 0) + b.duration_min
+    derived_deep_start = max(aw_start, derived_first) if derived_first is not None else aw_start
+    derived_deep_end = min(aw_end, derived_last + timedelta(days=1)) if derived_last is not None else aw_start
+    if derived_deep_start < derived_deep_end:
+        for block in iter_derived_deep_work(
+            start=datetime.combine(derived_deep_start, time_cls.min),
+            end=datetime.combine(derived_deep_end, time_cls.min),
+            ensure=False,
+        ):
+            day = logical_date(block.start)
+            dw_by_day[day] = dw_by_day.get(day, 0) + block.duration_min
 
-    baseline_hours = sum(active_map.values()) / max(len(active_map), 1) / 3600 if active_map else 0
+    cursor = max(aw_start, derived_last + timedelta(days=1)) if derived_last is not None else aw_start
+    while cursor < aw_end:
+        chunk_end = min(cursor + timedelta(days=chunk_days), aw_end)
+        dw_blocks = deep_work(
+            start=datetime.combine(cursor, time_cls.min),
+            end=datetime.combine(chunk_end, time_cls.min),
+        )
+        for b in dw_blocks:
+            day = logical_date(b.start)
+            dw_by_day[day] = dw_by_day.get(day, 0) + b.duration_min
+        cursor = chunk_end
+
+    baseline_hours = active_total / max(active_days, 1) / 3600 if active_map else 0
 
     result: list[SleepProductivity] = []
     for entry in sleep_data:
@@ -627,3 +690,18 @@ def sleep_productivity(*, start: date, end: date) -> list[SleepProductivity]:
             productivity_vs_baseline=round(vs_baseline, 2),
         ))
     return result
+
+
+def _activitywatch_derived_bounds() -> tuple[date | None, date | None]:
+    from .activitywatch_derived import activitywatch_derived_manifest_path
+
+    manifest = activitywatch_derived_manifest_path()
+    if not manifest.exists():
+        return None, None
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        first = date.fromisoformat(str(payload["first_date"]))
+        last = date.fromisoformat(str(payload["last_date"]))
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return None, None
+    return first, last
