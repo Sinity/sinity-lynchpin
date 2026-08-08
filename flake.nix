@@ -26,6 +26,20 @@
         };
         # Package Python deps not in nixpkgs
         pythonPackagesOverlay = final: prev: {
+          # SciPy 1.18.0 has one property-based test that is invalid under
+          # NumPy 2.5.1's floating-point behavior: an exact-zero result is
+          # compared with a tiny non-zero expected value. The runtime package
+          # remains valid; skip only that stale assertion until upstream
+          # refreshes it.
+          #
+          # recheck: when nixpkgs bumps SciPy past 1.18.0 or refreshes this
+          # test for NumPy 2.5.
+          scipy = prev.scipy.overrideAttrs (old: {
+            disabledTests = (old.disabledTests or [ ]) ++ [
+              "test_support_moments_sample"
+            ];
+          });
+
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
             version = "0.22.20251013";
