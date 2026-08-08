@@ -25,7 +25,29 @@
           config.allowUnfree = true;
         };
         # Package Python deps not in nixpkgs
-        pythonPackagesOverlay = final: prev: {
+        pythonPackagesOverlay = final: prev:
+          let
+            replaceDependency = name: replacement: input:
+              if (input.pname or "") == name then replacement else input;
+
+            scipy = prev.scipy.overrideAttrs (old: {
+              disabledTests = (old.disabledTests or [ ]) ++ [
+                "test_support_moments_sample"
+              ];
+            });
+
+            scikit-learn = prev.scikit-learn.overridePythonAttrs (old: {
+              build-system = map (replaceDependency "scipy" scipy) (old.build-system or [ ]);
+              dependencies = map (replaceDependency "scipy" scipy) (old.dependencies or [ ]);
+            });
+
+            hmmlearn = prev.hmmlearn.overridePythonAttrs (old: {
+              propagatedBuildInputs = map (
+                replaceDependency "scikit-learn" scikit-learn
+              ) (old.propagatedBuildInputs or [ ]);
+            });
+          in
+          {
           # SciPy 1.18.0 has one property-based test that is invalid under
           # NumPy 2.5.1's floating-point behavior: an exact-zero result is
           # compared with a tiny non-zero expected value. The runtime package
@@ -34,11 +56,7 @@
           #
           # recheck: when nixpkgs bumps SciPy past 1.18.0 or refreshes this
           # test for NumPy 2.5.
-          scipy = prev.scipy.overrideAttrs (old: {
-            disabledTests = (old.disabledTests or [ ]) ++ [
-              "test_support_moments_sample"
-            ];
-          });
+          inherit scipy scikit-learn hmmlearn;
 
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
