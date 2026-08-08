@@ -52,6 +52,24 @@
               # recheck: when hmmlearn refreshes its NumPy 2.5 test suite.
               doCheck = false;
             });
+
+            fastapi = prev.fastapi.overridePythonAttrs (_old: {
+              # FastAPI's current snapshot tests fail against the updated
+              # inline-snapshot release; this package is consumed for its
+              # runtime API surface here.
+              #
+              # recheck: when FastAPI refreshes its snapshot test suite.
+              nativeInstallCheckInputs = [ ];
+              doCheck = false;
+            });
+
+            rich-toolkit = prev.rich-toolkit.overridePythonAttrs (_old: {
+              # rich-toolkit has the same stale inline-snapshot test edge.
+              #
+              # recheck: when rich-toolkit refreshes its snapshot tests.
+              nativeInstallCheckInputs = [ ];
+              doCheck = false;
+            });
           in
           {
           # SciPy 1.18.0 has one property-based test that is invalid under
@@ -62,7 +80,7 @@
           #
           # recheck: when nixpkgs bumps SciPy past 1.18.0 or refreshes this
           # test for NumPy 2.5.
-          inherit scipy scikit-learn hmmlearn;
+          inherit scipy scikit-learn hmmlearn fastapi rich-toolkit;
 
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
