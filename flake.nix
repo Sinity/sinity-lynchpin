@@ -139,7 +139,7 @@
 
           polylogue = prev.buildPythonPackage {
             pname = "polylogue";
-            version = "0.1.0";
+            version = (builtins.fromTOML (builtins.readFile "${polylogueSrc}/pyproject.toml")).project.version;
             pyproject = true;
             src = polylogueSrc;
 
