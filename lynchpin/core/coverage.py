@@ -86,6 +86,11 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "sinnix_runtime_inventory",
         # Browser bookmarks — updated continuously
         "browser_bookmarks",
+        # sinnix-capture-v1 desktop event lanes — continuous daemons
+        "notifications",
+        "mpris",
+        "audio_index",
+        "audio_topology",
     }
 )
 

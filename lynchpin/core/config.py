@@ -135,6 +135,10 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
+            "notifications": any((self.captures_root / "notifications").glob("notifications-*.jsonl")),
+            "mpris": any((self.captures_root / "mpris").glob("mpris-*.jsonl")),
+            "audio_index": any((self.captures_root / "audio-index").glob("audio-index-*.jsonl")),
+            "audio_topology": any((self.captures_root / "audio-topology").glob("audio-topology-*.jsonl")),
         }
 
     @classmethod

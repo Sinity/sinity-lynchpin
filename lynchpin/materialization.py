@@ -325,6 +325,10 @@ def _dataset_builders() -> dict[str, Any]:
         "health": _health_dataset,
         "goodreads": _goodreads_dataset,
         "keylog": _keylog_dataset,
+        "notifications": _notifications_dataset,
+        "mpris": _mpris_dataset,
+        "audio_index": _audio_index_dataset,
+        "audio_topology": _audio_topology_dataset,
         "keylog_analysis": _keylog_analysis_dataset,
         "raw_log": _raw_log_dataset,
         "sleep": _sleep_dataset,
@@ -1765,6 +1769,36 @@ def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=log_dates[-1],
         reason="scribe-tap keylog log files are present",
     )
+
+
+def _sinnix_capture_lane_dataset(cfg: LynchpinConfig, *, lane: str) -> MaterializedDataset:
+    contract = source_contract(lane.replace("-", "_"))
+    root = cfg.captures_root / lane
+    return _raw_source_dataset(
+        cfg,
+        name=contract.name,
+        raw_roots=(root,),
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialization_hint=contract.materialization_hint,
+        row_count=_count_files(root, suffixes=(".jsonl",)),
+    )
+
+
+def _notifications_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _sinnix_capture_lane_dataset(cfg, lane="notifications")
+
+
+def _mpris_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _sinnix_capture_lane_dataset(cfg, lane="mpris")
+
+
+def _audio_index_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _sinnix_capture_lane_dataset(cfg, lane="audio-index")
+
+
+def _audio_topology_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _sinnix_capture_lane_dataset(cfg, lane="audio-topology")
 
 
 def _keylog_analysis_dataset(cfg: LynchpinConfig) -> MaterializedDataset:

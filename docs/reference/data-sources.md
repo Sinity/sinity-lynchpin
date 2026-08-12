@@ -33,6 +33,42 @@ The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
 
+## sinnix-capture-v1 desktop event lanes
+
+Sinnix writes four small, continuous JSON-lines lanes under
+`captures/<lane>/<lane>-YYYYMMDD.jsonl`: `notifications` (desktop
+notification bus), `mpris` (media-player state), `audio-index` (speech-segment
+index over the `audio` capture — index only, not the audio), and
+`audio-topology` (PipeWire graph add/remove events). `lynchpin.sources.
+sinnix_capture_lanes` reads the shared envelope and exposes each lane as a
+typed record (`notification_events`, `mpris_events`, `audio_index_entries`,
+`audio_topology_events`) plus `daily_lane_activity` for coverage-aware daily
+counts. All four are registered as capture sources in `available_sources()`
+and `CAPTURE_SOURCES`, so they show up in `source_observations()` like any
+other continuous capture.
+
+## Capture roots without a dedicated source
+
+Some `captures/*` roots have real, growing owner-native data (audio, screen
+recordings, screenshots) but no typed source module yet — the content itself
+(audio, images, video) is out of scope for deep parsing.
+`lynchpin.sources.capture_inventory` gives these roots the same minimal
+visibility `observability_catalog` gives machine/observability inputs: file
+count, total bytes, and observed mtime span per root, computed live from the
+filesystem — no content parsing. Run `python -m lynchpin.cli.capture_inventory`
+for a summary, or `--json` for machine-readable output. Promote a root out of
+this catalog into a real typed source (with coverage, a materializer, and
+substrate rows) when an analysis actually needs its content, not before — the
+four event lanes above made that jump.
+
+`captures/input-dynamics`, `captures/stability-lab`, and
+`captures/dev/tortoisesvn` are deliberately absent from this catalog: the
+operator flagged them as dead/unwanted (2026-08-12) — `input-dynamics` is
+superseded by `captures/keylog` (see `keylog_dynamics`), `stability-lab` is
+dead or being retired, and the `tortoisesvn` historical import is not worth
+tracking. The directories themselves were not touched; only this catalog
+stopped watching them.
+
 ## Substack archives
 
 The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/media/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
