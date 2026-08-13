@@ -196,6 +196,29 @@ def test_web_mentions_use_source_date_filter(monkeypatch):
     assert [m.url for m in mentions] == ["https://example.com/visited"]
 
 
+def test_web_mentions_bucket_by_logical_not_calendar_day(monkeypatch):
+    """lynchpin-t3a: a visit at 03:00 local on the window's start date belongs
+    to the PREVIOUS logical day (DAY_BOUNDARY_HOUR=6) and must be excluded —
+    a raw .date() call would keep it in-window instead."""
+    from lynchpin.core.parse import local_tz
+
+    tz = local_tz()
+    late_night = datetime(2026, 6, 1, 3, 0, tzinfo=tz)  # 03:00 local -> logical day 2026-05-31
+
+    def fake_iter_entries(start: date | None = None, end: date | None = None, **_kwargs):
+        yield {
+            "url": "https://example.com/late-night",
+            "iso_time": late_night.isoformat(),
+            "title": "Late night browsing",
+        }
+
+    monkeypatch.setattr("lynchpin.sources.web.iter_entries", fake_iter_entries)
+
+    mentions = list(iter_url_mentions(start=date(2026, 6, 1), end=date(2026, 6, 3), sources={"web"}))
+
+    assert mentions == []
+
+
 def test_raindrop_mentions_use_half_open_bounded_reader(monkeypatch):
     calls: list[tuple[date | None, date | None]] = []
 

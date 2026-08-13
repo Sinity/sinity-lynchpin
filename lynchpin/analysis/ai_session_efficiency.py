@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from ..core.analytics import TrendResult, detect_trend
+from ..core.primitives import logical_date
 from ..sources.polylogue_models import SessionProfile
 
 
@@ -380,9 +381,9 @@ def _profile_date(p: SessionProfile) -> Optional[date]:
     if p.canonical_session_date is not None:
         return p.canonical_session_date
     if p.last_message_at is not None:
-        return p.last_message_at.date()
+        return logical_date(p.last_message_at)
     if p.first_message_at is not None:
-        return p.first_message_at.date()
+        return logical_date(p.first_message_at)
     return None
 
 

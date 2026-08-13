@@ -56,6 +56,50 @@ def test_personal_interest_trace_fuses_search_bookmark_and_domain_sources() -> N
     assert duckdb["score"] > 7
 
 
+def test_personal_interest_trace_buckets_by_logical_not_calendar_day() -> None:
+    """lynchpin-t3a: a bookmark added at 03:00 local belongs to the PREVIOUS
+    logical day (DAY_BOUNDARY_HOUR=6), not its calendar date. Google/bookmark
+    evidence bucketing used a raw .date() call, which would put this event on
+    2026-05-02 instead of 2026-05-01 and silently disagree with anything
+    joined against logical-day activity products."""
+    from lynchpin.core.parse import local_tz
+
+    tz = local_tz()
+    late_night = datetime(2026, 5, 2, 3, 0, tzinfo=tz)  # 03:00 local, May 2
+
+    bookmarks = [
+        BookmarkEvent(
+            bookmark_id="b1",
+            source="fixture",
+            browser="firefox",
+            profile="default",
+            url="https://duckdb.org/docs",
+            normalized_url="https://duckdb.org/docs",
+            domain="duckdb.org",
+            title="DuckDB docs",
+            folder="dev",
+            added_at=late_night,
+            source_path="fixture",
+        )
+    ]
+
+    report = personal_interest_trace(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 2),
+        google_events=[],
+        bookmark_events=bookmarks,
+        web_domain_rows=[],
+        top_n=5,
+    )
+    payload = report.to_json()
+    duckdb = next(row for row in payload["topics"] if row["topic"] == "duckdb")
+
+    # Logical day for 03:00 on May 2 is May 1 — the day the late-night
+    # session actually belongs to, not its calendar date.
+    assert duckdb["first_seen"] == "2026-05-01"
+    assert duckdb["last_seen"] == "2026-05-01"
+
+
 def test_personal_interest_trace_bounds_google_event_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

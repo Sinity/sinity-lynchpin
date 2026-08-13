@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lynchpin.core.io import save_json
+from lynchpin.core.primitives import logical_date
 from lynchpin.sources.bookmarks import BookmarkEvent, iter_bookmarks
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent, iter_events
 from lynchpin.sources.web import domain_breakdown
@@ -111,7 +112,7 @@ def _add_google_evidence(
 ) -> None:
     rows = events if events is not None else iter_events(start=start, end=end)
     for event in rows:
-        day = event.timestamp.date()
+        day = logical_date(event.timestamp)
         if not _in_window(day, start=start, end=end):
             continue
         for topic in _topics(event.title):
@@ -130,7 +131,7 @@ def _add_bookmark_evidence(
         for event in rows:
             if event.added_at is None:
                 continue
-            day = event.added_at.date()
+            day = logical_date(event.added_at)
             if not _in_window(day, start=start, end=end):
                 continue
             for topic in {*_topics(event.title), _domain_topic(event.domain)}:

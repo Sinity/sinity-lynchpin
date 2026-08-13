@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Iterator, Literal, Optional
 from urllib.parse import urlparse
 
+from ..core.primitives import logical_date
 from ..sources.web_urls import normalize_url
 
 
@@ -142,7 +143,7 @@ def _iter_reddit_mentions(start: date, end: date) -> Iterator[URLMention]:
     def _in_range(dt: Optional[datetime]) -> bool:
         if dt is None:
             return False
-        d = dt.date()
+        d = logical_date(dt)
         return start <= d <= end
 
     for comment in iter_comments(start=start, end=end + timedelta(days=1)):
@@ -267,7 +268,7 @@ def _iter_wykop_mentions(start: date, end: date) -> Iterator[URLMention]:
     def _in_range(dt: Optional[datetime]) -> bool:
         if dt is None:
             return False
-        d = dt.date()
+        d = logical_date(dt)
         return start <= d <= end
 
     for lc in iter_wykop_link_comments(start=start, end=end + timedelta(days=1)):
@@ -349,7 +350,7 @@ def _iter_raindrop_mentions(start: date, end: date) -> Iterator[URLMention]:
     for b in iter_raindrop_bookmarks(start=start, end=end + timedelta(days=1)):
         if not b.created:
             continue
-        d = b.created.date()
+        d = logical_date(b.created)
         if d < start or d > end:
             continue
         if not b.url or not b.url.startswith("http"):
@@ -386,7 +387,7 @@ def _iter_web_visits(start: date, end: date) -> Iterator[URLMention]:
                 ts = None
         if ts is None:
             continue
-        d = ts.date()
+        d = logical_date(ts)
         if d < start or d > end:
             continue
         norm, domain = _norm(url)
