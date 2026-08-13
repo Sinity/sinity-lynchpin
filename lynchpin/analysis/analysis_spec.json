@@ -65,6 +65,7 @@
     "machine_observational_baselines": "machine_observational_baselines.json",
     "machine_observational_deltas": "machine_observational_deltas.json",
     "machine_pressure_incidents": "machine_pressure_incidents.json",
+    "machine_stall_attribution": "machine_stall_attribution.json",
     "machine_support_assessment": "machine_support_assessment.json",
     "machine_telemetry_analysis": "machine_telemetry_analysis.json",
     "machine_validation_design": "machine_validation_design.json",

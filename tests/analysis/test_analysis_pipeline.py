@@ -136,6 +136,7 @@ def test_current_state_refresh_dag_is_independent_of_external_repos():
         "machine_telemetry_analysis",
         "machine_episode_analysis",
         "machine_pressure_incidents",
+        "machine_stall_attribution",
         "machine_below_analysis",
         "machine_below_attribution",
         "machine_below_export_handoff",
