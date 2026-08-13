@@ -1786,10 +1786,16 @@ def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         materialization_hint="scribe-tap records live keylog captures",
         row_count=_count_files(logs_root),
     )
+    # _date_from_iso is lenient (accepts a YYYY-MM-DD *prefix*, e.g. a
+    # "2026-08-12.torn-original.jsonl" quarantine file from scribe-tap's
+    # corruption remediation), but re-parsing the untruncated stem with
+    # strict date.fromisoformat() below rejects exactly the files the filter
+    # just accepted. Parse once with the lenient function and reuse the
+    # result instead of two inconsistent parses of the same string.
     log_dates = sorted(
-        date.fromisoformat(path.stem)
+        parsed
         for path in logs_root.glob("*.jsonl")
-        if _date_from_iso(path.stem) is not None
+        if (parsed := _date_from_iso(path.stem)) is not None
     ) if logs_root.exists() else []
     if not log_dates:
         return row

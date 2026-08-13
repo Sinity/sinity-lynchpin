@@ -2933,6 +2933,27 @@ def test_keylog_audit_uses_log_file_dates_for_coverage(tmp_path) -> None:
     assert row.last_date == date(2026, 5, 3)
 
 
+def test_keylog_audit_tolerates_non_date_stem_jsonl_files(tmp_path) -> None:
+    """A quarantine file like '<date>.torn-original.jsonl' (scribe-tap's
+    corruption remediation, sinnix-kfx6) has a *.jsonl name but a stem that
+    isn't a clean ISO date. _date_from_iso's lenient 10-char-prefix parse
+    matches its filter check, but a strict date.fromisoformat() on the
+    untruncated stem must not be used downstream, or this crashes the whole
+    keylog audit (observed live, blocked reproducing lynchpin-qsa)."""
+    from lynchpin import materialization
+
+    logs = tmp_path / "keylog" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "2026-05-01.jsonl").write_text("{}\n", encoding="utf-8")
+    (logs / "2026-05-03.torn-original.jsonl").write_text("{}\n", encoding="utf-8")
+
+    row = materialization._keylog_dataset(SimpleNamespace(keylog_root=tmp_path / "keylog"))
+
+    assert row.status == "ready"
+    assert row.first_date == date(2026, 5, 1)
+    assert row.last_date == date(2026, 5, 3)
+
+
 def test_wykop_audit_uses_comment_dates_for_coverage(tmp_path) -> None:
     from lynchpin import materialization
 
