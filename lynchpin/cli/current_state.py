@@ -56,7 +56,7 @@ def render_current_state(
     persist_weak_tags: bool = False,
     json_output: bool = False,
     timeline_output: Path | None = None,
-    materialize_substrate: bool = False,
+    materialize_substrate: bool = True,
     progress: str = "plain",
 ) -> str:
     start_dt = as_local(datetime.combine(start, time.min))
@@ -110,9 +110,15 @@ def _current_state_command(
         ),
     ),
     materialize_substrate: bool = typer.Option(
-        False,
+        True,
         "--materialize-substrate/",
-        help="Materialize and replace the deterministic DuckDB graph for this range.",
+        help=(
+            "Build and promote a live DuckDB graph for this range when no "
+            "compatible promoted snapshot already covers it (default: on, so a "
+            "read is never blocked by a missing/stale substrate). Pass "
+            "--no-materialize-substrate for the strict opposite: only ever read "
+            "an already-promoted snapshot, raising instead of doing live work."
+        ),
     ),
     progress: str = typer.Option(
         "plain",
