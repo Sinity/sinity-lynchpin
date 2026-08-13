@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import duckdb
+
+from lynchpin.substrate.run_steps import record_run_step, reconcile_orphaned_running_steps
+
+
+def _connect() -> duckdb.DuckDBPyConnection:
+    from lynchpin.substrate.connection import apply_schema
+
+    conn = duckdb.connect(":memory:")
+    apply_schema(conn)
+    return conn
+
+
+def test_reconcile_marks_stale_running_step_as_orphaned() -> None:
+    conn = _connect()
+    started = datetime.now(timezone.utc) - timedelta(hours=3)
+    record_run_step(
+        conn,
+        refresh_id="machine-analysis:rolling:today",
+        step="promote_machine_tables",
+        status="running",
+        message="started",
+        started_at=started,
+    )
+
+    reconciled = reconcile_orphaned_running_steps(
+        conn, stale_before=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    assert reconciled == 1
+    rows = conn.execute(
+        "SELECT status, started_at FROM substrate_run_step "
+        "WHERE refresh_id = 'machine-analysis:rolling:today' AND step = 'promote_machine_tables' "
+        "ORDER BY recorded_at"
+    ).fetchall()
+    assert [r[0] for r in rows] == ["running", "orphaned"]
+    # The orphaned row preserves the original started_at, not "now".
+    assert rows[1][1] == started
+
+
+def test_reconcile_leaves_fresh_running_step_alone() -> None:
+    conn = _connect()
+    record_run_step(
+        conn,
+        refresh_id="current-state:2026-08-13:2026-08-14:all",
+        step="promote_machine_tables",
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+
+    reconciled = reconcile_orphaned_running_steps(
+        conn, stale_before=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    assert reconciled == 0
+    status = conn.execute(
+        "SELECT status FROM substrate_run_step ORDER BY recorded_at DESC LIMIT 1"
+    ).fetchone()[0]
+    assert status == "running"
+
+
+def test_reconcile_leaves_completed_step_alone() -> None:
+    conn = _connect()
+    started = datetime.now(timezone.utc) - timedelta(hours=3)
+    record_run_step(
+        conn,
+        refresh_id="machine-analysis:rolling:today",
+        step="promote_machine_tables",
+        status="running",
+        started_at=started,
+    )
+    record_run_step(
+        conn,
+        refresh_id="machine-analysis:rolling:today",
+        step="promote_machine_tables",
+        status="success",
+        row_count=803,
+        started_at=started,
+        finished_at=started + timedelta(minutes=2),
+    )
+
+    reconciled = reconcile_orphaned_running_steps(
+        conn, stale_before=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    assert reconciled == 0
+    rows = conn.execute(
+        "SELECT status FROM substrate_run_step ORDER BY recorded_at"
+    ).fetchall()
+    assert [r[0] for r in rows] == ["running", "success"]
+
+
+def test_reconcile_handles_multiple_orphaned_steps_independently() -> None:
+    conn = _connect()
+    stale = datetime.now(timezone.utc) - timedelta(hours=3)
+    fresh = datetime.now(timezone.utc)
+    record_run_step(conn, refresh_id="r1", step="a", status="running", started_at=stale)
+    record_run_step(conn, refresh_id="r1", step="b", status="running", started_at=fresh)
+    record_run_step(conn, refresh_id="r2", step="a", status="running", started_at=stale)
+
+    reconciled = reconcile_orphaned_running_steps(
+        conn, stale_before=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    assert reconciled == 2
+    latest_by_step = dict(
+        conn.execute(
+            """
+            SELECT refresh_id || ':' || step, status
+            FROM (
+                SELECT refresh_id, step, status,
+                       row_number() OVER (PARTITION BY refresh_id, step ORDER BY recorded_at DESC) AS rn
+                FROM substrate_run_step
+            )
+            WHERE rn = 1
+            """
+        ).fetchall()
+    )
+    assert latest_by_step == {"r1:a": "orphaned", "r1:b": "running", "r2:a": "orphaned"}

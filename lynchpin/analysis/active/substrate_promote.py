@@ -19,7 +19,7 @@ import logging
 import gc
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .substrate_promote_ai import promote_ai_sources
@@ -55,7 +55,7 @@ from .substrate_promote_status import (
     SOURCE_SYMBOLS,
     SourceSelection,
 )
-from lynchpin.substrate.run_steps import record_run_step
+from lynchpin.substrate.run_steps import record_run_step, reconcile_orphaned_running_steps
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +180,16 @@ def _do_promote(
     # every source's promotion (sinnix-kx4).
     with connect(substrate_path(), rebuild_corrupt=True) as conn:
         apply_schema(conn)
+
+        orphaned = reconcile_orphaned_running_steps(
+            conn, stale_before=started_at - timedelta(hours=1)
+        )
+        if orphaned:
+            log.warning(
+                "substrate_promote: reconciled %d step(s) stuck 'running' with no "
+                "terminal status (likely killed mid-step in a prior run)",
+                orphaned,
+            )
 
         _run_stage(
             conn,
