@@ -94,6 +94,9 @@ def test_ensure_substrate_materialized_for_read_reports_caller(monkeypatch) -> N
     calls = []
 
     class Result:
+        status = "ready"
+        reason = "DuckDB evidence graph builds are present"
+
         def to_json(self) -> dict[str, object]:
             return {"name": "evidence_graph_substrate", "status": "ready"}
 
@@ -117,6 +120,62 @@ def test_ensure_substrate_materialized_for_read_reports_caller(monkeypatch) -> N
         "status": "ready",
         "caller": "test.surface",
     }
+
+
+def test_ensure_substrate_materialized_for_read_logs_when_blocked(monkeypatch, caplog) -> None:
+    """lynchpin-zoz: every caller discards this return value, so a blocked
+    status must be observable some other way — a warning log — or a read
+    over an unmaterialized window silently proceeds as if nothing were wrong.
+    """
+    import logging
+
+    from lynchpin.mcp.tools._utils import ensure_substrate_materialized_for_read
+
+    class BlockedResult:
+        status = "blocked"
+        reason = "no transparent materializer is defined for this contract"
+
+        def to_json(self) -> dict[str, object]:
+            return {"name": "evidence_graph_substrate", "status": "blocked"}
+
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: BlockedResult(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lynchpin.mcp.tools._utils"):
+        ensure_substrate_materialized_for_read(
+            caller="test.blocked_surface",
+            window=(date(2020, 1, 1), date(2020, 1, 5)),
+        )
+
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "test.blocked_surface" in message
+    assert "status=blocked" in message
+
+
+def test_ensure_substrate_materialized_for_read_does_not_log_when_ready(monkeypatch, caplog) -> None:
+    import logging
+
+    from lynchpin.mcp.tools._utils import ensure_substrate_materialized_for_read
+
+    class ReadyResult:
+        status = "ready"
+        reason = "DuckDB evidence graph builds are present"
+
+        def to_json(self) -> dict[str, object]:
+            return {"name": "evidence_graph_substrate", "status": "ready"}
+
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window=None: ReadyResult(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lynchpin.mcp.tools._utils"):
+        ensure_substrate_materialized_for_read(caller="test.ready_surface", window=None)
+
+    assert caplog.records == []
 
 
 def test_require_best_materialized_refresh_id_is_read_only_when_blocked(tmp_path) -> None:

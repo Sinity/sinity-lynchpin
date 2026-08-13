@@ -7,6 +7,7 @@ circular coupling between substrate.py and views.py.
 from __future__ import annotations
 
 import base64
+import logging
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,8 @@ from lynchpin.mcp.registry import PUBLIC_TOOL_NAMES
 from lynchpin.substrate import snapshots as _snapshots
 
 PLATFORM_TOOL_NAMES: tuple[str, ...] = PUBLIC_TOOL_NAMES
+
+log = logging.getLogger(__name__)
 
 
 def json_safe(value: Any) -> Any:
@@ -63,11 +66,32 @@ def ensure_substrate_materialized_for_read(
     normal MCP reads. ``evidence_graph_substrate`` is a derived substrate product:
     if the existing DuckDB substrate is usable this returns ``ready``; if not,
     the materialization layer reports why the product cannot be advanced locally.
+
+    Every caller of this function currently discards its return value (it's
+    called purely for the check, not the payload) — so when the requested
+    window isn't covered by anything promoted, the resulting 'blocked' status
+    (evidence_graph_substrate has no registered materializer; only an
+    explicit `substrate_snapshot` promote can advance it) was going entirely
+    unobserved and the read proceeded as if nothing were wrong, silently
+    returning whatever partial/empty data the query happens to produce
+    (lynchpin-zoz). Logging it here is a deliberately narrow fix: it makes
+    the condition observable without touching every caller's response shape,
+    which would need per-tool review this wasn't scoped for.
     """
 
     from lynchpin.materialization import ensure_materialized
 
     result = ensure_materialized("evidence_graph_substrate", window=window)
+    if result.status not in ("ready", "pinned"):
+        log.warning(
+            "mcp.%s: evidence_graph_substrate is not ready for window=%s "
+            "(status=%s reason=%r) — read is proceeding anyway and may "
+            "return partial or empty data without saying so",
+            caller,
+            window,
+            result.status,
+            result.reason,
+        )
     payload = result.to_json()
     payload["caller"] = caller
     return payload
