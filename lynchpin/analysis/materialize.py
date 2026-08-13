@@ -74,6 +74,7 @@ from .machine.devshell import write_devshell_performance_analysis
 from .machine.episodes import write_machine_episode_analysis
 from .machine.experiment_manifest_diagnostics import write_machine_experiment_manifest_diagnostics
 from .machine.pressure_incidents import write_machine_pressure_incidents
+from .machine.stall_attribution import write_stall_attribution
 from .machine.experiments import write_machine_experiment_claims
 from .machine.feature_frames import write_machine_feature_frames
 from .machine.gap_summary import write_gap_summary_analysis
@@ -209,6 +210,11 @@ def _add_machine_analysis_steps(
     dag.add(Step(
         "machine_pressure_incidents",
         fn=lambda: write_machine_pressure_incidents(Path(_out("machine_pressure_incidents.json")), start=start, end=end),
+        depends_on=substrate_deps,
+    ))
+    dag.add(Step(
+        "machine_stall_attribution",
+        fn=lambda: write_stall_attribution(Path(_out("machine_stall_attribution.json")), start=start, end=end),
         depends_on=substrate_deps,
     ))
     dag.add(Step(
