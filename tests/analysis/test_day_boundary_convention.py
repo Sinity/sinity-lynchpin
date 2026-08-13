@@ -31,18 +31,17 @@ ANALYSIS_DIR = Path(__file__).resolve().parents[2] / "lynchpin" / "analysis"
 
 # module filename -> number of sanctioned no-arg .date() call sites.
 ALLOWED_CALENDAR_DATE_CALLS = {
-    "ai_session_efficiency.py": 2,  # lynchpin-t3a: self-consistent calendar days
     "code_quality.py": 2,
     "evening_activity_sleep.py": 1,  # timestamp arithmetic (late cutoff), not a join key
     "google_takeout_mining.py": 7,  # provider-local export dates
     "health_baselines.py": 1,
     "operator_public_text.py": 8,  # provider-local post timestamps
-    "personal_interest_fusion.py": 2,  # lynchpin-t3a
     "sleep_coverage.py": 3,
     "sleep_stage_model.py": 1,
-    "url_crossref.py": 4,  # lynchpin-t3a
     "quota_advisory.py": 1,  # provider/archive calendar query, not a daily join key
 }
+# ai_session_efficiency.py, personal_interest_fusion.py, url_crossref.py:
+# migrated to logical_date, lynchpin-t3a — no longer need an entry here.
 
 
 def _count_date_calls(path: Path) -> int:
