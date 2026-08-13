@@ -250,3 +250,44 @@ def test_project_and_evidence_routes_label_source_modes(
     assert timeline["meta"]["coverage_end"] == "2026-06-30"
     assert timeline["meta"]["matched_row_count"] == 0
     assert "freshness_warning" in timeline["meta"]
+
+
+def test_blocked_materialization_surfaces_as_response_caveat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lynchpin-zoz: a routed tool call that reads through an unmaterialized
+    substrate window must say so in its own response, not just return
+    ok=true with whatever partial/empty data the query happens to produce.
+
+    setup_substrate() gives an empty, freshly-schema'd DuckDB with no
+    evidence_graph_build rows at all, so any window is guaranteed
+    unmaterialized — exactly the condition the original bug report hit.
+    """
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    result = lynchpin_evidence(action="timeline", start="2020-01-01", end="2020-01-05")
+
+    assert result["ok"] is True
+    caveats = result["meta"].get("materialization_caveats")
+    assert caveats, "expected a materialization caveat for an unmaterialized window"
+    assert caveats[0]["caller"] == "project_day_correlations"
+    assert caveats[0]["status"] == "blocked"
+    assert caveats[0]["window"] == ["2020-01-01", "2020-01-06"]
+
+
+def test_ready_materialization_has_no_caveat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool call that never touches an unmaterialized window must not carry
+    a stray materialization_caveats key — the ContextVar collecting them is
+    reset per call, not leaking across requests or appearing when unused."""
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.public import lynchpin_project
+
+    result = lynchpin_project(action="repos")
+
+    assert result["ok"] is True
+    assert "materialization_caveats" not in result["meta"]

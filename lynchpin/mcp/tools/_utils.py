@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,25 @@ from lynchpin.substrate import snapshots as _snapshots
 PLATFORM_TOOL_NAMES: tuple[str, ...] = PUBLIC_TOOL_NAMES
 
 log = logging.getLogger(__name__)
+
+# Collects non-ready materialization results seen during the current public
+# MCP tool call, so lynchpin.mcp.tools.public._internal_call — the single
+# choke point every routed action passes through — can surface them as a
+# response caveat (lynchpin-zoz) without every one of the ~40 internal
+# functions that call ensure_substrate_materialized_for_read needing to
+# thread the result through its own return value. None outside of an active
+# _internal_call (the list is installed/torn down there); appends are a
+# no-op when nothing is collecting, so calling this helper directly in a
+# script or test never raises.
+_MATERIALIZATION_CAVEATS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "lynchpin_mcp_materialization_caveats", default=None
+)
+
+
+def _record_materialization_caveat(payload: dict[str, Any]) -> None:
+    caveats = _MATERIALIZATION_CAVEATS.get()
+    if caveats is not None:
+        caveats.append(payload)
 
 
 def json_safe(value: Any) -> Any:
@@ -67,16 +87,19 @@ def ensure_substrate_materialized_for_read(
     if the existing DuckDB substrate is usable this returns ``ready``; if not,
     the materialization layer reports why the product cannot be advanced locally.
 
-    Every caller of this function currently discards its return value (it's
+    Every caller of this function discards its return value directly (it's
     called purely for the check, not the payload) — so when the requested
     window isn't covered by anything promoted, the resulting 'blocked' status
     (evidence_graph_substrate has no registered materializer; only an
-    explicit `substrate_snapshot` promote can advance it) was going entirely
-    unobserved and the read proceeded as if nothing were wrong, silently
-    returning whatever partial/empty data the query happens to produce
-    (lynchpin-zoz). Logging it here is a deliberately narrow fix: it makes
-    the condition observable without touching every caller's response shape,
-    which would need per-tool review this wasn't scoped for.
+    explicit `substrate_snapshot` promote can advance it) previously went
+    entirely unobserved and the read proceeded as if nothing were wrong,
+    silently returning whatever partial/empty data the query happened to
+    produce (lynchpin-zoz). Fixed two ways instead of touching every one of
+    those ~40 call sites: this logs a warning immediately, and also records
+    the result via ``_record_materialization_caveat`` into a ContextVar that
+    ``lynchpin.mcp.tools.public._internal_call`` — the single choke point
+    every routed public-tool action passes through — collects and attaches
+    to the response's ``meta.materialization_caveats`` before returning.
     """
 
     from lynchpin.materialization import ensure_materialized
@@ -91,6 +114,14 @@ def ensure_substrate_materialized_for_read(
             window,
             result.status,
             result.reason,
+        )
+        _record_materialization_caveat(
+            {
+                "caller": caller,
+                "window": [d.isoformat() for d in window] if window else None,
+                "status": result.status,
+                "reason": result.reason,
+            }
         )
     payload = result.to_json()
     payload["caller"] = caller

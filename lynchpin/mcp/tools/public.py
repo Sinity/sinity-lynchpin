@@ -18,7 +18,7 @@ from lynchpin.mcp.registry import (
     public_tool_catalog,
 )
 from lynchpin.mcp.server import app
-from lynchpin.mcp.tools._utils import json_safe
+from lynchpin.mcp.tools._utils import _MATERIALIZATION_CAVEATS, json_safe
 
 _CURRENT_ROUTE: ContextVar[tuple[str, str] | None] = ContextVar("lynchpin_mcp_current_route", default=None)
 
@@ -288,12 +288,25 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
     module = importlib.import_module(module_name)
     fn = getattr(module, function_name)
     route = f"{module_name}.{function_name}"
+    # lynchpin-zoz: collect any ensure_substrate_materialized_for_read()
+    # results the routed function sees during this call, so a blocked/stale
+    # substrate check surfaces in the response instead of being silently
+    # discarded — every one of the ~40 internal functions calls that check
+    # and throws away its return value directly, so this is caught centrally
+    # here rather than in each of them.
+    caveats_token = _MATERIALIZATION_CAVEATS.set([])
     try:
         meta = {"route": route} if not tool_name or not action else _action_meta(str(tool_name), str(action), route=route)
         meta.update(extra_meta)
-        return _ok(_call(fn, **kwargs), **meta)
+        result = _call(fn, **kwargs)
+        caveats = _MATERIALIZATION_CAVEATS.get()
+        if caveats:
+            meta["materialization_caveats"] = caveats
+        return _ok(result, **meta)
     except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors.
         return _error("tool_error", f"{type(exc).__name__}: {exc}", hint=f"route: {route}")
+    finally:
+        _MATERIALIZATION_CAVEATS.reset(caveats_token)
 
 
 def _query_sql(sql: str, parameters: list[Any] | None = None, max_rows: int = 1000) -> dict[str, Any]:
