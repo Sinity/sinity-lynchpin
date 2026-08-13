@@ -973,3 +973,38 @@ def domain_breakdown(
         (domain, count, round(count / total, 4) if total else 0)
         for domain, count in domains.most_common(top_n)
     ]
+
+
+def domain_breakdown_by_day(
+    *,
+    start: date,
+    end: date,
+    top_n: int = 200,
+    ensure: bool = True,
+) -> list[tuple[date, str, int]]:
+    """Per-day domain visit counts over a date range: (day, domain, count).
+
+    Unlike domain_breakdown() (which collapses to one count per domain across
+    the whole window), this preserves which real day(s) each domain was
+    actually visited on. Needed by any consumer computing genuine active-day
+    counts or first/last-seen dates per domain — collapsing this back into
+    (domain, total_count, pct) reproduces domain_breakdown() exactly, so this
+    is a strict refinement, not a divergent computation.
+    """
+    _days, domains_by_day = _load_daily_index(
+        window=(start, end + timedelta(days=1)),
+        ensure=ensure,
+    )
+    rows: list[tuple[date, str, int]] = []
+    for day, day_domains in domains_by_day.items():
+        if not in_date_range(day, start, end):
+            continue
+        for domain, count in day_domains.items():
+            rows.append((day, domain, count))
+    if top_n and rows:
+        totals: Counter[str] = Counter()
+        for _day, domain, count in rows:
+            totals[domain] += count
+        keep = {domain for domain, _ in totals.most_common(top_n)}
+        rows = [row for row in rows if row[1] in keep]
+    return sorted(rows)

@@ -576,6 +576,16 @@ def test_daily_browsing_and_domain_breakdown_share_source_index(tmp_path, monkey
         ("github.com", 1, 0.3333),
     ]
 
+    from lynchpin.sources.web import domain_breakdown_by_day
+
+    # Real per-day rows, the strict refinement domain_breakdown() collapses
+    # into the aggregate above (lynchpin-bae) — same source, same counts,
+    # but with the actual day each domain was seen on preserved.
+    assert domain_breakdown_by_day(start=_date(2026, 5, 15), end=_date(2026, 5, 15)) == [
+        (_date(2026, 5, 15), "example.com", 2),
+        (_date(2026, 5, 15), "github.com", 1),
+    ]
+
 
 def test_daily_web_aggregates_forward_requested_materialization_window(tmp_path, monkeypatch):
     from datetime import date as _date

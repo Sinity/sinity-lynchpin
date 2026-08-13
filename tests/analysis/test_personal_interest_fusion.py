@@ -56,6 +56,45 @@ def test_personal_interest_trace_fuses_search_bookmark_and_domain_sources() -> N
     assert duckdb["score"] > 7
 
 
+def test_personal_interest_trace_web_domains_use_real_per_day_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lynchpin-bae: the default (real, every-caller-hits-this) path must not
+    fabricate first_seen/last_seen/active_days by replicating pseudo-rows
+    anchored on a single date. A domain visited on three distinct real days
+    must report those three real days, not active_days=1 pinned to window
+    start — regardless of how many visits happened on any one of them."""
+    from lynchpin.analysis import personal_interest_fusion as fusion
+
+    def fake_domain_breakdown_by_day(*, start, end, top_n=200):
+        return [
+            (date(2026, 5, 1), "duckdb.org", 40),
+            (date(2026, 5, 5), "duckdb.org", 3),
+            (date(2026, 5, 9), "duckdb.org", 1),
+        ]
+
+    monkeypatch.setattr(
+        "lynchpin.sources.web.domain_breakdown_by_day", fake_domain_breakdown_by_day
+    )
+
+    report = personal_interest_trace(
+        start=date(2026, 5, 1),
+        end=date(2026, 5, 10),
+        google_events=[],
+        bookmark_events=[],
+        web_domain_rows=None,
+        top_n=5,
+    )
+    payload = report.to_json()
+    duckdb = next(row for row in payload["topics"] if row["topic"] == "duckdb")
+
+    # Three genuinely distinct visit-days, not one fabricated anchor day —
+    # and the true span, not window-start-to-window-start.
+    assert duckdb["active_days"] == 3
+    assert duckdb["first_seen"] == "2026-05-01"
+    assert duckdb["last_seen"] == "2026-05-09"
+
+
 def test_personal_interest_trace_buckets_by_logical_not_calendar_day() -> None:
     """lynchpin-t3a: a bookmark added at 03:00 local belongs to the PREVIOUS
     logical day (DAY_BOUNDARY_HOUR=6), not its calendar date. Google/bookmark

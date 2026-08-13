@@ -14,7 +14,6 @@ from lynchpin.core.io import save_json
 from lynchpin.core.primitives import logical_date
 from lynchpin.sources.bookmarks import BookmarkEvent, iter_bookmarks
 from lynchpin.sources.google_takeout_products import GoogleTakeoutEvent, iter_events
-from lynchpin.sources.web import domain_breakdown
 
 
 STOPWORDS = {
@@ -150,13 +149,31 @@ def _add_web_domain_evidence(
 ) -> None:
     try:
         if rows is None:
+            # Default (real) path: every actual caller hits this branch, never
+            # the explicit `rows` one below. Use per-day domain counts so each
+            # evidence row is a real visit-day, not a fabricated one — the old
+            # code replicated min(count, 100) identical rows all anchored on
+            # `start`, which collapsed every domain to active_days=1 and
+            # first_seen=last_seen=start regardless of when it was actually
+            # visited (lynchpin-bae).
             if start is None or end is None:
                 return
-            domain_rows = domain_breakdown(start=start, end=end, top_n=200)
-        else:
-            domain_rows = rows
+            from lynchpin.sources.web import domain_breakdown_by_day
+
+            for day, domain, count in domain_breakdown_by_day(start=start, end=end, top_n=200):
+                topic = _domain_topic(domain)
+                if not topic:
+                    continue
+                evidence[topic].append(("webhistory", day, f"{domain} ({count} visit(s))"))
+            return
+        # Explicit pre-aggregated (domain, count, pct) rows: a test/legacy
+        # injection path with no real caller. No per-day dates are available
+        # here by construction, so this can only approximate — anchor on the
+        # window start and say so via the fixed row count, rather than
+        # silently claiming the same first/last-seen precision the real path
+        # now provides.
         anchor_day = start or end or date.today()
-        for domain, count, _pct in domain_rows:
+        for domain, count, _pct in rows:
             topic = _domain_topic(domain)
             if not topic:
                 continue
