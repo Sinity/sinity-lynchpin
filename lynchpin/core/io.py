@@ -30,11 +30,46 @@ def analysis_root() -> str:
     return str(get_config().analysis_output_dir)
 
 
+class InvalidAnalysisPath(ValueError):
+    """A path/filename argument looks like free-text content, not a path."""
+
+
 def _resolve(base: Path, path: str | PathLike[str]) -> str:
+    _validate_path_component(path)
     candidate = Path(path)
     if candidate.is_absolute():
         return str(candidate)
     return str(base / candidate)
+
+
+def _validate_path_component(path: str | PathLike[str]) -> None:
+    """Fail fast when ``path`` couldn't possibly be a real filename.
+
+    resolve_analysis_path/resolve_repo_path are the single choke point every
+    analysis-artifact writer (~150 call sites) uses to build an output path
+    from a short name like "burnout_warning.json". If a caller ever passes
+    free-text content instead by mistake — a narrative moment title, a claim
+    summary — Path() happily joins it as one oversized component with
+    embedded newlines, and the failure only surfaces much later as a cryptic
+    OS-level "OSError: File name too long" with no indication of which
+    caller or value was responsible (lynchpin-qsa). The longest legitimate
+    name in this codebase is 45 chars; 200 leaves generous headroom while
+    still catching anything that's clearly prose, not a filename.
+    """
+    text = str(path)
+    if "\n" in text or "\r" in text:
+        raise InvalidAnalysisPath(
+            f"invalid analysis/repo path: contains a newline (starts "
+            f"{text[:80]!r}) — this looks like free-text content was passed "
+            f"where a filename was expected"
+        )
+    for part in Path(text).parts:
+        if len(part) > 200:
+            raise InvalidAnalysisPath(
+                f"invalid analysis/repo path component ({len(part)} chars, "
+                f"starts {part[:80]!r}) — this looks like free-text content "
+                f"was passed where a filename was expected"
+            )
 
 
 def resolve_repo_path(path: str | PathLike[str]) -> str:

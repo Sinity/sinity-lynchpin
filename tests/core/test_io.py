@@ -92,6 +92,46 @@ class TestCanonicalSpecLoading:
         )
 
 
+def test_resolve_analysis_path_accepts_ordinary_names(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        analysis_io, "get_config", lambda: SimpleNamespace(analysis_output_dir=tmp_path)
+    )
+    assert analysis_io.resolve_analysis_path("burnout_warning.json") == str(
+        tmp_path / "burnout_warning.json"
+    )
+    assert analysis_io.resolve_analysis_path("maps/project-maps.md") == str(
+        tmp_path / "maps/project-maps.md"
+    )
+
+
+def test_resolve_analysis_path_rejects_multiline_content(monkeypatch, tmp_path: Path) -> None:
+    """lynchpin-qsa: free-text content (a narrative moment title, a claim
+    summary) passed where a filename was expected must fail fast and
+    clearly here — the single choke point every analysis-artifact writer
+    uses — instead of surfacing hundreds of call frames away as a cryptic
+    OS-level 'File name too long'."""
+    monkeypatch.setattr(
+        analysis_io, "get_config", lambda: SimpleNamespace(analysis_output_dir=tmp_path)
+    )
+    prose = (
+        "\n• The existing suite is broad, so the case has to be specific: "
+        "gaps remain where the code has cross-boundary invariants but tests "
+        "mostly verify one surface at a time."
+    )
+    with pytest.raises(analysis_io.InvalidAnalysisPath, match="free-text content"):
+        analysis_io.resolve_analysis_path(prose)
+
+
+def test_resolve_analysis_path_rejects_pathologically_long_component(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        analysis_io, "get_config", lambda: SimpleNamespace(analysis_output_dir=tmp_path)
+    )
+    with pytest.raises(analysis_io.InvalidAnalysisPath, match="free-text content"):
+        analysis_io.resolve_analysis_path("x" * 300 + ".json")
+
+
 def test_load_json_object_requires_existing_product(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="active project snapshot is missing"):
         load_json_object(tmp_path / "missing.json", label="active project snapshot")
