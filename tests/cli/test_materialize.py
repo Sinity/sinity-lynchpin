@@ -27,8 +27,8 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     ]
     forwarded = {}
 
-    monkeypatch.setattr(materialize, "plan_materializations", lambda force=False: [])
-    monkeypatch.setattr(materialize, "run_materialization_plan", lambda plan: [])
+    monkeypatch.setattr(materialize, "plan_materializations", lambda force=False, window=None: [])
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda plan, window=None: [])
     monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
 
     def fake_snapshot(argv: list[str]) -> int:
@@ -55,8 +55,8 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
 def test_materialize_rejects_mode_option(monkeypatch) -> None:
     from lynchpin.cli import materialize
 
-    monkeypatch.setattr(materialize, "plan_materializations", lambda force=False: [])
-    monkeypatch.setattr(materialize, "run_materialization_plan", lambda plan: [])
+    monkeypatch.setattr(materialize, "plan_materializations", lambda force=False, window=None: [])
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda plan, window=None: [])
 
     with pytest.raises(SystemExit) as exc:
         materialize.main(["--all", "--mode", "local-heavy"])

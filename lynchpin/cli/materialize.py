@@ -40,14 +40,25 @@ def main(argv: list[str] | None = None) -> int:
     if not args.all:
         parser.error("only --all is supported; canonical products are materialized as a coherent set")
 
+    # An explicit --start/--end (the --history=window --promote path) bounds
+    # per-source materialization to that window instead of each source's
+    # full history — see lynchpin-9rr. --history=all intentionally wants the
+    # full history, so its window is resolved after the materialize pass,
+    # once every source is fresh enough to report accurate date bounds.
+    window: tuple[date, date] | None = None
+    if args.promote and args.history == "window":
+        if not args.start or not args.end:
+            parser.error("--promote requires --start and --end unless --history all is used")
+        window = (date.fromisoformat(args.start), date.fromisoformat(args.end))
+
     _progress("planning canonical materialization")
-    plan = plan_materializations(force=args.force)
+    plan = plan_materializations(force=args.force, window=window)
     _progress(f"plan ready: {len(plan)} step(s)")
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
     for step in plan:
         _progress(f"{step.action}: {step.name} ({step.reason})")
-    run_materialization_plan(plan)
+    run_materialization_plan(plan, window=window)
     _progress("canonical materialization complete")
     if args.promote:
         if args.history == "all":

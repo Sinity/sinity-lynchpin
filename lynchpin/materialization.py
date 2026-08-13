@@ -428,8 +428,20 @@ def plan_materializations(
     *,
     cfg: LynchpinConfig | None = None,
     force: bool = False,
+    window: tuple[date, date] | None = None,
 ) -> list[MaterializationPlanStep]:
-    """Return the deterministic transparent materialization plan."""
+    """Return the deterministic transparent materialization plan.
+
+    ``window``, when given, delegates the staleness decision to
+    :func:`_materialized_enough_for_window` — the same window-aware check
+    :func:`ensure_materialized` uses — instead of the coarser
+    ``row.status != "ready"`` check. Without it a product with mere
+    tail-staleness for *today* is scheduled for a full materialize even when
+    the caller only asked about a window that doesn't reach today; two
+    independently-maintained staleness algorithms could disagree (lynchpin-9rr
+    follow-up). ``window=None`` preserves the original coarse behavior for
+    callers that want a genuine, unscoped full-catalog refresh.
+    """
     cfg = cfg or get_config()
     materializers = _materializers()
     steps: list[MaterializationPlanStep] = []
@@ -438,7 +450,17 @@ def plan_materializations(
         if row.name not in materializers:
             action = "check-only"
             reason = "no transparent materializer is defined for this contract"
-        elif force or row.status != "ready":
+        elif force:
+            action = "materialize"
+            reason = row.reason
+        elif window is not None:
+            if _materialized_enough_for_window(row, window):
+                action = "skip"
+                reason = "canonical product covers requested window"
+            else:
+                action = "materialize"
+                reason = row.reason
+        elif row.status != "ready":
             action = "materialize"
             reason = row.reason
         else:
@@ -461,8 +483,16 @@ def run_materialization_plan(
     steps: Iterable[MaterializationPlanStep],
     *,
     refresh_id: str | None = None,
+    window: tuple[date, date] | None = None,
 ) -> list[MaterializationPlanStep]:
-    """Execute materialization steps and return the steps that actually ran."""
+    """Execute materialization steps and return the steps that actually ran.
+
+    ``window``, when given, is threaded into each materializer the same way
+    :func:`ensure_materialized` already does via :func:`_run_materializer` —
+    a materializer whose signature accepts ``start``/``end`` reprocesses only
+    that window instead of its full source history. Materializers without
+    those parameters are called as before (unaffected by ``window``).
+    """
     materializers = _materializers()
     ran: list[MaterializationPlanStep] = []
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
@@ -478,7 +508,7 @@ def run_materialization_plan(
             started_at=started,
         )
         try:
-            report = materializers[step.name]()
+            report = _run_materializer(materializers[step.name], window=window)
         except Exception as exc:
             _record_materialization_step(
                 refresh_id,
