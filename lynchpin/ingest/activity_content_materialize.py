@@ -29,7 +29,29 @@ RECENT_WINDOW_DAYS = 30
 
 
 class _TitleUsageStore:
-    """Disk-backed accumulator for high-cardinality title usage rows."""
+    """Persistent, day-partitioned accumulator for high-cardinality title usage rows.
+
+    Two tables back the exported title_usage.ndjson:
+
+    - ``title_dim``: one row per (title_hash, app) — the title's latest-seen
+      classification. Upserted whenever a title is touched by whatever window
+      is currently being (re)processed.
+    - ``title_usage_daily``: one row per (title_hash, app, day) — that title's
+      contribution on that specific day. This is what makes reprocessing a
+      narrow window safe and idempotent: :meth:`reset_window` deletes exactly
+      the day-rows about to be recomputed, then :meth:`add` repopulates them,
+      so re-running the same window twice cannot double-count, and a day
+      outside the window is never touched at all.
+
+    The exported per-title lifetime totals (focused_seconds, span_count,
+    first_date, last_date) are a SUM/MIN/MAX over ``title_usage_daily``,
+    computed at export time — the file always reflects the union of every
+    day this store has ever seen, not just the most recently processed
+    window. This is what lets a materialize call recompute only the days it
+    was asked about instead of the dataset's entire history every time
+    (lynchpin-d36): the store itself is the durable "already materialized"
+    record, not an ephemeral per-run scratch file.
+    """
 
     _columns = (
         "title_hash",
@@ -52,19 +74,15 @@ class _TitleUsageStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        path.unlink(missing_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path)
         self.connection.execute(
             """
-            CREATE TABLE title_usage (
+            CREATE TABLE IF NOT EXISTS title_dim (
                 title_hash TEXT NOT NULL,
                 app TEXT NOT NULL,
                 normalized_title TEXT NOT NULL,
                 example_title TEXT NOT NULL,
-                focused_seconds REAL NOT NULL,
-                span_count INTEGER NOT NULL,
-                first_date TEXT NOT NULL,
-                last_date TEXT NOT NULL,
                 matched INTEGER NOT NULL,
                 classification_source TEXT,
                 confidence REAL,
@@ -77,6 +95,32 @@ class _TitleUsageStore:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS title_usage_daily (
+                title_hash TEXT NOT NULL,
+                app TEXT NOT NULL,
+                day TEXT NOT NULL,
+                focused_seconds REAL NOT NULL,
+                span_count INTEGER NOT NULL,
+                PRIMARY KEY (title_hash, app, day)
+            )
+            """
+        )
+        self.connection.commit()
+
+    def reset_window(self, start: date, end: date) -> None:
+        """Clear persisted per-day facts for ``[start, end)``.
+
+        Must be called once before reprocessing that range so the day-rows
+        this run recomputes replace the old ones exactly, instead of
+        accumulating on top of them.
+        """
+        self.connection.execute(
+            "DELETE FROM title_usage_daily WHERE day >= ? AND day < ?",
+            (start.isoformat(), end.isoformat()),
+        )
+        self.connection.commit()
 
     def ensure_row(
         self,
@@ -89,12 +133,22 @@ class _TitleUsageStore:
     ) -> None:
         self.connection.execute(
             """
-            INSERT OR IGNORE INTO title_usage (
-                title_hash, app, normalized_title, example_title,
-                focused_seconds, span_count, first_date, last_date, matched,
+            INSERT INTO title_dim (
+                title_hash, app, normalized_title, example_title, matched,
                 classification_source, confidence, activity, content_type,
                 attention_level, topic_category, platform
-            ) VALUES (?, ?, ?, ?, 0.0, 0, '', '', ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (title_hash, app) DO UPDATE SET
+                normalized_title = excluded.normalized_title,
+                example_title = excluded.example_title,
+                matched = excluded.matched,
+                classification_source = excluded.classification_source,
+                confidence = excluded.confidence,
+                activity = excluded.activity,
+                content_type = excluded.content_type,
+                attention_level = excluded.attention_level,
+                topic_category = excluded.topic_category,
+                platform = excluded.platform
             """,
             (
                 title_hash,
@@ -116,39 +170,72 @@ class _TitleUsageStore:
         day_s = day.isoformat()
         self.connection.execute(
             """
-            UPDATE title_usage
-            SET focused_seconds = focused_seconds + ?,
-                span_count = span_count + 1,
-                first_date = CASE WHEN first_date = '' OR first_date > ? THEN ? ELSE first_date END,
-                last_date = CASE WHEN last_date = '' OR last_date < ? THEN ? ELSE last_date END
-            WHERE title_hash = ? AND app = ?
+            INSERT INTO title_usage_daily (title_hash, app, day, focused_seconds, span_count)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT (title_hash, app, day) DO UPDATE SET
+                focused_seconds = focused_seconds + excluded.focused_seconds,
+                span_count = span_count + 1
             """,
-            (seconds, day_s, day_s, day_s, day_s, title_hash, app),
+            (title_hash, app, day_s, seconds),
         )
 
     def commit(self) -> None:
         self.connection.commit()
 
     def iter_rows(self) -> Any:
-        query = "SELECT * FROM title_usage ORDER BY focused_seconds DESC, app, normalized_title"
+        query = """
+            SELECT
+                d.title_hash, d.app, d.normalized_title, d.example_title,
+                SUM(f.focused_seconds), SUM(f.span_count),
+                MIN(f.day), MAX(f.day),
+                d.matched, d.classification_source, d.confidence,
+                d.activity, d.content_type, d.attention_level, d.topic_category, d.platform
+            FROM title_dim d
+            JOIN title_usage_daily f ON f.title_hash = d.title_hash AND f.app = d.app
+            GROUP BY d.title_hash, d.app
+            ORDER BY SUM(f.focused_seconds) DESC, d.app, d.normalized_title
+        """
         for values in self.connection.execute(query):
             row = dict(zip(self._columns, values, strict=True))
             row["matched"] = bool(row["matched"])
             yield {key: value for key, value in row.items() if value is not None}
 
     def count(self) -> int:
-        return int(self.connection.execute("SELECT COUNT(*) FROM title_usage").fetchone()[0])
+        return int(
+            self.connection.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM title_dim d
+                    JOIN title_usage_daily f ON f.title_hash = d.title_hash AND f.app = d.app
+                    GROUP BY d.title_hash, d.app
+                )
+                """
+            ).fetchone()[0]
+        )
 
     def unmatched_count(self) -> int:
-        return int(self.connection.execute("SELECT COUNT(*) FROM title_usage WHERE matched = 0").fetchone()[0])
+        return int(
+            self.connection.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM title_dim d
+                    JOIN title_usage_daily f ON f.title_hash = d.title_hash AND f.app = d.app
+                    WHERE d.matched = 0
+                    GROUP BY d.title_hash, d.app
+                )
+                """
+            ).fetchone()[0]
+        )
 
     def top_unmatched(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
-            SELECT app, normalized_title, focused_seconds, span_count
-            FROM title_usage
-            WHERE matched = 0
-            ORDER BY focused_seconds DESC
+            SELECT d.app, d.normalized_title, SUM(f.focused_seconds), SUM(f.span_count)
+            FROM title_dim d
+            JOIN title_usage_daily f ON f.title_hash = d.title_hash AND f.app = d.app
+            WHERE d.matched = 0
+            GROUP BY d.title_hash, d.app
+            ORDER BY SUM(f.focused_seconds) DESC
             LIMIT 20
             """
         )
@@ -165,7 +252,6 @@ class _TitleUsageStore:
     def close(self) -> None:
         self.connection.commit()
         self.connection.close()
-        self.path.unlink(missing_ok=True)
 
 
 def materialize_activity_content(
@@ -177,18 +263,43 @@ def materialize_activity_content(
     start, end = _default_window(start, end)
     default_output = activity_content_daily_path()
     output = output or default_output
-    start, end = _expand_existing_window(start, end, output)
     usage_output = activity_title_usage_path() if output == default_output else output.with_name("title_usage.ndjson")
     input_files = activity_content_input_files()
     output.parent.mkdir(parents=True, exist_ok=True)
     usage_output.parent.mkdir(parents=True, exist_ok=True)
     classifications = load_title_classification_map()
 
+    existing_by_day = _read_existing_daily(output)
+
+    facts_path = usage_output.with_name(f"{usage_output.stem}.facts.sqlite3")
+    if not facts_path.exists() and existing_by_day:
+        # One-time migration (lynchpin-d36): the persistent per-day title-usage
+        # store is new. If it doesn't exist yet but daily.ndjson already has
+        # history, this call's window must widen to that full existing range
+        # once — otherwise title_usage.ndjson (rebuilt below purely from this
+        # store) would be silently truncated from years of lifetime totals
+        # down to just the narrow window this call happened to ask for. Every
+        # later call, once the store exists, stays scoped to what it asks for.
+        start = min(start, min(existing_by_day))
+        end = max(end, max(existing_by_day) + timedelta(days=1))
+        _progress(
+            f"bootstrapping persistent title-usage store from full history "
+            f"({start.isoformat()}..{end.isoformat()}, one-time)"
+        )
+
+    reprocessed_days = set()
+    d = start
+    while d < end:
+        reprocessed_days.add(d)
+        d += timedelta(days=1)
+    # Drop every day this run is about to (re)compute — including ones that
+    # turn out to have no qualifying activity below — so a day that legitimately
+    # went from "had rows" to "empty" on reprocessing doesn't keep a stale row.
+    existing_by_day = {day: row for day, row in existing_by_day.items() if day not in reprocessed_days}
+
     by_day: dict[date, dict[str, Any]] = {}
-    title_usage = _TitleUsageStore(usage_output.with_name(f".{usage_output.name}.sqlite.tmp"))
-    source_counts: Counter[str] = Counter()
-    matched_seconds_total = 0.0
-    focused_seconds_total = 0.0
+    title_usage = _TitleUsageStore(facts_path)
+    title_usage.reset_window(start, end)
     cursor = start
     processed_days = 0
     recent_start = end - timedelta(days=RECENT_WINDOW_DAYS)
@@ -223,16 +334,13 @@ def materialize_activity_content(
                 if seconds <= 0:
                     continue
                 title_usage.add(title_hash=key, app=span.app, day=day, seconds=seconds)
-                focused_seconds_total += seconds
                 day_row = by_day.setdefault(day, _empty_day(day))
                 day_row["focused_seconds"] += seconds
                 if classification is None:
                     continue
                 day_row["matched_seconds"] += seconds
-                matched_seconds_total += seconds
                 source = classification.classification_source or "unknown"
                 day_row["source_counts"][source] += 1
-                source_counts[source] += 1
                 if source == "gpt":
                     day_row["gpt_matched_seconds"] += seconds
                 _add_bucket(day_row["activity_seconds"], classification.activity, seconds)
@@ -248,9 +356,11 @@ def materialize_activity_content(
     for day_row in by_day.values():
         _finish_day(day_row)
 
+    merged_by_day = {**existing_by_day, **by_day}
+
     with output.open("w", encoding="utf-8") as handle:
-        for day in sorted(by_day):
-            handle.write(json.dumps(by_day[day], ensure_ascii=False, sort_keys=True) + "\n")
+        for day in sorted(merged_by_day):
+            handle.write(json.dumps(merged_by_day[day], ensure_ascii=False, sort_keys=True) + "\n")
     with usage_output.open("w", encoding="utf-8") as handle:
         for row in title_usage.iter_rows():
             row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
@@ -261,17 +371,26 @@ def materialize_activity_content(
     top_unmatched_titles = title_usage.top_unmatched()
     title_usage.close()
 
+    # Manifest totals describe the whole product (matching first_date/last_date
+    # below), not just the window this call reprocessed — summed from the
+    # merged day-rows rather than tracked incrementally during the loop.
+    focused_seconds_total = sum(row["focused_seconds"] for row in merged_by_day.values())
+    matched_seconds_total = sum(row["matched_seconds"] for row in merged_by_day.values())
+    source_counts: Counter[str] = Counter()
+    for row in merged_by_day.values():
+        source_counts.update(row["source_counts"])
+
     manifest = {
         "dataset": "lynchpin.activity_content_daily",
         "schema_version": ACTIVITY_CONTENT_SCHEMA_VERSION,
         "materialized_path": str(output),
         "title_usage_path": str(usage_output),
-        "row_count": len(by_day),
+        "row_count": len(merged_by_day),
         "title_usage_count": title_usage_count,
         "unmatched_title_count": unmatched_title_count,
         "top_unmatched_titles": top_unmatched_titles,
-        "first_date": min(by_day).isoformat() if by_day else None,
-        "last_date": max(by_day).isoformat() if by_day else None,
+        "first_date": min(merged_by_day).isoformat() if merged_by_day else None,
+        "last_date": max(merged_by_day).isoformat() if merged_by_day else None,
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
         "focused_seconds": round(focused_seconds_total, 3),
@@ -315,27 +434,25 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     return first, end or (last_inclusive + timedelta(days=1))
 
 
-def _expand_existing_window(
-    start: date, end: date, output: Path
-) -> tuple[date, date]:
-    """Keep global title-usage aggregates complete on windowed requests.
+def _read_existing_daily(output: Path) -> dict[date, dict[str, Any]]:
+    """Load previously materialized daily rows, keyed by date.
 
-    Title usage has no per-day contribution table, so a partial rebuild cannot
-    safely merge with the existing aggregate. Expand a request to the prior
-    product bounds and let the canonical input manifest extend the right edge.
-    Fresh outputs retain the caller's narrow window for focused tests and
-    explicit backfills.
+    materialize_activity_content merges this with whatever it (re)computes
+    for the requested window, so a narrow request only pays for its own
+    window instead of the product's entire history (lynchpin-d36) while
+    still producing a complete, correct daily.ndjson.
     """
-    manifest = output.with_suffix(".manifest.json")
-    if not output.exists() or not manifest.exists():
-        return start, end
-    try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-        first = date.fromisoformat(str(payload["first_date"]))
-        last = date.fromisoformat(str(payload["last_date"]))
-    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
-        return start, end
-    return min(start, first), max(end, last + timedelta(days=1))
+    if not output.exists():
+        return {}
+    rows: dict[date, dict[str, Any]] = {}
+    with output.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            rows[date.fromisoformat(payload["date"])] = payload
+    return rows
 
 
 def _empty_day(day: date) -> dict[str, Any]:
