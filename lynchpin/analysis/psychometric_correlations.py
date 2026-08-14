@@ -39,6 +39,18 @@ experiment's (still unwritten) hypothesis.
 
 Method: same-day (lag 0) Pearson correlation, autocorrelation-corrected,
 Benjamini-Hochberg FDR correction across the full family.
+
+VERIFICATION STATUS (2026-08-14): this module has been verified only with
+planted synthetic signals (``tests/analysis/test_psychometric_correlations.py``
+mocks ``daily_instrument_metrics``/``operator_daily_matrix``/
+``instrument_runs`` and checks the FDR machinery recovers a known r) — the
+same precedent ``mood_correlations.py`` was verified under. It has NOT yet
+had a live end-to-end run against real instrument data: as of this writing
+the phone has logged exactly one ``instrument_run`` (a single breath_counting
+run on 2026-08-14), which is far below ``MIN_PAIRS`` for every pairing, so a
+live call today returns an empty report by construction. Re-check this note
+once enough days of real PVT/staircase/forced-choice runs exist to actually
+exercise a live pairing.
 """
 
 from __future__ import annotations

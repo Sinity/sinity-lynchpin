@@ -28,15 +28,33 @@ This module exposes two levels of typed access:
 
 Primary-metric caveat: the persisted ``instrument_run`` payload does NOT
 carry a canonical "this is the headline number" field — that framing
-(``Outcome.primaryLabel`` in the Kotlin source) exists only in the on-screen
-result and is never written to the event. ``_primary_metric`` reconstructs a
-best-effort equivalent per engine family (median_rt_ms for reaction runs,
-threshold for staircases, accuracy for forced-choice runs) and, for counting
-runs, derives an accuracy estimate from ``cycles_correct`` /
-``unaware_miscounts`` — the same ratio the app computes in memory for display
-but does not persist. A run whose engine/fields don't match any of these
-falls through with ``primary_metric_value=None``; the run still counts
-towards ``run_count`` (missing a metric is not the same as missing a run).
+(``Outcome.primaryLabel`` in the Kotlin source, ``ui/instrument/*Engine.kt``)
+exists only in the on-screen result and is never written to the event.
+``_primary_metric`` reconstructs a reader-side approximation. This is a
+FALLBACK, not the mechanism of record: if the app is ever changed to persist
+``primary_metric``/``primary_value`` directly on the event, this function
+should defer to that field first and keep the table below only for old
+records. As of this writing (2026-08-14), traced against
+``ui/instrument/*Engine.kt`` and ``instruments/Catalogue.kt``:
+
+======================  ========  ==================  ============================  ===============================
+engine (canon)          instrument  Kotlin primaryLabel  field this reader picks       agreement
+======================  ========  ==================  ============================  ===============================
+reaction                pvt         median_rt_ms          median_rt_ms                  exact match
+reaction                go_no_go    median_rt_ms          median_rt_ms                  exact match (same code path as pvt)
+reaction                tapping     interval_sd_ms         interval_sd_ms                exact match (falls through to 2nd priority)
+staircase               pitch_jnd   threshold              threshold                     exact match
+staircase               gap_detection threshold            threshold                     exact match
+staircase               (torch-feasibility preflight, not a catalogued instrument) achievable_hz  NOT PICKED — no "achievable_hz" in the priority list; falls through to None
+forced_choice           stroop      median_correct_rt_ms OR interference_ms (dynamic)  accuracy   DELIBERATE DIVERGENCE — this reader reports accuracy (0-1), not the app's reaction-time-shaped headline, because the correlation this feeds wants an accuracy-style outcome; the app's actual primary is a different, also-persisted field
+counting                breath_counting  cycles_correct (label only; value = 100 * cycles_correct/(cycles_correct+unaware_miscounts))  accuracy, derived as cycles_correct/(cycles_correct+unaware_miscounts)  DELIBERATE DIVERGENCE — same ratio, this reader keeps it on a 0-1 scale and calls it "accuracy" rather than the app's 0-100 "cycles_correct"-labelled percentage
+counting                (prime-scored breath variant, "scored_by":"prime")  none (empty)  none (falls through to None; no accuracy fields on-device)  exact match (both absent)
+hold_still              ppg, tremor  none (empty; scored via prime trace_file)  none    exact match (both absent)
+======================  ========  ==================  ============================  ===============================
+
+A run whose engine/fields don't match any of the above falls through with
+``primary_metric_value=None``; the run still counts towards ``run_count``
+(missing a metric is not the same as missing a run).
 """
 
 from __future__ import annotations
@@ -73,11 +91,13 @@ _INSTRUMENT_RUN_COMMON_FIELDS = frozenset({
     "preflight_unmet",
 })
 
-# instrument.engine.name.lowercase() values observed/expected. "count" is a
-# schema surprise: real captured data (2026-08-14) writes "count" for the
-# breath-counting instrument, not "counting" as the Kotlin `Engine.COUNTING`
-# enum constant would lowercase to — alias both to be safe against either the
-# current app build or a future one that matches the enum name exactly.
+# instrument.engine.name.lowercase() values. "count" is not a bug in the
+# current app: the pre-rewrite Java BreathActivity hard-coded
+# o.put("engine", "count"), and the only live "count" record predates the
+# Kotlin rewrite (which writes "counting", matching Engine.COUNTING.name.
+# lowercase()) by hours. The events plane is append-only and spans that
+# rewrite, so both spellings are permanently present in the historical
+# record — this alias is not a stopgap for a defect to later "fix away".
 _ENGINE_ALIASES: dict[str, str] = {
     "count": "counting",
     "counting": "counting",
