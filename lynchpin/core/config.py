@@ -93,6 +93,10 @@ class LynchpinConfig:
     browser_bookmarks_root: Path
     arbtt_root: Path
     teams_root: Path
+    phone_events_dir: Path
+    phone_ambient_jsonl: Path
+    steering_jsonl_dir: Path
+    steering_sqlite: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -139,6 +143,9 @@ class LynchpinConfig:
             "mpris": any((self.captures_root / "mpris").glob("mpris-*.jsonl")),
             "audio_index": any((self.captures_root / "audio-index").glob("audio-index-*.jsonl")),
             "audio_topology": any((self.captures_root / "audio-topology").glob("audio-topology-*.jsonl")),
+            "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
+            "phone_ambient": self.phone_ambient_jsonl.exists(),
+            "steering": self.steering_jsonl_dir.exists() and any(self.steering_jsonl_dir.glob("*.jsonl")),
         }
 
     @classmethod
@@ -321,6 +328,22 @@ class LynchpinConfig:
             "LYNCHPIN_TEAMS_ROOT",
             captures_root / "comms/teams",
         ))
+        phone_events_dir = Path(os.environ.get(
+            "LYNCHPIN_PHONE_EVENTS_DIR",
+            captures_root / "phone/estate/events",
+        ))
+        phone_ambient_jsonl = Path(os.environ.get(
+            "LYNCHPIN_PHONE_AMBIENT_JSONL",
+            captures_root / "phone/ambient-levels.jsonl",
+        ))
+        steering_jsonl_dir = Path(os.environ.get(
+            "LYNCHPIN_STEERING_JSONL_DIR",
+            captures_root / "steering",
+        ))
+        steering_sqlite = Path(os.environ.get(
+            "LYNCHPIN_STEERING_SQLITE",
+            "/realm/state/steering/steering.sqlite",
+        ))
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
@@ -372,6 +395,10 @@ class LynchpinConfig:
             browser_bookmarks_root=browser_bookmarks_root,
             arbtt_root=arbtt_root,
             teams_root=teams_root,
+            phone_events_dir=phone_events_dir,
+            phone_ambient_jsonl=phone_ambient_jsonl,
+            steering_jsonl_dir=steering_jsonl_dir,
+            steering_sqlite=steering_sqlite,
         )
 
 

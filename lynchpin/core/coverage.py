@@ -91,6 +91,14 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "mpris",
         "audio_index",
         "audio_topology",
+        # Sinnix phone app event stream (instruments, marks, ambient
+        # light/motion, chunk lifecycle) — continuous while capture is on
+        "phone_events",
+        # Phone ambient-audio loudness levels — continuous, one row per chunk
+        "phone_ambient",
+        # Steering store nightly JSONL export (commitments/activities/reviews)
+        # — continuous, grows with each ritual
+        "steering",
     }
 )
 
