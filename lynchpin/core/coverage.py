@@ -99,6 +99,9 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         # Steering store nightly JSONL export (commitments/activities/reviews)
         # — continuous, grows with each ritual
         "steering",
+        # Speech-transcription pipeline output over phone/desktop audio
+        # captures — continuous, grows as chunks are transcribed
+        "transcripts",
     }
 )
 

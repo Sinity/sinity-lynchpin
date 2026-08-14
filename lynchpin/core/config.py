@@ -97,6 +97,8 @@ class LynchpinConfig:
     phone_ambient_jsonl: Path
     steering_jsonl_dir: Path
     steering_sqlite: Path
+    transcripts_dir: Path
+    transcribed_ledger_jsonl: Path
 
     def available_sources(self) -> dict[str, bool]:
         """Check which data sources actually have data on disk."""
@@ -146,6 +148,7 @@ class LynchpinConfig:
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
             "steering": self.steering_jsonl_dir.exists() and any(self.steering_jsonl_dir.glob("*.jsonl")),
+            "transcripts": self.transcripts_dir.exists() and any(self.transcripts_dir.glob("*.jsonl")),
         }
 
     @classmethod
@@ -344,6 +347,14 @@ class LynchpinConfig:
             "LYNCHPIN_STEERING_SQLITE",
             "/realm/state/steering/steering.sqlite",
         ))
+        transcripts_dir = Path(os.environ.get(
+            "LYNCHPIN_TRANSCRIPTS_DIR",
+            captures_root / "transcripts",
+        ))
+        transcribed_ledger_jsonl = Path(os.environ.get(
+            "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",
+            transcripts_dir / "transcribed.jsonl",
+        ))
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         return cls(
@@ -399,6 +410,8 @@ class LynchpinConfig:
             phone_ambient_jsonl=phone_ambient_jsonl,
             steering_jsonl_dir=steering_jsonl_dir,
             steering_sqlite=steering_sqlite,
+            transcripts_dir=transcripts_dir,
+            transcribed_ledger_jsonl=transcribed_ledger_jsonl,
         )
 
 
