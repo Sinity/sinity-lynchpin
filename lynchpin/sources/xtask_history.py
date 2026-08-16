@@ -20,6 +20,22 @@ _DEFAULT_ARCHIVE_PATHS = (
     ),
 )
 
+_DB_NAME = "xtask-history.db"
+
+#: Roots under which a linked worktree keeps its own xtask history.
+#:
+#: xtask resolves its database per workspace -- ``XTASK_HISTORY_DB`` if set,
+#: else ``<workspace_root>/.sinex/state/xtask-history.db`` (xtask/src/config.rs).
+#: The configured ``live`` path therefore names exactly one workspace, so
+#: without this sweep every worktree's runs are invisible to Lynchpin.
+_WORKSPACE_ROOTS: tuple[Path, ...] = (
+    Path("/realm/worktrees"),
+    Path("/realm/tmp/worktrees"),
+)
+
+#: Durable home for worktree history that would otherwise die with its worktree.
+XTASK_LAKE_ARCHIVE_DIR = Path("/realm/data/captures/dev/sinex/xtask-history")
+
 
 @dataclass(frozen=True)
 class XtaskInvocation:
@@ -112,6 +128,76 @@ def xtask_history_archive_paths() -> tuple[Path, ...]:
     return tuple(path for path in _DEFAULT_ARCHIVE_PATHS if path.exists())
 
 
+def xtask_workspace_history_paths() -> tuple[tuple[str, Path], ...]:
+    """Return one labeled ledger per linked worktree, plus preserved copies.
+
+    Each worktree writes its own database and loses it when the worktree is
+    removed, so preserved copies under ``XTASK_LAKE_ARCHIVE_DIR`` are included
+    alongside the live ones. A workspace present in both yields the live path;
+    the copy is a subset of it.
+
+    Labels are the workspace directory name, which is what makes a promoted row
+    attributable to the lane that produced it.
+    """
+    result: list[tuple[str, Path]] = []
+    seen_labels: set[str] = set()
+
+    for root in _WORKSPACE_ROOTS:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            candidate = child / ".sinex" / "state" / _DB_NAME
+            if candidate.is_file() and child.name not in seen_labels:
+                result.append((child.name, candidate))
+                seen_labels.add(child.name)
+
+    if XTASK_LAKE_ARCHIVE_DIR.is_dir():
+        for preserved in sorted(XTASK_LAKE_ARCHIVE_DIR.glob(f"*.{_DB_NAME}")):
+            label = preserved.name[: -len(_DB_NAME) - 1]
+            if label not in seen_labels:
+                result.append((label, preserved))
+                seen_labels.add(label)
+
+    return tuple(result)
+
+
+def preserve_workspace_histories(
+    *,
+    archive_dir: Path = XTASK_LAKE_ARCHIVE_DIR,
+) -> tuple[int, int]:
+    """Copy each live worktree ledger into the data lake.
+
+    Returns ``(copied, skipped)``. A worktree's history is deleted along with
+    the worktree, and Lynchpin promotion replaces the partition it writes, so
+    without this a removed lane's runs disappear from the substrate. Copying
+    into the lake keeps them attributable after the worktree is gone.
+
+    Uses SQLite's online backup API, not a file copy: the sources run in WAL
+    mode with a live writer, so copying bytes could capture a torn page or miss
+    committed data still sitting in the WAL. Read-only on the source, so an
+    ingest can never make an xtask invocation fail.
+    """
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    copied = skipped = 0
+    for label, path in xtask_workspace_history_paths():
+        target = archive_dir / f"{label}.{_DB_NAME}"
+        if path.resolve() == target.resolve():
+            continue
+        try:
+            source = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            try:
+                with source, sqlite3.connect(target) as destination:
+                    source.backup(destination)
+            finally:
+                source.close()
+            copied += 1
+        except sqlite3.Error:
+            skipped += 1
+    return copied, skipped
+
+
 def xtask_history_paths() -> tuple[tuple[str, Path], ...]:
     """Return labeled xtask ledgers, oldest recovered ledgers first."""
     result: list[tuple[str, Path]] = []
@@ -125,6 +211,14 @@ def xtask_history_paths() -> tuple[tuple[str, Path], ...]:
     resolved_live = live_path.resolve()
     if resolved_live not in seen:
         result.append(("live", live_path))
+        seen.add(resolved_live)
+    # Linked worktrees each keep a private ledger; without these the substrate
+    # only ever sees the one configured checkout.
+    for label, path in xtask_workspace_history_paths():
+        resolved = path.resolve()
+        if resolved not in seen:
+            result.append((label, path))
+            seen.add(resolved)
     return tuple(result)
 
 
