@@ -31,6 +31,7 @@ def promote_work_sources(
         from lynchpin.sources.polylogue_devtools import iter_invocations as iter_polylogue_invocations
         from lynchpin.sources.xtask_history import iter_all_invocations, xtask_history_paths
         from lynchpin.sources.xtask_history import iter_all_stage_timings, iter_all_test_results
+        from lynchpin.sources.xtask_history import preserve_workspace_histories
         from lynchpin.substrate.work_observations import (
             promote_polylogue_devtools_observations,
             promote_work_observation_stages,
@@ -38,6 +39,11 @@ def promote_work_sources(
             promote_work_observations,
         )
 
+        # Copy each worktree ledger into the lake before reading. A worktree's
+        # xtask history dies with the worktree, and this promotion replaces the
+        # partition it writes, so an unpreserved lane's runs would disappear
+        # from the substrate the first time it is materialized after removal.
+        preserve_workspace_histories()
         paths = xtask_history_paths()
         has_xtask = any(path.exists() for _, path in paths)
         has_polylogue_devtools = polylogue_devtools_available()
