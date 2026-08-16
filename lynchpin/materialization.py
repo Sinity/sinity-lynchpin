@@ -329,6 +329,10 @@ def _dataset_builders() -> dict[str, Any]:
         "mpris": _mpris_dataset,
         "audio_index": _audio_index_dataset,
         "audio_topology": _audio_topology_dataset,
+        "phone_events": _phone_events_dataset,
+        "phone_ambient": _phone_ambient_dataset,
+        "steering": _steering_dataset,
+        "transcripts": _transcripts_dataset,
         "keylog_analysis": _keylog_analysis_dataset,
         "raw_log": _raw_log_dataset,
         "sleep": _sleep_dataset,
@@ -1835,6 +1839,53 @@ def _audio_index_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 def _audio_topology_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     return _sinnix_capture_lane_dataset(cfg, lane="audio-topology")
+
+
+def _live_source_dataset(
+    cfg: LynchpinConfig, *, name: str, raw_roots: tuple[Path, ...]
+) -> MaterializedDataset:
+    """A source some other process records live, with no Lynchpin materializer.
+
+    The four sources contracted in 0288c1e are all of this shape: the phone app,
+    the steering ritual and the speech pipeline each write their own JSONL and
+    Lynchpin only reads it. They were added to SOURCE_CONTRACTS without matching
+    builder entries, and audit_materialization() indexes builders by every
+    contract name, so `materialize --all` died with KeyError: 'phone_events'
+    every night from 2026-08-15 on.
+    """
+    contract = source_contract(name)
+    return _raw_source_dataset(
+        cfg,
+        name=contract.name,
+        raw_roots=raw_roots,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialization_hint=contract.materialization_hint,
+    )
+
+
+def _phone_events_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _live_source_dataset(
+        cfg, name="phone_events", raw_roots=(cfg.phone_events_dir,)
+    )
+
+
+def _phone_ambient_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _live_source_dataset(
+        cfg, name="phone_ambient", raw_roots=(cfg.phone_ambient_jsonl,)
+    )
+
+
+def _steering_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _live_source_dataset(
+        cfg, name="steering", raw_roots=(cfg.steering_jsonl_dir, cfg.steering_sqlite)
+    )
+
+
+def _transcripts_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _live_source_dataset(
+        cfg, name="transcripts", raw_roots=(cfg.transcripts_dir,)
+    )
 
 
 def _keylog_analysis_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
