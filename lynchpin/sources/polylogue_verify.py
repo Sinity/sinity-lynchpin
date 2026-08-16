@@ -24,14 +24,23 @@ from typing import Any
 __all__ = ["iter_verify_runs", "verify_history_path"]
 
 _ENV_OVERRIDE = "POLYLOGUE_VERIFY_HISTORY_PATH"
+_LAKE_PATH = Path("/realm/data/captures/dev/polylogue/verify-history.jsonl")
 _DEFAULT_RELATIVE = Path("polylogue/devtools/verify-history.jsonl")
 
 
 def verify_history_path() -> Path:
-    """Locate the durable history, honouring an explicit override then XDG."""
+    """Locate the durable history: explicit override, then lake, then XDG.
+
+    Polylogue writes to the lake path via POLYLOGUE_VERIFY_HISTORY_PATH, but a
+    materialization run does not necessarily inherit that environment, so the
+    lake location is also checked directly. The XDG fallback keeps this working
+    against a checkout that predates the relocation.
+    """
     override = os.environ.get(_ENV_OVERRIDE, "").strip()
     if override:
         return Path(override).expanduser()
+    if _LAKE_PATH.exists():
+        return _LAKE_PATH
     state_home = os.environ.get("XDG_STATE_HOME", "").strip()
     root = Path(state_home).expanduser() if state_home else Path.home() / ".local/state"
     return root / _DEFAULT_RELATIVE
