@@ -87,6 +87,7 @@ from .ingest.machine_materialize import (
     machine_input_files,
     materialize_machine_telemetry,
 )
+from .ingest.polylogue_verify_materialize import materialize_polylogue_verify_runs
 from .ingest.substack_materialize import SUBSTACK_SCHEMA_VERSION, materialize_substack
 from .ingest.personal_signals_materialize import (
     PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
@@ -387,6 +388,7 @@ def _materializers() -> dict[str, Callable[..., Any]]:
         "irc": materialize_irc_events,
         "code_snapshots": materialize_code_snapshots,
         "substack": materialize_substack,
+        "polylogue_verify_runs": materialize_polylogue_verify_runs,
     }
 
 
