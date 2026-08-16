@@ -67,6 +67,8 @@ def _pytest_counts(entry: dict[str, Any]) -> dict[str, Any]:
         return {}
     outcomes = aggregate.get("outcomes")
     outcomes = outcomes if isinstance(outcomes, dict) else {}
+    resources = aggregate.get("resources")
+    resources = resources if isinstance(resources, dict) else {}
     return {
         "tests_passed": outcomes.get("passed"),
         "tests_failed": outcomes.get("failed"),
@@ -75,6 +77,14 @@ def _pytest_counts(entry: dict[str, Any]) -> dict[str, Any]:
         "terminal_green": aggregate.get("terminal_green"),
         "complete_corpus_covered": aggregate.get("complete_corpus_covered"),
         "pytest_wall_s": _number(aggregate, "wall_s"),
+        "collection_wall_s": _number(aggregate, "collection_wall_s"),
+        # Resource cost is what makes a slowdown attributable rather than
+        # arguable: a run writing 104 GiB against a 10.8 GiB basetemp is a
+        # different problem from one that simply ran more tests.
+        "write_bytes": _number(resources, "write_bytes"),
+        "read_bytes": _number(resources, "read_bytes"),
+        "peak_storage_bytes": _number(resources, "peak_storage_bytes"),
+        "peak_rss_kb": _number(resources, "peak_tree_rss_kb"),
     }
 
 

@@ -1423,6 +1423,11 @@ DDL_STATEMENTS = (
         terminal_green           BOOLEAN,
         complete_corpus_covered  BOOLEAN,
         pytest_wall_s            DOUBLE,
+        collection_wall_s        DOUBLE,
+        write_bytes              DOUBLE,
+        read_bytes               DOUBLE,
+        peak_storage_bytes       DOUBLE,
+        peak_rss_kb              DOUBLE,
         refresh_id               VARCHAR NOT NULL,
         materialized_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (run_id, refresh_id)

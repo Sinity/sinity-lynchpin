@@ -39,6 +39,11 @@ _RUN_COLUMNS: tuple[str, ...] = (
     "terminal_green",
     "complete_corpus_covered",
     "pytest_wall_s",
+    "collection_wall_s",
+    "write_bytes",
+    "read_bytes",
+    "peak_storage_bytes",
+    "peak_rss_kb",
 )
 
 REFRESH_ID = "latest"
