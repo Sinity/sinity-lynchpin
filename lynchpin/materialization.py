@@ -42,6 +42,7 @@ from .ingest.webhistory import (
     build_full_history,
     full_history_manifest_path,
 )
+from .ingest.webhistory import run as run_webhistory_pipeline
 from .ingest.exports_materialize import (
     MESSENGER_CANONICAL_SCHEMA_VERSION,
     RAINDROP_BOOKMARKS_SCHEMA_VERSION,
@@ -390,13 +391,30 @@ def _materializers() -> dict[str, Callable[..., Any]]:
 
 
 def _materialize_webhistory(*, start: date | None = None, end: date | None = None) -> None:
+    """Capture live browser history, then merge it into the canonical NDJSON.
+
+    This runs the WHOLE pipeline (extract -> dedup -> merge), not just the
+    merge. Splitting "capture" from "materialize" here was a distinction
+    without a difference for everyone downstream, and it cost real data: only
+    the merge half was ever scheduled, so the extraction never ran outside a
+    manual invocation. Chrome keeps roughly 90 days of visits and then drops
+    them -- measured 2026-08-16, a fresh snapshot of the live profile covered
+    exactly 2026-05-18 to that day -- so an unscheduled extraction quietly
+    becomes permanent history loss, and merging a raw directory nobody is
+    refilling produces a canonical product that silently stops advancing.
+    """
     cfg = get_config()
     if cfg.webhistory_ndjson is None:
         raise MaterializationError(
             "webhistory",
             reason="canonical webhistory output path is not configured",
         )
-    build_full_history(data_dir=cfg.webhistory_dir, output=cfg.webhistory_ndjson, start=start, end=end)
+    run_webhistory_pipeline(
+        data_dir=cfg.webhistory_dir,
+        output=cfg.webhistory_ndjson,
+        start=start,
+        end=end,
+    )
 
 
 def _materialize_google_takeout() -> None:
