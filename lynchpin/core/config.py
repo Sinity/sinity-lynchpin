@@ -323,9 +323,15 @@ class LynchpinConfig:
             "LYNCHPIN_BROWSER_BOOKMARKS_ROOT",
             captures_root / "webhistory/bookmarks",
         ))
+        # Colocated with activitywatch rather than in a lane of its own: both
+        # are foreground-window time series, arbtt covering the era before
+        # ActivityWatch was installed. A separate top-level "focus" lane held
+        # one retired source, went untouched since 2026-06, and was tracked by
+        # nothing -- one place to look for "what was in focus, when" is worth
+        # more than a directory per collector.
         arbtt_root = Path(os.environ.get(
             "LYNCHPIN_ARBTT_ROOT",
-            captures_root / "focus/arbtt",
+            captures_root / "activitywatch/historical/arbtt",
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",
