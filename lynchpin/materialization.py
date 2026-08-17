@@ -1970,7 +1970,7 @@ def _samsung_gdpr_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.samsung_gdpr_cloud_dir,),
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/data/health/samsung",
         row_count=_count_files(cfg.samsung_gdpr_cloud_dir),
     )
 
@@ -2328,7 +2328,7 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        materialization_hint="edit /realm/data/exports/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/data/health/health/processed/substance_log_unified.csv",
         reason="processed substance CSV is present" if path.exists() else "processed substance CSV is missing",
     )
 

@@ -165,7 +165,7 @@ class SleepArchitecture:
     first_rem_min: Optional[float] = None  # minutes from sleep onset to first REM
 
 
-_PROCESSED = Path("/realm/data/exports/health/processed")
+_PROCESSED = Path("/realm/data/health/health/processed")
 
 
 def _load_jsonl(filename: str) -> Iterator[dict[str, object]]:

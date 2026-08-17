@@ -351,7 +351,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="substance",
         authority="processed substance log CSV",
         query_surface="lynchpin.sources.substance",
-        materialization_hint="edit /realm/data/exports/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/data/health/health/processed/substance_log_unified.csv",
         substrate_daily_signal=True,
     ),
     SourceContract(
@@ -374,7 +374,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="samsung_gdpr_cloud",
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/data/exports/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/data/health/samsung",
         required=False,
     ),
     SourceContract(

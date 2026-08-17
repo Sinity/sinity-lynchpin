@@ -1,6 +1,6 @@
 """Samsung Health source facade.
 
-Reads processed JSONL files under /realm/data/exports/health/processed/.
+Reads processed JSONL files under /realm/data/health/health/processed/.
 Run `python -m lynchpin.cli.process_health` to refresh from raw exports.
 
 Sleep data is in the separate `sleep` module.

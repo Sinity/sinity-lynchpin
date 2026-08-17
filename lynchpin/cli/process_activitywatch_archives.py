@@ -19,7 +19,7 @@ app = typer.Typer(add_completion=False)
 
 @app.command()
 def main(
-    input_root: Path = typer.Option(Path("/realm/data/exports/activitywatch"), "--input"),
+    input_root: Path = typer.Option(Path("/realm/data/activity/activitywatch"), "--input"),
     output_dir: Path | None = typer.Option(None, "--output-dir"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     audit_only: bool = typer.Option(False, "--audit-only"),

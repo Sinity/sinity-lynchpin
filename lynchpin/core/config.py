@@ -136,7 +136,7 @@ class LynchpinConfig:
             "raw_log": self.raw_log_file.exists(),
             "machine": self.machine_telemetry_db.exists(),
             "xtask_history": self.xtask_history_db.exists(),
-            "gmail_takeout": (self.exports_root / "google/raw/takeout").exists(),
+            "gmail_takeout": (self.data_root / "accounts/google/raw/takeout").exists(),
             "raindrop_live": _raindrop_live_available(),
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
@@ -206,7 +206,7 @@ class LynchpinConfig:
         )).expanduser()
         aw_archive_db_dir = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_ARCHIVE_DB_DIR",
-            exports_root / "activitywatch/processed/archive-dbs",
+            data_root / "activity/activitywatch/processed/archive-dbs",
         ))
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
         baseline_dir = _non_legacy_generated_path(
@@ -220,17 +220,17 @@ class LynchpinConfig:
         ))
         webhistory_ndjson = webhistory_ndjson_path
 
-        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", exports_root / "health/processed/sleep_merged.jsonl"))
+        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", data_root / "health/health/processed/sleep_merged.jsonl"))
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
-            os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"), exports_root / "reddit/processed"
+            os.environ.get("LYNCHPIN_REDDIT_EXPORT_DIR"), data_root / "accounts/reddit/processed"
         )
         spotify_root = _resolve_spotify_export(Path(os.environ.get(
-            "LYNCHPIN_SPOTIFY_ROOT", exports_root / "spotify/processed"
+            "LYNCHPIN_SPOTIFY_ROOT", data_root / "accounts/spotify/processed"
         )))
-        polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", exports_root / "chatlog/processed/markdown"))
-        polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", exports_root / "chatlog/archive"))
+        polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "ai/chatlog/processed/markdown"))
+        polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", data_root / "ai/chatlog/archive"))
         xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
         polylogue_db = _default_polylogue_db(xdg_data_home)
         polylogue_project_root = Path(os.environ.get(
@@ -247,12 +247,12 @@ class LynchpinConfig:
         )).expanduser()
 
         fbmessenger_gdpr_root = Path(os.environ.get(
-            "LYNCHPIN_FBMESSENGER_GDPR", exports_root / "comms/facebook-messenger/processed/gdpr"
+            "LYNCHPIN_FBMESSENGER_GDPR", data_root / "comms/comms/facebook-messenger/processed/gdpr"
         ))
         fbmessenger_db = Path(os.environ.get("LYNCHPIN_FBMESSENGER_DB", _resolve_fbmessenger_db(
-            exports_root / "comms/facebook-messenger/processed/fbmessengerexport.sqlite",
-            exports_root / "comms/facebook-messenger/fbmessengerexport.sqlite",
-            exports_root / "comms/fbmessengerexport.sqlite",
+            data_root / "comms/comms/facebook-messenger/processed/fbmessengerexport.sqlite",
+            data_root / "comms/comms/facebook-messenger/fbmessengerexport.sqlite",
+            data_root / "comms/comms/fbmessengerexport.sqlite",
         )))
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", captures_root / "asciinema"))
@@ -263,7 +263,7 @@ class LynchpinConfig:
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/data/knowledgebase"))
 
-        raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
+        raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "accounts/raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
         substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/library/media/substack"))
         substack_downloader = Path(os.environ.get(
@@ -278,10 +278,10 @@ class LynchpinConfig:
         ))
         wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", data_root / "accounts/wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
-        themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", exports_root / "themotte/raw"))
+        themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", data_root / "accounts/themotte/raw"))
         themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
-            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", exports_root / "health/raw/samsung-gdpr-cloud"
+            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", data_root / "health/health/raw/samsung-gdpr-cloud"
         ))
         clipboard_live_file = Path(os.environ.get(
             "LYNCHPIN_CLIPBOARD_LIVE_FILE", "~/.config/clipse/clipboard_history.json"
@@ -291,9 +291,9 @@ class LynchpinConfig:
             for item in os.environ.get(
                 "LYNCHPIN_CLIPBOARD_EXPORT_FILES",
                 ":".join([
-                    str(exports_root / "clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
-                    str(exports_root / "clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
-                    str(exports_root / "chatlog/raw/legacy-raw/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
+                    str(data_root / "activity/clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
+                    str(data_root / "activity/clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
+                    str(data_root / "ai/chatlog/raw/legacy-raw/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
                 ]),
             ).split(":")
             if item

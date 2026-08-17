@@ -1,7 +1,7 @@
 """TheMotte raw export reader.
 
 The sync command writes authenticated private messages and notification rows
-under ``/realm/data/exports/themotte/raw/<username>/``. This source keeps the
+under ``/realm/data/accounts/themotte/raw/<username>/``. This source keeps the
 browser scrape out of ordinary read paths; readers only parse local JSONL.
 """
 

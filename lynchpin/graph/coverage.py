@@ -83,7 +83,7 @@ def coverage_report(
         "facebook_messenger": {"display": "messenger", "repair_hint": "Request a fresh Facebook Messenger export"},
         "raindrop": {"repair_hint": "Request a fresh Raindrop export"},
         "substance": {
-            "repair_hint": "Extend /realm/data/exports/health/processed/substance_log_unified.csv with current rows",
+            "repair_hint": "Extend /realm/data/health/health/processed/substance_log_unified.csv with current rows",
         },
         "webhistory": {
             "repair_hint": "Add a newer browser capture/Takeout archive, then run python -m lynchpin.ingest.webhistory",

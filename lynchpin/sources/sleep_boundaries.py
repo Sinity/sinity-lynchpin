@@ -47,7 +47,7 @@ __all__ = [
     "boundary_estimates",
 ]
 
-_PROCESSED = Path("/realm/data/exports/health/processed")
+_PROCESSED = Path("/realm/data/health/health/processed")
 _HEART_RATE_FILE = "health_heart_rate.jsonl"
 
 AGREE_MINUTES = 10.0

@@ -1,6 +1,6 @@
 """SMS source — Samsung GDPR text message export.
 
-Data: /realm/data/exports/samsung/processed/2026-03-30-gdpr-extracted/
+Data: /realm/data/health/samsung/processed/2026-03-30-gdpr-extracted/
       samsungcloud_gk000066110887_20260329_access/SMS/
 
 The Samsung SMS export format wraps each message in a CSV row whose VALUE
@@ -26,7 +26,7 @@ from ..core.errors import SourceUnavailableError
 from ..core.primitives import logical_date
 
 SMS_ROOT = Path(
-    "/realm/data/exports/samsung/processed/2026-03-30-gdpr-extracted/"
+    "/realm/data/health/samsung/processed/2026-03-30-gdpr-extracted/"
     "samsungcloud_gk000066110887_20260329_access/SMS"
 )
 
