@@ -191,6 +191,11 @@ def _merge_intervals(
 # sleep_deep/light/rem/awake minutes the per-state sums reproduce.
 _VENDOR_SLEEP_STATES = {2: "deep", 3: "light", 4: "rem", 5: "awake"}
 
+# The phone importer generation that first paged Health Connect to exhaustion.
+# Sweeps recorded by earlier generations stopped at the provider's page cap, so
+# the history behind them is a floor.
+_PAGINATED_GENERATION = 3
+
 
 def _vendor_stage_minutes(records: Any) -> dict[str, float]:
     """Minutes per sleep stage from the vendor's raw stage transitions.
@@ -506,6 +511,12 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 "sweep_failures": sweep_failures.get(rtype, 0),
                 "last_failure": last_sweep_failure.get(rtype),
                 "deleted_records": len(deletions.get(rtype, ())),
+                # A type whose newest sweep predates the paginated importer
+                # was read by one that stopped at the provider's first page
+                # cap, so its span is a floor rather than a history. The row
+                # says so instead of leaving every reader to remember which
+                # generation could be trusted.
+                "span_trustworthy": (completed or {}).get("generation", 0) >= _PAGINATED_GENERATION,
             }
         )
 
