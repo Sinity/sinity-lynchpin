@@ -146,6 +146,7 @@ class LynchpinConfig:
             "audio_index": any((self.captures_root / "audio-index").glob("audio-index-*.jsonl")),
             "audio_topology": any((self.captures_root / "audio-topology").glob("audio-topology-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
+            "xiaomi_cloud": any((self.captures_root / "xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
             "steering": self.steering_jsonl_dir.exists() and any(self.steering_jsonl_dir.glob("*.jsonl")),
             "transcripts": self.transcripts_dir.exists() and any(self.transcripts_dir.glob("*.jsonl")),

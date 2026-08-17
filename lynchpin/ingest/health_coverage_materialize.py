@@ -29,9 +29,17 @@ So this materializer reports coverage the way it must be counted:
 
 Input is the phone events plane (``lynchpin.sources.phone_events``), streamed
 -- day files reach gigabytes when an importer misbehaves, which is exactly
-when this report matters most. Output is one heterogeneous NDJSON product
-(``row`` field discriminates: ``group`` / ``gap`` / ``sweep`` / ``lane`` /
-``anomaly`` / ``summary``) plus the usual manifest.
+when this report matters most -- joined against the Xiaomi cloud witness
+lane (``lynchpin.sources.xiaomi_cloud``) for the two-independent-witness
+check the vendor service exists for (sinnix-ogll): per night, the vendor's
+sleep segments against Health Connect's sleep sessions with computed overlap
+minutes; per day, the vendor's dense heart-rate sample count against HC's
+unique record count. The two paths share no code and no transport (band ->
+Mi Fitness -> Xiaomi cloud vs band -> Mi Fitness -> HC -> phone app), so
+agreement is real corroboration and divergence localizes which leg dropped
+data. Output is one heterogeneous NDJSON product (``row`` field
+discriminates: ``group`` / ``gap`` / ``sweep`` / ``lane`` / ``anomaly`` /
+``witness`` / ``summary``) plus the usual manifest.
 
 Rebuilds are always whole-history: coverage is a global property, and a
 windowed rebuild of a gap report would reintroduce the exact blindness the
@@ -50,6 +58,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..core.config import get_config
+from ..sources import xiaomi_cloud
 from ..sources.phone_events import phone_events
 from ._manifest import atomic_write_ndjson, write_manifest
 
@@ -150,6 +159,116 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if dt else None
 
 
+def _epoch_utc(value: Any) -> Optional[datetime]:
+    if not isinstance(value, (int, float)) or not value:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc)
+
+
+def _overlap_seconds(
+    a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime
+) -> float:
+    return max(0.0, (min(a_end, b_end) - max(a_start, b_start)).total_seconds())
+
+
+def _merge_intervals(
+    intervals: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """Union of possibly-overlapping intervals. Legacy HC sleep sessions are
+    re-emitted with drifting bounds, so the same night appears several times;
+    summing them double-counts, the union does not."""
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _witness_rows(
+    hc_sleep_sessions: dict[str, tuple[datetime, Optional[datetime]]],
+    hc_hr_days: dict[str, set[str]],
+) -> list[dict[str, Any]]:
+    """Vendor-vs-HC cross-check rows, restricted to days the vendor lane holds.
+
+    The vendor lane is young (rolling-window witness, live 2026-08-17); the
+    HC side spans years. Emitting a witness row for every historical HC day
+    would drown the comparison, so the vendor lane picks the days and the
+    group/gap rows keep answering for deep history. Heart-rate numbers are
+    deliberately NOT ratioed: vendor samples are individual bpm readings
+    while HC HeartRateRecords are series records each carrying many samples,
+    so the two counts corroborate presence and density, not equality.
+    """
+    latest = xiaomi_cloud.latest_envelopes(kinds={"vendor_sleep", "vendor_raw_heart_rate"})
+    rows: list[dict[str, Any]] = []
+    hr_vendor: dict[str, int] = {}
+    for (kind, day, _wake), envelope in sorted(
+        latest.items(), key=lambda item: (item[0][0], item[0][1] or datetime.min.date())
+    ):
+        if day is None or not isinstance(envelope.data, dict):
+            continue
+        if kind == "vendor_raw_heart_rate":
+            count = envelope.data.get("count")
+            hr_vendor[day.isoformat()] = (
+                count if isinstance(count, int) else len(envelope.data.get("records") or [])
+            )
+            continue
+        segments = [
+            (bed, wake)
+            for segment in envelope.data.get("segment_details") or []
+            if isinstance(segment, dict)
+            for bed in (_epoch_utc(segment.get("bedtime")),)
+            for wake in (_epoch_utc(segment.get("wake_up_time")),)
+            if bed is not None and wake is not None and wake > bed
+        ]
+        matched: list[tuple[datetime, datetime]] = []
+        for _rid, (start, end) in hc_sleep_sessions.items():
+            if end is None:
+                continue
+            if any(_overlap_seconds(start, end, bed, wake) > 0 for bed, wake in segments):
+                matched.append((start, end))
+        hc_union = _merge_intervals(matched)
+        segment_union = _merge_intervals(segments)
+        hc_minutes = sum((end - start).total_seconds() for start, end in hc_union) / 60
+        overlap_minutes = (
+            sum(
+                _overlap_seconds(h_start, h_end, s_start, s_end)
+                for h_start, h_end in hc_union
+                for s_start, s_end in segment_union
+            )
+            / 60
+        )
+        rows.append(
+            {
+                "row": "witness",
+                "metric": "sleep",
+                "day": day.isoformat(),
+                "vendor_segments": len(segments),
+                "vendor_sleep_minutes": envelope.data.get("total_duration"),
+                "vendor_sleep_score": envelope.data.get("sleep_score"),
+                "vendor_bedtime": _iso(min((bed for bed, _ in segments), default=None)),
+                "vendor_wake": _iso(max((wake for _, wake in segments), default=None)),
+                "hc_sessions": len(matched),
+                "hc_sleep_minutes": round(hc_minutes, 1),
+                "overlap_minutes": round(overlap_minutes, 1),
+                "both_witnesses": bool(segments) and bool(matched),
+            }
+        )
+    for day in sorted(hr_vendor):
+        rows.append(
+            {
+                "row": "witness",
+                "metric": "heart_rate",
+                "day": day,
+                "vendor_samples": hr_vendor[day],
+                "hc_records": len(hc_hr_days.get(day, ())),
+                "both_witnesses": hr_vendor[day] > 0 and bool(hc_hr_days.get(day)),
+            }
+        )
+    return rows
+
+
 def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, Any]:
     groups: dict[tuple[str, str, str, str], _Group] = defaultdict(_Group)
     # Unique-record measurement times per (kind, source), for gap analysis.
@@ -166,6 +285,10 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
     routes_pending: set[str] = set()
     routes_with_data: set[str] = set()
     health_events = 0
+    # Two-witness inputs: HC sleep sessions (rid -> start/end) and unique HC
+    # heart-rate record ids per UTC day, joined against the vendor lane below.
+    hc_sleep_sessions: dict[str, tuple[datetime, Optional[datetime]]] = {}
+    hc_hr_days: dict[str, set[str]] = defaultdict(set)
 
     for event in phone_events():
         kind = event.kind
@@ -246,6 +369,20 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 group.latest = measured
             if isinstance(rid, str) and rid:
                 gap_times[(kind, source)].setdefault(rid, measured)
+            # Witness collectors accept rid-less records: every pre-metadata-
+            # rewrite event lacks record_id (all 259 historical sleep sessions
+            # do), and requiring one would report false vendor/HC divergence.
+            # The legacy key dedups re-emissions by measurement bounds instead.
+            if kind == "health_sleep":
+                skey = (
+                    rid
+                    if isinstance(rid, str) and rid
+                    else f"legacy:{_iso(measured)}|{payload.get('end') or ''}"
+                )
+                hc_sleep_sessions.setdefault(skey, (measured, _parse_ts(payload.get("end"))))
+            elif kind == "health_heart_rate":
+                hkey = rid if isinstance(rid, str) and rid else f"legacy:{_iso(measured)}"
+                hc_hr_days[measured.astimezone(timezone.utc).date().isoformat()].add(hkey)
 
         if kind == "health_exercise" and isinstance(rid, str):
             route = payload.get("route")
@@ -325,6 +462,9 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
 
     rows.extend(anomalies.values())
 
+    witness_rows = _witness_rows(hc_sleep_sessions, hc_hr_days)
+    rows.extend(witness_rows)
+
     rows.append(
         {
             "row": "summary",
@@ -333,6 +473,8 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             "unique_records_total": sum(len(g.record_ids) for g in groups.values()),
             "routes_pending_consent": len(routes_pending - routes_with_data),
             "anomalies": len(anomalies),
+            "witness_days": len(witness_rows),
+            "witness_corroborated": sum(1 for r in witness_rows if r.get("both_witnesses")),
         }
     )
 

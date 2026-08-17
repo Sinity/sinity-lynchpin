@@ -65,6 +65,24 @@ file outgrows the report. Bare event totals are banned as coverage answers
 by design — "Samsung sleep: 251 / Band 10 sleep: N" is the intended answer
 shape (sinnix-3jnc).
 
+## Xiaomi cloud witness lane
+
+`lynchpin.sources.xiaomi_cloud` reads
+`captures/xiaomi-cloud/xiaomi-cloud-YYYYMMDD.jsonl`, written every 30
+minutes by the sinnix `sinnix-xiaomi-witness` timer: the Mi Band's data as
+Xiaomi's servers hold it, independent of the Health Connect path.
+Envelopes carry daily aggregates (`vendor_sleep` with
+sleep_score/REM/segments, `vendor_*_day`), the band's dense raw series
+(`vendor_raw_*`: ~2-minute heart rate, continuous SpO2/stress, 5-minute
+steps/calories), and FDS sleep-detail blobs when firmware uploads them.
+Write-on-change: one envelope per (kind, day) revision — `xiaomi_envelopes`
+streams every revision, `latest_envelopes` keeps the current state per
+logical key. The health coverage report joins this lane against the HC
+events plane as `witness` rows: per-night vendor sleep vs HC sleep-session
+union with overlap minutes, per-day vendor HR sample counts vs HC unique
+record counts (counts corroborate presence and density, not equality —
+HC records are series-shaped).
+
 ## Capture roots without a dedicated source
 
 Some `captures/*` roots have real, growing owner-native data (audio, screen

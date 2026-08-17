@@ -83,6 +83,12 @@ def test_coverage_counts_records_not_events(monkeypatch, tmp_path) -> None:
         "lynchpin.ingest.health_coverage_materialize.phone_events",
         lambda: iter(_fixture_events()),
     )
+    # No vendor lane in this fixture; without the stub the report would read
+    # the live capture lane and the assertions would depend on machine state.
+    monkeypatch.setattr(
+        "lynchpin.sources.xiaomi_cloud.latest_envelopes",
+        lambda **_kwargs: {},
+    )
     output = tmp_path / "health_coverage.ndjson"
 
     from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
@@ -147,6 +153,87 @@ def test_coverage_counts_records_not_events(monkeypatch, tmp_path) -> None:
     )
     assert manifest["dataset"] == "health_coverage"
     assert manifest["unique_records_total"] == 5
+
+
+def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) -> None:
+    """Vendor-vs-HC witness rows: legacy rid-less sessions corroborate, and
+    duplicate re-emitted sessions are unioned, never summed (the defect shape
+    was overlap_minutes exceeding the vendor sleep window itself)."""
+    from datetime import date as date_type
+
+    from lynchpin.sources.xiaomi_cloud import XiaomiEnvelope
+
+    hc = [
+        # The same night re-emitted twice with drifting bounds, WITHOUT
+        # record_id (pre-metadata-rewrite shape): 00:30-08:30 and 00:45-08:35.
+        _event("health_sleep", "2026-08-15T09:00:00Z",
+               start="2026-08-15T00:30:00Z", end="2026-08-15T08:30:00Z",
+               source="com.xiaomi.wearable"),
+        _event("health_sleep", "2026-08-15T10:00:00Z",
+               start="2026-08-15T00:45:00Z", end="2026-08-15T08:35:00Z",
+               source="com.xiaomi.wearable"),
+        # HR records: two on the witness day, one rid-less.
+        _event("health_heart_rate", "2026-08-15T09:01:00Z", record_id="hr-a",
+               start="2026-08-15T03:00:00Z", source="com.xiaomi.wearable"),
+        _event("health_heart_rate", "2026-08-15T09:02:00Z",
+               start="2026-08-15T04:00:00Z", source="com.xiaomi.wearable"),
+    ]
+
+    def _envelope(kind, day, data):
+        return XiaomiEnvelope(
+            kind=kind, day=day, fetched_at=None, parser_version=2,
+            content_sha256=None, payload={"kind": kind, "data": data},
+        )
+
+    day = date_type(2026, 8, 15)
+    vendor = {
+        ("vendor_sleep", day, None): _envelope("vendor_sleep", day, {
+            "total_duration": 473,
+            "sleep_score": 80,
+            "segment_details": [
+                # 00:29-08:36 UTC as epoch seconds.
+                {"bedtime": 1786753740, "wake_up_time": 1786782960, "timezone": 8},
+            ],
+        }),
+        ("vendor_raw_heart_rate", day, None): _envelope(
+            "vendor_raw_heart_rate", day, {"key": "heart_rate", "count": 488, "records": []},
+        ),
+    }
+
+    monkeypatch.setattr(
+        "lynchpin.ingest.health_coverage_materialize.phone_events",
+        lambda: iter(hc),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.xiaomi_cloud.latest_envelopes",
+        lambda **_kwargs: vendor,
+    )
+    output = tmp_path / "health_coverage.ndjson"
+
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    materialize_health_coverage(output=output)
+    by = _rows_by_kind(output)
+
+    sleep = next(w for w in by["witness"] if w["metric"] == "sleep")
+    assert sleep["both_witnesses"] is True
+    assert sleep["hc_sessions"] == 2
+    # Union of 00:30-08:30 and 00:45-08:35 is 00:30-08:35 = 485 min, not the
+    # 960-min sum of the two overlapping emissions.
+    assert sleep["hc_sleep_minutes"] == 485.0
+    # Overlap is bounded by the vendor window (00:29-08:36 = 487 min).
+    assert sleep["overlap_minutes"] == 485.0
+    assert sleep["vendor_sleep_minutes"] == 473
+
+    hr = next(w for w in by["witness"] if w["metric"] == "heart_rate")
+    assert hr["vendor_samples"] == 488
+    # Both the rid-carrying and the legacy rid-less record count.
+    assert hr["hc_records"] == 2
+    assert hr["both_witnesses"] is True
+
+    summary = by["summary"][0]
+    assert summary["witness_days"] == 2
+    assert summary["witness_corroborated"] == 2
 
 
 def test_registered_in_dag() -> None:
