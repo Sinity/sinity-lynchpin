@@ -262,3 +262,53 @@ def test_registered_in_dag() -> None:
     assert contract.materialization_executor.ref == "health_coverage"
     assert "health_coverage" in _materializers()
     assert "health_coverage" in _dataset_builders()
+
+
+def test_lane_state_answers_swept_when_no_receipt_survived(monkeypatch, tmp_path) -> None:
+    """The lane's state record, not the receipt, decides swept-ness.
+
+    Reproduces the real 2026-08-17 shape: a type reading incrementally with no
+    surviving `health_backfill` line anywhere in the lake. Before the state
+    record the report had nothing to say about it at all -- the row was not
+    even emitted -- which is the failure this test pins.
+    """
+    events = [
+        _event("health_heart_rate", "2026-08-17T10:00:00Z", record_id="hr-x",
+               start="2026-08-17T09:00:00Z", source="com.xiaomi.wearable"),
+        _event("health_lane_state", "2026-08-17T10:05:00Z",
+               generation=3,
+               swept=["HeartRateRecord", "StepsRecord"],
+               unswept=["WeightRecord"],
+               ungranted=["HydrationRecord"],
+               rate_limited=False),
+    ]
+    monkeypatch.setattr(
+        "lynchpin.ingest.health_coverage_materialize.phone_events",
+        lambda: iter(events),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.xiaomi_cloud.latest_envelopes", lambda **_kwargs: {}
+    )
+    output = tmp_path / "health_coverage.ndjson"
+
+    from lynchpin.ingest.health_coverage_materialize import materialize_health_coverage
+
+    materialize_health_coverage(output=output)
+    by = _rows_by_kind(output)
+    sweeps = {r["record_type"]: r for r in by["sweep"]}
+
+    hr = sweeps["HeartRateRecord"]
+    # Swept per the lane, with no receipt to show for it -- and the row says
+    # both rather than collapsing them into one claim.
+    assert hr["state_swept"] is True
+    assert hr["sweep_completed"] is False
+    assert hr["span_trustworthy"] is False
+
+    assert sweeps["WeightRecord"]["state_swept"] is False
+    assert sweeps["HydrationRecord"]["state_granted"] is False
+
+    summary = by["summary"][0]
+    assert summary["types_swept"] == 2
+    assert summary["types_unswept"] == 1
+    assert summary["types_ungranted"] == 1
+    assert summary["lane_state_at"] == "2026-08-17T10:05:00Z"

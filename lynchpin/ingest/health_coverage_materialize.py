@@ -99,7 +99,13 @@ KIND_TO_RECORD_TYPE: dict[str, str] = {
 }
 
 #: Lifecycle kinds consumed for receipts rather than counted as data.
-_RECEIPT_KINDS = {"health_backfill", "health_sweep_failed", "health_deletion", "lane_blocked"}
+_RECEIPT_KINDS = {
+    "health_backfill",
+    "health_lane_state",
+    "health_sweep_failed",
+    "health_deletion",
+    "lane_blocked",
+}
 
 #: Measurement timestamps before this are treated as corrupt provider data
 #: (observed: one Samsung HR record stamped 1970-01-01) -- surfaced as
@@ -327,6 +333,8 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
     # Keyed per record_id so a record emitted 473 times contributes once.
     gap_times: dict[tuple[str, str], dict[str, datetime]] = defaultdict(dict)
     sweeps: dict[str, dict[str, Any]] = {}
+    # Last-wins: the newest state record is the current answer.
+    lane_state: dict[str, Any] = {}
     sweep_failures: Counter[str] = Counter()
     last_sweep_failure: dict[str, dict[str, Any]] = {}
     deletions: dict[str, set[str]] = defaultdict(set)
@@ -361,6 +369,22 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                     "pages": payload.get("pages"),
                     "generation": payload.get("generation"),
                     "completed_at": payload.get("ts"),
+                }
+            elif kind == "health_lane_state":
+                # The lane's own answer to "which types are swept", restated
+                # every tick. It supersedes the receipts for that question:
+                # a receipt proves a sweep finished at a moment, and only if
+                # that moment's line survived into the lake. Seventeen types
+                # are swept on this device with no retained receipt for any of
+                # them, so without this the report could only say "unknown"
+                # about the bulk of the history it exists to describe.
+                lane_state = {
+                    "at": payload.get("ts"),
+                    "generation": payload.get("generation"),
+                    "swept": [s for s in payload.get("swept") or [] if isinstance(s, str)],
+                    "unswept": [s for s in payload.get("unswept") or [] if isinstance(s, str)],
+                    "ungranted": [s for s in payload.get("ungranted") or [] if isinstance(s, str)],
+                    "rate_limited": payload.get("rate_limited"),
                 }
             elif kind == "health_sweep_failed":
                 rtype = str(payload.get("type"))
@@ -496,11 +520,26 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
         )
 
     all_types = sorted(
-        set(sweeps) | set(sweep_failures) | set(deletions) | set(KIND_TO_RECORD_TYPE.values())
+        set(sweeps)
+        | set(sweep_failures)
+        | set(deletions)
+        | set(KIND_TO_RECORD_TYPE.values())
+        | set(lane_state.get("swept") or ())
+        | set(lane_state.get("unswept") or ())
+        | set(lane_state.get("ungranted") or ())
+    )
+    state_swept = set(lane_state.get("swept") or ())
+    state_known = state_swept | set(lane_state.get("unswept") or ()) | set(
+        lane_state.get("ungranted") or ()
     )
     for rtype in all_types:
         completed = sweeps.get(rtype)
-        if completed is None and rtype not in sweep_failures and rtype not in deletions:
+        if (
+            completed is None
+            and rtype not in sweep_failures
+            and rtype not in deletions
+            and rtype not in state_known
+        ):
             continue
         rows.append(
             {
@@ -517,6 +556,14 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                 # says so instead of leaving every reader to remember which
                 # generation could be trusted.
                 "span_trustworthy": (completed or {}).get("generation", 0) >= _PAGINATED_GENERATION,
+                # What the lane says about itself right now, which is a
+                # different claim from "a completion receipt survived in the
+                # lake". Where they disagree the state wins for swept-ness and
+                # the receipt still supplies the counts.
+                "state_swept": rtype in state_swept if state_known else None,
+                "state_granted": (
+                    rtype not in set(lane_state.get("ungranted") or ()) if state_known else None
+                ),
             }
         )
 
@@ -538,6 +585,12 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
             "anomalies": len(anomalies),
             "witness_days": len(witness_rows),
             "witness_corroborated": sum(1 for r in witness_rows if r.get("both_witnesses")),
+            # Straight from the lane's newest state record; null when the
+            # phone has not yet reported one (a build older than 2026-08-17).
+            "lane_state_at": lane_state.get("at"),
+            "types_swept": len(state_swept) if state_known else None,
+            "types_unswept": len(lane_state.get("unswept") or ()) if state_known else None,
+            "types_ungranted": len(lane_state.get("ungranted") or ()) if state_known else None,
         }
     )
 
