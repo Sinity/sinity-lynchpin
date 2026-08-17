@@ -24,7 +24,7 @@ from typing import Any
 __all__ = ["iter_verify_runs", "verify_history_path"]
 
 _ENV_OVERRIDE = "POLYLOGUE_VERIFY_HISTORY_PATH"
-_LAKE_PATH = Path("/realm/data/captures/dev/polylogue/verify-history.jsonl")
+_LAKE_PATH = Path("/realm/data/activity/dev/polylogue/verify-history.jsonl")
 _DEFAULT_RELATIVE = Path("polylogue/devtools/verify-history.jsonl")
 
 
