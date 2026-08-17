@@ -265,14 +265,18 @@ class LynchpinConfig:
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", exports_root / "raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
-        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/media/substack"))
+        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/library/media/substack"))
         substack_downloader = Path(os.environ.get(
             "LYNCHPIN_SUBSTACK_DOWNLOADER", substack_root / "sbstck-dl/sbstck-dl"
         ))
+        # goodreads/wykop moved out of exports_root to data_root/accounts on
+        # 2026-08-17 (estate charter: platform-footprint exports route to
+        # accounts/, not exports/) -- both are still env-overridable, only the
+        # hardcoded default changed.
         goodreads_library = Path(os.environ.get(
-            "LYNCHPIN_GOODREADS_LIBRARY", exports_root / "goodreads/raw/library_export.csv"
+            "LYNCHPIN_GOODREADS_LIBRARY", data_root / "accounts/goodreads/raw/library_export.csv"
         ))
-        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", exports_root / "wykop/raw"))
+        wykop_root = Path(os.environ.get("LYNCHPIN_WYKOP_ROOT", data_root / "accounts/wykop/raw"))
         wykop_username = os.environ.get("LYNCHPIN_WYKOP_USER", "Sinity")
         themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", exports_root / "themotte/raw"))
         themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")

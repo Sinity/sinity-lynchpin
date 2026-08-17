@@ -1797,7 +1797,7 @@ def _goodreads_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.goodreads_library,),
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        materialization_hint="replace /realm/data/exports/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/data/accounts/goodreads/raw/library_export.csv",
         row_count=_csv_count(cfg.goodreads_library),
     )
 
@@ -1995,7 +1995,7 @@ def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(root,),
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        materialization_hint="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
+        materialization_hint="replace Wykop GDPR export under /realm/data/accounts/wykop/raw",
         row_count=_count_files(root, suffixes=(".csv", ".json", ".jsonl")),
     )
     try:

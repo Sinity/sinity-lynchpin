@@ -1,7 +1,7 @@
 """Wykop social platform source — operator's comments, votes, and entries.
 
 Wykop is a Polish link-aggregation / social-news platform (similar to
-Reddit/Digg). The operator's export lives at /realm/data/exports/wykop/raw/Sinity/.
+Reddit/Digg). The operator's export lives at /realm/data/accounts/wykop/raw/Sinity/.
 
 Key signals:
   - links_commented: 11,534 operator comments on shared links (18 MB)
@@ -34,7 +34,7 @@ from typing import Iterator, Optional
 
 from ..core.errors import SourceUnavailableError
 
-WYKOP_ROOT = Path("/realm/data/exports/wykop/raw/Sinity")
+WYKOP_ROOT = Path("/realm/data/accounts/wykop/raw/Sinity")
 
 
 @dataclass(frozen=True)

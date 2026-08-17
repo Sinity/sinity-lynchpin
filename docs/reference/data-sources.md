@@ -98,18 +98,18 @@ substrate rows) when an analysis actually needs its content, not before — the
 four event lanes above made that jump.
 
 `captures/input-dynamics`, `captures/stability-lab`, and
-`captures/dev/tortoisesvn` are deliberately absent from this catalog: the
+`code/tortoisesvn` (moved from `captures/dev/tortoisesvn` 2026-08-17) are deliberately absent from this catalog: the
 operator flagged them as dead/unwanted (2026-08-12) — `input-dynamics` is
 superseded by `captures/keylog` (see `keylog_dynamics`), `stability-lab` is
-dead or being retired, and the `tortoisesvn` historical import is not worth
+dead or being retired, and the `tortoisesvn` historical import (now at `data/code/tortoisesvn`) is not worth
 tracking. The directories themselves were not touched; only this catalog
 stopped watching them.
 
 ## Substack archives
 
-The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/media/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
+The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/library/media/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
 
-The downloader is configured through `LYNCHPIN_SUBSTACK_DOWNLOADER`, defaulting to `/realm/media/substack/sbstck-dl/sbstck-dl`. The integrated command derives the publication directory and then materializes the index:
+The downloader is configured through `LYNCHPIN_SUBSTACK_DOWNLOADER`, defaulting to `/realm/library/media/substack/sbstck-dl/sbstck-dl`. The integrated command derives the publication directory and then materializes the index:
 
 ```bash
 lynchpin-substack download --url https://www.astralcodexten.com/ --publication acx --format html --rate 2

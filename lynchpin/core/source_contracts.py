@@ -247,7 +247,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="goodreads",
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        materialization_hint="replace /realm/data/exports/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/data/accounts/goodreads/raw/library_export.csv",
         required=False,
     ),
     SourceContract(
@@ -481,7 +481,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="wykop",
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        materialization_hint="replace Wykop GDPR export under /realm/data/exports/wykop/raw",
+        materialization_hint="replace Wykop GDPR export under /realm/data/accounts/wykop/raw",
         required=False,
         substrate_daily_signal=True,
     ),
