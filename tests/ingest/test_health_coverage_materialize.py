@@ -168,7 +168,10 @@ def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) ->
         # record_id (pre-metadata-rewrite shape): 00:30-08:30 and 00:45-08:35.
         _event("health_sleep", "2026-08-15T09:00:00Z",
                start="2026-08-15T00:30:00Z", end="2026-08-15T08:30:00Z",
-               source="com.xiaomi.wearable"),
+               source="com.xiaomi.wearable",
+               # What Mi Fitness actually writes: the session, no architecture.
+               stages=[{"stage": "unknown", "start": "2026-08-15T00:30:00Z",
+                        "end": "2026-08-15T08:30:00Z", "minutes": 480}]),
         _event("health_sleep", "2026-08-15T10:00:00Z",
                start="2026-08-15T00:45:00Z", end="2026-08-15T08:35:00Z",
                source="com.xiaomi.wearable"),
@@ -187,7 +190,7 @@ def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) ->
 
     day = date_type(2026, 8, 15)
     vendor = {
-        ("vendor_sleep", day, None): _envelope("vendor_sleep", day, {
+        ("vendor_sleep", day): _envelope("vendor_sleep", day, {
             "total_duration": 473,
             "sleep_score": 80,
             "segment_details": [
@@ -195,8 +198,17 @@ def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) ->
                 {"bedtime": 1786753740, "wake_up_time": 1786782960, "timezone": 8},
             ],
         }),
-        ("vendor_raw_heart_rate", day, None): _envelope(
+        ("vendor_raw_heart_rate", day): _envelope(
             "vendor_raw_heart_rate", day, {"key": "heart_rate", "count": 488, "records": []},
+        ),
+        # Two stage transitions off the raw plane: 30 min deep then 60 light.
+        ("vendor_raw_sleep", day): _envelope(
+            "vendor_raw_sleep", day, {"key": "sleep", "count": 1, "records": [
+                {"value": {"items": [
+                    {"state": 2, "start_time": 1786753740, "end_time": 1786755540},
+                    {"state": 3, "start_time": 1786755540, "end_time": 1786759140},
+                ]}},
+            ]},
         ),
     }
 
@@ -224,6 +236,12 @@ def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) ->
     # Overlap is bounded by the vendor window (00:29-08:36 = 487 min).
     assert sleep["overlap_minutes"] == 485.0
     assert sleep["vendor_sleep_minutes"] == 473
+    # Sleep ARCHITECTURE, in the shape Mi Fitness produces for a short
+    # session: one stage-free block into Health Connect while the vendor
+    # plane still resolves it. (The main night IS staged in HC; the row
+    # exists to make the difference visible per day rather than assumed.)
+    assert sleep["vendor_stage_minutes"] == {"deep": 30.0, "light": 60.0}
+    assert sleep["hc_stage_labels"] == ["unknown"]
 
     hr = next(w for w in by["witness"] if w["metric"] == "heart_rate")
     assert hr["vendor_samples"] == 488

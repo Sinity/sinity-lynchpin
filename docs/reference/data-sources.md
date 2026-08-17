@@ -68,7 +68,7 @@ shape (sinnix-3jnc).
 ## Xiaomi cloud witness lane
 
 `lynchpin.sources.xiaomi_cloud` reads
-`captures/xiaomi-cloud/xiaomi-cloud-YYYYMMDD.jsonl`, written every 30
+`health/xiaomi-cloud/xiaomi-cloud-YYYYMMDD.jsonl`, written every 30
 minutes by the sinnix `sinnix-xiaomi-witness` timer: the Mi Band's data as
 Xiaomi's servers hold it, independent of the Health Connect path.
 Envelopes carry daily aggregates (`vendor_sleep` with

@@ -1,6 +1,6 @@
 """Xiaomi cloud vendor-witness lane (sinnix ``xiaomi-witness`` service).
 
-Reads the append-only JSONL envelope lane at ``captures/xiaomi-cloud/
+Reads the append-only JSONL envelope lane at ``health/xiaomi-cloud/
 xiaomi-cloud-YYYYMMDD.jsonl``, written every 30 minutes by the sinnix
 ``sinnix-xiaomi-witness`` timer: the Mi Band's data as Xiaomi's servers hold
 it, fetched independently of the phone's Health Connect path. Envelope kinds:
@@ -8,11 +8,18 @@ it, fetched independently of the phone's Health Connect path. Envelope kinds:
 * ``vendor_sleep`` / ``vendor_*_day`` — daily aggregates (sleep with
   sleep_score/REM/segments, HR/SpO2/steps/stress summaries);
 * ``vendor_raw_*`` — the band's dense series (one envelope per key and UTC
-  day: ~2-minute heart rate, continuous SpO2/stress, 5-minute
-  steps/calories, per-night raw sleep objects);
-* ``vendor_sleep_details`` — FDS minute-level sleep blobs (absent for Band
-  10, lane armed for firmware that uploads them);
+  day: ~1/minute heart rate, continuous SpO2/stress, 5-minute
+  steps/calories, and a per-night sleep object whose ``items[]`` is the
+  complete minute-level stage transition list);
 * ``vendor_fetch_failed`` — per-lane fetch failures, not data.
+
+Sleep architecture is more complete here than in Health Connect, measured
+2026-08-17: Mi Fitness stages the main night into HC (27–43 stage segments
+of awake/deep/light/rem) but writes short daytime sessions as a single
+``unknown`` block, while this lane stages every segment. An earlier
+``vendor_sleep_details`` kind chased the same detail through Xiaomi's FDS
+blob store and never landed one; it was removed once the raw plane was
+found to carry the staging already.
 
 Write-on-change semantics matter for readers: the writer re-fetches a
 rolling window every pass and appends an envelope ONLY when the day's
@@ -21,9 +28,8 @@ order. ``latest_envelopes`` therefore keeps the LAST envelope per logical
 key — the current state — while ``xiaomi_envelopes`` yields every revision
 for consumers that treat the revision history itself as evidence.
 
-The logical key is ``(kind, day)`` for aggregate and raw kinds; sleep-detail
-envelopes are additionally discriminated by their segment ``wake_up_time``
-(several segments — night plus naps — share a day).
+The logical key is ``(kind, day)``; a day's several sleep segments — night
+plus naps — ride inside one ``vendor_sleep`` envelope.
 """
 
 from __future__ import annotations
@@ -49,7 +55,12 @@ _DAY_FILE_RE = re.compile(r"xiaomi-cloud-(\d{8})\.jsonl\Z")
 
 
 def _lane_root(root: Optional[Path] = None) -> Path:
-    return root or (LynchpinConfig.from_env().captures_root / "xiaomi-cloud")
+    # ``health/`` since the 2026-08-17 subject recut moved this lane out of
+    # ``captures/``. The presence map in core.config already pointed here
+    # while this reader still looked at the old path, which is why the
+    # coverage report's witness rows silently went to zero: an empty lane and
+    # a moved lane are the same observation to a reader that only globs.
+    return root or (LynchpinConfig.from_env().data_root / "health" / "xiaomi-cloud")
 
 
 @dataclass(frozen=True)
@@ -68,12 +79,15 @@ class XiaomiEnvelope:
         return self.payload.get("data")
 
     @property
-    def logical_key(self) -> tuple[str, Optional[date], Optional[int]]:
-        wake = None
-        if self.kind == "vendor_sleep_details" and isinstance(self.data, dict):
-            raw = self.data.get("wake_up_time")
-            wake = raw if isinstance(raw, int) else None
-        return (self.kind, self.day, wake)
+    def logical_key(self) -> tuple[str, Optional[date]]:
+        """What ``latest_envelopes`` collapses revisions onto.
+
+        (kind, day) is the whole key: the writer emits one envelope per kind
+        per UTC day per revision, and a day's several sleep segments — night
+        plus naps — ride inside one ``vendor_sleep`` envelope rather than
+        appearing as separate rows.
+        """
+        return (self.kind, self.day)
 
 
 def _parse_day(value: object) -> Optional[date]:
@@ -147,9 +161,9 @@ def latest_envelopes(
     *,
     kinds: Optional[set[str]] = None,
     root: Optional[Path] = None,
-) -> dict[tuple[str, Optional[date], Optional[int]], XiaomiEnvelope]:
+) -> dict[tuple[str, Optional[date]], XiaomiEnvelope]:
     """Current state per logical key: the last-appended revision wins."""
-    latest: dict[tuple[str, Optional[date], Optional[int]], XiaomiEnvelope] = {}
+    latest: dict[tuple[str, Optional[date]], XiaomiEnvelope] = {}
     for envelope in xiaomi_envelopes(root=root):
         if envelope.kind == "vendor_fetch_failed":
             continue

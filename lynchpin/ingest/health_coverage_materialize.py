@@ -186,9 +186,43 @@ def _merge_intervals(
     return merged
 
 
+# Xiaomi's raw sleep objects label each minute-level segment with a numeric
+# state. Decoded 2026-08-17 against the same night's aggregate, whose
+# sleep_deep/light/rem/awake minutes the per-state sums reproduce.
+_VENDOR_SLEEP_STATES = {2: "deep", 3: "light", 4: "rem", 5: "awake"}
+
+
+def _vendor_stage_minutes(records: Any) -> dict[str, float]:
+    """Minutes per sleep stage from the vendor's raw stage transitions.
+
+    Paired in the witness row with the stage labels Health Connect offered for
+    the same day, because the two disagree in a specific way: Mi Fitness
+    stages the main night into HC but writes short daytime sessions as one
+    ``unknown`` block, while this lane stages every segment. An unrecognized
+    state code is reported under its own number rather than silently folded
+    into a known stage.
+    """
+    minutes: dict[str, float] = defaultdict(float)
+    for record in records if isinstance(records, list) else []:
+        value = record.get("value") if isinstance(record, dict) else None
+        for item in (value or {}).get("items") or [] if isinstance(value, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            start, end = item.get("start_time"), item.get("end_time")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+                continue
+            if end <= start:
+                continue
+            state = item.get("state")
+            label = _VENDOR_SLEEP_STATES.get(state, f"state_{state}")
+            minutes[label] += (end - start) / 60
+    return {k: round(v, 1) for k, v in sorted(minutes.items())}
+
+
 def _witness_rows(
     hc_sleep_sessions: dict[str, tuple[datetime, Optional[datetime]]],
     hc_hr_days: dict[str, set[str]],
+    hc_sleep_stage_labels: dict[str, set[str]],
 ) -> list[dict[str, Any]]:
     """Vendor-vs-HC cross-check rows, restricted to days the vendor lane holds.
 
@@ -200,10 +234,13 @@ def _witness_rows(
     while HC HeartRateRecords are series records each carrying many samples,
     so the two counts corroborate presence and density, not equality.
     """
-    latest = xiaomi_cloud.latest_envelopes(kinds={"vendor_sleep", "vendor_raw_heart_rate"})
+    latest = xiaomi_cloud.latest_envelopes(
+        kinds={"vendor_sleep", "vendor_raw_heart_rate", "vendor_raw_sleep"}
+    )
     rows: list[dict[str, Any]] = []
     hr_vendor: dict[str, int] = {}
-    for (kind, day, _wake), envelope in sorted(
+    stages_vendor: dict[str, dict[str, float]] = {}
+    for (kind, day), envelope in sorted(
         latest.items(), key=lambda item: (item[0][0], item[0][1] or datetime.min.date())
     ):
         if day is None or not isinstance(envelope.data, dict):
@@ -213,6 +250,9 @@ def _witness_rows(
             hr_vendor[day.isoformat()] = (
                 count if isinstance(count, int) else len(envelope.data.get("records") or [])
             )
+            continue
+        if kind == "vendor_raw_sleep":
+            stages_vendor[day.isoformat()] = _vendor_stage_minutes(envelope.data.get("records"))
             continue
         segments = [
             (bed, wake)
@@ -253,6 +293,13 @@ def _witness_rows(
                 "hc_sleep_minutes": round(hc_minutes, 1),
                 "overlap_minutes": round(overlap_minutes, 1),
                 "both_witnesses": bool(segments) and bool(matched),
+                # Architecture, and how much of it each witness kept. A day
+                # whose hc_stage_labels is only {"unknown"} is a day whose
+                # sleep structure survives in the vendor lane alone -- which
+                # is what naps look like, and what a firmware or app change
+                # would look like if it ever stopped staging the night too.
+                "vendor_stage_minutes": stages_vendor.get(day.isoformat()) or None,
+                "hc_stage_labels": sorted(hc_sleep_stage_labels.get(day.isoformat(), ())) or None,
             }
         )
     for day in sorted(hr_vendor):
@@ -289,6 +336,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
     # heart-rate record ids per UTC day, joined against the vendor lane below.
     hc_sleep_sessions: dict[str, tuple[datetime, Optional[datetime]]] = {}
     hc_hr_days: dict[str, set[str]] = defaultdict(set)
+    hc_sleep_stage_labels: dict[str, set[str]] = defaultdict(set)
 
     for event in phone_events():
         kind = event.kind
@@ -380,6 +428,10 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
                     else f"legacy:{_iso(measured)}|{payload.get('end') or ''}"
                 )
                 hc_sleep_sessions.setdefault(skey, (measured, _parse_ts(payload.get("end"))))
+                day_key = measured.astimezone(timezone.utc).date().isoformat()
+                for stage in payload.get("stages") or []:
+                    if isinstance(stage, dict) and isinstance(stage.get("stage"), str):
+                        hc_sleep_stage_labels[day_key].add(stage["stage"])
             elif kind == "health_heart_rate":
                 hkey = rid if isinstance(rid, str) and rid else f"legacy:{_iso(measured)}"
                 hc_hr_days[measured.astimezone(timezone.utc).date().isoformat()].add(hkey)
@@ -462,7 +514,7 @@ def materialize_health_coverage(*, output: Optional[Path] = None) -> dict[str, A
 
     rows.extend(anomalies.values())
 
-    witness_rows = _witness_rows(hc_sleep_sessions, hc_hr_days)
+    witness_rows = _witness_rows(hc_sleep_sessions, hc_hr_days, hc_sleep_stage_labels)
     rows.extend(witness_rows)
 
     rows.append(
