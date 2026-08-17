@@ -79,6 +79,7 @@ from .ingest.activitywatch_derived_materialize import (
     activitywatch_derived_input_files,
     materialize_activitywatch_derived,
 )
+from .ingest.health_coverage_materialize import health_coverage_path, materialize_health_coverage
 from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files, materialize_atuin_history
 from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION, materialize_title_metadata
 from .ingest.machine_materialize import (
@@ -325,6 +326,7 @@ def _dataset_builders() -> dict[str, Any]:
         "github_context": _github_context_dataset,
         "analysis_artifacts": _analysis_artifacts_dataset,
         "health": _health_dataset,
+        "health_coverage": _health_coverage_dataset,
         "goodreads": _goodreads_dataset,
         "keylog": _keylog_dataset,
         "notifications": _notifications_dataset,
@@ -385,6 +387,7 @@ def _materializers() -> dict[str, Callable[..., Any]]:
         "personal_daily_signals": materialize_personal_daily_signals,
         "temporal_signals": materialize_temporal_signals,
         "sleep_productivity": materialize_sleep_productivity,
+        "health_coverage": materialize_health_coverage,
         "irc": materialize_irc_events,
         "code_snapshots": materialize_code_snapshots,
         "substack": materialize_substack,
@@ -2249,6 +2252,49 @@ def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=last,
         materialization_hint="python -m lynchpin.cli.process_health",
         reason="processed health JSONL products are present" if files else "processed health JSONL products are missing",
+    )
+
+
+def _health_coverage_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    contract = source_contract("health_coverage")
+    path = health_coverage_path(cfg.derived_root)
+    manifest = path.with_suffix(".manifest.json")
+    meta = _load_json(manifest)
+    ready = _product_with_manifest_exists(path, manifest)
+    # The report is a whole-history reduction of the phone events plane, so
+    # it is stale the moment any day file outgrows it -- coverage claims made
+    # from a report older than its inputs are exactly the misreading the
+    # product exists to prevent.
+    inputs_current = True
+    if ready:
+        built_at = _datetime_from_iso(meta.get("materialized_at"))
+        if built_at is not None:
+            newest_input = max(
+                (f.stat().st_mtime for f in cfg.phone_events_dir.glob("events-*.jsonl")),
+                default=None,
+            )
+            inputs_current = newest_input is None or newest_input <= built_at.timestamp()
+    if ready and inputs_current:
+        status: Status = "ready"
+        reason = "coverage report is present and newer than every events day file"
+    elif ready:
+        status = "partial"
+        reason = "phone events day files have grown since the coverage report was built"
+    else:
+        status = "partial"
+        reason = "coverage report or manifest is missing/malformed"
+    return MaterializedDataset(
+        name="health_coverage",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path, manifest),
+        raw_roots=(cfg.phone_events_dir,),
+        row_count=_manifest_row_count(meta, path),
+        first_date=None,
+        last_date=None,
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 

@@ -47,6 +47,24 @@ counts. All four are registered as capture sources in `available_sources()`
 and `CAPTURE_SOURCES`, so they show up in `source_observations()` like any
 other continuous capture.
 
+## Health coverage report
+
+`lynchpin.ingest.health_coverage_materialize` reduces the phone events
+plane's `health_*` records (the sinnix app's Health Connect capture) into
+`derived_root/health/health_coverage.ndjson`: per record-kind × source
+package × device model × recording-method groups it reports canonical
+unique-record counts (by Health Connect `record_id`), event totals and the
+events-per-record ratio (a duplication-defect signal), measurement-time
+bounds, largest internal gap plus a gap histogram over unique records,
+sweep completion/failure receipts per record type, lane-block reasons,
+typed deletion tombstones, pending exercise-route consents, and timestamp
+anomalies (epoch-era measurement times are surfaced, never aggregated
+over). Registered as the `health_coverage` contract with a transparent
+materializer, so `materialize --all` refreshes it whenever an events day
+file outgrows the report. Bare event totals are banned as coverage answers
+by design — "Samsung sleep: 251 / Band 10 sleep: N" is the intended answer
+shape (sinnix-3jnc).
+
 ## Capture roots without a dedicated source
 
 Some `captures/*` roots have real, growing owner-native data (audio, screen

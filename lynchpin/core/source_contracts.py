@@ -236,6 +236,14 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         substrate_daily_signal=True,
     ),
     SourceContract(
+        name="health_coverage",
+        authority="derived coverage report over phone-events health_* records",
+        query_surface="lynchpin.ingest.health_coverage_materialize",
+        materialization_hint="python -m lynchpin.ingest.health_coverage_materialize",
+        materialization_executor=MaterializationExecutor.materializer("health_coverage"),
+        required=False,
+    ),
+    SourceContract(
         name="goodreads",
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
