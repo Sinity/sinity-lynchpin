@@ -51,8 +51,8 @@ _DATE_RANGE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})")
 # Canonical historical browser snapshots. Disk-image recovery directories are
 # provenance only; ingestion reads from the webhistory ontology.
 _HISTORICAL_BROWSER_DB_ROOTS: tuple[Path, ...] = (
-    Path("/realm/data/captures/webhistory/browser-dbs/historical/windows_install_ezode"),
-    Path("/realm/data/captures/webhistory/browser-dbs/historical/jbr_vhdx_michab"),
+    Path("/realm/data/activity/webhistory/browser-dbs/historical/windows_install_ezode"),
+    Path("/realm/data/activity/webhistory/browser-dbs/historical/jbr_vhdx_michab"),
 )
 
 # ── extraction ────────────────────────────────────────────────────────

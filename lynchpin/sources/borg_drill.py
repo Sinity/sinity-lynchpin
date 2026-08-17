@@ -10,7 +10,7 @@ periodic deep verification, silent bit rot in the chunk store would
 not surface until restore time.
 
 Path resolves from `LynchpinConfig.borg_drill_jsonl` with default
-/realm/data/captures/machine/borg_drill.jsonl. Missing or empty file
+/realm/data/machine/borg_drill.jsonl. Missing or empty file
 is treated as "no rows" — hosts without the drill service produce
 no records.
 """

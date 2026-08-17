@@ -1710,7 +1710,7 @@ def _asciinema_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.asciinema_root,),
         authority="asciinema terminal recording captures",
         query_surface="lynchpin.sources.terminal.recordings",
-        materialization_hint="asciinema recording capture writes under /realm/data/captures/asciinema",
+        materialization_hint="asciinema recording capture writes under /realm/data/activity/asciinema",
         row_count=_count_files(cfg.asciinema_root, suffixes=(".cast",)),
     )
 

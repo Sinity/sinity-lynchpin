@@ -34,7 +34,7 @@ _WORKSPACE_ROOTS: tuple[Path, ...] = (
 )
 
 #: Durable home for worktree history that would otherwise die with its worktree.
-XTASK_LAKE_ARCHIVE_DIR = Path("/realm/data/captures/dev/sinex/xtask-history")
+XTASK_LAKE_ARCHIVE_DIR = Path("/realm/data/activity/dev/sinex/xtask-history")
 
 
 @dataclass(frozen=True)

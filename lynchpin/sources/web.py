@@ -1,9 +1,9 @@
 """Webhistory source and normalization helpers.
 
 Read-only access over the canonical webhistory roots:
-- raw exports under `/realm/data/captures/webhistory/gestalt/raw/`
-- deduped canonical segments under `/realm/data/captures/webhistory/gestalt/data/`
-- merged NDJSON under `/realm/data/captures/webhistory/gestalt/derived/full_history.ndjson`
+- raw exports under `/realm/data/activity/webhistory/gestalt/raw/`
+- deduped canonical segments under `/realm/data/activity/webhistory/gestalt/data/`
+- merged NDJSON under `/realm/data/activity/webhistory/gestalt/derived/full_history.ndjson`
 
 Use ``lynchpin.ingest.webhistory`` for extract-dedup-merge workflows
 over browser data. This module stays purely read-only.

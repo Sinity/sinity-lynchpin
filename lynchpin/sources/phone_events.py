@@ -2,7 +2,7 @@
 
 Reads the append-only JSONL event log written by the phone app's estate
 capture (`Events.append`), one file per UTC day at
-``captures/phone/estate/events/events-YYYYMMDD.jsonl``. Every record shares
+``machine/phone/estate/events/events-YYYYMMDD.jsonl``. Every record shares
 two common fields, ``kind`` and ``ts``, plus kind-specific payload fields.
 See ``docs/phone.md`` in the sinnix repo for the full event catalogue
 (instrument runs, marks, EMA answers, ambient light/motion samples, chunk

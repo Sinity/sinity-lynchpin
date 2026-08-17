@@ -6,7 +6,7 @@ extract a header-only index that gives downstream consumers the
 session metadata they need for cross-referencing with Atuin / keylog
 / AW: when did this terminal start, on which pty, with which shell.
 
-Output: /realm/data/captures/asciinema/index/asciinema_sessions.ndjson
+Output: /realm/data/activity/asciinema/index/asciinema_sessions.ndjson
 (one record per .cast file).
 
 Run: python scripts/asciinema_index.py
@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-CAST_ROOT = Path("/realm/data/captures/asciinema")
+CAST_ROOT = Path("/realm/data/activity/asciinema")
 INDEX_PATH = CAST_ROOT / "index" / "asciinema_sessions.ndjson"
 
 DIR_RE = re.compile(

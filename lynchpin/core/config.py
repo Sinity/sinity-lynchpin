@@ -141,12 +141,17 @@ class LynchpinConfig:
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),
             "arbtt": self.arbtt_root.exists(),
-            "notifications": any((self.captures_root / "notifications").glob("notifications-*.jsonl")),
-            "mpris": any((self.captures_root / "mpris").glob("mpris-*.jsonl")),
-            "audio_index": any((self.captures_root / "audio-index").glob("audio-index-*.jsonl")),
-            "audio_topology": any((self.captures_root / "audio-topology").glob("audio-topology-*.jsonl")),
+            "notifications": any((self.data_root / "activity/notifications").glob("notifications-*.jsonl")),
+            "mpris": any((self.data_root / "activity/mpris").glob("mpris-*.jsonl")),
+            "audio_index": any((self.data_root / "activity/audio-index").glob("audio-index-*.jsonl")),
+            # Whole audio family (audio/audio-devices/audio-topology/audio-index)
+            # stays under activity/ despite the charter's machine/ mapping for
+            # audio-devices/audio-topology -- the CLI derives all four lanes
+            # from one shared --capture-root, so it cannot split without CLI
+            # changes (sinnix modules/services/capture-audio.nix, 2026-08-17).
+            "audio_topology": any((self.data_root / "activity/audio-topology").glob("audio-topology-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
-            "xiaomi_cloud": any((self.captures_root / "xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
+            "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),
             "steering": self.steering_jsonl_dir.exists() and any(self.steering_jsonl_dir.glob("*.jsonl")),
             "transcripts": self.transcripts_dir.exists() and any(self.transcripts_dir.glob("*.jsonl")),
@@ -213,10 +218,14 @@ class LynchpinConfig:
             os.environ.get("LYNCHPIN_BASELINE_DIR"), repo_artefacts_root / "baseline/latest"
         )
 
-        webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", captures_root / "webhistory/gestalt/raw"))
-        webhistory_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_DIR", captures_root / "webhistory/gestalt/data"))
+        # captures_root/webhistory,asciinema,audio,screenshot,keylog,comms/irc
+        # moved to data_root/activity or data_root/comms/comms on 2026-08-17
+        # (estate charter subject recut) -- still env-overridable, only the
+        # hardcoded defaults changed.
+        webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", data_root / "activity/webhistory/gestalt/raw"))
+        webhistory_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_DIR", data_root / "activity/webhistory/gestalt/data"))
         webhistory_ndjson_path = Path(os.environ.get(
-            "LYNCHPIN_WEBHISTORY_NDJSON", captures_root / "webhistory/gestalt/derived/full_history.ndjson"
+            "LYNCHPIN_WEBHISTORY_NDJSON", data_root / "activity/webhistory/gestalt/derived/full_history.ndjson"
         ))
         webhistory_ndjson = webhistory_ndjson_path
 
@@ -255,10 +264,10 @@ class LynchpinConfig:
             data_root / "comms/comms/fbmessengerexport.sqlite",
         )))
 
-        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", captures_root / "asciinema"))
-        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", captures_root / "audio/raw"))
-        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", captures_root / "screenshot"))
-        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", captures_root / "keylog"))
+        asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/asciinema"))
+        audio_root = Path(os.environ.get("LYNCHPIN_AUDIO_ROOT", data_root / "activity/audio/raw"))
+        screenshot_root = Path(os.environ.get("LYNCHPIN_SCREENSHOT_ROOT", data_root / "activity/screenshot"))
+        keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/keylog"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
         dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/data/knowledgebase"))
@@ -298,11 +307,11 @@ class LynchpinConfig:
             ).split(":")
             if item
         )
-        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", captures_root / "comms/irc"))
+        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "comms/comms/irc"))
         raw_log_file = Path(os.environ.get(
             "LYNCHPIN_RAW_LOG_FILE", "/realm/data/knowledgebase/logs.raw-log.md"
         ))
-        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", captures_root / "machine"))
+        machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "machine"))
         machine_host = os.environ.get("LYNCHPIN_MACHINE_HOST", "sinnix-prime")
         default_machine_host_root = (
             machine_capture_root
@@ -326,7 +335,7 @@ class LynchpinConfig:
         ))
         browser_bookmarks_root = Path(os.environ.get(
             "LYNCHPIN_BROWSER_BOOKMARKS_ROOT",
-            captures_root / "webhistory/bookmarks",
+            data_root / "activity/webhistory/bookmarks",
         ))
         # Colocated with activitywatch rather than in a lane of its own: both
         # are foreground-window time series, arbtt covering the era before
@@ -336,23 +345,29 @@ class LynchpinConfig:
         # more than a directory per collector.
         arbtt_root = Path(os.environ.get(
             "LYNCHPIN_ARBTT_ROOT",
-            captures_root / "activitywatch/historical/arbtt",
+            data_root / "activity/activitywatch/activitywatch/historical/arbtt",
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",
-            captures_root / "comms/teams",
+            data_root / "comms/comms/teams",
         ))
+        # captures_root/phone moved to data_root/machine/phone on 2026-08-17
+        # (estate charter subject recut: "captures/phone -- the app's own
+        # lane -- -> machine/", confirmed by phone-drain.nix's own comment
+        # that phone/estate/events mixes battery/health/location/thermal
+        # telemetry, i.e. genuinely "the app's own lane" rather than one
+        # clean subject).
         phone_events_dir = Path(os.environ.get(
             "LYNCHPIN_PHONE_EVENTS_DIR",
-            captures_root / "phone/estate/events",
+            data_root / "machine/phone/estate/events",
         ))
         phone_ambient_jsonl = Path(os.environ.get(
             "LYNCHPIN_PHONE_AMBIENT_JSONL",
-            captures_root / "phone/ambient-levels.jsonl",
+            data_root / "machine/phone/ambient-levels.jsonl",
         ))
         steering_jsonl_dir = Path(os.environ.get(
             "LYNCHPIN_STEERING_JSONL_DIR",
-            captures_root / "steering",
+            data_root / "activity/steering",
         ))
         steering_sqlite = Path(os.environ.get(
             "LYNCHPIN_STEERING_SQLITE",
@@ -360,7 +375,7 @@ class LynchpinConfig:
         ))
         transcripts_dir = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIPTS_DIR",
-            captures_root / "transcripts",
+            data_root / "activity/transcripts",
         ))
         transcribed_ledger_jsonl = Path(os.environ.get(
             "LYNCHPIN_TRANSCRIBED_LEDGER_JSONL",

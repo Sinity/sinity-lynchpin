@@ -53,7 +53,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
-KEYLOG_DIR = Path("/realm/data/captures/keylog/logs")
+KEYLOG_DIR = Path("/realm/data/activity/keylog/logs")
 
 
 @dataclass(frozen=True)

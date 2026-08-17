@@ -86,7 +86,7 @@ def observability_inputs() -> tuple[ObservabilityInput, ...]:
                 "cgroup_memory_split",
                 "network_link_quality",
             ),
-            retention="canonical raw capture under /realm/data/captures/machine",
+            retention="canonical raw capture under /realm/data/machine",
             next_action=(
                 "promote coarse metric, service, GPU, and network samples for "
                 "snapshot analytics; read high-rate block_device_sample, "

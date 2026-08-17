@@ -1,6 +1,6 @@
 """Phone ambient-audio loudness levels.
 
-Reads ``captures/phone/ambient-levels.jsonl`` — one row per ambient-audio
+Reads ``machine/phone/ambient-levels.jsonl`` — one row per ambient-audio
 chunk (``chunk``, ``bytes``, ``duration_seconds``, ``sample_rate``,
 ``mean_db``, ``max_db``, ``captured_nothing``), append-only.
 
