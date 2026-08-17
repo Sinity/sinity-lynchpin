@@ -1,6 +1,6 @@
 """Per-minute / per-window Samsung Health binning data.
 
-The processed JSONL files at /realm/data/health/health/processed/health_stress.jsonl
+The processed JSONL files at /realm/data/health/processed/health_stress.jsonl
 and health_hrv.jsonl give 1-hour-window summaries. The raw GDPR export at
 /realm/data/health/samsung/processed/2026-03-30-gdpr-extracted/.../Stress Internal Data/
 and Health HRV/ contains finer-grained binning_data fields:

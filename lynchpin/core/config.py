@@ -219,7 +219,7 @@ class LynchpinConfig:
         )
 
         # captures_root/webhistory,asciinema,audio,screenshot,keylog,comms/irc
-        # moved to data_root/activity or data_root/comms/comms on 2026-08-17
+        # moved to data_root/activity or data_root/comms on 2026-08-17
         # (estate charter subject recut) -- still env-overridable, only the
         # hardcoded defaults changed.
         webhistory_raw_dir = Path(os.environ.get("LYNCHPIN_WEBHISTORY_RAW_DIR", data_root / "activity/webhistory/gestalt/raw"))
@@ -229,7 +229,7 @@ class LynchpinConfig:
         ))
         webhistory_ndjson = webhistory_ndjson_path
 
-        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", data_root / "health/health/processed/sleep_merged.jsonl"))
+        sleep_jsonl = Path(os.environ.get("LYNCHPIN_SLEEP_JSONL", data_root / "health/processed/sleep_merged.jsonl"))
         codex_sessions_root = Path(os.environ.get("LYNCHPIN_CODEX_ROOT", "~/.codex/sessions")).expanduser()
 
         reddit_export_dir = _resolve_reddit_export(
@@ -256,12 +256,12 @@ class LynchpinConfig:
         )).expanduser()
 
         fbmessenger_gdpr_root = Path(os.environ.get(
-            "LYNCHPIN_FBMESSENGER_GDPR", data_root / "comms/comms/facebook-messenger/processed/gdpr"
+            "LYNCHPIN_FBMESSENGER_GDPR", data_root / "comms/facebook-messenger/processed/gdpr"
         ))
         fbmessenger_db = Path(os.environ.get("LYNCHPIN_FBMESSENGER_DB", _resolve_fbmessenger_db(
-            data_root / "comms/comms/facebook-messenger/processed/fbmessengerexport.sqlite",
-            data_root / "comms/comms/facebook-messenger/fbmessengerexport.sqlite",
-            data_root / "comms/comms/fbmessengerexport.sqlite",
+            data_root / "comms/facebook-messenger/processed/fbmessengerexport.sqlite",
+            data_root / "comms/facebook-messenger/fbmessengerexport.sqlite",
+            data_root / "comms/fbmessengerexport.sqlite",
         )))
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/asciinema"))
@@ -290,7 +290,7 @@ class LynchpinConfig:
         themotte_root = Path(os.environ.get("LYNCHPIN_THEMOTTE_ROOT", data_root / "accounts/themotte/raw"))
         themotte_username = os.environ.get("LYNCHPIN_THEMOTTE_USER", "Sinity")
         samsung_gdpr_cloud_dir = Path(os.environ.get(
-            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", data_root / "health/health/raw/samsung-gdpr-cloud"
+            "LYNCHPIN_SAMSUNG_GDPR_CLOUD", data_root / "health/raw/samsung-gdpr-cloud"
         ))
         clipboard_live_file = Path(os.environ.get(
             "LYNCHPIN_CLIPBOARD_LIVE_FILE", "~/.config/clipse/clipboard_history.json"
@@ -307,7 +307,7 @@ class LynchpinConfig:
             ).split(":")
             if item
         )
-        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "comms/comms/irc"))
+        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "comms/irc"))
         raw_log_file = Path(os.environ.get(
             "LYNCHPIN_RAW_LOG_FILE", "/realm/data/knowledgebase/logs.raw-log.md"
         ))
@@ -349,7 +349,7 @@ class LynchpinConfig:
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",
-            data_root / "comms/comms/teams",
+            data_root / "comms/teams",
         ))
         # captures_root/phone moved to data_root/machine/phone on 2026-08-17
         # (estate charter subject recut: "captures/phone -- the app's own

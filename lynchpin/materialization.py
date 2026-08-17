@@ -2328,7 +2328,7 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        materialization_hint="edit /realm/data/health/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/data/health/processed/substance_log_unified.csv",
         reason="processed substance CSV is present" if path.exists() else "processed substance CSV is missing",
     )
 

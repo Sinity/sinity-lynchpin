@@ -351,7 +351,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="substance",
         authority="processed substance log CSV",
         query_surface="lynchpin.sources.substance",
-        materialization_hint="edit /realm/data/health/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/data/health/processed/substance_log_unified.csv",
         substrate_daily_signal=True,
     ),
     SourceContract(

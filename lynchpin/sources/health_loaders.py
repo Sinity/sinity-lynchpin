@@ -399,7 +399,7 @@ def nap_sessions(*, start: Optional[date] = None, end: Optional[date] = None) ->
 
 # ── Internal helpers (previously health_reader.py) ──────────────────────────
 
-_PROCESSED = Path("/realm/data/health/health/processed")
+_PROCESSED = Path("/realm/data/health/processed")
 
 
 def load_jsonl(filename: str) -> Iterator[dict[str, Any]]:
