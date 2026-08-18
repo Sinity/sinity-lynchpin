@@ -124,7 +124,7 @@ def _materialize_window(
     window_rows = {
         "focus_spans": [
             _focus_span_row(span)
-            for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=False)
+            for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=True)
         ],
         "project_focus_days": [
             _project_focus_day_row(row)
