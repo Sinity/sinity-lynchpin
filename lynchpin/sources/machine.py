@@ -27,6 +27,7 @@ from .machine_models import (
     MachineMetricSample,
     MachineNetworkSample,
     MachineProcessIODeltaSample,
+    MachineProcessMemoryGrowth,
     MachineProcessMemorySample,
     MachineServiceCgroupIOSample,
     MachineServiceCgroupPressureSample,
@@ -92,6 +93,7 @@ __all__ = [
     "service_cgroup_io_samples",
     "service_cgroup_pressure_samples",
     "process_io_delta_samples",
+    "process_memory_growth_candidates",
     "process_memory_samples",
     "cgroup_memory_samples",
     "canonical_machine_table_path",
@@ -784,6 +786,81 @@ def process_memory_samples(
                 shared_dirty_kb=int(row["shared_dirty_kb"]),
                 swap_kb=int(row["swap_kb"]),
             )
+
+
+def process_memory_growth_candidates(
+    *,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
+    path: Path | None = None,
+    min_samples: int = 2,
+) -> list[MachineProcessMemoryGrowth]:
+    """First/last pss_anon_kb per process lifetime in the window, via SQL.
+
+    For leak-candidate scanning over a multi-day window: computing MIN/MAX
+    ``observed_at`` per process in SQLite and joining back for the endpoint
+    values avoids materializing every sample row of every process into
+    Python (``process_memory_samples`` over 48h is the exact per-row cost
+    that made ``machine explain`` miss its 5s AC before the sinnix-6o2 fix).
+    """
+    if path is None:
+        db = _default_machine_db()
+        if db is None:
+            return []
+        path = db
+    if not path.exists():
+        return []
+    where, params = _observed_at_window(start, end)
+    where_sql = (" WHERE " + " AND ".join(where) + " AND pss_anon_kb IS NOT NULL") if where else " WHERE pss_anon_kb IS NOT NULL"
+    with connect_readonly(path) as conn:
+        if not table_exists(conn, "process_memory_sample"):
+            return []
+        validate_process_memory_schema(conn)
+        sql = f"""
+            WITH bounds AS (
+                SELECT pid, process_start_time_ticks, comm, unit, scope,
+                       MIN(observed_at) AS first_ts,
+                       MAX(observed_at) AS last_ts,
+                       COUNT(*) AS n
+                FROM process_memory_sample
+                {where_sql}
+                GROUP BY pid, process_start_time_ticks, comm, unit, scope
+                HAVING COUNT(*) >= ? AND MAX(observed_at) > MIN(observed_at)
+            )
+            SELECT b.pid, b.process_start_time_ticks, b.comm, b.unit, b.scope, b.n,
+                   b.first_ts, f.pss_anon_kb AS first_pss_anon_kb,
+                   b.last_ts, l.pss_anon_kb AS last_pss_anon_kb
+            FROM bounds b
+            JOIN process_memory_sample f
+                ON f.pid = b.pid AND f.process_start_time_ticks = b.process_start_time_ticks
+                AND f.observed_at = b.first_ts
+            JOIN process_memory_sample l
+                ON l.pid = b.pid AND l.process_start_time_ticks = b.process_start_time_ticks
+                AND l.observed_at = b.last_ts
+        """
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, [*params, max(int(min_samples), 1)]).fetchall()
+    out: list[MachineProcessMemoryGrowth] = []
+    for row in rows:
+        first_ts = as_utc(row["first_ts"])
+        last_ts = as_utc(row["last_ts"])
+        if first_ts is None or last_ts is None:
+            continue
+        out.append(
+            MachineProcessMemoryGrowth(
+                pid=int(row["pid"]),
+                process_start_time_ticks=row["process_start_time_ticks"],
+                comm=row["comm"],
+                unit=row["unit"],
+                scope=row["scope"],
+                sample_count=int(row["n"]),
+                first_observed_at=first_ts,
+                first_pss_anon_kb=int(row["first_pss_anon_kb"]),
+                last_observed_at=last_ts,
+                last_pss_anon_kb=int(row["last_pss_anon_kb"]),
+            )
+        )
+    return out
 
 
 def cgroup_memory_samples(

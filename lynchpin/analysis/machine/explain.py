@@ -30,10 +30,19 @@ from lynchpin.sources.machine_models import (
     MachineKillEvent,
     MachineMetricSample,
     MachineProcessIODeltaSample,
+    MachineProcessMemoryGrowth,
     MachineProcessMemorySample,
+)
+from lynchpin.analysis.machine.signatures import (
+    SignatureFinding,
+    classify_signatures,
+    headline_signature,
 )
 
 CALIBRATION_PROVENANCE = "sinnix-prime pressure-incident taxonomy, 2026-08-18"
+# Leak-candidate scanning (signatures.detect_leak_candidates) wants more
+# history than the report window itself to fit a monotone-growth rate.
+LEAK_SCAN_LOOKBACK = timedelta(hours=48)
 
 # ── Host calibration (taxonomy §2/§3; shared with the hub's /pressure/ page) ──
 # Telemetry records swap_used_mb only; the host's swap total (12 GiB zram
@@ -141,6 +150,8 @@ class MachineExplainReport:
     health_ledger_note: str
     prior_week: WindowAggregates | None
     prior_week_note: str
+    signatures: tuple[SignatureFinding, ...]
+    signature_headline: SignatureFinding | None
     caveats: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
@@ -515,6 +526,8 @@ def build_machine_explain_report(
     io_samples: Sequence[MachineProcessIODeltaSample],
     prior_samples: Sequence[MachineMetricSample] | None = None,
     prior_kills: Sequence[MachineKillEvent] | None = None,
+    growth: Sequence[MachineProcessMemoryGrowth] = (),
+    last_seen_incidents: dict[str, Any] | None = None,
     health_ledger: Path = DEFAULT_HEALTH_LEDGER,
     generated_at: datetime | None = None,
 ) -> MachineExplainReport:
@@ -556,6 +569,11 @@ def build_machine_explain_report(
     if len(hosts) > 1:
         caveats.append(f"samples span multiple hosts: {sorted(hosts)}")
 
+    signatures = classify_signatures(
+        samples=ordered, kills=kills, growth=growth, last_seen_incidents=last_seen_incidents
+    )
+    signature_headline = headline_signature(signatures)
+
     return MachineExplainReport(
         host=next(iter(hosts)) if len(hosts) == 1 else None,
         window_start=window_start,
@@ -584,6 +602,8 @@ def build_machine_explain_report(
         health_ledger_note=health_note,
         prior_week=prior,
         prior_week_note=prior_note,
+        signatures=signatures,
+        signature_headline=signature_headline,
         caveats=tuple(caveats),
     )
 
@@ -662,6 +682,10 @@ def machine_explain(
             )
         )
 
+    growth = source.process_memory_growth_candidates(
+        start=window_end - LEAK_SCAN_LOOKBACK, end=window_end, path=telemetry_db
+    )
+
     return build_machine_explain_report(
         window_start=window_start,
         window_end=window_end,
@@ -671,6 +695,7 @@ def machine_explain(
         io_samples=io_samples,
         prior_samples=prior_metric_samples,
         prior_kills=prior_kill_events,
+        growth=growth,
         health_ledger=health_ledger,
     )
 
@@ -689,6 +714,31 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes}m"
 
 
+def signature_state(headline: SignatureFinding | None) -> str:
+    """ok/elevated/degraded/incident, per the headline signature's confidence."""
+    if headline is None:
+        return "ok"
+    if headline.confidence >= 0.7:
+        return "incident"
+    if headline.confidence >= 0.4:
+        return "degraded"
+    return "elevated"
+
+
+def _headline_line(report: MachineExplainReport) -> str:
+    headline = report.signature_headline
+    state = signature_state(headline).upper()
+    if headline is None:
+        return f"HEADLINE: {state} — no known-signature detector fired in this window"
+    ev = headline.evidence[0] if headline.evidence else None
+    ev_text = f"{ev.metric} {ev.value:.3g} vs baseline {ev.baseline:.3g}" if ev is not None else "no evidence row captured"
+    last_seen = f"; last seen {headline.last_seen_incident.isoformat()}" if headline.last_seen_incident else ""
+    return (
+        f"HEADLINE: {state} — {headline.name} signature firing ({ev_text}{last_seen}); "
+        f"classified via the signature library ({headline.threshold_note})"
+    )
+
+
 def render_machine_explain_text(report: MachineExplainReport, *, episode_limit: int = 8) -> str:
     lines: list[str] = []
     agg = report.aggregates
@@ -697,12 +747,19 @@ def render_machine_explain_text(report: MachineExplainReport, *, episode_limit: 
         f"MACHINE EXPLAIN — {host} — {_local(report.window_start)} → {_local(report.window_end)} "
         f"(local time; {((report.window_end - report.window_start).total_seconds() / 3600):.0f}h window)"
     )
+    lines.append(_headline_line(report))
     lines.append(
         f"Calibration: {report.calibration['provenance']}; swap total {SWAP_TOTAL_MB} MB, "
         f"swap-critical ≥{SWAP_CRITICAL_RATIO:.0%}, psi_full degraded ≥{PSI_FULL_DEGRADED:.0f} / "
         f"frozen ≥{PSI_FULL_FROZEN:.0f}; episode: mem_some ≥{EPISODE_MEM_SOME:.0f} | "
         f"io_full ≥{EPISODE_IO_FULL:.0f} | avail <{EPISODE_AVAIL_FLOOR_MB} MB"
     )
+    fired = [f for f in report.signatures if f.fires]
+    if fired:
+        lines.append(
+            "SIGNATURES firing: "
+            + "; ".join(f"{f.name} (confidence {f.confidence:.2f}, {len(f.evidence)} evidence rows)" for f in fired)
+        )
     lines.append("")
     lines.append(
         f"STALL TIME: memory degraded {agg.memory_degraded_hours:.1f}h "
@@ -821,4 +878,5 @@ __all__ = [
     "build_machine_explain_report",
     "machine_explain",
     "render_machine_explain_text",
+    "signature_state",
 ]

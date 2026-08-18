@@ -271,6 +271,29 @@ class MachineProcessMemorySample:
 
 
 @dataclass(frozen=True)
+class MachineProcessMemoryGrowth:
+    """First/last pss_anon_kb observation for one process lifetime in a window.
+
+    An SQL-side aggregate (see ``sources.machine.process_memory_growth_candidates``)
+    over ``process_memory_sample``, not a per-sample row: leak-candidate scanning
+    needs only the two endpoints of a process's memory trajectory, and computing
+    that in SQLite avoids materializing every sample of every process in a
+    multi-day window into Python (sinnix-6o2).
+    """
+
+    pid: int
+    process_start_time_ticks: int | None
+    comm: str | None
+    unit: str | None
+    scope: str | None
+    sample_count: int
+    first_observed_at: datetime
+    first_pss_anon_kb: int
+    last_observed_at: datetime
+    last_pss_anon_kb: int
+
+
+@dataclass(frozen=True)
 class MachineCgroupMemorySample:
     observed_at: datetime
     host: str
