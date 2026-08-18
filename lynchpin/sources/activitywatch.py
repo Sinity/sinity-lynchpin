@@ -223,45 +223,86 @@ def focus_spans(
 def _enrich_with_polylogue(
     spans: list[FocusSpan], start: datetime, end: datetime
 ) -> list[FocusSpan]:
-    """Backfill project attribution via polylogue work_event overlap.
+    """Backfill project attribution via polylogue session overlap.
 
-    When a focused span on a terminal app has no project, we check whether
-    it temporally overlaps a polylogue work_event. If it does, we inherit
-    the work_event's session→project mapping.
+    Two tiers, both time-overlap based:
 
-    Gracefully returns spans unchanged when polylogue is unavailable or
-    its insight products are not materialized.
+    1. Primary: cross-reference against polylogue work_events (per-turn
+       granularity) and resolve each event's conversation to a project via
+       session profiles. Requires materialized polylogue insight products.
+    2. Fallback: for spans the primary tier leaves unattributed (including
+       when insight products aren't materialized at all), read
+       sessions/session_repos straight from the polylogue index DB and
+       attribute by dominant session-interval overlap. Coarser but needs no
+       materialization — see ``polylogue_session_attribution``.
+
+    Gracefully returns spans unchanged when polylogue is unavailable.
     """
     # Only relevant for spans that need attribution
     needy = [
-        (i, s) for i, s in enumerate(spans)
+        i for i, s in enumerate(spans)
         if s.kind == "focused" and not s.project
     ]
     if not needy:
         return spans
 
     context = _polylogue_attribution_context(start.date(), end.date())
-    if context is None:
-        return spans
-    events, conv_projects = context
+    if context is not None:
+        events, conv_projects = context
 
-    # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow.
-    from .window_session_attribution import SpanWindow, WorkEventWindow, attribute_spans
-    from typing import cast
+        # FocusSpan structurally matches SpanWindow; WorkEvent matches WorkEventWindow.
+        from .window_session_attribution import SpanWindow, WorkEventWindow, attribute_spans
+        from typing import cast
 
-    needy_spans = [s for _, s in needy]
-    attributions = attribute_spans(
-        cast("Iterable[SpanWindow]", needy_spans),
-        cast("Sequence[WorkEventWindow]", events),
+        needy_spans = [spans[i] for i in needy]
+        attributions = attribute_spans(
+            cast("Iterable[SpanWindow]", needy_spans),
+            cast("Sequence[WorkEventWindow]", events),
+        )
+
+        for idx, attr in zip(needy, attributions):
+            if attr is None or attr.confidence < 0.3:
+                continue
+            projects = conv_projects.get(attr.conversation_id, ())
+            if projects:
+                spans[idx] = replace(spans[idx], project=projects[0])
+
+    still_needy = [i for i in needy if not spans[i].project]
+    if still_needy:
+        spans = _enrich_with_session_overlap(spans, still_needy)
+
+    return spans
+
+
+def _enrich_with_session_overlap(
+    spans: list[FocusSpan], idxs: list[int]
+) -> list[FocusSpan]:
+    """Fallback tier: attribute remaining spans via raw index-DB session overlap.
+
+    Gracefully returns spans unchanged when the polylogue index DB is
+    missing or unreadable.
+    """
+    from ..core.config import get_config
+    from .polylogue_session_attribution import (
+        attribute_spans_by_session_overlap,
+        session_repo_intervals,
     )
 
-    for (idx, span), attr in zip(needy, attributions):
-        if attr is None or attr.confidence < 0.3:
-            continue
-        projects = conv_projects.get(attr.conversation_id, ())
-        if projects:
-            spans[idx] = replace(span, project=projects[0])
+    try:
+        db_path = get_config().polylogue_db
+        if not db_path.exists():
+            return spans
+        intervals = session_repo_intervals(str(db_path))
+    except Exception:
+        return spans
+    if not intervals:
+        return spans
 
+    needy_spans = [spans[i] for i in idxs]
+    attributions = attribute_spans_by_session_overlap(needy_spans, intervals)
+    for i, attr in zip(idxs, attributions):
+        if attr is not None:
+            spans[i] = replace(spans[i], project=attr.project)
     return spans
 
 

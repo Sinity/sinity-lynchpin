@@ -15,7 +15,9 @@ import pytest
 
 from lynchpin.sources import activitywatch
 from lynchpin.sources import polylogue, window_session_attribution
+from lynchpin.sources import polylogue_session_attribution
 from lynchpin.sources.activitywatch_models import FocusSpan
+from lynchpin.sources.polylogue_session_attribution import SessionOverlapAttribution
 from lynchpin.sources.window_session_attribution import SpanAttribution
 
 
@@ -79,6 +81,44 @@ def test_enrich_with_polylogue_caches_unavailable_products(monkeypatch):
     assert activitywatch._enrich_with_polylogue([span], start, end)[0] is span
     assert activitywatch._enrich_with_polylogue([span], start, end)[0] is span
     assert calls == 1
+
+
+def test_enrich_falls_back_to_session_overlap_when_work_events_unavailable(monkeypatch, tmp_path):
+    """Fallback tier fires when the primary (work_events) tier no-ops entirely."""
+    activitywatch._polylogue_attribution_context.cache_clear()
+    span = _span(project=None)
+    start = datetime(2026, 4, 21, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 4, 21, 23, 59, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(
+        polylogue, "work_events",
+        lambda *, start, end: (_ for _ in ()).throw(RuntimeError("insight products missing")),
+    )
+
+    db_path = tmp_path / "index.db"
+    db_path.touch()
+    fake_config = type("Config", (), {"polylogue_db": db_path})()
+    monkeypatch.setattr(
+        "lynchpin.core.config.get_config", lambda: fake_config
+    )
+    monkeypatch.setattr(
+        polylogue_session_attribution, "session_repo_intervals",
+        lambda db_path_str: (object(),),
+    )
+    monkeypatch.setattr(
+        polylogue_session_attribution, "attribute_spans_by_session_overlap",
+        lambda spans, intervals, **kw: [
+            SessionOverlapAttribution(
+                project="sinity-lynchpin", session_id="s1", overlap_s=900.0, confidence=0.9
+            )
+        ],
+    )
+
+    result = activitywatch._enrich_with_polylogue([span], start, end)
+
+    assert result[0].project == "sinity-lynchpin"
+    assert span.project is None
+    assert result[0] is not span
 
 
 def test_focus_span_is_frozen():
