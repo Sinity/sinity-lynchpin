@@ -122,7 +122,7 @@ def test_export_raises_on_verification_mismatch(tmp_path):
     import duckdb
     import pytest
 
-    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, export_table, verify_day_partition
+    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, export_table, verify_exported_days
 
     db = tmp_path / "telemetry.sqlite"
     lake = tmp_path / "lake"
@@ -136,10 +136,13 @@ def test_export_raises_on_verification_mismatch(tmp_path):
         conn, table="gpu_sample", time_col="observed_at", lake_root=lake,
         today=date(2026, 8, 17),
     )
-    part_dir = lake / "gpu_sample" / "dt=2026-08-15"
+    out_dir = lake / "gpu_sample"
+    part_dir = out_dir / "dt=2026-08-15"
 
     # Sanity: the partition just written by export_table verifies clean.
-    assert verify_day_partition(conn, table="gpu_sample", time_col="observed_at", day="2026-08-15", part_dir=part_dir) == 3
+    assert verify_exported_days(
+        conn, table="gpu_sample", time_col="observed_at", target_days=["2026-08-15"], out_dir=out_dir
+    ) == {"2026-08-15": 3}
 
     # Simulate a write that landed short (e.g. a truncated COPY): drop one row
     # from the already-written partition without touching the source.
@@ -149,4 +152,6 @@ def test_export_raises_on_verification_mismatch(tmp_path):
     )
 
     with pytest.raises(LakeVerificationError):
-        verify_day_partition(conn, table="gpu_sample", time_col="observed_at", day="2026-08-15", part_dir=part_dir)
+        verify_exported_days(
+            conn, table="gpu_sample", time_col="observed_at", target_days=["2026-08-15"], out_dir=out_dir
+        )

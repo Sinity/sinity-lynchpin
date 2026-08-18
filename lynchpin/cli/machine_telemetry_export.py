@@ -68,28 +68,52 @@ def _existing_lake_days(lake_root: Path, table: str) -> set[str]:
     return days
 
 
-def verify_day_partition(conn: Any, *, table: str, time_col: str, day: str, part_dir: Path) -> int:
-    """Compare a written parquet day-partition against its SQLite source; return row count.
+def verify_exported_days(
+    conn: Any, *, table: str, time_col: str, target_days: list[str], out_dir: Path
+) -> dict[str, int]:
+    """Compare every just-written day-partition against its SQLite source; return row counts by day.
 
-    Raises `LakeVerificationError` if row count or the `sum(id)` natural-key
-    checksum disagree -- `id` is AUTOINCREMENT on every collector table and
-    every table is insert-only, so the sum is a cheap, deterministic proxy for
-    "same set of rows" without hashing every column.
+    One grouped query against each side (not one query per day): on the two
+    tables with no usable `observed_at` index (`service_state`,
+    `cgroup_memory_sample`), a per-day SQLite query is a full table scan --
+    N of those turns verification into the same O(days) full-scan pathology
+    the design doc measured for the un-de-chunked promoter. `id` is
+    AUTOINCREMENT on every collector table and every table is insert-only, so
+    `sum(id)` is a cheap, deterministic proxy for "same set of rows" without
+    hashing every column.
+
+    Raises `LakeVerificationError` on the first day whose row count or
+    checksum disagree.
     """
-    src_count, src_checksum = conn.execute(
-        f"SELECT count(*), sum(id) FROM src.{table} "
-        f"WHERE substr({time_col}, 1, 10) = ?",
-        [day],
-    ).fetchone()
-    pq_count, pq_checksum = conn.execute(
-        f"SELECT count(*), sum(id) FROM read_parquet('{part_dir}/*.parquet')"
-    ).fetchone()
-    if pq_count != src_count or pq_checksum != src_checksum:
-        raise LakeVerificationError(
-            f"{table} dt={day}: sqlite count={src_count} checksum={src_checksum} "
-            f"!= parquet count={pq_count} checksum={pq_checksum}"
-        )
-    return int(pq_count)
+    if not target_days:
+        return {}
+    day_list_sql = ", ".join(f"'{d}'" for d in target_days)
+    src_rows = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            f"SELECT substr({time_col}, 1, 10) AS dt, count(*), sum(id) FROM src.{table} "
+            f"WHERE substr({time_col}, 1, 10) IN ({day_list_sql}) GROUP BY dt"
+        ).fetchall()
+    }
+    globs = [str(out_dir / f"dt={day}" / "*.parquet") for day in target_days]
+    pq_rows = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            "SELECT CAST(dt AS VARCHAR), count(*), sum(id) FROM read_parquet(?, hive_partitioning = true) GROUP BY dt",
+            [globs],
+        ).fetchall()
+    }
+    counts: dict[str, int] = {}
+    for day in target_days:
+        src_count, src_checksum = src_rows.get(day, (0, None))
+        pq_count, pq_checksum = pq_rows.get(day, (0, None))
+        if pq_count != src_count or pq_checksum != src_checksum:
+            raise LakeVerificationError(
+                f"{table} dt={day}: sqlite count={src_count} checksum={src_checksum} "
+                f"!= parquet count={pq_count} checksum={pq_checksum}"
+            )
+        counts[day] = int(pq_count)
+    return counts
 
 
 def export_table(
@@ -135,13 +159,11 @@ def export_table(
         """
     )
 
-    rows_exported = 0
+    verified_counts = verify_exported_days(conn, table=table, time_col=time_col, target_days=target_days, out_dir=out_dir)
+    rows_exported = sum(verified_counts.values())
     bytes_written = 0
     for day in target_days:
-        part_dir = out_dir / f"dt={day}"
-        pq_count = verify_day_partition(conn, table=table, time_col=time_col, day=day, part_dir=part_dir)
-        rows_exported += pq_count
-        for f in part_dir.glob("*.parquet"):
+        for f in (out_dir / f"dt={day}").glob("*.parquet"):
             bytes_written += f.stat().st_size
 
     return TableExportResult(
