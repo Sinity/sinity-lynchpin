@@ -107,6 +107,28 @@ def _default_machine_db() -> Path | None:
     return db if db.exists() else None
 
 
+def _observed_at_window(
+    start: date | None, end: date | None
+) -> tuple[list[str], list[object]]:
+    """Return (where_clauses, params) selecting the inclusive day window.
+
+    ``observed_at`` is TEXT ISO8601-with-offset and always UTC, so a half-open
+    text range selects the same rows as a date comparison while remaining
+    *sargable*: ``date(observed_at) >= ?`` wraps the column in a function, which
+    degrades the plan from ``SEARCH ... USING INDEX ...observed_at`` to a full
+    ``SCAN`` of every row in the table.
+    """
+    where: list[str] = []
+    params: list[object] = []
+    if start is not None:
+        where.append("observed_at >= ?")
+        params.append(start.isoformat())
+    if end is not None:
+        where.append("observed_at < ?")
+        params.append((end + timedelta(days=1)).isoformat())
+    return where, params
+
+
 def readiness() -> MachineSourceReadiness:
     cfg = get_config()
     live_rows = count_sqlite_rows(cfg.machine_telemetry_db, "metric_sample")
@@ -164,14 +186,7 @@ def metric_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     with connect_readonly(db) as conn:
         validate_metric_schema(conn)
         sql = "SELECT " + ", ".join(metric_columns(conn)) + " FROM metric_sample"
@@ -364,14 +379,7 @@ def service_states(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     with connect_readonly(db) as conn:
         validate_service_state_schema(conn)
         columns = service_state_columns(conn)
@@ -448,14 +456,7 @@ def block_device_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     sql = (
         "SELECT "
         + ", ".join(EXPECTED_BLOCK_DEVICE_COLUMNS)
@@ -520,14 +521,7 @@ def service_cgroup_io_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     sql = (
         "SELECT "
         + ", ".join(EXPECTED_SERVICE_CGROUP_IO_COLUMNS)
@@ -583,14 +577,7 @@ def service_cgroup_pressure_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     sql = (
         "SELECT "
         + ", ".join(EXPECTED_SERVICE_CGROUP_PRESSURE_COLUMNS)
@@ -658,14 +645,7 @@ def process_io_delta_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     with connect_readonly(db) as conn:
         if not table_exists(conn, "process_io_delta_sample"):
             return
@@ -749,14 +729,7 @@ def process_memory_samples(
             return
         validate_process_memory_schema(conn)
         columns = process_memory_columns(conn)
-        where: list[str] = []
-        params: list[object] = []
-        if start is not None:
-            where.append("date(observed_at) >= ?")
-            params.append(start.isoformat())
-        if end is not None:
-            where.append("date(observed_at) <= ?")
-            params.append(end.isoformat())
+        where, params = _observed_at_window(start, end)
         sql = "SELECT " + ", ".join(columns) + " FROM process_memory_sample"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -817,14 +790,7 @@ def cgroup_memory_samples(
             return
         validate_cgroup_memory_schema(conn)
         columns = cgroup_memory_columns(conn)
-        where: list[str] = []
-        params: list[object] = []
-        if start is not None:
-            where.append("date(observed_at) >= ?")
-            params.append(start.isoformat())
-        if end is not None:
-            where.append("date(observed_at) <= ?")
-            params.append(end.isoformat())
+        where, params = _observed_at_window(start, end)
         sql = "SELECT " + ", ".join(columns) + " FROM cgroup_memory_sample"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -904,14 +870,7 @@ def kill_events(
             return
         validate_kill_event_schema(conn)
         columns = kill_event_columns(conn)
-        where: list[str] = []
-        params: list[object] = []
-        if start is not None:
-            where.append("date(observed_at) >= ?")
-            params.append(start.isoformat())
-        if end is not None:
-            where.append("date(observed_at) <= ?")
-            params.append(end.isoformat())
+        where, params = _observed_at_window(start, end)
         sql = "SELECT " + ", ".join(columns) + " FROM kill_event"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -1106,14 +1065,7 @@ def gpu_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     sql = "SELECT " + ", ".join(EXPECTED_GPU_COLUMNS) + " FROM gpu_sample"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -1163,14 +1115,7 @@ def network_samples(
     db = path
     if not db.exists():
         return
-    where: list[str] = []
-    params: list[object] = []
-    if start is not None:
-        where.append("date(observed_at) >= ?")
-        params.append(start.isoformat())
-    if end is not None:
-        where.append("date(observed_at) <= ?")
-        params.append(end.isoformat())
+    where, params = _observed_at_window(start, end)
     default_interface = default_route_interface()
     if default_interface is not None:
         where.append("interface = ?")

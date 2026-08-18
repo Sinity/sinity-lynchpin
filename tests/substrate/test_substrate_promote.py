@@ -67,16 +67,6 @@ def test_machine_sqlite_window_filter_uses_half_open_text_range() -> None:
     assert params == ["2026-05-01", "2026-05-04"]
 
 
-def test_machine_fast_path_chunks_window_by_day() -> None:
-    from lynchpin.analysis.active.substrate_promote_machine import _iter_day_windows
-
-    assert list(_iter_day_windows(date(2026, 5, 1), date(2026, 5, 3))) == [
-        (date(2026, 5, 1), date(2026, 5, 1)),
-        (date(2026, 5, 2), date(2026, 5, 2)),
-        (date(2026, 5, 3), date(2026, 5, 3)),
-    ]
-
-
 def test_machine_experiment_promotion_enriches_manifest_validation(tmp_path: Path) -> None:
     from lynchpin.analysis.active.substrate_promote_machine import (
         _validated_experiment_runs,

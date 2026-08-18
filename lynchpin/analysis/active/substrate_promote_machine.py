@@ -14,7 +14,7 @@ import logging
 import time
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .substrate_promote_status import (
     SOURCE_MACHINE,
@@ -56,7 +56,15 @@ def promote_machine_tables(
     )):
         return
 
-    # ── fast path: DuckDB SQLite ATTACH (metric/gpu/network/service_state) ──
+    # ── fast path: DuckDB SQLite ATTACH — every sqlite-backed machine table ──
+    # process_io_delta/process_memory/cgroup_memory/kill_event used to be
+    # excluded from this path and promoted row-by-row in Python afterwards.
+    # They never converged: the row-by-row promoters ran sequentially after the
+    # ATTACH tables, and process_io_delta_sample (22 M rows) starved every step
+    # behind it, so machine_cgroup_memory_sample held ZERO rows against
+    # 4.68 M upstream for the life of the substrate (sinnix-a1dp.1) — not a
+    # cgroup-memory bug, just third in a queue that never drained.
+    fast_ok = False
     sqlite_path = _machine_sqlite_path()
     if sqlite_path and sqlite_path.exists():
         try:
@@ -69,35 +77,40 @@ def promote_machine_tables(
                 counts=counts,
                 selection=selection,
             )
+            fast_ok = True
         except Exception as exc:
             log.warning(
                 "substrate_promote: fast machine promotion failed, "
                 "falling back to Python iterator path: %s",
                 exc,
             )
-            # ── slow path: Python row-by-row (fallback for metric/gpu/
-            # network/service_state/process_io/process_memory/cgroup_memory) ──
-            _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
-    else:
-        _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
 
-    # Each of the remaining per-table promoters already records its own
-    # success/error status internally; call them as INDEPENDENT steps
-    # (not chained inside one shared try/except) so a bug in one — including
-    # one whose own exception handler itself raises, e.g. because a prior
-    # DuckDB internal error left the connection aborted — cannot silently
-    # skip the promotion attempt (and status write) for every source called
-    # after it. This was an observed real failure shape (sinnix-kx4):
-    # machine_experiments' substrate_source_status row went stale in
-    # lockstep with machine_cgroup_memory_sample's, both stuck on the same
-    # date, while sibling sources kept refreshing daily.
-    for step in (
-        _promote_machine_process_io_slow,
-        _promote_machine_process_memory_slow,
-        _promote_machine_cgroup_memory_slow,
-        _promote_machine_kill_event_slow,
-        _promote_experiments,
-    ):
+    # ── slow path: Python row-by-row, fallback only ──
+    # Guarded on fast_ok so the sqlite-backed tables are promoted exactly once;
+    # running both paths would double-insert every row under one refresh_id.
+    steps: tuple[Any, ...] = ()
+    if not fast_ok:
+        _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
+        steps = (
+            _promote_machine_process_io_slow,
+            _promote_machine_process_memory_slow,
+            _promote_machine_cgroup_memory_slow,
+            _promote_machine_kill_event_slow,
+        )
+    # Experiments are not a sqlite source (they are files under the machine
+    # host root), so they run on both paths.
+    steps += (_promote_experiments,)
+
+    # Each per-table promoter already records its own success/error status
+    # internally; call them as INDEPENDENT steps (not chained inside one shared
+    # try/except) so a bug in one — including one whose own exception handler
+    # itself raises, e.g. because a prior DuckDB internal error left the
+    # connection aborted — cannot silently skip the promotion attempt (and
+    # status write) for every source called after it. This was an observed real
+    # failure shape (sinnix-kx4): machine_experiments' substrate_source_status
+    # row went stale in lockstep with machine_cgroup_memory_sample's, both stuck
+    # on the same date, while sibling sources kept refreshing daily.
+    for step in steps:
         try:
             step(conn, refresh_id, window_start, window_end, counts, selection)
         except Exception as exc:
@@ -139,9 +152,13 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
     from the override map are selected by their identical source name.
     """
     from lynchpin.substrate.machine import (
+        _CGROUP_MEMORY_COLUMNS,
         _GPU_SAMPLE_COLUMNS,
+        _KILL_EVENT_COLUMNS,
         _METRIC_SAMPLE_COLUMNS,
         _NETWORK_SAMPLE_COLUMNS,
+        _PROCESS_IO_DELTA_COLUMNS,
+        _PROCESS_MEMORY_COLUMNS,
         _SERVICE_STATE_COLUMNS,
     )
 
@@ -181,6 +198,26 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
                 "gap_codes": gap,
             },
         ),
+        "process_io_delta_sample": (
+            _PROCESS_IO_DELTA_COLUMNS,
+            {"observed_at": ts, "source_schema_version": schema_ver},
+        ),
+        "process_memory_sample": (
+            _PROCESS_MEMORY_COLUMNS,
+            {"observed_at": ts, "source_schema_version": schema_ver},
+        ),
+        "cgroup_memory_sample": (
+            _CGROUP_MEMORY_COLUMNS,
+            {"observed_at": ts, "source_schema_version": schema_ver},
+        ),
+        "kill_event": (
+            _KILL_EVENT_COLUMNS,
+            {
+                "observed_at": ts,
+                "source_schema_version": schema_ver,
+                "source_row_id": "id",
+            },
+        ),
     }
 
 
@@ -194,10 +231,12 @@ def _promote_machine_fast(
     counts: dict[str, int],
     selection: SourceSelection,
 ) -> None:
-    """Bulk-transfer machine tables via DuckDB SQLite ATTACH.
+    """Bulk-transfer every sqlite-backed machine table via DuckDB SQLite ATTACH.
 
-    Avoids the Python-object roundtrip penalty — 1.5 M rows transfer in
-    ~1.5 s instead of hours.
+    Avoids the Python-object roundtrip penalty, and issues exactly one
+    statement per table: DuckDB reads the whole source table for each statement
+    regardless of the predicate (no filter pushdown into SQLite), so statement
+    count is the cost driver, not window width.
     """
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
@@ -214,6 +253,10 @@ def _promote_machine_fast(
         ("service_state", "machine_service_state", SOURCE_MACHINE_SERVICE_STATE, selection.includes(SOURCE_MACHINE_SERVICE_STATE)),
         ("gpu_sample", "machine_gpu_sample", SOURCE_MACHINE_GPU, selection.includes(SOURCE_MACHINE_GPU)),
         ("network_sample", "machine_network_sample", SOURCE_MACHINE_NETWORK, selection.includes(SOURCE_MACHINE_NETWORK)),
+        ("process_io_delta_sample", "machine_process_io_delta_sample", SOURCE_MACHINE_PROCESS_IO_DELTA, selection.includes(SOURCE_MACHINE_PROCESS_IO_DELTA)),
+        ("process_memory_sample", "machine_process_memory_sample", SOURCE_MACHINE_PROCESS_MEMORY, selection.includes(SOURCE_MACHINE_PROCESS_MEMORY)),
+        ("cgroup_memory_sample", "machine_cgroup_memory_sample", SOURCE_MACHINE_CGROUP_MEMORY, selection.includes(SOURCE_MACHINE_CGROUP_MEMORY)),
+        ("kill_event", "machine_kill_event", SOURCE_MACHINE_KILL_EVENT, selection.includes(SOURCE_MACHINE_KILL_EVENT)),
     ]
 
     for src_table, dst_table, source, enabled in tables:
@@ -236,15 +279,24 @@ def _promote_machine_fast(
         try:
             columns, overrides = projections[src_table]
             select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-            for chunk_start, chunk_end in _iter_day_windows(window_start, window_end):
-                date_filter, date_params = _source_window_filter(chunk_start, chunk_end)
-                conn.execute(
-                    f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
-                    f"SELECT {select_exprs}, ? AS refresh_id "
-                    f"FROM machine_src.{src_table} {date_filter}",
-                    [write_id, *date_params],
-                )
-                gc.collect()
+            # ONE statement for the whole window, not one per day. DuckDB does
+            # not push this predicate down into SQLite -- EXPLAIN shows
+            # SQLITE_SCAN under a FILTER -- so every statement issued here
+            # reads the ENTIRE source table regardless of any observed_at
+            # index. Chunking by day therefore multiplied a full table scan by
+            # the window length: at 25s per scan of service_state, a 90-day
+            # window cost ~37 minutes for that table alone and the DAG step
+            # never converged. INSERT..SELECT streams, so one statement is also
+            # the cheaper shape in memory (measured peak 1.6 GB on the 22 M-row
+            # process_io_delta_sample).
+            date_filter, date_params = _source_window_filter(window_start, window_end)
+            conn.execute(
+                f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                f"SELECT {select_exprs}, ? AS refresh_id "
+                f"FROM machine_src.{src_table} {date_filter}",
+                [write_id, *date_params],
+            )
+            gc.collect()
             # Full window staged successfully — swap onto the real
             # refresh_id as two fast, separate autocommit statements (NOT one
             # transaction: DuckDB's PK index does not see an in-transaction
@@ -297,13 +349,6 @@ def _promote_machine_fast(
 
     total_elapsed = time.monotonic() - t_total
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
-
-
-def _iter_day_windows(window_start: date, window_end: date) -> Iterator[tuple[date, date]]:
-    current = window_start
-    while current <= window_end:
-        yield current, current
-        current += timedelta(days=1)
 
 
 def _source_window_filter(window_start: date, window_end: date) -> tuple[str, list[str]]:

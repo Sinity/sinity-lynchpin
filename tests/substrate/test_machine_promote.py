@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 
 def test_promote_machine_metric_samples_round_trip(tmp_path):
@@ -715,3 +715,156 @@ def test_load_machine_promotion_freshness_missing_substrate_rows_is_stale(tmp_pa
     assert by_table["machine_cgroup_memory_sample"]["stale"] is True
     assert by_table["machine_cgroup_memory_sample"]["lag_hours"] is None
     assert by_table["machine_cgroup_memory_sample"]["substrate_max_observed_at"] is None
+
+
+def _seed_attach_fixture(path, days):
+    """Build a live-source SQLite with the two tables that never converged.
+
+    Column names mirror the Sinnix collector's real schema, because the ATTACH
+    fast path selects source columns by name.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE cgroup_memory_sample (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              observed_at TEXT NOT NULL, host TEXT NOT NULL, boot_id TEXT,
+              schema_version INTEGER NOT NULL, label TEXT NOT NULL,
+              scope TEXT NOT NULL, control_group TEXT NOT NULL,
+              memory_current_bytes INTEGER, memory_peak_bytes INTEGER,
+              memory_swap_current_bytes INTEGER, memory_swap_peak_bytes INTEGER,
+              memory_high_bytes INTEGER, memory_max_bytes INTEGER,
+              memory_anon_bytes INTEGER, memory_file_bytes INTEGER,
+              memory_kernel_bytes INTEGER, memory_slab_bytes INTEGER,
+              memory_sock_bytes INTEGER, memory_shmem_bytes INTEGER,
+              memory_swapcached_bytes INTEGER, memory_zswap_bytes INTEGER,
+              memory_zswapped_bytes INTEGER, cgroup_populated INTEGER,
+              cgroup_frozen INTEGER, cgroup_freeze INTEGER,
+              memory_events_high INTEGER, memory_events_max INTEGER,
+              memory_events_oom INTEGER, memory_events_oom_kill INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE process_io_delta_sample (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              observed_at TEXT NOT NULL, host TEXT NOT NULL, boot_id TEXT,
+              schema_version INTEGER NOT NULL, interval_s REAL NOT NULL,
+              pid INTEGER NOT NULL, process_start_time_ticks INTEGER NOT NULL,
+              comm TEXT, exe TEXT, cgroup TEXT, unit TEXT, scope TEXT,
+              command_line TEXT,
+              read_bytes_delta INTEGER NOT NULL, write_bytes_delta INTEGER NOT NULL,
+              cancelled_write_bytes_delta INTEGER NOT NULL,
+              read_chars_delta INTEGER NOT NULL, write_chars_delta INTEGER NOT NULL,
+              read_syscalls_delta INTEGER NOT NULL, write_syscalls_delta INTEGER NOT NULL,
+              total_bytes_delta INTEGER NOT NULL, total_syscalls_delta INTEGER NOT NULL
+            )
+            """
+        )
+        for day in days:
+            ts = f"{day}T10:00:00+00:00"
+            conn.execute(
+                "INSERT INTO cgroup_memory_sample "
+                "(observed_at, host, boot_id, schema_version, label, scope, control_group, "
+                " memory_current_bytes) VALUES (?, 'sinnix-prime', 'boot-a', 1, "
+                "'user.agent', 'user', '/agent.slice', 4096)",
+                [ts],
+            )
+            conn.execute(
+                "INSERT INTO process_io_delta_sample "
+                "(observed_at, host, boot_id, schema_version, interval_s, pid, "
+                " process_start_time_ticks, comm, read_bytes_delta, write_bytes_delta, "
+                " cancelled_write_bytes_delta, read_chars_delta, write_chars_delta, "
+                " read_syscalls_delta, write_syscalls_delta, total_bytes_delta, "
+                " total_syscalls_delta) "
+                "VALUES (?, 'sinnix-prime', 'boot-a', 1, 10.0, 42, 99, 'python3', "
+                "1, 2, 0, 3, 4, 5, 6, 3, 11)",
+                [ts],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class _CountingConn:
+    """Forwards to a real DuckDB connection, recording executed SQL."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.statements: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.statements.append(sql)
+        return self._inner.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement(
+    tmp_path, monkeypatch
+):
+    """sinnix-a1dp.1 / sinnix-2g54 regression, two invariants in one route.
+
+    1. cgroup_memory and process_io_delta must actually LAND. They were
+       excluded from the ATTACH fast path and promoted row-by-row afterwards,
+       queued behind the 22 M-row process_io promoter; that queue never
+       drained, so machine_cgroup_memory_sample held zero rows for the life of
+       the substrate while the upstream table held 4.68 M.
+    2. Each table must cost exactly ONE INSERT for the whole window. DuckDB
+       does not push the date predicate into SQLite, so every statement issued
+       reads the entire source table; chunking by day multiplied a full table
+       scan by the window length, which is why the step stopped converging as
+       the store grew.
+    """
+    from types import SimpleNamespace
+
+    from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda *a, **k: SimpleNamespace(status="ready", reason=None),
+    )
+
+    days = ["2026-05-01", "2026-05-02", "2026-05-03"]
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_attach_fixture(live_db, days)
+
+    counts: dict[str, int] = {}
+    with connect(tmp_path / "sub.duckdb") as real_conn:
+        apply_schema(real_conn)
+        conn = _CountingConn(real_conn)
+        _promote_machine_fast(
+            conn,
+            refresh_id="test-refresh",
+            sqlite_path=live_db,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 3),
+            counts=counts,
+            selection=SourceSelection.from_collection(None),
+        )
+
+        assert counts["machine_cgroup_memory_sample"] == 3
+        assert counts["machine_process_io_delta_sample"] == 3
+
+        rows = real_conn.execute(
+            "SELECT label, memory_current_bytes FROM machine_cgroup_memory_sample "
+            "WHERE refresh_id = 'test-refresh' ORDER BY observed_at"
+        ).fetchall()
+        assert rows == [("user.agent", 4096)] * 3
+
+    inserts = [
+        s
+        for s in conn.statements
+        if s.startswith("INSERT INTO machine_process_io_delta_sample")
+    ]
+    assert len(inserts) == 1, (
+        f"one INSERT per table for the whole window, got {len(inserts)} "
+        f"for a {len(days)}-day window"
+    )
