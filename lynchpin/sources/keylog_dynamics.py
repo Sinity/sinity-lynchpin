@@ -1,6 +1,6 @@
 """Typing dynamics from raw scribe-tap keylog events (inter-key intervals).
 
-The keylog capture (``captures/keylog/logs/YYYY-MM-DD.jsonl``) records every
+The keylog capture (``activity/keylog/logs/YYYY-MM-DD.jsonl``) records every
 key press with millisecond timestamps. Daily keypress *counts* were already a
 product; this source adds the *dynamics* — how the typing happened:
 
@@ -53,7 +53,7 @@ class TypingDay:
 
 
 def _logs_root() -> Path:
-    return get_config().captures_root / "keylog/logs"
+    return get_config().keylog_root / "logs"
 
 
 def _press_times_ms(path: Path) -> list[tuple[datetime, float]]:

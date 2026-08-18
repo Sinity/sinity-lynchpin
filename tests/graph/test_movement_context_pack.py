@@ -255,7 +255,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     (analysis_root / "machine_below_export_handoff.json").write_text(
-        '{"planned_window_count":2,"failed_capture_count":1,"root":"/realm/data/captures/stability-lab","items":[{"episode_kind":"io_pressure"},{"episode_kind":"load_pressure"}]}',
+        '{"planned_window_count":2,"failed_capture_count":1,"root":"/realm/data/machine/stability-lab","items":[{"episode_kind":"io_pressure"},{"episode_kind":"load_pressure"}]}',
         encoding="utf-8",
     )
     (analysis_root / "machine_work_state_windows.json").write_text(
@@ -404,7 +404,7 @@ def test_context_pack_renders_machine_analysis_artifacts(monkeypatch, tmp_path):
     assert "Work observations: 1 daily groups" in rendered
     assert "Process attribution: bounded_below=0/3; workload_resource=1/3; residual_unattributed=2" in rendered
     assert "Below analysis coverage: bounded_windows=4; top_processes=5; top_cgroups=6; live_store_indexes=7" in rendered
-    assert "Below export handoff: 2 planned windows; failed=1; kinds=io_pressure×1, load_pressure×1; root=/realm/data/captures/stability-lab" in rendered
+    assert "Below export handoff: 2 planned windows; failed=1; kinds=io_pressure×1, load_pressure×1; root=/realm/data/machine/stability-lab" in rendered
     assert "Command performance: 3 commands" in rendered
     assert "Observational command deltas: 1 matched cohorts" in rendered
     assert "Attribution candidates: 1 non-causal candidates; frontier=1; validation=design_ready×1; families=stage_regression_or_workload_mix×1; top=command.pytest.duration_seconds" in rendered

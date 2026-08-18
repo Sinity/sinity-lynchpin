@@ -78,8 +78,8 @@ def test_machine_status_summarizes_generated_artifacts(monkeypatch, tmp_path):
         {
             "planned_window_count": 4,
             "failed_capture_count": 1,
-            "root": "/realm/data/captures/stability-lab",
-            "live_store": "/realm/data/captures/machine/below/store",
+            "root": "/realm/data/machine/stability-lab",
+            "live_store": "/realm/data/machine/below/store",
         },
         sort_keys=True,
     )

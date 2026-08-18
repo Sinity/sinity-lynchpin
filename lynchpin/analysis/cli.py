@@ -222,7 +222,7 @@ def _register_machine(app: typer.Typer) -> None:
 
     @app.command("machine-below", help="Build bounded below process/cgroup analysis from exported windows")
     def _machine_below(
-        root: str = typer.Option("/realm/data/captures/stability-lab", "--root"),
+        root: str = typer.Option("/realm/data/machine/stability-lab", "--root"),
         top_n: int = typer.Option(20, "--top-n"),
         out: str | None = typer.Option(None, "--out"),
     ) -> None:
@@ -235,7 +235,7 @@ def _register_machine(app: typer.Typer) -> None:
         begin: str = typer.Option(..., "--begin", help="Begin time accepted by below replay/dump"),
         end: str | None = typer.Option(None, "--end", help="End time accepted by below replay/dump"),
         duration: str | None = typer.Option("5 min", "--duration", help="Duration when --end is omitted"),
-        root: str = typer.Option("/realm/data/captures/stability-lab", "--root"),
+        root: str = typer.Option("/realm/data/machine/stability-lab", "--root"),
         capture_id: str | None = typer.Option(None, "--capture-id"),
         top_n: int = typer.Option(20, "--top-n"),
         timeout_s: int = typer.Option(60, "--timeout-s"),
@@ -263,7 +263,7 @@ def _register_machine(app: typer.Typer) -> None:
     def _machine_below_attribution(
         start: str = typer.Option(None, "--start"),
         end: str = typer.Option(None, "--end"),
-        root: str = typer.Option("/realm/data/captures/stability-lab", "--root"),
+        root: str = typer.Option("/realm/data/machine/stability-lab", "--root"),
         top_n: int = typer.Option(5, "--top-n"),
         max_attributions: int = typer.Option(500, "--max-attributions"),
         out: str | None = typer.Option(None, "--out"),
@@ -291,7 +291,7 @@ def _register_machine(app: typer.Typer) -> None:
     def _machine_below_export_pressure_windows(
         start: str = typer.Option(None, "--start"),
         end: str = typer.Option(None, "--end"),
-        root: str = typer.Option("/realm/data/captures/stability-lab", "--root"),
+        root: str = typer.Option("/realm/data/machine/stability-lab", "--root"),
         limit: int = typer.Option(10, "--limit"),
         padding_seconds: int = typer.Option(60, "--padding-seconds"),
         min_duration_seconds: int = typer.Option(120, "--min-duration-seconds"),

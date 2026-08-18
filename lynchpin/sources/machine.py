@@ -99,7 +99,7 @@ __all__ = [
 
 
 def canonical_machine_table_path(table: str) -> Path:
-    return get_config().captures_root / f"machine/processed/{table}.ndjson"
+    return get_config().machine_capture_root / f"processed/{table}.ndjson"
 
 
 def _default_machine_db() -> Path | None:

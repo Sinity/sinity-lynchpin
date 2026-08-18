@@ -1503,7 +1503,7 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(*product_paths, manifest),
-        raw_roots=(cfg.captures_root / "activitywatch",),
+        raw_roots=(cfg.data_root / "activity/activitywatch/activitywatch",),
         row_count=_int_or_none(meta.get("row_count")),
         first_date=canonical_first_date or _date_from_iso(meta.get("first_date")),
         last_date=canonical_last_date or _date_from_iso(meta.get("last_date")),
@@ -1546,7 +1546,7 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(*paths, manifest),
-        raw_roots=(cfg.captures_root / "activitywatch",),
+        raw_roots=(cfg.data_root / "activity/activitywatch/activitywatch",),
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -1625,7 +1625,7 @@ def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, usage, manifest),
-        raw_roots=(cfg.derived_root / "title_metadata", cfg.captures_root / "activitywatch"),
+        raw_roots=(cfg.derived_root / "title_metadata", cfg.data_root / "activity/activitywatch/activitywatch"),
         row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -1835,8 +1835,11 @@ def _keylog_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _sinnix_capture_lane_dataset(cfg: LynchpinConfig, *, lane: str) -> MaterializedDataset:
+    # The four lanes routed through here (notifications, mpris, audio-index,
+    # audio-topology) moved from captures/ to activity/ in the 2026-08-17
+    # subject recut -- mirrors lynchpin.sources.sinnix_capture_lanes.lane_root.
     contract = source_contract(lane.replace("-", "_"))
-    root = cfg.captures_root / lane
+    root = cfg.data_root / "activity" / lane
     return _raw_source_dataset(
         cfg,
         name=contract.name,

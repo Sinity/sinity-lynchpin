@@ -1,6 +1,6 @@
 """Shallow itemization of capture roots that have no dedicated source module.
 
-Several `captures/*` roots (audio, screenshots, screen recordings) are real,
+Several `activity/*` roots (audio, screenshots, screen recordings) are real,
 growing owner-native data with zero Lynchpin visibility today: they never
 show up in `available_sources()`, coverage, or any analysis. They do not
 warrant a dedicated typed source yet — deep audio/video/image processing is
@@ -16,7 +16,7 @@ jump; see `lynchpin.sources.sinnix_capture_lanes`.
 
 Roots the operator has flagged as dead/unwanted (2026-08-12) are excluded
 rather than itemized as live: `input-dynamics` (dead, superseded by
-`captures/keylog`), `stability-lab` (dead/being retired), and
+`activity/keylog`), `stability-lab` (dead/being retired), and
 `dev/tortoisesvn` (a historical import the operator does not want tracked).
 The raw directories are untouched — only this catalog stopped watching them.
 """
@@ -40,7 +40,8 @@ CaptureKind = Literal[
     "reserved_empty",
 ]
 
-#: (id, relative path under captures_root, kind, note)
+#: (id, relative path under its subject root -- activity/ for every entry
+#: except comms_teams, which lives under comms/ -- kind, note)
 #: Roots already owned by a dedicated source module (activitywatch, arbtt,
 #: asciinema/kitty-scrollback via terminal.py, atuin/zsh via shell/terminal,
 #: keylog, clipboard, irc, machine, webhistory, polylogue, syslog) are
@@ -73,7 +74,7 @@ _REGISTRY: tuple[tuple[str, str, CaptureKind, str], ...] = (
     ),
     (
         "comms_teams",
-        "comms/teams",
+        "teams",
         "historical_archive",
         "frozen historical Microsoft Teams log import; not a continuous capture",
     ),
@@ -127,9 +128,16 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
     reports ``exists=False`` with zeroed counts, same as any other source's
     availability check.
     """
-    base = captures_root or get_config().captures_root
+    # Every registry entry lived under one shared captures_root before the
+    # 2026-08-17 subject recut. All but comms_teams moved to activity/;
+    # comms_teams moved to comms/ (flattened, 2026-08-17 companion commit).
+    # An explicit override still applies uniformly to every entry (tests rely
+    # on this to point the whole registry at one fake tree).
+    activity_base = captures_root if captures_root is not None else get_config().data_root / "activity"
+    comms_base = captures_root if captures_root is not None else get_config().data_root / "comms"
     items: list[CaptureInventoryItem] = []
     for item_id, rel_path, kind, note in _REGISTRY:
+        base = comms_base if item_id == "comms_teams" else activity_base
         path = base / rel_path
         if not path.exists():
             items.append(

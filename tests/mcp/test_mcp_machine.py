@@ -927,8 +927,8 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
         json.dumps({
             "planned_window_count": 1,
             "failed_capture_count": 1,
-            "root": "/realm/data/captures/stability-lab",
-            "live_store": "/realm/data/captures/machine/below/store",
+            "root": "/realm/data/machine/stability-lab",
+            "live_store": "/realm/data/machine/below/store",
             "failed_captures": [{"capture_id": "pressure-empty-1"}],
             "items": [{
                 "capture_id": "pressure-load-1",
@@ -943,7 +943,7 @@ def test_machine_analysis_mcp_tools_read_materialized_artifacts(tmp_path: Path, 
     )
     (analysis_root / "machine_experiment_manifest_diagnostics.json").write_text(
         json.dumps({
-            "root": "/realm/data/captures/machine/experiments",
+            "root": "/realm/data/machine/experiments",
             "root_exists": True,
             "manifest_count": 2,
             "source_loadable_count": 2,

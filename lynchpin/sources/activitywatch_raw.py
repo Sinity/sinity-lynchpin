@@ -53,7 +53,9 @@ def _candidate_dbs(db_path: Optional[Path] = None) -> tuple[Path, ...]:
 
 
 def canonical_activitywatch_events_path() -> Path:
-    return get_config().captures_root / "activitywatch/events.ndjson"
+    # activity/activitywatch/activitywatch since the 2026-08-17 subject
+    # recut merged captures/activitywatch into the nested export-wave tree.
+    return get_config().data_root / "activity/activitywatch/activitywatch/events.ndjson"
 
 
 def events(

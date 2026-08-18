@@ -357,7 +357,7 @@ def test_machine_canonical_fallback_materializes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         machine,
         "get_config",
-        lambda: SimpleNamespace(machine_telemetry_db=missing_live, captures_root=tmp_path),
+        lambda: SimpleNamespace(machine_telemetry_db=missing_live, machine_capture_root=tmp_path / "machine"),
     )
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",

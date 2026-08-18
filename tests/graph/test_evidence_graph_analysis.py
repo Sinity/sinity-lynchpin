@@ -519,7 +519,7 @@ def test_build_evidence_graph_surfaces_machine_artifacts_as_nodes(
     (analysis_root / "machine_below_export_handoff.json").write_text(
         """{
           "planned_window_count": 1,
-          "root": "/realm/data/captures/stability-lab",
+          "root": "/realm/data/machine/stability-lab",
           "items": [
             {
               "episode_kind": "io_pressure",

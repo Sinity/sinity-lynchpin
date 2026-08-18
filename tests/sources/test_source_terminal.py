@@ -103,7 +103,7 @@ def test_commands_default_reader_materializes(monkeypatch, tmp_path):
     import json
 
     calls = []
-    history = tmp_path / "shell/atuin/history.ndjson"
+    history = tmp_path / "activity/shell/atuin/history.ndjson"
     history.parent.mkdir(parents=True)
     history.write_text(
         json.dumps(
@@ -119,7 +119,7 @@ def test_commands_default_reader_materializes(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(terminal, "get_config", lambda: SimpleNamespace(captures_root=tmp_path))
+    monkeypatch.setattr(terminal, "get_config", lambda: SimpleNamespace(data_root=tmp_path))
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
         lambda name, *, window=None: calls.append((name, window)),

@@ -2269,7 +2269,7 @@ def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tm
     monkeypatch.setattr(materialization, "activitywatch_derived_input_files", lambda: (canonical,))
 
     row = materialization._activitywatch_derived_dataset(
-        SimpleNamespace(captures_root=tmp_path / "captures")
+        SimpleNamespace(data_root=tmp_path)
     )
 
     assert row.status == "ready"
@@ -2312,7 +2312,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
 
     row = materialization._activitywatch_event_index_dataset(
-        SimpleNamespace(captures_root=tmp_path / "captures")
+        SimpleNamespace(data_root=tmp_path)
     )
 
     assert row.status == "ready"
@@ -2354,7 +2354,7 @@ def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
 
     row = materialization._activitywatch_event_index_dataset(
-        SimpleNamespace(captures_root=tmp_path / "captures")
+        SimpleNamespace(data_root=tmp_path)
     )
 
     assert row.status == "partial"
@@ -2442,7 +2442,7 @@ def test_activitywatch_derived_audit_marks_old_schema_partial(monkeypatch, tmp_p
     monkeypatch.setattr(materialization, "activitywatch_derived_input_files", lambda: (canonical,))
 
     row = materialization._activitywatch_derived_dataset(
-        SimpleNamespace(captures_root=tmp_path / "captures")
+        SimpleNamespace(data_root=tmp_path)
     )
 
     assert row.status == "partial"
@@ -2520,7 +2520,7 @@ def test_activity_content_audit_marks_manifest_with_changed_upstream_products_pa
     monkeypatch.setattr(materialization, "activity_content_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "activity_content_input_files", lambda: (aw, titles))
 
-    row = materialization._activity_content_dataset(SimpleNamespace(derived_root=tmp_path, captures_root=tmp_path))
+    row = materialization._activity_content_dataset(SimpleNamespace(derived_root=tmp_path, data_root=tmp_path))
 
     assert row.status == "partial"
     assert "older upstream products" in row.reason
@@ -2556,7 +2556,7 @@ def test_activity_content_audit_marks_old_schema_partial(monkeypatch, tmp_path) 
     monkeypatch.setattr(materialization, "activity_content_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "activity_content_input_files", lambda: (aw, titles))
 
-    row = materialization._activity_content_dataset(SimpleNamespace(derived_root=tmp_path, captures_root=tmp_path))
+    row = materialization._activity_content_dataset(SimpleNamespace(derived_root=tmp_path, data_root=tmp_path))
 
     assert row.status == "partial"
     assert "schema is older" in row.reason

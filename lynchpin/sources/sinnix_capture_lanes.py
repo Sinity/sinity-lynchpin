@@ -64,7 +64,10 @@ class LaneEvent:
 
 
 def lane_root(lane: str, root: Path | None = None) -> Path:
-    base = root or get_config().captures_root
+    # All four lanes read through this module (notifications, mpris,
+    # audio-index, audio-topology) moved from captures/ to activity/ in the
+    # 2026-08-17 subject recut.
+    base = root or (get_config().data_root / "activity")
     return base / lane
 
 

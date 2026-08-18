@@ -274,7 +274,7 @@ def _load_git_commits(start: date, end: date) -> dict[date, float]:
 
 def _load_machine_daily() -> dict[str, dict[date, float]]:
     """Daily machine-pressure aggregates from the telemetry capture (read-only)."""
-    path = get_config().captures_root / "machine/telemetry.sqlite"
+    path = get_config().machine_telemetry_db
     out: dict[str, dict[date, float]] = {
         "io_psi_mean": {}, "mem_psi_mean": {}, "swap_max_mb": {}, "kill_events": {},
     }

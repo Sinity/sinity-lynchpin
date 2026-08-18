@@ -125,8 +125,10 @@ def commands(
 
 
 def canonical_atuin_history_path() -> Path:
+    # shell/atuin moved from captures/ to activity/ in the 2026-08-17
+    # subject recut.
     cfg = get_config()
-    return cfg.captures_root / "shell/atuin/history.ndjson"
+    return cfg.data_root / "activity/shell/atuin/history.ndjson"
 
 
 def _datetime_window(start: Optional[datetime], end: Optional[datetime]) -> tuple[date, date] | None:

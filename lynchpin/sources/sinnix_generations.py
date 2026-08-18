@@ -97,7 +97,7 @@ class DailyGenerations:
 
 def _canonical_generations_path() -> Path:
     """Return the canonical path to generations.jsonl."""
-    return get_config().captures_root / "machine" / "generations.jsonl"
+    return get_config().sinnix_generations_jsonl
 
 
 def readiness(*, path: Path | None = None) -> SinnixGenerationsReadiness:

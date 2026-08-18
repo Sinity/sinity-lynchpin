@@ -23,7 +23,14 @@ __all__ = [
 
 
 def activitywatch_event_index_dir(root: Path | None = None) -> Path:
-    base = root or get_config().captures_root
+    # An explicit root already names the activitywatch lane's own parent
+    # (tests use this to point at a fake tree one level up, same contract
+    # as before the recut). Only the default changes: activitywatch moved
+    # from captures/activitywatch to the nested activity/activitywatch/
+    # activitywatch (merged with the export-wave material already there) in
+    # the 2026-08-17 subject recut, so the un-overridden base needs the
+    # extra "activitywatch" segment to land in the same place.
+    base = root or (get_config().data_root / "activity" / "activitywatch")
     return base / "activitywatch/events_by_day"
 
 
