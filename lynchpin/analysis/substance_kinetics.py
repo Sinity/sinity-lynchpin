@@ -236,6 +236,7 @@ def substance_sleep_night_correlation(
 
     from ..core.analytics import _benjamini_hochberg, _pearson_r, _t_test_p
     from ..sources.sleep import entries_in_range as sleep_entries_in_range
+    from ..sources.sleep_composite import composite_minutes_by_date
     from ..sources.substance import entries_in_range as dose_entries_in_range
 
     table = {k.lower(): v for k, v in (half_lives or HALF_LIVES_HOURS).items()}
@@ -257,6 +258,7 @@ def substance_sleep_night_correlation(
     for events in doses.values():
         events.sort()
 
+    composite_minutes = composite_minutes_by_date(start=start, end=end)
     nights: list[dict[str, object]] = []
     for night in sleep_entries_in_range(start=start, end=end, canonical=True):
         if night.is_nap or not night.segments:
@@ -271,7 +273,7 @@ def substance_sleep_night_correlation(
             "score": night.effective_score,
             "deep_pct": metrics.deep_pct if metrics else None,
             "rem_pct": metrics.rem_pct if metrics else None,
-            "duration_min": night.total_minutes or None,
+            "duration_min": composite_minutes.get(night.date) or None,
             "hr_avg": night.signals.hr_avg if night.signals else None,
             "onset_hour": onset_naive.hour + onset_naive.minute / 60.0,
         }
