@@ -138,6 +138,7 @@ files = [
     "lynchpin/analysis/interpretation/velocity_windows.py",
     "lynchpin/analysis/machine/episodes.py",
     "lynchpin/analysis/machine/explain.py",
+    "lynchpin/analysis/machine/signatures.py",
     "lynchpin/analysis/maps/change_surface.py",
     "lynchpin/analysis/maps/cli.py",
     "lynchpin/analysis/maps/dependency_map.py",

@@ -93,7 +93,8 @@ def _threshold(
     """
     median, mad, note = _baseline_band(metric)
     if median is not None:
-        spread = mad if (mad or 0.0) > 1e-9 else max(abs(median) * 0.1, 1e-9)
+        mad_value = mad if mad is not None else 0.0
+        spread = mad_value if mad_value > 1e-9 else max(abs(median) * 0.1, 1e-9)
         value = median + k * spread if direction == "high" else median - k * spread
         return value, note
     return floor, floor_note
@@ -173,7 +174,8 @@ def detect_cache_thrash(
         if rate < threshold:
             continue
         swap_rate = pswpin.get(ts, 0.0) + pswpout.get(ts, 0.0)
-        mem_some = (by_ts.get(ts).memory_psi_some_avg10 if by_ts.get(ts) else None) or 0.0
+        sample_at_ts = by_ts.get(ts)
+        mem_some = (sample_at_ts.memory_psi_some_avg10 if sample_at_ts is not None else None) or 0.0
         if swap_rate <= CACHE_THRASH_SWAP_QUIET_FLOOR_PER_HOUR and mem_some >= explain.EPISODE_MEM_SOME:
             evidence.append(EvidenceRow(ts, "vmstat_workingset_refault_file_rate_per_hour", rate, threshold))
     return SignatureFinding(
