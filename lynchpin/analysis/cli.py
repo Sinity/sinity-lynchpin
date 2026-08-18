@@ -1014,7 +1014,10 @@ def _register_misc(app: typer.Typer) -> None:
     ) -> None:
         start_d = _opt_date(start)
         end_d = _opt_date(end)
-        dag = machine_analysis_dag(start=start_d, end=end_d)
+        # --full also bypasses substrate_promote_machine's incremental
+        # watermark: an operator asking for a full re-run means "no
+        # shortcuts", which for machine tables includes the row-level one.
+        dag = machine_analysis_dag(start=start_d, end=end_d, full_repromote=not incremental)
         requested_window = _rolling_window(start=start_d, end=end_d, days=90)
         code = _run_dag(
             dag,

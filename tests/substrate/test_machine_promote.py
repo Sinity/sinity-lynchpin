@@ -815,7 +815,7 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
        queued behind the 22 M-row process_io promoter; that queue never
        drained, so machine_cgroup_memory_sample held zero rows for the life of
        the substrate while the upstream table held 4.68 M.
-    2. Each table must cost exactly ONE INSERT for the whole window. DuckDB
+    2. Each table must cost exactly ONE statement for the whole window. DuckDB
        does not push the date predicate into SQLite, so every statement issued
        reads the entire source table; chunking by day multiplied a full table
        scan by the window length, which is why the step stopped converging as
@@ -865,6 +865,119 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
         if s.startswith("INSERT INTO machine_process_io_delta_sample")
     ]
     assert len(inserts) == 1, (
-        f"one INSERT per table for the whole window, got {len(inserts)} "
+        f"one INSERT per table regardless of window width, got {len(inserts)} "
         f"for a {len(days)}-day window"
     )
+
+
+def _insert_process_io_day(path, day):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        ts = f"{day}T10:00:00+00:00"
+        conn.execute(
+            "INSERT INTO process_io_delta_sample "
+            "(observed_at, host, boot_id, schema_version, interval_s, pid, "
+            " process_start_time_ticks, comm, read_bytes_delta, write_bytes_delta, "
+            " cancelled_write_bytes_delta, read_chars_delta, write_chars_delta, "
+            " read_syscalls_delta, write_syscalls_delta, total_bytes_delta, "
+            " total_syscalls_delta) "
+            "VALUES (?, 'sinnix-prime', 'boot-a', 1, 10.0, 42, 99, 'python3', "
+            "1, 2, 0, 3, 4, 5, 6, 3, 11)",
+            [ts],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_incremental_watermark_appends_new_day_without_full_rescan(tmp_path, monkeypatch):
+    """sinnix-2g54 §4b regression: steady-state runs must not re-INSERT the
+    whole indexed table every day once a watermark exists.
+
+    Mutating this away (e.g. dropping the watermark check, or always taking
+    the full ATTACH path) makes the second-run assertion on ``inserts_after``
+    fail: a second full ``INSERT INTO machine_process_io_delta_sample ...
+    FROM machine_src.process_io_delta_sample`` statement would appear, and/or
+    the appended day's row would be lost or duplicated.
+    """
+    from types import SimpleNamespace
+
+    from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda *a, **k: SimpleNamespace(status="ready", reason=None),
+    )
+
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_attach_fixture(live_db, ["2026-05-01", "2026-05-02", "2026-05-03"])
+
+    counts: dict[str, int] = {}
+    with connect(tmp_path / "sub.duckdb") as real_conn:
+        apply_schema(real_conn)
+        conn = _CountingConn(real_conn)
+
+        # First run: no watermark yet, takes the full ATTACH path.
+        _promote_machine_fast(
+            conn,
+            refresh_id="test-refresh",
+            sqlite_path=live_db,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 3),
+            counts=counts,
+            selection=SourceSelection.from_collection(None),
+        )
+        assert counts["machine_process_io_delta_sample"] == 3
+        first_run_inserts = [
+            s for s in conn.statements
+            if s.startswith("INSERT INTO machine_process_io_delta_sample")
+        ]
+        assert len(first_run_inserts) == 1
+
+        # A new day lands upstream; the substrate promotion window rolls
+        # forward by one day too (dropping 05-01, adding 05-04).
+        _insert_process_io_day(live_db, "2026-05-04")
+        conn.statements.clear()
+        real_conn.execute("DETACH machine_src")
+        _promote_machine_fast(
+            conn,
+            refresh_id="test-refresh",
+            sqlite_path=live_db,
+            window_start=date(2026, 5, 2),
+            window_end=date(2026, 5, 4),
+            counts=counts,
+            selection=SourceSelection.from_collection(None),
+        )
+
+        # Still 3 rows in the (now-shifted) window: 05-02, 05-03, 05-04 —
+        # not 4 (duplicated) and not fewer (lost).
+        assert counts["machine_process_io_delta_sample"] == 3
+        remaining_days = {
+            row[0].date().isoformat()
+            for row in real_conn.execute(
+                "SELECT observed_at FROM machine_process_io_delta_sample "
+                "WHERE refresh_id = 'test-refresh'"
+            ).fetchall()
+        }
+        assert remaining_days == {"2026-05-02", "2026-05-03", "2026-05-04"}, (
+            "sliding window must prune the day that fell off the trailing "
+            "edge (05-01) and land the new day (05-04)"
+        )
+
+        # The steady-state run must NOT re-issue the full-table ATTACH scan
+        # (``... FROM machine_src.process_io_delta_sample``) — that scan, not
+        # the small pandas-batch insert used by the incremental append path,
+        # is exactly the cost this watermark exists to avoid.
+        attach_scan_inserts = [
+            s for s in conn.statements
+            if s.startswith("INSERT INTO machine_process_io_delta_sample")
+            and "machine_src.process_io_delta_sample" in s
+        ]
+        assert attach_scan_inserts == [], (
+            f"expected zero full-table ATTACH-scan inserts on the incremental "
+            f"run, got {len(attach_scan_inserts)}"
+        )

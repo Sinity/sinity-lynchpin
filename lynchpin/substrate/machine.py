@@ -636,14 +636,21 @@ def promote_machine_metric_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
-    """INSERT machine_metric_sample rows, idempotent on refresh_id."""
+    """INSERT machine_metric_sample rows, idempotent on refresh_id.
+
+    ``delete_existing=False`` is the incremental-watermark append path (see
+    substrate_promote_machine.py): the caller has already deleted the
+    overlapping tail, so rows are inserted directly rather than staged.
+    """
     return promote_rows(
         conn,
         table="machine_metric_sample",
         columns=_METRIC_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, s.source, int(s.source_schema_version),
             s.cpu_package_w, s.cpu_core_w, s.cpu_pkg_c, s.cpu_max_core_c,
@@ -727,6 +734,7 @@ def promote_machine_process_memory_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_process_memory_sample rows, idempotent on refresh_id."""
     return promote_rows(
@@ -735,6 +743,7 @@ def promote_machine_process_memory_samples(
         columns=_PROCESS_MEMORY_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
             s.pid, s.process_start_time_ticks, s.comm, s.exe, s.cgroup,
@@ -782,6 +791,7 @@ def promote_machine_kill_events(
     *,
     refresh_id: str,
     events: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_kill_event rows, idempotent on refresh_id."""
     return promote_rows(
@@ -790,6 +800,7 @@ def promote_machine_kill_events(
         columns=_KILL_EVENT_COLUMNS,
         refresh_id=refresh_id,
         rows=events,
+        delete_existing=delete_existing,
         extractor=lambda e: (
             e.observed_at, e.host, e.boot_id, int(e.source_schema_version),
             e.killer, e.victim_comm, e.victim_pid, e.victim_rss_mib,
@@ -862,6 +873,7 @@ def promote_machine_process_io_delta_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_process_io_delta_sample rows, idempotent on refresh_id."""
     return promote_rows(
@@ -870,6 +882,7 @@ def promote_machine_process_io_delta_samples(
         columns=_PROCESS_IO_DELTA_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
             s.interval_s, s.pid, s.process_start_time_ticks, s.comm, s.exe,
@@ -923,6 +936,7 @@ def promote_machine_gpu_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_gpu_sample rows, idempotent on refresh_id."""
     return promote_rows(
@@ -931,6 +945,7 @@ def promote_machine_gpu_samples(
         columns=_GPU_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, s.source,
             s.gpu_power_w, s.gpu_power_limit_w, s.gpu_temp_c, s.gpu_fan_pct,
@@ -953,6 +968,7 @@ def promote_machine_network_samples(
     *,
     refresh_id: str,
     samples: Iterable[Any],
+    delete_existing: bool = True,
 ) -> int:
     """INSERT machine_network_sample rows, idempotent on refresh_id."""
     return promote_rows(
@@ -961,6 +977,7 @@ def promote_machine_network_samples(
         columns=_NETWORK_SAMPLE_COLUMNS,
         refresh_id=refresh_id,
         rows=samples,
+        delete_existing=delete_existing,
         extractor=lambda s: (
             s.observed_at, s.host, s.boot_id, int(s.source_schema_version),
             s.interface, s.gateway_ip,

@@ -12,7 +12,7 @@ from dataclasses import replace
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,7 @@ def promote_machine_tables(
     window_end: date,
     counts: dict[str, int],
     selection: SourceSelection,
+    full_repromote: bool = False,
 ) -> None:
     if not selection.includes(*(
         SOURCE_MACHINE,
@@ -76,6 +77,7 @@ def promote_machine_tables(
                 window_end=window_end,
                 counts=counts,
                 selection=selection,
+                full_repromote=full_repromote,
             )
             fast_ok = True
         except Exception as exc:
@@ -221,6 +223,59 @@ def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
     }
 
 
+# Tables with no usable ``observed_at`` SQLite index (confirmed via EXPLAIN
+# QUERY PLAN, sinnix-2g54 design note §3): any predicate-filtered read costs a
+# full table scan regardless of window width, so there is nothing for the
+# incremental watermark to save here and these always take the one-scan
+# ATTACH path. Adding the missing index is deliberately rejected (permanent
+# write amplification for a benefit ``_promote_machine_fast``'s single scan
+# already captures).
+_UNINDEXED_MACHINE_TABLES = frozenset({"service_state", "cgroup_memory_sample"})
+
+
+def _incremental_reader_and_promoter(
+    src_table: str,
+) -> tuple[Any, Any, str]:
+    """Return (reader, promoter, sample-kwarg-name) for the watermark append path.
+
+    Deliberately routes through the Python ``sqlite3`` readers rather than the
+    DuckDB ATTACH scan: a real ``sqlite3`` query against an indexed table gets
+    SQLite's own SEARCH plan (sub-second for a one-day tail, per the design
+    note's pushdown measurements), where DuckDB's ATTACH scan never pushes the
+    predicate down and pays a full-table read no matter how narrow the window.
+    """
+    from lynchpin.sources.machine import (
+        gpu_samples,
+        kill_events,
+        metric_samples,
+        network_samples,
+        process_io_delta_samples,
+        process_memory_samples,
+    )
+    from lynchpin.substrate.machine import (
+        promote_machine_gpu_samples,
+        promote_machine_kill_events,
+        promote_machine_metric_samples,
+        promote_machine_network_samples,
+        promote_machine_process_io_delta_samples,
+        promote_machine_process_memory_samples,
+    )
+
+    table_map: dict[str, tuple[Any, Any, str]] = {
+        "metric_sample": (metric_samples, promote_machine_metric_samples, "samples"),
+        "gpu_sample": (gpu_samples, promote_machine_gpu_samples, "samples"),
+        "network_sample": (network_samples, promote_machine_network_samples, "samples"),
+        "process_io_delta_sample": (
+            process_io_delta_samples, promote_machine_process_io_delta_samples, "samples",
+        ),
+        "process_memory_sample": (
+            process_memory_samples, promote_machine_process_memory_samples, "samples",
+        ),
+        "kill_event": (kill_events, promote_machine_kill_events, "events"),
+    }
+    return table_map[src_table]
+
+
 def _promote_machine_fast(
     conn: Any,
     *,
@@ -230,13 +285,25 @@ def _promote_machine_fast(
     window_end: date,
     counts: dict[str, int],
     selection: SourceSelection,
+    full_repromote: bool = False,
 ) -> None:
     """Bulk-transfer every sqlite-backed machine table via DuckDB SQLite ATTACH.
 
     Avoids the Python-object roundtrip penalty, and issues exactly one
-    statement per table: DuckDB reads the whole source table for each statement
-    regardless of the predicate (no filter pushdown into SQLite), so statement
-    count is the cost driver, not window width.
+    statement per table: DuckDB reads the whole source table for every
+    statement (no filter pushdown into SQLite), so statement count is the read
+    cost driver and window width is free.
+
+    Indexed tables (everything but ``_UNINDEXED_MACHINE_TABLES``) additionally
+    check for an existing watermark under this ``refresh_id`` and, when one is
+    found (a prior run already populated this refresh_id/window) and
+    ``full_repromote`` is not set, take the incremental append path instead —
+    see ``_promote_machine_table_incremental``. ``refresh_id`` is a
+    deterministic function of the requested window (see
+    ``materialize._machine_analysis_refresh_id``), so the daily rolling-window
+    call reuses the same refresh_id every day and this is the steady-state
+    path in production; a genuinely new window (first backfill, an ad hoc
+    ``--start``/``--end``) has no watermark yet and takes the full path once.
     """
     t_total = time.monotonic()
     conn.execute("INSTALL SQLITE")
@@ -263,6 +330,55 @@ def _promote_machine_fast(
         if not enabled:
             continue
         t0 = time.monotonic()
+        watermark = None
+        if not full_repromote and src_table not in _UNINDEXED_MACHINE_TABLES:
+            watermark = conn.execute(
+                f"SELECT MAX(observed_at) FROM {dst_table} "
+                f"WHERE refresh_id = ? "
+                f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
+                f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
+                [
+                    refresh_id,
+                    window_start.isoformat(),
+                    (window_end + timedelta(days=1)).isoformat(),
+                ],
+            ).fetchone()[0]
+        if watermark is not None:
+            try:
+                row_count = _promote_machine_table_incremental(
+                    conn,
+                    src_table=src_table,
+                    dst_table=dst_table,
+                    refresh_id=refresh_id,
+                    sqlite_path=sqlite_path,
+                    window_start=window_start,
+                    window_end=window_end,
+                    watermark=watermark,
+                )
+                counts[dst_table] = row_count
+                elapsed = time.monotonic() - t0
+                log.info(
+                    "substrate_promote: %s ← %s (incremental, watermark %s): "
+                    "%s rows in %.1fs",
+                    dst_table, src_table, watermark, f"{row_count:,}", elapsed,
+                )
+                record_source_status(
+                    conn,
+                    refresh_id=refresh_id,
+                    source=source,
+                    status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                    reason=machine_ready.reason if not row_count else None,
+                    row_count=row_count,
+                    window_start=window_start,
+                    window_end=window_end,
+                )
+                continue
+            except Exception as exc:
+                log.warning(
+                    "substrate_promote: %s incremental promotion failed, "
+                    "falling back to full re-promote: %s",
+                    dst_table, exc,
+                )
         # Stage into a private refresh_id first; only swap it onto the real
         # refresh_id once every day-chunk has landed. This mirrors
         # lynchpin.substrate._helpers.promote_rows's interruption-safety
@@ -279,16 +395,29 @@ def _promote_machine_fast(
         try:
             columns, overrides = projections[src_table]
             select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-            # ONE statement for the whole window, not one per day. DuckDB does
-            # not push this predicate down into SQLite -- EXPLAIN shows
-            # SQLITE_SCAN under a FILTER -- so every statement issued here
-            # reads the ENTIRE source table regardless of any observed_at
-            # index. Chunking by day therefore multiplied a full table scan by
-            # the window length: at 25s per scan of service_state, a 90-day
-            # window cost ~37 minutes for that table alone and the DAG step
-            # never converged. INSERT..SELECT streams, so one statement is also
-            # the cheaper shape in memory (measured peak 1.6 GB on the 22 M-row
-            # process_io_delta_sample).
+            # ONE statement for the whole window. DuckDB does not push this
+            # predicate down into SQLite -- EXPLAIN shows SQLITE_SCAN under a
+            # FILTER -- so every statement issued here reads the ENTIRE source
+            # table regardless of the WHERE and regardless of any observed_at
+            # index. Chunking therefore multiplies a full table scan by the
+            # chunk count and buys nothing: measured against the live 28 GB
+            # store, splitting a 90-day window into 4 monthly chunks took
+            # metric_sample from 23.6s to 65.5s for identical output.
+            #
+            # Chunking was originally per-day, and it is tempting to read it as
+            # a memory bound. It is not one. Commit memory here is dominated by
+            # the target table's ART indexes (machine_service_state carries a
+            # 5-column PK plus three secondary indexes), which are memory-
+            # resident, cannot spill, and accumulate across statements written
+            # under one refresh_id. Chunking a 16.6 M-row promote into 4 pieces
+            # hit the SAME "failed to pin block (5.5 GiB/5.5 GiB used)" commit
+            # failure as one statement did -- it just took 18 minutes to get
+            # there instead of 3. Bounding that cost is an index-design
+            # question, not a chunk-size one. Once the watermark path above is
+            # warm, this full path only runs for the first backfill of a given
+            # refresh_id/window or an explicit --full-repromote, which is where
+            # that memory cost belongs (a one-time or operator-invoked cost,
+            # not a steady-state one).
             date_filter, date_params = _source_window_filter(window_start, window_end)
             conn.execute(
                 f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
@@ -349,6 +478,50 @@ def _promote_machine_fast(
 
     total_elapsed = time.monotonic() - t_total
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
+
+
+def _promote_machine_table_incremental(
+    conn: Any,
+    *,
+    src_table: str,
+    dst_table: str,
+    refresh_id: str,
+    sqlite_path: Path,
+    window_start: date,
+    window_end: date,
+    watermark: datetime,
+) -> int:
+    """Append only the rows newer than ``watermark``, via the indexed Python reader.
+
+    Re-reads the watermark's own day in full (cheap — one indexed day) rather
+    than trying to resume mid-day, which sidesteps sub-day dedup entirely: the
+    tail is deleted before the re-read is inserted, so there is no window in
+    which the same row could be both kept and re-inserted under the same
+    primary key (``observed_at, ..., refresh_id``).
+
+    Also prunes rows that fell out the trailing edge of the rolling window
+    (``< window_start``), since the caller's window advances by roughly a day
+    on every run and the full path would otherwise have dropped them.
+    """
+    reader, promoter, sample_kwarg = _incremental_reader_and_promoter(src_table)
+    tail_start = max(watermark.date(), window_start)
+
+    conn.execute(
+        f"DELETE FROM {dst_table} WHERE refresh_id = ? "
+        f"AND observed_at >= CAST(? AS TIMESTAMPTZ)",
+        [refresh_id, tail_start.isoformat()],
+    )
+    conn.execute(
+        f"DELETE FROM {dst_table} WHERE refresh_id = ? "
+        f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
+        [refresh_id, window_start.isoformat()],
+    )
+    kwargs = {sample_kwarg: reader(start=tail_start, end=window_end, path=sqlite_path)}
+    promoter(conn, refresh_id=refresh_id, delete_existing=False, **kwargs)
+    return conn.execute(
+        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
+        [refresh_id],
+    ).fetchone()[0]
 
 
 def _source_window_filter(window_start: date, window_end: date) -> tuple[str, list[str]]:

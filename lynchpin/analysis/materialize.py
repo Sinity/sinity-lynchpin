@@ -902,8 +902,15 @@ def machine_analysis_dag(
     *,
     start: date | None = None,
     end: date | None = None,
+    full_repromote: bool = False,
 ) -> DAG:
-    """Build the source-selected machine-analysis materialization DAG."""
+    """Build the source-selected machine-analysis materialization DAG.
+
+    ``full_repromote`` bypasses the incremental watermark in
+    ``substrate_promote_machine`` and re-transfers the whole window for every
+    machine table — the escape hatch for schema changes and backfills, wired
+    to the CLI's ``--full`` flag.
+    """
     dag = DAG("machine-analysis-materialization")
     machine_start, machine_end = _rolling_window(start=start, end=end, days=90)
     dag.add(Step(
@@ -918,6 +925,7 @@ def machine_analysis_dag(
             window_end=machine_end,
             sources=MACHINE_ANALYSIS_SUBSTRATE_SOURCES,
             write_evidence_graph=False,
+            full_repromote=full_repromote,
         ),
     ))
     _add_machine_analysis_steps(

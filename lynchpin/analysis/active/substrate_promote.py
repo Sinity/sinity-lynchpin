@@ -101,6 +101,7 @@ def run_substrate_promote(
     write_evidence_graph: bool = True,
     window_start: date | None = None,
     window_end: date | None = None,
+    full_repromote: bool = False,
 ) -> PromotionRunResult:
     """Promote materialized artifacts and live source families to the substrate.
 
@@ -124,6 +125,7 @@ def run_substrate_promote(
             write_evidence_graph=write_evidence_graph,
             window_start=window_start,
             window_end=window_end,
+            full_repromote=full_repromote,
         )
     except Exception as exc:  # noqa: BLE001 — record before surfacing promotion failure.
         log.warning("substrate_promote: substrate promotion failed: %s", exc)
@@ -153,6 +155,7 @@ def _do_promote(
     write_evidence_graph: bool,
     window_start: date | None,
     window_end: date | None,
+    full_repromote: bool = False,
 ) -> PromotionRunResult:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
@@ -311,6 +314,7 @@ def _do_promote(
                     window_end=window_end,
                     counts=counts,
                     selection=selection,
+                    full_repromote=full_repromote,
                 ),
             )
 
