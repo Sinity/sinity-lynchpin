@@ -90,12 +90,24 @@ def _threshold(
 ) -> tuple[float, str]:
     """A high/low threshold for ``metric``: baseline-derived when a
     materialized band exists, else the caller's hardcoded floor.
+
+    The floor is also a backstop against a degenerate baseline, not just a
+    no-baseline fallback: a metric that is genuinely almost-always-zero
+    (dstate_task_count's real band is median=0, mad=0 on this host) makes
+    the spread fallback ``max(abs(median) * 0.1, 1e-9)`` collapse to ~0, so
+    ``median + k*spread`` is ~0 too -- "high" would mean "nonzero", which
+    is not what any caller means by a signature threshold. Never return a
+    "high" threshold below the floor, or a "low" threshold above it.
     """
     median, mad, note = _baseline_band(metric)
     if median is not None:
         mad_value = mad if mad is not None else 0.0
         spread = mad_value if mad_value > 1e-9 else max(abs(median) * 0.1, 1e-9)
         value = median + k * spread if direction == "high" else median - k * spread
+        if direction == "high" and value < floor:
+            return floor, f"{note}; floor-clamped ({floor_note})"
+        if direction == "low" and value > floor:
+            return floor, f"{note}; floor-clamped ({floor_note})"
         return value, note
     return floor, floor_note
 
