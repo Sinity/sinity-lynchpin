@@ -51,6 +51,9 @@ EPISODE_MEM_SOME = 20.0
 EPISODE_IO_FULL = 20.0
 EPISODE_AVAIL_FLOOR_MB = 2_048
 EPISODE_SPLIT_GAP = timedelta(seconds=120)
+# Same padding _build_episode applies before attributing culprits; also the
+# span machine_explain() fetches process/IO samples for (sinnix-6o2 perf fix).
+CULPRIT_PAD = timedelta(minutes=2)
 # Severe-mechanism floors used by the cluster classifier (taxonomy §2.1).
 SEVERE_MEM_PSI_SOME = 40.0
 SEVERE_IO_PSI_FULL = 40.0
@@ -176,6 +179,27 @@ def _split_runs(samples: Sequence[MachineMetricSample]) -> list[list[MachineMetr
     return runs
 
 
+def _merged_culprit_windows(
+    samples: Sequence[MachineMetricSample], *, pad: timedelta = CULPRIT_PAD
+) -> list[tuple[datetime, datetime]]:
+    """Padded, merged (start, end) spans that culprit attribution needs.
+
+    Mirrors the padding _build_episode applies, so machine_explain() can fetch
+    process/IO samples only where they will actually be used instead of the
+    whole report window.
+    """
+    spans = sorted(
+        (run[0].observed_at - pad, run[-1].observed_at + pad) for run in _split_runs(samples)
+    )
+    merged: list[list[datetime]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
 def _peak(values: Iterable[float | None]) -> float | None:
     present = [v for v in values if v is not None]
     return max(present) if present else None
@@ -273,8 +297,8 @@ def _build_episode(
         min_avail=min_avail,
         max_swap_ratio=max_swap_ratio,
     )
-    pad_start = started_at - timedelta(minutes=2)
-    pad_end = ended_at + timedelta(minutes=2)
+    pad_start = started_at - CULPRIT_PAD
+    pad_end = ended_at + CULPRIT_PAD
     if cluster.startswith(("C5", "MINOR")) and (peak_io_full or 0.0) >= EPISODE_IO_FULL:
         culprits = _io_culprits(io_samples, start=pad_start, end=pad_end)
     else:
@@ -507,9 +531,9 @@ def build_machine_explain_report(
     )
     kill_assessments = _assess_kills(kills, ordered)
     gaps = _coverage_gaps(ordered, window_start=window_start, window_end=window_end)
-    if not process_samples:
+    if episodes and not process_samples:
         caveats.append("no process memory samples in window — memory-episode culprits unavailable")
-    if not io_samples:
+    if episodes and not io_samples:
         caveats.append("no process IO delta samples in window — IO-episode culprits unavailable")
 
     health, health_available, health_note = _read_health_transitions(
@@ -586,40 +610,57 @@ def machine_explain(
     def clip(items: Iterable[Any], start: datetime, stop: datetime) -> list[Any]:
         return [item for item in items if start <= item.observed_at <= stop]
 
+    # Exact-datetime bounds (not `.date()`) push the filter into SQL instead
+    # of fetching whole calendar days and discarding most rows in Python —
+    # process_io_delta_sample/process_memory_sample are high-cardinality
+    # per-process-per-sample tables where that used to dominate runtime
+    # (sinnix-6o2: ~1.15M rows materialized into Python for a 2-day span,
+    # ~8s of a ~12s report). `clip()` stays as a cheap defensive re-filter.
     samples = clip(
-        source.metric_samples(start=window_start.date(), end=window_end.date(), path=telemetry_db),
+        source.metric_samples(start=window_start, end=window_end, path=telemetry_db),
         window_start,
         window_end,
     )
     prior_metric_samples = clip(
-        source.metric_samples(start=prior_start.date(), end=prior_end.date(), path=telemetry_db),
+        source.metric_samples(start=prior_start, end=prior_end, path=telemetry_db),
         prior_start,
         prior_end,
     )
     kills = clip(
-        source.kill_events(start=window_start.date(), end=window_end.date(), path=telemetry_db),
+        source.kill_events(start=window_start, end=window_end, path=telemetry_db),
         window_start,
         window_end,
     )
     prior_kill_events = clip(
-        source.kill_events(start=prior_start.date(), end=prior_end.date(), path=telemetry_db),
+        source.kill_events(start=prior_start, end=prior_end, path=telemetry_db),
         prior_start,
         prior_end,
     )
-    process_samples = clip(
-        source.process_memory_samples(
-            start=window_start.date(), end=window_end.date(), path=telemetry_db
-        ),
-        window_start,
-        window_end,
-    )
-    io_samples = clip(
-        source.process_io_delta_samples(
-            start=window_start.date(), end=window_end.date(), path=telemetry_db
-        ),
-        window_start,
-        window_end,
-    )
+    # Culprit attribution only ever looks inside a pressure episode's padded
+    # window (_build_episode pads +/-2min), never the full report window, so
+    # fetch process_memory_sample/process_io_delta_sample only for the merged
+    # episode windows rather than the whole span. Those two tables are one
+    # row per process per sample interval; pulling a full 24h of them (even
+    # with the exact-datetime SQL bound above) was still the dominant cost
+    # (sinnix-6o2: ~4.5s of a ~5.5s report) because most processes most of
+    # the time are simply not part of any pressure episode.
+    process_samples: list[MachineProcessMemorySample] = []
+    io_samples: list[MachineProcessIODeltaSample] = []
+    for pad_start, pad_end in _merged_culprit_windows(samples):
+        process_samples.extend(
+            clip(
+                source.process_memory_samples(start=pad_start, end=pad_end, path=telemetry_db),
+                pad_start,
+                pad_end,
+            )
+        )
+        io_samples.extend(
+            clip(
+                source.process_io_delta_samples(start=pad_start, end=pad_end, path=telemetry_db),
+                pad_start,
+                pad_end,
+            )
+        )
 
     return build_machine_explain_report(
         window_start=window_start,

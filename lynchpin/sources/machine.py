@@ -108,15 +108,22 @@ def _default_machine_db() -> Path | None:
 
 
 def _observed_at_window(
-    start: date | None, end: date | None
+    start: date | datetime | None, end: date | datetime | None
 ) -> tuple[list[str], list[object]]:
-    """Return (where_clauses, params) selecting the inclusive day window.
+    """Return (where_clauses, params) selecting the requested window.
 
     ``observed_at`` is TEXT ISO8601-with-offset and always UTC, so a half-open
     text range selects the same rows as a date comparison while remaining
     *sargable*: ``date(observed_at) >= ?`` wraps the column in a function, which
     degrades the plan from ``SEARCH ... USING INDEX ...observed_at`` to a full
     ``SCAN`` of every row in the table.
+
+    ``start``/``end`` accept either a ``date`` (rounds to the inclusive
+    calendar day, the historical contract every existing caller relies on) or
+    a ``datetime`` (pushes the exact bound into SQL instead of the whole
+    day — callers that only need a short window, e.g. an explain report
+    reading a couple of hours, avoid materializing an entire day of
+    per-process rows into Python just to filter most of them back out).
     """
     where: list[str] = []
     params: list[object] = []
@@ -124,9 +131,20 @@ def _observed_at_window(
         where.append("observed_at >= ?")
         params.append(start.isoformat())
     if end is not None:
-        where.append("observed_at < ?")
-        params.append((end + timedelta(days=1)).isoformat())
+        if isinstance(end, datetime):
+            where.append("observed_at <= ?")
+            params.append(end.isoformat())
+        else:
+            where.append("observed_at < ?")
+            params.append((end + timedelta(days=1)).isoformat())
     return where, params
+
+
+def _as_date(value: date | datetime | None) -> date | None:
+    """Narrow a datetime bound to a date for readers that only accept day granularity."""
+    if isinstance(value, datetime):
+        return value.date()
+    return value
 
 
 def readiness() -> MachineSourceReadiness:
@@ -173,7 +191,7 @@ def readiness() -> MachineSourceReadiness:
 
 
 def metric_samples(
-    *, start: date | None = None, end: date | None = None, path: Path | None = None
+    *, start: date | datetime | None = None, end: date | datetime | None = None, path: Path | None = None
 ) -> Iterator[MachineMetricSample]:
     if path is None:
         if db := _default_machine_db():
@@ -628,8 +646,8 @@ def service_cgroup_pressure_samples(
 
 def process_io_delta_samples(
     *,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     path: Path | None = None,
 ) -> Iterator[MachineProcessIODeltaSample]:
     if path is None:
@@ -638,8 +656,8 @@ def process_io_delta_samples(
             return
         yield from _process_io_delta_samples_from_ndjson(
             canonical_machine_table_path("process_io_delta_sample"),
-            start=start,
-            end=end,
+            start=_as_date(start),
+            end=_as_date(end),
         )
         return
     db = path
@@ -695,8 +713,8 @@ def process_io_delta_samples(
 
 def process_memory_samples(
     *,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     path: Path | None = None,
     limit: int | None = None,
 ) -> Iterator[MachineProcessMemorySample]:
@@ -716,10 +734,10 @@ def process_memory_samples(
         ndjson = canonical_machine_table_path("process_memory_sample")
         if ndjson.exists():
             yield from _process_memory_samples_from_ndjson(
-                ndjson, start=start, end=end
+                ndjson, start=_as_date(start), end=_as_date(end)
             )
             return
-        yield from _live_process_memory_samples(start=start, end=end, limit=limit)
+        yield from _live_process_memory_samples(start=_as_date(start), end=_as_date(end), limit=limit)
         return
     db = path
     if not db.exists():
@@ -844,8 +862,8 @@ def cgroup_memory_samples(
 
 def kill_events(
     *,
-    start: date | None = None,
-    end: date | None = None,
+    start: date | datetime | None = None,
+    end: date | datetime | None = None,
     path: Path | None = None,
 ) -> Iterator[MachineKillEvent]:
     """Iterate OOM/earlyoom kill events (sinnix-fjq, schema v5, new table).
@@ -860,7 +878,7 @@ def kill_events(
             return
         ndjson = canonical_machine_table_path("kill_event")
         if ndjson.exists():
-            yield from _kill_events_from_ndjson(ndjson, start=start, end=end)
+            yield from _kill_events_from_ndjson(ndjson, start=_as_date(start), end=_as_date(end))
         return
     db = path
     if not db.exists():
