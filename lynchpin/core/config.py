@@ -86,6 +86,7 @@ class LynchpinConfig:
     machine_capture_root: Path
     machine_host_root: Path
     machine_telemetry_db: Path
+    machine_telemetry_lake_root: Path
     sinnix_generations_jsonl: Path
     borg_drill_jsonl: Path
     xtask_history_db: Path
@@ -321,6 +322,9 @@ class LynchpinConfig:
         )
         machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", default_machine_host_root))
         machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
+        machine_telemetry_lake_root = Path(os.environ.get(
+            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "derived/machine-telemetry"
+        ))
         sinnix_generations_jsonl = Path(os.environ.get(
             "LYNCHPIN_SINNIX_GENERATIONS_JSONL",
             machine_capture_root / "generations.jsonl",
@@ -426,6 +430,7 @@ class LynchpinConfig:
             machine_capture_root=machine_capture_root,
             machine_host_root=machine_host_root,
             machine_telemetry_db=machine_telemetry_db,
+            machine_telemetry_lake_root=machine_telemetry_lake_root,
             sinnix_generations_jsonl=sinnix_generations_jsonl,
             borg_drill_jsonl=borg_drill_jsonl,
             xtask_history_db=xtask_history_db,
