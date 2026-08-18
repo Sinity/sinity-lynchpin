@@ -8,13 +8,17 @@ record shares one envelope::
     {"host": ..., "lane": ..., "payload": {...}, "raw_ref": ..., "schema":
      "sinnix-capture-v1", "schema_version": 1, "seq": ..., "ts": ...}
 
-Four lanes exist today: ``notifications`` (desktop notification bus),
+Five lanes exist today: ``notifications`` (desktop notification bus),
 ``mpris`` (media-player state), ``audio-index`` (speech-segment index over the
-``audio`` capture), and ``audio-topology`` (PipeWire graph add/remove events).
-This module reads the shared envelope and exposes each lane's payload as a
-typed record plus a coverage-aware daily event count — it does not interpret
-notification bodies, decode audio, or resolve the PipeWire graph; that stays
-downstream analysis work if it is ever needed.
+``audio`` capture), ``audio-topology`` (PipeWire graph add/remove events), and
+``screen-frames`` (per-window screen frame capture: geometry, monitor,
+workspace, and focused window identity alongside each frame). This module
+reads the shared envelope and exposes each lane's payload as a typed record
+plus a coverage-aware daily event count — it does not interpret notification
+bodies, decode audio/frame content, or resolve the PipeWire graph; that stays
+downstream analysis work if it is ever needed (see
+``lynchpin.analysis.terminal_reconstruction`` for the screen-frames geometry
+timeline join).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ __all__ = [
     "MprisEvent",
     "AudioIndexEntry",
     "AudioTopologyEvent",
+    "ScreenFrameEvent",
     "LANES",
     "lane_root",
     "iter_lane_events",
@@ -43,11 +48,12 @@ __all__ = [
     "mpris_events",
     "audio_index_entries",
     "audio_topology_events",
+    "screen_frame_events",
     "daily_lane_activity",
 ]
 
 #: Known lane names, matching their capture directory / file-prefix.
-LANES: tuple[str, ...] = ("notifications", "mpris", "audio-index", "audio-topology")
+LANES: tuple[str, ...] = ("notifications", "mpris", "audio-index", "audio-topology", "screen-frames")
 
 _DAY_FILE_RE = re.compile(r"-(\d{8})\.jsonl\Z")
 
@@ -233,6 +239,51 @@ def audio_topology_events(
             action=str(payload.get("action") or ""),
             kind=str(payload.get("kind") or ""),
             object_id=int(raw_id) if raw_id is not None else None,
+            source_path=event.source_path,
+        )
+
+
+@dataclass(frozen=True)
+class ScreenFrameEvent:
+    timestamp: datetime
+    """Grim capture instant (payload ``ts``) -- precedes ``written_at`` by the
+    time it took to hash/dedup/write the frame, so it is the timestamp to
+    align against other capture lanes, not the envelope's wrapper-write time.
+    """
+    written_at: datetime
+    trigger: str
+    monitor: str | None
+    workspace: str | None
+    window_class: str | None
+    window_title: str | None
+    geometry: dict
+    sha256: str | None
+    raw_ref: str | None
+    source_path: str
+
+
+def screen_frame_events(
+    root: Path | None = None, *, start: date | None = None, end: date | None = None
+) -> Iterator[ScreenFrameEvent]:
+    for event in iter_lane_events("screen-frames", root, start=start, end=end):
+        payload = event.payload
+        payload_ts = payload.get("ts")
+        captured_at = (
+            datetime.fromtimestamp(float(payload_ts), tz=timezone.utc)
+            if payload_ts is not None
+            else event.timestamp
+        )
+        yield ScreenFrameEvent(
+            timestamp=captured_at,
+            written_at=event.timestamp,
+            trigger=str(payload.get("trigger") or ""),
+            monitor=payload.get("monitor"),
+            workspace=payload.get("workspace"),
+            window_class=payload.get("window_class"),
+            window_title=payload.get("window_title"),
+            geometry=dict(payload.get("geometry") or {}),
+            sha256=payload.get("sha256"),
+            raw_ref=event.raw_ref,
             source_path=event.source_path,
         )
 

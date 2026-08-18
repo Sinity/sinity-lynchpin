@@ -25,11 +25,14 @@ __all__ = [
     "ShellSession",
     "TerminalRecording",
     "DownloadEvent",
+    "KittyScrollbackCapture",
     "DailyTerminalActivity",
     "commands",
     "shell_sessions",
     "recordings",
     "download_provenance",
+    "kitty_scrollback_root",
+    "kitty_scrollback_captures",
     "daily_terminal_activity",
     "daily_activity",
 ]
@@ -68,6 +71,29 @@ class TerminalRecording:
     duration_s: Optional[float]
     title: Optional[str]
     shell: Optional[str]
+
+
+@dataclass(frozen=True)
+class KittyScrollbackCapture:
+    """One periodic full-ANSI scrollback snapshot of a live kitty window.
+
+    Sourced from ``activity/kitty-scrollback/<TIMESTAMP>-<host>-pid<kitty_pid>-
+    win<window_id>-<title-slug>.meta.json`` sidecars, written by
+    ``sinnix-capture-kitty-scrollback`` alongside the ``.ansi`` dump. ``kitty_pid``
+    identifies the owning kitty *instance* (one control socket per OS process);
+    ``window_id`` is that instance's own per-window id, so ``(kitty_pid,
+    window_id)`` is the stable identity a session's terminal window keeps across
+    every periodic snapshot -- the same key the ops-reducer terminal-view route
+    joins scrollback history against.
+    """
+    window_id: int
+    kitty_pid: int
+    title: str
+    cwd: str
+    captured_at: datetime
+    hostname: str
+    ansi_path: str
+    meta_path: str
 
 
 @dataclass(frozen=True)
@@ -288,6 +314,27 @@ def recordings(
         yield rec
 
 
+def _cast_session_id(path: Path) -> str:
+    """The recording's real session id, not the fixed ``session.cast`` filename.
+
+    The current writer (sinnix-captured-shell) puts every recording in its own
+    ``<session_id>/session.cast`` directory alongside a ``session.json`` that
+    carries ``session_id`` verbatim -- ``path.stem`` alone collapsed every
+    current-format recording to the literal string ``"session"``. Older flat
+    ``<name>.cast`` files (no directory, no sidecar) keep the stem as their id.
+    """
+    sidecar = path.with_name("session.json")
+    if sidecar.exists():
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            payload = {}
+        session_id = payload.get("session_id")
+        if session_id:
+            return str(session_id)
+    return path.stem
+
+
 def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
     """Parse an asciinema v2 .cast file header."""
     try:
@@ -326,12 +373,72 @@ def _parse_cast_file(path: Path) -> Optional[TerminalRecording]:
             pass
 
     return TerminalRecording(
-        session_id=path.stem,
+        session_id=_cast_session_id(path),
         path=str(path),
         created_at=created,
         duration_s=float(duration) if duration else None,
         title=header.get("title") or env.get("TITLE"),
         shell=env.get("SHELL") or header.get("command"),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Kitty scrollback: periodic full-ANSI window snapshots
+# ══════════════════════════════════════════════════════════════════════════════
+
+_KITTY_META_TIMESTAMP_RE = re.compile(r"^(\d{8}T\d{6})Z$")
+
+
+def kitty_scrollback_root() -> Path:
+    return get_config().data_root / "activity/kitty-scrollback"
+
+
+def kitty_scrollback_captures(
+    *,
+    root: Optional[Path] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+) -> Iterator[KittyScrollbackCapture]:
+    """Yield kitty scrollback snapshots (meta.json sidecars), oldest first."""
+    base = root or kitty_scrollback_root()
+    if not base.exists():
+        return
+    for meta_path in sorted(base.glob("*.meta.json")):
+        cap = _parse_kitty_meta(meta_path)
+        if cap is None:
+            continue
+        if start and cap.captured_at < start:
+            continue
+        if end and cap.captured_at >= end:
+            continue
+        yield cap
+
+
+def _parse_kitty_meta(meta_path: Path) -> Optional[KittyScrollbackCapture]:
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    raw_ts = str(payload.get("captured_at") or "")
+    m = _KITTY_META_TIMESTAMP_RE.match(raw_ts)
+    if not m:
+        return None
+    captured_at = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    ansi_name = str(payload.get("ansi_file") or "")
+    try:
+        window_id = int(payload["window_id"])
+        kitty_pid = int(payload["kitty_pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return KittyScrollbackCapture(
+        window_id=window_id,
+        kitty_pid=kitty_pid,
+        title=str(payload.get("title") or ""),
+        cwd=str(payload.get("cwd") or ""),
+        captured_at=captured_at,
+        hostname=str(payload.get("hostname") or ""),
+        ansi_path=str(meta_path.parent / ansi_name) if ansi_name else "",
+        meta_path=str(meta_path),
     )
 
 
