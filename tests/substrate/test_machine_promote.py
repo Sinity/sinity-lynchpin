@@ -870,6 +870,91 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
     )
 
 
+def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(tmp_path, monkeypatch):
+    """sinnix-2g54 stage 3: a no-watermark first run must prefer the Parquet
+    lake over DuckDB's ATTACH full-table SQLite scan wherever the lake has
+    sealed-day coverage, falling back to the indexed incremental-append
+    reader (not another ATTACH scan) for whatever the lake does not yet
+    cover.
+
+    Uses the real exporter (`lynchpin.cli.machine_telemetry_export.run_export`)
+    to build the lake, so this is an integration check of the schema/column
+    contract between stages 2 and 3, not just the promotion code in
+    isolation.
+    """
+    from datetime import datetime as dt_cls
+    from types import SimpleNamespace
+
+    from lynchpin.analysis.active.substrate_promote_machine import _promote_machine_fast
+    from lynchpin.analysis.active.substrate_promote_status import SourceSelection
+    from lynchpin.cli.machine_telemetry_export import run_export
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda *a, **k: SimpleNamespace(status="ready", reason=None),
+    )
+
+    live_db = tmp_path / "telemetry.sqlite"
+    _seed_attach_fixture(live_db, ["2026-05-01", "2026-05-02", "2026-05-03"])
+
+    lake_root = tmp_path / "lake"
+    # 05-03 is still "today" at export time, so only 05-01/05-02 seal — the
+    # lake is deliberately partial, matching the real steady-state shape
+    # (history in the lake, the newest day(s) only in the live SQLite).
+    run_export(
+        sqlite_path=live_db, lake_root=lake_root, tables=("process_io_delta_sample",),
+        now=dt_cls(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.active.substrate_promote_machine._machine_lake_root",
+        lambda: lake_root,
+    )
+
+    counts: dict[str, int] = {}
+    with connect(tmp_path / "sub.duckdb") as real_conn:
+        apply_schema(real_conn)
+        conn = _CountingConn(real_conn)
+
+        _promote_machine_fast(
+            conn,
+            refresh_id="test-refresh",
+            sqlite_path=live_db,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 3),
+            counts=counts,
+            selection=SourceSelection.from_collection(None),
+        )
+
+        assert counts["machine_process_io_delta_sample"] == 3
+        remaining_days = {
+            row[0].date().isoformat()
+            for row in real_conn.execute(
+                "SELECT observed_at FROM machine_process_io_delta_sample "
+                "WHERE refresh_id = 'test-refresh'"
+            ).fetchall()
+        }
+        assert remaining_days == {"2026-05-01", "2026-05-02", "2026-05-03"}
+
+    attach_scan_inserts = [
+        s for s in conn.statements
+        if s.startswith("INSERT INTO machine_process_io_delta_sample")
+        and "machine_src.process_io_delta_sample" in s
+    ]
+    assert attach_scan_inserts == [], (
+        "the full ATTACH-scan branch must not run when the lake already "
+        f"covers the window's sealed days, got {len(attach_scan_inserts)}"
+    )
+    lake_bootstrap_inserts = [
+        s for s in conn.statements
+        if s.startswith("INSERT INTO machine_process_io_delta_sample")
+        and "read_parquet" in s
+    ]
+    assert len(lake_bootstrap_inserts) == 1, (
+        f"expected exactly one lake-bootstrap INSERT, got {len(lake_bootstrap_inserts)}"
+    )
+
+
 def _insert_process_io_day(path, day):
     import sqlite3
 

@@ -138,6 +138,115 @@ def _machine_sqlite_path() -> Path | None:
     return db_path
 
 
+def _machine_lake_root() -> Path | None:
+    """Return the machine-telemetry Parquet lake root, if the directory exists.
+
+    ``None`` (not just "empty") disables every lake-aware code path below —
+    an operator who has not run the exporter yet gets byte-identical
+    behaviour to before this lake existed.
+    """
+    from lynchpin.core.config import get_config
+
+    cfg = get_config()
+    root = getattr(cfg, "machine_telemetry_lake_root", None)
+    if root is None or not Path(root).is_dir():
+        return None
+    return Path(root)
+
+
+def _lake_table_dt_range(lake_root: Path, table: str) -> tuple[str, str] | None:
+    """Return (min_dt, max_dt) of exported day-partitions for ``table``, if any."""
+    table_dir = lake_root / table
+    if not table_dir.is_dir():
+        return None
+    days = sorted(
+        entry.name[len("dt="):]
+        for entry in table_dir.iterdir()
+        if entry.is_dir() and entry.name.startswith("dt=") and any(entry.glob("*.parquet"))
+    )
+    if not days:
+        return None
+    return days[0], days[-1]
+
+
+def _maybe_bootstrap_from_lake(
+    conn: Any,
+    *,
+    src_table: str,
+    dst_table: str,
+    refresh_id: str,
+    lake_root: Path,
+    window_start: date,
+    window_end: date,
+    columns: tuple[str, ...],
+    overrides: dict[str, str],
+) -> None:
+    """Populate ``dst_table`` from the Parquet lake instead of the live SQLite,
+    when this ``refresh_id`` has not been promoted yet (sinnix-2g54 stage 3).
+
+    A no-watermark first run/backfill otherwise pays a full SQLite table scan
+    per table (DuckDB's ATTACH never pushes the date predicate down — see the
+    design doc, §3). The lake holds the same sealed-day rows as compressed
+    Parquet that DuckDB reads natively, so this replaces that scan with a
+    cheap columnar read for every day already exported; the incremental
+    watermark path immediately below picks up the resulting high-water mark
+    and appends only the tail SQLite has and the lake does not (a live-day
+    read via the same indexed Python reader the steady-state append already
+    uses). A failure here is a pure optimization miss, not a correctness
+    risk: it leaves ``dst_table`` exactly as it was, and the existing
+    full-ATTACH-scan path below still runs unmodified.
+    """
+    dt_range = _lake_table_dt_range(lake_root, src_table)
+    if dt_range is None:
+        return
+    lake_min, lake_max = dt_range
+    dt_start = max(lake_min, window_start.isoformat())
+    dt_end = min(lake_max, window_end.isoformat())
+    if dt_start > dt_end:
+        return
+
+    existing = conn.execute(
+        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
+    ).fetchone()[0]
+    if existing:
+        return  # a watermark already exists; the incremental path below owns this refresh_id
+
+    glob = str(lake_root / src_table / "dt=*" / "*.parquet")
+    select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
+    write_id = _staging_refresh_id(refresh_id)
+    try:
+        conn.execute(
+            f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+            f"SELECT {select_exprs}, ? AS refresh_id "
+            f"FROM read_parquet(?, hive_partitioning = true) "
+            f"WHERE dt >= CAST(? AS DATE) AND dt <= CAST(? AS DATE)",
+            [write_id, glob, dt_start, dt_end],
+        )
+        conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            f"UPDATE {dst_table} SET refresh_id = ? WHERE refresh_id = ?",
+            [refresh_id, write_id],
+        )
+    except Exception as exc:
+        log.warning(
+            "substrate_promote: %s lake bootstrap failed, falling back to full ATTACH scan: %s",
+            dst_table, exc,
+        )
+        try:
+            conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [write_id])
+        except Exception:
+            pass
+        return
+
+    row_count = conn.execute(
+        f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
+    ).fetchone()[0]
+    log.info(
+        "substrate_promote: %s ← parquet lake (%s..%s): %s rows",
+        dst_table, dt_start, dt_end, f"{row_count:,}",
+    )
+
+
 def _machine_projections() -> dict[str, tuple[tuple[str, ...], dict[str, str]]]:
     """Per-source-table (target_columns, override_exprs) for the ATTACH fast path.
 
@@ -326,10 +435,24 @@ def _promote_machine_fast(
         ("kill_event", "machine_kill_event", SOURCE_MACHINE_KILL_EVENT, selection.includes(SOURCE_MACHINE_KILL_EVENT)),
     ]
 
+    lake_root = _machine_lake_root() if not full_repromote else None
+
     for src_table, dst_table, source, enabled in tables:
         if not enabled:
             continue
         t0 = time.monotonic()
+        if lake_root is not None and src_table not in _UNINDEXED_MACHINE_TABLES:
+            _maybe_bootstrap_from_lake(
+                conn,
+                src_table=src_table,
+                dst_table=dst_table,
+                refresh_id=refresh_id,
+                lake_root=lake_root,
+                window_start=window_start,
+                window_end=window_end,
+                columns=projections[src_table][0],
+                overrides=projections[src_table][1],
+            )
         watermark = None
         if not full_repromote and src_table not in _UNINDEXED_MACHINE_TABLES:
             watermark = conn.execute(
