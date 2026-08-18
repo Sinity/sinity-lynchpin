@@ -36,7 +36,7 @@ operator's data layout.
 ## sinnix-capture-v1 desktop event lanes
 
 Sinnix writes four small, continuous JSON-lines lanes under
-`captures/<lane>/<lane>-YYYYMMDD.jsonl`: `notifications` (desktop
+`activity/<lane>/<lane>-YYYYMMDD.jsonl`: `notifications` (desktop
 notification bus), `mpris` (media-player state), `audio-index` (speech-segment
 index over the `audio` capture — index only, not the audio), and
 `audio-topology` (PipeWire graph add/remove events). `lynchpin.sources.
@@ -85,8 +85,8 @@ HC records are series-shaped).
 
 ## Capture roots without a dedicated source
 
-Some `captures/*` roots have real, growing owner-native data (audio, screen
-recordings, screenshots) but no typed source module yet — the content itself
+Some `activity/*` (and `comms/*`) roots have real, growing owner-native data
+(audio, screen recordings, screenshots) but no typed source module yet — the content itself
 (audio, images, video) is out of scope for deep parsing.
 `lynchpin.sources.capture_inventory` gives these roots the same minimal
 visibility `observability_catalog` gives machine/observability inputs: file
@@ -100,7 +100,7 @@ four event lanes above made that jump.
 `captures/input-dynamics`, `captures/stability-lab`, and
 `code/tortoisesvn` (moved from `captures/dev/tortoisesvn` 2026-08-17) are deliberately absent from this catalog: the
 operator flagged them as dead/unwanted (2026-08-12) — `input-dynamics` is
-superseded by `captures/keylog` (see `keylog_dynamics`), `stability-lab` is
+superseded by `activity/keylog` (see `keylog_dynamics`), `stability-lab` is
 dead or being retired, and the `tortoisesvn` historical import (now at `data/code/tortoisesvn`) is not worth
 tracking. The directories themselves were not touched; only this catalog
 stopped watching them.
