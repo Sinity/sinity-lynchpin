@@ -168,7 +168,7 @@ def _slice_attributions(
     if not rows:
         return [], ["no slice-level machine_cgroup_memory_sample rows in the padded window"]
 
-    by_label: dict[str, list[tuple[Any, Any, Any, Any]]] = {}
+    by_label: dict[str, list[tuple[Any, Any, Any]]] = {}
     scope_of: dict[str, str] = {}
     for label, scope, observed_at, cur_bytes, peak_bytes in rows:
         by_label.setdefault(label, []).append((observed_at, cur_bytes, peak_bytes))
