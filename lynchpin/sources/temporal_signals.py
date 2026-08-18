@@ -449,13 +449,13 @@ def _load_youtube_activity(start: date, end: date, *, ensure: bool = True) -> di
 
 
 def _load_sleep_hours(start: date, end: date) -> dict[date, float]:
-    from .sleep import entries_in_range
+    from .sleep_composite import composite_minutes_by_date
 
-    out: dict[date, float] = {}
-    for entry in entries_in_range(start=start, end=end):
-        if entry.total_minutes:
-            out[entry.date] = entry.total_minutes / 60.0
-    return out
+    return {
+        day: minutes / 60.0
+        for day, minutes in composite_minutes_by_date(start=start, end=end).items()
+        if minutes
+    }
 
 
 def _load_sleep_score(start: date, end: date) -> dict[date, float]:
