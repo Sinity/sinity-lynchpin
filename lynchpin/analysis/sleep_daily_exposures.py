@@ -63,7 +63,9 @@ def min_detectable_r(n: int, *, alpha_z: float = 1.96, power_z: float = 0.84) ->
 
 def _night_outcomes(start: date, end: date) -> dict[date, dict[str, Optional[float]]]:
     from ..sources.sleep import entries_in_range
+    from ..sources.sleep_composite import composite_minutes_by_date
 
+    composite_minutes = composite_minutes_by_date(start=start, end=end)
     out: dict[date, dict[str, Optional[float]]] = {}
     for entry in entries_in_range(start=start, end=end, canonical=True):
         if entry.is_nap:
@@ -71,7 +73,7 @@ def _night_outcomes(start: date, end: date) -> dict[date, dict[str, Optional[flo
         metrics = entry.metrics
         out[entry.date] = {
             "score": entry.effective_score,
-            "duration_min": entry.total_minutes or None,
+            "duration_min": composite_minutes.get(entry.date) or None,
             "deep_pct": metrics.deep_pct if metrics else None,
             "hr_avg": entry.signals.hr_avg if entry.signals else None,
         }

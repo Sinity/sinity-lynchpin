@@ -15,8 +15,9 @@ class _Seg:
 
 
 class _Metrics:
-    def __init__(self, deep_pct=None):
+    def __init__(self, deep_pct=None, rem_pct=None):
         self.deep_pct = deep_pct
+        self.rem_pct = rem_pct
 
 
 class _Signals:
@@ -34,6 +35,8 @@ class _Entry:
         self.signals = _Signals(hr_avg=58.0)
         self.total_minutes = minutes
         self.effective_score = score
+        self.score_estimated = False
+        self.source = "merged"
 
 
 class _KeyDay:
@@ -111,3 +114,29 @@ def test_naps_excluded_and_unavailable_sources_reported(monkeypatch):
     assert res["nights"] == 30
     assert any("keylog" in u for u in res["unavailable"])
     assert any("EXPLORATORY" in c for c in res["caveats"])
+
+
+def test_duration_outcome_uses_composite_not_canonical_minutes(monkeypatch):
+    """A fragmented/short-canonical night must report composite duration.
+
+    Mirrors the measured production case (sinity-lynchpin sleep_composite
+    docstring, 2023-05-30): a short high-priority-source record and a longer
+    low-priority-source record on the same night. Canonical selection picks
+    the short one; ``_night_outcomes`` must report the union instead.
+    """
+    d = date(2026, 2, 1)
+    short = datetime.combine(d, datetime.min.time()) + timedelta(hours=23)
+    long_end = short + timedelta(minutes=360)
+    entries = [
+        _Entry(d, minutes=100.0),  # source="merged" -> highest priority
+        _Entry(d, minutes=360.0),  # will be overwritten to a lower-priority source below
+    ]
+    entries[0].segments = (_Seg(short, short + timedelta(minutes=100)),)
+    entries[1].segments = (_Seg(short, long_end),)
+    entries[1].source = "stage_derived"
+    monkeypatch.setattr("lynchpin.sources.sleep.entries_in_range", lambda **kw: entries)
+    monkeypatch.setattr(sde, "_keylog_exposures", lambda s, e: {})
+    monkeypatch.setattr(sde, "_weather_exposures", lambda s, e: {})
+
+    outcomes = sde._night_outcomes(d, d)
+    assert outcomes[d]["duration_min"] == 360.0
