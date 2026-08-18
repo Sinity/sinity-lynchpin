@@ -360,6 +360,7 @@ def _dataset_builders() -> dict[str, Any]:
         "wykop": _wykop_dataset,
         "themotte": _themotte_dataset,
         "code_snapshots": _code_snapshots_dataset,
+        "ambient_intelligence": _ambient_intelligence_dataset,
     }
 
 
@@ -392,6 +393,7 @@ def _materializers() -> dict[str, Callable[..., Any]]:
         "code_snapshots": materialize_code_snapshots,
         "substack": materialize_substack,
         "polylogue_verify_runs": materialize_polylogue_verify_runs,
+        "ambient_intelligence": _materialize_ambient_intelligence,
     }
 
 
@@ -1952,6 +1954,50 @@ def _keylog_analysis_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         reason=reason,
         covered_dates=covered_dates,
     )
+
+
+def _ambient_intelligence_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .core.io import resolve_analysis_path
+
+    contract = source_contract("ambient_intelligence")
+    path = Path(resolve_analysis_path("ambient_intelligence.json"))
+    payload = _load_json(path)
+    ready = path.exists() and bool(payload)
+    logical = _date_from_iso(payload.get("logical_date"))
+    schema_current = payload.get("schema") == "lynchpin-ambient-intelligence-v1"
+    if ready and not schema_current:
+        status: Status = "partial"
+        reason = "ambient intelligence product schema is unsupported"
+    elif ready and logical != date.today():
+        status = "partial"
+        reason = "ambient intelligence product is not current for today"
+    elif ready:
+        status = "ready"
+        reason = "ambient intelligence product is current"
+    else:
+        status = "missing"
+        reason = "ambient intelligence product is missing"
+    return MaterializedDataset(
+        name="ambient_intelligence",
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(path,),
+        raw_roots=(cfg.derived_root,),
+        row_count=1 if ready else None,
+        first_date=logical,
+        last_date=logical,
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
+def _materialize_ambient_intelligence() -> dict[str, Any]:
+    from .analysis.ambient_intelligence import write_ambient_intelligence
+    from .core.io import resolve_analysis_path
+
+    write_ambient_intelligence(Path(resolve_analysis_path("ambient_intelligence.json")))
+    return {"row_count": 1}
 
 
 def _raw_log_dataset(cfg: LynchpinConfig) -> MaterializedDataset:

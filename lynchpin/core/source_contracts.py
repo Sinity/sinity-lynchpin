@@ -510,6 +510,18 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
             "XML slices are large filesystem files; use list_code_snapshot_slices for discovery",
         ),
     ),
+    SourceContract(
+        name="ambient_intelligence",
+        authority="dated ambient-intelligence snapshot fused from circadian, fragmentation, anomaly, and chore products",
+        query_surface="lynchpin.analysis.ambient_intelligence",
+        materialization_hint="python -m lynchpin.cli.materialize --all",
+        materialization_executor=MaterializationExecutor.materializer("ambient_intelligence"),
+        required=False,
+        empty="valid",
+        collection_model="derived",
+        materialization_mode="derived",
+        mcp_tools=("lynchpin_personal", "lynchpin_status"),
+    ),
 )
 
 _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
