@@ -61,6 +61,7 @@ def evening_nights(
     from ..core.parse import as_local
     from ..sources.activitywatch import active_intervals
     from ..sources.sleep import entries_in_range
+    from ..sources.sleep_composite import composite_minutes_by_date
 
     nights = [
         entry
@@ -78,6 +79,7 @@ def evening_nights(
         for a, b in active_intervals(start=span_start, end=span_end)
     )
 
+    composite_minutes = composite_minutes_by_date(start=start, end=end)
     rows: list[EveningNight] = []
     for night in nights:
         onset = night.segments[0].start.replace(tzinfo=None)
@@ -118,7 +120,7 @@ def evening_nights(
                 ),
                 late_active_min=round(late, 1),
                 onset_hour=round(onset.hour + onset.minute / 60.0, 3),
-                duration_min=night.total_minutes or None,
+                duration_min=composite_minutes.get(night.date) or None,
                 score=night.effective_score,
                 deep_pct=metrics.deep_pct if metrics else None,
                 rem_pct=metrics.rem_pct if metrics else None,

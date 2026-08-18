@@ -35,6 +35,8 @@ class _Entry:
         self.signals = _Signals(hr_avg=hr)
         self.total_minutes = (end - start).total_seconds() / 60.0
         self.effective_score = score
+        self.score_estimated = False
+        self.source = "merged"
 
 
 def _patch(monkeypatch, entries, intervals):
@@ -90,6 +92,17 @@ def test_no_activity_yields_zero_and_null_gap(monkeypatch):
     (row,) = eas.evening_nights(start=date(2026, 1, 1), end=date(2026, 1, 1))
     assert row.active_min == 0.0
     assert row.last_active_gap_min is None
+
+
+def test_duration_uses_composite_not_canonical_minutes(monkeypatch):
+    """A short high-priority-source record must not shadow the composite night."""
+    d = date(2026, 1, 1)
+    short = _Entry(d, ONSET, ONSET + timedelta(minutes=100), score=70)
+    long = _Entry(d, ONSET, ONSET + timedelta(minutes=360))
+    long.source = "stage_derived"
+    _patch(monkeypatch, [short, long], [])
+    rows = eas.evening_nights(start=d, end=d)
+    assert all(row.duration_min == 360.0 for row in rows)
 
 
 def test_correlation_requires_min_nights(monkeypatch):
