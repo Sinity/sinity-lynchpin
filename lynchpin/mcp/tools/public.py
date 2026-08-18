@@ -684,6 +684,8 @@ def lynchpin_machine(
     if action == "metrics":
         return _internal_call("lynchpin.mcp.tools.machine_status", "machine_metrics", by=view or "daily", start=start, end=end, host=host)
     if action == "pressure":
+        if view == "narrative":
+            return _internal_call("lynchpin.mcp.tools.machine_status", "machine_explain", end=end)
         fn = "machine_pressure_explain" if view == "explain" else "machine_pressure_report"
         return _internal_call("lynchpin.mcp.tools.machine_status", fn, start=start, end=end, host=host, limit=limit)
     if action == "services":

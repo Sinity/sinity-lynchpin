@@ -23,6 +23,33 @@ def machine_status() -> dict[str, Any]:
     return _json_safe(machine_status_payload())
 
 
+def machine_explain(
+    window_hours: float = 24.0,
+    end: str | None = None,
+    text: bool = False,
+) -> dict[str, Any]:
+    """Operator-facing narrative of recent machine state (sinnix-6o2).
+
+    Pressure episodes classified via the known-signature detector library,
+    kill verdicts, telemetry coverage gaps, health-ledger transitions, and
+    week-over-week deltas, from a bounded read-only live-SQLite window (no
+    substrate materialization; completes in a few seconds). ``text=True``
+    additionally returns the terminal-rendered narrative in ``"text"``.
+    """
+    from lynchpin.analysis.machine.explain import machine_explain as _machine_explain
+    from lynchpin.analysis.machine.explain import render_machine_explain_text
+
+    end_bound = _parse_temporal_bound(end)
+    end_dt = end_bound if isinstance(end_bound, datetime) else None
+    report = _machine_explain(window_hours=window_hours, end=end_dt)
+    payload = _json_safe(report.to_dict())
+    payload["source_mode"] = "direct_live_sources"
+    payload["substrate_promotion_required"] = False
+    if text:
+        payload["text"] = render_machine_explain_text(report)
+    return payload
+
+
 def machine_service_io_for_xtask_invocation(
     invocation_id: int,
     limit: int = 20,

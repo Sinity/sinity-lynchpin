@@ -161,7 +161,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
         actions=(
             ActionSpec("status", "Machine status and materialization health.", "read", parameters=("view",), views=("summary", "materialization"), response_kind="machine_status"),
             ActionSpec("metrics", "Daily/context/memory/pressure machine metrics.", "converge", parameters=("view", "start", "end", "host"), views=("daily", "context", "memory", "pressure"), response_kind="machine_metrics"),
-            ActionSpec("pressure", "Pressure reports and explainers.", "converge", parameters=("view", "start", "end", "host", "limit"), views=("report", "explain"), response_kind="pressure"),
+            ActionSpec("pressure", "Pressure reports, explainers, and the machine-explain narrative.", "converge", parameters=("view", "start", "end", "host", "limit"), views=("report", "explain", "narrative"), response_kind="pressure"),
             ActionSpec("services", "Service state, generations, and backup drills.", "converge", parameters=("view", "start", "end", "host", "limit"), response_kind="services"),
             ActionSpec("workloads", "Machine workload/session/timeline views.", "read", parameters=("view", "start", "end"), views=("summary", "sessions", "co_presence", "scope", "heatmap", "orphans"), response_kind="workloads"),
             ActionSpec("observations", "Work observation and command performance views.", "converge", parameters=("view", "start", "end", "project", "limit"), response_kind="work_observations"),
