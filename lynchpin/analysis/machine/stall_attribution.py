@@ -17,6 +17,18 @@ covers a fixed list of named services, not the top-level slices) so
 attribution here is necessarily via slice memory bytes (current/peak
 growth during the window), not slice PSI -- documented as a caveat on
 every analysis, not silently assumed away.
+
+Each window carries two attribution rankings rather than one, since they
+answer different questions and can disagree on real data: ``top_attributed_
+slices`` ranks by peak resident bytes ("who was biggest during the freeze"
+-- catches a slice that was already huge and stayed huge) and
+``top_by_growth`` ranks by delta bytes, end minus start ("who was actively
+growing/escaping" -- catches the slice driving a fresh allocation spike
+even under a larger, already-resident slice). sinnix-a1dp.1's own
+containment-escape ground truth (2026-08-03 05:11:08) is exactly this
+case: ``user.build`` tops peak_bytes (19.32GB) while shrinking during the
+window (delta -3.4GB), and ``user.agent`` tops top_by_growth (delta
++1.1GB) as the only slice that actually grew.
 """
 
 from __future__ import annotations
@@ -71,13 +83,28 @@ class StallWindow:
     ended_at: datetime
     sample_count: int
     peak_memory_psi_full_avg60: float | None
+    # Ranked by peak resident bytes during the window: "who was biggest
+    # while the freeze was happening" -- catches a slice that was already
+    # huge and merely held its peak through the stall.
     top_attributed_slices: tuple[SliceAttribution, ...]
+    # Ranked by delta_bytes (end - start) during the window: "who was
+    # actively growing/escaping" -- catches the slice driving a fresh
+    # allocation spike even when a larger, already-resident slice ranks
+    # higher on peak_bytes alone. The two rankings can disagree (e.g. a
+    # huge, shrinking slice outranks a smaller, actively-growing one on
+    # peak_bytes) -- both are kept rather than picking one philosophy.
+    top_by_growth: tuple[SliceAttribution, ...]
     caveats: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            **{k: v for k, v in asdict(self).items() if k != "top_attributed_slices"},
+            **{
+                k: v
+                for k, v in asdict(self).items()
+                if k not in ("top_attributed_slices", "top_by_growth")
+            },
             "top_attributed_slices": [s.to_dict() for s in self.top_attributed_slices],
+            "top_by_growth": [s.to_dict() for s in self.top_by_growth],
         }
 
 
@@ -153,7 +180,7 @@ def _merge_sustained_runs(
 
 def _slice_attributions(
     conn: Any, *, host: str, window_start: datetime, window_end: datetime, top_n: int
-) -> tuple[list[SliceAttribution], list[str]]:
+) -> tuple[list[SliceAttribution], list[SliceAttribution], list[str]]:
     cgroup_rows = latest_machine_rows("machine_cgroup_memory_sample")
     rows = conn.execute(
         f"""
@@ -166,7 +193,7 @@ def _slice_attributions(
         [host, window_start, window_end],
     ).fetchall()
     if not rows:
-        return [], ["no slice-level machine_cgroup_memory_sample rows in the padded window"]
+        return [], [], ["no slice-level machine_cgroup_memory_sample rows in the padded window"]
 
     by_label: dict[str, list[tuple[Any, Any, Any]]] = {}
     scope_of: dict[str, str] = {}
@@ -198,12 +225,16 @@ def _slice_attributions(
             )
         )
 
-    # Rank by peak resident bytes during the window -- the slice that was
-    # simply LARGEST while the freeze was happening is the attribution;
-    # delta_bytes alone would miss a slice that was already huge and
-    # merely held its peak through the stall (still the culprit).
-    attributions.sort(key=lambda a: a.peak_bytes or 0, reverse=True)
-    return attributions[:top_n], []
+    # Two rankings, kept side by side rather than picking one philosophy:
+    # peak_bytes ("who was simply LARGEST while the freeze was happening" --
+    # delta_bytes alone would miss a slice that was already huge and merely
+    # held its peak through the stall, still the culprit) and delta_bytes
+    # ("who was actively growing/escaping" -- peak_bytes alone would miss a
+    # smaller slice mid-escape while a larger, already-resident slice sits
+    # on top just by size). They can and do disagree on real data.
+    by_peak = sorted(attributions, key=lambda a: a.peak_bytes or 0, reverse=True)
+    by_growth = sorted(attributions, key=lambda a: a.delta_bytes or 0, reverse=True)
+    return by_peak[:top_n], by_growth[:top_n], []
 
 
 def analyze_stall_attribution(
@@ -235,7 +266,7 @@ def analyze_stall_attribution(
                 started_at = run[0]["observed_at"]
                 ended_at = run[-1]["observed_at"]
                 peak = max((r["memory_psi_full"] for r in run), default=None)
-                attributions, window_caveats = _slice_attributions(
+                by_peak, by_growth, window_caveats = _slice_attributions(
                     conn,
                     host=host,
                     window_start=started_at - window_pad,
@@ -250,7 +281,8 @@ def analyze_stall_attribution(
                         ended_at=ended_at,
                         sample_count=len(run),
                         peak_memory_psi_full_avg60=peak,
-                        top_attributed_slices=tuple(attributions),
+                        top_attributed_slices=tuple(by_peak),
+                        top_by_growth=tuple(by_growth),
                         caveats=tuple(window_caveats),
                     )
                 )

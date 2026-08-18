@@ -108,6 +108,11 @@ def test_sustained_memory_psi_window_attributes_to_peak_slice(tmp_path):
     assert top.peak_bytes == 6_500_000_000
     assert top.delta_bytes == 5_500_000_000
 
+    # Here user.agent also grows the most, so both rankings agree.
+    growth_labels = [s.label for s in window.top_by_growth]
+    assert growth_labels[0] == "user.agent"
+    assert "unit:below.service" not in growth_labels
+
 
 def test_no_spike_below_threshold_reports_no_windows(tmp_path):
     db = tmp_path / "sub.duckdb"
@@ -134,6 +139,7 @@ def test_window_with_no_slice_samples_reports_a_caveat(tmp_path):
     assert analysis.window_count == 1
     window = analysis.windows[0]
     assert window.top_attributed_slices == ()
+    assert window.top_by_growth == ()
     assert any("no slice-level machine_cgroup_memory_sample rows" in c for c in window.caveats)
 
 
@@ -167,3 +173,53 @@ def test_isolated_windows_each_self_attribute(tmp_path):
     first, second = analysis.windows
     assert first.top_attributed_slices[0].label == "user.build"
     assert second.top_attributed_slices[0].label == "system.nix-build"
+
+
+def test_peak_and_growth_rankings_can_disagree(tmp_path):
+    """Mirrors the real 2026-08-03 05:11:08 containment-escape window
+    (sinnix-a1dp.1): user.build is a huge slice that was already shrinking
+    during the window (largest peak, negative delta), while user.agent is
+    smaller but the only slice actively growing (smaller peak, only
+    positive delta) -- the actual escape driver. Peak-rank and growth-rank
+    must pick different winners here rather than silently agreeing."""
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+
+        _metric(conn, 20, 0, memory_psi_full_avg60=40.0)
+        _metric(conn, 21, 0, memory_psi_full_avg60=50.0)
+
+        # user.build: huge and shrinking during the window.
+        _cgroup(
+            conn, 19, 0, label="user.build", scope="user",
+            control_group="/user.slice/build.slice",
+            memory_current_bytes=22_720_000_000, memory_peak_bytes=19_320_000_000,
+        )
+        _cgroup(
+            conn, 22, 0, label="user.build", scope="user",
+            control_group="/user.slice/build.slice",
+            memory_current_bytes=19_320_000_000, memory_peak_bytes=19_320_000_000,
+        )
+        # user.agent: smaller peak, but the only slice that grew.
+        _cgroup(
+            conn, 19, 0, label="user.agent", scope="user",
+            control_group="/user.slice/user-1000.slice/user@1000.service/agent.slice",
+            memory_current_bytes=17_120_000_000, memory_peak_bytes=17_120_000_000,
+        )
+        _cgroup(
+            conn, 22, 0, label="user.agent", scope="user",
+            control_group="/user.slice/user-1000.slice/user@1000.service/agent.slice",
+            memory_current_bytes=18_220_000_000, memory_peak_bytes=18_220_000_000,
+        )
+
+    analysis = analyze_stall_attribution(start=_ts(0).date(), end=_ts(0).date(), path=db)
+
+    assert analysis.window_count == 1
+    window = analysis.windows[0]
+
+    assert window.top_attributed_slices[0].label == "user.build"
+    assert window.top_attributed_slices[0].delta_bytes < 0
+
+    assert window.top_by_growth[0].label == "user.agent"
+    assert window.top_by_growth[0].delta_bytes > 0
+    assert window.top_by_growth[0].label != window.top_attributed_slices[0].label
