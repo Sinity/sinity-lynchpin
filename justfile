@@ -42,6 +42,10 @@ chisel projects="" output_root="" max_workers="4":
         --output-root "{{output_root}}" \
         --max-workers {{max_workers}}
 
+# Operator-facing narrative of recent machine state (default: last 24h).
+machine-explain args="":
+    python -m lynchpin.cli.machine_explain {{args}}
+
 # --- Tool inventory -----------------------------------------------------------------
 
 # List all Lynchpin tools: MCP tools (enumerated live), CLI entry points, dev recipes.
@@ -50,6 +54,7 @@ tool-inventory:
     @echo "  python -m lynchpin.cli.current_state"
     @echo "  python -m lynchpin.analysis materialize"
     @echo "  python -m lynchpin.cli.process_health"
+    @echo "  python -m lynchpin.cli.machine_explain"
     @echo "  python -m lynchpin.analysis.projects velocity"
     @echo "  python -m lynchpin.analysis.projects chisel"
     @echo "  python -m lynchpin.analysis ecosystem-dashboard"
