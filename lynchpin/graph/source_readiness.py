@@ -556,51 +556,68 @@ def _machine_promotion_staleness(*, max_lag_hours: float = 24.0) -> tuple[str, .
 def _xtask_history_source() -> SourceReadiness:
     from sqlite3 import connect as sqlite_connect
 
-    from ..sources.xtask_history import xtask_history_paths
+    from ..sources.xtask_history import xtask_history_path
 
-    paths = tuple((label, path) for label, path in xtask_history_paths() if path.exists())
-    if not paths:
+    path = xtask_history_path()
+    if not path.exists():
         return SourceReadiness(
             source="xtask_history",
             status="missing",
-            reason="xtask invocation ledgers are missing",
+            reason="the xtask invocation ledger is missing",
             cost="materialized",
         )
 
     invocation_count = 0
     stage_count = 0
     test_count = 0
+    workspace_count = 0
     first_seen: date | None = None
     last_seen: date | None = None
     caveats: list[str] = []
-    for label, path in paths:
-        try:
-            with sqlite_connect(path) as conn:
-                inv, first_raw, last_raw = conn.execute(
-                    "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations"
-                ).fetchone()
-                invocation_count += int(inv or 0)
-                stage_count += _sqlite_count(conn, "stage_timings")
-                test_count += _sqlite_count(conn, "test_results")
-                first_seen = _min_date(first_seen, _iso_date(first_raw))
-                last_seen = _max_date(last_seen, _iso_date(last_raw))
-        except Exception as exc:
-            caveats.append(f"{label}: {exc}")
+    try:
+        with sqlite_connect(path) as conn:
+            inv, first_raw, last_raw = conn.execute(
+                "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM invocations"
+            ).fetchone()
+            invocation_count = int(inv or 0)
+            stage_count = _sqlite_count(conn, "stage_timings")
+            test_count = _sqlite_count(conn, "test_results")
+            first_seen = _iso_date(first_raw)
+            last_seen = _iso_date(last_raw)
+            workspace_count = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT workspace_root) FROM invocations"
+                    " WHERE workspace_root IS NOT NULL"
+                ).fetchone()[0]
+                or 0
+            )
+            unattributed = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM invocations WHERE workspace_root IS NULL"
+                ).fetchone()[0]
+                or 0
+            )
+            if unattributed:
+                caveats.append(
+                    f"{unattributed} invocation(s) predate workspace attribution and name no workspace"
+                )
+    except Exception as exc:
+        caveats.append(str(exc))
 
     status: ReadinessStatus = "available" if invocation_count else "partial"
     reason = (
-        f"{len(paths)} xtask ledger(s): {invocation_count} invocations, "
+        f"{invocation_count} invocations across {workspace_count} workspace(s), "
         f"{stage_count} stages, {test_count} test results"
     )
     if invocation_count == 0:
-        reason = "xtask ledgers are present but contain no invocation rows"
+        reason = "the xtask ledger is present but contains no invocation rows"
     caveats.append("xtask history is observational operator telemetry, not a controlled benchmark")
     return SourceReadiness(
         source="xtask_history",
         status=status,
         reason=reason,
         cost="materialized",
-        path=":".join(str(path) for _, path in paths),
+        path=str(path),
         count=invocation_count,
         first_date=first_seen,
         last_date=last_seen,

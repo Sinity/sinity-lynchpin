@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,29 +12,18 @@ from typing import Any, Iterator
 from lynchpin.core.classify import resolve_project
 from lynchpin.core.config import get_config
 
-_DEFAULT_ARCHIVE_PATHS = (
-    Path(
-        "/realm/recovery/borg-rotation-rescue-20260523/unrecovered-all/"
-        "realm/project/sinex/.sinex/state/xtask-history.db"
-    ),
-)
-
-_DB_NAME = "xtask-history.db"
-
-#: Roots under which a linked worktree keeps its own xtask history.
+#: xtask records every checkout and linked worktree into one database, so this
+#: source reads exactly one file. Rows carry their own workspace provenance
+#: (``workspace_root`` / ``workspace_name``), which is what makes a promoted row
+#: attributable to the lane that produced it.
 #:
-#: xtask resolves its database per workspace -- ``XTASK_HISTORY_DB`` if set,
-#: else ``<workspace_root>/.sinex/state/xtask-history.db`` (xtask/src/config.rs).
-#: The configured ``live`` path therefore names exactly one workspace, so
-#: without this sweep every worktree's runs are invisible to Lynchpin.
-_WORKSPACE_ROOTS: tuple[Path, ...] = (
-    Path("/realm/worktrees"),
-    Path("/realm/tmp/worktrees"),
-)
-
-#: Durable home for worktree history that would otherwise die with its worktree.
-XTASK_LAKE_ARCHIVE_DIR = Path("/realm/data/activity/dev/sinex/xtask-history")
-
+#: Until 2026-08-18 each worktree kept a private ledger that died with the
+#: worktree, and Lynchpin swept those files and mirrored them into the data lake
+#: to keep the rows. Both the sweep and the mirror are gone: worktree directory
+#: names repeat, so the name-keyed mirror silently destroyed a dead lane's only
+#: surviving copy when a lane of the same name reappeared, and each fresh
+#: database restarted rowids at 1, handing the new lane the dead one's source
+#: ids. `xtask history unify` absorbs any straggler ledger at the source.
 
 @dataclass(frozen=True)
 class XtaskInvocation:
@@ -83,6 +71,13 @@ class XtaskInvocation:
     host_block_busiest_device_read_iops_avg: float | None = None
     host_block_busiest_device_write_iops_avg: float | None = None
     host_block_busiest_device_weighted_io_ms_per_s: float | None = None
+    #: Absolute root of the checkout or worktree that ran the command, and its
+    #: directory name. None on rows recorded before the ledger was unified whose
+    #: cwd matched no known workspace root.
+    workspace_root: str | None = None
+    workspace_name: str | None = None
+    #: Branch checked out in that workspace, or None on a detached HEAD.
+    git_branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,121 +116,15 @@ def xtask_history_path(path: Path | None = None) -> Path:
     return path or get_config().xtask_history_db
 
 
-def xtask_history_archive_paths() -> tuple[Path, ...]:
-    raw = os.environ.get("LYNCHPIN_XTASK_HISTORY_ARCHIVE_DBS")
-    if raw is not None:
-        return tuple(Path(item).expanduser() for item in raw.split(":") if item)
-    return tuple(path for path in _DEFAULT_ARCHIVE_PATHS if path.exists())
-
-
-def xtask_workspace_history_paths() -> tuple[tuple[str, Path], ...]:
-    """Return one labeled ledger per linked worktree, plus preserved copies.
-
-    Each worktree writes its own database and loses it when the worktree is
-    removed, so preserved copies under ``XTASK_LAKE_ARCHIVE_DIR`` are included
-    alongside the live ones. A workspace present in both yields the live path;
-    the copy is a subset of it.
-
-    Labels are the workspace directory name, which is what makes a promoted row
-    attributable to the lane that produced it.
-    """
-    result: list[tuple[str, Path]] = []
-    seen_labels: set[str] = set()
-
-    for root in _WORKSPACE_ROOTS:
-        if not root.is_dir():
-            continue
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
-                continue
-            candidate = child / ".sinex" / "state" / _DB_NAME
-            if candidate.is_file() and child.name not in seen_labels:
-                result.append((child.name, candidate))
-                seen_labels.add(child.name)
-
-    if XTASK_LAKE_ARCHIVE_DIR.is_dir():
-        for preserved in sorted(XTASK_LAKE_ARCHIVE_DIR.glob(f"*.{_DB_NAME}")):
-            label = preserved.name[: -len(_DB_NAME) - 1]
-            if label not in seen_labels:
-                result.append((label, preserved))
-                seen_labels.add(label)
-
-    return tuple(result)
-
-
-def preserve_workspace_histories(
-    *,
-    archive_dir: Path = XTASK_LAKE_ARCHIVE_DIR,
-) -> tuple[int, int]:
-    """Copy each live worktree ledger into the data lake.
-
-    Returns ``(copied, skipped)``. A worktree's history is deleted along with
-    the worktree, and Lynchpin promotion replaces the partition it writes, so
-    without this a removed lane's runs disappear from the substrate. Copying
-    into the lake keeps them attributable after the worktree is gone.
-
-    Uses SQLite's online backup API, not a file copy: the sources run in WAL
-    mode with a live writer, so copying bytes could capture a torn page or miss
-    committed data still sitting in the WAL. Read-only on the source, so an
-    ingest can never make an xtask invocation fail.
-    """
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    copied = skipped = 0
-    for label, path in xtask_workspace_history_paths():
-        target = archive_dir / f"{label}.{_DB_NAME}"
-        if path.resolve() == target.resolve():
-            continue
-        try:
-            source = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
-            try:
-                with source, sqlite3.connect(target) as destination:
-                    source.backup(destination)
-            finally:
-                source.close()
-            copied += 1
-        except sqlite3.Error:
-            skipped += 1
-    return copied, skipped
-
-
-def xtask_history_paths() -> tuple[tuple[str, Path], ...]:
-    """Return labeled xtask ledgers, oldest recovered ledgers first."""
-    result: list[tuple[str, Path]] = []
-    seen: set[Path] = set()
-    for idx, path in enumerate(xtask_history_archive_paths(), start=1):
-        resolved = path.resolve()
-        if resolved not in seen and path.exists():
-            result.append((f"archive{idx}", path))
-            seen.add(resolved)
-    live_path = xtask_history_path()
-    resolved_live = live_path.resolve()
-    if resolved_live not in seen:
-        result.append(("live", live_path))
-        seen.add(resolved_live)
-    # Linked worktrees each keep a private ledger; without these the substrate
-    # only ever sees the one configured checkout.
-    for label, path in xtask_workspace_history_paths():
-        resolved = path.resolve()
-        if resolved not in seen:
-            result.append((label, path))
-            seen.add(resolved)
-    return tuple(result)
-
-
 def iter_all_invocations(
     *,
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> Iterator[XtaskInvocation]:
-    for label, path in xtask_history_paths():
-        if not path.exists():
-            continue
-        yield from iter_invocations(
-            path=path,
-            start=start,
-            end=end,
-            source_prefix=f"xtask:{label}",
-        )
+    path = xtask_history_path()
+    if not path.exists():
+        return
+    yield from iter_invocations(path=path, start=start, end=end)
 
 
 def iter_all_stage_timings(
@@ -243,15 +132,10 @@ def iter_all_stage_timings(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> Iterator[XtaskStageTiming]:
-    for label, path in xtask_history_paths():
-        if not path.exists():
-            continue
-        yield from iter_stage_timings(
-            path=path,
-            start=start,
-            end=end,
-            source_prefix=f"xtask:{label}",
-        )
+    path = xtask_history_path()
+    if not path.exists():
+        return
+    yield from iter_stage_timings(path=path, start=start, end=end)
 
 
 def iter_all_test_results(
@@ -259,15 +143,10 @@ def iter_all_test_results(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> Iterator[XtaskTestResult]:
-    for label, path in xtask_history_paths():
-        if not path.exists():
-            continue
-        yield from iter_test_results(
-            path=path,
-            start=start,
-            end=end,
-            source_prefix=f"xtask:{label}",
-        )
+    path = xtask_history_path()
+    if not path.exists():
+        return
+    yield from iter_test_results(path=path, start=start, end=end)
 
 
 def iter_invocations(
@@ -412,6 +291,9 @@ def _row_to_invocation(row: sqlite3.Row, *, source_prefix: str) -> XtaskInvocati
         project=resolve_project(cwd, row["command"], row["subcommand"], row["profile"]),
         git_commit=str(row["git_commit"]) if row["git_commit"] else None,
         git_dirty=bool(row["git_dirty"]),
+        workspace_root=str(row["workspace_root"]) if row["workspace_root"] else None,
+        workspace_name=str(row["workspace_name"]) if row["workspace_name"] else None,
+        git_branch=str(row["git_branch"]) if row["git_branch"] else None,
         live_stage=str(row["live_stage"]) if row["live_stage"] else None,
         args_json=args_json,
         cpu_usage_avg=_float(row["cpu_usage_avg"]),
@@ -515,6 +397,9 @@ _INVOCATION_COLUMNS = (
     "args_json",
     "git_commit",
     "git_dirty",
+    "workspace_root",
+    "workspace_name",
+    "git_branch",
     "started_at",
     "finished_at",
     "duration_secs",
@@ -641,7 +526,5 @@ __all__ = [
     "iter_invocations",
     "iter_stage_timings",
     "iter_test_results",
-    "xtask_history_archive_paths",
     "xtask_history_path",
-    "xtask_history_paths",
 ]

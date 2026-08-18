@@ -29,9 +29,8 @@ def promote_work_sources(
     try:
         from lynchpin.sources.polylogue_devtools import available as polylogue_devtools_available
         from lynchpin.sources.polylogue_devtools import iter_invocations as iter_polylogue_invocations
-        from lynchpin.sources.xtask_history import iter_all_invocations, xtask_history_paths
+        from lynchpin.sources.xtask_history import iter_all_invocations, xtask_history_path
         from lynchpin.sources.xtask_history import iter_all_stage_timings, iter_all_test_results
-        from lynchpin.sources.xtask_history import preserve_workspace_histories
         from lynchpin.substrate.work_observations import (
             promote_polylogue_devtools_observations,
             promote_work_observation_stages,
@@ -39,13 +38,11 @@ def promote_work_sources(
             promote_work_observations,
         )
 
-        # Copy each worktree ledger into the lake before reading. A worktree's
-        # xtask history dies with the worktree, and this promotion replaces the
-        # partition it writes, so an unpreserved lane's runs would disappear
-        # from the substrate the first time it is materialized after removal.
-        preserve_workspace_histories()
-        paths = xtask_history_paths()
-        has_xtask = any(path.exists() for _, path in paths)
+        # One ledger, shared by every checkout and worktree: nothing to sweep or
+        # mirror before reading. Rows carry their own workspace provenance, and
+        # a worktree still running an older xtask is absorbed at the source with
+        # `xtask history unify`.
+        has_xtask = xtask_history_path().exists()
         has_polylogue_devtools = polylogue_devtools_available()
         if not has_xtask and not has_polylogue_devtools:
             record_source_status(
@@ -53,7 +50,7 @@ def promote_work_sources(
                 refresh_id=refresh_id,
                 source=SOURCE_WORK_OBSERVATIONS,
                 status="unavailable",
-                reason="no xtask history databases or Polylogue devtool ledgers found",
+                reason="no xtask history database or Polylogue devtool ledgers found",
                 row_count=0,
                 window_start=window_start,
                 window_end=window_end,

@@ -22,22 +22,63 @@ def test_xtask_history_reads_invocation_rows(tmp_path: Path) -> None:
     assert row.host_block_read_mib_delta == 12.5
 
 
-def test_xtask_history_all_invocations_labels_archive_and_live(
+def test_xtask_history_reads_the_single_configured_ledger(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    """Source ids come from one ledger, so a rowid identifies exactly one run.
+
+    Each workspace used to write its own database, and every one of them
+    restarted rowids at 1 -- which is why the old reader had to prefix ids with
+    a per-file label. xtask now records every workspace into one file, so the
+    rowid is unique on its own.
+    """
     from lynchpin.core import config as config_mod
     from lynchpin.sources.xtask_history import iter_all_invocations
 
-    archive = _write_xtask_db(tmp_path / "archive.db", row_id=1)
-    live = _write_xtask_db(tmp_path / "live.db", row_id=1)
-    monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_ARCHIVE_DBS", str(archive))
-    monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_DB", str(live))
+    ledger = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
+    unrelated = _write_xtask_db(tmp_path / "stale-worktree-copy.db", row_id=1)
+    assert unrelated.exists()
+    monkeypatch.setenv("LYNCHPIN_XTASK_HISTORY_DB", str(ledger))
     monkeypatch.setattr(config_mod, "_CONFIG", None)
 
     rows = list(iter_all_invocations())
 
-    assert [row.source_id for row in rows] == ["xtask:archive1:1", "xtask:live:1"]
+    assert [row.source_id for row in rows] == ["xtask:1"]
+
+
+def test_xtask_history_exposes_workspace_provenance(tmp_path: Path) -> None:
+    from lynchpin.sources.xtask_history import iter_invocations
+
+    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "ALTER TABLE invocations ADD COLUMN workspace_root TEXT"
+        )
+        conn.execute("ALTER TABLE invocations ADD COLUMN workspace_name TEXT")
+        conn.execute("ALTER TABLE invocations ADD COLUMN git_branch TEXT")
+        conn.execute(
+            "UPDATE invocations SET workspace_root = ?, workspace_name = ?, git_branch = ?",
+            ("/realm/worktrees/sinex-q102", "sinex-q102", "feature/x"),
+        )
+
+    row = next(iter(iter_invocations(path=db)))
+
+    assert row.workspace_root == "/realm/worktrees/sinex-q102"
+    assert row.workspace_name == "sinex-q102"
+    assert row.git_branch == "feature/x"
+
+
+def test_xtask_history_tolerates_a_ledger_without_workspace_columns(tmp_path: Path) -> None:
+    from lynchpin.sources.xtask_history import iter_invocations
+
+    db = _write_xtask_db(tmp_path / "xtask-history.db", row_id=1)
+
+    row = next(iter(iter_invocations(path=db)))
+
+    assert row.workspace_root is None
+    assert row.workspace_name is None
+    assert row.git_branch is None
 
 
 def test_xtask_history_reads_recovered_schema_by_column_name(tmp_path: Path) -> None:

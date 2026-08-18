@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -13,7 +14,9 @@ from lynchpin.sources.polylogue import PolylogueReadiness
 @pytest.fixture(autouse=True)
 def _empty_observation_contract(monkeypatch):
     monkeypatch.setattr("lynchpin.graph.source_readiness.source_observations", lambda: ())
-    monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_paths", lambda: ())
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.xtask_history_path", lambda *a, **k: Path("/nonexistent")
+    )
     monkeypatch.setattr(
         "lynchpin.graph.source_readiness.coverage_report",
         lambda *, start, end, repair_materializations=True: CoverageReport(
@@ -169,7 +172,7 @@ def test_xtask_source_readiness_summarizes_ledgers(monkeypatch, tmp_path):
         conn.execute("INSERT INTO test_results VALUES (1)")
         conn.execute("INSERT INTO test_results VALUES (2)")
 
-    monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_paths", lambda: (("live", db),))
+    monkeypatch.setattr("lynchpin.sources.xtask_history.xtask_history_path", lambda *a, **k: db)
 
     from lynchpin.graph.source_readiness import _xtask_history_source
 

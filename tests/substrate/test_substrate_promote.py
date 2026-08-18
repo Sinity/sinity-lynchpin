@@ -1197,11 +1197,11 @@ def test_work_source_promotion_streams_source_iterables(
         seen[name] = next(iter(rows))  # type: ignore[arg-type]
         return 1
 
-    monkeypatch.setattr(
-        "lynchpin.sources.xtask_history.xtask_history_paths",
-        lambda: (("live", tmp_path / "xtask.db"),),
-    )
     (tmp_path / "xtask.db").write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "lynchpin.sources.xtask_history.xtask_history_path",
+        lambda *a, **k: tmp_path / "xtask.db",
+    )
     monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda: True)
     monkeypatch.setattr(
         "lynchpin.sources.xtask_history.iter_all_invocations",

@@ -547,22 +547,21 @@ def _raindrop_live_available() -> bool:
 
 
 def _resolve_xtask_history_db(env_value: str | None) -> Path:
+    """Locate the single xtask development-history database.
+
+    xtask resolves the same file through its main checkout's state directory,
+    with ``XTASK_HISTORY_DB`` as an explicit override; mirroring that order here
+    keeps both sides pointed at one ledger. There is no scan of per-worktree or
+    relocated cache locations any more: every workspace records into this file,
+    so a second candidate would only be a stale fork of it.
+    """
     if env_value:
         return Path(env_value).expanduser()
-    state_dir = os.environ.get("SINEX_STATE_DIR")
-    if state_dir:
-        return Path(state_dir).expanduser() / "xtask-history.db"
+    override = os.environ.get("XTASK_HISTORY_DB")
+    if override:
+        return Path(override).expanduser()
     checkout_root = Path(os.environ.get("SINEX_ROOT", "/realm/project/sinex")).expanduser()
-    checkout_db = checkout_root / ".sinex/state/xtask-history.db"
-    if checkout_db.exists():
-        return checkout_db
-    root = Path("/var/cache/sinex/sinity")
-    candidates = sorted(
-        root.glob("*/dev-state/state/xtask-history.db") if root.exists() else (),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else root / "xtask-history.db"
+    return checkout_root / ".sinex/state/xtask-history.db"
 
 
 def _resolve_fbmessenger_db(*candidates: Path) -> str:
