@@ -44,7 +44,8 @@ CaptureKind = Literal[
 #: except comms_teams, which lives under comms/ -- kind, note)
 #: Roots already owned by a dedicated source module (activitywatch, arbtt,
 #: asciinema/kitty-scrollback via terminal.py, atuin/zsh via shell/terminal,
-#: keylog, clipboard, irc, machine, webhistory, polylogue, syslog) are
+#: keylog, clipboard, irc, machine, webhistory, polylogue, syslog,
+#: screen-frames via sinnix_capture_lanes.screen_frame_events) are
 #: deliberately excluded — this catalog covers what nothing else reads yet.
 _REGISTRY: tuple[tuple[str, str, CaptureKind, str], ...] = (
     (
@@ -59,12 +60,6 @@ _REGISTRY: tuple[tuple[str, str, CaptureKind, str], ...] = (
         "screenshot",
         "image",
         "periodic desktop screenshots (.png); continuous capture, not parsed for content",
-    ),
-    (
-        "screen_frames",
-        "screen-frames",
-        "reserved_empty",
-        "provisioned capture root, no data observed yet",
     ),
     (
         "replay",

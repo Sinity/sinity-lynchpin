@@ -91,6 +91,7 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "mpris",
         "audio_index",
         "audio_topology",
+        "screen_frames",
         # Sinnix phone app event stream (instruments, marks, ambient
         # light/motion, chunk lifecycle) — continuous while capture is on
         "phone_events",

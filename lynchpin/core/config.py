@@ -150,6 +150,7 @@ class LynchpinConfig:
             # from one shared --capture-root, so it cannot split without CLI
             # changes (sinnix modules/services/capture-audio.nix, 2026-08-17).
             "audio_topology": any((self.data_root / "activity/audio-topology").glob("audio-topology-*.jsonl")),
+            "screen_frames": any((self.data_root / "activity/screen-frames").glob("screen-frames-*.jsonl")),
             "phone_events": self.phone_events_dir.exists() and any(self.phone_events_dir.glob("events-*.jsonl")),
             "xiaomi_cloud": any((self.data_root / "health/xiaomi-cloud").glob("xiaomi-cloud-*.jsonl")),
             "phone_ambient": self.phone_ambient_jsonl.exists(),

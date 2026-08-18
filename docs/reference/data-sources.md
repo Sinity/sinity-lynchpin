@@ -35,17 +35,19 @@ operator's data layout.
 
 ## sinnix-capture-v1 desktop event lanes
 
-Sinnix writes four small, continuous JSON-lines lanes under
+Sinnix writes five small, continuous JSON-lines lanes under
 `activity/<lane>/<lane>-YYYYMMDD.jsonl`: `notifications` (desktop
 notification bus), `mpris` (media-player state), `audio-index` (speech-segment
-index over the `audio` capture — index only, not the audio), and
-`audio-topology` (PipeWire graph add/remove events). `lynchpin.sources.
+index over the `audio` capture — index only, not the audio),
+`audio-topology` (PipeWire graph add/remove events), and `screen-frames`
+(per-window screen frame capture: geometry, monitor, workspace, and focused
+window identity alongside each dedup'd WebP frame). `lynchpin.sources.
 sinnix_capture_lanes` reads the shared envelope and exposes each lane as a
 typed record (`notification_events`, `mpris_events`, `audio_index_entries`,
-`audio_topology_events`) plus `daily_lane_activity` for coverage-aware daily
-counts. All four are registered as capture sources in `available_sources()`
-and `CAPTURE_SOURCES`, so they show up in `source_observations()` like any
-other continuous capture.
+`audio_topology_events`, `screen_frame_events`) plus `daily_lane_activity` for
+coverage-aware daily counts. All five are registered as capture sources in
+`available_sources()` and `CAPTURE_SOURCES`, so they show up in
+`source_observations()` like any other continuous capture.
 
 ## Health coverage report
 
@@ -82,6 +84,28 @@ events plane as `witness` rows: per-night vendor sleep vs HC sleep-session
 union with overlap minutes, per-day vendor HR sample counts vs HC unique
 record counts (counts corroborate presence and density, not equality —
 HC records are series-shaped).
+
+## Terminal-session reconstruction
+
+`lynchpin.analysis.terminal_reconstruction.reconstruct_session(session_id)`
+joins one asciinema session's own capture lanes into a single record
+recreating what that terminal session looked like: the cast (`session.cast`),
+its kitty scrollback snapshots (`terminal.kitty_scrollback_captures`, keyed by
+`(kitty_pid, window_id)`), and its geometry timeline (`screen_frame_events`
+filtered to `window_class == "kitty"` and a matching, glyph-normalized window
+title). It is a downstream join over three already-continuous captures, not a
+fourth capture lane, per this doc's own cross-source-joins-belong-downstream
+invariant.
+
+The cast↔kitty-window link is the one fact nothing on disk records directly:
+it is read from the still-running asciinema recorder process's own
+environment (`KITTY_PID`/`KITTY_WINDOW_ID`, inherited from the kitty window
+that launched it — the same technique sinnix-ops-reducer's
+`terminals.py:live_streams()` uses for its live-stream routing), so it only
+resolves for a session whose recorder is still alive; a session whose
+recorder has exited comes back `link_method = "unresolved"` rather than a
+guess. `write_reconstruction` writes the record as JSON under
+`derived_root/terminal-reconstruction/<session_id>.json`.
 
 ## Capture roots without a dedicated source
 
