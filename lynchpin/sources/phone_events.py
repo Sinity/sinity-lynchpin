@@ -1,8 +1,8 @@
 """Sinnix phone app event stream.
 
-Reads the append-only JSONL event log written by the phone app's estate
-capture (`Events.append`), one file per UTC day at
-``machine/phone/estate/events/events-YYYYMMDD.jsonl``. Every record shares
+Reads the append-only JSONL event log the phone app pushes to prime
+(`Events.append`), one file per UTC day at
+``machine/phone/events/events-YYYYMMDD.jsonl``. Every record shares
 two common fields, ``kind`` and ``ts``, plus kind-specific payload fields.
 See ``docs/phone.md`` in the sinnix repo for the full event catalogue
 (instrument runs, marks, EMA answers, ambient light/motion samples, chunk
@@ -262,7 +262,23 @@ def phone_events(
     """
     base = root or LynchpinConfig.from_env().phone_events_dir
     for path in _day_files(base, start, end):
+        # Health Connect re-exports carry a stable record identity; a forced
+        # backfill used to re-emit the same record per sync (sinnix-jvt8), so
+        # reads deduplicate on it defensively even though the writer now
+        # gates on the same key. Scope is per day file, matching the writer.
+        seen_records: set[tuple[Any, ...]] = set()
         for event in read_jsonl_with(path, _hydrate_event, source_name=path.name):
+            record_id = event.payload.get("record_id")
+            if record_id is not None:
+                key = (
+                    event.kind,
+                    record_id,
+                    event.payload.get("modified"),
+                    event.payload.get("client_record_version"),
+                )
+                if key in seen_records:
+                    continue
+                seen_records.add(key)
             if kind is not None and event.kind != kind:
                 continue
             if start is not None and event.date < start:

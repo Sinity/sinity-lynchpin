@@ -359,7 +359,7 @@ class LynchpinConfig:
         # clean subject).
         phone_events_dir = Path(os.environ.get(
             "LYNCHPIN_PHONE_EVENTS_DIR",
-            data_root / "machine/phone/estate/events",
+            data_root / "machine/phone/events",
         ))
         phone_ambient_jsonl = Path(os.environ.get(
             "LYNCHPIN_PHONE_AMBIENT_JSONL",
