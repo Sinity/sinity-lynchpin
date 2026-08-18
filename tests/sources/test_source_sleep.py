@@ -1,7 +1,7 @@
 """Tests for sources/sleep.py."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 from lynchpin.sources.sleep import (
@@ -142,12 +142,30 @@ def test_sleep_productivity_chunks_activitywatch_and_uses_logical_deep_work_day(
             total_minutes=420.0,
             effective_score=80.0,
             quality_label="good",
+            is_nap=False,
+            source="merged",
+            score_estimated=False,
+            metrics=None,
+            signals=None,
+            segments=(SimpleNamespace(
+                start=datetime(2026, 3, 1, 23, 0),
+                end=datetime(2026, 3, 1, 23, 0) + timedelta(minutes=420),
+            ),),
         ),
         SimpleNamespace(
             date=date(2026, 3, 2),
             total_minutes=390.0,
             effective_score=70.0,
             quality_label="fair",
+            is_nap=False,
+            source="merged",
+            score_estimated=False,
+            metrics=None,
+            signals=None,
+            segments=(SimpleNamespace(
+                start=datetime(2026, 3, 2, 23, 0),
+                end=datetime(2026, 3, 2, 23, 0) + timedelta(minutes=390),
+            ),),
         ),
     ]
     active_calls = []
@@ -161,7 +179,7 @@ def test_sleep_productivity_chunks_activitywatch_and_uses_logical_deep_work_day(
             return (SimpleNamespace(start=datetime(2026, 3, 3, 5), duration_min=10.0),)
         return ()
 
-    monkeypatch.setattr(mod, "entries_in_range", lambda *, start, end: entries)
+    monkeypatch.setattr(mod, "entries_in_range", lambda *, start, end, canonical=True: entries)
     monkeypatch.setattr(mod, "_activitywatch_derived_bounds", lambda: (None, None))
     monkeypatch.setattr("lynchpin.sources.activitywatch.active_seconds_by_date", fake_active_seconds_by_date)
     monkeypatch.setattr("lynchpin.sources.activitywatch.deep_work", fake_deep_work)
@@ -262,6 +280,62 @@ def test_daily_activity_populates_signal_fields(tmp_path, monkeypatch):
     assert day.snoring_seconds == 30.0
     assert day.skin_temp_c == 33.4
     assert day.score == 82.0
+
+
+def test_daily_activity_uses_composite_not_canonical_minutes(tmp_path, monkeypatch):
+    """A short high-priority-source record must not shadow the composite night
+    (lynchpin-txz: canonical selection understated nights by ~62 min/night)."""
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    _write_rows(sleep_file, [
+        {
+            # highest source priority but short -> wins canonical selection
+            "start_local": "2026-03-15T23:00:00+01:00",
+            "end_local": "2026-03-16T00:40:00+01:00",
+            "source": "merged",
+            "sleep_metrics": {"sleep_score": 82, "sleep_duration": 100},
+        },
+        {
+            # lower priority but covers the real night, overlapping the above
+            "start_local": "2026-03-15T23:00:00+01:00",
+            "end_local": "2026-03-16T05:00:00+01:00",
+            "source": "stage_derived",
+            "sleep_metrics": {"sleep_duration": 360},
+        },
+    ])
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+
+    (day,) = daily_activity(start=date(2026, 3, 15), end=date(2026, 3, 16))
+    assert day.total_hours == 6.0  # 360 min composite, not the canonical 100 min
+    assert day.score == 82.0  # scalar fields still come from the canonical record
+
+
+def test_sleep_productivity_uses_composite_not_canonical_minutes(tmp_path, monkeypatch):
+    sleep_file = tmp_path / "sleep_merged.jsonl"
+    _write_rows(sleep_file, [
+        {
+            "start_local": "2026-03-15T23:00:00+01:00",
+            "end_local": "2026-03-16T00:40:00+01:00",
+            "source": "merged",
+            "sleep_metrics": {"sleep_duration": 100},
+        },
+        {
+            "start_local": "2026-03-15T23:00:00+01:00",
+            "end_local": "2026-03-16T05:00:00+01:00",
+            "source": "stage_derived",
+            "sleep_metrics": {"sleep_duration": 360},
+        },
+    ])
+    monkeypatch.setattr("lynchpin.sources.sleep.get_config", lambda: SimpleNamespace(sleep_jsonl=sleep_file))
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch.active_seconds_by_date", lambda start, end: {}
+    )
+    monkeypatch.setattr("lynchpin.sources.activitywatch.deep_work", lambda *, start, end: ())
+    monkeypatch.setattr(
+        "lynchpin.sources.sleep._activitywatch_derived_bounds", lambda: (None, None)
+    )
+
+    (row,) = sleep_productivity(start=date(2026, 3, 15), end=date(2026, 3, 15))
+    assert row.sleep_hours == 6.0  # 360 min composite, not the canonical 100 min
 
 
 def test_sleep_stage_movement_flags_contradicted_deep(monkeypatch):

@@ -365,13 +365,17 @@ class SleepDayActivity:
 
 def daily_activity(*, start: date, end: date) -> list[SleepDayActivity]:
     """Per-day sleep activity summary."""
+    from .sleep_composite import composite_minutes_by_date
+
+    composite_minutes = composite_minutes_by_date(start=start, end=end)
     result: list[SleepDayActivity] = []
     for entry in entries_in_range(start=start, end=end, canonical=True):
         sig = entry.signals
         score = entry.effective_score
+        minutes = composite_minutes.get(entry.date)
         result.append(SleepDayActivity(
             date=entry.date,
-            total_hours=round(entry.total_minutes / 60, 2) if entry.total_minutes else None,
+            total_hours=round(minutes / 60, 2) if minutes else None,
             score=round(score, 2) if score is not None else None,
             quality=entry.quality_label,
             hr_min_bpm=sig.hr_min if sig else None,
@@ -610,6 +614,10 @@ def sleep_productivity(
     if not sleep_data:
         return []
 
+    from .sleep_composite import composite_minutes_by_date
+
+    composite_minutes = composite_minutes_by_date(start=start, end=end)
+
     # Lazy import — ActivityWatch is a peer source, not a module-level
     # dependency. Prefer its bounded canonical products when available.
     from .activitywatch import active_seconds_by_date, deep_work
@@ -683,7 +691,8 @@ def sleep_productivity(
         dw_min = dw_by_day.get(workday, 0)
         vs_baseline = active_h / baseline_hours if baseline_hours > 0 else 0
         result.append(SleepProductivity(
-            sleep_date=entry.date, sleep_hours=round(entry.total_minutes / 60, 2),
+            sleep_date=entry.date,
+            sleep_hours=round((composite_minutes.get(entry.date) or entry.total_minutes) / 60, 2),
             sleep_score=entry.effective_score, sleep_quality=entry.quality_label,
             workday_active_hours=round(active_h, 2),
             workday_deep_work_min=round(dw_min, 1),
