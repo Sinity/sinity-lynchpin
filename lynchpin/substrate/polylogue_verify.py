@@ -44,6 +44,9 @@ _RUN_COLUMNS: tuple[str, ...] = (
     "read_bytes",
     "peak_storage_bytes",
     "peak_rss_kb",
+    "selection_mode",
+    "selection_state",
+    "selection_reason",
 )
 
 REFRESH_ID = "latest"

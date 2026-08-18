@@ -160,6 +160,16 @@ def iter_verify_runs(path: Path | None = None) -> Iterator[dict[str, Any]]:
                 "release_baseline_allowed": entry.get("release_baseline_allowed"),
                 "artifact_dir": entry.get("artifact_dir"),
             }
+            # Newer rows carry the full selection block; older testmon-tier
+            # rows only recorded the mode inside testmon_environment.
+            selection = entry.get("testmon_selection")
+            environment = entry.get("testmon_environment")
+            if isinstance(selection, dict):
+                row["selection_mode"] = selection.get("selection_mode")
+                row["selection_state"] = selection.get("state_status")
+                row["selection_reason"] = selection.get("state_reason")
+            elif isinstance(environment, dict):
+                row["selection_mode"] = environment.get("selection_mode")
             row.update(_step_summary(entry))
             row.update(_pytest_counts(entry))
             yield row

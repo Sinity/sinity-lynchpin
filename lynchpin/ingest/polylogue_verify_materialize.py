@@ -34,6 +34,18 @@ def materialize_polylogue_verify_runs() -> dict[str, Any]:
     with connect(rebuild_corrupt=True) as conn:
         # Additive table: create it in place rather than forcing a
         # SUBSTRATE_VERSION bump, which drops and rebuilds every product.
+        # The table is fully re-promoted from the complete history on every
+        # materialization, so when its DDL gains columns the cheapest
+        # migration is dropping just this table and recreating it -- nothing
+        # is lost and no other product is touched.
+        existing = {
+            str(column[0])
+            for column in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'polylogue_verify_run'"
+            ).fetchall()
+        }
+        if existing and "selection_state" not in existing:
+            conn.execute("DROP TABLE polylogue_verify_run")
         for statement in polylogue_verify_ddl():
             conn.execute(statement)
         promoted = promote_polylogue_verify_runs(conn, rows=rows)

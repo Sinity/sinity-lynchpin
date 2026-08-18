@@ -1428,6 +1428,14 @@ DDL_STATEMENTS = (
         read_bytes               DOUBLE,
         peak_storage_bytes       DOUBLE,
         peak_rss_kb              DOUBLE,
+        -- Why a run selected what it did. selection_state carries the
+        -- bootstrap-cause split (absent = env digest changed, incomplete =
+        -- graph missing changed modules, valid = warm affected) that the
+        -- 2026-08-17 suite-cost analysis had to dig out of per-run receipt
+        -- JSON because no promoted column held it.
+        selection_mode           VARCHAR,
+        selection_state          VARCHAR,
+        selection_reason         VARCHAR,
         refresh_id               VARCHAR NOT NULL,
         materialized_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (run_id, refresh_id)
