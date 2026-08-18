@@ -818,25 +818,26 @@ def process_memory_growth_candidates(
         validate_process_memory_schema(conn)
         sql = f"""
             WITH bounds AS (
-                SELECT pid, process_start_time_ticks, comm, unit, scope,
+                SELECT pid, process_start_time_ticks, comm,
                        MIN(observed_at) AS first_ts,
                        MAX(observed_at) AS last_ts,
                        COUNT(*) AS n
                 FROM process_memory_sample
                 {where_sql}
-                GROUP BY pid, process_start_time_ticks, comm, unit, scope
+                GROUP BY pid, process_start_time_ticks, comm
                 HAVING COUNT(*) >= ? AND MAX(observed_at) > MIN(observed_at)
             )
-            SELECT b.pid, b.process_start_time_ticks, b.comm, b.unit, b.scope, b.n,
+            SELECT b.pid, b.process_start_time_ticks, b.comm, b.n,
                    b.first_ts, f.pss_anon_kb AS first_pss_anon_kb,
-                   b.last_ts, l.pss_anon_kb AS last_pss_anon_kb
+                   b.last_ts, l.pss_anon_kb AS last_pss_anon_kb,
+                   l.unit AS unit, l.scope AS scope
             FROM bounds b
             JOIN process_memory_sample f
-                ON f.pid = b.pid AND f.process_start_time_ticks = b.process_start_time_ticks
-                AND f.observed_at = b.first_ts
+                ON f.pid = b.pid AND f.process_start_time_ticks IS b.process_start_time_ticks
+                AND f.comm IS b.comm AND f.observed_at = b.first_ts
             JOIN process_memory_sample l
-                ON l.pid = b.pid AND l.process_start_time_ticks = b.process_start_time_ticks
-                AND l.observed_at = b.last_ts
+                ON l.pid = b.pid AND l.process_start_time_ticks IS b.process_start_time_ticks
+                AND l.comm IS b.comm AND l.observed_at = b.last_ts
         """
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, [*params, max(int(min_samples), 1)]).fetchall()
