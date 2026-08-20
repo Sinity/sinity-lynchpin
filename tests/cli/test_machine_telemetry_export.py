@@ -1,3 +1,5 @@
+import json
+import shutil
 import sqlite3
 from datetime import date, datetime, timezone
 
@@ -23,6 +25,21 @@ def _seed_source_db(path, rows_by_day):
               schema_version INTEGER NOT NULL, payload_json TEXT NOT NULL
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE source_status (
+              source TEXT PRIMARY KEY,
+              checked_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              reason TEXT,
+              payload_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO source_status (source, checked_at, status, reason, payload_json) "
+            "VALUES ('gpu', '2026-08-17T00:00:00+00:00', 'ok', NULL, '{}')"
         )
         for day, n in rows_by_day.items():
             for hour in range(n):
@@ -59,6 +76,31 @@ def test_export_only_touches_sealed_days_before_today(tmp_path):
     assert result.rows_exported == 5
     assert not (lake / "gpu_sample" / "dt=2026-08-17").exists()
     assert not list((lake / "gpu_sample").glob(".staging-*"))
+    manifest = json.loads((lake / "manifest.json").read_text())
+    assert manifest["schema"] == "sinnix-machine-telemetry-lake-v1"
+    assert set(manifest["tables"]) == {
+        "metric_sample",
+        "service_state",
+        "gpu_sample",
+        "network_sample",
+        "block_device_sample",
+        "service_cgroup_io_sample",
+        "service_cgroup_pressure_sample",
+        "process_io_delta_sample",
+        "process_memory_sample",
+        "cgroup_memory_sample",
+        "kill_event",
+        "hardware_state",
+        "source_status",
+    }
+    assert manifest["tables"]["source_status"]["metadata_path"] == (
+        "source_status/metadata.parquet"
+    )
+    assert manifest["tables"]["source_status"]["row_count"] == 1
+    assert manifest["tables"]["gpu_sample"]["sealed_days"] == [
+        "2026-08-15",
+        "2026-08-16",
+    ]
 
 
 def test_export_verifies_row_count_and_checksum_per_day(tmp_path):
@@ -114,6 +156,24 @@ def test_export_is_idempotent_and_incremental_by_default(tmp_path):
     )
     assert third[0].days_exported == ("2026-08-15",)
     assert third[0].rows_exported == 3
+
+
+def test_incremental_export_recovers_missing_partition(tmp_path):
+    from lynchpin.cli.machine_telemetry_export import run_export
+
+    db = tmp_path / "telemetry.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {"2026-08-15": 3, "2026-08-16": 2})
+    now = datetime(2026, 8, 17, 0, 0, tzinfo=timezone.utc)
+    run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
+    shutil.rmtree(lake / "gpu_sample" / "dt=2026-08-15")
+
+    (result,) = run_export(
+        sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now
+    )
+    assert result.days_exported == ("2026-08-15",)
+    assert result.rows_exported == 3
+    assert (lake / "gpu_sample" / "dt=2026-08-15").is_dir()
 
 
 def test_incremental_export_rejects_corrupt_existing_partition(tmp_path):

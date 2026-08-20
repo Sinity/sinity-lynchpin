@@ -13,6 +13,7 @@ exports days not already present in the lake).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -27,10 +28,9 @@ import typer
 
 log = logging.getLogger(__name__)
 
-# (source table, day-partition column). Every real telemetry table in the
-# collector's schema except `source_status` (tiny config table, not a time
-# series) and `sqlite_sequence` (SQLite-internal). hardware_state's time
-# column is `captured_at`, everything else is `observed_at`.
+# (source table, day-partition column). Every time-series table in the
+# collector's schema except `sqlite_sequence` (SQLite-internal). hardware_state's
+# time column is `captured_at`, everything else is `observed_at`.
 _TABLES: tuple[tuple[str, str], ...] = (
     ("metric_sample", "observed_at"),
     ("service_state", "observed_at"),
@@ -45,6 +45,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
     ("kill_event", "observed_at"),
     ("hardware_state", "captured_at"),
 )
+_METADATA_TABLES: tuple[str, ...] = ("source_status",)
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,79 @@ def export_table(
     )
 
 
+def _export_metadata_table(conn: Any, *, table: str, lake_root: Path) -> int:
+    """Export and verify a non-time-series collector table atomically."""
+    if table != "source_status":
+        raise ValueError(f"unsupported metadata table: {table}")
+    out_dir = lake_root / table
+    out_dir.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix=".staging-", dir=out_dir))
+    staged_file = staging_root / "metadata.parquet"
+    final_file = out_dir / "metadata.parquet"
+    try:
+        conn.execute(
+            f"COPY (SELECT * FROM src.{table}) TO '{staged_file}' "
+            "(FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
+        source_count, source_checksum = conn.execute(
+            "SELECT count(*), sum(hash(source, checked_at, status, "
+            "coalesce(reason, ''), payload_json)) FROM src.source_status"
+        ).fetchone()
+        parquet_count, parquet_checksum = conn.execute(
+            "SELECT count(*), sum(hash(source, checked_at, status, "
+            "coalesce(reason, ''), payload_json)) FROM read_parquet(?)",
+            [str(staged_file)],
+        ).fetchone()
+        if (parquet_count, parquet_checksum) != (source_count, source_checksum):
+            raise LakeVerificationError(
+                f"{table}: sqlite count={source_count} checksum={source_checksum} "
+                f"!= parquet count={parquet_count} checksum={parquet_checksum}"
+            )
+        os.replace(staged_file, final_file)
+        return int(parquet_count)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def _write_coverage_manifest(
+    *,
+    lake_root: Path,
+    sqlite_path: Path,
+    generated_at: datetime,
+    metadata_rows: dict[str, int],
+) -> None:
+    """Publish an atomic receipt of every collector table's lake coverage."""
+    tables = {
+        table: {
+            "time_column": time_col,
+            "sealed_days": sorted(_existing_lake_days(lake_root, table)),
+        }
+        for table, time_col in _TABLES
+    }
+    for table in _METADATA_TABLES:
+        tables[table] = {
+            "time_column": None,
+            "sealed_days": [],
+            "metadata_path": f"{table}/metadata.parquet",
+            "row_count": metadata_rows[table],
+        }
+    manifest = {
+        "schema": "sinnix-machine-telemetry-lake-v1",
+        "generated_at": generated_at.astimezone(timezone.utc).isoformat(),
+        "source_database": str(sqlite_path),
+        "tables": tables,
+    }
+    manifest_path = lake_root / "manifest.json"
+    fd, tmp_name = tempfile.mkstemp(prefix=".manifest-", dir=lake_root)
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        tmp_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+        os.replace(tmp_path, manifest_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def run_export(
     *,
     sqlite_path: Path,
@@ -247,7 +321,9 @@ def run_export(
 ) -> list[TableExportResult]:
     import duckdb
 
-    today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    export_time = now or datetime.now(timezone.utc)
+    today = export_time.astimezone(timezone.utc).date()
+    lake_root.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect()
     conn.execute("INSTALL sqlite; LOAD sqlite;")
     conn.execute(f"ATTACH '{sqlite_path}' AS src (TYPE SQLITE, READ_ONLY)")
@@ -278,6 +354,16 @@ def run_export(
                 f"{result.rows_exported:,}",
                 result.bytes_written / 1e6,
             )
+    metadata_rows = {
+        table: _export_metadata_table(conn, table=table, lake_root=lake_root)
+        for table in _METADATA_TABLES
+    }
+    _write_coverage_manifest(
+        lake_root=lake_root,
+        sqlite_path=sqlite_path,
+        generated_at=export_time,
+        metadata_rows=metadata_rows,
+    )
     return results
 
 

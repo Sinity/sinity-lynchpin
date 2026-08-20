@@ -39,7 +39,9 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     )
     with connect(db) as conn:
         apply_schema(conn)
-        assert promote_machine_metric_samples(conn, refresh_id="r1", samples=[sample]) == 1
+        assert (
+            promote_machine_metric_samples(conn, refresh_id="r1", samples=[sample]) == 1
+        )
         row = conn.execute(
             """
             SELECT host, cpu_package_w, gpu_power_w, gpu_pcie_gen,
@@ -91,7 +93,9 @@ def test_promote_machine_metric_samples_round_trip(tmp_path):
     assert memory[0]["mem_slab_unreclaimable_mb"] == 300
 
 
-def test_load_machine_memory_breakdown_filters_exact_timestamps_without_default_limit(tmp_path):
+def test_load_machine_memory_breakdown_filters_exact_timestamps_without_default_limit(
+    tmp_path,
+):
     from lynchpin.sources.machine import MachineMetricSample
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.machine import load_machine_memory_breakdown
@@ -113,11 +117,14 @@ def test_load_machine_memory_breakdown_filters_exact_timestamps_without_default_
 
     with connect(db) as conn:
         apply_schema(conn)
-        assert promote_machine_metric_samples(
-            conn,
-            refresh_id="r1",
-            samples=[sample(hour) for hour in range(6)],
-        ) == 6
+        assert (
+            promote_machine_metric_samples(
+                conn,
+                refresh_id="r1",
+                samples=[sample(hour) for hour in range(6)],
+            )
+            == 6
+        )
         rows = load_machine_memory_breakdown(
             conn,
             refresh_id="r1",
@@ -184,7 +191,10 @@ def test_promote_machine_experiment_runs_round_trip(tmp_path):
     assert loaded[0]["validation_status"] == "invalid"
     assert loaded[0]["validation_issues"] == ["fixture issue"]
     assert loaded[0]["validation_warnings"] == ["fixture warning"]
-    assert loaded[0]["manifest_validation"] == '{"valid": false, "issues": ["fixture issue"]}'
+    assert (
+        loaded[0]["manifest_validation"]
+        == '{"valid": false, "issues": ["fixture issue"]}'
+    )
 
 
 def test_promote_machine_gpu_samples_round_trip(tmp_path):
@@ -249,7 +259,9 @@ def test_promote_machine_service_states_round_trip(tmp_path):
     )
     with connect(db) as conn:
         apply_schema(conn)
-        assert promote_machine_service_states(conn, refresh_id="r1", states=[state]) == 1
+        assert (
+            promote_machine_service_states(conn, refresh_id="r1", states=[state]) == 1
+        )
         loaded = load_machine_service_states(conn, refresh_id="r1")
 
     assert len(loaded) == 1
@@ -536,7 +548,9 @@ def test_machine_pressure_explainer_joins_metric_service_and_process_io(tmp_path
 
     assert len(windows) == 1
     assert windows[0]["metric"]["mem_file_cache_mb"] == 16000
-    assert "reclaimable cache/slab exceeds anonymous process memory" in windows[0]["notes"]
+    assert (
+        "reclaimable cache/slab exceeds anonymous process memory" in windows[0]["notes"]
+    )
     assert windows[0]["top_services_by_memory"][0]["unit"] == "transmission.service"
     assert windows[0]["top_services_by_memory"][0]["max_file_mib"] == 1800
     assert windows[0]["top_process_io_deltas"][0]["comm"] == "codex"
@@ -571,7 +585,10 @@ def test_promote_machine_network_samples_round_trip(tmp_path):
     )
     with connect(db) as conn:
         apply_schema(conn)
-        assert promote_machine_network_samples(conn, refresh_id="r1", samples=[sample]) == 1
+        assert (
+            promote_machine_network_samples(conn, refresh_id="r1", samples=[sample])
+            == 1
+        )
         loaded = load_machine_network_samples(conn, refresh_id="r1")
 
     assert len(loaded) == 1
@@ -765,6 +782,21 @@ def _seed_attach_fixture(path, days):
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE source_status (
+              source TEXT PRIMARY KEY,
+              checked_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              reason TEXT,
+              payload_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO source_status (source, checked_at, status, reason, payload_json) "
+            "VALUES ('fixture', '2026-05-03T00:00:00+00:00', 'ok', NULL, '{}')"
+        )
         for day in days:
             ts = f"{day}T10:00:00+00:00"
             conn.execute(
@@ -870,7 +902,9 @@ def test_attach_fast_path_promotes_process_io_and_cgroup_memory_in_one_statement
     )
 
 
-def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(tmp_path, monkeypatch):
+def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(
+    tmp_path, monkeypatch
+):
     """sinnix-2g54 stage 3: a no-watermark first run must prefer the Parquet
     lake over DuckDB's ATTACH full-table SQLite scan wherever the lake has
     sealed-day coverage, falling back to the indexed incremental-append
@@ -903,7 +937,9 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(tmp_path, monk
     # lake is deliberately partial, matching the real steady-state shape
     # (history in the lake, the newest day(s) only in the live SQLite).
     run_export(
-        sqlite_path=live_db, lake_root=lake_root, tables=("process_io_delta_sample",),
+        sqlite_path=live_db,
+        lake_root=lake_root,
+        tables=("process_io_delta_sample",),
         now=dt_cls(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
     )
     monkeypatch.setattr(
@@ -937,7 +973,8 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(tmp_path, monk
         assert remaining_days == {"2026-05-01", "2026-05-02", "2026-05-03"}
 
     attach_scan_inserts = [
-        s for s in conn.statements
+        s
+        for s in conn.statements
         if s.startswith("INSERT INTO machine_process_io_delta_sample")
         and "machine_src.process_io_delta_sample" in s
     ]
@@ -946,13 +983,14 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(tmp_path, monk
         f"covers the window's sealed days, got {len(attach_scan_inserts)}"
     )
     lake_bootstrap_inserts = [
-        s for s in conn.statements
+        s
+        for s in conn.statements
         if s.startswith("INSERT INTO machine_process_io_delta_sample")
         and "read_parquet" in s
     ]
-    assert len(lake_bootstrap_inserts) == 1, (
-        f"expected exactly one lake-bootstrap INSERT, got {len(lake_bootstrap_inserts)}"
-    )
+    assert (
+        len(lake_bootstrap_inserts) == 1
+    ), f"expected exactly one lake-bootstrap INSERT, got {len(lake_bootstrap_inserts)}"
 
 
 def _insert_process_io_day(path, day):
@@ -977,7 +1015,9 @@ def _insert_process_io_day(path, day):
         conn.close()
 
 
-def test_incremental_watermark_appends_new_day_without_full_rescan(tmp_path, monkeypatch):
+def test_incremental_watermark_appends_new_day_without_full_rescan(
+    tmp_path, monkeypatch
+):
     """sinnix-2g54 §4b regression: steady-state runs must not re-INSERT the
     whole indexed table every day once a watermark exists.
 
@@ -1018,7 +1058,8 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(tmp_path, mon
         )
         assert counts["machine_process_io_delta_sample"] == 3
         first_run_inserts = [
-            s for s in conn.statements
+            s
+            for s in conn.statements
             if s.startswith("INSERT INTO machine_process_io_delta_sample")
         ]
         assert len(first_run_inserts) == 1
@@ -1058,7 +1099,8 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(tmp_path, mon
         # the small pandas-batch insert used by the incremental append path,
         # is exactly the cost this watermark exists to avoid.
         attach_scan_inserts = [
-            s for s in conn.statements
+            s
+            for s in conn.statements
             if s.startswith("INSERT INTO machine_process_io_delta_sample")
             and "machine_src.process_io_delta_sample" in s
         ]
