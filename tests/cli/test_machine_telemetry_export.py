@@ -49,13 +49,16 @@ def test_export_only_touches_sealed_days_before_today(tmp_path):
     _seed_source_db(db, {"2026-08-15": 3, "2026-08-16": 2, "2026-08-17": 5})
 
     results = run_export(
-        sqlite_path=db, lake_root=lake, tables=("gpu_sample",),
+        sqlite_path=db,
+        lake_root=lake,
+        tables=("gpu_sample",),
         now=datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc),
     )
     (result,) = results
     assert result.days_exported == ("2026-08-15", "2026-08-16")
     assert result.rows_exported == 5
     assert not (lake / "gpu_sample" / "dt=2026-08-17").exists()
+    assert not list((lake / "gpu_sample").glob(".staging-*"))
 
 
 def test_export_verifies_row_count_and_checksum_per_day(tmp_path):
@@ -68,7 +71,9 @@ def test_export_verifies_row_count_and_checksum_per_day(tmp_path):
     _seed_source_db(db, {"2026-08-15": 4, "2026-08-16": 6})
 
     run_export(
-        sqlite_path=db, lake_root=lake, tables=("gpu_sample", "hardware_state"),
+        sqlite_path=db,
+        lake_root=lake,
+        tables=("gpu_sample", "hardware_state"),
         now=datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc),
     )
 
@@ -104,9 +109,35 @@ def test_export_is_idempotent_and_incremental_by_default(tmp_path):
     second = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
     assert second[0].days_exported == ()  # nothing new to export
 
-    third = run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now, full=True)
+    third = run_export(
+        sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now, full=True
+    )
     assert third[0].days_exported == ("2026-08-15",)
     assert third[0].rows_exported == 3
+
+
+def test_incremental_export_rejects_corrupt_existing_partition(tmp_path):
+    """A present partition is re-verified instead of being trusted by name."""
+    import duckdb
+    import pytest
+
+    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, run_export
+
+    db = tmp_path / "telemetry.sqlite"
+    lake = tmp_path / "lake"
+    _seed_source_db(db, {"2026-08-15": 3})
+    now = datetime(2026, 8, 17, 0, 0, tzinfo=timezone.utc)
+    run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
+
+    conn = duckdb.connect()
+    part = next((lake / "gpu_sample" / "dt=2026-08-15").glob("*.parquet"))
+    conn.execute(
+        f"COPY (SELECT * FROM read_parquet('{part}') LIMIT 2) "
+        f"TO '{part}' (FORMAT PARQUET)"
+    )
+
+    with pytest.raises(LakeVerificationError):
+        run_export(sqlite_path=db, lake_root=lake, tables=("gpu_sample",), now=now)
 
 
 def test_export_raises_on_verification_mismatch(tmp_path):
@@ -122,7 +153,11 @@ def test_export_raises_on_verification_mismatch(tmp_path):
     import duckdb
     import pytest
 
-    from lynchpin.cli.machine_telemetry_export import LakeVerificationError, export_table, verify_exported_days
+    from lynchpin.cli.machine_telemetry_export import (
+        LakeVerificationError,
+        export_table,
+        verify_exported_days,
+    )
 
     db = tmp_path / "telemetry.sqlite"
     lake = tmp_path / "lake"
@@ -133,7 +168,10 @@ def test_export_raises_on_verification_mismatch(tmp_path):
     conn.execute(f"ATTACH '{db}' AS src (TYPE SQLITE, READ_ONLY)")
 
     export_table(
-        conn, table="gpu_sample", time_col="observed_at", lake_root=lake,
+        conn,
+        table="gpu_sample",
+        time_col="observed_at",
+        lake_root=lake,
         today=date(2026, 8, 17),
     )
     out_dir = lake / "gpu_sample"
@@ -141,7 +179,11 @@ def test_export_raises_on_verification_mismatch(tmp_path):
 
     # Sanity: the partition just written by export_table verifies clean.
     assert verify_exported_days(
-        conn, table="gpu_sample", time_col="observed_at", target_days=["2026-08-15"], out_dir=out_dir
+        conn,
+        table="gpu_sample",
+        time_col="observed_at",
+        target_days=["2026-08-15"],
+        out_dir=out_dir,
     ) == {"2026-08-15": 3}
 
     # Simulate a write that landed short (e.g. a truncated COPY): drop one row
@@ -153,5 +195,9 @@ def test_export_raises_on_verification_mismatch(tmp_path):
 
     with pytest.raises(LakeVerificationError):
         verify_exported_days(
-            conn, table="gpu_sample", time_col="observed_at", target_days=["2026-08-15"], out_dir=out_dir
+            conn,
+            table="gpu_sample",
+            time_col="observed_at",
+            target_days=["2026-08-15"],
+            out_dir=out_dir,
         )

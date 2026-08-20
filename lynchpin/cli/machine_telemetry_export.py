@@ -14,7 +14,10 @@ exports days not already present in the lake).
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -63,8 +66,12 @@ def _existing_lake_days(lake_root: Path, table: str) -> set[str]:
         return set()
     days = set()
     for entry in table_dir.iterdir():
-        if entry.is_dir() and entry.name.startswith("dt="):
-            days.add(entry.name[len("dt="):])
+        if (
+            entry.is_dir()
+            and entry.name.startswith("dt=")
+            and any(entry.glob("*.parquet"))
+        ):
+            days.add(entry.name[len("dt=") :])
     return days
 
 
@@ -136,30 +143,85 @@ def export_table(
     ).fetchall()
     sealed_days = sorted(r[0] for r in dt_rows)
 
+    already = _existing_lake_days(lake_root, table)
+    if already:
+        # An existing partition is not evidence of a complete export: a
+        # process death can leave an empty or truncated directory behind.
+        # Verify it against the live source before treating the sealed day as
+        # immutable and skipping it. A mismatch is a hard stop rather than a
+        # silent overwrite, so the operator can inspect the lake and source.
+        verify_exported_days(
+            conn,
+            table=table,
+            time_col=time_col,
+            target_days=sorted(already & set(sealed_days)),
+            out_dir=out_dir,
+        )
+
     if not full:
-        already = _existing_lake_days(lake_root, table)
         target_days = [d for d in sealed_days if d not in already]
     else:
         target_days = sealed_days
 
     if not target_days:
-        return TableExportResult(table=table, days_exported=(), rows_exported=0, verified_days=0, bytes_written=0)
+        return TableExportResult(
+            table=table,
+            days_exported=(),
+            rows_exported=0,
+            verified_days=0,
+            bytes_written=0,
+        )
 
     day_list_sql = ", ".join(f"'{d}'" for d in target_days)
-    conn.execute(
-        f"""
-        COPY (
-            SELECT *, substr({time_col}, 1, 10) AS dt
-            FROM src.{table}
-            WHERE substr({time_col}, 1, 10) IN ({day_list_sql})
-        ) TO '{out_dir}' (
-            FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (dt),
-            FILENAME_PATTERN 'part', OVERWRITE_OR_IGNORE 1
+    staging_root = Path(tempfile.mkdtemp(prefix=".staging-", dir=out_dir))
+    try:
+        conn.execute(
+            f"""
+            COPY (
+                SELECT *, substr({time_col}, 1, 10) AS dt
+                FROM src.{table}
+                WHERE substr({time_col}, 1, 10) IN ({day_list_sql})
+            ) TO '{staging_root}' (
+                FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (dt),
+                FILENAME_PATTERN 'part', OVERWRITE_OR_IGNORE 1
+            )
+            """
         )
-        """
-    )
 
-    verified_counts = verify_exported_days(conn, table=table, time_col=time_col, target_days=target_days, out_dir=out_dir)
+        # A partition becomes visible only after its complete staged output
+        # has passed the source count+checksum check. Directory rename is the
+        # publication boundary; an interrupted COPY leaves only a hidden
+        # staging directory that the next run can safely ignore.
+        verified_counts = verify_exported_days(
+            conn,
+            table=table,
+            time_col=time_col,
+            target_days=target_days,
+            out_dir=staging_root,
+        )
+        for day in target_days:
+            staged_partition = staging_root / f"dt={day}"
+            final_partition = out_dir / f"dt={day}"
+            if final_partition.exists():
+                if not full:
+                    raise LakeVerificationError(
+                        f"{table} dt={day}: partition appeared during export; refusing overwrite"
+                    )
+                staged_files = list(staged_partition.glob("*.parquet"))
+                final_files = list(final_partition.glob("*.parquet"))
+                if len(staged_files) != 1 or len(final_files) != 1:
+                    raise LakeVerificationError(
+                        f"{table} dt={day}: expected one parquet file for atomic replacement"
+                    )
+                # Full re-export replaces the single immutable file in place;
+                # os.replace keeps readers from observing a partial file.
+                os.replace(staged_files[0], final_files[0])
+                staged_partition.rmdir()
+            else:
+                staged_partition.rename(final_partition)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
     rows_exported = sum(verified_counts.values())
     bytes_written = 0
     for day in target_days:
@@ -194,22 +256,46 @@ def run_export(
     for table, time_col in _TABLES:
         if tables and table not in tables:
             continue
-        log.info("machine-telemetry-export: %s (sealed days before %s)", table, today.isoformat())
-        result = export_table(conn, table=table, time_col=time_col, lake_root=lake_root, today=today, full=full)
+        log.info(
+            "machine-telemetry-export: %s (sealed days before %s)",
+            table,
+            today.isoformat(),
+        )
+        result = export_table(
+            conn,
+            table=table,
+            time_col=time_col,
+            lake_root=lake_root,
+            today=today,
+            full=full,
+        )
         results.append(result)
         if result.days_exported:
             log.info(
                 "machine-telemetry-export: %s: %d day(s), %s rows, %.2f MB verified",
-                table, len(result.days_exported), f"{result.rows_exported:,}", result.bytes_written / 1e6,
+                table,
+                len(result.days_exported),
+                f"{result.rows_exported:,}",
+                result.bytes_written / 1e6,
             )
     return results
 
 
 def _export_command(
-    sqlite_path: Path = typer.Option(None, "--db", help="Source SQLite (default: configured live database)"),
-    lake_root: Path = typer.Option(None, "--lake-root", help="Parquet lake output root (default: configured lake root)"),
-    full: bool = typer.Option(False, "--full", help="Re-export every sealed day, not just missing ones"),
-    tables: str = typer.Option("", "--tables", help="Comma-separated table subset (default: all)"),
+    sqlite_path: Path = typer.Option(
+        None, "--db", help="Source SQLite (default: configured live database)"
+    ),
+    lake_root: Path = typer.Option(
+        None,
+        "--lake-root",
+        help="Parquet lake output root (default: configured lake root)",
+    ),
+    full: bool = typer.Option(
+        False, "--full", help="Re-export every sealed day, not just missing ones"
+    ),
+    tables: str = typer.Option(
+        "", "--tables", help="Comma-separated table subset (default: all)"
+    ),
 ) -> None:
     from lynchpin.core.config import get_config
 
@@ -246,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
     import click
 
     try:
-        _command.main(args=list(argv) if argv is not None else None, standalone_mode=False)
+        _command.main(
+            args=list(argv) if argv is not None else None, standalone_mode=False
+        )
     except click.UsageError as exc:
         sys.stderr.write(f"Error: {exc.format_message()}\n")
         return 2
