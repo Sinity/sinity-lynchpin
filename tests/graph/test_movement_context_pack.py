@@ -9,6 +9,7 @@ from lynchpin.graph.context_pack import (
     _render_content_metadata_coverage,
     _render_machine_analysis_artifacts,
     context_pack,
+    materialize_evidence_graph,
     graph_context_pack,
     render_context_pack,
 )
@@ -644,6 +645,35 @@ def test_context_pack_records_exact_substrate_hit(monkeypatch, tmp_path):
 
     assert context.substrate_state.status == "exact_hit"
     assert "Substrate graph: `exact_hit`" in render_context_pack(context)
+
+
+def test_materialize_evidence_graph_skips_context_pack_rendering(monkeypatch):
+    start = date(2026, 5, 1)
+    end = date(2026, 5, 2)
+    graph = EvidenceGraph(
+        start=start,
+        end=end,
+        generated_at=datetime(2026, 5, 2, tzinfo=UTC),
+        mode="materialized",
+        nodes=(),
+        edges=(),
+        caveats=(),
+    )
+    materialized: dict[str, object] = {}
+    monkeypatch.setattr("lynchpin.graph.context_pack.build_evidence_graph", lambda **_kwargs: graph)
+    monkeypatch.setattr(
+        "lynchpin.graph.context_pack._materialize_context_graph",
+        lambda graph, **kwargs: materialized.update(graph=graph, **kwargs),
+    )
+
+    result = materialize_evidence_graph(start=start, end=end)
+
+    assert result is graph
+    assert materialized == {
+        "graph": graph,
+        "refresh_id": "current-state:2026-05-01:2026-05-02:all",
+        "projects": None,
+    }
 
 
 def test_context_pack_requires_materialized_substrate_by_default(monkeypatch):

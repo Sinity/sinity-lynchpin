@@ -111,6 +111,7 @@ def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_p
         "2026-05-24",
     ]
     assert "--existing-products" in forwarded["argv"]
+    assert "--graph-only" in forwarded["argv"]
 
 
 def test_materialize_rejects_mode_option(monkeypatch) -> None:
@@ -299,7 +300,16 @@ def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
     import lynchpin.cli.substrate_snapshot as snapshot
 
     promoted: dict[str, object] = {}
-    monkeypatch.setattr(snapshot, "current_state_main", lambda _argv: 0)
+    materialized: dict[str, object] = {}
+    monkeypatch.setattr(
+        snapshot,
+        "current_state_main",
+        lambda _argv: pytest.fail("graph-only snapshot must not render a context pack"),
+    )
+    monkeypatch.setattr(
+        "lynchpin.graph.context_pack.materialize_evidence_graph",
+        lambda **kwargs: materialized.update(kwargs),
+    )
     monkeypatch.setattr(snapshot, "_record_run_step", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(snapshot, "_record_snapshot_materialization_statuses", lambda **_kwargs: None)
     monkeypatch.setattr(
@@ -316,10 +326,16 @@ def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
             "--end",
             "2026-05-02",
             "--existing-products",
+            "--graph-only",
             "--progress",
             "quiet",
         ]
     )
 
     assert code == 0
+    assert materialized == {
+        "start": date(2026, 5, 1),
+        "end": date(2026, 5, 2),
+        "projects": (),
+    }
     assert promoted["ensure_products"] is False

@@ -26,6 +26,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="read canonical products without materializing them",
     )
+    parser.add_argument(
+        "--graph-only",
+        action="store_true",
+        help="materialize the graph without rendering a context pack",
+    )
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
     global _PROGRESS_FORMAT
@@ -58,7 +63,17 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--output", str(args.output)])
     if args.timeline_output is not None:
         forwarded.extend(["--timeline-output", str(args.timeline_output)])
-    code = current_state_main(forwarded)
+    if args.graph_only:
+        from lynchpin.graph.context_pack import materialize_evidence_graph
+
+        materialize_evidence_graph(
+            start=date.fromisoformat(args.start),
+            end=date.fromisoformat(args.end),
+            projects=tuple(args.projects or ()),
+        )
+        code = 0
+    else:
+        code = current_state_main(forwarded)
     if code:
         _record_run_step(refresh_id, "current_state_graph", "error", f"current-state exited {code}")
         return code

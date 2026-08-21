@@ -240,6 +240,30 @@ def _current_state_refresh_id(
     return f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
 
 
+def materialize_evidence_graph(
+    *,
+    start: date,
+    end: date,
+    projects: Sequence[str] | None = None,
+    include_github_frontier: bool = False,
+    exclude_analysis_artifacts: Sequence[str] = (),
+) -> EvidenceGraph:
+    """Build and persist a graph without rendering a context pack."""
+    graph = build_evidence_graph(
+        start=start,
+        end=end,
+        projects=projects,
+        include_github_frontier=include_github_frontier,
+        exclude_analysis_artifacts=exclude_analysis_artifacts,
+    )
+    _materialize_context_graph(
+        graph,
+        refresh_id=_current_state_refresh_id(start=start, end=end, projects=projects),
+        projects=projects,
+    )
+    return graph
+
+
 def _materialize_context_graph(
     graph: EvidenceGraph,
     *,
