@@ -101,7 +101,9 @@ def test_temporal_inputs_refresh_only_activitywatch_tail(monkeypatch) -> None:
         lambda: (
             SimpleNamespace(
                 name="activitywatch_derived",
+                status="ready",
                 tail_stale=True,
+                first_date=date(2024, 2, 15),
                 last_date=date(2026, 5, 3),
             ),
         ),
@@ -115,6 +117,38 @@ def test_temporal_inputs_refresh_only_activitywatch_tail(monkeypatch) -> None:
 
     assert calls[0] == ("activitywatch_derived", (date(2026, 5, 3), date(2026, 5, 6)))
     assert all(window == (date(2026, 5, 1), date(2026, 5, 6)) for _, window in calls[1:])
+
+
+def test_temporal_inputs_do_not_rebuild_before_known_product_coverage(monkeypatch) -> None:
+    from lynchpin.ingest.temporal_signals_materialize import _ensure_temporal_inputs
+
+    calls = []
+    rows = (
+        SimpleNamespace(
+            name="activitywatch_derived",
+            status="ready",
+            tail_stale=False,
+            first_date=date(2024, 2, 15),
+            last_date=date(2026, 8, 20),
+        ),
+        SimpleNamespace(
+            name="polylogue",
+            status="ready",
+            tail_stale=False,
+            first_date=date(2022, 12, 11),
+            last_date=date(2026, 7, 31),
+        ),
+    )
+    monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: rows)
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda name, *, window: calls.append((name, window)),
+    )
+
+    _ensure_temporal_inputs(date(2011, 11, 1), date(2026, 8, 20))
+
+    assert ("activitywatch_derived", (date(2024, 2, 15), date(2026, 8, 21))) in calls
+    assert ("polylogue", (date(2022, 12, 11), date(2026, 8, 21))) in calls
 
 
 def test_iter_temporal_signals_converges_default_materialization(monkeypatch, tmp_path) -> None:

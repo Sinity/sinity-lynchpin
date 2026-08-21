@@ -188,14 +188,9 @@ def _temporal_input_files(start: date, end: date) -> tuple[Path, ...]:
 def _ensure_temporal_inputs(start: date, end: date) -> None:
     from ..materialization import audit_materialization, ensure_materialized
 
+    rows = {row.name: row for row in audit_materialization()}
     activitywatch_window = (start, end + timedelta(days=1))
-    try:
-        activitywatch = next(
-            row for row in audit_materialization()
-            if row.name == "activitywatch_derived"
-        )
-    except (StopIteration, OSError, RuntimeError):
-        activitywatch = None
+    activitywatch = rows.get("activitywatch_derived")
     if (
         activitywatch is not None
         and activitywatch.tail_stale
@@ -222,6 +217,16 @@ def _ensure_temporal_inputs(start: date, end: date) -> None:
         "health",
     ):
         window = activitywatch_window if name == "activitywatch_derived" else (start, end + timedelta(days=1))
+        row = rows.get(name)
+        if row is not None and (row.status == "ready" or row.tail_stale) and row.first_date is not None:
+            # An input product can legitimately begin after the earliest data
+            # in the temporal analysis window. Its existing span is sufficient
+            # for signal detection, which has no observation to recover before
+            # that first date. Do not rebuild a current source merely because a
+            # different source has older history.
+            window = (max(window[0], row.first_date), window[1])
+        if window[0] >= window[1]:
+            continue
         ensure_materialized(name, window=window)
 
 
