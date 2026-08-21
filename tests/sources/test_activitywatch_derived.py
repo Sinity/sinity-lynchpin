@@ -4,6 +4,8 @@ import json
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from lynchpin.sources import activitywatch_derived
 from lynchpin.sources.activitywatch_derived import (
     iter_derived_daily_activity,
@@ -103,6 +105,60 @@ def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
     assert daily[0].deep_work_min == 45.0
     assert daily[0].hourly_active[8] == 60.0
     assert daily[0].presence_typing_hours == 1.0
+
+
+def test_focus_span_reader_repairs_rollback_offset_from_recorded_duration(tmp_path):
+    focus_path = tmp_path / "focus_spans.ndjson"
+    focus_path.write_text(
+        json.dumps(
+            {
+                "start": "2025-10-26T02:12:25.057417+01:00",
+                "end": "2025-10-26T02:18:01.055419+02:00",
+                "duration_s": 335.998,
+                "kind": "focused",
+                "app": "google-chrome",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    spans = list(
+        iter_derived_focus_spans(
+            start=datetime(2025, 10, 26, 0, tzinfo=timezone.utc),
+            end=datetime(2025, 10, 27, 0, tzinfo=timezone.utc),
+            path=focus_path,
+        )
+    )
+
+    assert len(spans) == 1
+    assert spans[0].end.isoformat() == "2025-10-26T02:18:01.055417+01:00"
+    assert spans[0].duration_s == 335.998
+
+
+def test_focus_span_reader_rejects_invalid_row_without_duration(tmp_path):
+    focus_path = tmp_path / "focus_spans.ndjson"
+    focus_path.write_text(
+        json.dumps(
+            {
+                "start": "2025-10-26T02:12:25.057417+01:00",
+                "end": "2025-10-26T02:18:01.055419+02:00",
+                "kind": "focused",
+                "app": "google-chrome",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="no usable duration"):
+        list(
+            iter_derived_focus_spans(
+                start=datetime(2025, 10, 26, 0, tzinfo=timezone.utc),
+                end=datetime(2025, 10, 27, 0, tzinfo=timezone.utc),
+                path=focus_path,
+            )
+        )
 
 
 def test_activitywatch_derived_default_reader_materializes(monkeypatch, tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
@@ -46,6 +47,8 @@ PRODUCT_KINDS = (
     "attention",
 )
 
+_LOG = logging.getLogger(__name__)
+
 
 def activitywatch_derived_dir(root: Path | None = None) -> Path:
     base = root or get_config().derived_root
@@ -73,17 +76,7 @@ def iter_derived_focus_spans(
     _ensure_default_product(path, start=start, end=end, ensure=ensure)
     start_cmp, end_cmp = as_local(start), as_local(end)
     for row in _rows(path or activitywatch_derived_path("focus_spans")):
-        span = FocusSpan(
-            start=_datetime(row["start"]),
-            end=_datetime(row["end"]),
-            kind=str(row["kind"]),
-            app=_str_or_none(row.get("app")),
-            title=_str_or_none(row.get("title")),
-            mode=_str_or_none(row.get("mode")),
-            project=_str_or_none(row.get("project")),
-            keypress_count=_int(row.get("keypress_count")),
-            keylog_state=str(row.get("keylog_state") or "not_requested"),
-        )
+        span = _focus_span(row)
         if span.end <= start_cmp or span.start >= end_cmp or span.duration_s < min_duration_s:
             continue
         yield span
@@ -268,6 +261,39 @@ def _datetime(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _focus_span(row: dict[str, object]) -> FocusSpan:
+    start = _datetime(row["start"])
+    end = _datetime(row["end"])
+    if end < start:
+        duration = _float(row.get("duration_s"), default=-1.0)
+        if duration < 0:
+            raise ValueError(
+                "invalid persisted ActivityWatch focus span has no usable duration: "
+                f"start={start.isoformat()} end={end.isoformat()}"
+            )
+        repaired_end = start + timedelta(seconds=duration)
+        _LOG.warning(
+            "repairing persisted ActivityWatch focus-span end from recorded duration: "
+            "start=%s stored_end=%s duration_s=%s repaired_end=%s",
+            start.isoformat(),
+            end.isoformat(),
+            duration,
+            repaired_end.isoformat(),
+        )
+        end = repaired_end
+    return FocusSpan(
+        start=start,
+        end=end,
+        kind=str(row["kind"]),
+        app=_str_or_none(row.get("app")),
+        title=_str_or_none(row.get("title")),
+        mode=_str_or_none(row.get("mode")),
+        project=_str_or_none(row.get("project")),
+        keypress_count=_int(row.get("keypress_count")),
+        keylog_state=str(row.get("keylog_state") or "not_requested"),
+    )
 
 
 def _str_or_none(value: object) -> str | None:
