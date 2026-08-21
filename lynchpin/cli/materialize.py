@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import signal
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from ..materialization import (
     plan_materializations,
     run_materialization_plan,
 )
+from ..substrate.connection import CandidateGenerationInterrupted
 
 _PROGRESS_FORMAT = "plain"
 
@@ -166,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.strict and any(row.status != "ready" for row in rows):
                 raise _CandidateRejected(1, "strict materialization readiness check failed")
+    except CandidateGenerationInterrupted as exc:
+        signal_name = signal.Signals(exc.signal_number).name
+        _progress(f"promoted materialization interrupted by {signal_name}; candidate was archived")
+        return 128 + exc.signal_number
     except _CandidateRejected as exc:
         _progress(str(exc))
         return exc.code

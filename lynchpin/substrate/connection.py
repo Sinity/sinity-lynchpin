@@ -19,8 +19,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 import shutil
+import signal
+import threading
 from typing import TYPE_CHECKING, Iterator
 from uuid import uuid4
 
@@ -29,6 +32,17 @@ if TYPE_CHECKING:
 
 SUBSTRATE_VERSION = 41
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
+
+log = logging.getLogger(__name__)
+_CANCELLATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+class CandidateGenerationInterrupted(KeyboardInterrupt):
+    """A termination signal received while a candidate generation was active."""
+
+    def __init__(self, signal_number: int) -> None:
+        self.signal_number = signal_number
+        super().__init__(f"candidate generation interrupted by {signal.Signals(signal_number).name}")
 
 
 _substrate_path_override: ContextVar[Path | None] = ContextVar(
@@ -141,19 +155,96 @@ def _archive_generation(path: Path, label: str) -> Path | None:
     return archived
 
 
-def _archive_candidate(candidate: Path, label: str) -> None:
+def _candidate_artifacts(candidate: Path) -> tuple[Path, ...]:
+    """Return every known database, snapshot, and manifest artifact for a candidate."""
+    snapshot = candidate.with_suffix(".read-snapshot.duckdb")
+    manifest = candidate.with_suffix(".manifest.json")
+    return (
+        candidate,
+        candidate.with_name(f"{candidate.name}.wal"),
+        snapshot,
+        snapshot.with_suffix(".tmp"),
+        manifest,
+        manifest.with_name(f".{manifest.name}.tmp"),
+    )
+
+
+def _archive_candidate(candidate: Path, label: str) -> tuple[Path, ...]:
     """Preserve an abandoned candidate and every adjacent publication sidecar."""
-    _archive_generation(candidate, label)
-    _archive_generation(candidate.with_name(f"{candidate.name}.wal"), label)
-    _archive_generation(candidate.with_suffix(".read-snapshot.duckdb"), label)
-    _archive_generation(candidate.with_suffix(".manifest.json"), label)
+    archived = tuple(
+        artifact
+        for path in _candidate_artifacts(candidate)
+        if (artifact := _archive_generation(path, label)) is not None
+    )
+    if archived:
+        log.warning(
+            "archived %s candidate generation artifacts; canonical generation was not modified: %s",
+            label,
+            ", ".join(str(path) for path in archived),
+        )
+    return archived
 
 
 def _archive_interrupted_candidates(canonical: Path) -> None:
     """Archive candidates left behind when a process exits without unwinding."""
     pattern = f"{canonical.stem}.candidate-*{canonical.suffix}"
     for candidate in canonical.parent.glob(pattern):
-        _archive_candidate(candidate, "interrupted")
+        archived = _archive_candidate(candidate, "interrupted")
+        if archived:
+            log.warning(
+                "recovered interrupted candidate generation while retaining canonical generation: %s",
+                canonical,
+            )
+
+
+def _raise_candidate_interruption(signal_number: int, _frame: object) -> None:
+    raise CandidateGenerationInterrupted(signal_number)
+
+
+@contextmanager
+def _candidate_interruption_handlers() -> Iterator[None]:
+    """Turn SIGINT/SIGTERM into unwindable candidate-context exceptions."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    previous_handlers = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in _CANCELLATION_SIGNALS
+    }
+    try:
+        for signal_number in _CANCELLATION_SIGNALS:
+            signal.signal(signal_number, _raise_candidate_interruption)
+        yield
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
+
+
+@contextmanager
+def _defer_candidate_interruptions() -> Iterator[list[int]]:
+    """Defer cancellation until the serving database/snapshot/manifest move completes."""
+    if threading.current_thread() is not threading.main_thread():
+        deferred: list[int] = []
+        yield deferred
+        return
+
+    deferred = []
+
+    def defer(signal_number: int, _frame: object) -> None:
+        deferred.append(signal_number)
+
+    previous_handlers = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in _CANCELLATION_SIGNALS
+    }
+    try:
+        for signal_number in _CANCELLATION_SIGNALS:
+            signal.signal(signal_number, defer)
+        yield deferred
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
 
 
 def _publish_candidate(generation: CandidateGeneration) -> None:
@@ -197,34 +288,53 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
     their existing facts. If canonical is corrupt, recovery acts only on the
     candidate. A previous verified read snapshot remains serving until a new
     candidate has a successful promotion record and source-status coverage.
+    SIGINT and SIGTERM unwind this context so candidate artifacts are archived;
+    they are deferred only while the serving database/snapshot/manifest triple
+    is being published.
     """
     canonical = substrate_path()
-    _archive_interrupted_candidates(canonical)
     refresh_id = uuid4().hex
     candidate = canonical.with_name(
         f"{canonical.stem}.candidate-{refresh_id}{canonical.suffix}"
     )
-    if canonical.exists():
-        shutil.copy2(canonical, candidate)
-    if generation_refresh_id(canonical) is not None:
-        update_read_snapshot(canonical)
+    token = None
+    published = False
+    with _candidate_interruption_handlers():
+        try:
+            _archive_interrupted_candidates(canonical)
+            if canonical.exists():
+                shutil.copy2(canonical, candidate)
+            if generation_refresh_id(canonical) is not None:
+                update_read_snapshot(canonical)
 
-    token = _substrate_path_override.set(candidate)
-    generation = CandidateGeneration(
-        candidate=candidate,
-        canonical=canonical,
-        refresh_id=refresh_id,
-    )
-    try:
-        yield generation
-        if generation_refresh_id(candidate) is None:
-            raise RuntimeError("candidate has no verified promoted generation")
-        _publish_candidate(generation)
-    except Exception:
-        _archive_candidate(candidate, "failed")
-        raise
-    finally:
-        _substrate_path_override.reset(token)
+            token = _substrate_path_override.set(candidate)
+            generation = CandidateGeneration(
+                candidate=candidate,
+                canonical=canonical,
+                refresh_id=refresh_id,
+            )
+            yield generation
+            if generation_refresh_id(candidate) is None:
+                raise RuntimeError("candidate has no verified promoted generation")
+            with _defer_candidate_interruptions() as deferred:
+                _publish_candidate(generation)
+                published = True
+            if deferred:
+                raise CandidateGenerationInterrupted(deferred[0])
+        except BaseException as exc:
+            if published:
+                log.warning(
+                    "candidate generation was published before %s; canonical generation is serving: %s",
+                    type(exc).__name__,
+                    canonical,
+                )
+            else:
+                label = "failed" if isinstance(exc, Exception) else "cancelled"
+                _archive_candidate(candidate, label)
+            raise
+        finally:
+            if token is not None:
+                _substrate_path_override.reset(token)
 
 
 def _quarantine_suffix() -> str:

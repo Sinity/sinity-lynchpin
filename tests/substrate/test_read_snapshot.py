@@ -7,11 +7,13 @@ lock for 30-60+ minutes; MCP needs a path to read regardless.
 from __future__ import annotations
 
 from pathlib import Path
+import signal
 
 import duckdb
 import pytest
 
 from lynchpin.substrate.connection import (
+    CandidateGenerationInterrupted,
     apply_schema,
     candidate_generation,
     connect,
@@ -268,6 +270,61 @@ def test_candidate_failure_retains_verified_serving_generation(
     assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
 
 
+@pytest.mark.parametrize("signal_number", (signal.SIGINT, signal.SIGTERM))
+def test_candidate_signal_archives_every_sidecar_and_retains_serving_triple(
+    isolated_substrate: Path,
+    signal_number: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    serving_paths = (
+        isolated_substrate,
+        substrate_read_snapshot_path(),
+        substrate_status_manifest_path(isolated_substrate),
+    )
+    serving_contents = {path: path.read_bytes() for path in serving_paths}
+    original_handler = signal.getsignal(signal_number)
+
+    with caplog.at_level("WARNING", logger="lynchpin.substrate.connection"):
+        with pytest.raises(CandidateGenerationInterrupted) as interrupted:
+            with candidate_generation() as generation:
+                candidate_snapshot = generation.candidate.with_suffix(".read-snapshot.duckdb")
+                candidate_manifest = substrate_status_manifest_path(generation.candidate)
+                generation.candidate.with_name(f"{generation.candidate.name}.wal").write_bytes(
+                    b"candidate wal"
+                )
+                candidate_snapshot.write_bytes(b"candidate snapshot")
+                candidate_snapshot.with_suffix(".tmp").write_bytes(b"candidate snapshot temp")
+                candidate_manifest.write_text("{}")
+                candidate_manifest.with_name(f".{candidate_manifest.name}.tmp").write_text("{}")
+                signal.raise_signal(signal_number)
+
+    assert interrupted.value.signal_number == signal_number
+    assert signal.getsignal(signal_number) == original_handler
+    assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    for artifact in (
+        generation.candidate,
+        generation.candidate.with_name(f"{generation.candidate.name}.wal"),
+        generation.candidate.with_suffix(".read-snapshot.duckdb"),
+        generation.candidate.with_suffix(".read-snapshot.duckdb").with_suffix(".tmp"),
+        substrate_status_manifest_path(generation.candidate),
+        substrate_status_manifest_path(generation.candidate).with_name(
+            f".{substrate_status_manifest_path(generation.candidate).name}.tmp"
+        ),
+    ):
+        assert not artifact.exists()
+        assert list(artifact.parent.glob(f"{artifact.name}.cancelled-*"))
+    assert any(
+        "cancelled candidate generation artifacts; canonical generation was not modified"
+        in message
+        for message in caplog.messages
+    )
+
+
 def test_candidate_manifest_failure_retains_verified_serving_generation(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -348,6 +405,42 @@ def test_candidate_publication_replaces_only_verified_generation(
     archived = list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
     assert len(archived) == 1
     assert generation_refresh_id(archived[0]) == "prior"
+
+
+def test_candidate_publication_defers_signal_until_serving_triple_is_complete(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.substrate.connection as connection
+
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    serving_manifest = substrate_status_manifest_path(isolated_substrate)
+    real_archive_generation = connection._archive_generation
+    signal_injected = False
+
+    def archive_with_signal(path: Path, label: str) -> Path | None:
+        nonlocal signal_injected
+        if path == serving_manifest and not signal_injected:
+            signal_injected = True
+            signal.raise_signal(signal.SIGTERM)
+        return real_archive_generation(path, label)
+
+    monkeypatch.setattr(connection, "_archive_generation", archive_with_signal)
+
+    with pytest.raises(CandidateGenerationInterrupted) as interrupted:
+        with candidate_generation() as generation:
+            _record_verified_generation(generation.candidate, "current")
+
+    assert signal_injected
+    assert interrupted.value.signal_number == signal.SIGTERM
+    assert generation_refresh_id(isolated_substrate) == "current"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "current"
+    manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert manifest is not None
+    assert manifest["latest_refresh_id"] == "current"
+    assert not list(isolated_substrate.parent.glob("substrate.candidate-*"))
 
 
 def test_connect_prefers_verified_snapshot_to_unready_canonical(

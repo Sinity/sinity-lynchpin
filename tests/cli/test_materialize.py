@@ -3,8 +3,10 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
+import signal
 from types import SimpleNamespace
 
+import duckdb
 import pytest
 
 def test_plan_json_exits_before_materialization(monkeypatch, capsys) -> None:
@@ -204,6 +206,75 @@ def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_p
     ]
     assert "--existing-products" in forwarded["argv"]
     assert "--graph-only" in forwarded["argv"]
+
+
+def test_promote_sigterm_archives_candidate_and_returns_signal_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lynchpin.cli import materialize
+    from lynchpin.substrate import connection
+    from lynchpin.substrate.status_manifest import (
+        substrate_status_manifest_path,
+        write_substrate_status_manifest,
+    )
+
+    canonical = connection.substrate_path()
+    with duckdb.connect(str(canonical)) as conn:
+        connection.apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES ('prior', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES ('prior', 'fixture', 'stage', 'ok', NULL, 1, NULL, NULL, now())
+            """
+        )
+    connection.update_read_snapshot()
+    assert write_substrate_status_manifest(canonical) is not None
+    serving_paths = (
+        canonical,
+        connection.substrate_read_snapshot_path(),
+        substrate_status_manifest_path(canonical),
+    )
+    serving_contents = {path: path.read_bytes() for path in serving_paths}
+    candidate_path: Path | None = None
+
+    def interrupt_materialization(*_args, **_kwargs) -> list[object]:
+        nonlocal candidate_path
+        candidate_path = connection.substrate_path()
+        candidate_path.with_name(f"{candidate_path.name}.wal").write_bytes(b"candidate wal")
+        signal.raise_signal(signal.SIGTERM)
+        raise AssertionError("SIGTERM should have interrupted the candidate context")
+
+    monkeypatch.setattr(materialize, "run_materialization_plan", interrupt_materialization)
+
+    code = materialize.main(
+        [
+            "--promote",
+            "--start",
+            "2026-05-01",
+            "--end",
+            "2026-05-02",
+            "--progress",
+            "quiet",
+        ]
+    )
+
+    assert code == 128 + signal.SIGTERM
+    assert candidate_path is not None
+    assert not candidate_path.exists()
+    assert not candidate_path.with_name(f"{candidate_path.name}.wal").exists()
+    assert list(candidate_path.parent.glob(f"{candidate_path.name}.cancelled-*"))
+    assert list(candidate_path.parent.glob(f"{candidate_path.name}.wal.cancelled-*"))
+    assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
+    assert connection.generation_refresh_id(canonical) == "prior"
+    assert connection.generation_refresh_id(connection.substrate_read_snapshot_path()) == "prior"
 
 
 def test_materialize_rejects_mode_option(monkeypatch) -> None:
