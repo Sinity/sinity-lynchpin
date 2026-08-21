@@ -219,12 +219,20 @@ def _ensure_temporal_inputs(start: date, end: date) -> None:
         window = activitywatch_window if name == "activitywatch_derived" else (start, end + timedelta(days=1))
         row = rows.get(name)
         if row is not None and (row.status == "ready" or row.tail_stale) and row.first_date is not None:
-            # An input product can legitimately begin after the earliest data
-            # in the temporal analysis window. Its existing span is sufficient
-            # for signal detection, which has no observation to recover before
-            # that first date. Do not rebuild a current source merely because a
-            # different source has older history.
-            window = (max(window[0], row.first_date), window[1])
+            # An input product can legitimately begin or end outside the
+            # aggregate temporal window, which is the union of every source's
+            # history. Signal detection has no observation to recover beyond a
+            # source's verified span, so convergence uses the intersection.
+            # A live stale tail may still advance through today, but never to a
+            # future timestamp supplied by a different source.
+            window_start = max(window[0], row.first_date)
+            if row.tail_stale:
+                window_end = min(window[1], date.today() + timedelta(days=1))
+            elif row.last_date is not None:
+                window_end = min(window[1], row.last_date + timedelta(days=1))
+            else:
+                window_end = window[1]
+            window = (window_start, window_end)
         if window[0] >= window[1]:
             continue
         ensure_materialized(name, window=window)
