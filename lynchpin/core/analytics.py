@@ -209,32 +209,53 @@ def detect_changepoints(
         penalty = math.log(n) * var if var > 0 else 1.0
 
     points: list[tuple[int, float]] = []  # (index, SSE gain at that split)
-    _binary_segment(list(values), 0, n, min_segment, penalty, max_changepoints, points)
+    series = list(values)
+    prefix_sum = [0.0]
+    prefix_square_sum = [0.0]
+    for value in series:
+        prefix_sum.append(prefix_sum[-1] + value)
+        prefix_square_sum.append(prefix_square_sum[-1] + value * value)
+    _binary_segment(
+        prefix_sum,
+        prefix_square_sum,
+        0,
+        n,
+        min_segment,
+        penalty,
+        max_changepoints,
+        points,
+    )
     points.sort()
 
     result: list[ChangePoint] = []
     for idx, gain in points:
-        before = values[:idx]
-        after = values[idx:]
-        bm = statistics.mean(before) if before else 0
-        am = statistics.mean(after) if after else 0
+        bm = _segment_mean(prefix_sum, 0, idx)
+        am = _segment_mean(prefix_sum, idx, n)
         mag = (am - bm) / abs(bm) if abs(bm) > 1e-9 else 0
         result.append(ChangePoint(index=idx, before_mean=round(bm, 3), after_mean=round(am, 3),
                                   magnitude=round(mag, 3), cost_reduction=round(gain, 3)))
     return result
 
 
-def _binary_segment(values: list[float], start: int, end: int, min_seg: int,
-                    penalty: float, max_cp: int, points: list[tuple[int, float]]) -> None:
+def _binary_segment(
+    prefix_sum: list[float],
+    prefix_square_sum: list[float],
+    start: int,
+    end: int,
+    min_seg: int,
+    penalty: float,
+    max_cp: int,
+    points: list[tuple[int, float]],
+) -> None:
     if end - start < 2 * min_seg or len(points) >= max_cp:
         return
     best_idx = -1
     best_gain = 0.0
-    total_cost = _segment_cost(values, start, end)
+    total_cost = _segment_cost(prefix_sum, prefix_square_sum, start, end)
 
     for i in range(start + min_seg, end - min_seg + 1):
-        left_cost = _segment_cost(values, start, i)
-        right_cost = _segment_cost(values, i, end)
+        left_cost = _segment_cost(prefix_sum, prefix_square_sum, start, i)
+        right_cost = _segment_cost(prefix_sum, prefix_square_sum, i, end)
         gain = total_cost - left_cost - right_cost
         if gain > best_gain:
             best_gain = gain
@@ -242,18 +263,42 @@ def _binary_segment(values: list[float], start: int, end: int, min_seg: int,
 
     if best_idx >= 0 and best_gain > penalty:
         points.append((best_idx, best_gain))
-        _binary_segment(values, start, best_idx, min_seg, penalty, max_cp, points)
-        _binary_segment(values, best_idx, end, min_seg, penalty, max_cp, points)
+        _binary_segment(
+            prefix_sum,
+            prefix_square_sum,
+            start,
+            best_idx,
+            min_seg,
+            penalty,
+            max_cp,
+            points,
+        )
+        _binary_segment(
+            prefix_sum,
+            prefix_square_sum,
+            best_idx,
+            end,
+            min_seg,
+            penalty,
+            max_cp,
+            points,
+        )
 
 
-def _segment_cost(values: list[float], start: int, end: int) -> float:
-    if end <= start:
+def _segment_mean(prefix_sum: list[float], start: int, end: int) -> float:
+    count = end - start
+    return (prefix_sum[end] - prefix_sum[start]) / count if count else 0.0
+
+
+def _segment_cost(
+    prefix_sum: list[float], prefix_square_sum: list[float], start: int, end: int
+) -> float:
+    count = end - start
+    if count < 2:
         return 0.0
-    seg = values[start:end]
-    if len(seg) < 2:
-        return 0.0
-    mean = statistics.mean(seg)
-    return sum((v - mean) ** 2 for v in seg)
+    total = prefix_sum[end] - prefix_sum[start]
+    square_total = prefix_square_sum[end] - prefix_square_sum[start]
+    return max(square_total - total * total / count, 0.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

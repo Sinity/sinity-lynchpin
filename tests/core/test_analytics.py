@@ -64,6 +64,19 @@ class TestDetectChangepoints:
         cps = detect_changepoints(values)
         assert len(cps) >= 2
 
+    def test_long_daily_series_keeps_detecting_shift(self):
+        """Exercise the all-history path used by temporal signal materialization.
+
+        A full substrate refresh supplies thousands of daily observations here.
+        The production detector must retain the same shift semantics without
+        repeatedly rescanning each candidate segment.
+        """
+        values = [2.0] * 2_048 + [8.0] * 2_048
+
+        cps = detect_changepoints(values)
+
+        assert any(2_040 <= cp.index <= 2_056 for cp in cps)
+
     def test_too_short(self):
         assert detect_changepoints([1, 2, 3]) == []
 
