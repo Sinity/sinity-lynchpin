@@ -3735,6 +3735,17 @@ def test_substrate_materialization_snapshot_is_cheap_status(tmp_path) -> None:
     assert ready.source_high_water["latest_materialized_refresh_id"] == "rid-1"
     assert ready.product_paths == (substrate,)
 
+    degraded = substrate_materialization_snapshot(
+        substrate,
+        latest_available_refresh_id="rid-2",
+        latest_available_status="degraded",
+        latest_available_reason="one source is stale",
+    )
+
+    assert degraded.status == "degraded"
+    assert degraded.coverage["relation"] == "dated"
+    assert "one source is stale" in degraded.reason
+
 
 def test_duck_evidence_graph_status_reads_build_and_source_status_once(tmp_path) -> None:
     import duckdb

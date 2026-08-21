@@ -39,7 +39,6 @@ from .core.source_contracts import (
 )
 from .ingest.webhistory import (
     WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
-    build_full_history,
     full_history_manifest_path,
 )
 from .ingest.webhistory import run as run_webhistory_pipeline
@@ -168,7 +167,15 @@ from .sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION, github_contex
 
 
 Status = DatasetStatus
-MaterializationStatus = Literal["ready", "updated", "blocked", "failed", "coverage_bound", "manual"]
+MaterializationStatus = Literal[
+    "ready",
+    "updated",
+    "blocked",
+    "degraded",
+    "failed",
+    "coverage_bound",
+    "manual",
+]
 MaterializationBudget = Literal["inline", "background", "manual"]
 
 #: Dataset names whose tail has already been force-refreshed once THIS
@@ -778,7 +785,7 @@ def substrate_materialization_snapshot(
         status: MaterializationStatus = "ready"
         reason = "substrate has a recorded promotion snapshot"
     elif path.exists() and latest_available_refresh_id:
-        status = "failed"
+        status = "degraded" if latest_available_status == "degraded" else "failed"
         reason = (
             f"latest substrate promotion ended with status {latest_available_status or 'unknown'}"
         )
@@ -806,7 +813,7 @@ def substrate_materialization_snapshot(
             "latest_available_status": latest_available_status,
         },
         coverage={
-            "relation": "dated" if status in {"ready", "failed"} else "unavailable",
+            "relation": "dated" if status in {"ready", "degraded", "failed"} else "unavailable",
             "interpretation": reason,
         },
     )
