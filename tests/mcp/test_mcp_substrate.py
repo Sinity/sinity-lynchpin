@@ -607,6 +607,11 @@ def test_readiness_report_empty_substrate(tmp_path: Path, monkeypatch: pytest.Mo
     assert result["sources"] == []
     assert result["evidence_graph"] is None
     assert result["summary"]["trustworthy"] is False
+    assert result["serving"] == {
+        "state": "unavailable",
+        "kind": None,
+        "refresh_id": None,
+    }
     assert result["materialization"]["name"] == "evidence_graph_substrate"
     assert result["materialization"]["status"] in {"blocked", "ready"}
 
@@ -677,6 +682,68 @@ def test_readiness_report_uses_latest_successful_promotion_run(
     assert result["latest_available_status"] == "ok"
     assert "latest_refresh_id" not in result
     assert {source["source"] for source in result["sources"]} == {"commits"}
+    assert result["serving"] == {
+        "state": "ready",
+        "kind": "canonical",
+        "refresh_id": "rid-full",
+    }
+
+
+def test_readiness_report_uses_verified_snapshot_when_canonical_is_unready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.substrate import substrate_readiness_report
+    from lynchpin.substrate.connection import connect, update_read_snapshot
+
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (
+                'prior', 'ok', NULL, DATE '2026-05-01', DATE '2026-05-31',
+                'materialized', '{"commits":1}', TIMESTAMPTZ '2026-06-05 12:00:00+00',
+                TIMESTAMPTZ '2026-06-05 12:01:00+00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES ('prior', 'commits', 'stage', 'ok', NULL, 1,
+                    DATE '2026-05-01', DATE '2026-05-31', TIMESTAMPTZ '2026-06-05 12:01:00+00')
+            """
+        )
+    update_read_snapshot(db_path)
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM substrate_source_status")
+        conn.execute("DELETE FROM substrate_promotion_run")
+
+    result = substrate_readiness_report()
+
+    assert result["serving"] == {
+        "state": "degraded_previous_generation",
+        "kind": "read_snapshot",
+        "refresh_id": "prior",
+    }
+    assert result["latest_materialized_refresh_id"] == "prior"
+    assert result["materialization"]["status"] == "ready"
+    assert result["materialization"]["product_paths"] == [
+        str(db_path.with_suffix(".read-snapshot.duckdb"))
+    ]
+    assert len(result["sources"]) == 1
+    source = result["sources"][0]
+    assert source["source"] == "commits"
+    assert source["kind"] == "stage"
+    assert source["status"] == "ok"
+    assert source["row_count"] == 1
+    assert source["window_start"] == "2026-05-01"
+    assert source["window_end"] == "2026-05-31"
+    assert source["recorded_at"].startswith("2026-06-05T")
 
 
 def test_readiness_report_exposes_failed_promotion_as_degraded_available_snapshot(

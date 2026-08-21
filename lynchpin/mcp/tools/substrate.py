@@ -246,9 +246,33 @@ def substrate_readiness_report() -> dict[str, Any]:
     history yet.
     """
     from lynchpin.materialization import substrate_materialization_snapshot
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import (
+        connect,
+        generation_refresh_id,
+        substrate_path,
+        substrate_read_snapshot_path,
+    )
 
     path = substrate_path()
+    canonical_generation = generation_refresh_id(path)
+    snapshot_path = substrate_read_snapshot_path()
+    snapshot_generation = generation_refresh_id(snapshot_path)
+    if canonical_generation is not None:
+        serving = {
+            "state": "ready",
+            "kind": "canonical",
+            "refresh_id": canonical_generation,
+        }
+    elif snapshot_generation is not None:
+        serving = {
+            "state": "degraded_previous_generation",
+            "kind": "read_snapshot",
+            "refresh_id": snapshot_generation,
+        }
+    else:
+        serving = {"state": "unavailable", "kind": None, "refresh_id": None}
+    serving_path = snapshot_path if serving["kind"] == "read_snapshot" else path
+
     with connect(path, read_only=True) as conn:
         # ── substrate version ──────────────────────────────────────────────
         version_row = conn.execute(
@@ -267,13 +291,14 @@ def substrate_readiness_report() -> dict[str, Any]:
                 caller="substrate_readiness_report",
             )
             if latest_attempt is None:
-                materialization = substrate_materialization_snapshot(path).to_json()
+                materialization = substrate_materialization_snapshot(serving_path).to_json()
                 return {
                     "substrate_version": substrate_version,
                     "latest_materialized_refresh_id": None,
                     "latest_recorded_at": None,
                     "latest_available_refresh_id": None,
                     "latest_available_status": None,
+                    "serving": serving,
                     "sources": [],
                     "evidence_graph": None,
                     "summary": {
@@ -291,7 +316,7 @@ def substrate_readiness_report() -> dict[str, Any]:
             latest_materialized_id = str(latest_refresh_id)
 
         materialization = substrate_materialization_snapshot(
-            path,
+            serving_path,
             latest_materialized_refresh_id=latest_materialized_id,
             latest_recorded_at=latest_recorded_at,
             latest_available_refresh_id=str(latest_refresh_id),
@@ -377,6 +402,7 @@ def substrate_readiness_report() -> dict[str, Any]:
         "latest_available_refresh_id": str(latest_refresh_id),
         "latest_available_status": promotion_status,
         "latest_available_reason": promotion_reason,
+        "serving": serving,
         "sources": sources,
         "evidence_graph": evidence_graph,
         "summary": summary,

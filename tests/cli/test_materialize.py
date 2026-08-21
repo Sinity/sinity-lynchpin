@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,10 +27,19 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
         )
     ]
     forwarded = {}
+    calls: dict[str, object] = {}
 
     monkeypatch.setattr(materialize, "plan_materializations", lambda force=False, window=None: [])
-    monkeypatch.setattr(materialize, "run_materialization_plan", lambda plan, window=None: [])
+    monkeypatch.setattr(
+        materialize,
+        "run_materialization_plan",
+        lambda plan, window=None, continue_on_error=False: calls.update(
+            continue_on_error=continue_on_error
+        )
+        or [],
+    )
     monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", nullcontext)
 
     def fake_snapshot(argv: list[str]) -> int:
         forwarded["argv"] = argv
@@ -43,6 +53,7 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     code = materialize.main(["--all", "--promote", "--history", "all"])
 
     assert code == 0
+    assert calls["continue_on_error"] is True
     assert forwarded["argv"][:4] == [
         "--start",
         "2013-03-27",
@@ -62,6 +73,56 @@ def test_materialize_rejects_mode_option(monkeypatch) -> None:
         materialize.main(["--all", "--mode", "local-heavy"])
 
     assert exc.value.code == 2
+
+
+def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    before = materialization.MaterializedDataset(
+        name="fixture",
+        status="ready",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=None,
+        last_date=None,
+        materialization_hint="refresh",
+        reason="ready",
+    )
+    steps = [
+        materialization.MaterializationPlanStep(
+            "broken", before, "materialize", "refresh", "fixture"
+        ),
+        materialization.MaterializationPlanStep(
+            "healthy", before, "materialize", "refresh", "fixture"
+        ),
+    ]
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        materialization,
+        "_materializers",
+        lambda: {
+            "broken": lambda: (_ for _ in ()).throw(RuntimeError("repomix unavailable")),
+            "healthy": lambda: {"row_count": 4},
+        },
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_record_materialization_step",
+        lambda _refresh, name, status, *_args, **_kwargs: events.append((name, status)),
+    )
+
+    ran = materialization.run_materialization_plan(steps, continue_on_error=True)
+
+    assert [step.name for step in ran] == ["healthy"]
+    assert events == [
+        ("broken", "started"),
+        ("broken", "error"),
+        ("healthy", "started"),
+        ("healthy", "ok"),
+    ]
 
 
 def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -> None:

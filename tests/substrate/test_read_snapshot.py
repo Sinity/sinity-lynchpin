@@ -12,7 +12,10 @@ import duckdb
 import pytest
 
 from lynchpin.substrate.connection import (
+    apply_schema,
+    candidate_generation,
     connect,
+    generation_refresh_id,
     substrate_read_snapshot_path,
     update_read_snapshot,
 )
@@ -27,6 +30,27 @@ def isolated_substrate(monkeypatch, tmp_path: Path) -> Path:
         lambda: target,
     )
     return target
+
+
+def _record_verified_generation(path: Path, refresh_id: str) -> None:
+    with duckdb.connect(str(path)) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (?, 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """,
+            [refresh_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES (?, 'fixture', 'stage', 'ok', NULL, 1, NULL, NULL, now())
+            """,
+            [refresh_id],
+        )
 
 
 def test_update_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
@@ -222,3 +246,49 @@ def test_rebuild_keeps_canonical_when_clean_schema_creation_fails(
     assert canonical.read_bytes() == b"canonical retained"
     assert not list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
     assert not canonical.with_suffix(".rebuild.tmp").exists()
+
+
+def test_candidate_failure_retains_verified_serving_generation(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        with candidate_generation():
+            raise RuntimeError("injected failure")
+
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+
+
+def test_candidate_publication_replaces_only_verified_generation(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+
+    with candidate_generation() as generation:
+        _record_verified_generation(generation.candidate, "current")
+
+    assert generation_refresh_id(isolated_substrate) == "current"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "current"
+    archived = list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
+    assert len(archived) == 1
+    assert generation_refresh_id(archived[0]) == "prior"
+
+
+def test_connect_prefers_verified_snapshot_to_unready_canonical(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute("DELETE FROM substrate_source_status")
+        conn.execute("DELETE FROM substrate_promotion_run")
+
+    with connect(isolated_substrate, read_only=True) as reader:
+        assert reader.execute(
+            "SELECT refresh_id FROM substrate_promotion_run"
+        ).fetchone() == ("prior",)

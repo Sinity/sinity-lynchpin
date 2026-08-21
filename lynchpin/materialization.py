@@ -513,6 +513,7 @@ def run_materialization_plan(
     *,
     refresh_id: str | None = None,
     window: tuple[date, date] | None = None,
+    continue_on_error: bool = False,
 ) -> list[MaterializationPlanStep]:
     """Execute materialization steps and return the steps that actually ran.
 
@@ -521,6 +522,12 @@ def run_materialization_plan(
     a materializer whose signature accepts ``start``/``end`` reprocesses only
     that window instead of its full source history. Materializers without
     those parameters are called as before (unaffected by ``window``).
+
+    A coherent substrate promotion may continue after one source fails. The
+    failure remains durably recorded by ``_record_materialization_step`` and
+    downstream source status, while still-valid authoritative products can
+    produce a degraded but queryable generation. Other callers retain the
+    historical fail-fast behavior by default.
     """
     materializers = _materializers()
     ran: list[MaterializationPlanStep] = []
@@ -547,6 +554,8 @@ def run_materialization_plan(
                 started_at=started,
                 finished_at=datetime.now(timezone.utc),
             )
+            if continue_on_error:
+                continue
             raise
         row_count = report.get("row_count") if isinstance(report, dict) else None
         _record_materialization_step(

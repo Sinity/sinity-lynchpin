@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import sys
 from datetime import date, datetime
@@ -17,6 +18,14 @@ from ..materialization import (
 )
 
 _PROGRESS_FORMAT = "plain"
+
+
+class _CandidateRejected(RuntimeError):
+    """Abort candidate publication while preserving the serving generation."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,47 +67,72 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
     for step in plan:
         _progress(f"{step.action}: {step.name} ({step.reason})")
-    run_materialization_plan(plan, window=window)
-    _progress("canonical materialization complete")
+    # Promotion has a stronger contract than ordinary product refreshes: every
+    # writer sees a candidate database, then publication occurs only after the
+    # snapshot has recorded a usable promoted generation. This leaves the last
+    # serving generation queryable if a materializer or DuckDB fails.
     if args.promote:
-        if args.history == "all":
-            start_d, end_d = _all_history_window()
-            args.start = start_d.isoformat()
-            args.end = end_d.isoformat()
-            _progress(f"derived all-history promotion window: {args.start}..{args.end}")
-        elif not args.start or not args.end:
-            parser.error("--promote requires --start and --end unless --history all is used")
-        date.fromisoformat(args.start)
-        date.fromisoformat(args.end)
-        from .substrate_snapshot import main as snapshot_main
+        from lynchpin.substrate.connection import candidate_generation
 
-        snapshot_output = args.snapshot_output or (
-            get_config().local_root / "generated" / "substrate_snapshot.md"
-        )
-        forwarded = [
-            "--start",
-            args.start,
-            "--end",
-            args.end,
-            "--output",
-            str(snapshot_output),
-            "--progress",
-            args.progress,
-        ]
-        if args.weak_tags:
-            forwarded.append("--weak-tags")
-        _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
-        code = snapshot_main(forwarded)
-        if code:
-            _progress(f"substrate snapshot failed with exit code {code}")
-            return code
-        _progress("substrate snapshot promotion complete")
-    _progress("auditing materialization readiness")
-    rows = audit_materialization()
-    if args.json:
-        sys.stdout.write(json.dumps([row.to_json() for row in rows], indent=2, sort_keys=True) + "\n")
-    if args.strict and any(row.status != "ready" for row in rows):
-        return 1
+        generation_context = candidate_generation()
+    else:
+        generation_context = nullcontext()
+
+    try:
+        with generation_context:
+            run_materialization_plan(
+                plan,
+                window=window,
+                continue_on_error=args.promote,
+            )
+            _progress("canonical materialization complete")
+            if args.promote:
+                if args.history == "all":
+                    start_d, end_d = _all_history_window()
+                    args.start = start_d.isoformat()
+                    args.end = end_d.isoformat()
+                    _progress(f"derived all-history promotion window: {args.start}..{args.end}")
+                elif not args.start or not args.end:
+                    parser.error("--promote requires --start and --end unless --history all is used")
+                date.fromisoformat(args.start)
+                date.fromisoformat(args.end)
+                from .substrate_snapshot import main as snapshot_main
+
+                snapshot_output = args.snapshot_output or (
+                    get_config().local_root / "generated" / "substrate_snapshot.md"
+                )
+                forwarded = [
+                    "--start",
+                    args.start,
+                    "--end",
+                    args.end,
+                    "--output",
+                    str(snapshot_output),
+                    "--progress",
+                    args.progress,
+                ]
+                if args.weak_tags:
+                    forwarded.append("--weak-tags")
+                _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
+                code = snapshot_main(forwarded)
+                if code:
+                    raise _CandidateRejected(
+                        code,
+                        f"substrate snapshot failed with exit code {code}",
+                    )
+                _progress("substrate snapshot promotion complete")
+            _progress("auditing materialization readiness")
+            rows = audit_materialization()
+            if args.json:
+                sys.stdout.write(
+                    json.dumps([row.to_json() for row in rows], indent=2, sort_keys=True)
+                    + "\n"
+                )
+            if args.strict and any(row.status != "ready" for row in rows):
+                raise _CandidateRejected(1, "strict materialization readiness check failed")
+    except _CandidateRejected as exc:
+        _progress(str(exc))
+        return exc.code
     return 0
 
 

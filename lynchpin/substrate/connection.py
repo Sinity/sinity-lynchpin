@@ -16,10 +16,13 @@ is *derived* from sources, not authoritative. Re-promote is cheap.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, Iterator
+from uuid import uuid4
 
 if TYPE_CHECKING:
     import duckdb
@@ -28,8 +31,28 @@ SUBSTRATE_VERSION = 41
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 
+_substrate_path_override: ContextVar[Path | None] = ContextVar(
+    "substrate_path_override",
+    default=None,
+)
+
+
+@dataclass(frozen=True)
+class CandidateGeneration:
+    """A complete substrate generation staged before it becomes serving."""
+
+    candidate: Path
+    canonical: Path
+    refresh_id: str
+
+
 def substrate_path() -> Path:
-    """Return the canonical DuckDB substrate file path."""
+    """Return the substrate path for the current promotion context."""
+    override = _substrate_path_override.get()
+    if override is not None:
+        override.parent.mkdir(parents=True, exist_ok=True)
+        return override
+
     from lynchpin.core.config import get_config
 
     cfg = get_config()
@@ -51,20 +74,14 @@ def substrate_read_snapshot_path() -> Path:
 
 
 def update_read_snapshot(path: Path | None = None) -> Path | None:
-    """Copy the current canonical substrate to its read-snapshot location.
+    """Copy a substrate generation to its adjacent read-snapshot location.
 
-    Idempotent: overwrites any prior snapshot. Returns the snapshot path
-    on success, None if the canonical is currently write-locked AND there
-    is no readable copy to clone (extremely rare; caller can retry later).
-
-    Designed to be called at the END of a successful substrate_promote
-    (when the write lock is released and the freshest data is committed)
-    and OPTIONALLY at the START to capture the prior generation before
-    invalidation. Either approach gives MCP readers a frozen view they
-    can rely on during the next write window.
+    The optional path deliberately controls both the source and destination.
+    Candidate promotion therefore creates a candidate snapshot instead of
+    overwriting the serving snapshot before the candidate is verified.
     """
     canonical = path if path is not None else substrate_path()
-    snapshot = substrate_read_snapshot_path()
+    snapshot = canonical.with_suffix(".read-snapshot.duckdb")
     if not canonical.exists():
         return None
     # Use shutil.copy2 to preserve mtime; DuckDB doesn't keep external
@@ -74,6 +91,100 @@ def update_read_snapshot(path: Path | None = None) -> Path | None:
     shutil.copy2(canonical, tmp)
     tmp.replace(snapshot)
     return snapshot
+
+
+def generation_refresh_id(path: Path) -> str | None:
+    """Return the latest usable promotion ID, or None for an unready store."""
+    import duckdb
+
+    try:
+        with duckdb.connect(str(path), read_only=True) as conn:
+            row = conn.execute(
+                """
+                SELECT refresh_id
+                FROM substrate_promotion_run
+                WHERE status IN ('ok', 'degraded')
+                ORDER BY finished_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            source_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM substrate_source_status
+                WHERE refresh_id = ?
+                """,
+                [row[0]],
+            ).fetchone()[0]
+    except duckdb.Error:
+        # Missing schema tables and engine/open failures both mean this path is
+        # not a verified Lynchpin generation. Minimal test databases and old
+        # pre-substrate files must preserve the ordinary snapshot fallback.
+        return None
+    return str(row[0]) if source_count else None
+
+
+def _archive_generation(path: Path, label: str) -> Path | None:
+    if not path.exists():
+        return None
+    archived = path.with_name(
+        f"{path.name}.{label}-{datetime.now().astimezone():%Y%m%dT%H%M%S%z}-{uuid4().hex}"
+    )
+    path.replace(archived)
+    return archived
+
+
+def _publish_candidate(generation: CandidateGeneration) -> None:
+    """Publish a checked candidate while retaining prior generation files."""
+    candidate_snapshot = update_read_snapshot(generation.candidate)
+    if candidate_snapshot is None:
+        raise RuntimeError("candidate substrate disappeared before snapshot publication")
+
+    serving_snapshot = generation.canonical.with_suffix(".read-snapshot.duckdb")
+    _archive_generation(generation.canonical, "previous")
+    generation.candidate.replace(generation.canonical)
+    _archive_generation(serving_snapshot, "previous")
+    candidate_snapshot.replace(serving_snapshot)
+
+
+@contextmanager
+def candidate_generation() -> Iterator[CandidateGeneration]:
+    """Stage a complete materialization before replacing the serving generation.
+
+    The candidate begins as a copy of canonical so incremental promoters retain
+    their existing facts. If canonical is corrupt, recovery acts only on the
+    candidate. A previous verified read snapshot remains serving until a new
+    candidate has a successful promotion record and source-status coverage.
+    """
+    canonical = substrate_path()
+    refresh_id = uuid4().hex
+    candidate = canonical.with_name(
+        f"{canonical.stem}.candidate-{refresh_id}{canonical.suffix}"
+    )
+    if canonical.exists():
+        shutil.copy2(canonical, candidate)
+    if generation_refresh_id(canonical) is not None:
+        update_read_snapshot(canonical)
+
+    token = _substrate_path_override.set(candidate)
+    generation = CandidateGeneration(
+        candidate=candidate,
+        canonical=canonical,
+        refresh_id=refresh_id,
+    )
+    try:
+        yield generation
+        if generation_refresh_id(candidate) is None:
+            raise RuntimeError("candidate has no verified promoted generation")
+        _publish_candidate(generation)
+    except Exception:
+        _archive_generation(candidate, "failed")
+        _archive_generation(candidate.with_suffix(".read-snapshot.duckdb"), "failed")
+        raise
+    finally:
+        _substrate_path_override.reset(token)
 
 
 def _quarantine_suffix() -> str:
@@ -152,6 +263,16 @@ def connect(
     import duckdb
 
     target = path if path is not None else substrate_path()
+    # A failed recovery may leave a clean but unpromoted canonical database.
+    # Prefer the prior verified snapshot in that state rather than making read
+    # clients observe an empty schema as if it were a successful generation.
+    if read_only and snapshot_fallback and target == substrate_path():
+        snapshot = substrate_read_snapshot_path()
+        if (
+            generation_refresh_id(target) is None
+            and generation_refresh_id(snapshot) is not None
+        ):
+            target = snapshot
     # DuckDB raises IOException for cross-process write-lock conflicts
     # and ConnectionException for same-process config conflicts (e.g.
     # an existing writer in the same interpreter). Both signal "canonical

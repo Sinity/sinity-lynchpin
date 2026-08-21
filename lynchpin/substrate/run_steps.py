@@ -34,7 +34,10 @@ def reconcile_orphaned_running_steps(
         FROM (
             SELECT refresh_id, step, status, started_at,
                    row_number() OVER (
-                       PARTITION BY refresh_id, step ORDER BY recorded_at DESC
+                       PARTITION BY refresh_id, step
+                       ORDER BY
+                           recorded_at DESC,
+                           CASE WHEN status = 'running' THEN 0 ELSE 1 END DESC
                    ) AS rn
             FROM substrate_run_step
         )
