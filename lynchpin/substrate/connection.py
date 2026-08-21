@@ -46,6 +46,11 @@ class CandidateGeneration:
     refresh_id: str
 
 
+def in_candidate_generation() -> bool:
+    """Return whether this context writes an unpublishable candidate generation."""
+    return _substrate_path_override.get() is not None
+
+
 def substrate_path() -> Path:
     """Return the substrate path for the current promotion context."""
     override = _substrate_path_override.get()

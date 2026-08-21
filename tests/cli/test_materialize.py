@@ -286,6 +286,20 @@ def test_maintenance_plan_never_dispatches_unscoped_materializers(monkeypatch) -
     assert by_name["unwindowed"].window is None
 
 
+def test_standalone_materialization_does_not_mutate_published_substrate(monkeypatch) -> None:
+    from lynchpin import materialization
+    from lynchpin.substrate import connection
+
+    monkeypatch.setattr(connection, "in_candidate_generation", lambda: False)
+    monkeypatch.setattr(
+        connection,
+        "connect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("published substrate must stay untouched")),
+    )
+
+    materialization._record_materialization_step("refresh", "fixture", "ok", "materialized")
+
+
 def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:
     from lynchpin import materialization
 

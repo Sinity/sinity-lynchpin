@@ -1144,9 +1144,20 @@ def _record_materialization_step(
     finished_at: datetime | None = None,
 ) -> None:
     try:
-        from .substrate.connection import apply_schema, connect, substrate_path
+        from .substrate.connection import (
+            apply_schema,
+            connect,
+            in_candidate_generation,
+            substrate_path,
+        )
         from .substrate.run_steps import record_run_step
 
+        # A standalone product refresh must not mutate the published substrate:
+        # even a harmless observability row changes its mtime and invalidates the
+        # manifest/read-snapshot generation identity. Candidate promotions retain
+        # the rows because they publish fresh matching sidecars on success.
+        if not in_candidate_generation():
+            return
         with connect(substrate_path()) as conn:
             apply_schema(conn)
             record_run_step(
