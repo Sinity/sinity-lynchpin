@@ -42,7 +42,6 @@ def main(argv: list[str] | None = None) -> int:
         args.start,
         "--end",
         args.end,
-        "--materialize-substrate",
         "--progress",
         args.progress,
     ]

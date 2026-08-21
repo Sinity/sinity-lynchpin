@@ -220,3 +220,26 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
         ("activity_title_usage", date(2026, 5, 1), date(2026, 5, 2), False),
     ]
     assert "BEGIN TRANSACTION" not in executed_sql
+
+
+def test_snapshot_uses_current_state_default_graph_materialization(monkeypatch) -> None:
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    forwarded: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        snapshot,
+        "current_state_main",
+        lambda argv: forwarded.setdefault("argv", argv) and 0,
+    )
+    monkeypatch.setattr(snapshot, "_record_run_step", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_record_snapshot_materialization_statuses", lambda **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_promote_snapshot_daily_signals", lambda **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_record_snapshot_promotion_run", lambda **_kwargs: None)
+
+    code = snapshot.main(
+        ["--start", "2026-05-01", "--end", "2026-05-02", "--progress", "quiet"]
+    )
+
+    assert code == 0
+    assert "--materialize-substrate" not in forwarded["argv"]
+    assert "--no-materialize-substrate" not in forwarded["argv"]
