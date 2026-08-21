@@ -81,12 +81,17 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
             builds = _scalar_count(conn, "evidence_graph_build")
             latest_build = _latest_graph_build(conn)
             latest_status = _latest_source_status(conn, "evidence_graph")
+            latest_promotion = _latest_promotion(conn)
             promotion_count = _successful_promotion_count(conn)
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - sidecar writer must not break promotion.
         return {
             "builds": None,
+            "latest_refresh_id": None,
+            "latest_graph_refresh_id": None,
+            "latest_promotion_status": None,
+            "latest_promotion_reason": None,
             "latest_node_count": None,
             "latest_edge_count": None,
             "latest_source_status": None,
@@ -107,6 +112,18 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
         last_date = first_date
     return {
         "builds": builds,
+        "latest_refresh_id": (
+            latest_promotion["refresh_id"]
+            if latest_promotion is not None
+            else latest_build["refresh_id"] if latest_build else None
+        ),
+        "latest_graph_refresh_id": latest_build["refresh_id"] if latest_build else None,
+        "latest_promotion_status": (
+            latest_promotion["status"] if latest_promotion is not None else None
+        ),
+        "latest_promotion_reason": (
+            latest_promotion["reason"] if latest_promotion is not None else None
+        ),
         "latest_node_count": latest_node_count,
         "latest_edge_count": latest_edge_count,
         "first_date": first_date.isoformat() if first_date is not None else None,
@@ -170,6 +187,27 @@ def _latest_source_status(conn: Any, source: str) -> tuple[str, str | None] | No
     return str(row[0]), row[1]
 
 
+def _latest_promotion(conn: Any) -> dict[str, Any] | None:
+    try:
+        row = conn.execute(
+            """
+            SELECT refresh_id, status, reason
+            FROM substrate_promotion_run
+            ORDER BY finished_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return {
+        "refresh_id": str(row[0]),
+        "status": str(row[1]),
+        "reason": row[2],
+    }
+
+
 def _successful_promotion_count(conn: Any) -> int | None:
     try:
         row = conn.execute(
@@ -188,7 +226,7 @@ def _latest_graph_build(conn: Any) -> dict[str, Any] | None:
     try:
         row = conn.execute(
             """
-            SELECT start_date, end_date, node_count, edge_count
+            SELECT refresh_id, start_date, end_date, node_count, edge_count
             FROM evidence_graph_build
             ORDER BY materialized_at DESC, generated_at DESC
             LIMIT 1
@@ -199,10 +237,11 @@ def _latest_graph_build(conn: Any) -> dict[str, Any] | None:
     if not row:
         return None
     return {
-        "start_date": row[0],
-        "end_date": row[1],
-        "node_count": int(row[2]),
-        "edge_count": int(row[3]),
+        "refresh_id": str(row[0]),
+        "start_date": row[1],
+        "end_date": row[2],
+        "node_count": int(row[3]),
+        "edge_count": int(row[4]),
     }
 
 

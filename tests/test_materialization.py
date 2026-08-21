@@ -3969,6 +3969,9 @@ def test_substrate_status_manifest_records_latest_graph_bounds(tmp_path, monkeyp
 
     assert manifest is not None
     assert manifest["status"] == "ready"
+    assert manifest["latest_refresh_id"] == "rid-latest"
+    assert manifest["latest_graph_refresh_id"] == "rid-latest"
+    assert manifest["latest_promotion_status"] is None
     assert manifest["latest_node_count"] == 7
     assert manifest["latest_edge_count"] == 2
     assert manifest["first_date"] == "2026-05-01"

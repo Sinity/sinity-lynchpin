@@ -337,6 +337,9 @@ def test_candidate_publication_replaces_only_verified_generation(
     manifest = load_current_substrate_status_manifest(isolated_substrate)
     assert manifest is not None
     assert manifest["substrate_path"] == str(isolated_substrate)
+    assert manifest["latest_refresh_id"] == "current"
+    assert manifest["latest_graph_refresh_id"] is None
+    assert manifest["latest_promotion_status"] == "ok"
     assert manifest["substrate_size_bytes"] == isolated_substrate.stat().st_size
     assert manifest["substrate_mtime_ns"] == isolated_substrate.stat().st_mtime_ns
     assert manifest["promotion_count"] == 2
