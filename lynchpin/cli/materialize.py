@@ -6,7 +6,7 @@ import argparse
 from contextlib import nullcontext
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..core.config import get_config
@@ -34,12 +34,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--promote", action="store_true", help="also build/promote a coherent substrate snapshot")
     parser.add_argument("--start", help="snapshot start date when --promote is used")
     parser.add_argument("--end", help="snapshot end date when --promote is used")
-    parser.add_argument("--history", choices=("window", "all"), default="window", help="promote an explicit window or the full ready contract range")
+    parser.add_argument(
+        "--history",
+        choices=("window", "incremental", "all"),
+        default="window",
+        help="promote an explicit window, a bounded maintenance tail, or the full ready contract range",
+    )
     parser.add_argument("--weak-tags", action="store_true", help="include weak keyword/proximity evidence tags in promoted snapshot")
     parser.add_argument("--snapshot-output", type=Path, default=None, help="write promoted snapshot Markdown to this path")
     parser.add_argument("--strict", action="store_true", help="exit non-zero if any known product is not ready")
     parser.add_argument("--json", action="store_true", help="write JSON audit rows after materialization")
-    parser.add_argument("--plan-json", action="store_true", help="write materialization plan rows before execution")
+    parser.add_argument("--plan-json", action="store_true", help="write the materialization plan as JSON and exit without changing products")
     parser.add_argument("--force", action="store_true", help="rebuild all locally materializable products")
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
@@ -51,26 +56,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.force and not args.all:
         parser.error("--force requires --all")
 
-    # An explicit --start/--end (the --history=window --promote path) bounds
-    # per-source materialization to that window instead of each source's
-    # full history — see lynchpin-9rr. --history=all intentionally wants the
-    # full history, so its window is resolved after the materialize pass,
-    # once every source is fresh enough to report accurate date bounds.
+    # An explicit --start/--end bounds every window-aware materializer to that
+    # request. Incremental maintenance instead asks the planner for a separate
+    # bounded tail for each product. Only --history=all permits unscoped
+    # materializers, and it is retained exclusively for explicit repair/backfill.
     window: tuple[date, date] | None = None
     if args.promote and args.history == "window":
         if not args.start or not args.end:
-            parser.error("--promote requires --start and --end unless --history all is used")
+            parser.error("--promote requires --start and --end unless --history all or incremental is used")
         window = (date.fromisoformat(args.start), date.fromisoformat(args.end))
+    if args.history == "incremental" and not (args.all and args.promote):
+        parser.error("--history incremental requires --all --promote")
 
     if args.all:
         _progress("planning canonical materialization")
-        plan = plan_materializations(force=args.force, window=window)
+        plan_kwargs: dict[str, object] = {"force": args.force, "window": window}
+        if args.history == "incremental":
+            plan_kwargs["maintenance"] = True
+        plan = plan_materializations(**plan_kwargs)
     else:
         _progress("promoting from existing canonical products")
         plan = []
     _progress(f"plan ready: {len(plan)} step(s)")
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
+        return 0
     for step in plan:
         _progress(f"{step.action}: {step.name} ({step.reason})")
     # Promotion has a stronger contract than ordinary product refreshes: every
@@ -93,13 +103,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             _progress("canonical materialization complete")
             if args.promote:
-                if args.history == "all":
+                incremental_tail_start: date | None = None
+                if args.history in {"all", "incremental"}:
                     start_d, end_d = _all_history_window()
                     args.start = start_d.isoformat()
                     args.end = end_d.isoformat()
-                    _progress(f"derived all-history promotion window: {args.start}..{args.end}")
+                    if args.history == "incremental":
+                        refreshed_windows = [
+                            step.window
+                            for step in plan
+                            if step.action == "materialize" and step.window is not None
+                        ]
+                        incremental_tail_start = min(
+                            (item[0] for item in refreshed_windows),
+                            default=max(start_d, end_d - timedelta(days=7)),
+                        )
+                        _progress(
+                            "derived incremental graph tail: "
+                            f"{incremental_tail_start.isoformat()}..{args.end}"
+                        )
+                    else:
+                        _progress(f"derived all-history promotion window: {args.start}..{args.end}")
                 elif not args.start or not args.end:
-                    parser.error("--promote requires --start and --end unless --history all is used")
+                    parser.error("--promote requires --start and --end unless --history all or incremental is used")
                 date.fromisoformat(args.start)
                 date.fromisoformat(args.end)
                 from .substrate_snapshot import main as snapshot_main
@@ -117,9 +143,11 @@ def main(argv: list[str] | None = None) -> int:
                     "--progress",
                     args.progress,
                 ]
+                if incremental_tail_start is not None:
+                    forwarded.extend(("--incremental-tail-start", incremental_tail_start.isoformat()))
                 if args.weak_tags:
                     forwarded.append("--weak-tags")
-                if not args.all:
+                if not args.all or args.history == "incremental":
                     forwarded.extend(("--existing-products", "--graph-only"))
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
                 code = snapshot_main(forwarded)

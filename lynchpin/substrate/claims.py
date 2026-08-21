@@ -70,6 +70,88 @@ def promote_analysis_claims(
     return len(rows)
 
 
+def promote_incremental_analysis_claims(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    previous_refresh_id: str,
+    refresh_id: str,
+    tail_start: date,
+    claims: Iterable[AnalysisClaimRow],
+) -> int:
+    """Copy predecessor claims and replace only the refreshed tail."""
+    rows = list(claims)
+    replacing_existing_refresh = previous_refresh_id == refresh_id
+    if not replacing_existing_refresh:
+        conn.execute("DELETE FROM analysis_claim WHERE refresh_id = ?", [refresh_id])
+    else:
+        conn.execute(
+            "DELETE FROM analysis_claim WHERE refresh_id = ? AND date >= ?",
+            [refresh_id, tail_start],
+        )
+        if rows:
+            conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_claim_ids (id VARCHAR PRIMARY KEY)")
+            conn.executemany(
+                "INSERT INTO incremental_claim_ids VALUES (?)",
+                [(row.claim_id,) for row in rows],
+            )
+            conn.execute(
+                "DELETE FROM analysis_claim WHERE refresh_id = ? AND claim_id IN (SELECT id FROM incremental_claim_ids)",
+                [refresh_id],
+            )
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        if not replacing_existing_refresh:
+            conn.execute(
+                """
+                INSERT INTO analysis_claim (
+                    refresh_id, claim_id, claim_type, project, date, support_level,
+                    confidence, score, summary, source_ids, relation_ids, caveats, payload
+                )
+                SELECT ?, claim_id, claim_type, project, date, support_level,
+                       confidence, score, summary, source_ids, relation_ids, caveats, payload
+                FROM analysis_claim
+                WHERE refresh_id = ? AND (date IS NULL OR date < ?)
+                """,
+                [refresh_id, previous_refresh_id, tail_start],
+            )
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO analysis_claim (
+                    refresh_id, claim_id, claim_type, project, date, support_level,
+                    confidence, score, summary, source_ids, relation_ids, caveats, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        refresh_id,
+                        row.claim_id,
+                        row.claim_type,
+                        row.project,
+                        row.date,
+                        row.support_level,
+                        row.confidence,
+                        row.score,
+                        row.summary,
+                        list(row.source_ids),
+                        list(row.relation_ids),
+                        json.dumps(list(row.caveats)),
+                        json.dumps(row.payload, sort_keys=True),
+                    )
+                    for row in rows
+                ],
+            )
+        count = int(
+            conn.execute("SELECT COUNT(*) FROM analysis_claim WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return count
+
+
 def claim_id(*parts: object) -> str:
     raw = "\x1f".join(str(part) for part in parts)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]

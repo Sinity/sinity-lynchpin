@@ -446,6 +446,250 @@ def _extract_edge(edge: Any) -> tuple[Any, ...]:
     )
 
 
+def load_evidence_graph_boundary_nodes(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    tail_start: date,
+    lookback_days: int,
+) -> tuple[Any, ...]:
+    """Load the small predecessor slice needed to derive tail-crossing edges.
+
+    The date lookback covers bounded relation builders. The timestamp predicate
+    additionally retains an earlier node whose interval remains open at the
+    replacement boundary, which is the only way temporal-overlap relations can
+    cross an arbitrarily old start date.
+    """
+    from datetime import datetime, time, timedelta
+    from lynchpin.core.evidence_graph import EvidenceNode
+
+    lookback_start = tail_start - timedelta(days=lookback_days)
+    boundary_start = datetime.combine(tail_start, time.min).astimezone()
+    rows = conn.execute(
+        """
+        SELECT id, kind, source, date, project, summary,
+               start_ts, end_ts, url, payload, provenance, caveats
+        FROM evidence_node
+        WHERE refresh_id = ?
+          AND (
+              date >= ?
+              OR (end_ts IS NOT NULL AND end_ts >= ?)
+          )
+        """,
+        [refresh_id, lookback_start, boundary_start],
+    ).fetchall()
+    return tuple(
+        EvidenceNode(
+            id=n_id,
+            kind=n_kind,
+            source=source,
+            date=n_date,
+            project=project,
+            summary=summary or "",
+            start=start_ts,
+            end=end_ts,
+            url=url,
+            payload=_hydrate_payload(payload),
+            provenance=_hydrate_provenance(provenance),
+            caveats=_hydrate_caveats(caveats),
+        )
+        for (
+            n_id,
+            n_kind,
+            source,
+            n_date,
+            project,
+            summary,
+            start_ts,
+            end_ts,
+            url,
+            payload,
+            provenance,
+            caveats,
+        ) in rows
+    )
+
+
+def promote_incremental_evidence_graph(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    previous_refresh_id: str,
+    refresh_id: str,
+    graph: Any,
+    full_start: date,
+    tail_start: date,
+    projects: Sequence[str] = (),
+) -> dict[str, int]:
+    """Publish a new full graph by copying its predecessor and replacing a tail.
+
+    The database already belongs to a candidate generation, so this operation
+    changes only that candidate. Historical rows are copied inside DuckDB rather
+    than hydrated and reinserted through Python. Rows and relations touching the
+    tail are replaced from ``graph``; caller-provided graph edges include both
+    tail-internal and boundary-crossing relations.
+    """
+    predecessor = conn.execute(
+        "SELECT 1 FROM evidence_graph_build WHERE refresh_id = ?",
+        [previous_refresh_id],
+    ).fetchone()
+    if predecessor is None:
+        raise ValueError(f"incremental graph predecessor is missing: {previous_refresh_id}")
+
+    replacing_existing_refresh = previous_refresh_id == refresh_id
+    conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_node_ids (id VARCHAR PRIMARY KEY)")
+    if graph.nodes:
+        conn.executemany(
+            "INSERT INTO incremental_node_ids VALUES (?)",
+            [(node.id,) for node in graph.nodes],
+        )
+    if not replacing_existing_refresh:
+        conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
+        conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [refresh_id])
+        conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
+    else:
+        # DuckDB 1.1 cannot reinsert a primary-key value in the same explicit
+        # transaction that deleted it. Clear the replacement tail in its own
+        # transaction, then bulk-insert the new tail below.
+        conn.execute(
+            """
+            DELETE FROM evidence_edge
+            WHERE refresh_id = ?
+              AND (
+                  source_id IN (
+                      SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?
+                  )
+                  OR target_id IN (
+                      SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?
+                  )
+              )
+            """,
+            [refresh_id, refresh_id, tail_start, refresh_id, tail_start],
+        )
+        conn.execute(
+            "DELETE FROM evidence_node WHERE refresh_id = ? AND date >= ?",
+            [refresh_id, tail_start],
+        )
+        conn.execute(
+            """
+            DELETE FROM evidence_edge
+            WHERE refresh_id = ?
+              AND (
+                  source_id IN (SELECT id FROM incremental_node_ids)
+                  OR target_id IN (SELECT id FROM incremental_node_ids)
+              )
+            """,
+            [refresh_id],
+        )
+        conn.execute(
+            "DELETE FROM evidence_node WHERE refresh_id = ? AND id IN (SELECT id FROM incremental_node_ids)",
+            [refresh_id],
+        )
+        conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        if not replacing_existing_refresh:
+            conn.execute(
+                """
+                INSERT INTO evidence_node (refresh_id, id, kind, source, date, project,
+                                           summary, start_ts, end_ts, url, payload,
+                                           provenance, caveats)
+                SELECT ?, id, kind, source, date, project, summary, start_ts, end_ts,
+                       url, payload, provenance, caveats
+                FROM evidence_node
+                WHERE refresh_id = ?
+                  AND date < ?
+                  AND id NOT IN (SELECT id FROM incremental_node_ids)
+                """,
+                [refresh_id, previous_refresh_id, tail_start],
+            )
+            conn.execute(
+                """
+                INSERT INTO evidence_edge (refresh_id, source_id, target_id, relation,
+                                           evidence, weight)
+                SELECT ?, edge.source_id, edge.target_id, edge.relation, edge.evidence,
+                       edge.weight
+                FROM evidence_edge AS edge
+                JOIN evidence_node AS source_node
+                  ON source_node.refresh_id = edge.refresh_id
+                 AND source_node.id = edge.source_id
+                JOIN evidence_node AS target_node
+                  ON target_node.refresh_id = edge.refresh_id
+                 AND target_node.id = edge.target_id
+                WHERE edge.refresh_id = ?
+                  AND source_node.date < ?
+                  AND target_node.date < ?
+                  AND source_node.id NOT IN (SELECT id FROM incremental_node_ids)
+                  AND target_node.id NOT IN (SELECT id FROM incremental_node_ids)
+                """,
+                [refresh_id, previous_refresh_id, tail_start, tail_start],
+            )
+        promote_rows(
+            conn,
+            table="evidence_node",
+            columns=_EVIDENCE_NODE_COLUMNS,
+            refresh_id=refresh_id,
+            rows=graph.nodes,
+            extractor=_extract_node,
+            batch_size=5000,
+            refresh_id_position="first",
+            delete_existing=False,
+            wrap_transaction=False,
+        )
+        promote_rows(
+            conn,
+            table="evidence_edge",
+            columns=_EVIDENCE_EDGE_COLUMNS,
+            refresh_id=refresh_id,
+            rows=graph.edges,
+            extractor=_extract_edge,
+            batch_size=5000,
+            refresh_id_position="first",
+            delete_existing=False,
+            wrap_transaction=False,
+        )
+        node_count = int(
+            conn.execute("SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+        )
+        edge_count = int(
+            conn.execute("SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+        )
+        caveats_json = json.dumps(
+            [
+                {"source": caveat.source, "status": caveat.status, "message": caveat.message}
+                for caveat in graph.caveats
+            ]
+        )
+        mode_str = graph.mode if isinstance(graph.mode, str) else str(graph.mode)
+        build_values = [
+            refresh_id,
+            full_start,
+            graph.end,
+            mode_str,
+            list(projects),
+            node_count,
+            edge_count,
+            caveats_json,
+            graph.generated_at,
+        ]
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build (
+                refresh_id, start_date, end_date, mode, projects,
+                node_count, edge_count, caveats, generated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            build_values,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception as rollback_exc:  # noqa: BLE001 - preserve original promote failure.
+            log.warning("promote_incremental_evidence_graph: rollback failed: %s", rollback_exc)
+        raise
+    return {"build": 1, "nodes": node_count, "edges": edge_count}
+
+
 def promote_evidence_graph(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -541,5 +785,7 @@ __all__ = [
     "compute_symbol_overlap_edges",
     "list_evidence_graph_builds",
     "load_evidence_graph",
+    "load_evidence_graph_boundary_nodes",
     "promote_evidence_graph",
+    "promote_incremental_evidence_graph",
 ]

@@ -17,6 +17,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build a coherent Lynchpin substrate snapshot")
     parser.add_argument("--start", required=True, help="inclusive start date, YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="exclusive end date, YYYY-MM-DD")
+    parser.add_argument(
+        "--incremental-tail-start",
+        help="replace this inclusive graph tail while retaining the compatible prior graph",
+    )
     parser.add_argument("--weak-tags", action="store_true", help="include weak keyword/proximity evidence tags")
     parser.add_argument("--project", action="append", dest="projects")
     parser.add_argument("--output", type=Path, default=None)
@@ -37,8 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     _PROGRESS_FORMAT = args.progress
 
     # Validate dates here so errors point at this stable public entrypoint.
-    date.fromisoformat(args.start)
-    date.fromisoformat(args.end)
+    start_date = date.fromisoformat(args.start)
+    end_date = date.fromisoformat(args.end)
+    tail_start = date.fromisoformat(args.incremental_tail_start) if args.incremental_tail_start else None
+    if tail_start is not None and not (start_date <= tail_start < end_date):
+        parser.error("--incremental-tail-start must fall within --start and --end")
+    if tail_start is not None and not args.graph_only:
+        parser.error("--incremental-tail-start requires --graph-only")
     _progress(f"building current-state graph: {args.start}..{args.end}")
     refresh_id = _snapshot_refresh_id(
         start=date.fromisoformat(args.start),
@@ -64,13 +73,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeline_output is not None:
         forwarded.extend(["--timeline-output", str(args.timeline_output)])
     if args.graph_only:
-        from lynchpin.graph.context_pack import materialize_evidence_graph
+        if tail_start is None:
+            from lynchpin.graph.context_pack import materialize_evidence_graph
 
-        materialize_evidence_graph(
-            start=date.fromisoformat(args.start),
-            end=date.fromisoformat(args.end),
-            projects=tuple(args.projects or ()),
-        )
+            materialize_evidence_graph(
+                start=start_date,
+                end=end_date,
+                projects=tuple(args.projects or ()),
+            )
+        else:
+            from lynchpin.graph.context_pack import materialize_incremental_evidence_graph
+
+            materialize_incremental_evidence_graph(
+                start=start_date,
+                end=end_date,
+                tail_start=tail_start,
+                projects=tuple(args.projects or ()),
+            )
         code = 0
     else:
         code = current_state_main(forwarded)

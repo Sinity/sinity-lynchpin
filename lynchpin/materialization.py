@@ -255,12 +255,21 @@ class MaterializationPlanStep:
     action: str
     materialization_hint: str
     reason: str
+    window: tuple[date, date] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "status": self.before.status,
             "action": self.action,
+            "window": (
+                {
+                    "start": self.window[0].isoformat(),
+                    "end": self.window[1].isoformat(),
+                }
+                if self.window is not None
+                else None
+            ),
             "materialization_hint": self.materialization_hint,
             "reason": self.reason,
         }
@@ -460,41 +469,122 @@ def _materialize_keylog_analysis(
     return {"row_count": analysis.source_event_count}
 
 
+_INCREMENTAL_MAX_CATCHUP_DAYS = 31
+
+_INCREMENTAL_OVERLAP_DAYS: dict[str, int] = {
+    # These products merge logical-day partitions. Reprocess recent days so
+    # delayed events, sessions that cross midnight, and a partially-written
+    # current day converge without replaying their entire lifetime history.
+    "activitywatch": 2,
+    "activitywatch_event_index": 2,
+    "activity_content": 2,
+    "activitywatch_derived": 2,
+    "atuin": 2,
+    "machine": 2,
+    "keylog_analysis": 2,
+    "personal_daily_signals": 2,
+    "spotify_daily": 2,
+    "temporal_signals": 7,
+    "sleep_productivity": 7,
+    "github_context": 2,
+    "webhistory": 7,
+    "irc": 7,
+}
+
+
+def _supports_windowed_materialization(materializer: Callable[..., Any]) -> bool:
+    signature = inspect.signature(materializer)
+    return "start" in signature.parameters and "end" in signature.parameters
+
+
+def _incremental_window(
+    row: MaterializedDataset,
+    *,
+    end: date,
+) -> tuple[date, date] | None:
+    """Return the bounded tail that can safely refresh ``row``.
+
+    A missing product has no proven historical base to merge into. Scheduled
+    maintenance must not turn that condition into an implicit all-history
+    backfill, because that is exactly the outage-shaped work this planner is
+    meant to avoid. Repair and explicit full-history modes remain available for
+    that case.
+    """
+    if row.first_date is None or row.last_date is None or end <= row.first_date:
+        return None
+    if end - row.last_date > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
+        return None
+    overlap = _INCREMENTAL_OVERLAP_DAYS.get(row.name, 7)
+    start = max(row.first_date, min(row.last_date, end - timedelta(days=overlap)))
+    return start, end
+
+
 def plan_materializations(
     *,
     cfg: LynchpinConfig | None = None,
     force: bool = False,
     window: tuple[date, date] | None = None,
+    maintenance: bool = False,
+    maintenance_end: date | None = None,
 ) -> list[MaterializationPlanStep]:
     """Return the deterministic transparent materialization plan.
 
-    ``window``, when given, delegates the staleness decision to
-    :func:`_materialized_enough_for_window` — the same window-aware check
-    :func:`ensure_materialized` uses — instead of the coarser
-    ``row.status != "ready"`` check. Without it a product with mere
-    tail-staleness for *today* is scheduled for a full materialize even when
-    the caller only asked about a window that doesn't reach today; two
-    independently-maintained staleness algorithms could disagree (lynchpin-9rr
-    follow-up). ``window=None`` preserves the original coarse behavior for
-    callers that want a genuine, unscoped full-catalog refresh.
+    ``window`` delegates the staleness decision to
+    :func:`_materialized_enough_for_window`, the same check
+    :func:`ensure_materialized` uses. ``maintenance`` instead derives a
+    materializer-specific bounded tail from each product's proven coverage.
+    It never schedules an unscoped materializer call: missing historical bases
+    and materializers without ``start``/``end`` remain explicit repair work.
+    ``window=None`` without maintenance preserves the explicit full-catalog
+    behavior for repair/backfill callers.
     """
+    if maintenance and window is not None:
+        raise ValueError("maintenance planning and an explicit window are mutually exclusive")
     cfg = cfg or get_config()
     materializers = _materializers()
+    end = maintenance_end or (date.today() + timedelta(days=1))
     steps: list[MaterializationPlanStep] = []
     for row in audit_materialization(cfg=cfg):
         contract = source_contract(row.name)
+        step_window: tuple[date, date] | None = None
         if row.name not in materializers:
             action = "check-only"
             reason = "no transparent materializer is defined for this contract"
         elif force:
             action = "materialize"
             reason = row.reason
+        elif maintenance:
+            materializer = materializers[row.name]
+            if row.status == "ready" and not row.tail_stale:
+                action = "skip"
+                reason = "canonical product is ready"
+            elif not _supports_windowed_materialization(materializer):
+                action = "check-only"
+                reason = "incremental maintenance requires an explicit repair for this unwindowed materializer"
+            else:
+                step_window = _incremental_window(row, end=end)
+                if step_window is None:
+                    action = "check-only"
+                    if row.last_date is not None and end - row.last_date > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
+                        reason = (
+                            "incremental maintenance refuses a "
+                            f"{(end - row.last_date).days}-day catch-up; run explicit repair/backfill"
+                        )
+                    else:
+                        reason = "incremental maintenance requires a proven historical product; run explicit repair/backfill"
+                else:
+                    action = "materialize"
+                    reason = (
+                        f"incremental tail {step_window[0].isoformat()}..{step_window[1].isoformat()}: "
+                        f"{row.reason}"
+                    )
         elif window is not None:
             if _materialized_enough_for_window(row, window):
                 action = "skip"
                 reason = "canonical product covers requested window"
             else:
                 action = "materialize"
+                step_window = window
                 reason = row.reason
         elif row.status != "ready":
             action = "materialize"
@@ -510,6 +600,7 @@ def plan_materializations(
                     action=action,
                     materialization_hint=contract.materialization_hint,
                     reason=reason,
+                    window=step_window,
                 )
             )
     return steps
@@ -553,7 +644,10 @@ def run_materialization_plan(
             started_at=started,
         )
         try:
-            report = _run_materializer(materializers[step.name], window=window)
+            report = _run_materializer(
+                materializers[step.name],
+                window=step.window if step.window is not None else window,
+            )
         except Exception as exc:
             _record_materialization_step(
                 refresh_id,

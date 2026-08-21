@@ -264,6 +264,128 @@ def materialize_evidence_graph(
     return graph
 
 
+def materialize_incremental_evidence_graph(
+    *,
+    start: date,
+    end: date,
+    tail_start: date,
+    projects: Sequence[str] | None = None,
+    include_github_frontier: bool = False,
+    exclude_analysis_artifacts: Sequence[str] = (),
+) -> EvidenceGraph:
+    """Replace a bounded graph tail while publishing a coherent full graph.
+
+    The predecessor is copied inside DuckDB, not rebuilt through Python. We
+    rebuild all nodes from ``tail_start`` forward, plus every relation between
+    that tail and predecessor nodes that can still participate in a relation.
+    The latter includes a bounded date lookback and any earlier interval still
+    open at the boundary, so long-lived sessions are not silently disconnected.
+    """
+    if not start <= tail_start < end:
+        raise ValueError("incremental graph tail must fall within the promoted range")
+
+    from . import evidence_edges
+    from .evidence_graph import _dedupe_edges
+    from lynchpin.substrate import apply_schema, connect
+    from lynchpin.substrate.graph import (
+        load_evidence_graph_boundary_nodes,
+        promote_incremental_evidence_graph,
+    )
+
+    refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects)
+    with connect() as conn:
+        apply_schema(conn)
+        previous = conn.execute(
+            """
+            SELECT refresh_id
+            FROM evidence_graph_build
+            WHERE start_date <= ? AND end_date >= ?
+              AND (len(projects) = 0 OR projects = ?)
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            [start, tail_start, list(projects or ())],
+        ).fetchone()
+        if previous is None:
+            raise RuntimeError("incremental graph promotion requires a compatible predecessor")
+        previous_refresh_id = str(previous[0])
+        boundary_nodes = load_evidence_graph_boundary_nodes(
+            conn,
+            refresh_id=previous_refresh_id,
+            tail_start=tail_start,
+            lookback_days=1,
+        )
+
+    tail_graph = build_evidence_graph(
+        start=tail_start,
+        end=end,
+        projects=projects,
+        include_github_frontier=include_github_frontier,
+        exclude_analysis_artifacts=exclude_analysis_artifacts,
+    )
+    tail_ids = {node.id for node in tail_graph.nodes}
+    relation_nodes = [node for node in boundary_nodes if node.id not in tail_ids and node.date < tail_start]
+    relation_nodes.extend(tail_graph.nodes)
+    relation_ids = {node.id for node in relation_nodes}
+    crossing_edges = []
+    for builder in (
+        evidence_edges.same_project_day_edges,
+        evidence_edges.temporal_overlap_edges,
+        evidence_edges.temporal_proximity_edges,
+        evidence_edges.polylogue_work_event_tool_overlap_edges,
+        evidence_edges.mentions_project_edges,
+    ):
+        crossing_edges.extend(
+            edge
+            for edge in builder(relation_nodes)
+            if edge.source_id in relation_ids
+            and edge.target_id in relation_ids
+            and (edge.source_id in tail_ids or edge.target_id in tail_ids)
+        )
+    sql_edges = evidence_edges.overlap_edges_via_substrate(
+        relation_nodes,
+        refresh_id=f"overlap:{tail_graph.generated_at.isoformat()}",
+    )
+    crossing_edges.extend(
+        edge
+        for edge in sql_edges
+        if edge.source_id in relation_ids
+        and edge.target_id in relation_ids
+        and (edge.source_id in tail_ids or edge.target_id in tail_ids)
+    )
+    incremental_graph = EvidenceGraph(
+        start=tail_start,
+        end=end,
+        generated_at=tail_graph.generated_at,
+        mode=tail_graph.mode,
+        nodes=tail_graph.nodes,
+        edges=_dedupe_edges(tuple(tail_graph.edges) + tuple(crossing_edges)),
+        caveats=tail_graph.caveats,
+    )
+    with connect() as conn:
+        apply_schema(conn)
+        promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id=previous_refresh_id,
+            refresh_id=refresh_id,
+            graph=incremental_graph,
+            full_start=start,
+            tail_start=tail_start,
+            projects=tuple(projects or ()),
+        )
+        from .evidence_graph import analysis_claim_rows
+        from lynchpin.substrate.claims import promote_incremental_analysis_claims
+
+        promote_incremental_analysis_claims(
+            conn,
+            previous_refresh_id=previous_refresh_id,
+            refresh_id=refresh_id,
+            tail_start=tail_start,
+            claims=analysis_claim_rows(incremental_graph),
+        )
+    return incremental_graph
+
+
 def _materialize_context_graph(
     graph: EvidenceGraph,
     *,

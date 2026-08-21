@@ -7,6 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 
+def test_plan_json_exits_before_materialization(monkeypatch, capsys) -> None:
+    from lynchpin.cli import materialize
+
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        materialize,
+        "run_materialization_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("plan must not execute")),
+    )
+
+    code = materialize.main(["--all", "--plan-json", "--progress", "quiet"])
+
+    assert code == 0
+    assert capsys.readouterr().out == "[]\n"
+
+
 def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> None:
     from lynchpin.cli import materialize
     from lynchpin.materialization import MaterializedDataset
@@ -62,6 +78,82 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     ]
     assert "--mode" not in forwarded["argv"]
     assert "--existing-products" not in forwarded["argv"]
+
+
+def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.cli import materialize
+    from lynchpin.materialization import MaterializationPlanStep, MaterializedDataset
+
+    before = MaterializedDataset(
+        name="activity_content",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 10),
+        materialization_hint="refresh",
+        reason="tail stale",
+        tail_stale=True,
+    )
+    step = MaterializationPlanStep(
+        name="activity_content",
+        before=before,
+        action="materialize",
+        materialization_hint="refresh",
+        reason="incremental tail",
+        window=(date(2026, 5, 8), date(2026, 5, 12)),
+    )
+    rows = [
+        MaterializedDataset(
+            name="webhistory",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 5, 1),
+            last_date=date(2026, 5, 12),
+            materialization_hint="refresh",
+            reason="ready",
+        )
+    ]
+    forwarded: dict[str, list[str]] = {}
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        materialize,
+        "plan_materializations",
+        lambda **kwargs: calls.update(kwargs) or [step],
+    )
+    monkeypatch.setattr(
+        materialize,
+        "run_materialization_plan",
+        lambda plan, window=None, continue_on_error=False: calls.update(
+            run_window=window,
+            continue_on_error=continue_on_error,
+        ) or list(plan),
+    )
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", nullcontext)
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    monkeypatch.setattr(snapshot, "main", lambda argv: forwarded.setdefault("argv", argv) and 0)
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+
+    code = materialize.main(["--all", "--promote", "--history", "incremental"])
+
+    assert code == 0
+    assert calls["maintenance"] is True
+    assert calls["run_window"] is None
+    assert "--incremental-tail-start" in forwarded["argv"]
+    tail_index = forwarded["argv"].index("--incremental-tail-start")
+    assert forwarded["argv"][tail_index + 1] == "2026-05-08"
+    assert "--existing-products" in forwarded["argv"]
+    assert "--graph-only" in forwarded["argv"]
 
 
 def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_path: Path) -> None:
@@ -124,6 +216,74 @@ def test_materialize_rejects_mode_option(monkeypatch) -> None:
         materialize.main(["--all", "--mode", "local-heavy"])
 
     assert exc.value.code == 2
+
+
+def test_maintenance_plan_never_dispatches_unscoped_materializers(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    windowed = materialization.MaterializedDataset(
+        name="windowed",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 10),
+        materialization_hint="refresh",
+        reason="tail stale",
+    )
+    stale_windowed = materialization.MaterializedDataset(
+        name="stale_windowed",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 1, 1),
+        last_date=date(2026, 3, 1),
+        materialization_hint="repair",
+        reason="old product",
+    )
+    unwindowed = materialization.MaterializedDataset(
+        name="unwindowed",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 10),
+        materialization_hint="repair",
+        reason="requires repair",
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda cfg=None: [windowed, stale_windowed, unwindowed])
+    monkeypatch.setattr(materialization, "source_contract", lambda name: SimpleNamespace(materialization_hint=name))
+    monkeypatch.setattr(
+        materialization,
+        "_materializers",
+        lambda: {
+            "windowed": lambda *, start=None, end=None: {"start": start, "end": end},
+            "stale_windowed": lambda *, start=None, end=None: {"start": start, "end": end},
+            "unwindowed": lambda: None,
+        },
+    )
+
+    plan = materialization.plan_materializations(
+        maintenance=True,
+        maintenance_end=date(2026, 5, 12),
+    )
+
+    by_name = {step.name: step for step in plan}
+    assert by_name["windowed"].action == "materialize"
+    assert by_name["windowed"].window == (date(2026, 5, 5), date(2026, 5, 12))
+    assert by_name["stale_windowed"].action == "check-only"
+    assert "catch-up" in by_name["stale_windowed"].reason
+    assert by_name["unwindowed"].action == "check-only"
+    assert by_name["unwindowed"].window is None
 
 
 def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:

@@ -170,6 +170,130 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
     assert ("ai_work:ev001", "github:pr99", "references") in loaded_relations
 
 
+def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail(tmp_path: Path) -> None:
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.substrate import graph as graph_mod
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    predecessor = _make_evidence_graph()
+    tail = EvidenceGraph(
+        start=date(2026, 5, 5),
+        end=date(2026, 5, 8),
+        generated_at=datetime(2026, 5, 8, 12, tzinfo=UTC),
+        mode="materialized",
+        nodes=(
+            EvidenceNode(
+                id="commit:tail",
+                kind="commit",
+                source="git",
+                date=date(2026, 5, 6),
+                project="lynchpin",
+                summary="tail commit",
+            ),
+        ),
+        edges=(
+            EvidenceEdge(
+                source_id="commit:sha001",
+                target_id="commit:tail",
+                relation="temporal_overlap",
+                evidence="crosses tail boundary",
+                weight=0.7,
+            ),
+        ),
+        caveats=(),
+    )
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        graph_mod.promote_evidence_graph(conn, refresh_id="old", graph=predecessor)
+        counts = graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="old",
+            refresh_id="new",
+            graph=tail,
+            full_start=predecessor.start,
+            tail_start=date(2026, 5, 5),
+        )
+        same_refresh_counts = graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="new",
+            refresh_id="new",
+            graph=tail,
+            full_start=predecessor.start,
+            tail_start=date(2026, 5, 5),
+        )
+        loaded = graph_mod.load_evidence_graph(conn, refresh_id="new")
+
+    assert counts == {"build": 1, "nodes": 4, "edges": 3}
+    assert same_refresh_counts == counts
+    assert loaded is not None
+    assert loaded.start == predecessor.start
+    assert loaded.end == tail.end
+    assert {node.id for node in loaded.nodes} == {
+        "commit:sha001",
+        "ai_work:ev001",
+        "github:pr99",
+        "commit:tail",
+    }
+    assert ("commit:sha001", "commit:tail", "temporal_overlap") in {
+        (edge.source_id, edge.target_id, edge.relation) for edge in loaded.edges
+    }
+
+
+def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path: Path) -> None:
+    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims, promote_incremental_analysis_claims
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    old = AnalysisClaimRow(
+        claim_id="old",
+        claim_type="work",
+        project="lynchpin",
+        date=date(2026, 5, 1),
+        support_level="supported",
+        confidence=0.9,
+        score=1.0,
+        summary="old claim",
+        source_ids=(),
+        relation_ids=(),
+        caveats=(),
+        payload={},
+    )
+    tail = AnalysisClaimRow(
+        claim_id="tail",
+        claim_type="work",
+        project="lynchpin",
+        date=date(2026, 5, 6),
+        support_level="supported",
+        confidence=0.9,
+        score=1.0,
+        summary="tail claim",
+        source_ids=(),
+        relation_ids=(),
+        caveats=(),
+        payload={},
+    )
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_analysis_claims(conn, refresh_id="same", claims=(old, tail))
+        count = promote_incremental_analysis_claims(
+            conn,
+            previous_refresh_id="same",
+            refresh_id="same",
+            tail_start=date(2026, 5, 5),
+            claims=(tail,),
+        )
+        ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT claim_id FROM analysis_claim WHERE refresh_id = 'same'"
+            ).fetchall()
+        }
+
+    assert count == 2
+    assert ids == {"old", "tail"}
+
+
 def test_promote_evidence_graph_idempotent(tmp_path: Path) -> None:
     """Promoting the same graph twice under refresh_id='r1' must not double rows."""
     from lynchpin.substrate import graph as graph_mod
