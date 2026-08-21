@@ -44,6 +44,17 @@ def test_internal_tool_modules_do_not_register_fastmcp_tools() -> None:
     assert offenders == []
 
 
+def test_public_tool_annotations_follow_registry_effects() -> None:
+    from lynchpin.mcp.registry import PUBLIC_TOOLS
+    from lynchpin.mcp.server import app
+
+    tools = app._tool_manager._tools
+    for spec in PUBLIC_TOOLS:
+        annotations = tools[spec.name].annotations
+        assert annotations.readOnlyHint is (spec.effect_mode == "read")
+        assert annotations.destructiveHint is (spec.effect_mode == "write")
+
+
 def test_public_router_bodies_cover_registered_actions() -> None:
     from lynchpin.mcp.registry import PUBLIC_TOOLS
     from lynchpin.mcp.tools import public

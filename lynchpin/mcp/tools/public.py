@@ -10,7 +10,10 @@ from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from lynchpin.mcp.registry import (
+    PUBLIC_TOOL_BY_NAME,
     PUBLIC_TOOL_NAMES,
     PUBLIC_TOOLS,
     public_action_spec,
@@ -21,6 +24,14 @@ from lynchpin.mcp.server import app
 from lynchpin.mcp.tools._utils import _MATERIALIZATION_CAVEATS, json_safe
 
 _CURRENT_ROUTE: ContextVar[tuple[str, str] | None] = ContextVar("lynchpin_mcp_current_route", default=None)
+
+
+def _tool_annotations(name: str) -> ToolAnnotations:
+    spec = PUBLIC_TOOL_BY_NAME[name]
+    return ToolAnnotations(
+        readOnlyHint=spec.effect_mode == "read",
+        destructiveHint=spec.effect_mode == "write",
+    )
 
 
 def _ok(data: Any, **meta: Any) -> dict[str, Any]:
@@ -379,7 +390,7 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_status"))
 def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | None = None) -> dict[str, Any]:
     """Runtime/readiness/status router. view: runtime, readiness, self_check, materialization, operations, chisel, github."""
     if invalid := _mark_route("lynchpin_status", view):
@@ -429,7 +440,7 @@ def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | 
     return _invalid_action("lynchpin_status", view)
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_catalog"))
 def lynchpin_catalog(
     domain: str | None = None,
     include_schema: bool = False,
@@ -463,7 +474,7 @@ def lynchpin_catalog(
     return _ok(payload, **_action_meta("lynchpin_catalog", "catalog", route="lynchpin.mcp.registry.public_tool_catalog"))
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_query"))
 def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
     """Read-only query surface. spec mode: dsl (default) or sql."""
     mode = str(spec.get("mode") or "dsl")
@@ -487,7 +498,7 @@ def lynchpin_query(spec: dict[str, Any]) -> dict[str, Any]:
     return _error("invalid_mode", f"unknown query mode {mode!r}", choices=("dsl", "sql"))
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_evidence"))
 def lynchpin_evidence(
     action: str = "graph",
     refresh_id: str | None = None,
@@ -540,7 +551,7 @@ def lynchpin_evidence(
     return _invalid_action("lynchpin_evidence", action)
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_project"))
 def lynchpin_project(
     action: str = "repos",
     repo: str | None = None,
@@ -607,7 +618,7 @@ def lynchpin_project(
     return _invalid_action("lynchpin_project", action)
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_personal"))
 def lynchpin_personal(
     action: str = "daily",
     view: str | None = None,
@@ -664,7 +675,7 @@ def lynchpin_personal(
     return _invalid_action("lynchpin_personal", action)
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_machine"))
 def lynchpin_machine(
     action: str = "status",
     view: str | None = None,
@@ -712,7 +723,7 @@ def lynchpin_machine(
     return _invalid_action("lynchpin_machine", action)
 
 
-@app.tool()
+@app.tool(annotations=_tool_annotations("lynchpin_ops"))
 def lynchpin_ops(
     action: str = "materialize",
     execute: bool = False,
