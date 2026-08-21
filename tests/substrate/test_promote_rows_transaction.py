@@ -1,11 +1,9 @@
-"""Regression: promote_rows must wrap its DELETE+INSERT batch in ONE transaction.
+"""Regression coverage for staged, idempotent DuckDB promotions.
 
-In DuckDB autocommit, executemany commits (and fsyncs) per row — measured at
-~120KB-1.8MB written/row and ~99% of substrate-promote wall-time (artifacts
-promote: 20GB / 14min for ~163k rows; one transaction -> 179MB / 55s). This pins
-the transaction contract (standalone owns + commits, caller-owned defers,
-failure rolls back without poisoning the connection) rather than fragile
-byte/timing numbers.
+Rows are accumulated in one transaction to avoid per-row autocommit/fsync cost.
+A temporary table holds a complete replacement until target rows can be swapped
+with separate committed statements, which preserves prior rows if generation or
+insertion fails and avoids indexed primary-key updates in the target table.
 """
 
 from __future__ import annotations
@@ -35,6 +33,26 @@ def test_re_promote_same_refresh_id_replaces_without_pk_violation() -> None:
                      rows=[1, 2, 3], extractor=lambda x: (x,))
     assert n == 3
     assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+
+
+def test_repromote_indexed_target_leaves_no_synthetic_refresh_or_table() -> None:
+    conn = duckdb.connect()
+    conn.execute("CREATE TABLE t (refresh_id VARCHAR, v INTEGER, PRIMARY KEY (v, refresh_id))")
+    conn.execute("CREATE INDEX t_refresh_id ON t(refresh_id)")
+    promote_rows(conn, table="t", columns=("v",), refresh_id="latest",
+                 rows=[1, 2], extractor=lambda x: (x,))
+
+    promote_rows(conn, table="t", columns=("v",), refresh_id="latest",
+                 rows=[3, 4], extractor=lambda x: (x,))
+
+    assert conn.execute("SELECT refresh_id, v FROM t ORDER BY v").fetchall() == [
+        ("latest", 3),
+        ("latest", 4),
+    ]
+    assert conn.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name LIKE 'promote_rows_staging_%'"
+    ).fetchone()[0] == 0
 
 
 def test_standalone_owns_and_commits_transaction() -> None:
@@ -86,9 +104,9 @@ def test_interrupted_repromote_does_not_delete_old_data() -> None:
     source hit a transient read error) left the target refresh_id with ZERO
     rows and no exception ever surfaced past this point in some call chains —
     this was the observed real-world failure on machine_cgroup_memory_sample.
-    The fix stages new rows under a private refresh_id first and only swaps
-    them onto the target after a full successful commit, so an interrupted
-    re-promote leaves the previous good data completely untouched.
+    The fix stages new rows in a temporary table and only swaps them onto the
+    target after a full successful commit, so an interrupted re-promote leaves
+    the previous good data completely untouched.
     """
     conn = _conn()
     promote_rows(conn, table="t", columns=("v",), refresh_id="r1",
@@ -111,8 +129,7 @@ def test_interrupted_repromote_does_not_delete_old_data() -> None:
     ).fetchall()
     assert rows == [(1,), (2,), (3,)]
 
-    # No orphaned staging rows should be visible under any OTHER refresh_id
-    # either (the failed transaction rolled the staged insert back too).
+    # The failed temporary-table insertion leaves no extra target rows.
     total = conn.execute("SELECT COUNT(*) FROM t").fetchone()[0]
     assert total == 3
 
