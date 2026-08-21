@@ -394,6 +394,25 @@ def test_candidate_failure_retains_verified_serving_generation(
     assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
 
 
+def test_candidate_generation_rejects_explicit_serving_writer(
+    isolated_substrate: Path,
+) -> None:
+    """An accidental canonical path cannot bypass a live candidate context."""
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    serving_contents = isolated_substrate.read_bytes()
+
+    with pytest.raises(CandidateGenerationRejected, match="outside its staged substrate"):
+        with candidate_generation():
+            with connect(isolated_substrate):
+                pass
+
+    assert isolated_substrate.read_bytes() == serving_contents
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+
+
 @pytest.mark.parametrize("signal_number", (signal.SIGINT, signal.SIGTERM))
 def test_candidate_signal_archives_every_sidecar_and_retains_serving_triple(
     isolated_substrate: Path,

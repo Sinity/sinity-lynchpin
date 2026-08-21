@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
+import logging
 from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
@@ -14,9 +15,12 @@ from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
 from .evidence_graph import build_evidence_graph
 from .evidence_views import render_evidence_relations, render_evidence_timeline
+from .performance import log_performance, sample_performance
 from .weak_tags import WeakTagEnrichment, build_weak_tags, render_weak_tag_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
+
+log = logging.getLogger(__name__)
 
 SubstrateGraphStatus = Literal[
     "disabled",
@@ -292,7 +296,7 @@ def materialize_incremental_evidence_graph(
         promote_incremental_evidence_graph,
     )
 
-    refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects)
+    predecessor_started = sample_performance()
     with connect() as conn:
         apply_schema(conn)
         previous = conn.execute(
@@ -315,7 +319,15 @@ def materialize_incremental_evidence_graph(
             tail_start=tail_start,
             lookback_days=1,
         )
+    log_performance(
+        log,
+        component="incremental_graph",
+        stage="predecessor_boundary",
+        started=predecessor_started,
+        boundary_node_count=len(boundary_nodes),
+    )
 
+    tail_build_started = sample_performance()
     tail_graph = build_evidence_graph(
         start=tail_start,
         end=end,
@@ -323,11 +335,20 @@ def materialize_incremental_evidence_graph(
         include_github_frontier=include_github_frontier,
         exclude_analysis_artifacts=exclude_analysis_artifacts,
     )
+    log_performance(
+        log,
+        component="incremental_graph",
+        stage="tail_graph_build",
+        started=tail_build_started,
+        tail_node_count=len(tail_graph.nodes),
+        tail_edge_count=len(tail_graph.edges),
+    )
     tail_ids = {node.id for node in tail_graph.nodes}
     relation_nodes = [node for node in boundary_nodes if node.id not in tail_ids and node.date < tail_start]
     relation_nodes.extend(tail_graph.nodes)
     relation_ids = {node.id for node in relation_nodes}
     crossing_edges = []
+    crossing_python_started = sample_performance()
     for builder in (
         evidence_edges.same_project_day_edges,
         evidence_edges.temporal_overlap_edges,
@@ -342,6 +363,14 @@ def materialize_incremental_evidence_graph(
             and edge.target_id in relation_ids
             and (edge.source_id in tail_ids or edge.target_id in tail_ids)
         )
+    log_performance(
+        log,
+        component="incremental_graph",
+        stage="crossing_python_edges",
+        started=crossing_python_started,
+        edge_count=len(crossing_edges),
+    )
+    crossing_sql_started = sample_performance()
     sql_edges = evidence_edges.overlap_edges_via_substrate(
         relation_nodes,
         refresh_id=f"overlap:{tail_graph.generated_at.isoformat()}",
@@ -352,6 +381,14 @@ def materialize_incremental_evidence_graph(
         if edge.source_id in relation_ids
         and edge.target_id in relation_ids
         and (edge.source_id in tail_ids or edge.target_id in tail_ids)
+    )
+    log_performance(
+        log,
+        component="incremental_graph",
+        stage="crossing_sql_edges",
+        started=crossing_sql_started,
+        sql_edge_count=len(sql_edges),
+        crossing_edge_count=len(crossing_edges),
     )
     incremental_graph = EvidenceGraph(
         start=tail_start,
@@ -364,24 +401,55 @@ def materialize_incremental_evidence_graph(
     )
     with connect() as conn:
         apply_schema(conn)
+        # A candidate begins as a complete verified substrate generation, so
+        # the predecessor graph already exists in this database. Reuse that
+        # refresh ID and replace only its bounded tail. Allocating a fresh ID
+        # would copy every historical node and edge into a second partition
+        # before replacing the same small tail.
+        graph_write_started = sample_performance()
         promote_incremental_evidence_graph(
             conn,
             previous_refresh_id=previous_refresh_id,
-            refresh_id=refresh_id,
+            refresh_id=previous_refresh_id,
             graph=incremental_graph,
             full_start=start,
             tail_start=tail_start,
             projects=tuple(projects or ()),
         )
+        log_performance(
+            log,
+            component="incremental_graph",
+            stage="candidate_graph_write",
+            started=graph_write_started,
+            node_count=len(incremental_graph.nodes),
+            edge_count=len(incremental_graph.edges),
+        )
         from .evidence_graph import analysis_claim_rows
         from lynchpin.substrate.claims import promote_incremental_analysis_claims
 
+        claim_build_started = sample_performance()
+        claims = analysis_claim_rows(incremental_graph)
+        log_performance(
+            log,
+            component="incremental_graph",
+            stage="analysis_claim_build",
+            started=claim_build_started,
+            claim_count=len(claims),
+        )
+        claim_write_started = sample_performance()
         promote_incremental_analysis_claims(
             conn,
             previous_refresh_id=previous_refresh_id,
-            refresh_id=refresh_id,
+            refresh_id=previous_refresh_id,
             tail_start=tail_start,
-            claims=analysis_claim_rows(incremental_graph),
+            claims=claims,
+        )
+        log_performance(
+            log,
+            component="incremental_graph",
+            stage="candidate_claim_write",
+            started=claim_write_started,
+            claim_count=len(claims),
         )
     return incremental_graph
 

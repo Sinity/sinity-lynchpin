@@ -25,6 +25,7 @@ from ..core.evidence_graph import (
 from . import evidence_analysis, evidence_edges, evidence_sources
 from .evidence_projects import selected_projects
 from .machine_analysis import add_machine_analysis_nodes
+from .performance import log_performance, sample_performance
 from .source_readiness import source_readiness
 
 log = logging.getLogger(__name__)
@@ -234,6 +235,20 @@ def build_evidence_graph(
     )
 
 
+def _measure_edges(stage: str, build: Any) -> tuple[EvidenceEdge, ...]:
+    """Materialize and record one independent edge-family derivation."""
+    started = sample_performance()
+    edges = tuple(build())
+    log_performance(
+        log,
+        component="edge_derivation",
+        stage=stage,
+        started=started,
+        edge_count=len(edges),
+    )
+    return edges
+
+
 def _finalize_graph(
     *,
     nodes: list[EvidenceNode],
@@ -254,33 +269,45 @@ def _finalize_graph(
             len(nodes),
         )
     log.info("evidence_graph: deriving same-project/day edges for %d nodes", len(nodes))
-    same_project_edges = tuple(
-        edge
-        for edge in evidence_edges.same_project_day_edges(nodes)
-        if edge.source_id in node_ids and edge.target_id in node_ids
+    same_project_edges = _measure_edges(
+        "same_project_day",
+        lambda: (
+            edge
+            for edge in evidence_edges.same_project_day_edges(nodes)
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ),
     )
     edges.extend(same_project_edges)
     log.info("evidence_graph: added %d same-project/day edges", len(same_project_edges))
     log.info("evidence_graph: deriving temporal-overlap edges")
-    overlap_edges = tuple(
-        edge
-        for edge in evidence_edges.temporal_overlap_edges(nodes)
-        if edge.source_id in node_ids and edge.target_id in node_ids
+    overlap_edges = _measure_edges(
+        "temporal_overlap",
+        lambda: (
+            edge
+            for edge in evidence_edges.temporal_overlap_edges(nodes)
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ),
     )
     edges.extend(overlap_edges)
     log.info("evidence_graph: added %d temporal-overlap edges", len(overlap_edges))
     log.info("evidence_graph: deriving temporal-proximity edges")
-    proximity_edges = tuple(
-        edge
-        for edge in evidence_edges.temporal_proximity_edges(nodes)
-        if edge.source_id in node_ids and edge.target_id in node_ids
+    proximity_edges = _measure_edges(
+        "temporal_proximity",
+        lambda: (
+            edge
+            for edge in evidence_edges.temporal_proximity_edges(nodes)
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ),
     )
     edges.extend(proximity_edges)
     log.info("evidence_graph: added %d temporal-proximity edges", len(proximity_edges))
     log.info("evidence_graph: deriving file/symbol overlap edges")
     overlap_refresh_id = f"overlap:{generated_at.isoformat()}"
-    sql_edges = evidence_edges.overlap_edges_via_substrate(
-        nodes, refresh_id=overlap_refresh_id
+    sql_edges = _measure_edges(
+        "file_symbol_overlap",
+        lambda: evidence_edges.overlap_edges_via_substrate(
+            nodes, refresh_id=overlap_refresh_id
+        ),
     )
     edges.extend(
         edge
@@ -289,16 +316,23 @@ def _finalize_graph(
     )
     log.info("evidence_graph: added %d file/symbol overlap edges", len(sql_edges))
     log.info("evidence_graph: deriving tool-overlap edges")
-    edges.extend(
-        edge
-        for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
-        if edge.source_id in node_ids and edge.target_id in node_ids
+    tool_overlap_edges = _measure_edges(
+        "tool_overlap",
+        lambda: (
+            edge
+            for edge in evidence_edges.polylogue_work_event_tool_overlap_edges(nodes)
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ),
     )
+    edges.extend(tool_overlap_edges)
     log.info("evidence_graph: deriving mentions-project edges")
-    mentions_edges = tuple(
-        edge
-        for edge in evidence_edges.mentions_project_edges(nodes)
-        if edge.source_id in node_ids and edge.target_id in node_ids
+    mentions_edges = _measure_edges(
+        "mentions_project",
+        lambda: (
+            edge
+            for edge in evidence_edges.mentions_project_edges(nodes)
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ),
     )
     edges.extend(mentions_edges)
     log.info("evidence_graph: added %d mentions-project edges", len(mentions_edges))

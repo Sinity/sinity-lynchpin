@@ -178,6 +178,30 @@ def _snapshot_refresh_id(
     )
 
 
+def _current_graph_row(
+    conn: object,
+    *,
+    start: date,
+    end: date,
+    projects: tuple[str, ...],
+) -> tuple[int, int] | None:
+    """Return the current compatible graph, independent of snapshot refresh ID."""
+    row = conn.execute(
+        """
+        SELECT node_count, edge_count
+        FROM evidence_graph_build
+        WHERE start_date <= ? AND end_date >= ?
+          AND (len(projects) = 0 OR projects = ?)
+        ORDER BY generated_at DESC
+        LIMIT 1
+        """,
+        [start, end, list(projects)],
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row[0]), int(row[1])
+
+
 def _record_snapshot_materialization_statuses(
     *,
     start: date,
@@ -211,10 +235,12 @@ def _record_snapshot_materialization_statuses(
                 window_start=start,
                 window_end=end,
             )
-        graph_row = conn.execute(
-            "SELECT node_count FROM evidence_graph_build WHERE refresh_id = ?",
-            [refresh_id],
-        ).fetchone()
+        graph_row = _current_graph_row(
+            conn,
+            start=start,
+            end=end,
+            projects=projects,
+        )
         record_source_status(
             conn,
             refresh_id=refresh_id,
@@ -344,10 +370,12 @@ def _record_snapshot_promotion_run(
             """,
             [refresh_id],
         ).fetchall()
-        graph_row = conn.execute(
-            "SELECT node_count, edge_count FROM evidence_graph_build WHERE refresh_id = ?",
-            [refresh_id],
-        ).fetchone()
+        graph_row = _current_graph_row(
+            conn,
+            start=start,
+            end=end,
+            projects=projects,
+        )
         counts = {
             "evidence_graph_nodes": int(graph_row[0]) if graph_row else 0,
             "evidence_graph_edges": int(graph_row[1]) if graph_row else 0,

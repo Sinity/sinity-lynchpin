@@ -528,6 +528,11 @@ def connect(
     import duckdb
 
     target = path if path is not None else substrate_path()
+    candidate = _substrate_path_override.get()
+    if candidate is not None and not read_only and target != candidate:
+        raise CandidateGenerationRejected(
+            "candidate generation cannot write outside its staged substrate"
+        )
     # A failed recovery may leave a clean but unpromoted canonical database.
     # Prefer the prior verified snapshot in that state rather than making read
     # clients observe an empty schema as if it were a successful generation.

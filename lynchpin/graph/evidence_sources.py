@@ -27,6 +27,7 @@ from . import evidence_arbtt
 from . import evidence_svn
 from . import evidence_gmail
 from . import evidence_substance
+from .performance import log_performance, sample_performance
 
 log = logging.getLogger(__name__)
 
@@ -223,6 +224,7 @@ def _run_source(
 ) -> None:
     """Add one source without letting it abort the whole evidence graph."""
     before = node_count()
+    started = sample_performance()
     log.info("evidence_sources: %s", label)
     try:
         build()
@@ -235,12 +237,29 @@ def _run_source(
                 f"{label} evidence source failed during graph build: {exc}",
             )
         )
+        log_performance(
+            log,
+            component="source",
+            stage=label,
+            started=started,
+            status="blocked",
+            node_delta=node_count() - before,
+        )
         return
+    node_delta = node_count() - before
     log.info(
         "evidence_sources: %s complete nodes=%d (+%d)",
         label,
         node_count(),
-        node_count() - before,
+        node_delta,
+    )
+    log_performance(
+        log,
+        component="source",
+        stage=label,
+        started=started,
+        status="ok",
+        node_delta=node_delta,
     )
 
 

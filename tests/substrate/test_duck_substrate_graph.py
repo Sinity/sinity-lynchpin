@@ -17,6 +17,8 @@ Tests cover the current split substrate table modules directly.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +240,120 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
     assert ("commit:sha001", "commit:tail", "temporal_overlap") in {
         (edge.source_id, edge.target_id, edge.relation) for edge in loaded.edges
     }
+
+
+def test_incremental_context_graph_reuses_candidate_predecessor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Normal maintenance replaces a tail without duplicating history."""
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.graph import context_pack, evidence_edges
+    import lynchpin.substrate as substrate
+    from lynchpin.substrate import graph as graph_mod
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    predecessor = _make_evidence_graph()
+    tail = EvidenceGraph(
+        start=date(2026, 5, 5),
+        end=date(2026, 5, 8),
+        generated_at=datetime(2026, 5, 8, 12, tzinfo=UTC),
+        mode="materialized",
+        nodes=(
+            EvidenceNode(
+                id="commit:tail",
+                kind="commit",
+                source="git",
+                date=date(2026, 5, 6),
+                project="lynchpin",
+                summary="tail commit",
+            ),
+        ),
+        edges=(
+            EvidenceEdge(
+                source_id="commit:sha001",
+                target_id="commit:tail",
+                relation="temporal_overlap",
+                evidence="crosses tail boundary",
+                weight=0.7,
+            ),
+        ),
+        caveats=(),
+    )
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    db = tmp_path / "duck" / "substrate.duckdb"
+    db.parent.mkdir()
+    with connect(db) as conn:
+        apply_schema(conn)
+        graph_mod.promote_evidence_graph(conn, refresh_id="stable", graph=predecessor)
+
+    monkeypatch.setattr(context_pack, "build_evidence_graph", lambda **_kwargs: tail)
+    monkeypatch.setattr(substrate, "connect", lambda *_args, **_kwargs: connect(db))
+    monkeypatch.setattr(evidence_edges, "same_project_day_edges", lambda _nodes: ())
+    monkeypatch.setattr(evidence_edges, "temporal_overlap_edges", lambda _nodes: ())
+    monkeypatch.setattr(evidence_edges, "temporal_proximity_edges", lambda _nodes: ())
+    monkeypatch.setattr(
+        evidence_edges,
+        "overlap_edges_via_substrate",
+        lambda _nodes, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        evidence_edges,
+        "polylogue_work_event_tool_overlap_edges",
+        lambda _nodes: (),
+    )
+    monkeypatch.setattr(evidence_edges, "mentions_project_edges", lambda _nodes: ())
+
+    with caplog.at_level(logging.INFO, logger="lynchpin.graph.context_pack"):
+        context_pack.materialize_incremental_evidence_graph(
+            start=predecessor.start,
+            end=tail.end,
+            tail_start=tail.start,
+        )
+
+    from lynchpin.cli import substrate_snapshot
+
+    with connect(db, read_only=True) as conn:
+        refresh_ids = conn.execute(
+            "SELECT refresh_id FROM evidence_graph_build ORDER BY refresh_id"
+        ).fetchall()
+        loaded = graph_mod.load_evidence_graph(conn, refresh_id="stable")
+        current_row = substrate_snapshot._current_graph_row(
+            conn,
+            start=predecessor.start,
+            end=tail.end,
+            projects=(),
+        )
+
+    assert refresh_ids == [("stable",)]
+    assert current_row == (4, 3)
+    assert loaded is not None
+    assert {node.id for node in loaded.nodes} == {
+        "commit:sha001",
+        "ai_work:ev001",
+        "github:pr99",
+        "commit:tail",
+    }
+    metrics = [
+        json.loads(record.message.removeprefix("evidence_graph_performance "))
+        for record in caplog.records
+        if record.message.startswith("evidence_graph_performance ")
+    ]
+    by_stage = {metric["stage"]: metric for metric in metrics}
+    assert set(by_stage) == {
+        "predecessor_boundary",
+        "tail_graph_build",
+        "crossing_python_edges",
+        "crossing_sql_edges",
+        "candidate_graph_write",
+        "analysis_claim_build",
+        "candidate_claim_write",
+    }
+    assert all(
+        {"elapsed_seconds", "cpu_seconds", "average_cpu_cores"} <= metric.keys()
+        for metric in metrics
+    )
 
 
 def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path: Path) -> None:
