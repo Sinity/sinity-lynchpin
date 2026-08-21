@@ -24,7 +24,7 @@ from pathlib import Path
 import shutil
 import signal
 import threading
-from typing import TYPE_CHECKING, Iterator, Literal
+from typing import TYPE_CHECKING, Iterator
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class CandidateGeneration:
     candidate: Path
     canonical: Path
     refresh_id: str
-    seed_mode: Literal["copy", "logical-index-rebuild"]
+    seed_source: Path
 
 
 def in_candidate_generation() -> bool:
@@ -305,31 +305,31 @@ def _base_table_names(conn: "duckdb.DuckDBPyConnection", catalog: str | None = N
     return {str(row[0]) for row in rows}
 
 
-def _logical_index_rebuild_seed(canonical: Path, candidate: Path, refresh_id: str) -> None:
+def _logical_index_rebuild_seed(source: Path, candidate: Path, refresh_id: str) -> None:
     """Copy verified logical rows into fresh schema and index structures.
 
     This deliberately does not copy DuckDB pages, checkpoints, or WAL state.
-    It is an explicit recovery operation for a readable generation whose
-    physical ART indexes can no longer accept a promotion write.
+    It uses a readable verified generation, which can be an archive when the
+    serving file's physical ART indexes can no longer accept a promotion write.
     """
     import duckdb
 
-    if generation_refresh_id(canonical) is None:
+    if generation_refresh_id(source) is None:
         raise CandidateGenerationRejected(
-            "logical index rebuild requires a readable verified canonical generation"
+            "logical index rebuild requires a readable verified generation"
         )
 
     with duckdb.connect(str(candidate)) as conn:
         apply_schema(conn)
-        canonical_sql = str(canonical).replace("'", "''")
-        conn.execute(f"ATTACH '{canonical_sql}' AS source (READ_ONLY)")
+        source_sql = str(source).replace("'", "''")
+        conn.execute(f"ATTACH '{source_sql}' AS source (READ_ONLY)")
         source_version = conn.execute(
             "SELECT value FROM \"source\".\"main\".\"substrate_meta\" "
             "WHERE key = 'version'"
         ).fetchone()
         if source_version != (str(SUBSTRATE_VERSION),):
             raise CandidateGenerationRejected(
-                "logical index rebuild requires canonical schema version "
+                "logical index rebuild requires source schema version "
                 f"{SUBSTRATE_VERSION}, found {source_version[0] if source_version else 'none'}"
             )
 
@@ -347,7 +347,7 @@ def _logical_index_rebuild_seed(canonical: Path, candidate: Path, refresh_id: st
                 if item is not None
             )
             raise CandidateGenerationRejected(
-                "logical index rebuild requires matching canonical and current "
+                "logical index rebuild requires matching source and candidate "
                 f"schema tables ({details})"
             )
 
@@ -380,27 +380,72 @@ def _logical_index_rebuild_seed(canonical: Path, candidate: Path, refresh_id: st
             refresh_id=refresh_id,
             step="candidate_index_rebuild",
             status="ok",
-            message="rebuilt candidate indexes from verified canonical logical rows",
+            message=f"rebuilt candidate indexes from verified logical rows: {source.name}",
             row_count=copied_rows,
         )
         conn.execute("CHECKPOINT")
 
 
+def _latest_verified_generation(canonical: Path) -> Path:
+    """Find the newest readable verified generation without trusting file names.
+
+    A prior candidate or corruption quarantine can be the only readable source
+    after DuckDB rejects the current serving file. Promotion metadata and source
+    coverage, rather than an archive suffix or modification time, establish
+    whether a path is eligible to seed a new candidate.
+    """
+    import duckdb
+
+    candidates = [canonical]
+    candidates.extend(
+        path
+        for path in canonical.parent.glob(f"{canonical.stem}*.duckdb*")
+        if path.is_file()
+        and path != canonical
+        and ".read-snapshot.duckdb" not in path.name
+        and ".wal" not in path.name
+    )
+    verified: list[tuple[datetime, Path]] = []
+    for path in candidates:
+        refresh_id = generation_refresh_id(path)
+        if refresh_id is None:
+            continue
+        try:
+            with duckdb.connect(str(path), read_only=True) as conn:
+                row = conn.execute(
+                    """
+                    SELECT finished_at
+                    FROM substrate_promotion_run
+                    WHERE refresh_id = ? AND status IN ('ok', 'degraded')
+                    ORDER BY finished_at DESC
+                    LIMIT 1
+                    """,
+                    [refresh_id],
+                ).fetchone()
+        except duckdb.Error:
+            continue
+        if row is not None and isinstance(row[0], datetime):
+            verified.append((row[0], path))
+    if not verified:
+        raise CandidateGenerationRejected(
+            "candidate generation requires a readable verified substrate source"
+        )
+    return max(verified, key=lambda item: (item[0], item[1].name))[1]
+
+
 @contextmanager
-def candidate_generation(
-    *, rebuild_indexes: bool = False
-) -> Iterator[CandidateGeneration]:
+def candidate_generation() -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
-    The ordinary path begins as a physical copy of canonical so incremental
-    promoters retain existing facts cheaply. ``rebuild_indexes=True`` is an
-    explicit recovery path: it creates a fresh schema and copies verified
-    logical rows, recreating physical DuckDB indexes without cloning damaged
-    index pages. A previous verified read snapshot remains serving until a new
-    candidate has a successful promotion record and source-status coverage.
-    SIGINT and SIGTERM unwind this context so candidate artifacts are archived;
-    they are deferred only while the serving database/snapshot/manifest triple
-    is being published.
+    Every candidate is seeded by copying logical rows from the newest readable
+    verified generation. This recreates DuckDB's physical index structures and
+    never clones the ART pages that repeatedly became unwritable after a
+    physical file copy. A prior candidate or corruption quarantine can seed
+    recovery when the current serving file is unreadable. Serving sidecars are
+    not touched until the candidate has a successful promotion record and
+    source-status coverage. SIGINT and SIGTERM unwind this context so candidate
+    artifacts are archived; they are deferred only while the serving
+    database/snapshot/manifest triple is being published.
     """
     canonical = substrate_path()
     refresh_id = uuid4().hex
@@ -412,21 +457,15 @@ def candidate_generation(
     with _candidate_interruption_handlers():
         try:
             _archive_interrupted_candidates(canonical)
-            seed_mode: Literal["copy", "logical-index-rebuild"] = "copy"
-            if rebuild_indexes:
-                seed_mode = "logical-index-rebuild"
-                _logical_index_rebuild_seed(canonical, candidate, refresh_id)
-            elif canonical.exists():
-                shutil.copy2(canonical, candidate)
-            if generation_refresh_id(canonical) is not None:
-                update_read_snapshot(canonical)
+            seed_source = _latest_verified_generation(canonical)
+            _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
 
             token = _substrate_path_override.set(candidate)
             generation = CandidateGeneration(
                 candidate=candidate,
                 canonical=canonical,
                 refresh_id=refresh_id,
-                seed_mode=seed_mode,
+                seed_source=seed_source,
             )
             yield generation
             if generation_refresh_id(candidate) is None:

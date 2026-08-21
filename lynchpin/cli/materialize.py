@@ -48,11 +48,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="write JSON audit rows after materialization")
     parser.add_argument("--plan-json", action="store_true", help="write the materialization plan as JSON and exit without changing products")
     parser.add_argument("--force", action="store_true", help="rebuild all locally materializable products")
-    parser.add_argument(
-        "--rebuild-candidate-indexes",
-        action="store_true",
-        help="explicitly seed promotion from logical rows with freshly rebuilt DuckDB indexes",
-    )
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
     global _PROGRESS_FORMAT
@@ -62,8 +57,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--all is required unless --promote builds a snapshot from canonical products")
     if args.force and not args.all:
         parser.error("--force requires --all")
-    if args.rebuild_candidate_indexes and not (args.all and args.promote):
-        parser.error("--rebuild-candidate-indexes requires --all --promote")
 
     # An explicit --start/--end bounds every window-aware materializer to that
     # request. Incremental maintenance instead asks the planner for a separate
@@ -99,11 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.promote:
         from lynchpin.substrate.connection import candidate_generation
 
-        if args.rebuild_candidate_indexes:
-            _progress("seeding candidate from logical rows with fresh DuckDB indexes")
-            generation_context = candidate_generation(rebuild_indexes=True)
-        else:
-            generation_context = candidate_generation()
+        _progress("seeding candidate from verified logical rows with fresh DuckDB indexes")
+        generation_context = candidate_generation()
     else:
         generation_context = nullcontext()
 

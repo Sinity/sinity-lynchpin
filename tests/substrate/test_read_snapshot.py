@@ -288,8 +288,8 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
     update_read_snapshot()
     expected_counts = _base_table_counts(isolated_substrate)
 
-    with candidate_generation(rebuild_indexes=True) as generation:
-        assert generation.seed_mode == "logical-index-rebuild"
+    with candidate_generation() as generation:
+        assert generation.seed_source == isolated_substrate
         candidate_counts = _base_table_counts(generation.candidate)
         assert {
             table: count
@@ -345,6 +345,24 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
     assert list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
 
 
+def test_candidate_generation_recovers_from_archived_verified_source(
+    isolated_substrate: Path,
+) -> None:
+    """An unreadable serving path can be recovered from verified retained rows."""
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    archived = isolated_substrate.with_name("substrate.candidate-recovery.duckdb.retained")
+    isolated_substrate.replace(archived)
+
+    with candidate_generation() as generation:
+        assert generation.seed_source == archived
+        _record_verified_generation(generation.candidate, "current")
+
+    assert generation_refresh_id(isolated_substrate) == "current"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "current"
+    assert generation_refresh_id(archived) == "prior"
+
+
 def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -369,8 +387,8 @@ def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
 
     monkeypatch.setattr(connection, "_base_table_names", incompatible_tables)
 
-    with pytest.raises(CandidateGenerationRejected, match="matching canonical"):
-        with candidate_generation(rebuild_indexes=True):
+    with pytest.raises(CandidateGenerationRejected, match="matching source"):
+        with candidate_generation():
             pass
 
     assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
