@@ -24,7 +24,7 @@ from pathlib import Path
 import shutil
 import signal
 import threading
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Iterator, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -62,6 +62,7 @@ class CandidateGeneration:
     candidate: Path
     canonical: Path
     refresh_id: str
+    seed_mode: Literal["copy", "logical-index-rebuild"]
 
 
 def in_candidate_generation() -> bool:
@@ -284,13 +285,118 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
     generation.candidate.replace(generation.canonical)
 
 
+def _quote_identifier(identifier: str) -> str:
+    """Quote an identifier obtained from DuckDB catalog metadata."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _base_table_names(conn: "duckdb.DuckDBPyConnection", catalog: str | None = None) -> set[str]:
+    """Return main-schema base tables for the current or attached catalog."""
+    if catalog is None:
+        catalog = str(conn.execute("SELECT current_database()").fetchone()[0])
+    rows = conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_catalog = ? AND table_schema = 'main' AND table_type = 'BASE TABLE'
+        """,
+        [catalog],
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _logical_index_rebuild_seed(canonical: Path, candidate: Path, refresh_id: str) -> None:
+    """Copy verified logical rows into fresh schema and index structures.
+
+    This deliberately does not copy DuckDB pages, checkpoints, or WAL state.
+    It is an explicit recovery operation for a readable generation whose
+    physical ART indexes can no longer accept a promotion write.
+    """
+    import duckdb
+
+    if generation_refresh_id(canonical) is None:
+        raise CandidateGenerationRejected(
+            "logical index rebuild requires a readable verified canonical generation"
+        )
+
+    with duckdb.connect(str(candidate)) as conn:
+        apply_schema(conn)
+        canonical_sql = str(canonical).replace("'", "''")
+        conn.execute(f"ATTACH '{canonical_sql}' AS source (READ_ONLY)")
+        source_version = conn.execute(
+            "SELECT value FROM \"source\".\"main\".\"substrate_meta\" "
+            "WHERE key = 'version'"
+        ).fetchone()
+        if source_version != (str(SUBSTRATE_VERSION),):
+            raise CandidateGenerationRejected(
+                "logical index rebuild requires canonical schema version "
+                f"{SUBSTRATE_VERSION}, found {source_version[0] if source_version else 'none'}"
+            )
+
+        source_tables = _base_table_names(conn, "source")
+        candidate_tables = _base_table_names(conn)
+        if source_tables != candidate_tables:
+            missing = ", ".join(sorted(candidate_tables - source_tables))
+            unexpected = ", ".join(sorted(source_tables - candidate_tables))
+            details = "; ".join(
+                item
+                for item in (
+                    f"missing source tables: {missing}" if missing else None,
+                    f"unexpected source tables: {unexpected}" if unexpected else None,
+                )
+                if item is not None
+            )
+            raise CandidateGenerationRejected(
+                "logical index rebuild requires matching canonical and current "
+                f"schema tables ({details})"
+            )
+
+        copied_rows = 0
+        for table in sorted(source_tables):
+            if table == "substrate_meta":
+                continue
+            quoted = _quote_identifier(table)
+            source_relation = f'"source"."main".{quoted}'
+            source_count = conn.execute(
+                f"SELECT count(*) FROM {source_relation}"
+            ).fetchone()[0]
+            conn.execute(
+                f"INSERT INTO {quoted} BY NAME SELECT * FROM {source_relation}"
+            )
+            candidate_count = conn.execute(
+                f"SELECT count(*) FROM {quoted}"
+            ).fetchone()[0]
+            if candidate_count != source_count:
+                raise CandidateGenerationRejected(
+                    "logical index rebuild copied an incomplete table "
+                    f"({table}: {candidate_count} != {source_count})"
+                )
+            copied_rows += int(source_count)
+
+        from lynchpin.substrate.run_steps import record_run_step
+
+        record_run_step(
+            conn,
+            refresh_id=refresh_id,
+            step="candidate_index_rebuild",
+            status="ok",
+            message="rebuilt candidate indexes from verified canonical logical rows",
+            row_count=copied_rows,
+        )
+        conn.execute("CHECKPOINT")
+
+
 @contextmanager
-def candidate_generation() -> Iterator[CandidateGeneration]:
+def candidate_generation(
+    *, rebuild_indexes: bool = False
+) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
-    The candidate begins as a copy of canonical so incremental promoters retain
-    their existing facts. If canonical is corrupt, recovery acts only on the
-    candidate. A previous verified read snapshot remains serving until a new
+    The ordinary path begins as a physical copy of canonical so incremental
+    promoters retain existing facts cheaply. ``rebuild_indexes=True`` is an
+    explicit recovery path: it creates a fresh schema and copies verified
+    logical rows, recreating physical DuckDB indexes without cloning damaged
+    index pages. A previous verified read snapshot remains serving until a new
     candidate has a successful promotion record and source-status coverage.
     SIGINT and SIGTERM unwind this context so candidate artifacts are archived;
     they are deferred only while the serving database/snapshot/manifest triple
@@ -306,7 +412,11 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
     with _candidate_interruption_handlers():
         try:
             _archive_interrupted_candidates(canonical)
-            if canonical.exists():
+            seed_mode: Literal["copy", "logical-index-rebuild"] = "copy"
+            if rebuild_indexes:
+                seed_mode = "logical-index-rebuild"
+                _logical_index_rebuild_seed(canonical, candidate, refresh_id)
+            elif canonical.exists():
                 shutil.copy2(canonical, candidate)
             if generation_refresh_id(canonical) is not None:
                 update_read_snapshot(canonical)
@@ -316,6 +426,7 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
                 candidate=candidate,
                 canonical=canonical,
                 refresh_id=refresh_id,
+                seed_mode=seed_mode,
             )
             yield generation
             if generation_refresh_id(candidate) is None:

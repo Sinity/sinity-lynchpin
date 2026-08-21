@@ -14,6 +14,7 @@ import pytest
 
 from lynchpin.substrate.connection import (
     CandidateGenerationInterrupted,
+    CandidateGenerationRejected,
     apply_schema,
     candidate_generation,
     connect,
@@ -253,6 +254,129 @@ def test_rebuild_keeps_canonical_when_clean_schema_creation_fails(
     assert canonical.read_bytes() == b"canonical retained"
     assert not list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
     assert not canonical.with_suffix(".rebuild.tmp").exists()
+
+
+def _base_table_counts(path: Path) -> dict[str, int]:
+    with duckdb.connect(str(path), read_only=True) as conn:
+        names = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main' AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """
+            ).fetchall()
+        ]
+        return {
+            name: conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+            for name in names
+        }
+
+
+def test_logical_index_rebuild_seed_preserves_verified_rows(
+    isolated_substrate: Path,
+) -> None:
+    from lynchpin.substrate.connection import SUBSTRATE_VERSION
+
+    _record_verified_generation(isolated_substrate, "prior")
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute(
+            "INSERT INTO activity_content_day (date, refresh_id) VALUES ('2026-08-21', 'prior')"
+        )
+    update_read_snapshot()
+    expected_counts = _base_table_counts(isolated_substrate)
+
+    with candidate_generation(rebuild_indexes=True) as generation:
+        assert generation.seed_mode == "logical-index-rebuild"
+        candidate_counts = _base_table_counts(generation.candidate)
+        assert {
+            table: count
+            for table, count in candidate_counts.items()
+            if table != "substrate_run_step"
+        } == {
+            table: count
+            for table, count in expected_counts.items()
+            if table != "substrate_run_step"
+        }
+        assert candidate_counts["substrate_run_step"] == (
+            expected_counts["substrate_run_step"] + 1
+        )
+        with duckdb.connect(str(generation.candidate), read_only=True) as conn:
+            assert conn.execute(
+                "SELECT value FROM substrate_meta WHERE key = 'version'"
+            ).fetchone() == (str(SUBSTRATE_VERSION),)
+            views = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main' AND table_type = 'VIEW'
+                    """
+                ).fetchall()
+            }
+            assert views == {
+                "issue_closure_chain_walk",
+                "project_day_correlation",
+                "work_event_file_overlap",
+                "work_event_symbol_overlap",
+            }
+            assert conn.execute("SELECT count(*) FROM duckdb_sequences()").fetchone() == (0,)
+            assert conn.execute(
+                """
+                SELECT status, row_count
+                FROM substrate_run_step
+                WHERE refresh_id = ? AND step = 'candidate_index_rebuild'
+                """,
+                [generation.refresh_id],
+            ).fetchone() == (
+                "ok",
+                sum(expected_counts.values()) - expected_counts["substrate_meta"],
+            )
+        _record_verified_generation(generation.candidate, "current")
+
+    assert generation_refresh_id(isolated_substrate) == "current"
+    with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM activity_content_day WHERE refresh_id = 'prior'"
+        ).fetchone() == (1,)
+    assert list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
+
+
+def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.substrate.connection as connection
+
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    serving_paths = (
+        isolated_substrate,
+        substrate_read_snapshot_path(),
+        substrate_status_manifest_path(isolated_substrate),
+    )
+    serving_contents = {path: path.read_bytes() for path in serving_paths}
+    real_base_table_names = connection._base_table_names
+
+    def incompatible_tables(conn, catalog=None):
+        if catalog is None:
+            return set()
+        return real_base_table_names(conn, catalog)
+
+    monkeypatch.setattr(connection, "_base_table_names", incompatible_tables)
+
+    with pytest.raises(CandidateGenerationRejected, match="matching canonical"):
+        with candidate_generation(rebuild_indexes=True):
+            pass
+
+    assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
 
 
 def test_candidate_failure_retains_verified_serving_generation(

@@ -973,21 +973,13 @@ def test_lake_bootstrap_avoids_full_attach_scan_on_first_backfill(
         assert remaining_days == {"2026-05-01", "2026-05-02", "2026-05-03"}
 
     attach_scan_inserts = [
-        s
-        for s in conn.statements
-        if s.startswith("INSERT INTO machine_process_io_delta_sample")
-        and "machine_src.process_io_delta_sample" in s
+        s for s in conn.statements if "machine_src.process_io_delta_sample" in s
     ]
     assert attach_scan_inserts == [], (
         "the full ATTACH-scan branch must not run when the lake already "
         f"covers the window's sealed days, got {len(attach_scan_inserts)}"
     )
-    lake_bootstrap_inserts = [
-        s
-        for s in conn.statements
-        if s.startswith("INSERT INTO machine_process_io_delta_sample")
-        and "read_parquet" in s
-    ]
+    lake_bootstrap_inserts = [s for s in conn.statements if "read_parquet" in s]
     assert (
         len(lake_bootstrap_inserts) == 1
     ), f"expected exactly one lake-bootstrap INSERT, got {len(lake_bootstrap_inserts)}"

@@ -29,7 +29,7 @@ from .substrate_promote_status import (
     SourceSelection,
     record_source_status,
 )
-from lynchpin.substrate._helpers import _staging_refresh_id
+from lynchpin.substrate._helpers import _staging_table_name
 
 log = logging.getLogger(__name__)
 
@@ -213,30 +213,34 @@ def _maybe_bootstrap_from_lake(
 
     glob = str(lake_root / src_table / "dt=*" / "*.parquet")
     select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-    write_id = _staging_refresh_id(refresh_id)
+    staging_table = _staging_table_name()
     try:
         conn.execute(
-            f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+            f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
+        )
+        conn.execute(
+            f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
             f"SELECT {select_exprs}, ? AS refresh_id "
             f"FROM read_parquet(?, hive_partitioning = true) "
             f"WHERE dt >= CAST(? AS DATE) AND dt <= CAST(? AS DATE)",
-            [write_id, glob, dt_start, dt_end],
+            [refresh_id, glob, dt_start, dt_end],
         )
         conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
         conn.execute(
-            f"UPDATE {dst_table} SET refresh_id = ? WHERE refresh_id = ?",
-            [refresh_id, write_id],
+            f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+            f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
         )
     except Exception as exc:
         log.warning(
             "substrate_promote: %s lake bootstrap failed, falling back to full ATTACH scan: %s",
             dst_table, exc,
         )
-        try:
-            conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [write_id])
-        except Exception:
-            pass
         return
+    finally:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
+        except Exception:
+            log.debug("could not drop machine promotion staging table", exc_info=True)
 
     row_count = conn.execute(
         f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?", [refresh_id]
@@ -502,19 +506,10 @@ def _promote_machine_fast(
                     "falling back to full re-promote: %s",
                     dst_table, exc,
                 )
-        # Stage into a private refresh_id first; only swap it onto the real
-        # refresh_id once every day-chunk has landed. This mirrors
-        # lynchpin.substrate._helpers.promote_rows's interruption-safety
-        # design: a DELETE-then-INSERT of the SAME refresh_id (the previous
-        # design here) commits the DELETE immediately in DuckDB autocommit, so
-        # a process death (e.g. an OOM kill) or a mid-loop exception partway
-        # through the day-chunk INSERTs left the target refresh_id with STALE
-        # or ZERO rows and no error ever recorded — the exact "silent
-        # promotion stall" observed on machine_cgroup_memory_sample /
-        # machine_service_state (sinnix-kx4). Staging first means the target
-        # refresh_id's existing rows are untouched until the new data is
-        # fully written.
-        write_id = _staging_refresh_id(refresh_id)
+        # Stage a complete replacement outside the indexed target. The target
+        # therefore never indexes a synthetic refresh_id or updates a
+        # primary-key value during the final swap.
+        staging_table = _staging_table_name()
         try:
             columns, overrides = projections[src_table]
             select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
@@ -543,21 +538,22 @@ def _promote_machine_fast(
             # not a steady-state one).
             date_filter, date_params = _source_window_filter(window_start, window_end)
             conn.execute(
-                f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
+            )
+            conn.execute(
+                f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
                 f"SELECT {select_exprs}, ? AS refresh_id "
                 f"FROM machine_src.{src_table} {date_filter}",
-                [write_id, *date_params],
+                [refresh_id, *date_params],
             )
             gc.collect()
-            # Full window staged successfully — swap onto the real
-            # refresh_id as two fast, separate autocommit statements (NOT one
-            # transaction: DuckDB's PK index does not see an in-transaction
-            # DELETE, so DELETE+INSERT of the same key in one transaction
-            # trips a phantom duplicate-key error).
+            # DuckDB's primary-key index does not reflect an in-transaction
+            # DELETE, so target delete and insert remain separate autocommit
+            # statements. The temporary table eliminates the indexed UPDATE.
             conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
             conn.execute(
-                f"UPDATE {dst_table} SET refresh_id = ? WHERE refresh_id = ?",
-                [refresh_id, write_id],
+                f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
             )
             row_count = conn.execute(
                 f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
@@ -581,13 +577,6 @@ def _promote_machine_fast(
             )
         except Exception as exc:
             log.warning("substrate_promote: %s promotion failed: %s", dst_table, exc)
-            try:
-                # Best-effort: drop any partially-staged rows from this
-                # attempt. The target refresh_id's prior data was never
-                # touched, so this is pure cleanup, not recovery.
-                conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [write_id])
-            except Exception:
-                pass
             record_source_status(
                 conn,
                 refresh_id=refresh_id,
@@ -598,6 +587,11 @@ def _promote_machine_fast(
                 window_start=window_start,
                 window_end=window_end,
             )
+        finally:
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
+            except Exception:
+                log.debug("could not drop machine promotion staging table", exc_info=True)
 
     total_elapsed = time.monotonic() - t_total
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
