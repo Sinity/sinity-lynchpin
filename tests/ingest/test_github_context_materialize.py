@@ -54,6 +54,15 @@ def _inventory(
     )
 
 
+def test_index_delete_error_is_recoverable_candidate_corruption() -> None:
+    error = RuntimeError(
+        "Invalid Input Error: Failed to delete all rows from index. "
+        "Only deleted 1307 out of 1308 rows."
+    )
+
+    assert materializer._is_duckdb_fatal_connection_error(error)
+
+
 def test_substrate_promotion_rebuilds_corrupt_db_before_retry(monkeypatch, tmp_path: Path) -> None:
     calls = 0
     recovered: list[str] = []

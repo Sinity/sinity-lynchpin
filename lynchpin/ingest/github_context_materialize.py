@@ -558,6 +558,7 @@ def _is_duckdb_fatal_connection_error(exc: Exception) -> bool:
     return (
         "database has been invalidated" in message
         or "Corrupted ART index" in message
+        or "Failed to delete all rows from index" in message
         or "Invalid node type for TransformToDeprecated" in message
     )
 
