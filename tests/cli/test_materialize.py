@@ -63,6 +63,54 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
     assert "--mode" not in forwarded["argv"]
 
 
+def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.cli import materialize
+    from lynchpin.materialization import MaterializedDataset
+
+    rows = [
+        MaterializedDataset(
+            name="webhistory",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2013, 3, 27),
+            last_date=date(2026, 5, 23),
+            materialization_hint="refresh",
+            reason="ready",
+        )
+    ]
+    forwarded: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        materialize,
+        "plan_materializations",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("promotion-only must not plan rebuilds")),
+    )
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", nullcontext)
+
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    monkeypatch.setattr(
+        snapshot,
+        "main",
+        lambda argv: forwarded.setdefault("argv", argv) and 0,
+    )
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+
+    code = materialize.main(["--promote", "--history", "all"])
+
+    assert code == 0
+    assert forwarded["argv"][:4] == [
+        "--start",
+        "2013-03-27",
+        "--end",
+        "2026-05-24",
+    ]
+
+
 def test_materialize_rejects_mode_option(monkeypatch) -> None:
     from lynchpin.cli import materialize
 

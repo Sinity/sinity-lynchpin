@@ -46,8 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     global _PROGRESS_FORMAT
     _PROGRESS_FORMAT = args.progress
 
-    if not args.all:
-        parser.error("only --all is supported; canonical products are materialized as a coherent set")
+    if not args.all and not args.promote:
+        parser.error("--all is required unless --promote builds a snapshot from canonical products")
+    if args.force and not args.all:
+        parser.error("--force requires --all")
 
     # An explicit --start/--end (the --history=window --promote path) bounds
     # per-source materialization to that window instead of each source's
@@ -60,8 +62,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--promote requires --start and --end unless --history all is used")
         window = (date.fromisoformat(args.start), date.fromisoformat(args.end))
 
-    _progress("planning canonical materialization")
-    plan = plan_materializations(force=args.force, window=window)
+    if args.all:
+        _progress("planning canonical materialization")
+        plan = plan_materializations(force=args.force, window=window)
+    else:
+        _progress("promoting from existing canonical products")
+        plan = []
     _progress(f"plan ready: {len(plan)} step(s)")
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
