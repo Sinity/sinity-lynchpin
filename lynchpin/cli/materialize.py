@@ -119,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 if args.weak_tags:
                     forwarded.append("--weak-tags")
+                if not args.all:
+                    forwarded.append("--existing-products")
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
                 code = snapshot_main(forwarded)
                 if code:

@@ -61,6 +61,7 @@ def test_materialize_history_all_derives_window(monkeypatch, tmp_path: Path) -> 
         "2026-05-24",
     ]
     assert "--mode" not in forwarded["argv"]
+    assert "--existing-products" not in forwarded["argv"]
 
 
 def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_path: Path) -> None:
@@ -109,6 +110,7 @@ def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_p
         "--end",
         "2026-05-24",
     ]
+    assert "--existing-products" in forwarded["argv"]
 
 
 def test_materialize_rejects_mode_option(monkeypatch) -> None:
@@ -291,3 +293,33 @@ def test_snapshot_uses_current_state_default_graph_materialization(monkeypatch) 
     assert code == 0
     assert "--materialize-substrate" not in forwarded["argv"]
     assert "--no-materialize-substrate" not in forwarded["argv"]
+
+
+def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    promoted: dict[str, object] = {}
+    monkeypatch.setattr(snapshot, "current_state_main", lambda _argv: 0)
+    monkeypatch.setattr(snapshot, "_record_run_step", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_record_snapshot_materialization_statuses", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        snapshot,
+        "_promote_snapshot_daily_signals",
+        lambda **kwargs: promoted.update(kwargs),
+    )
+    monkeypatch.setattr(snapshot, "_record_snapshot_promotion_run", lambda **_kwargs: None)
+
+    code = snapshot.main(
+        [
+            "--start",
+            "2026-05-01",
+            "--end",
+            "2026-05-02",
+            "--existing-products",
+            "--progress",
+            "quiet",
+        ]
+    )
+
+    assert code == 0
+    assert promoted["ensure_products"] is False

@@ -21,6 +21,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", action="append", dest="projects")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--timeline-output", type=Path, default=None)
+    parser.add_argument(
+        "--existing-products",
+        action="store_true",
+        help="read canonical products without materializing them",
+    )
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
     global _PROGRESS_FORMAT
@@ -73,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         start=date.fromisoformat(args.start),
         end=date.fromisoformat(args.end),
         projects=tuple(args.projects or ()),
+        ensure_products=not args.existing_products,
     )
     _record_run_step(refresh_id, "personal_daily_signal", "ok", "daily personal/content rows promoted")
     _progress("recording promotion run")
@@ -192,6 +198,7 @@ def _promote_snapshot_daily_signals(
     start: date,
     end: date,
     projects: tuple[str, ...],
+    ensure_products: bool = True,
 ) -> None:
     from lynchpin.analysis.active.substrate_promote_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
@@ -211,8 +218,9 @@ def _promote_snapshot_daily_signals(
     )
 
     refresh_id = _snapshot_refresh_id(start=start, end=end, projects=projects)
-    for product in ("title_metadata", "activity_content", "personal_daily_signals"):
-        ensure_materialized(product, window=(start, end))
+    if ensure_products:
+        for product in ("title_metadata", "activity_content", "personal_daily_signals"):
+            ensure_materialized(product, window=(start, end))
     rows = [
         (row.source, row.date, row.metric, row.value, row.dimensions)
         for row in iter_personal_daily_signals(start=start, end=end, ensure=False)
