@@ -263,6 +263,33 @@ def test_candidate_failure_retains_verified_serving_generation(
     assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
 
 
+def test_candidate_generation_archives_interrupted_candidate_sidecars(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    interrupted = isolated_substrate.with_name("substrate.candidate-interrupted.duckdb")
+    interrupted.write_bytes(b"interrupted candidate")
+    interrupted.with_name(f"{interrupted.name}.wal").write_bytes(b"candidate wal")
+    interrupted.with_suffix(".read-snapshot.duckdb").write_bytes(b"candidate snapshot")
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        with candidate_generation():
+            raise RuntimeError("injected failure")
+
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert not interrupted.exists()
+    assert not interrupted.with_name(f"{interrupted.name}.wal").exists()
+    assert not interrupted.with_suffix(".read-snapshot.duckdb").exists()
+    assert list(interrupted.parent.glob(f"{interrupted.name}.interrupted-*"))
+    assert list(interrupted.parent.glob(f"{interrupted.name}.wal.interrupted-*"))
+    assert list(
+        interrupted.parent.glob(
+            f"{interrupted.with_suffix('.read-snapshot.duckdb').name}.interrupted-*"
+        )
+    )
+
+
 def test_candidate_publication_replaces_only_verified_generation(
     isolated_substrate: Path,
 ) -> None:

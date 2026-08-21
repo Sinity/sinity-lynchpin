@@ -136,6 +136,20 @@ def _archive_generation(path: Path, label: str) -> Path | None:
     return archived
 
 
+def _archive_candidate(candidate: Path, label: str) -> None:
+    """Preserve an abandoned candidate and every adjacent DuckDB sidecar."""
+    _archive_generation(candidate, label)
+    _archive_generation(candidate.with_name(f"{candidate.name}.wal"), label)
+    _archive_generation(candidate.with_suffix(".read-snapshot.duckdb"), label)
+
+
+def _archive_interrupted_candidates(canonical: Path) -> None:
+    """Archive candidates left behind when a process exits without unwinding."""
+    pattern = f"{canonical.stem}.candidate-*{canonical.suffix}"
+    for candidate in canonical.parent.glob(pattern):
+        _archive_candidate(candidate, "interrupted")
+
+
 def _publish_candidate(generation: CandidateGeneration) -> None:
     """Publish a checked candidate while retaining prior generation files."""
     candidate_snapshot = update_read_snapshot(generation.candidate)
@@ -159,6 +173,7 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
     candidate has a successful promotion record and source-status coverage.
     """
     canonical = substrate_path()
+    _archive_interrupted_candidates(canonical)
     refresh_id = uuid4().hex
     candidate = canonical.with_name(
         f"{canonical.stem}.candidate-{refresh_id}{canonical.suffix}"
@@ -180,8 +195,7 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
             raise RuntimeError("candidate has no verified promoted generation")
         _publish_candidate(generation)
     except Exception:
-        _archive_generation(candidate, "failed")
-        _archive_generation(candidate.with_suffix(".read-snapshot.duckdb"), "failed")
+        _archive_candidate(candidate, "failed")
         raise
     finally:
         _substrate_path_override.reset(token)

@@ -4370,6 +4370,71 @@ def test_activity_content_partial_materialization_is_not_replayed(monkeypatch) -
     assert calls["materialize"] == 1
 
 
+def test_planned_activity_content_materialization_prevents_snapshot_replay(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    calls = {"materialize": 0}
+
+    def builder(_cfg):
+        return MaterializedDataset(
+            name="activity_content",
+            status="partial",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=2,
+            first_date=date(2026, 5, 1),
+            last_date=date(2026, 8, 6),
+            materialization_hint="materialize",
+            reason="sparse activity-content product",
+            covered_dates=(date(2026, 5, 1), date(2026, 8, 6)),
+        )
+
+    def materializer(*, start=None, end=None):
+        calls["materialize"] += 1
+        return {"row_count": 2}
+
+    monkeypatch.setattr(
+        materialization,
+        "_dataset_builders",
+        lambda: {"activity_content": builder},
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_materializers",
+        lambda: {"activity_content": materializer},
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_record_materialization_step",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS",
+        False,
+    )
+
+    step = materialization.MaterializationPlanStep(
+        name="activity_content",
+        before=builder(SimpleNamespace()),
+        action="materialize",
+        materialization_hint="materialize",
+        reason="sparse activity-content product",
+    )
+    materialization.run_materialization_plan([step])
+    result = ensure_materialized(
+        "activity_content",
+        window=(date(2026, 5, 1), date(2026, 8, 8)),
+        cfg=SimpleNamespace(),
+    )
+
+    assert result.changed is False
+    assert "already ran in this process" in result.reason
+    assert calls["materialize"] == 1
+
+
 def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.substack_materialize import materialize_substack

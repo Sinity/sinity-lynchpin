@@ -529,6 +529,8 @@ def run_materialization_plan(
     produce a degraded but queryable generation. Other callers retain the
     historical fail-fast behavior by default.
     """
+    global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
+
     materializers = _materializers()
     ran: list[MaterializationPlanStep] = []
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
@@ -567,6 +569,8 @@ def run_materialization_plan(
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )
+        if step.name == "activity_content":
+            _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
         ran.append(step)
     return ran
 
