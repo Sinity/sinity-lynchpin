@@ -63,6 +63,27 @@ def test_index_delete_error_is_recoverable_candidate_corruption() -> None:
     assert materializer._is_duckdb_fatal_connection_error(error)
 
 
+def test_candidate_checkpoint_corruption_aborts_without_clean_rebuild(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.substrate.connection import CandidateGenerationRejected
+
+    monkeypatch.setattr(
+        materializer,
+        "_promote_github_context_to_substrate",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("database has been invalidated")),
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.in_candidate_generation", lambda: True)
+    rebuilt: list[bool] = []
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.rebuild_corrupt_substrate",
+        lambda: rebuilt.append(True),
+    )
+
+    with pytest.raises(CandidateGenerationRejected, match="candidate substrate"):
+        materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
+
+    assert not rebuilt
+
+
 def test_substrate_promotion_rebuilds_corrupt_db_before_retry(monkeypatch, tmp_path: Path) -> None:
     calls = 0
     recovered: list[str] = []

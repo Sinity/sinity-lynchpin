@@ -107,6 +107,41 @@ def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
     assert daily[0].presence_typing_hours == 1.0
 
 
+def test_partitioned_empty_product_does_not_fall_back_to_legacy_rows(monkeypatch, tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 3, "product_paths": {"daily_activity": {}}}),
+        encoding="utf-8",
+    )
+    legacy = tmp_path / "daily_activity.ndjson"
+    legacy.write_text(
+        json.dumps(
+            {
+                "date": "2026-06-06",
+                "active_hours": 99.0,
+                "deep_work_min": 0.0,
+                "fragmentation_score": 0.0,
+                "project_count": 0,
+                "hourly_active": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(activitywatch_derived, "activitywatch_derived_manifest_path", lambda root=None: manifest)
+    monkeypatch.setattr(activitywatch_derived, "activitywatch_derived_path", lambda _kind: legacy)
+
+    rows = list(
+        iter_derived_daily_activity(
+            start=date(2026, 6, 6),
+            end=date(2026, 6, 6),
+            ensure=False,
+        )
+    )
+
+    assert rows == []
+
+
 def test_focus_span_reader_repairs_rollback_offset_from_recorded_duration(tmp_path):
     focus_path = tmp_path / "focus_spans.ndjson"
     focus_path.write_text(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -82,7 +83,11 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
     assert manifest["window_semantics"] == "start inclusive, end exclusive"
     assert manifest["covered_dates"] == ["2026-06-06"]
     assert manifest["covered_date_count"] == 1
-    assert (tmp_path / "activitywatch/graph/focus_spans.ndjson").exists()
+    assert all(
+        Path(path).exists()
+        for paths in manifest["product_paths"].values()
+        for path in paths.values()
+    )
     assert (tmp_path / "activitywatch/graph/manifest.json").exists()
 
 
@@ -121,21 +126,24 @@ def test_materialize_activitywatch_derived_replaces_only_requested_window(monkey
     monkeypatch.setattr(mod, "fragmentation", lambda **kwargs: ())
     monkeypatch.setattr(mod, "attention", lambda **kwargs: ())
 
-    mod.materialize_activitywatch_derived(
+    manifest = mod.materialize_activitywatch_derived(
         start=date(2026, 6, 6),
         end=date(2026, 6, 7),
         root=tmp_path,
     )
 
+    # The legacy monolith is a recovery carrier and remains untouched. The
+    # newly published manifest points each logical day at immutable files.
+    legacy_rows = [line for line in old_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert any('"project": "replace"' in row for row in legacy_rows)
+    paths = manifest["product_paths"]["project_focus_days"]
     rows = [
-        line for line in old_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)
+        for path in paths.values()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert len(rows) == 3
-    assert any('"project": "old"' in row for row in rows)
-    assert any('"project": "new"' in row for row in rows)
-    assert any('"project": "future"' in row for row in rows)
-    assert not any('"project": "replace"' in row for row in rows)
+    assert {row["project"] for row in rows} == {"old", "new", "future"}
 
 
 def test_materialize_activitywatch_derived_preserves_sparse_covered_dates(monkeypatch, tmp_path):
@@ -175,7 +183,7 @@ def test_materialize_activitywatch_derived_preserves_sparse_covered_dates(monkey
 def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypatch, tmp_path):
     """chunk_days must bound each generator window without changing the output."""
     from lynchpin.ingest import activitywatch_derived_materialize as mod
-    from lynchpin.sources.activitywatch_derived import PRODUCT_KINDS, activitywatch_derived_path
+    from lynchpin.sources.activitywatch_derived import PRODUCT_KINDS
 
     from datetime import timedelta
 
@@ -224,9 +232,19 @@ def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypat
         assert (w_end - w_start).days <= 2
 
     for kind in PRODUCT_KINDS:
-        single_text = activitywatch_derived_path(kind, single_root).read_text(encoding="utf-8")
-        chunked_text = activitywatch_derived_path(kind, chunked_root).read_text(encoding="utf-8")
-        assert chunked_text == single_text
+        single_rows = [
+            line
+            for path in single["product_paths"][kind].values()
+            for line in Path(path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        chunked_rows = [
+            line
+            for path in chunked["product_paths"][kind].values()
+            for line in Path(path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert chunked_rows == single_rows
 
     for key in ("row_counts", "row_count", "covered_dates", "first_date", "last_date"):
         assert chunked[key] == single[key]

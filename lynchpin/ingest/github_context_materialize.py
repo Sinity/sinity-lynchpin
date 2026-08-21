@@ -587,8 +587,17 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
             )
         except Exception as exc:
             if attempts == 1 and _is_duckdb_fatal_connection_error(exc):
-                from ..substrate.connection import rebuild_corrupt_substrate
+                from ..substrate.connection import (
+                    CandidateGenerationRejected,
+                    in_candidate_generation,
+                    rebuild_corrupt_substrate,
+                )
 
+                if in_candidate_generation():
+                    raise CandidateGenerationRejected(
+                        "GitHub context checkpoint invalidated the candidate substrate; "
+                        "candidate promotion was stopped before a clean schema could replace it"
+                    ) from exc
                 try:
                     quarantine = rebuild_corrupt_substrate()
                 except Exception as recovery_exc:

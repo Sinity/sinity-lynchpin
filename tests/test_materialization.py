@@ -2122,7 +2122,7 @@ def test_atuin_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
     assert row.covered_dates == (date(2026, 6, 5), date(2026, 6, 7))
 
 
-def test_activitywatch_audit_marks_manifest_with_changed_input_db_partial(monkeypatch, tmp_path) -> None:
+def test_activitywatch_audit_uses_live_sqlite_despite_stale_recovery_carrier(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.activitywatch_materialize import ACTIVITYWATCH_EVENTS_SCHEMA_VERSION
 
@@ -2155,11 +2155,11 @@ def test_activitywatch_audit_marks_manifest_with_changed_input_db_partial(monkey
 
     row = materialization._activitywatch_dataset(cfg)
 
-    assert row.status == "partial"
-    assert "older local input databases" in row.reason
+    assert row.status == "ready"
+    assert "active query source" in row.reason
 
 
-def test_activitywatch_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:
+def test_activitywatch_audit_uses_live_sqlite_despite_stale_recovery_schema(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
 
     db = tmp_path / "aw.db"
@@ -2191,8 +2191,8 @@ def test_activitywatch_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> 
 
     row = materialization._activitywatch_dataset(cfg)
 
-    assert row.status == "partial"
-    assert "schema is older" in row.reason
+    assert row.status == "ready"
+    assert "active query source" in row.reason
 
 
 def test_activitywatch_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
@@ -2301,13 +2301,18 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "canonical_row_count_verified": True,
             }
         ),
         encoding="utf-8",
     )
 
     monkeypatch.setattr(materialization, "activitywatch_event_index_manifest_path", lambda: manifest)
-    monkeypatch.setattr(materialization, "activitywatch_event_index_path", lambda day: root / f"{day.isoformat()}.ndjson")
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_event_index_product_paths",
+        lambda: {"2026-06-05": root / "2026-06-05.ndjson"},
+    )
     monkeypatch.setattr(materialization, "activitywatch_event_index_input_files", lambda: (canonical, canonical_manifest))
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
 
@@ -2319,7 +2324,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
     assert row.covered_dates == (date(2026, 6, 5),)
 
 
-def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp_path) -> None:
+def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.sources.activitywatch_event_index import ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
 
@@ -2343,13 +2348,18 @@ def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
                 "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "canonical_row_count_verified": True,
             }
         ),
         encoding="utf-8",
     )
 
     monkeypatch.setattr(materialization, "activitywatch_event_index_manifest_path", lambda: manifest)
-    monkeypatch.setattr(materialization, "activitywatch_event_index_path", lambda day: root / f"{day.isoformat()}.ndjson")
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_event_index_product_paths",
+        lambda: {"2026-06-05": root / "2026-06-05.ndjson"},
+    )
     monkeypatch.setattr(materialization, "activitywatch_event_index_input_files", lambda: (canonical, canonical_manifest))
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: canonical)
 
@@ -2357,9 +2367,36 @@ def test_activitywatch_event_index_rejects_incomplete_row_count(monkeypatch, tmp
         SimpleNamespace(data_root=tmp_path)
     )
 
-    assert row.status == "partial"
-    assert "row count differs" in row.reason
-    assert row.tail_stale
+    assert row.status == "ready"
+    assert not row.tail_stale
+
+
+def test_incremental_maintenance_defers_unverified_index_repair(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    row = MaterializedDataset(
+        name="activitywatch_event_index",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 6, 5),
+        last_date=date(2026, 6, 5),
+        materialization_hint="repair",
+        reason="needs full equivalence repair",
+        repair_required=True,
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda cfg=None: [row])
+    monkeypatch.setattr(materialization, "_materializers", lambda: {row.name: lambda start=None, end=None: {}})
+
+    plan = materialization.plan_materializations(maintenance=True, maintenance_end=date(2026, 6, 7))
+
+    assert [(step.name, step.action, step.window) for step in plan] == [
+        ("activitywatch_event_index", "check-only", None)
+    ]
+    assert "explicit full repair" in plan[0].reason
 
 
 def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
@@ -3020,7 +3057,7 @@ def test_themotte_audit_uses_synced_date_bounds(tmp_path) -> None:
     assert row.last_date == date(2026, 2, 1)
 
 
-def test_machine_audit_marks_manifest_with_changed_input_db_partial(monkeypatch, tmp_path) -> None:
+def test_machine_audit_uses_live_sqlite_without_rewriting_snapshot(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION
 
@@ -3061,11 +3098,11 @@ def test_machine_audit_marks_manifest_with_changed_input_db_partial(monkeypatch,
         SimpleNamespace(machine_telemetry_db=db, machine_capture_root=tmp_path)
     )
 
-    assert row.status == "partial"
-    assert "older local database" in row.reason
+    assert row.status == "ready"
+    assert "active query source" in row.reason
 
 
-def test_machine_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:
+def test_machine_audit_uses_live_sqlite_despite_stale_snapshot_schema(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
 
     db = tmp_path / "telemetry.sqlite"
@@ -3105,8 +3142,8 @@ def test_machine_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:
         SimpleNamespace(machine_telemetry_db=db, machine_capture_root=tmp_path)
     )
 
-    assert row.status == "partial"
-    assert "schema is older" in row.reason
+    assert row.status == "ready"
+    assert "active query source" in row.reason
 
 
 def test_machine_table_materialization_merges_requested_window(monkeypatch, tmp_path) -> None:

@@ -8,6 +8,7 @@ import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
 
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
@@ -26,16 +27,18 @@ from ..sources.activitywatch import (
 from ..sources.activitywatch_derived import (
     PRODUCT_KINDS,
     activitywatch_derived_dir,
+    activitywatch_derived_generation_dir,
     activitywatch_derived_manifest_path,
     activitywatch_derived_path,
 )
+from ..sources.activitywatch_event_index import activitywatch_event_index_manifest_path
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from .activitywatch_event_index_materialize import activitywatch_event_index_input_files
 from .manifest_windows import merge_manifest_covered_dates
 from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 
-ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 2
+ACTIVITYWATCH_DERIVED_SCHEMA_VERSION = 3
 
 # Bound on how many days of source events a single pass may hold in memory.
 # The heavy allocations are the AWEvent objects and span intermediates inside
@@ -83,21 +86,20 @@ def materialize_activitywatch_derived(
 
 
 def _clip_to_real_coverage(start: date, end: date) -> tuple[date, date]:
-    """Clip the half-open ``[start, end)`` request to canonical AW coverage.
+    """Clip the half-open ``[start, end)`` request to indexed AW coverage.
 
-    Outside the canonical events product's real span there is no source
-    data at all, so materializing there means asking the generators "what
-    happened on this day" for a day ActivityWatch never recorded. This is
-    the single choke point every caller routes through — the CLI, the
-    ensure-cascade from other materializers (temporal_signals etc.), ad-hoc
-    backfills — so clipping here is sufficient without patching each caller.
+    The logical-day event index is the active bounded product. The legacy
+    canonical NDJSON remains an offline recovery carrier, so it is only a
+    fallback when no index manifest has been published yet. Outside the real
+    source span there is no event data, and asking generators to infer a day
+    with no ActivityWatch coverage fabricates outages and other derived rows.
     """
-    manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    manifest = activitywatch_event_index_manifest_path()
     if not manifest.exists():
-        # No canonical product to clip against — nothing to enforce, and
-        # nothing wrong with proceeding (this is the normal state for tests
-        # that monkeypatch the generators directly, bypassing the canonical
-        # events file entirely).
+        manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    if not manifest.exists():
+        # No materialized carrier to clip against. This is the normal test
+        # state when source generators are monkeypatched directly.
         return start, end
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     first_raw = payload.get("first_date")
@@ -107,6 +109,16 @@ def _clip_to_real_coverage(start: date, end: date) -> tuple[date, date]:
     floor = date.fromisoformat(str(first_raw))
     ceiling = date.fromisoformat(str(last_raw)) + timedelta(days=1)  # end is exclusive
     return max(start, floor), min(end, ceiling)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _materialize_window(
@@ -126,10 +138,7 @@ def _materialize_window(
             _focus_span_row(span)
             for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=True)
         ],
-        "project_focus_days": [
-            _project_focus_day_row(row)
-            for row in project_focus_days(start=start_dt, end=end_dt)
-        ],
+        "project_focus_days": [_project_focus_day_row(row) for row in project_focus_days(start=start_dt, end=end_dt)],
         "daily_activity": [_daily_activity_row(row) for row in daily_activity(start=start, end=end_inclusive)],
         "deep_work": [_deep_work_row(row) for row in deep_work(start=start_dt, end=end_dt)],
         "circadian": [_circadian_row(row) for row in circadian(start=start, end=end_inclusive)],
@@ -137,50 +146,78 @@ def _materialize_window(
         "fragmentation": [_fragmentation_row(row) for row in fragmentation(start=start, end=end_inclusive)],
         "attention": [_attention_row(row) for row in attention(start=start, end=end_inclusive)],
     }
-    rows = {
-        kind: _merge_existing_rows(
-            kind=kind,
-            root=root,
-            start=start,
-            end=end,
-            window_rows=window_rows[kind],
-        )
-        for kind in PRODUCT_KINDS
+
+    previous = _load_json(activitywatch_derived_manifest_path(root))
+    paths, partition_counts = _existing_partitions(previous)
+    migration = previous.get("schema_version") != ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    if migration:
+        # The one-time v2-to-v3 conversion copies the small persisted derived
+        # products into immutable logical-day files. It does not re-run raw
+        # ActivityWatch history. Later tail refreshes never read these files.
+        for kind in PRODUCT_KINDS:
+            for row in _read_existing_rows(activitywatch_derived_path(kind, root)):
+                day = _row_logical_date(kind, row).isoformat()
+                paths[kind].setdefault(day, [])
+                paths[kind][day].append(row)
+
+    generation = f"generation-{uuid4().hex}"
+    generation_dir = activitywatch_derived_generation_dir(generation, root)
+    staging_dir = generation_dir.with_name(f".{generation}.staging")
+    staging_dir.mkdir(parents=True)
+    next_paths: dict[str, dict[str, str]] = {
+        kind: {day: str(path) for day, path in path_map.items() if isinstance(path, Path)}
+        for kind, path_map in paths.items()
+    }
+    next_counts: dict[str, dict[str, int]] = {
+        kind: dict(counts) for kind, counts in partition_counts.items()
     }
 
+    for kind in PRODUCT_KINDS:
+        rows_by_day: dict[str, list[dict[str, object]]] = {}
+        if migration:
+            for day, legacy_rows in paths[kind].items():
+                assert isinstance(legacy_rows, list)
+                rows_by_day[day] = [
+                    row for row in legacy_rows if not (start <= _row_logical_date(kind, row) < end)
+                ]
+        for row in window_rows[kind]:
+            day = _row_logical_date(kind, row).isoformat()
+            if start <= date.fromisoformat(day) < end:
+                rows_by_day.setdefault(day, []).append(row)
+        for day in tuple(next_paths[kind]):
+            if start <= date.fromisoformat(day) < end:
+                next_paths[kind].pop(day, None)
+                next_counts[kind].pop(day, None)
+        for day, rows in rows_by_day.items():
+            if not rows:
+                continue
+            target = staging_dir / kind / f"{day}.ndjson"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_ndjson(target, sorted(rows, key=lambda row: _row_sort_key(kind, row)))
+            next_paths[kind][day] = str(generation_dir / kind / target.name)
+            next_counts[kind][day] = len(rows)
+
+    generation_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir.replace(generation_dir)
+    row_counts = {kind: sum(next_counts[kind].values()) for kind in PRODUCT_KINDS}
     guard_incremental_shrinkage(
         activitywatch_derived_manifest_path(root),
-        sum(len(rows[kind]) for kind in PRODUCT_KINDS),
+        sum(row_counts.values()),
         dataset="lynchpin.activitywatch_derived",
     )
-    row_counts: dict[str, int] = {}
-    paths: dict[str, str] = {}
-    for kind in PRODUCT_KINDS:
-        path = activitywatch_derived_path(kind, root)
-        _write_ndjson(path, rows[kind])
-        row_counts[kind] = len(rows[kind])
-        paths[kind] = str(path)
 
     input_files = activitywatch_derived_input_files()
-    all_logical_dates = [
-        _row_logical_date(kind, row)
-        for kind in PRODUCT_KINDS
-        for row in rows[kind]
-    ]
-    covered_dates = _merge_covered_dates(
-        root=root,
-        start=start,
-        end=end,
-        verified_bounds=(min(all_logical_dates), max(all_logical_dates)) if all_logical_dates else None,
-    )
+    covered_dates = _merge_covered_dates(root=root, start=start, end=end)
     manifest = {
         "dataset": "lynchpin.activitywatch_derived",
         "schema_version": ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
+        "generation": generation,
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
         "window_semantics": "start inclusive, end exclusive",
         "date_boundary": "logical_06:00_local",
-        "product_paths": paths,
+        "product_paths": next_paths,
+        "partition_row_counts": next_counts,
         "row_counts": row_counts,
         "row_count": sum(row_counts.values()),
         "covered_dates": [day.isoformat() for day in covered_dates],
@@ -217,24 +254,27 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     return first, end or (last_inclusive + timedelta(days=1))
 
 
-def _merge_existing_rows(
-    *,
-    kind: str,
-    root: Path | None,
-    start: date,
-    end: date,
-    window_rows: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    path = activitywatch_derived_path(kind, root)
-    existing = _read_existing_rows(path)
-    outside_window = [
-        row for row in existing
-        if not (start <= _row_logical_date(kind, row) < end)
-    ]
-    return sorted(
-        [*outside_window, *window_rows],
-        key=lambda row: _row_sort_key(kind, row),
-    )
+def _existing_partitions(
+    manifest: dict[str, Any],
+) -> tuple[dict[str, dict[str, Path]], dict[str, dict[str, int]]]:
+    raw_paths = manifest.get("product_paths")
+    raw_counts = manifest.get("partition_row_counts")
+    paths: dict[str, dict[str, Path]] = {kind: {} for kind in PRODUCT_KINDS}
+    counts: dict[str, dict[str, int]] = {kind: {} for kind in PRODUCT_KINDS}
+    if not isinstance(raw_paths, dict) or not isinstance(raw_counts, dict):
+        return paths, counts
+    for kind in PRODUCT_KINDS:
+        product_paths = raw_paths.get(kind)
+        product_counts = raw_counts.get(kind)
+        if not isinstance(product_paths, dict) or not isinstance(product_counts, dict):
+            return {name: {} for name in PRODUCT_KINDS}, {name: {} for name in PRODUCT_KINDS}
+        for day, value in product_paths.items():
+            path = Path(str(value))
+            count = product_counts.get(day)
+            if path.exists() and isinstance(count, int):
+                paths[kind][str(day)] = path
+                counts[kind][str(day)] = count
+    return paths, counts
 
 
 def _merge_covered_dates(

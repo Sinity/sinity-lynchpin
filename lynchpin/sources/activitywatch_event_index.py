@@ -5,19 +5,21 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.primitives import logical_date
 from .activitywatch_models import AWEvent
 
-ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION = 1
+ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION = 2
 
 __all__ = [
     "ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION",
     "activitywatch_event_index_dir",
+    "activitywatch_event_index_generation_dir",
     "activitywatch_event_index_manifest_path",
     "activitywatch_event_index_path",
+    "activitywatch_event_index_product_paths",
     "iter_indexed_activitywatch_events",
 ]
 
@@ -35,11 +37,45 @@ def activitywatch_event_index_dir(root: Path | None = None) -> Path:
 
 
 def activitywatch_event_index_path(day: date, root: Path | None = None) -> Path:
+    """Return the pre-generation static path retained for legacy indexes."""
     return activitywatch_event_index_dir(root) / f"{day.isoformat()}.ndjson"
+
+
+def activitywatch_event_index_generation_dir(generation: str, root: Path | None = None) -> Path:
+    """Return the immutable directory used by one published index generation."""
+    return activitywatch_event_index_dir(root) / "generations" / generation
 
 
 def activitywatch_event_index_manifest_path(root: Path | None = None) -> Path:
     return activitywatch_event_index_dir(root) / "manifest.json"
+
+
+def _index_manifest(root: Path | None = None) -> dict[str, Any]:
+    manifest_path = activitywatch_event_index_manifest_path(root)
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def activitywatch_event_index_product_paths(root: Path | None = None) -> dict[str, Path]:
+    """Return paths from the one manifest that defines the serving generation.
+
+    Schema v1 stored stable filenames directly. Schema v2 points at immutable
+    generation files, so replacing the manifest is the publication boundary.
+    """
+    payload = _index_manifest(root)
+    raw_paths = payload.get("product_paths")
+    if not isinstance(raw_paths, dict):
+        return {}
+    return {
+        str(day): Path(str(path))
+        for day, path in raw_paths.items()
+        if isinstance(path, str) and Path(path).exists()
+    }
 
 
 def iter_indexed_activitywatch_events(
@@ -58,10 +94,23 @@ def iter_indexed_activitywatch_events(
 
     first = logical_date(start) - timedelta(days=1)
     last = logical_date(end - timedelta(microseconds=1)) if end > start else logical_date(start)
+    manifest = _index_manifest(root)
+    product_paths = activitywatch_event_index_product_paths(root)
+    generation_manifest = manifest.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
     rows: list[AWEvent] = []
     cursor = first
     while cursor <= last:
-        path = activitywatch_event_index_path(cursor, root)
+        raw_day = cursor.isoformat()
+        path = product_paths.get(raw_day)
+        # Legacy schema-v1 indexes had no generation paths in their manifest.
+        # Preserve read access to them until an explicit v2 materialization
+        # publishes the first immutable generation. A v2 manifest deliberately
+        # omits empty days, which must not fall through to stale legacy data.
+        if path is None and not generation_manifest:
+            path = activitywatch_event_index_path(cursor, root)
+        if path is None:
+            cursor += timedelta(days=1)
+            continue
         if path.exists():
             rows.extend(_read_day(path, bucket_prefix=bucket_prefix, start=start, end=end))
         cursor += timedelta(days=1)

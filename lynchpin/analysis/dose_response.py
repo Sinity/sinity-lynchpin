@@ -74,10 +74,23 @@ class DoseResponseReport:
     caveats: tuple[str, ...] = ()
 
 
-def _circadian_path() -> Path:
-    from ..sources.activitywatch_derived import activitywatch_derived_path
+def _circadian_paths() -> tuple[Path, ...]:
+    from ..sources.activitywatch_derived import (
+        activitywatch_derived_manifest_path,
+        activitywatch_derived_path,
+        activitywatch_derived_product_paths,
+    )
 
-    return activitywatch_derived_path("circadian")
+    partitioned = activitywatch_derived_product_paths("circadian")
+    manifest_path = activitywatch_derived_manifest_path()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    raw_products = manifest.get("product_paths") if isinstance(manifest, dict) else None
+    if isinstance(raw_products, dict) and isinstance(raw_products.get("circadian"), dict):
+        return tuple(path for _, path in sorted(partitioned.items()))
+    return (activitywatch_derived_path("circadian"),)
 
 
 def load_hourly_activity(path: Optional[Path] = None) -> dict[date, dict[int, float]]:
@@ -87,27 +100,28 @@ def load_hourly_activity(path: Optional[Path] = None) -> dict[date, dict[int, fl
     active minutes that hour (the product emits rows for active hours only),
     so consumers treat absent hours on covered days as 0.0.
     """
-    src = path if path is not None else _circadian_path()
+    paths = (path,) if path is not None else _circadian_paths()
     out: dict[date, dict[int, float]] = {}
-    if not src.exists():
-        return out
-    with src.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            try:
-                day = date.fromisoformat(str(row["date"]))
-                hour = int(row["hour"])
-                active = float(row.get("active_min") or 0.0)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if day < MIN_PRODUCT_DATE:
-                continue
-            out.setdefault(day, {})[hour] = active
+    for src in paths:
+        if not src.exists():
+            continue
+        with src.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    day = date.fromisoformat(str(row["date"]))
+                    hour = int(row["hour"])
+                    active = float(row.get("active_min") or 0.0)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if day < MIN_PRODUCT_DATE:
+                    continue
+                out.setdefault(day, {})[hour] = active
     return out
 
 

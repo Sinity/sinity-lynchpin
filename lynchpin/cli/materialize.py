@@ -17,7 +17,7 @@ from ..materialization import (
     plan_materializations,
     run_materialization_plan,
 )
-from ..substrate.connection import CandidateGenerationInterrupted
+from ..substrate.connection import CandidateGenerationInterrupted, CandidateGenerationRejected
 
 _PROGRESS_FORMAT = "plain"
 
@@ -172,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         signal_name = signal.Signals(exc.signal_number).name
         _progress(f"promoted materialization interrupted by {signal_name}; candidate was archived")
         return 128 + exc.signal_number
+    except CandidateGenerationRejected as exc:
+        _progress(f"candidate materialization rejected: {exc}")
+        return 1
     except _CandidateRejected as exc:
         _progress(str(exc))
         return exc.code

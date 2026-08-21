@@ -45,6 +45,10 @@ class CandidateGenerationInterrupted(KeyboardInterrupt):
         super().__init__(f"candidate generation interrupted by {signal.Signals(signal_number).name}")
 
 
+class CandidateGenerationRejected(RuntimeError):
+    """Abort an unsafe candidate while retaining the verified serving generation."""
+
+
 _substrate_path_override: ContextVar[Path | None] = ContextVar(
     "substrate_path_override",
     default=None,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 
 def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypatch, tmp_path):
@@ -42,8 +44,39 @@ def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypa
     assert manifest["schema_version"] == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
     assert manifest["row_count"] == 2
     assert manifest["covered_dates"] == ["2026-03-14", "2026-03-15"]
-    assert (tmp_path / "activitywatch/events_by_day/2026-03-14.ndjson").exists()
-    assert (tmp_path / "activitywatch/events_by_day/2026-03-15.ndjson").exists()
+    assert manifest["generation"].startswith("generation-")
+    assert all(Path(path).exists() for path in manifest["product_paths"].values())
+
+
+def test_full_index_repair_rejects_unverified_canonical_row_count(monkeypatch, tmp_path):
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    canonical = tmp_path / "activitywatch/events.ndjson"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(
+        json.dumps(
+            {
+                "bucket": "aw-watcher-window_host",
+                "start": "2026-03-15T08:00:00+00:00",
+                "end": "2026-03-15T08:30:00+00:00",
+                "data": {"app": "only-row"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    canonical.with_suffix(".manifest.json").write_text('{"row_count": 2}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+
+    try:
+        mod.materialize_activitywatch_event_index(root=tmp_path)
+    except MaterializationError as exc:
+        assert "row count does not match" in str(exc)
+    else:
+        raise AssertionError("expected full-index verification failure")
+
+    assert not (tmp_path / "activitywatch/events_by_day/manifest.json").exists()
 
 
 def test_materialize_activitywatch_event_index_replaces_only_requested_window(monkeypatch, tmp_path):
@@ -65,6 +98,20 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
     )
     canonical.with_suffix(".manifest.json").write_text('{"row_count": 1}\n', encoding="utf-8")
     monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+    monkeypatch.setattr(
+        mod,
+        "events_from_activitywatch_dbs",
+        lambda *_args, **_kwargs: iter(
+            [
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc),
+                    data={"app": "new-window"},
+                )
+            ]
+        ),
+    )
 
     day_before = tmp_path / "activitywatch/events_by_day/2026-06-05.ndjson"
     day_window = tmp_path / "activitywatch/events_by_day/2026-06-06.ndjson"
@@ -100,41 +147,50 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
     )
 
     assert json.loads(day_before.read_text(encoding="utf-8"))["data"]["app"] == "before"
+    assert json.loads(day_window.read_text(encoding="utf-8"))["data"]["app"] == "old-window"
     assert json.loads(day_after.read_text(encoding="utf-8"))["data"]["app"] == "after"
-    window_rows = [json.loads(line) for line in day_window.read_text(encoding="utf-8").splitlines()]
+    window_path = Path(manifest["product_paths"]["2026-06-06"])
+    window_rows = [json.loads(line) for line in window_path.read_text(encoding="utf-8").splitlines()]
     assert [row["data"]["app"] for row in window_rows] == ["new-window"]
     assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06", "2026-06-07"]
     assert manifest["row_counts"] == {"2026-06-05": 1, "2026-06-06": 1, "2026-06-07": 1}
     assert manifest["window_start"] == "2026-06-06"
     assert manifest["window_end"] == "2026-06-07"
 
+    from lynchpin.sources.activitywatch_event_index import iter_indexed_activitywatch_events
 
-def test_materialize_activitywatch_event_index_skips_corrupt_canonical_lines(
-    monkeypatch, tmp_path
-):
+    indexed = list(
+        iter_indexed_activitywatch_events(
+            bucket_prefix="aw-watcher-window_",
+            start=datetime(2026, 6, 6, 7, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 6, 9, tzinfo=timezone.utc),
+            root=tmp_path,
+        )
+    )
+    assert [event.data["app"] for event in indexed] == ["new-window"]
+
+
+def test_materialize_activitywatch_event_index_reads_only_bounded_raw_tail(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
 
     canonical = tmp_path / "activitywatch/events.ndjson"
-    canonical.parent.mkdir(parents=True)
-    canonical.write_text(
-        "\n".join(
+    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+    calls: list[tuple[object, object]] = []
+
+    def raw_events(*_args, **kwargs):
+        calls.append((kwargs["start"], kwargs["end"]))
+        return iter(
             [
-                '": "aw-watcher-window_host", "data": {"app": "truncated"}',
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-window_host",
-                        "start": "2026-06-06T08:00:00+00:00",
-                        "end": "2026-06-06T08:30:00+00:00",
-                        "data": {"app": "new-window"},
-                    }
-                ),
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc),
+                    data={"app": "new-window"},
+                )
             ]
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    canonical.with_suffix(".manifest.json").write_text('{"row_count": 1}\n', encoding="utf-8")
-    monkeypatch.setattr(mod, "canonical_activitywatch_events_path", lambda: canonical)
+
+    monkeypatch.setattr(mod, "events_from_activitywatch_dbs", raw_events)
 
     manifest = mod.materialize_activitywatch_event_index(
         root=tmp_path,
@@ -142,8 +198,56 @@ def test_materialize_activitywatch_event_index_skips_corrupt_canonical_lines(
         end=date(2026, 6, 7),
     )
 
+    assert len(calls) == 1
+    assert calls[0][0].replace(tzinfo=None) == datetime(2026, 6, 6, 6)
+    assert calls[0][1].replace(tzinfo=None) == datetime(2026, 6, 7, 6)
     assert manifest["row_count"] == 1
     assert manifest["covered_dates"] == ["2026-06-06"]
+
+
+def test_failed_index_generation_does_not_replace_serving_manifest(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    serving = tmp_path / "activitywatch/events_by_day/generations/serving/2026-06-06.ndjson"
+    serving.parent.mkdir(parents=True)
+    serving.write_text('{"data":{"app":"serving"}}\n', encoding="utf-8")
+    manifest_path = tmp_path / "activitywatch/events_by_day/manifest.json"
+    previous = {
+        "schema_version": 2,
+        "product_paths": {"2026-06-06": str(serving)},
+        "row_counts": {"2026-06-06": 1},
+        "covered_dates": ["2026-06-06"],
+    }
+    manifest_path.write_text(json.dumps(previous) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod,
+        "events_from_activitywatch_dbs",
+        lambda *_args, **_kwargs: iter(
+            [
+                SimpleNamespace(
+                    bucket="aw-watcher-window_host",
+                    start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
+                    end=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc),
+                    data={"app": "candidate"},
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(mod, "write_manifest", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected publish failure")))
+
+    try:
+        mod.materialize_activitywatch_event_index(
+            root=tmp_path,
+            start=date(2026, 6, 6),
+            end=date(2026, 6, 7),
+        )
+    except OSError as exc:
+        assert str(exc) == "injected publish failure"
+    else:
+        raise AssertionError("expected manifest publication failure")
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == previous
+    assert json.loads(serving.read_text(encoding="utf-8"))["data"]["app"] == "serving"
 
 
 def test_indexed_activitywatch_events_read_only_relevant_day_files(tmp_path):

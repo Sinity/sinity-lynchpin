@@ -59,11 +59,7 @@ from .ingest.exports_materialize import (
     reddit_canonical_dir,
     spotify_streams_path,
 )
-from .ingest.activitywatch_materialize import (
-    ACTIVITYWATCH_EVENTS_SCHEMA_VERSION,
-    activitywatch_input_files,
-    materialize_activitywatch_events,
-)
+from .ingest.activitywatch_materialize import activitywatch_input_files, materialize_activitywatch_events
 from .ingest.activitywatch_event_index_materialize import (
     activitywatch_event_index_input_files,
     materialize_activitywatch_event_index,
@@ -81,12 +77,7 @@ from .ingest.activitywatch_derived_materialize import (
 from .ingest.health_coverage_materialize import health_coverage_path, materialize_health_coverage
 from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files, materialize_atuin_history
 from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION, materialize_title_metadata
-from .ingest.machine_materialize import (
-    MACHINE_TABLES,
-    MACHINE_TELEMETRY_SCHEMA_VERSION,
-    machine_input_files,
-    materialize_machine_telemetry,
-)
+from .ingest.machine_materialize import MACHINE_TABLES, machine_input_files, materialize_machine_telemetry
 from .ingest.polylogue_verify_materialize import materialize_polylogue_verify_runs
 from .ingest.substack_materialize import SUBSTACK_SCHEMA_VERSION, materialize_substack
 from .ingest.personal_signals_materialize import (
@@ -135,13 +126,14 @@ from .sources.activitywatch_raw import canonical_activitywatch_events_path
 from .sources.activitywatch_event_index import (
     ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
     activitywatch_event_index_manifest_path,
-    activitywatch_event_index_path,
+    activitywatch_event_index_product_paths,
 )
 from .sources.activity_content import activity_content_daily_path, activity_content_manifest_path, activity_title_usage_path
 from .sources.activitywatch_derived import (
     PRODUCT_KINDS as ACTIVITYWATCH_DERIVED_PRODUCT_KINDS,
     activitywatch_derived_manifest_path,
     activitywatch_derived_path,
+    activitywatch_derived_product_paths,
 )
 from .sources.machine import canonical_machine_table_path
 from .sources.terminal import canonical_atuin_history_path
@@ -216,6 +208,9 @@ class MaterializedDataset:
     #: live host). Historical windows fully inside ``covered_dates`` are still
     #: trustworthy; only reads that include the present need a refresh.
     tail_stale: bool = False
+    #: True when a bounded tail can be served but the historical carrier still
+    #: needs an explicit full repair before it may be called fully verified.
+    repair_required: bool = False
 
     def to_json(self) -> dict[str, Any]:
         contract = source_contract(self.name)
@@ -224,6 +219,7 @@ class MaterializedDataset:
             "name": self.name,
             "status": self.status,
             "tail_stale": self.tail_stale,
+            "repair_required": self.repair_required,
             "substrate_status": dataset_status_to_substrate_status(self.status),
             "kind": contract.kind,
             "required": contract.required,
@@ -555,7 +551,10 @@ def plan_materializations(
             reason = row.reason
         elif maintenance:
             materializer = materializers[row.name]
-            if row.status == "ready" and not row.tail_stale:
+            if row.repair_required:
+                action = "check-only"
+                reason = "incremental maintenance requires an explicit full repair before this product is historically verified"
+            elif row.status == "ready" and not row.tail_stale:
                 action = "skip"
                 reason = "canonical product is ready"
             elif not _supports_windowed_materialization(materializer):
@@ -657,6 +656,10 @@ def run_materialization_plan(
                 started_at=started,
                 finished_at=datetime.now(timezone.utc),
             )
+            from .substrate.connection import CandidateGenerationRejected
+
+            if isinstance(exc, CandidateGenerationRejected):
+                raise
             if continue_on_error:
                 continue
             raise
@@ -1543,28 +1546,20 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     input_files = activitywatch_input_files(cfg)
     archives = _count_files(cfg.activitywatch_archive_db_dir, suffixes=(".sqlite", ".db"))
     product_ready = _product_with_manifest_exists(path, manifest)
-    inputs_current = _manifest_inputs_current(meta, input_files)
-    schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENTS_SCHEMA_VERSION
-    tail_stale = False
-    if product_ready and not schema_current:
-        status = "partial"
-        reason = "canonical ActivityWatch event schema is older than the current reader contract"
-    elif product_ready and not inputs_current:
-        # The live aw-server DB gains rows every few seconds, so on a running
-        # desktop this branch is permanent. Only the present-day tail is
-        # affected; history inside covered_dates stays trustworthy.
-        status = "partial"
-        tail_stale = True
-        reason = "canonical ActivityWatch event NDJSON was built from older local input databases"
+
+    # The live ActivityWatch SQLite databases are the authority. The monolithic
+    # events NDJSON remains a historical recovery carrier, but it must not be
+    # rebuilt for every live tail: the logical-day index owns bounded refreshes
+    # for downstream derived products.
+    if input_files:
+        status: Status = "ready"
+        reason = "live ActivityWatch SQLite is the active query source; logical-day partitions serve derived products"
     elif product_ready:
         status = "ready"
-        reason = "canonical ActivityWatch event NDJSON is present"
-    elif input_files:
-        status = "partial"
-        reason = "canonical ActivityWatch event product is missing"
+        reason = "canonical ActivityWatch event NDJSON recovery carrier is present"
     else:
         status = "missing"
-        reason = "live ActivityWatch DB is missing"
+        reason = "live ActivityWatch DB and canonical recovery carrier are missing"
     return MaterializedDataset(
         name="activitywatch",
         status=status,
@@ -1576,9 +1571,8 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
         covered_dates=_manifest_covered_dates(meta),
-        materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
+        materialization_hint="live SQLite plus logical-day ActivityWatch event partitions",
         reason=reason,
-        tail_stale=tail_stale,
     )
 
 
@@ -1588,33 +1582,27 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     meta = _load_json(manifest)
     input_files = activitywatch_event_index_input_files()
     covered_dates = _manifest_covered_dates(meta)
-    product_paths = tuple(activitywatch_event_index_path(day) for day in covered_dates)
+    paths_by_day = activitywatch_event_index_product_paths()
+    product_paths = tuple(paths_by_day[day.isoformat()] for day in covered_dates if day.isoformat() in paths_by_day)
     products_ready = (
         _manifest_valid(manifest)
         and bool(covered_dates)
-        and all(path.exists() for path in product_paths)
+        and len(product_paths) == len(covered_dates)
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
-    canonical_manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
-    canonical_meta = _load_json(canonical_manifest)
-    canonical_row_count = _int_or_none(canonical_meta.get("row_count"))
-    canonical_first_date = _date_from_iso(canonical_meta.get("first_date"))
-    canonical_last_date = _date_from_iso(canonical_meta.get("last_date"))
-    index_row_count = _int_or_none(meta.get("row_count"))
-    row_count_current = canonical_row_count is None or index_row_count == canonical_row_count
+    repair_required = products_ready and schema_current and not bool(meta.get("canonical_row_count_verified"))
     tail_stale = False
     if products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"
+    elif products_ready and repair_required:
+        status = "partial"
+        reason = "ActivityWatch event index needs an explicit full equivalence repair against the canonical recovery carrier"
     elif products_ready and not inputs_current:
         status = "partial"
         tail_stale = True
-        reason = "ActivityWatch event index was built from an older canonical event product"
-    elif products_ready and not row_count_current:
-        status = "partial"
-        tail_stale = True
-        reason = "ActivityWatch event index row count differs from the canonical event product"
+        reason = "ActivityWatch event index was built from older live SQLite inputs"
     elif products_ready:
         status = "ready"
         reason = "ActivityWatch logical-day event index is present"
@@ -1630,14 +1618,22 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(*product_paths, manifest),
-        raw_roots=(cfg.data_root / "activity/activitywatch/activitywatch",),
+        raw_roots=tuple(
+            path
+            for path in (
+                getattr(cfg, "activitywatch_db", None),
+                getattr(cfg, "activitywatch_archive_db_dir", None),
+            )
+            if isinstance(path, Path)
+        ),
         row_count=_int_or_none(meta.get("row_count")),
-        first_date=canonical_first_date or _date_from_iso(meta.get("first_date")),
-        last_date=canonical_last_date or _date_from_iso(meta.get("last_date")),
+        first_date=_date_from_iso(meta.get("first_date")),
+        last_date=_date_from_iso(meta.get("last_date")),
         materialization_hint=contract.materialization_hint,
         reason=reason,
         covered_dates=covered_dates,
         tail_stale=tail_stale,
+        repair_required=repair_required,
     )
 
 
@@ -1645,9 +1641,21 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("activitywatch_derived")
     manifest = activitywatch_derived_manifest_path()
     meta = _load_json(manifest)
-    paths = tuple(activitywatch_derived_path(kind) for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS)
+    partition_paths = {
+        kind: activitywatch_derived_product_paths(kind)
+        for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS
+    }
+    paths = tuple(path for product in partition_paths.values() for path in product.values())
     input_files = activitywatch_derived_input_files()
-    products_ready = manifest.exists() and all(path.exists() for path in paths)
+    raw_product_paths = meta.get("product_paths")
+    partition_manifest = isinstance(raw_product_paths, dict) and all(
+        isinstance(raw_product_paths.get(kind), dict)
+        and len(partition_paths[kind]) == len(raw_product_paths[kind])
+        for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS
+    )
+    products_ready = manifest.exists() and (
+        partition_manifest or all(activitywatch_derived_path(kind).exists() for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS)
+    )
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     tail_stale = False
@@ -2832,21 +2840,23 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     input_files = machine_input_files(cfg)
     tables = meta.get("tables") if isinstance(meta.get("tables"), dict) else {}
     paths = tuple(canonical_machine_table_path(name) for name in MACHINE_TABLES)
-    ready = _manifest_valid(manifest) and all(path.exists() for path in paths)
-    inputs_current = _manifest_inputs_current(meta, input_files)
-    schema_current = meta.get("schema_version") == MACHINE_TELEMETRY_SCHEMA_VERSION
-    if ready and not schema_current:
-        status: Status = "partial"
-        reason = "canonical machine telemetry schema is older than the current reader contract"
-    elif ready and not inputs_current:
-        status: Status = "partial"
-        reason = "canonical machine telemetry products were built from an older local database"
-    elif ready:
+    snapshot_ready = _manifest_valid(manifest) and all(path.exists() for path in paths)
+
+    # The live SQLite database is the authoritative machine source. Graph
+    # promotion reads it incrementally and uses the verified Parquet lake for
+    # historical bootstrap. The NDJSON tables are an offline fallback only:
+    # rewriting their complete history because SQLite appended a tail makes a
+    # two-day maintenance refresh read and write tens of GiB without improving
+    # the active query surface.
+    if input_files:
+        status: Status = "ready"
+        reason = "live machine telemetry SQLite is the active query source; NDJSON tables are an offline fallback"
+    elif snapshot_ready:
         status = "ready"
-        reason = "canonical machine telemetry NDJSON tables are present"
+        reason = "canonical machine telemetry NDJSON fallback tables are present"
     else:
-        status = "partial" if input_files else "missing"
-        reason = "canonical machine telemetry products are missing"
+        status = "missing"
+        reason = "live machine telemetry database and canonical fallback tables are missing"
     return MaterializedDataset(
         name="machine",
         status=status,
@@ -2858,10 +2868,9 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         first_date=_date_from_iso(_first_table_date(tables)),
         last_date=_date_from_iso(_last_table_date(tables)),
         covered_dates=_manifest_covered_dates(meta),
-        materialization_hint="python -m lynchpin.ingest.machine_materialize",
+        materialization_hint="live SQLite plus verified machine telemetry Parquet lake",
         reason=reason,
     )
-
 
 def _spotify_daily_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     contract = source_contract("spotify_daily")
