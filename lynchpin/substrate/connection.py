@@ -137,10 +137,11 @@ def _archive_generation(path: Path, label: str) -> Path | None:
 
 
 def _archive_candidate(candidate: Path, label: str) -> None:
-    """Preserve an abandoned candidate and every adjacent DuckDB sidecar."""
+    """Preserve an abandoned candidate and every adjacent publication sidecar."""
     _archive_generation(candidate, label)
     _archive_generation(candidate.with_name(f"{candidate.name}.wal"), label)
     _archive_generation(candidate.with_suffix(".read-snapshot.duckdb"), label)
+    _archive_generation(candidate.with_suffix(".manifest.json"), label)
 
 
 def _archive_interrupted_candidates(canonical: Path) -> None:
@@ -151,16 +152,36 @@ def _archive_interrupted_candidates(canonical: Path) -> None:
 
 
 def _publish_candidate(generation: CandidateGeneration) -> None:
-    """Publish a checked candidate while retaining prior generation files."""
+    """Publish a checked candidate with matching database and manifest sidecars."""
+    from lynchpin.substrate.status_manifest import (
+        substrate_status_manifest_path,
+        write_substrate_status_manifest,
+    )
+
     candidate_snapshot = update_read_snapshot(generation.candidate)
     if candidate_snapshot is None:
         raise RuntimeError("candidate substrate disappeared before snapshot publication")
 
+    candidate_manifest = substrate_status_manifest_path(generation.candidate)
+    if write_substrate_status_manifest(
+        generation.candidate,
+        output_path=candidate_manifest,
+        published_path=generation.canonical,
+    ) is None:
+        raise RuntimeError("candidate substrate disappeared before manifest publication")
+
     serving_snapshot = generation.canonical.with_suffix(".read-snapshot.duckdb")
-    _archive_generation(generation.canonical, "previous")
-    generation.candidate.replace(generation.canonical)
+    serving_manifest = substrate_status_manifest_path(generation.canonical)
+    # Move sidecars first. If either move fails, the current canonical database
+    # remains serving; the candidate is archived by the surrounding context.
     _archive_generation(serving_snapshot, "previous")
     candidate_snapshot.replace(serving_snapshot)
+    _archive_generation(serving_manifest, "previous")
+    candidate_manifest.replace(serving_manifest)
+    # The canonical database move is last. Nothing fallible follows it, so a
+    # failed sidecar publication cannot leave an unverified candidate serving.
+    _archive_generation(generation.canonical, "previous")
+    generation.candidate.replace(generation.canonical)
 
 
 @contextmanager

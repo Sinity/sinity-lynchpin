@@ -40,7 +40,19 @@ def load_current_substrate_status_manifest(path: Path | None = None) -> dict[str
     return manifest
 
 
-def write_substrate_status_manifest(path: Path | None = None) -> dict[str, Any] | None:
+def write_substrate_status_manifest(
+    path: Path | None = None,
+    *,
+    output_path: Path | None = None,
+    published_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Write a status sidecar for ``path``.
+
+    Candidate publication stages a manifest beside the candidate database, but
+    describes the canonical path it will occupy after an atomic rename. The
+    database's inode metadata survives that rename, so readers never accept a
+    manifest for different database bytes.
+    """
     target = Path(path or substrate_path())
     if not target.exists():
         return None
@@ -51,13 +63,12 @@ def write_substrate_status_manifest(path: Path | None = None) -> dict[str, Any] 
     manifest = {
         "dataset": SUBSTRATE_STATUS_DATASET,
         "materialized_at": datetime.now(timezone.utc).astimezone().isoformat(),
-        "substrate_path": str(target),
+        "substrate_path": str(published_path or target),
         "substrate_size_bytes": stat["size_bytes"],
         "substrate_mtime_ns": stat["mtime_ns"],
         **status,
     }
-    manifest_path = substrate_status_manifest_path(target)
-    _write_json_atomic(manifest_path, manifest)
+    _write_json_atomic(output_path or substrate_status_manifest_path(target), manifest)
     return manifest
 
 

@@ -19,6 +19,11 @@ from lynchpin.substrate.connection import (
     substrate_read_snapshot_path,
     update_read_snapshot,
 )
+from lynchpin.substrate.status_manifest import (
+    load_current_substrate_status_manifest,
+    substrate_status_manifest_path,
+    write_substrate_status_manifest,
+)
 
 
 @pytest.fixture
@@ -263,6 +268,26 @@ def test_candidate_failure_retains_verified_serving_generation(
     assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
 
 
+def test_candidate_manifest_failure_retains_verified_serving_generation(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    monkeypatch.setattr(
+        "lynchpin.substrate.status_manifest.write_substrate_status_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="manifest publication"):
+        with candidate_generation() as generation:
+            _record_verified_generation(generation.candidate, "current")
+
+    assert generation_refresh_id(isolated_substrate) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+
+
 def test_candidate_generation_archives_interrupted_candidate_sidecars(
     isolated_substrate: Path,
 ) -> None:
@@ -272,6 +297,7 @@ def test_candidate_generation_archives_interrupted_candidate_sidecars(
     interrupted.write_bytes(b"interrupted candidate")
     interrupted.with_name(f"{interrupted.name}.wal").write_bytes(b"candidate wal")
     interrupted.with_suffix(".read-snapshot.duckdb").write_bytes(b"candidate snapshot")
+    interrupted.with_suffix(".manifest.json").write_text("{}")
 
     with pytest.raises(RuntimeError, match="injected failure"):
         with candidate_generation():
@@ -281,11 +307,17 @@ def test_candidate_generation_archives_interrupted_candidate_sidecars(
     assert not interrupted.exists()
     assert not interrupted.with_name(f"{interrupted.name}.wal").exists()
     assert not interrupted.with_suffix(".read-snapshot.duckdb").exists()
+    assert not interrupted.with_suffix(".manifest.json").exists()
     assert list(interrupted.parent.glob(f"{interrupted.name}.interrupted-*"))
     assert list(interrupted.parent.glob(f"{interrupted.name}.wal.interrupted-*"))
     assert list(
         interrupted.parent.glob(
             f"{interrupted.with_suffix('.read-snapshot.duckdb').name}.interrupted-*"
+        )
+    )
+    assert list(
+        interrupted.parent.glob(
+            f"{interrupted.with_suffix('.manifest.json').name}.interrupted-*"
         )
     )
 
@@ -295,12 +327,21 @@ def test_candidate_publication_replaces_only_verified_generation(
 ) -> None:
     _record_verified_generation(isolated_substrate, "prior")
     update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
 
     with candidate_generation() as generation:
         _record_verified_generation(generation.candidate, "current")
 
     assert generation_refresh_id(isolated_substrate) == "current"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "current"
+    manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert manifest is not None
+    assert manifest["substrate_path"] == str(isolated_substrate)
+    assert manifest["substrate_size_bytes"] == isolated_substrate.stat().st_size
+    assert manifest["substrate_mtime_ns"] == isolated_substrate.stat().st_mtime_ns
+    assert manifest["promotion_count"] == 2
+    assert not substrate_status_manifest_path(generation.candidate).exists()
+    assert list(isolated_substrate.parent.glob("substrate.manifest.json.previous-*"))
     archived = list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
     assert len(archived) == 1
     assert generation_refresh_id(archived[0]) == "prior"
