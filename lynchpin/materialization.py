@@ -323,6 +323,7 @@ def _dataset_builders() -> dict[str, Any]:
         "webhistory": _webhistory_dataset,
         "google_takeout": _google_takeout_dataset,
         "polylogue": _polylogue_dataset,
+        "polylogue_verify_runs": _polylogue_verify_runs_dataset,
         "codex": _codex_dataset,
         "polylogue_devtools": _polylogue_devtools_dataset,
         "activitywatch": _activitywatch_dataset,
@@ -338,6 +339,7 @@ def _dataset_builders() -> dict[str, Any]:
         "github_context": _github_context_dataset,
         "analysis_artifacts": _analysis_artifacts_dataset,
         "health": _health_dataset,
+        "xiaomi_cloud": _xiaomi_cloud_dataset,
         "health_coverage": _health_coverage_dataset,
         "goodreads": _goodreads_dataset,
         "keylog": _keylog_dataset,
@@ -345,6 +347,7 @@ def _dataset_builders() -> dict[str, Any]:
         "mpris": _mpris_dataset,
         "audio_index": _audio_index_dataset,
         "audio_topology": _audio_topology_dataset,
+        "screen_frames": _screen_frames_dataset,
         "phone_events": _phone_events_dataset,
         "phone_ambient": _phone_ambient_dataset,
         "steering": _steering_dataset,
@@ -1539,6 +1542,58 @@ def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+def _polylogue_verify_runs_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    from .ingest.polylogue_verify_materialize import POLYLOGUE_VERIFY_SCHEMA_VERSION
+    from .sources.polylogue_verify import verify_history_path
+    from .substrate.connection import connect
+
+    contract = source_contract("polylogue_verify_runs")
+    history = verify_history_path()
+    manifest = cfg.derived_root / "polylogue_verify/polylogue_verify_runs.manifest.json"
+    meta = _load_json(manifest)
+    row_count: int | None = None
+    table_exists = False
+    try:
+        with connect(read_only=True) as conn:
+            table_exists = bool(
+                conn.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'polylogue_verify_run'"
+                ).fetchone()[0]
+            )
+            if table_exists:
+                row_count = int(conn.execute("SELECT COUNT(*) FROM polylogue_verify_run").fetchone()[0])
+    except Exception:
+        table_exists = False
+
+    product_ready = table_exists and _manifest_valid(manifest)
+    schema_current = meta.get("schema_version") == POLYLOGUE_VERIFY_SCHEMA_VERSION
+    if product_ready and not schema_current:
+        status: Status = "partial"
+        reason = "Polylogue verification product manifest schema is older than the current reader contract"
+    elif product_ready:
+        status = "ready"
+        reason = "Polylogue verification history is promoted into the substrate"
+    elif history.is_file():
+        status = "partial"
+        reason = "Polylogue verification history exists but has not been promoted into the substrate"
+    else:
+        status = "missing"
+        reason = "Polylogue verification history is missing"
+    return MaterializedDataset(
+        name=contract.name,
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(manifest,) if manifest.exists() else (),
+        raw_roots=(history,),
+        row_count=row_count,
+        first_date=None,
+        last_date=None,
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
+    )
+
+
 def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = canonical_activitywatch_events_path()
     manifest = path.with_suffix(".manifest.json")
@@ -2002,6 +2057,10 @@ def _audio_topology_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     return _sinnix_capture_lane_dataset(cfg, lane="audio-topology")
 
 
+def _screen_frames_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _sinnix_capture_lane_dataset(cfg, lane="screen-frames")
+
+
 def _live_source_dataset(
     cfg: LynchpinConfig, *, name: str, raw_roots: tuple[Path, ...]
 ) -> MaterializedDataset:
@@ -2434,6 +2493,14 @@ def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=last,
         materialization_hint="python -m lynchpin.cli.process_health",
         reason="processed health JSONL products are present" if files else "processed health JSONL products are missing",
+    )
+
+
+def _xiaomi_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
+    return _live_source_dataset(
+        cfg,
+        name="xiaomi_cloud",
+        raw_roots=(cfg.data_root / "health" / "xiaomi-cloud",),
     )
 
 

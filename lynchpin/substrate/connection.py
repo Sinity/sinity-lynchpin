@@ -94,7 +94,7 @@ def substrate_read_snapshot_path() -> Path:
     file is updated by ``update_read_snapshot()`` and stays available
     to readers regardless of the canonical's lock state.
     """
-    return substrate_path().with_suffix(".read-snapshot.duckdb")
+    return Path(substrate_path()).with_suffix(".read-snapshot.duckdb")
 
 
 def update_read_snapshot(path: Path | None = None) -> Path | None:

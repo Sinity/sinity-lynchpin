@@ -39,6 +39,7 @@ ALLOWED_CALENDAR_DATE_CALLS = {
     "sleep_coverage.py": 3,
     "sleep_stage_model.py": 1,
     "quota_advisory.py": 1,  # provider/archive calendar query, not a daily join key
+    "terminal_reconstruction.py": 2,  # calendar-named capture file selection, not a daily join key
 }
 # ai_session_efficiency.py, personal_interest_fusion.py, url_crossref.py:
 # migrated to logical_date, lynchpin-t3a — no longer need an entry here.

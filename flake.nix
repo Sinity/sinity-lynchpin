@@ -25,63 +25,7 @@
           config.allowUnfree = true;
         };
         # Package Python deps not in nixpkgs
-        pythonPackagesOverlay = final: prev:
-          let
-            replaceDependency = name: replacement: input:
-              if (input.pname or "") == name then replacement else input;
-
-            scipy = prev.scipy.overrideAttrs (old: {
-              disabledTests = (old.disabledTests or [ ]) ++ [
-                "test_support_moments_sample"
-              ];
-            });
-
-            scikit-learn = prev.scikit-learn.overridePythonAttrs (old: {
-              build-system = map (replaceDependency "scipy" scipy) (old.build-system or [ ]);
-              dependencies = map (replaceDependency "scipy" scipy) (old.dependencies or [ ]);
-            });
-
-            hmmlearn = prev.hmmlearn.overridePythonAttrs (old: {
-              propagatedBuildInputs = map (
-                replaceDependency "scikit-learn" scikit-learn
-              ) (old.propagatedBuildInputs or [ ]);
-              # hmmlearn's current tests promote NumPy 2.5 deprecations to
-              # errors across the matrix. Keep the runtime package while
-              # upstream updates those assertions.
-              #
-              # recheck: when hmmlearn refreshes its NumPy 2.5 test suite.
-              doCheck = false;
-            });
-
-            fastapi = prev.fastapi.overridePythonAttrs (_old: {
-              # FastAPI's current snapshot tests fail against the updated
-              # inline-snapshot release; this package is consumed for its
-              # runtime API surface here.
-              #
-              # recheck: when FastAPI refreshes its snapshot test suite.
-              nativeInstallCheckInputs = [ ];
-              doCheck = false;
-            });
-
-            rich-toolkit = prev.rich-toolkit.overridePythonAttrs (_old: {
-              # rich-toolkit has the same stale inline-snapshot test edge.
-              #
-              # recheck: when rich-toolkit refreshes its snapshot tests.
-              nativeInstallCheckInputs = [ ];
-              doCheck = false;
-            });
-          in
-          {
-          # SciPy 1.18.0 has one property-based test that is invalid under
-          # NumPy 2.5.1's floating-point behavior: an exact-zero result is
-          # compared with a tiny non-zero expected value. The runtime package
-          # remains valid; skip only that stale assertion until upstream
-          # refreshes it.
-          #
-          # recheck: when nixpkgs bumps SciPy past 1.18.0 or refreshes this
-          # test for NumPy 2.5.
-          inherit scipy scikit-learn hmmlearn fastapi rich-toolkit;
-
+        pythonPackagesBaseOverlay = final: prev: {
           cachew = prev.buildPythonPackage rec {
             pname = "cachew";
             version = "0.22.20251013";
@@ -210,11 +154,82 @@
           };
         };
 
-        python = pkgs.python312.override {
-          packageOverrides = pythonPackagesOverlay;
+        pythonPackagesPatchedOverlay =
+          final: prev:
+          let
+            replaceDependency =
+              name: replacement: input:
+              if (input.pname or "") == name then replacement else input;
+
+            scipy = prev.scipy.overrideAttrs (old: {
+              disabledTests = (old.disabledTests or [ ]) ++ [
+                "test_support_moments_sample"
+              ];
+            });
+
+            scikit-learn = prev.scikit-learn.overridePythonAttrs (old: {
+              build-system = map (replaceDependency "scipy" scipy) (old.build-system or [ ]);
+              dependencies = map (replaceDependency "scipy" scipy) (old.dependencies or [ ]);
+            });
+
+            hmmlearn = prev.hmmlearn.overridePythonAttrs (old: {
+              propagatedBuildInputs = map (replaceDependency "scikit-learn" scikit-learn) (
+                old.propagatedBuildInputs or [ ]
+              );
+              # hmmlearn's current tests promote NumPy 2.5 deprecations to
+              # errors across the matrix. Keep the runtime package while
+              # upstream updates those assertions.
+              #
+              # recheck: when hmmlearn refreshes its NumPy 2.5 test suite.
+              doCheck = false;
+            });
+
+            fastapi = prev.fastapi.overridePythonAttrs (_old: {
+              # FastAPI's current snapshot tests fail against the updated
+              # inline-snapshot release; this package is consumed for its
+              # runtime API surface here.
+              #
+              # recheck: when FastAPI refreshes its snapshot test suite.
+              nativeInstallCheckInputs = [ ];
+              doCheck = false;
+            });
+
+            rich-toolkit = prev.rich-toolkit.overridePythonAttrs (_old: {
+              # rich-toolkit has the same stale inline-snapshot test edge.
+              #
+              # recheck: when rich-toolkit refreshes its snapshot tests.
+              nativeInstallCheckInputs = [ ];
+              doCheck = false;
+            });
+          in
+          (pythonPackagesBaseOverlay final prev)
+          // {
+            # SciPy 1.18.0 has one property-based test that is invalid under
+            # NumPy 2.5.1's floating-point behavior: an exact-zero result is
+            # compared with a tiny non-zero expected value. The runtime
+            # package remains valid; skip only that stale assertion until
+            # upstream refreshes it.
+            #
+            # recheck: when nixpkgs bumps SciPy past 1.18.0 or refreshes this
+            # test for NumPy 2.5.
+            inherit
+              scipy
+              scikit-learn
+              hmmlearn
+              fastapi
+              rich-toolkit
+              ;
+          };
+
+        devPython = pkgs.python312.override {
+          packageOverrides = pythonPackagesBaseOverlay;
         };
 
-        pythonEnv = python.withPackages (
+        python = pkgs.python312.override {
+          packageOverrides = pythonPackagesPatchedOverlay;
+        };
+
+        pythonEnv = devPython.withPackages (
           ps: with ps; [
             black
             ipython
@@ -287,15 +302,13 @@
             name = "sinity-lynchpin-${profileName}";
             inherit packages;
 
-            shellHook =
-              (baseShellHook profileName)
-              + ''
-                export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
-                if [ "''${LYNCHPIN_MOTD_PRINTED:-0}" != "1" ] && [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
-                  "$PWD/tool/devshell-motd" >&2
-                fi
-                export LYNCHPIN_MOTD_PRINTED=1
-              '';
+            shellHook = (baseShellHook profileName) + ''
+              export LYNCHPIN_DEV_PYTHON="${pythonEnv.pythonVersion}"
+              if [ "''${LYNCHPIN_MOTD_PRINTED:-0}" != "1" ] && [ -x "$PWD/tool/devshell-motd" ] && { [ -n "''${DIRENV_DIR:-}" ] || [ -t 1 ]; }; then
+                "$PWD/tool/devshell-motd" >&2
+              fi
+              export LYNCHPIN_MOTD_PRINTED=1
+            '';
           };
         lynchpinPackage = python.pkgs.buildPythonPackage {
           pname = "lynchpin";

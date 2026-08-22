@@ -2,6 +2,7 @@ import json
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from lynchpin.analysis.cli import _run_dag, build_app
@@ -311,18 +312,20 @@ def test_observability_status_omits_queue_diagnostics(monkeypatch):
 
 def test_materialize_machine_help_uses_materialization_language():
     result = CliRunner().invoke(build_app(), ["materialize-machine", "--help"])
+    output = unstyle(result.output)
 
     assert result.exit_code == 0
-    assert "--explain-materialization" in result.output
-    assert "Materialize machine-analysis products" in result.output
+    assert "--explain-materialization" in output
+    assert "Materialize machine-analysis products" in output
 
 
 def test_materialize_current_state_help_exposes_explanation_without_incremental_execution():
     result = CliRunner().invoke(build_app(), ["materialize-current-state", "--help"])
+    output = unstyle(result.output)
 
     assert result.exit_code == 0
-    assert "--explain-materialization" in result.output
-    assert "--incremental" not in result.output
+    assert "--explain-materialization" in output
+    assert "--incremental" not in output
 
 
 def test_below_pressure_export_cli_reports_failed_attempts(monkeypatch):

@@ -19,3 +19,5 @@ jobs:
         uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
       - name: Run default test suite
         run: nix develop --command pytest -q
+      - name: Build distributable package
+        run: nix build .#lynchpin

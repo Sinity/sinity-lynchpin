@@ -999,6 +999,44 @@ def test_keylog_analysis_dataset_reports_artifact_coverage(monkeypatch, tmp_path
     assert row.covered_dates == (date(2026, 6, 5), date(2026, 6, 6))
 
 
+def test_polylogue_verify_runs_audit_requires_manifest_and_substrate_table(monkeypatch, tmp_path) -> None:
+    import duckdb
+
+    from lynchpin import materialization
+    from lynchpin.ingest.polylogue_verify_materialize import POLYLOGUE_VERIFY_SCHEMA_VERSION
+
+    history = tmp_path / "polylogue/verify-history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("{}\n", encoding="utf-8")
+    database = tmp_path / "substrate.duckdb"
+    with duckdb.connect(str(database)) as conn:
+        conn.execute("CREATE TABLE polylogue_verify_run (run_id VARCHAR)")
+        conn.execute("INSERT INTO polylogue_verify_run VALUES ('fixture')")
+    monkeypatch.setattr(
+        "lynchpin.sources.polylogue_verify.verify_history_path", lambda: history
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.substrate_path", lambda: database
+    )
+    cfg = SimpleNamespace(derived_root=tmp_path / "derived")
+
+    missing_manifest = materialization._polylogue_verify_runs_dataset(cfg)
+
+    assert missing_manifest.status == "partial"
+    assert missing_manifest.row_count == 1
+    manifest = cfg.derived_root / "polylogue_verify/polylogue_verify_runs.manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"schema_version": POLYLOGUE_VERIFY_SCHEMA_VERSION}),
+        encoding="utf-8",
+    )
+
+    ready = materialization._polylogue_verify_runs_dataset(cfg)
+
+    assert ready.status == "ready"
+    assert ready.row_count == 1
+
+
 def test_github_context_audit_marks_recent_product_ready(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION

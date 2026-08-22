@@ -92,6 +92,8 @@ CAPTURE_SOURCES: frozenset[str] = frozenset(
         "audio_index",
         "audio_topology",
         "screen_frames",
+        # Xiaomi cloud witness records refreshed by Sinnix on a fixed cadence.
+        "xiaomi_cloud",
         # Sinnix phone app event stream (instruments, marks, ambient
         # light/motion, chunk lifecycle) — continuous while capture is on
         "phone_events",
