@@ -44,14 +44,14 @@ cache = "tree+environment"
 
 [operations.materialize_plan]
 description = "Render the current canonical materialization plan without writes"
-exec = ["lynchpin-materialize", "--all", "--plan-json", "--progress", "quiet"]
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--plan-json", "--progress", "quiet"]
 pool = "normal"
 result = "json"
 cache = "tree+environment"
 
 [operations.materialize_all]
 description = "Materialize every locally rebuildable canonical Lynchpin product"
-exec = ["lynchpin-materialize", "--all", "--progress", "json"]
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--progress", "json"]
 pool = "bulk"
 result = "exit"
 cache = "none"
@@ -59,7 +59,7 @@ exclusive_keys = ["lynchpin:canonical-products"]
 
 [operations.promote_incremental]
 description = "Refresh canonical products and atomically promote an incremental substrate generation"
-exec = ["lynchpin-materialize", "--all", "--promote", "--history", "incremental", "--progress", "json"]
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "incremental", "--progress", "json"]
 pool = "bulk"
 result = "exit"
 cache = "none"
