@@ -48,3 +48,5 @@ uv.lock
 .dolt/
 *.db
 .beads-credential-key
+.beads.gate.lock
+.beads/dolt-server-config.yaml
