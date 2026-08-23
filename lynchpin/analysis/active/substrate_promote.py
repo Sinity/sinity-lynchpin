@@ -115,14 +115,22 @@ def run_substrate_promote(
     refresh_id = refresh_id or f"dag:{started_at.isoformat()}"
     try:
         from lynchpin.substrate.connection import (
+            CandidateGenerationRejected,
+            bind_candidate_publication,
             candidate_generation,
             in_candidate_generation,
-            substrate_read_snapshot_path,
+            substrate_path,
         )
 
-        if not in_candidate_generation() and substrate_read_snapshot_path().exists():
-            with candidate_generation():
-                return _do_promote(
+        if not in_candidate_generation():
+            canonical = substrate_path()
+            if not canonical.exists():
+                raise CandidateGenerationRejected(
+                    "ordinary substrate promotion requires a verified serving generation; "
+                    "use bootstrap_candidate_generation only for explicit initial recovery"
+                )
+            with candidate_generation() as generation:
+                result = _do_promote(
                     commit_facts_file=commit_facts_file,
                     file_changes_file=file_changes_file,
                     symbol_changes_file=symbol_changes_file,
@@ -135,6 +143,20 @@ def run_substrate_promote(
                     window_end=window_end,
                     full_repromote=full_repromote,
                 )
+                bind_candidate_publication(
+                    generation,
+                    result.refresh_id,
+                    require_graph=(
+                        write_evidence_graph
+                        and selection.includes(SOURCE_EVIDENCE_GRAPH)
+                    ),
+                )
+                if result.status == "error":
+                    raise CandidateGenerationRejected(
+                        "candidate promotion returned an error result for "
+                        f"refresh {result.refresh_id}: {result.reason or 'unspecified error'}"
+                    )
+                return result
         return _do_promote(
             commit_facts_file=commit_facts_file,
             file_changes_file=file_changes_file,

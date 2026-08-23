@@ -87,14 +87,26 @@ def _kill_candidate_at_durable_step(crash_step: str) -> None:
 
 
 def _fresh_process_reconcile(path: str) -> None:
-    from lynchpin.substrate.connection import _reconcile_publication
+    from lynchpin.substrate.status_manifest import load_current_substrate_status_manifest
 
     try:
-        _reconcile_publication(Path(path))
+        load_current_substrate_status_manifest(Path(path))
     except Exception:  # noqa: BLE001 - report the fresh-process failure via exit status.
         os._exit(1)
     else:
         os._exit(0)
+
+
+def _reader_after_publication_intent(path: str, started_fd: int, result_fd: int) -> None:
+    from lynchpin.substrate.connection import generation_refresh_id
+    from lynchpin.substrate.status_manifest import load_current_substrate_status_manifest
+
+    os.write(started_fd, b"started")
+    manifest = load_current_substrate_status_manifest(Path(path))
+    if manifest is None:
+        os._exit(1)
+    os.write(result_fd, (generation_refresh_id(Path(path)) or "missing").encode())
+    os._exit(0)
 
 
 def _fork_for_crash_simulation() -> int:
@@ -576,6 +588,23 @@ def test_ordinary_candidate_rejects_missing_verified_predecessor(
     assert not isolated_substrate.exists()
 
 
+def test_bootstrap_candidate_requires_an_empty_serving_artifact_set(
+    isolated_substrate: Path,
+) -> None:
+    from lynchpin.substrate.connection import bootstrap_candidate_generation
+
+    with bootstrap_candidate_generation() as generation:
+        assert generation.seed_mode == "bootstrap"
+        _record_verified_generation(generation.candidate, "initial")
+
+    assert generation_refresh_id(isolated_substrate) == "initial"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "initial"
+    assert load_current_substrate_status_manifest(isolated_substrate) is not None
+    with pytest.raises(CandidateGenerationRejected, match="requires no serving"):
+        with bootstrap_candidate_generation():
+            pass
+
+
 def test_candidate_failure_retains_verified_serving_generation(
     isolated_substrate: Path,
 ) -> None:
@@ -825,6 +854,62 @@ def test_fresh_read_reconciles_every_interrupted_publication_step(
     assert refreshes == {"current"}
 
 
+def test_reader_waits_for_live_publisher_intent_without_moving_candidate(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader waits behind the publisher lock and sees one complete triple."""
+    import lynchpin.substrate.connection as connection
+
+    _allow_reflink_preflight(monkeypatch)
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    started_read, started_write = os.pipe()
+    result_read, result_write = os.pipe()
+    writer = _fork_for_crash_simulation()
+    if writer == 0:
+        def pause_at_intent(step: str) -> None:
+            if step == "intent-durable":
+                os.write(ready_write, b"ready")
+                os.read(release_read, 1)
+
+        connection._publication_step = pause_at_intent
+        with candidate_generation() as generation:
+            _record_verified_generation(generation.candidate, "current")
+        os._exit(0)
+    assert os.read(ready_read, 5) == b"ready"
+    assert connection._publication_intent_path(isolated_substrate).exists()
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.duckdb"))
+
+    reader = _fork_for_crash_simulation()
+    if reader == 0:
+        _reader_after_publication_intent(
+            str(isolated_substrate), started_write, result_write
+        )
+    assert os.read(started_read, 7) == b"started"
+    os.set_blocking(result_read, False)
+    with pytest.raises(BlockingIOError):
+        os.read(result_read, 16)
+    assert list(isolated_substrate.parent.glob("substrate.candidate-*.duckdb"))
+
+    os.write(release_write, b"go")
+    _, writer_status = os.waitpid(writer, 0)
+    _, reader_status = os.waitpid(reader, 0)
+    assert os.waitstatus_to_exitcode(writer_status) == 0
+    assert os.waitstatus_to_exitcode(reader_status) == 0
+    assert os.read(result_read, 16) == b"current"
+    manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert manifest is not None
+    assert {
+        generation_refresh_id(isolated_substrate),
+        generation_refresh_id(substrate_read_snapshot_path()),
+        manifest["latest_refresh_id"],
+    } == {"current"}
+
+
 def test_candidate_rejects_stale_predecessor_before_overwriting_newer_generation(
     isolated_substrate: Path,
 ) -> None:
@@ -864,6 +949,10 @@ def test_direct_writer_is_rejected_when_a_read_snapshot_is_serving(
 
     with pytest.raises(CandidateGenerationRejected, match="candidate_generation"):
         with connect():
+            pass
+
+    with pytest.raises(CandidateGenerationRejected, match="candidate_generation"):
+        with connect(isolated_substrate):
             pass
 
 

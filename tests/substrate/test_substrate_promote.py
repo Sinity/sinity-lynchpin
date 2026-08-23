@@ -13,6 +13,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import duckdb
+import os
 import pytest
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -51,6 +53,12 @@ def _reload_config(monkeypatch: pytest.MonkeyPatch | None = None) -> None:
     cfg_mod._CONFIG = None  # clear the global cache without reload
     if monkeypatch is not None:
         monkeypatch.setattr(cfg_mod, "_CONFIG", None, raising=False)
+    if monkeypatch is not None and os.environ.get("LYNCHPIN_LOCAL_ROOT"):
+        from lynchpin.substrate.connection import substrate_path
+
+        canonical = substrate_path()
+        if not canonical.exists():
+            _seed_verified_serving_generation(canonical, "fixture:prior")
 
 
 def _dt(y: int, m: int, d: int, h: int = 12) -> datetime:
@@ -125,6 +133,58 @@ def _json_sources() -> set[str]:
     )
 
     return {SOURCE_COMMITS, SOURCE_FILE_CHANGES, SOURCE_SYMBOLS}
+
+
+def _seed_verified_serving_generation(path: Path, refresh_id: str) -> None:
+    from lynchpin.substrate.connection import apply_schema
+
+    with duckdb.connect(str(path)) as conn:
+        apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (?, 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """,
+            [refresh_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES (?, 'fixture', 'stage', 'ok', NULL, 1, NULL, NULL, now())
+            """,
+            [refresh_id],
+        )
+
+
+def _allow_candidate_reflink(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lynchpin.substrate.connection as connection
+
+    monkeypatch.setattr(
+        connection,
+        "_filesystem_type",
+        lambda _path: connection._BTRFS_SUPER_MAGIC,
+    )
+    monkeypatch.setattr(connection, "_file_flags", lambda _path: 0)
+
+
+def _record_failed_current_source(
+    conn: object,
+    *,
+    refresh_id: str,
+    **_kwargs: object,
+) -> None:
+    from lynchpin.analysis.active.substrate_promote_status import record_source_status
+
+    record_source_status(
+        conn,
+        refresh_id=refresh_id,
+        source="commits",
+        status="error",
+        reason="injected partial current failure",
+        row_count=0,
+    )
 
 
 def _json_pr_sources() -> set[str]:
@@ -277,7 +337,7 @@ def test_substrate_promote_raises_infrastructure_errors(
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
 
-    with pytest.raises(Exception, match="Cannot open file"):
+    with pytest.raises(Exception, match="verified serving generation|Cannot open file"):
         run_substrate_promote(
             commit_facts_file=str(tmp_path / "nope.json"),
             file_changes_file=str(tmp_path / "nope.json"),
@@ -373,7 +433,7 @@ def test_substrate_promote_loads_commit_facts(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -386,8 +446,7 @@ def test_substrate_promote_loads_commit_facts(
     assert counts.get("commits") == 3
 
     # Verify the rows landed in DuckDB.
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         total = conn.execute("SELECT COUNT(*) FROM commit_fact").fetchone()[0]
     assert total == 3
 
@@ -413,7 +472,7 @@ def test_substrate_promote_records_stage_steps(
         SOURCE_COMMITS,
         run_substrate_promote,
     )
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     refresh_id = "dag:test-stage-steps"
     run_substrate_promote(
@@ -425,8 +484,7 @@ def test_substrate_promote_records_stage_steps(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT step, status, message, row_count, started_at, finished_at
@@ -455,7 +513,7 @@ def test_substrate_promote_records_stage_error_before_reraising(
     _reload_config(monkeypatch)
 
     from lynchpin.analysis.active import substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import substrate_path
 
     def fail_promote_artifacts(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("stage exploded")
@@ -473,8 +531,11 @@ def test_substrate_promote_records_stage_error_before_reraising(
             write_evidence_graph=False,
         )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    archived_candidates = list(
+        substrate_path().parent.glob("substrate.candidate-*.duckdb.failed-*")
+    )
+    assert len(archived_candidates) == 1
+    with duckdb.connect(str(archived_candidates[0]), read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT step, status, message, row_count, finished_at
@@ -491,6 +552,106 @@ def test_substrate_promote_records_stage_error_before_reraising(
     ]
     assert rows[0][4] is None
     assert rows[1][4] is not None
+
+
+def test_failed_current_refresh_cannot_publish_inherited_predecessor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A current error result cannot publish prior usable metadata as its own."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+    _allow_candidate_reflink(monkeypatch)
+
+    from lynchpin.analysis.active import substrate_promote
+    from lynchpin.substrate.connection import (
+        CandidateGenerationRejected,
+        generation_refresh_id,
+        substrate_path,
+        substrate_read_snapshot_path,
+        update_read_snapshot,
+    )
+    from lynchpin.substrate.status_manifest import (
+        load_current_substrate_status_manifest,
+        substrate_status_manifest_path,
+        write_substrate_status_manifest,
+    )
+
+    canonical = substrate_path()
+    _seed_verified_serving_generation(canonical, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(canonical) is not None
+    serving_paths = (
+        canonical,
+        substrate_read_snapshot_path(),
+        substrate_status_manifest_path(canonical),
+    )
+    before = {path: path.read_bytes() for path in serving_paths}
+    monkeypatch.setattr(
+        substrate_promote,
+        "promote_artifact_sources",
+        _record_failed_current_source,
+    )
+
+    with pytest.raises(CandidateGenerationRejected, match="error result for refresh current"):
+        substrate_promote.run_substrate_promote(
+            commit_facts_file=str(tmp_path / "commit_facts.json"),
+            file_changes_file=str(tmp_path / "file_changes.json"),
+            symbol_changes_file=str(tmp_path / "symbol_changes.json"),
+            refresh_id="current",
+            sources={substrate_promote.SOURCE_COMMITS},
+            write_evidence_graph=False,
+        )
+
+    assert {path: path.read_bytes() for path in serving_paths} == before
+    assert generation_refresh_id(canonical) == "prior"
+    assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
+    manifest = load_current_substrate_status_manifest(canonical)
+    assert manifest is not None
+    assert manifest["latest_refresh_id"] == "prior"
+    assert list(canonical.parent.glob("substrate.candidate-*.failed-*"))
+
+
+def test_snapshot_loss_still_isolates_partial_promotion_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid canonical without a snapshot remains immutable until publish."""
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+    _reload_config(monkeypatch)
+    _allow_candidate_reflink(monkeypatch)
+
+    from lynchpin.analysis.active import substrate_promote
+    from lynchpin.substrate.connection import (
+        CandidateGenerationRejected,
+        generation_refresh_id,
+        substrate_path,
+        substrate_read_snapshot_path,
+    )
+
+    canonical = substrate_path()
+    _seed_verified_serving_generation(canonical, "prior")
+    before = canonical.read_bytes()
+    assert not substrate_read_snapshot_path().exists()
+    monkeypatch.setattr(
+        substrate_promote,
+        "promote_artifact_sources",
+        _record_failed_current_source,
+    )
+
+    with pytest.raises(CandidateGenerationRejected, match="error result for refresh current"):
+        substrate_promote.run_substrate_promote(
+            commit_facts_file=str(tmp_path / "commit_facts.json"),
+            file_changes_file=str(tmp_path / "file_changes.json"),
+            symbol_changes_file=str(tmp_path / "symbol_changes.json"),
+            refresh_id="current",
+            sources={substrate_promote.SOURCE_COMMITS},
+            write_evidence_graph=False,
+        )
+
+    assert canonical.read_bytes() == before
+    assert generation_refresh_id(canonical) == "prior"
+    assert not substrate_read_snapshot_path().exists()
 
 
 def test_substrate_promote_merges_active_ai_attribution(
@@ -532,7 +693,7 @@ def test_substrate_promote_merges_active_ai_attribution(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -544,8 +705,7 @@ def test_substrate_promote_merges_active_ai_attribution(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT sha, CAST(ai_attribution AS VARCHAR)
@@ -579,7 +739,7 @@ def test_substrate_promote_loads_file_change_facts(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -591,8 +751,7 @@ def test_substrate_promote_loads_file_change_facts(
 
     assert counts.get("file_changes") == 2
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         total = conn.execute("SELECT COUNT(*) FROM file_change_fact").fetchone()[0]
     assert total == 2
 
@@ -615,7 +774,7 @@ def test_substrate_promote_loads_symbol_changes(
     ])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -627,8 +786,7 @@ def test_substrate_promote_loads_symbol_changes(
 
     assert counts.get("symbols") == 2
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         total = conn.execute("SELECT COUNT(*) FROM symbol_change").fetchone()[0]
     assert total == 2
 
@@ -654,7 +812,7 @@ def test_substrate_promote_idempotent_same_refresh_id(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     rid = "dag:test-idempotent"
 
@@ -675,8 +833,7 @@ def test_substrate_promote_idempotent_same_refresh_id(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         count = conn.execute("SELECT COUNT(*) FROM commit_fact").fetchone()[0]
 
     assert count == 1  # not 2 — idempotent on refresh_id
@@ -705,7 +862,7 @@ def test_substrate_promote_isolated_per_refresh_id(
     cf_b, fc_b, sym_b = _write_commit(sha_b)
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=cf_a,
@@ -724,8 +881,7 @@ def test_substrate_promote_isolated_per_refresh_id(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         total = conn.execute("SELECT COUNT(*) FROM commit_fact").fetchone()[0]
         r1 = conn.execute(
             "SELECT COUNT(*) FROM commit_fact WHERE refresh_id = 'dag:run-1'"
@@ -763,7 +919,7 @@ def test_commit_facts_timestamp_field(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -776,8 +932,7 @@ def test_commit_facts_timestamp_field(
     # Must have promoted the row successfully.
     assert counts.get("commits") == 1
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         row = conn.execute("SELECT authored_at FROM commit_fact").fetchone()
     assert row is not None
     # DuckDB returns a timezone-aware datetime (possibly in local tz).
@@ -816,7 +971,7 @@ def test_same_sha_across_refresh_ids_does_not_collide(
     ])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     # First promote: refresh_A
     run_substrate_promote(
@@ -838,8 +993,7 @@ def test_same_sha_across_refresh_ids_does_not_collide(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         commit_count = conn.execute(
             "SELECT COUNT(*) FROM commit_fact WHERE sha = ?", [sha],
         ).fetchone()[0]
@@ -874,7 +1028,7 @@ def test_source_status_recorded_on_missing_files(
     _reload_config(monkeypatch)
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=str(tmp_path / "missing_commits.json"),
@@ -885,8 +1039,7 @@ def test_source_status_recorded_on_missing_files(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         rows = conn.execute(
             "SELECT source, status, reason FROM substrate_source_status "
             "WHERE refresh_id = ? ORDER BY source",
@@ -920,7 +1073,7 @@ def test_source_status_recorded_on_successful_promote(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -931,8 +1084,7 @@ def test_source_status_recorded_on_successful_promote(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         commits_row = conn.execute(
             "SELECT status, row_count FROM substrate_source_status "
             "WHERE refresh_id = ? AND source = 'commits'",
@@ -1063,7 +1215,7 @@ def test_source_status_idempotent_on_re_run(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     rid = "dag:test-status-idempotent"
 
@@ -1077,8 +1229,7 @@ def test_source_status_idempotent_on_re_run(
             write_evidence_graph=False,
         )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         # Exactly one row per (refresh_id, source) — primary key prevents dupes.
         commits_count = conn.execute(
             "SELECT COUNT(*) FROM substrate_source_status "
@@ -1113,7 +1264,7 @@ def test_substrate_promote_selected_sources_do_not_probe_others(
         SOURCE_COMMITS,
         run_substrate_promote,
     )
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -1127,8 +1278,7 @@ def test_substrate_promote_selected_sources_do_not_probe_others(
     assert "file_changes" not in counts
     assert "spotify_daily" not in counts
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         rows = conn.execute(
             "SELECT source FROM substrate_source_status WHERE refresh_id = ? ORDER BY source",
             ["dag:test-selected-source"],
@@ -1292,7 +1442,7 @@ def test_pr_review_promotion_when_payload_present(
     pr_file.write_text(json.dumps(pr_payload))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     counts = run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -1306,8 +1456,7 @@ def test_pr_review_promotion_when_payload_present(
 
     assert counts.get("pr_review_rows") == 1
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         row = conn.execute(
             "SELECT project, number, state, refresh_id FROM pr_review_row"
         ).fetchone()
@@ -1340,7 +1489,7 @@ def test_pr_review_marked_unavailable_when_file_missing(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -1352,8 +1501,7 @@ def test_pr_review_marked_unavailable_when_file_missing(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         row = conn.execute(
             "SELECT status FROM substrate_source_status "
             "WHERE refresh_id = ? AND source = 'pr_review'",
@@ -1381,7 +1529,7 @@ def test_path_roots_dict_keys_extracted(
     sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
 
     from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import connect, substrate_path
 
     run_substrate_promote(
         commit_facts_file=str(cf_file),
@@ -1391,8 +1539,7 @@ def test_path_roots_dict_keys_extracted(
         write_evidence_graph=False,
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         row = conn.execute("SELECT path_roots FROM commit_fact").fetchone()
     assert row is not None
     # path_roots is a VARCHAR[] in DuckDB.

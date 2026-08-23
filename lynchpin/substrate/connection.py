@@ -15,7 +15,7 @@ is *derived* from sources, not authoritative. Re-promote is cheap.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -68,8 +68,9 @@ class CandidateGeneration:
     canonical: Path
     refresh_id: str
     seed_source: Path
-    seed_mode: Literal["reflink", "logical-index-rebuild"]
+    seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"]
     expected_refresh_id: str | None = None
+    expected_graph_refresh_id: str | None = None
     predecessor_identity: tuple[int, int, int] | None = None
     phase_evidence: list[dict[str, object]] = field(default_factory=list)
 
@@ -296,6 +297,10 @@ def _publication_intent_path(canonical: Path) -> Path:
     return canonical.with_name(f".{canonical.name}.publication.json")
 
 
+def _promotion_lock_path(canonical: Path) -> Path:
+    return canonical.with_name(f".{canonical.name}.promotion.lock")
+
+
 def _artifact_identity(path: Path) -> dict[str, int]:
     stat = path.stat()
     return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size}
@@ -382,7 +387,7 @@ def _reconcile_publication(canonical: Path) -> None:
 @contextmanager
 def _promotion_lock(canonical: Path) -> Iterator[None]:
     """Hold the process-wide writer lock from predecessor capture to publish."""
-    lock_path = canonical.with_name(f".{canonical.name}.promotion.lock")
+    lock_path = _promotion_lock_path(canonical)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
@@ -393,6 +398,33 @@ def _promotion_lock(canonical: Path) -> Iterator[None]:
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+@contextmanager
+def _publication_read_lock(canonical: Path) -> Iterator[None]:
+    """Prevent an active publisher from moving serving artifacts during open."""
+    fd = os.open(_promotion_lock_path(canonical), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+@contextmanager
+def _stable_publication_read(canonical: Path) -> Iterator[None]:
+    """Open only after any active publication has completed or been recovered."""
+    while True:
+        with _publication_read_lock(canonical):
+            if not _publication_intent_path(canonical).exists():
+                yield
+                return
+        # A durable intent without a lock owner is an interrupted publisher.
+        # Reconcile while holding the same exclusive lock that protects a live
+        # publisher, then retry the stable shared-lock read path.
+        with _promotion_lock(canonical):
+            _reconcile_publication(canonical)
 
 
 def _publication_backups(targets: tuple[Path, ...]) -> dict[Path, Path]:
@@ -422,17 +454,25 @@ def _rollback_publication(
         _fsync_directory(replaced[0].parent)
 
 
-def _assert_candidate_manifest_identity(candidate_manifest: Path, expected_refresh_id: str) -> None:
+def _assert_candidate_manifest_identity(
+    candidate_manifest: Path,
+    expected_refresh_id: str,
+    expected_graph_refresh_id: str | None,
+) -> None:
     try:
         manifest = __import__("json").loads(candidate_manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise CandidateGenerationRejected("candidate publication manifest is unreadable") from exc
-    if (
-        manifest.get("latest_refresh_id") != expected_refresh_id
-        or manifest.get("latest_graph_refresh_id") != expected_refresh_id
-    ):
+    if manifest.get("latest_refresh_id") != expected_refresh_id:
         raise CandidateGenerationRejected(
             "candidate publication manifest does not identify the requested refresh"
+        )
+    if (
+        expected_graph_refresh_id is not None
+        and manifest.get("latest_graph_refresh_id") != expected_graph_refresh_id
+    ):
+        raise CandidateGenerationRejected(
+            "candidate publication manifest does not identify the requested graph refresh"
         )
 
 
@@ -456,7 +496,11 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
         raise RuntimeError("candidate substrate disappeared before manifest publication")
 
     if generation.expected_refresh_id is not None:
-        _assert_candidate_manifest_identity(candidate_manifest, generation.expected_refresh_id)
+        _assert_candidate_manifest_identity(
+            candidate_manifest,
+            generation.expected_refresh_id,
+            generation.expected_graph_refresh_id,
+        )
 
     for artifact in (generation.candidate, candidate_snapshot, candidate_manifest):
         _fsync_file(artifact)
@@ -784,14 +828,30 @@ def _record_candidate_phase(
     return payload
 
 
-def bind_candidate_publication(generation: CandidateGeneration, expected_refresh_id: str) -> None:
-    """Require publication to carry the graph refresh built by this invocation."""
+def bind_candidate_publication(
+    generation: CandidateGeneration,
+    expected_refresh_id: str,
+    *,
+    require_graph: bool = True,
+) -> None:
+    """Require publication to carry the exact promotion and optional graph refresh."""
     if generation.expected_refresh_id is not None and generation.expected_refresh_id != expected_refresh_id:
         raise CandidateGenerationRejected("candidate publication refresh identity changed during build")
     generation.expected_refresh_id = expected_refresh_id
+    if require_graph:
+        if (
+            generation.expected_graph_refresh_id is not None
+            and generation.expected_graph_refresh_id != expected_refresh_id
+        ):
+            raise CandidateGenerationRejected("candidate publication graph refresh changed during build")
+        generation.expected_graph_refresh_id = expected_refresh_id
 
 
-def _verify_candidate_publication_contract(candidate: Path, expected_refresh_id: str) -> None:
+def _verify_candidate_publication_contract(
+    candidate: Path,
+    expected_refresh_id: str,
+    expected_graph_refresh_id: str | None,
+) -> None:
     """Check exact graph, promotion, and source coverage before publication."""
     import duckdb
 
@@ -804,35 +864,46 @@ def _verify_candidate_publication_contract(candidate: Path, expected_refresh_id:
                 """,
                 [expected_refresh_id],
             ).fetchone()
-            graph = conn.execute(
-                "SELECT 1 FROM evidence_graph_build WHERE refresh_id = ?",
-                [expected_refresh_id],
-            ).fetchone()
+            graph = (
+                conn.execute(
+                    "SELECT 1 FROM evidence_graph_build WHERE refresh_id = ?",
+                    [expected_graph_refresh_id],
+                ).fetchone()
+                if expected_graph_refresh_id is not None
+                else None
+            )
             coverage = conn.execute(
                 """
-                SELECT COUNT(*), bool_and(status IN ('ok', 'empty', 'degraded'))
+                SELECT COUNT(*)
                 FROM substrate_source_status
                 WHERE refresh_id = ?
                 """,
                 [expected_refresh_id],
             ).fetchone()
-            graph_coverage = conn.execute(
-                """
-                SELECT status FROM substrate_source_status
-                WHERE refresh_id = ? AND source = 'evidence_graph'
-                ORDER BY recorded_at DESC LIMIT 1
-                """,
-                [expected_refresh_id],
-            ).fetchone()
+            graph_coverage = (
+                conn.execute(
+                    """
+                    SELECT status FROM substrate_source_status
+                    WHERE refresh_id = ? AND source = 'evidence_graph'
+                    ORDER BY recorded_at DESC LIMIT 1
+                    """,
+                    [expected_graph_refresh_id],
+                ).fetchone()
+                if expected_graph_refresh_id is not None
+                else None
+            )
     except duckdb.Error as exc:
         raise CandidateGenerationRejected("candidate publication contract cannot be read") from exc
     if promotion is None or promotion[0] not in {"ok", "degraded"}:
         raise CandidateGenerationRejected("candidate is missing the requested promotion refresh")
-    if graph is None:
+    if expected_graph_refresh_id is not None and graph is None:
         raise CandidateGenerationRejected("candidate is missing the requested evidence graph refresh")
-    if not coverage or int(coverage[0]) == 0 or coverage[1] is not True:
-        raise CandidateGenerationRejected("candidate is missing usable source coverage for requested refresh")
-    if graph_coverage is None or graph_coverage[0] != "ok":
+    if not coverage or int(coverage[0]) == 0:
+        raise CandidateGenerationRejected("candidate is missing source coverage for requested refresh")
+    if (
+        expected_graph_refresh_id is not None
+        and (graph_coverage is None or graph_coverage[0] != "ok")
+    ):
         raise CandidateGenerationRejected("candidate is missing usable evidence-graph coverage")
 
 
@@ -867,7 +938,7 @@ def _bind_candidate_attempt_evidence(generation: CandidateGeneration) -> None:
 
 @contextmanager
 def candidate_generation(
-    *, rebuild_indexes: bool = False
+    *, rebuild_indexes: bool = False, bootstrap: bool = False
 ) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
@@ -876,8 +947,9 @@ def candidate_generation(
     predecessor coverage without full logical reads or historical writes.
     ``rebuild_indexes=True`` is the explicit audited recovery path: it finds a
     readable verified retained generation and copies logical rows into fresh
-    DuckDB index structures. Neither path seeds an empty candidate. Serving
-    sidecars are untouched until verification succeeds, and SIGINT/SIGTERM
+    DuckDB index structures. ``bootstrap=True`` is reserved for initial
+    recovery when no serving artifacts exist. Ordinary callers must not use
+    it. Serving sidecars are untouched until verification succeeds, and SIGINT/SIGTERM
     archive only the candidate until the serving triple is published.
     """
     canonical = substrate_path()
@@ -893,7 +965,29 @@ def candidate_generation(
             _archive_interrupted_candidates(canonical)
             from lynchpin.substrate.run_steps import log_phase_evidence, measure_phase
 
-            if rebuild_indexes:
+            if rebuild_indexes and bootstrap:
+                raise CandidateGenerationRejected(
+                    "candidate bootstrap and logical-index rebuild are mutually exclusive"
+                )
+            if bootstrap:
+                serving_artifacts = (
+                    canonical,
+                    substrate_read_snapshot_path(),
+                    canonical.with_suffix(".manifest.json"),
+                )
+                if any(path.exists() for path in serving_artifacts):
+                    raise CandidateGenerationRejected(
+                        "candidate bootstrap requires no serving database, snapshot, or manifest"
+                    )
+                seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"] = "bootstrap"
+                seed_source = canonical
+                with measure_phase("candidate_write") as seed_measurement:
+                    import duckdb
+
+                    with duckdb.connect(str(candidate)) as conn:
+                        apply_schema(conn)
+                        conn.execute("CHECKPOINT")
+            elif rebuild_indexes:
                 seed_mode: Literal["reflink", "logical-index-rebuild"] = "logical-index-rebuild"
                 seed_source = _latest_verified_generation(canonical)
                 with measure_phase("candidate_write") as seed_measurement:
@@ -949,7 +1043,11 @@ def candidate_generation(
                 if generation_refresh_id(candidate) is None:
                     raise RuntimeError("candidate has no verified promoted generation")
             else:
-                _verify_candidate_publication_contract(candidate, generation.expected_refresh_id)
+                _verify_candidate_publication_contract(
+                    candidate,
+                    generation.expected_refresh_id,
+                    generation.expected_graph_refresh_id,
+                )
                 _bind_candidate_attempt_evidence(generation)
             with measure_phase("publication") as publication_measurement:
                 with _defer_candidate_interruptions() as deferred:
@@ -980,6 +1078,13 @@ def candidate_generation(
         finally:
             if token is not None:
                 _substrate_path_override.reset(token)
+
+
+@contextmanager
+def bootstrap_candidate_generation() -> Iterator[CandidateGeneration]:
+    """Explicit initial/recovery API for an empty serving-artifact set only."""
+    with candidate_generation(bootstrap=True) as generation:
+        yield generation
 
 
 def _quarantine_suffix() -> str:
@@ -1034,9 +1139,12 @@ def connect(
         raise CandidateGenerationRejected(
             "candidate generation cannot write outside its staged substrate"
         )
-    if target == substrate_path() and _substrate_path_override.get() is None:
-        _reconcile_publication(target)
-        if not read_only and not rebuild_corrupt and substrate_read_snapshot_path().exists():
+    serving_target = target == substrate_path() and _substrate_path_override.get() is None
+    if serving_target and not read_only:
+        if target.exists() or _publication_intent_path(target).exists():
+            with _promotion_lock(target):
+                _reconcile_publication(target)
+        if not rebuild_corrupt and substrate_read_snapshot_path().exists():
             raise CandidateGenerationRejected(
                 "direct substrate writes are rejected while a read snapshot serves readers; "
                 "run the writer through candidate_generation"
@@ -1056,19 +1164,21 @@ def connect(
     # an existing writer in the same interpreter). Both signal "canonical
     # is unavailable in our preferred mode"; fall back to the snapshot
     # in either case.
-    try:
-        conn = duckdb.connect(str(target), read_only=read_only)
-    except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
-        if not read_only or not snapshot_fallback:
-            if rebuild_corrupt and not read_only and isinstance(exc, duckdb.InternalException):
-                rebuild_corrupt_substrate(target)
+    stable_read = _stable_publication_read(target) if serving_target and read_only else nullcontext()
+    with stable_read:
+        try:
+            conn = duckdb.connect(str(target), read_only=read_only)
+        except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException) as exc:
+            if not read_only or not snapshot_fallback:
+                if rebuild_corrupt and not read_only and isinstance(exc, duckdb.InternalException):
+                    rebuild_corrupt_substrate(target)
+                else:
+                    raise
             else:
-                raise
-        else:
-            snapshot = substrate_read_snapshot_path()
-            if not snapshot.exists():
-                raise
-            conn = duckdb.connect(str(snapshot), read_only=True)
+                snapshot = substrate_read_snapshot_path()
+                if not snapshot.exists():
+                    raise
+                conn = duckdb.connect(str(snapshot), read_only=True)
     try:
         yield conn
     finally:
