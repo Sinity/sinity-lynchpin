@@ -49,18 +49,15 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
-[operations.materialize_all]
-description = "Materialize every locally rebuildable canonical Lynchpin product"
-exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--progress", "json"]
-pool = "bulk"
-result = "exit"
-cache = "none"
-exclusive_keys = ["lynchpin:canonical-products"]
-
 [operations.promote_incremental]
 description = "Refresh canonical products and atomically promote an incremental substrate generation"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "incremental", "--progress", "json"]
 pool = "bulk"
 result = "exit"
 cache = "none"
+timeout_seconds = 9000
 exclusive_keys = ["lynchpin:canonical-products", "lynchpin:substrate-generation"]
+
+[operations.promote_incremental.parameters.rebuild_candidate_indexes]
+type = "bool"
+flag = "--rebuild-candidate-indexes"
