@@ -17,6 +17,7 @@ from lynchpin.substrate.connection import (
     CandidateGenerationRejected,
     apply_schema,
     candidate_generation,
+    bind_candidate_publication,
     connect,
     generation_refresh_id,
     substrate_read_snapshot_path,
@@ -83,6 +84,51 @@ def test_update_read_snapshot_skips_missing_canonical(
 ) -> None:
     """No canonical → no snapshot, no error."""
     assert update_read_snapshot() is None
+
+
+def _allow_reflink_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lynchpin.substrate.connection as connection
+
+    monkeypatch.setattr(connection, "_filesystem_type", lambda _path: connection._BTRFS_SUPER_MAGIC)
+    monkeypatch.setattr(connection, "_file_flags", lambda _path: 0)
+
+
+def test_reflink_clone_rejects_nocow_source_or_destination(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.substrate.connection as connection
+
+    isolated_substrate.write_bytes(b"verified bytes")
+    destination = isolated_substrate.with_name("candidate.duckdb")
+    _allow_reflink_preflight(monkeypatch)
+    monkeypatch.setattr(connection, "_file_flags", lambda path: connection._FS_NOCOW_FL if path == isolated_substrate.parent else 0)
+
+    with pytest.raises(CandidateGenerationRejected, match="NOCOW (source|destination) directory"):
+        connection._reflink_clone(isolated_substrate, destination)
+
+    assert not destination.exists()
+
+
+def test_read_snapshot_rejects_real_duckdb_wal(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed write in DuckDB's live WAL must never disappear in a clone."""
+    _allow_reflink_preflight(monkeypatch)
+    writer = duckdb.connect(str(isolated_substrate))
+    try:
+        writer.execute("CREATE TABLE committed_wal_state (value INTEGER)")
+        writer.execute("INSERT INTO committed_wal_state VALUES (7)")
+        wal = isolated_substrate.with_name(f"{isolated_substrate.name}.wal")
+        assert wal.exists(), "DuckDB must retain this committed state in its live WAL"
+
+        with pytest.raises(CandidateGenerationRejected, match="uncheckpointed DuckDB WAL"):
+            update_read_snapshot()
+    finally:
+        writer.close()
+
+    assert not substrate_read_snapshot_path().exists()
 
 
 def test_connect_falls_back_to_snapshot_on_lock(isolated_substrate: Path) -> None:
@@ -364,6 +410,62 @@ def test_candidate_generation_recovers_from_archived_verified_source(
     assert generation_refresh_id(archived) == "prior"
 
 
+@pytest.mark.parametrize("failure_call", (1, 2, 3))
+def test_candidate_publication_rolls_back_every_rename_failure(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_call: int,
+) -> None:
+    """Every injected serving rename failure preserves the serving triple."""
+    import lynchpin.substrate.connection as connection
+
+    _allow_reflink_preflight(monkeypatch)
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    serving_paths = (
+        isolated_substrate,
+        substrate_read_snapshot_path(),
+        substrate_status_manifest_path(isolated_substrate),
+    )
+    before = {path: path.read_bytes() for path in serving_paths}
+    real_replace = connection._replace
+    calls = 0
+
+    def fail_once(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OSError("injected publication rename failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(connection, "_replace", fail_once)
+
+    with pytest.raises(OSError, match="injected publication rename failure"):
+        with candidate_generation():
+            pass
+
+    assert {path: path.read_bytes() for path in serving_paths} == before
+    assert generation_refresh_id(isolated_substrate) == "prior"
+
+
+def test_candidate_rejects_inherited_refresh_when_expected_refresh_is_missing(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verified predecessor cannot stand in for this invocation's graph refresh."""
+    _allow_reflink_preflight(monkeypatch)
+    _record_verified_generation(isolated_substrate, "prior")
+    before = isolated_substrate.read_bytes()
+
+    with pytest.raises(CandidateGenerationRejected, match="requested promotion refresh"):
+        with candidate_generation() as generation:
+            bind_candidate_publication(generation, "new-refresh")
+
+    assert isolated_substrate.read_bytes() == before
+    assert generation_refresh_id(isolated_substrate) == "prior"
+
+
 def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -622,17 +724,17 @@ def test_candidate_publication_defers_signal_until_serving_triple_is_complete(
     update_read_snapshot()
     assert write_substrate_status_manifest(isolated_substrate) is not None
     serving_manifest = substrate_status_manifest_path(isolated_substrate)
-    real_archive_generation = connection._archive_generation
+    real_replace = connection._replace
     signal_injected = False
 
-    def archive_with_signal(path: Path, label: str) -> Path | None:
+    def replace_with_signal(source: Path, destination: Path) -> None:
         nonlocal signal_injected
-        if path == serving_manifest and not signal_injected:
+        if destination == serving_manifest and not signal_injected:
             signal_injected = True
             signal.raise_signal(signal.SIGTERM)
-        return real_archive_generation(path, label)
+        real_replace(source, destination)
 
-    monkeypatch.setattr(connection, "_archive_generation", archive_with_signal)
+    monkeypatch.setattr(connection, "_replace", replace_with_signal)
 
     with pytest.raises(CandidateGenerationInterrupted) as interrupted:
         with candidate_generation() as generation:

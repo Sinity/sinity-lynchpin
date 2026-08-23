@@ -129,7 +129,10 @@ def test_reconcile_handles_multiple_orphaned_steps_independently() -> None:
     assert latest_by_step == {"r1:a": "orphaned", "r1:b": "running", "r2:a": "orphaned"}
 
 
-def test_phase_evidence_persists_wall_cpu_io_and_count() -> None:
+def test_phase_evidence_persists_typed_metrics_and_process_fallback(monkeypatch) -> None:
+    import lynchpin.substrate.run_steps as run_steps
+
+    monkeypatch.setattr(run_steps, "_cgroup_io_bytes", lambda: None)
     conn = _connect()
     with measure_phase("source_reads") as measurement:
         _ = sum(range(100))
@@ -138,7 +141,7 @@ def test_phase_evidence_persists_wall_cpu_io_and_count() -> None:
         conn,
         refresh_id="incremental-fixture",
         measurement=measurement,
-        count=3,
+        metrics=({"name": "completed_materializer_steps", "unit": "steps", "value": 3},),
     )
 
     step, status, message, row_count, started_at, finished_at = conn.execute(
@@ -148,13 +151,40 @@ def test_phase_evidence_persists_wall_cpu_io_and_count() -> None:
     payload = json.loads(message)
     assert step == "incremental_source_reads"
     assert status == "ok"
-    assert row_count == 3
+    assert row_count is None
     assert started_at <= finished_at
-    assert payload["schema"] == "lynchpin.incremental-phase.v1"
+    assert payload["schema"] == "lynchpin.incremental-phase.v2"
     assert payload["phase"] == "source_reads"
-    assert payload["count"] == 3
+    assert payload["metrics"] == [
+        {"name": "completed_materializer_steps", "unit": "steps", "value": 3}
+    ]
     assert payload["wall_seconds"] >= 0
     assert payload["cpu_user_seconds"] >= 0
     assert payload["cpu_system_seconds"] >= 0
-    assert payload["read_bytes"] is None or payload["read_bytes"] >= 0
-    assert payload["write_bytes"] is None or payload["write_bytes"] >= 0
+    assert payload["io"]["attribution"] == "process"
+    assert payload["io"]["scope"] == "process:self"
+    assert payload["io"]["read_bytes"] is None or payload["io"]["read_bytes"] >= 0
+    assert payload["io"]["write_bytes"] is None or payload["io"]["write_bytes"] >= 0
+
+
+def test_phase_evidence_prefers_cgroup_unit_io(monkeypatch) -> None:
+    import lynchpin.substrate.run_steps as run_steps
+
+    samples = iter(
+        (
+            {"attribution": "cgroup", "scope": "cgroup:/system.slice/lynchpin.service", "read_bytes": 11, "write_bytes": 13},
+            {"attribution": "cgroup", "scope": "cgroup:/system.slice/lynchpin.service", "read_bytes": 19, "write_bytes": 23},
+        )
+    )
+    monkeypatch.setattr(run_steps, "_cgroup_io_bytes", lambda: next(samples))
+
+    with measure_phase("graph_compute") as measurement:
+        pass
+
+    payload = measurement.payload()
+    assert payload["io"] == {
+        "attribution": "cgroup",
+        "scope": "cgroup:/system.slice/lynchpin.service",
+        "read_bytes": 8,
+        "write_bytes": 10,
+    }

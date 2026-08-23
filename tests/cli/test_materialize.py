@@ -126,7 +126,7 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     forwarded: dict[str, list[str]] = {}
     calls: dict[str, object] = {}
     phase_order: list[str] = []
-    phase_evidence: list[tuple[str, int | None]] = []
+    phase_evidence: list[tuple[str, tuple[object, ...]]] = []
 
     monkeypatch.setattr(
         materialize,
@@ -151,7 +151,7 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     monkeypatch.setattr(
         materialize,
         "_record_incremental_phase",
-        lambda _generation, measurement, *, count: phase_evidence.append((measurement.phase, count)),
+        lambda _generation, measurement, *, metrics: phase_evidence.append((measurement.phase, metrics)),
     )
     import lynchpin.cli.substrate_snapshot as snapshot
 
@@ -174,11 +174,14 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     assert "--existing-products" in forwarded["argv"]
     assert "--graph-only" in forwarded["argv"]
     assert phase_order == ["source_reads", "graph_compute"]
-    assert phase_evidence == [
-        ("source_reads", 1),
-        ("graph_compute", 1),
-        ("verification", 1),
+    assert [phase for phase, _metrics in phase_evidence] == [
+        "source_reads",
+        "graph_compute",
+        "verification",
     ]
+    assert phase_evidence[0][1][0]["unit"] == "steps"
+    assert phase_evidence[1][1][0]["unit"] == "refreshes"
+    assert phase_evidence[2][1][0]["unit"] == "datasets"
 
 
 def test_incremental_rebuild_candidate_indexes_is_explicit(monkeypatch, tmp_path: Path) -> None:
@@ -424,6 +427,39 @@ def test_maintenance_plan_never_dispatches_unscoped_materializers(monkeypatch) -
     assert "catch-up" in by_name["stale_windowed"].reason
     assert by_name["unwindowed"].action == "check-only"
     assert by_name["unwindowed"].window is None
+
+
+def test_materializer_dependency_model_requires_one_writer_wave() -> None:
+    from lynchpin.materialization import (
+        MaterializationPlanStep,
+        MaterializedDataset,
+        materializer_dependency_model,
+        materializer_execution_waves,
+    )
+
+    before = MaterializedDataset(
+        name="fixture",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 2),
+        materialization_hint="refresh",
+        reason="tail stale",
+    )
+    plan = (
+        MaterializationPlanStep("one", before, "materialize", "refresh", "one"),
+        MaterializationPlanStep("two", before, "materialize", "refresh", "two"),
+    )
+
+    model = materializer_dependency_model(plan)
+    waves = materializer_execution_waves(model)
+
+    assert all("candidate-substrate-receipts" in dependency.writes for dependency in model)
+    assert [[dependency.name for dependency in wave] for wave in waves] == [["one"], ["two"]]
 
 
 def test_standalone_materialization_does_not_mutate_published_substrate(monkeypatch) -> None:

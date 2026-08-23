@@ -14,6 +14,8 @@ from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..materialization import (
     audit_materialization,
+    materializer_dependency_model,
+    materializer_execution_waves,
     plan_materializations,
     run_materialization_plan,
 )
@@ -21,8 +23,10 @@ from ..substrate.connection import (
     CandidateGeneration,
     CandidateGenerationInterrupted,
     CandidateGenerationRejected,
+    bind_candidate_publication,
 )
 from ..substrate.run_steps import (
+    PhaseMetric,
     PhaseMeasurement,
     log_phase_evidence,
     measure_phase,
@@ -97,6 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         _progress("promoting from existing canonical products")
         plan = []
     _progress(f"plan ready: {len(plan)} step(s)")
+    dependency_model = materializer_dependency_model(plan)
+    writer_waves = materializer_execution_waves(dependency_model)
+    if any(len(wave) != 1 for wave in writer_waves):
+        raise RuntimeError("materializer dependency model admitted an unimplemented parallel writer wave")
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
         return 0
@@ -120,11 +128,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with generation_context as generation:
-            # These stages are deliberately sequential. Materializers publish
-            # the canonical tail that graph construction must consume, so
-            # parallel execution would race the requested tail rather than
-            # shorten an independent critical path. The candidate remains the
-            # single deterministic substrate writer throughout.
+            # The dependency model currently exposes one writer wave because
+            # every materializer mutates shared process state and candidate
+            # receipts. Graph construction is a barrier after that wave.
             with _measure_incremental_phase("source_reads") as source_measurement:
                 completed_steps = run_materialization_plan(
                     plan,
@@ -134,7 +140,10 @@ def main(argv: list[str] | None = None) -> int:
             _record_incremental_phase(
                 generation,
                 source_measurement,
-                count=len(completed_steps),
+                metrics=(
+                    {"name": "completed_materializer_steps", "unit": "steps", "value": len(completed_steps)},
+                    {"name": "materializer_writer_waves", "unit": "waves", "value": len(writer_waves)},
+                ),
             )
             _progress("canonical materialization complete")
             if args.promote:
@@ -187,11 +196,26 @@ def main(argv: list[str] | None = None) -> int:
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
                 with _measure_incremental_phase("graph_compute") as graph_measurement:
                     code = snapshot_main(forwarded)
-                _record_incremental_phase(generation, graph_measurement, count=1)
+                _record_incremental_phase(
+                    generation,
+                    graph_measurement,
+                    metrics=({"name": "graph_promotions", "unit": "refreshes", "value": 1},),
+                )
                 if code:
                     raise _CandidateRejected(
                         code,
                         f"substrate snapshot failed with exit code {code}",
+                    )
+                if isinstance(generation, CandidateGeneration):
+                    from .substrate_snapshot import _snapshot_refresh_id
+
+                    bind_candidate_publication(
+                        generation,
+                        _snapshot_refresh_id(
+                            start=date.fromisoformat(args.start),
+                            end=date.fromisoformat(args.end),
+                            projects=(),
+                        ),
                     )
                 _progress("substrate snapshot promotion complete")
             _progress("auditing materialization readiness")
@@ -205,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             _record_incremental_phase(
                 generation,
                 verification_measurement,
-                count=len(rows),
+                metrics=({"name": "audited_datasets", "unit": "datasets", "value": len(rows)},),
             )
             if args.json:
                 sys.stdout.write(
@@ -246,21 +270,22 @@ def _record_incremental_phase(
     generation: CandidateGeneration | None,
     measurement: PhaseMeasurement,
     *,
-    count: int | None,
+    metrics: tuple[PhaseMetric, ...],
 ) -> None:
     """Append phase evidence only when this invocation owns a candidate."""
     if generation is None:
         return
     from lynchpin.substrate.connection import connect
     with connect(generation.candidate) as conn:
-        record_phase_evidence(
+        payload = record_phase_evidence(
             conn,
             refresh_id=generation.refresh_id,
             measurement=measurement,
-            count=count,
+            metrics=metrics,
         )
         conn.execute("CHECKPOINT")
-    log_phase_evidence(measurement, count=count)
+    generation.phase_evidence.append(payload)
+    log_phase_evidence(measurement, metrics=metrics)
 
 
 def _all_history_window() -> tuple[date, date]:

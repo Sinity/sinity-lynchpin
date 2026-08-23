@@ -272,6 +272,58 @@ class MaterializationPlanStep:
 
 
 @dataclass(frozen=True)
+class MaterializerDependency:
+    """Declared resources for one materializer invocation.
+
+    Canonical materializers currently share process-global refresh guards and
+    append candidate substrate receipts.  That is a concrete write conflict,
+    so the planner must keep them in one deterministic writer wave until a
+    materializer advertises isolated output and receipt ownership.
+    """
+
+    name: str
+    reads: frozenset[str]
+    writes: frozenset[str]
+
+
+def materializer_dependency_model(
+    plan: Iterable[MaterializationPlanStep],
+) -> tuple[MaterializerDependency, ...]:
+    """Return the actual read/write model used to schedule a materialization plan."""
+    return tuple(
+        MaterializerDependency(
+            name=step.name,
+            reads=frozenset({f"owner-native:{step.name}"}),
+            writes=frozenset(
+                {
+                    f"canonical-product:{step.name}",
+                    "materialization-process-state",
+                    "candidate-substrate-receipts",
+                }
+            ),
+        )
+        for step in plan
+        if step.action == "materialize"
+    )
+
+
+def materializer_execution_waves(
+    dependencies: Iterable[MaterializerDependency],
+) -> tuple[tuple[MaterializerDependency, ...], ...]:
+    """Group only write-disjoint materializers; current contracts yield one wave."""
+    waves: list[list[MaterializerDependency]] = []
+    for dependency in dependencies:
+        for wave in waves:
+            occupied = frozenset().union(*(item.writes for item in wave))
+            if occupied.isdisjoint(dependency.writes):
+                wave.append(dependency)
+                break
+        else:
+            waves.append([dependency])
+    return tuple(tuple(wave) for wave in waves)
+
+
+@dataclass(frozen=True)
 class MaterializationResult:
     """Result of ensuring one product/source is ready for a read path.
 

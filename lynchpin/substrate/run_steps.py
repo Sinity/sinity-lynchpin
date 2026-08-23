@@ -8,13 +8,26 @@ import logging
 from pathlib import Path
 import resource
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 if TYPE_CHECKING:
     import duckdb
 
 
 log = logging.getLogger(__name__)
+
+
+class PhaseMetric(TypedDict):
+    name: str
+    unit: str
+    value: int
+
+
+class IoSample(TypedDict):
+    attribution: Literal["cgroup", "process"]
+    scope: str
+    read_bytes: int | None
+    write_bytes: int | None
 
 
 def _process_io_bytes() -> tuple[int | None, int | None]:
@@ -32,6 +45,49 @@ def _process_io_bytes() -> tuple[int | None, int | None]:
     return values.get("read_bytes"), values.get("write_bytes")
 
 
+def _cgroup_io_bytes() -> IoSample | None:
+    """Return cgroup-v2 I/O counters for the unit that owns this process.
+
+    ``/proc/self/io`` excludes helper processes, so it is only a labelled
+    fallback.  A unit cgroup accounts for the complete service workload when
+    the controller is available.
+    """
+    try:
+        entry = next(
+            line for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+            if line.startswith("0::")
+        )
+        relative = entry.split("::", 1)[1].lstrip("/")
+        io_stat = Path("/sys/fs/cgroup") / relative / "io.stat"
+        read_bytes = 0
+        write_bytes = 0
+        for line in io_stat.read_text(encoding="utf-8").splitlines():
+            fields = dict(field.split("=", 1) for field in line.split()[1:] if "=" in field)
+            read_bytes += int(fields.get("rbytes", "0"))
+            write_bytes += int(fields.get("wbytes", "0"))
+    except (OSError, StopIteration, ValueError):
+        return None
+    return {
+        "attribution": "cgroup",
+        "scope": f"cgroup:/{relative}",
+        "read_bytes": read_bytes,
+        "write_bytes": write_bytes,
+    }
+
+
+def _io_sample() -> IoSample:
+    cgroup = _cgroup_io_bytes()
+    if cgroup is not None:
+        return cgroup
+    read_bytes, write_bytes = _process_io_bytes()
+    return {
+        "attribution": "process",
+        "scope": "process:self",
+        "read_bytes": read_bytes,
+        "write_bytes": write_bytes,
+    }
+
+
 class PhaseMeasurement:
     """Process-local wall, CPU, and IO deltas for one promotion phase."""
 
@@ -41,32 +97,48 @@ class PhaseMeasurement:
         self.finished_at: datetime | None = None
         self._wall_started = time.monotonic()
         self._usage_started = resource.getrusage(resource.RUSAGE_SELF)
-        self._read_started, self._write_started = _process_io_bytes()
+        self._io_started = _io_sample()
 
     def finish(self) -> None:
         if self.finished_at is not None:
             return
         self.finished_at = datetime.now(timezone.utc)
         usage_finished = resource.getrusage(resource.RUSAGE_SELF)
-        read_finished, write_finished = _process_io_bytes()
+        io_finished = _io_sample()
         self.wall_seconds = round(time.monotonic() - self._wall_started, 6)
         self.cpu_user_seconds = round(usage_finished.ru_utime - self._usage_started.ru_utime, 6)
         self.cpu_system_seconds = round(usage_finished.ru_stime - self._usage_started.ru_stime, 6)
-        self.read_bytes = _delta(self._read_started, read_finished)
-        self.write_bytes = _delta(self._write_started, write_finished)
+        if (
+            io_finished["attribution"] == self._io_started["attribution"]
+            and io_finished["scope"] == self._io_started["scope"]
+        ):
+            self.io = {
+                "attribution": self._io_started["attribution"],
+                "scope": self._io_started["scope"],
+                "read_bytes": _delta(self._io_started["read_bytes"], io_finished["read_bytes"]),
+                "write_bytes": _delta(self._io_started["write_bytes"], io_finished["write_bytes"]),
+            }
+        else:
+            # A process may be moved between cgroups.  Do not manufacture a
+            # cross-scope delta; retain the explicit process-local fallback.
+            self.io = {
+                "attribution": "process",
+                "scope": "process:self",
+                "read_bytes": None,
+                "write_bytes": None,
+            }
 
-    def payload(self, *, count: int | None) -> dict[str, object]:
+    def payload(self, *, metrics: tuple[PhaseMetric, ...] = ()) -> dict[str, object]:
         if self.finished_at is None:
             raise RuntimeError(f"phase {self.phase} has not finished")
         return {
-            "schema": "lynchpin.incremental-phase.v1",
+            "schema": "lynchpin.incremental-phase.v2",
             "phase": self.phase,
-            "count": count,
+            "metrics": list(metrics),
             "wall_seconds": self.wall_seconds,
             "cpu_user_seconds": self.cpu_user_seconds,
             "cpu_system_seconds": self.cpu_system_seconds,
-            "read_bytes": self.read_bytes,
-            "write_bytes": self.write_bytes,
+            "io": self.io,
         }
 
     def __enter__(self) -> "PhaseMeasurement":
@@ -90,25 +162,28 @@ def record_phase_evidence(
     *,
     refresh_id: str,
     measurement: PhaseMeasurement,
-    count: int | None,
-) -> None:
+    metrics: tuple[PhaseMetric, ...] = (),
+) -> dict[str, object]:
     """Persist machine-readable phase evidence without a new telemetry database."""
-    payload = measurement.payload(count=count)
+    payload = measurement.payload(metrics=metrics)
     record_run_step(
         conn,
         refresh_id=refresh_id,
         step=f"incremental_{measurement.phase}",
         status="ok",
         message=json.dumps(payload, sort_keys=True),
-        row_count=count,
+        row_count=None,
         started_at=measurement.started_at,
         finished_at=measurement.finished_at,
     )
+    return payload
 
 
-def log_phase_evidence(measurement: PhaseMeasurement, *, count: int | None) -> None:
+def log_phase_evidence(
+    measurement: PhaseMeasurement, *, metrics: tuple[PhaseMetric, ...] = ()
+) -> None:
     """Expose the same receipt shape to the materialization unit journal."""
-    log.info("incremental_phase=%s", json.dumps(measurement.payload(count=count), sort_keys=True))
+    log.info("incremental_phase=%s", json.dumps(measurement.payload(metrics=metrics), sort_keys=True))
 
 
 def reconcile_orphaned_running_steps(
