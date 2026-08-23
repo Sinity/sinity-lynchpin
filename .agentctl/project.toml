@@ -1,0 +1,66 @@
+schema = 1
+
+[project]
+id = "lynchpin"
+display_name = "Lynchpin"
+root_markers = ["pyproject.toml", "lynchpin"]
+
+[environment]
+kind = "nix-develop"
+command = ["nix", "develop", "--command"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "KNOWLEDGEBASE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
+
+[workspace]
+provider = "git-worktree"
+root = "/realm/worktrees"
+default_base = "origin/master"
+identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "flake.nix"]
+checkpoint_untracked = true
+verification_operations = ["check"]
+
+[conflicts]
+exact_files = ["pyproject.toml", "flake.nix"]
+generated_surfaces = ["docs/reference/schema-support-matrix.md"]
+
+[conflicts.semantic_slots]
+materialization-registry = ["lynchpin/materialization.py", "lynchpin/ingest/**/*.py"]
+substrate-schema = ["lynchpin/substrate/**/*.py"]
+public-mcp-contract = ["lynchpin/mcp/**/*.py", "tests/test_mcp*.py"]
+
+[operations.check]
+description = "Run Lynchpin lint, maintained type checks, and default tests"
+exec = ["just", "check"]
+pool = "bulk"
+result = "exit"
+cache = "tree+environment"
+
+[operations.lint]
+description = "Run Lynchpin Ruff checks"
+exec = ["just", "lint"]
+pool = "normal"
+result = "exit"
+cache = "tree+environment"
+
+[operations.materialize_plan]
+description = "Render the current canonical materialization plan without writes"
+exec = ["lynchpin-materialize", "--all", "--plan-json", "--progress", "quiet"]
+pool = "normal"
+result = "json"
+cache = "tree+environment"
+
+[operations.materialize_all]
+description = "Materialize every locally rebuildable canonical Lynchpin product"
+exec = ["lynchpin-materialize", "--all", "--progress", "json"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+exclusive_keys = ["lynchpin:canonical-products"]
+
+[operations.promote_incremental]
+description = "Refresh canonical products and atomically promote an incremental substrate generation"
+exec = ["lynchpin-materialize", "--all", "--promote", "--history", "incremental", "--progress", "json"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+exclusive_keys = ["lynchpin:canonical-products", "lynchpin:substrate-generation"]
