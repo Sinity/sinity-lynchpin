@@ -46,7 +46,7 @@ cache = "tree+environment"
 description = "Render the current canonical materialization plan without writes"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--plan-json", "--progress", "quiet"]
 pool = "normal"
-result = "json"
+result = "exit"
 cache = "tree+environment"
 
 [operations.materialize_all]
