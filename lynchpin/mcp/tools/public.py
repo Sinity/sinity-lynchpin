@@ -115,15 +115,13 @@ def _project_day_timeline_meta(
 ) -> dict[str, Any]:
     from lynchpin.mcp.tools._utils import best_materialized_refresh_id
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.views import ensure_views
 
     requested_end = _parse_date(end)
     requested_start = _parse_date(start)
     coverage_params: list[Any] = []
     coverage_clauses: list[str] = []
     selected_refresh_id = refresh_id
-    with connect(substrate_path()) as conn:
-        ensure_views(conn)
+    with connect(substrate_path(), read_only=True) as conn:
         if selected_refresh_id is None:
             selected_refresh_id = best_materialized_refresh_id(
                 conn,

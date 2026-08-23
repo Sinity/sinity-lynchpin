@@ -1115,7 +1115,13 @@ def test_evidence_graph_empty_promote_is_not_reported_ok(
     )
     from lynchpin.core.evidence_graph import EvidenceGraph
     from lynchpin.materialization import audit_materialization
-    from lynchpin.substrate.connection import apply_schema, connect, substrate_path
+    from lynchpin.substrate.connection import (
+        bootstrap_candidate_generation,
+        connect,
+        substrate_path,
+        substrate_read_snapshot_path,
+    )
+    from lynchpin.substrate.status_manifest import substrate_status_manifest_path
 
     graph = EvidenceGraph(
         start=date(2026, 5, 1),
@@ -1131,23 +1137,30 @@ def test_evidence_graph_empty_promote_is_not_reported_ok(
         lambda *args, **kwargs: [],
     )
 
-    with connect(substrate_path()) as conn:
-        apply_schema(conn)
-        counts: dict[str, int] = {}
-        promote_graph_source(
-            conn,
-            refresh_id="dag:test-empty-graph",
-            window_start=date(2026, 5, 1),
-            window_end=date(2026, 5, 2),
-            counts=counts,
-            selection=SourceSelection.from_collection({SOURCE_EVIDENCE_GRAPH}),
-            write_evidence_graph=True,
-        )
-        status_row = conn.execute(
-            "SELECT status, reason, row_count FROM substrate_source_status "
-            "WHERE refresh_id = ? AND source = ?",
-            ["dag:test-empty-graph", SOURCE_EVIDENCE_GRAPH],
-        ).fetchone()
+    for artifact in (
+        substrate_path(),
+        substrate_read_snapshot_path(),
+        substrate_status_manifest_path(),
+    ):
+        artifact.unlink(missing_ok=True)
+    with bootstrap_candidate_generation() as generation:
+        with connect() as conn:
+            counts: dict[str, int] = {}
+            promote_graph_source(
+                conn,
+                refresh_id="dag:test-empty-graph",
+                window_start=date(2026, 5, 1),
+                window_end=date(2026, 5, 2),
+                counts=counts,
+                selection=SourceSelection.from_collection({SOURCE_EVIDENCE_GRAPH}),
+                write_evidence_graph=True,
+            )
+            status_row = conn.execute(
+                "SELECT status, reason, row_count FROM substrate_source_status "
+                "WHERE refresh_id = ? AND source = ?",
+                ["dag:test-empty-graph", SOURCE_EVIDENCE_GRAPH],
+            ).fetchone()
+        _seed_verified_serving_generation(generation.candidate, "dag:test-empty-graph")
 
     audit = {row.name: row for row in audit_materialization()}
 

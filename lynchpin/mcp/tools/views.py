@@ -63,9 +63,7 @@ def project_day_correlations(
             window=half_open_date_window(start_d, end_d),
         )
     path = substrate_path()
-    # Views need CREATE OR REPLACE (DDL) so we cannot use read_only=True here.
-    # Safety: this function only calls read-side reader helpers, never promoters.
-    with connect(path) as conn:
+    with connect(path, read_only=True) as conn:
         # Default to the best refresh_id so MCP callers don't get duplicate
         # (project, date) rows across multiple promotion runs.
         if refresh_id is None:
@@ -109,7 +107,7 @@ def closure_chain_walks(
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="closure_chain_walks")
     path = substrate_path()
-    with connect(path) as conn:
+    with connect(path, read_only=True) as conn:
         if refresh_id is None:
             refresh_id = best_materialized_refresh_id(
                 conn,
@@ -137,7 +135,7 @@ def file_overlap_edges(
     if we_refresh_id is None or commit_refresh_id is None:
         ensure_substrate_materialized_for_read(caller="file_overlap_edges")
     path = substrate_path()
-    with connect(path) as conn:
+    with connect(path, read_only=True) as conn:
         edges = compute_file_overlap_edges(
             conn,
             we_refresh_id=we_refresh_id,
@@ -161,7 +159,7 @@ def symbol_overlap_edges(
     if we_refresh_id is None or commit_refresh_id is None:
         ensure_substrate_materialized_for_read(caller="symbol_overlap_edges")
     path = substrate_path()
-    with connect(path) as conn:
+    with connect(path, read_only=True) as conn:
         edges = compute_symbol_overlap_edges(
             conn,
             we_refresh_id=we_refresh_id,

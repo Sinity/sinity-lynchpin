@@ -25,7 +25,7 @@ def test_machine_metrics_daily_materializes_substrate_only(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         machine_calls.append((name, window))
         return Result()
 
@@ -79,7 +79,7 @@ def test_machine_metrics_memory_materializes_substrate_only(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         machine_calls.append((name, window))
         return Result()
 
@@ -209,7 +209,7 @@ def test_machine_pressure_explain_materializes_substrate_only(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         machine_calls.append((name, window))
         return Result()
 
@@ -434,7 +434,7 @@ def test_machine_bufferbloat_summary_materializes_and_selects_snapshot(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         machine_calls.append((name, window))
         return Result()
 
@@ -503,7 +503,7 @@ def test_machine_service_state_summary_materializes_half_open_window(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         machine_calls.append((name, window))
         return Result()
 

@@ -23,12 +23,12 @@ def _ensure_source_materialized_for_read(
     start: _date | None = None,
     end: _date | None = None,
 ) -> dict[str, Any]:
-    """Ensure one canonical source product before an explicit read."""
+    """Inspect one canonical source product before an explicit read."""
 
     from lynchpin.materialization import ensure_materialized
 
     window = (start, end) if start is not None and end is not None else None
-    return ensure_materialized(name, window=window).to_json()
+    return ensure_materialized(name, window=window, budget="manual").to_json()
 
 
 def _exclusive_end(end: _date | None) -> _date | None:

@@ -36,8 +36,8 @@ def code_snapshot_status() -> dict[str, Any]:
 
     Queries code_snapshot_run in the substrate to show the current state of
     chisel-generated repomix XML slices, git bundles, and issue exports per project.
-    Ensures the derived snapshot product has converged before reading substrate
-    rows; manual ops remain available for forced rebuilds and diagnostics.
+    Inspects the derived snapshot product before reading substrate rows; manual
+    operations remain available for rebuilds and diagnostics.
     """
     from lynchpin.materialization import ensure_materialized
     from lynchpin.substrate.code_snapshots import iter_code_snapshot_runs

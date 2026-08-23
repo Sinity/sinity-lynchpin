@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import threading
 import warnings
 
 import duckdb
@@ -605,6 +606,24 @@ def test_bootstrap_candidate_requires_an_empty_serving_artifact_set(
             pass
 
 
+def test_bootstrap_rejects_a_stale_canonical_wal(
+    isolated_substrate: Path,
+) -> None:
+    """Bootstrap must never let a prior WAL replay into a new generation."""
+    from lynchpin.substrate.connection import bootstrap_candidate_generation
+
+    wal = isolated_substrate.with_name(f"{isolated_substrate.name}.wal")
+    wal.write_bytes(b"unverified canonical WAL")
+
+    with pytest.raises(CandidateGenerationRejected, match="WAL"):
+        with bootstrap_candidate_generation():
+            pass
+
+    assert wal.exists()
+    assert not isolated_substrate.exists()
+    assert not list(isolated_substrate.parent.glob("substrate.candidate-*.duckdb"))
+
+
 def test_candidate_failure_retains_verified_serving_generation(
     isolated_substrate: Path,
 ) -> None:
@@ -956,6 +975,87 @@ def test_direct_writer_is_rejected_when_a_read_snapshot_is_serving(
             pass
 
 
+def test_direct_writer_is_rejected_before_the_first_snapshot(
+    isolated_substrate: Path,
+) -> None:
+    """An empty serving path is never a loophole for canonical mutation."""
+    with pytest.raises(CandidateGenerationRejected, match="direct canonical"):
+        with connect():
+            pass
+    with pytest.raises(CandidateGenerationRejected, match="direct canonical"):
+        with connect(isolated_substrate):
+            pass
+
+
+def test_candidate_build_does_not_block_snapshot_readers(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Writer reservation is independent from the short publication lock."""
+    _allow_reflink_preflight(monkeypatch)
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    completed = threading.Event()
+    observed: list[str] = []
+
+    def read_serving_generation() -> None:
+        with connect(read_only=True) as conn:
+            observed.append(
+                str(
+                    conn.execute(
+                        "SELECT refresh_id FROM substrate_promotion_run "
+                        "WHERE status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+                    ).fetchone()[0]
+                )
+            )
+        completed.set()
+
+    with candidate_generation() as generation:
+        reader = threading.Thread(target=read_serving_generation)
+        reader.start()
+        assert completed.wait(timeout=2), "reader blocked behind candidate construction"
+        reader.join(timeout=2)
+        _record_verified_generation(generation.candidate, "current")
+
+    assert observed == ["prior"]
+
+
+def test_serving_generation_holds_publication_lock_for_full_observation(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A publisher cannot interleave a DB read with its matching manifest read."""
+    import lynchpin.substrate.connection as connection
+    from lynchpin.substrate.connection import serving_generation
+
+    _allow_reflink_preflight(monkeypatch)
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    publisher_entered = threading.Event()
+    release_publisher = threading.Event()
+
+    def contend_for_publication() -> None:
+        with connection._publication_write_lock(isolated_substrate):
+            publisher_entered.set()
+            release_publisher.wait(timeout=2)
+
+    with serving_generation() as generation:
+        assert generation.manifest is not None
+        assert generation.manifest["latest_refresh_id"] == "prior"
+        assert generation.connection.execute(
+            "SELECT refresh_id FROM substrate_promotion_run "
+            "WHERE status = 'ok' ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone() == ("prior",)
+        publisher = threading.Thread(target=contend_for_publication)
+        publisher.start()
+        assert not publisher_entered.wait(timeout=0.1)
+    assert publisher_entered.wait(timeout=2)
+    release_publisher.set()
+    publisher.join(timeout=2)
+
+
 def test_connect_prefers_verified_snapshot_to_unready_canonical(
     isolated_substrate: Path,
 ) -> None:
@@ -967,5 +1067,26 @@ def test_connect_prefers_verified_snapshot_to_unready_canonical(
 
     with connect(isolated_substrate, read_only=True) as reader:
         assert reader.execute(
+            "SELECT refresh_id FROM substrate_promotion_run"
+        ).fetchone() == ("prior",)
+
+
+def test_serving_generation_omits_manifest_for_snapshot_fallback(
+    isolated_substrate: Path,
+) -> None:
+    """A fallback snapshot never inherits the canonical database manifest."""
+    from lynchpin.substrate.connection import serving_generation
+
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute("DELETE FROM substrate_source_status")
+        conn.execute("DELETE FROM substrate_promotion_run")
+
+    with serving_generation() as generation:
+        assert generation.database_path == substrate_read_snapshot_path()
+        assert generation.manifest is None
+        assert generation.connection.execute(
             "SELECT refresh_id FROM substrate_promotion_run"
         ).fetchone() == ("prior",)

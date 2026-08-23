@@ -34,8 +34,8 @@ def test_operator_rhythm_returns_rendered_summary(monkeypatch: pytest.MonkeyPatc
         def to_json(self) -> dict[str, object]:
             return {"status": "ready"}
 
-    def fake_ensure_materialized(name, *, window=None):
-        source_calls.append((name, window))
+    def fake_ensure_materialized(name, *, window=None, budget=None):
+        source_calls.append((name, window, budget))
         return Result()
 
     def fake_ensure_substrate_materialized_for_read(*, caller, window=None):
@@ -73,7 +73,9 @@ def test_operator_rhythm_returns_rendered_summary(monkeypatch: pytest.MonkeyPatc
     assert result["summary"].startswith("Window 2026-05-25")
     assert "project sinex" in result["summary"]
     assert result["peak_focus_hour"] == [0, 14]
-    assert source_calls == [("activitywatch", (date(2026, 5, 25), date(2026, 5, 26)))]
+    assert source_calls == [
+        ("activitywatch", (date(2026, 5, 25), date(2026, 5, 26)), "manual")
+    ]
     assert substrate_calls == [("operator_rhythm", (date(2026, 5, 25), date(2026, 5, 26)))]
 
 
@@ -94,7 +96,7 @@ def test_spotify_daily_materializes_source_and_substrate_for_default_snapshot(
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         source_calls.append((name, window))
         return Result()
 
@@ -146,7 +148,7 @@ def test_personal_daily_signals_materializes_source_and_substrate_for_default_sn
         def __exit__(self, *_args):
             return None
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         source_calls.append((name, window))
         return Result()
 
@@ -202,7 +204,7 @@ def test_web_daily_buckets_visits_by_logical_day(monkeypatch: pytest.MonkeyPatch
         def to_json(self) -> dict[str, object]:
             return {"status": "ready"}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         ensure_calls.append((name, window))
         return Result()
 
@@ -274,7 +276,7 @@ def test_terminal_daily_materializes_atuin_for_requested_window(monkeypatch: pyt
         def to_json(self) -> dict[str, object]:
             return {"name": "atuin", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -311,7 +313,7 @@ def test_terminal_sessions_reuses_preconverged_atuin_product(monkeypatch: pytest
         def to_json(self) -> dict[str, object]:
             return {"name": "atuin", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -363,7 +365,7 @@ def test_keylog_daily_materializes_keylog_for_requested_window(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -436,7 +438,7 @@ def test_keybind_usage_materializes_keylog_and_filters_metadata(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -537,7 +539,7 @@ def test_keybind_usage_reuses_exact_window_artifact(monkeypatch: pytest.MonkeyPa
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -623,7 +625,7 @@ def test_keybind_usage_reuses_covering_artifact_with_window_counts(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -748,7 +750,7 @@ def test_keylog_text_shape_returns_shape_counts_without_raw_text(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -801,7 +803,7 @@ def test_keylog_text_shape_reuses_covering_artifact(monkeypatch: pytest.MonkeyPa
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -867,7 +869,7 @@ def test_keylog_text_content_materializes_keylog_and_returns_content_metrics(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -939,7 +941,7 @@ def test_keylog_text_content_reuses_exact_window_artifact(
         def to_json(self) -> dict[str, object]:
             return {"name": "keylog", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -970,7 +972,7 @@ def test_title_metadata_audit_reuses_preconverged_product(
         def to_json(self) -> dict[str, object]:
             return {"name": "title_metadata", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -1024,7 +1026,7 @@ def test_activity_content_daily_materializes_content_and_title_metadata(
         def to_json(self) -> dict[str, object]:
             return {"name": self.name, "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result(name)
 
@@ -1073,7 +1075,7 @@ def test_google_takeout_events_include_end_date(monkeypatch: pytest.MonkeyPatch)
         def to_json(self) -> dict[str, object]:
             return {"name": "google_takeout", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -1134,7 +1136,7 @@ def test_communication_events_include_end_date(monkeypatch: pytest.MonkeyPatch) 
         def to_json(self) -> dict[str, object]:
             return {"name": "communications", "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result()
 
@@ -1180,7 +1182,7 @@ def test_daily_personal_source_preconditions_use_half_open_windows(
         def to_json(self) -> dict[str, object]:
             return {"name": self.name, "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result(name)
 
@@ -1276,7 +1278,7 @@ def test_activity_content_tools_include_end_date(monkeypatch: pytest.MonkeyPatch
         def to_json(self) -> dict[str, object]:
             return {"name": self.name, "status": "ready", "changed": False}
 
-    def fake_ensure_materialized(name, *, window=None):
+    def fake_ensure_materialized(name, *, window=None, budget=None):
         calls.append((name, window))
         return Result(name)
 

@@ -48,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Materialize canonical Lynchpin products")
     parser.add_argument("--all", action="store_true", help="materialize every locally rebuildable product")
     parser.add_argument("--promote", action="store_true", help="also build/promote a coherent substrate snapshot")
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="initialize an empty substrate through one verified candidate publication",
+    )
     parser.add_argument("--start", help="snapshot start date when --promote is used")
     parser.add_argument("--end", help="snapshot end date when --promote is used")
     parser.add_argument(
@@ -73,7 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     _PROGRESS_FORMAT = args.progress
 
     if not args.all and not args.promote:
-        parser.error("--all is required unless --promote builds a snapshot from canonical products")
+        parser.error("--all --promote is required unless --promote builds a snapshot from existing products")
+    if args.all and not args.promote and not args.plan_json:
+        parser.error("--all requires --promote so substrate writes use candidate publication")
+    if args.bootstrap and not (args.all and args.promote):
+        parser.error("--bootstrap requires --all --promote")
     if args.force and not args.all:
         parser.error("--force requires --all")
     if args.rebuild_candidate_indexes and not (args.all and args.promote):
@@ -115,9 +124,12 @@ def main(argv: list[str] | None = None) -> int:
     # snapshot has recorded a usable promoted generation. This leaves the last
     # serving generation queryable if a materializer or DuckDB fails.
     if args.promote:
-        from lynchpin.substrate.connection import candidate_generation
+        from lynchpin.substrate.connection import bootstrap_candidate_generation, candidate_generation
 
-        if args.rebuild_candidate_indexes:
+        if args.bootstrap:
+            _progress("bootstrapping an empty substrate through candidate publication")
+            generation_context = bootstrap_candidate_generation()
+        elif args.rebuild_candidate_indexes:
             _progress("rebuilding candidate indexes from verified logical rows")
             generation_context = candidate_generation(rebuild_indexes=True)
         else:

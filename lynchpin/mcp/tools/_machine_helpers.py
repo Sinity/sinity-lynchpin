@@ -14,12 +14,12 @@ def _ensure_machine_materialized_for_read(
     start: Any = None,
     end: Any = None,
 ) -> dict[str, Any]:
-    """Ensure canonical machine telemetry before reading promoted tables."""
+    """Inspect canonical machine telemetry before reading promoted tables."""
 
     from lynchpin.materialization import ensure_materialized
 
     window = (start, end) if start is not None and end is not None else None
-    return ensure_materialized("machine", window=window).to_json()
+    return ensure_materialized("machine", window=window, budget="manual").to_json()
 
 
 def _exclusive_end(end: Any) -> Any:

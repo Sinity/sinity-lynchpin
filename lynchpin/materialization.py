@@ -2341,17 +2341,19 @@ def _themotte_operator_root(root: Path) -> Path:
 
 
 def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    from .substrate.connection import substrate_path
-    from .substrate.status_manifest import load_current_substrate_status_manifest, substrate_status_manifest_path
+    from .substrate.connection import serving_generation, substrate_path
+    from .substrate.status_manifest import substrate_status_manifest_path
 
     path = Path(substrate_path())
-    manifest = load_current_substrate_status_manifest(path)
-    if manifest is not None:
-        row = _git_substrate_dataset_from_manifest(cfg, path, manifest)
-        if row is not None:
-            return row
-
-    builds, latest_build_counts, latest_status, promotion_count = _duck_substrate_status(path)
+    with serving_generation(path) as generation:
+        manifest = generation.manifest
+        if manifest is not None:
+            row = _git_substrate_dataset_from_manifest(cfg, path, manifest)
+            if row is not None:
+                return row
+        builds, latest_build_counts, latest_status, promotion_count = _duck_substrate_status_connection(
+            generation.connection
+        )
     latest_node_count = latest_build_counts[0] if latest_build_counts else None
     if builds and builds > 0 and latest_node_count and latest_node_count > 0:
         status: Status = "ready"
@@ -3624,15 +3626,22 @@ def _duck_substrate_status(
 
         conn = duckdb.connect(str(path), read_only=True)
         try:
-            builds = _duck_scalar_count(conn, "evidence_graph_build")
-            latest_build_counts = _duck_latest_graph_build_counts(conn)
-            latest_status = _duck_latest_source_status(conn, "evidence_graph")
-            promotion_count = _duck_successful_promotion_count(conn)
+            return _duck_substrate_status_connection(conn)
         finally:
             conn.close()
     except Exception:
         return None, None, None, None
-    return builds, latest_build_counts, latest_status, promotion_count
+
+
+def _duck_substrate_status_connection(
+    conn: Any,
+) -> tuple[int | None, tuple[int, int] | None, tuple[str, str | None] | None, int | None]:
+    return (
+        _duck_scalar_count(conn, "evidence_graph_build"),
+        _duck_latest_graph_build_counts(conn),
+        _duck_latest_source_status(conn, "evidence_graph"),
+        _duck_successful_promotion_count(conn),
+    )
 
 
 def _duck_evidence_graph_status(

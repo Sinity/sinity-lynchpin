@@ -158,8 +158,7 @@ def compute_file_overlap_edges(
     """Compute file_overlap edges via SQL view; return same shape as
     the ``work_event_file_overlap`` SQL view produces.
 
-    Calls ``ensure_views`` first (idempotent CREATE OR REPLACE).  Each
-    returned ``EvidenceEdge`` has weight 0.85 and an evidence string of the
+    Each returned ``EvidenceEdge`` has weight 0.85 and an evidence string of the
     form ``'shared paths: a, b, c'`` or ``'shared paths: a, b, c (+N)'``,
     exactly matching the Python builder.
 
@@ -168,10 +167,6 @@ def compute_file_overlap_edges(
     (list_intersect does not guarantee order).
     """
     from lynchpin.core.evidence_graph import EvidenceEdge
-    from lynchpin.substrate.views import ensure_views
-
-    ensure_views(conn)
-
     clauses: list[str] = ["overlap_count > 0"]
     params: list[Any] = []
     if we_refresh_id is not None:
@@ -210,8 +205,7 @@ def compute_symbol_overlap_edges(
     """Compute symbol_overlap edges via SQL view; return same shape as
     the ``work_event_symbol_overlap`` SQL view produces.
 
-    Calls ``ensure_views`` first (idempotent CREATE OR REPLACE).  Each
-    returned ``EvidenceEdge`` has weight 0.95 and an evidence string of the
+    Each returned ``EvidenceEdge`` has weight 0.95 and an evidence string of the
     form ``'shared symbols: a, b, c'`` or ``'shared symbols: a, b, c (+N)'``,
     exactly matching the Python builder.
 
@@ -219,10 +213,6 @@ def compute_symbol_overlap_edges(
     non-deterministic order; we sort in Python before formatting.
     """
     from lynchpin.core.evidence_graph import EvidenceEdge
-    from lynchpin.substrate.views import ensure_views
-
-    ensure_views(conn)
-
     clauses: list[str] = ["symbol_count > 0"]
     params: list[Any] = []
     if we_refresh_id is not None:

@@ -47,18 +47,12 @@ def load_project_day_correlations(
 ) -> list[ProjectDayCorrelationRow]:
     """Read project_day_correlation rows. Filters compose with AND.
 
-    Calls ``ensure_views`` first (idempotent CREATE OR REPLACE).
-
     ``min_source_count=2`` surfaces only project-days with cross-source support.
     ``focus_seconds`` and ``shell_seconds`` from the view are divided by 60
     to produce ``focus_minutes`` / ``shell_minutes`` on the returned dataclass.
     DuckDB ARRAY_AGG results (Python list) are converted to tuple; NULL arrays
     become empty tuples.
     """
-    from lynchpin.substrate.views import ensure_views
-
-    ensure_views(conn)
-
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -165,8 +159,6 @@ def load_issue_closure_chain_walks(
 ) -> list[IssueClosureChainWalkRow]:
     """Read issue_closure_chain_walk rows from the recursive CTE.
 
-    Calls ``ensure_views`` first (idempotent CREATE OR REPLACE).
-
     Surfaces the structural shape of closure chains (which nodes are reachable
     from which issue) for downstream classification by
     ``lynchpin/graph/issue_closure_chain.py``.  The Python layer still owns
@@ -177,10 +169,6 @@ def load_issue_closure_chain_walks(
     payload).  The reachable_node_ids DuckDB list is converted to tuple; NULL
     arrays become empty tuples.
     """
-    from lynchpin.substrate.views import ensure_views
-
-    ensure_views(conn)
-
     clauses: list[str] = []
     params: list[Any] = []
 

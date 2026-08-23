@@ -80,7 +80,7 @@ def ensure_substrate_materialized_for_read(
     caller: str,
     window: tuple[date, date] | None = None,
 ) -> dict[str, Any]:
-    """Cheaply observe/converge the substrate product before a read.
+    """Inspect the substrate product before a read.
 
     This deliberately does not enqueue work or hide a full promotion inside
     normal MCP reads. ``evidence_graph_substrate`` is a derived substrate product:
@@ -104,7 +104,11 @@ def ensure_substrate_materialized_for_read(
 
     from lynchpin.materialization import ensure_materialized
 
-    result = ensure_materialized("evidence_graph_substrate", window=window)
+    result = ensure_materialized(
+        "evidence_graph_substrate",
+        window=window,
+        budget="manual",
+    )
     if result.status not in ("ready", "pinned"):
         log.warning(
             "mcp.%s: evidence_graph_substrate is not ready for window=%s "

@@ -609,7 +609,7 @@ def promote_analysis_product(
     """
     import json as _json
     from datetime import datetime as _dt, timezone as _tz
-    from lynchpin.substrate.connection import connect, substrate_path, apply_schema
+    from lynchpin.substrate.connection import candidate_generation, connect
 
     now = _dt.now(_tz.utc)
     node_id = f"analysis_product:{title.replace(' ', '_')}:{now.strftime('%Y%m%d')}"
@@ -617,40 +617,40 @@ def promote_analysis_product(
     if dry_run:
         return {"promoted": False, "node_id": node_id, "dry_run": True}
 
-    with connect(substrate_path(), read_only=False) as conn:
-        apply_schema(conn)
-        if refresh_id is None:
-            refresh_id = latest_materialized_refresh_id(conn, caller="adversarial_review")
+    with candidate_generation():
+        with connect() as conn:
             if refresh_id is None:
-                return {
-                    "promoted": False,
-                    "node_id": node_id,
-                    "error": "no promote runs",
-                }
+                refresh_id = latest_materialized_refresh_id(conn, caller="adversarial_review")
+                if refresh_id is None:
+                    return {
+                        "promoted": False,
+                        "node_id": node_id,
+                        "error": "no promote runs",
+                    }
 
-        conn.execute(
-            "DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?",
-            [refresh_id, node_id],
-        )
-        conn.execute(
-            """
-            INSERT INTO evidence_node (
-                refresh_id, id, kind, source, date, project,
-                summary, start_ts, end_ts, url, payload, provenance, caveats
-            ) VALUES (?, ?, 'analysis_product', 'analysis',
-                      CURRENT_DATE, NULL, ?, ?, ?, NULL, ?, NULL, '[]')
-        """,
-            [
-                refresh_id,
-                node_id,
-                title,
-                now,
-                now,
-                _json.dumps(
-                    {"title": title, "path": path, "generated_at": now.isoformat()}
-                ),
-            ],
-        )
+            conn.execute(
+                "DELETE FROM evidence_node WHERE refresh_id = ? AND id = ?",
+                [refresh_id, node_id],
+            )
+            conn.execute(
+                """
+                INSERT INTO evidence_node (
+                    refresh_id, id, kind, source, date, project,
+                    summary, start_ts, end_ts, url, payload, provenance, caveats
+                ) VALUES (?, ?, 'analysis_product', 'analysis',
+                          CURRENT_DATE, NULL, ?, ?, ?, NULL, ?, NULL, '[]')
+            """,
+                [
+                    refresh_id,
+                    node_id,
+                    title,
+                    now,
+                    now,
+                    _json.dumps(
+                        {"title": title, "path": path, "generated_at": now.isoformat()}
+                    ),
+                ],
+            )
 
     return {"promoted": True, "node_id": node_id, "dry_run": False}
 

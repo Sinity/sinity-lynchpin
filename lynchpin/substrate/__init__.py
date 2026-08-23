@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from lynchpin.substrate.connection import (
     SUBSTRATE_VERSION,
+    ServingGeneration,
     connect,
+    serving_generation,
     substrate_path,
     apply_schema,
     reset_substrate,
@@ -25,7 +27,9 @@ from lynchpin.substrate.connection import (
 
 __all__ = [
     "SUBSTRATE_VERSION",
+    "ServingGeneration",
     "connect",
+    "serving_generation",
     "substrate_path",
     "apply_schema",
     "reset_substrate",

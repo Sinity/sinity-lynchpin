@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 
 UTC = timezone.utc
@@ -112,9 +114,20 @@ def setup_substrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reload_config(monkeypatch)
     monkeypatch.setattr(duck_conn, "substrate_path", lambda: db_path)
 
-    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.connection import apply_schema
 
-    with connect(db_path) as conn:
+    with duckdb.connect(str(db_path)) as conn:
         apply_schema(conn)
+
+    # Fixtures deliberately seed isolated DuckDB files without exercising the
+    # public serving writer API. Production callers must use candidate
+    # publication; the substrate concurrency suite pins that boundary.
+    @contextmanager
+    def fixture_connect(path=None, *, read_only=False, **_kwargs):
+        target = Path(path) if path is not None else db_path
+        with duckdb.connect(str(target), read_only=read_only) as conn:
+            yield conn
+
+    monkeypatch.setattr(duck_conn, "connect", fixture_connect)
 
     return db_path

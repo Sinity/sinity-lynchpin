@@ -247,33 +247,33 @@ def substrate_readiness_report() -> dict[str, Any]:
     """
     from lynchpin.materialization import substrate_materialization_snapshot
     from lynchpin.substrate.connection import (
-        connect,
         generation_refresh_id,
+        serving_generation,
         substrate_path,
         substrate_read_snapshot_path,
     )
 
     path = substrate_path()
-    canonical_generation = generation_refresh_id(path)
     snapshot_path = substrate_read_snapshot_path()
-    snapshot_generation = generation_refresh_id(snapshot_path)
-    if canonical_generation is not None:
-        serving = {
-            "state": "ready",
-            "kind": "canonical",
-            "refresh_id": canonical_generation,
-        }
-    elif snapshot_generation is not None:
-        serving = {
-            "state": "degraded_previous_generation",
-            "kind": "read_snapshot",
-            "refresh_id": snapshot_generation,
-        }
-    else:
-        serving = {"state": "unavailable", "kind": None, "refresh_id": None}
-    serving_path = snapshot_path if serving["kind"] == "read_snapshot" else path
-
-    with connect(path, read_only=True) as conn:
+    with serving_generation(path) as observation:
+        conn = observation.connection
+        canonical_generation = generation_refresh_id(path)
+        snapshot_generation = generation_refresh_id(snapshot_path)
+        if canonical_generation is not None:
+            serving = {
+                "state": "ready",
+                "kind": "canonical",
+                "refresh_id": canonical_generation,
+            }
+        elif snapshot_generation is not None:
+            serving = {
+                "state": "degraded_previous_generation",
+                "kind": "read_snapshot",
+                "refresh_id": snapshot_generation,
+            }
+        else:
+            serving = {"state": "unavailable", "kind": None, "refresh_id": None}
+        serving_path = observation.database_path
         # ── substrate version ──────────────────────────────────────────────
         version_row = conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
@@ -490,13 +490,11 @@ def contract_coverage(
             continue
         materialization = None
         if source is not None:
-            materialization = ensure_materialized(row.name, window=window).to_json()
-            if materialization.get("changed") is True:
-                row = next(
-                    audited
-                    for audited in audit_materialization()
-                    if audited.name == row.name
-                )
+            materialization = ensure_materialized(
+                row.name,
+                window=window,
+                budget="manual",
+            ).to_json()
         coverage = materialized_dataset_coverage(row, start=start_d, end=end_exclusive)
         payload = {
             "source": row.name,
@@ -923,7 +921,7 @@ def ai_attribution_backfill(
     import json as _json
     from datetime import datetime as _dt, timezone as _tz
 
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import candidate_generation, connect, substrate_path
 
     path = substrate_path()
     with connect(path, read_only=True) as conn:
@@ -988,19 +986,20 @@ def ai_attribution_backfill(
     now_iso = _dt.now(_tz.utc).isoformat()
 
     if not dry_run:
-        with connect(path, read_only=False) as conn:
-            for sha, repo, subject, cnt, kinds, event_ids in matches:
-                attribution = _json.dumps({
-                    "matched_events": cnt,
-                    "top_kinds": list(kinds[:5]) if kinds else [],
-                    "matched_via": "project_suffix_path_overlap",
-                    "backfilled_at": now_iso,
-                })
-                conn.execute(
-                    "UPDATE commit_fact SET ai_attribution = ? "
-                    "WHERE refresh_id = ? AND sha = ? AND repo = ?",
-                    [attribution, refresh_id, sha, repo],
-                )
+        with candidate_generation():
+            with connect() as conn:
+                for sha, repo, subject, cnt, kinds, event_ids in matches:
+                    attribution = _json.dumps({
+                        "matched_events": cnt,
+                        "top_kinds": list(kinds[:5]) if kinds else [],
+                        "matched_via": "project_suffix_path_overlap",
+                        "backfilled_at": now_iso,
+                    })
+                    conn.execute(
+                        "UPDATE commit_fact SET ai_attribution = ? "
+                        "WHERE refresh_id = ? AND sha = ? AND repo = ?",
+                        [attribution, refresh_id, sha, repo],
+                    )
 
     return {
         "matched_commits": matched_count,
@@ -1035,7 +1034,7 @@ def substrate_prune(
         {"builds_before": N, "builds_after": N, "nodes_deleted": N,
          "edges_deleted": N, "dry_run": bool}
     """
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import candidate_generation, connect, substrate_path
 
     with connect(substrate_path(), read_only=True) as conn:
         builds_before = conn.execute(
@@ -1088,25 +1087,22 @@ def substrate_prune(
             "dry_run": True,
         }
 
-    with connect(substrate_path(), read_only=False) as conn:
-        for rid in to_delete:
-            conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [rid])
-            conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [rid])
-            conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [rid])
-
-    with connect(substrate_path(), read_only=True) as conn:
-        builds_after = conn.execute(
-            "SELECT COUNT(*) FROM evidence_graph_build"
-        ).fetchone()[0]
-        nodes_after = conn.execute(
-            "SELECT COUNT(*) FROM evidence_node"
-        ).fetchone()[0]
-        edges_after = conn.execute(
-            "SELECT COUNT(*) FROM evidence_edge"
-        ).fetchone()[0]
-
-        # Vacuum to reclaim space
-        conn.execute("CHECKPOINT")
+    with candidate_generation():
+        with connect() as conn:
+            for rid in to_delete:
+                conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [rid])
+                conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [rid])
+                conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [rid])
+            conn.execute("CHECKPOINT")
+            builds_after = conn.execute(
+                "SELECT COUNT(*) FROM evidence_graph_build"
+            ).fetchone()[0]
+            nodes_after = conn.execute(
+                "SELECT COUNT(*) FROM evidence_node"
+            ).fetchone()[0]
+            edges_after = conn.execute(
+                "SELECT COUNT(*) FROM evidence_edge"
+            ).fetchone()[0]
 
     return {
         "builds_before": builds_before,

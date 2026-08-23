@@ -41,7 +41,7 @@ def _git_value(repo: Path, *args: str) -> str | None:
 def mcp_runtime_status() -> dict[str, Any]:
     """Report the MCP server code path, repo revision, and latest materialized substrate ID."""
     from lynchpin.materialization import substrate_materialization_snapshot
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import serving_generation, substrate_path
 
     package_root = Path(__file__).resolve().parents[2]
     repo_root_raw = os.environ.get("LYNCHPIN_REPO_ROOT")
@@ -52,11 +52,20 @@ def mcp_runtime_status() -> dict[str, Any]:
     git_status = _git_value(repo_root, "status", "--short") if repo_root else None
 
     try:
-        with connect(substrate_path(), read_only=True) as conn:
+        with serving_generation() as generation:
+            conn = generation.connection
             latest_materialized = latest_materialized_refresh_id(conn, caller="mcp_runtime_status")
+            materialization = substrate_materialization_snapshot(
+                generation.database_path,
+                latest_materialized_refresh_id=latest_materialized,
+            ).to_json()
     except Exception as exc:  # noqa: BLE001 - status tool should report broken substrate access.
         latest_materialized = None
         substrate_error = f"{type(exc).__name__}: {exc}"
+        materialization = substrate_materialization_snapshot(
+            substrate_path(),
+            latest_materialized_refresh_id=None,
+        ).to_json()
     else:
         substrate_error = None
 
@@ -77,10 +86,7 @@ def mcp_runtime_status() -> dict[str, Any]:
             "path": str(substrate_path()),
             "latest_materialized_refresh_id": latest_materialized,
             "error": substrate_error,
-            "materialization": substrate_materialization_snapshot(
-                substrate_path(),
-                latest_materialized_refresh_id=latest_materialized,
-            ).to_json(),
+            "materialization": materialization,
         },
     }
 
@@ -173,7 +179,7 @@ def diagnostic_source_materialization_decision(
     start_d = date.fromisoformat(start) if start else None
     end_d = date.fromisoformat(end) + timedelta(days=1) if end else None
     window = (start_d, end_d) if start_d is not None and end_d is not None else None
-    return ensure_materialized(source, window=window).to_json()
+    return ensure_materialized(source, window=window, budget="manual").to_json()
 
 
 def diagnostic_ledger_dependency_edges(

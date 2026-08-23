@@ -321,7 +321,7 @@ def test_ai_attribution_backfill_defaults_to_joint_commit_ai_snapshot(
     assert result["match_rate"] == 1.0
 
 
-def test_contract_coverage_ensures_requested_source_window(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_contract_coverage_inspects_requested_source_window(monkeypatch: pytest.MonkeyPatch) -> None:
     from datetime import date as _date
 
     from lynchpin.materialization import MaterializedDataset
@@ -341,35 +341,22 @@ def test_contract_coverage_ensures_requested_source_window(monkeypatch: pytest.M
         materialization_hint="test",
         reason="missing before materialization",
     )
-    after = MaterializedDataset(
-        name="webhistory",
-        status="ready",
-        authority="test",
-        query_surface="test",
-        materialized_paths=(),
-        raw_roots=(),
-        row_count=3,
-        first_date=_date(2026, 5, 1),
-        last_date=_date(2026, 5, 3),
-        materialization_hint="test",
-        reason="ready after materialization",
-    )
-    audits = iter([[before], [after]])
+    audits = iter([[before]])
 
     class Result:
         def to_json(self) -> dict[str, object]:
             return {
                 "name": "webhistory",
-                "status": "updated",
-                "changed": True,
-                "reason": "materialized",
+                "status": "blocked",
+                "changed": False,
+                "reason": "materialization requires local work but budget is manual",
             }
 
     def fake_audit_materialization():
         return next(audits)
 
-    def fake_ensure_materialized(name, *, window=None):
-        calls.append((name, window))
+    def fake_ensure_materialized(name, *, window=None, budget=None):
+        calls.append((name, window, budget))
         return Result()
 
     monkeypatch.setattr("lynchpin.materialization.audit_materialization", fake_audit_materialization)
@@ -379,13 +366,15 @@ def test_contract_coverage_ensures_requested_source_window(monkeypatch: pytest.M
 
     rows = contract_coverage(source="webhistory", start="2026-05-01", end="2026-05-03")
 
-    assert calls == [("webhistory", (_date(2026, 5, 1), _date(2026, 5, 4)))]
-    assert rows[0]["status"] == "ready"
-    assert rows[0]["row_count"] == 3
+    assert calls == [
+        ("webhistory", (_date(2026, 5, 1), _date(2026, 5, 4)), "manual")
+    ]
+    assert rows[0]["status"] == "missing"
+    assert rows[0]["row_count"] is None
     assert rows[0]["coverage"]["requested_days"] == 3
-    assert rows[0]["coverage"]["covered_days"] == 3
-    assert rows[0]["coverage"]["relation"] == "covers_window"
-    assert rows[0]["materialization"]["status"] == "updated"
+    assert rows[0]["coverage"]["covered_days"] == 0
+    assert rows[0]["coverage"]["relation"] == "unavailable"
+    assert rows[0]["materialization"]["status"] == "blocked"
 
 
 def test_contract_coverage_without_source_is_cheap_audit(monkeypatch: pytest.MonkeyPatch) -> None:

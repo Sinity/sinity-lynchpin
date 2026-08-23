@@ -33,7 +33,7 @@ def pr_review_rows(
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="pr_review_rows")
     path = substrate_path()
-    with connect(path) as conn:
+    with connect(path, read_only=True) as conn:
         if refresh_id is None:
             refresh_id = best_materialized_refresh_id(conn, "pr_review_row", caller="pr_review_rows")
             if refresh_id is None:

@@ -207,6 +207,7 @@ def test_incremental_rebuild_candidate_indexes_is_explicit(monkeypatch, tmp_path
     monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [])
     monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "lynchpin.substrate.connection.candidate_generation",
         lambda **kwargs: calls.update(kwargs) or nullcontext(),
@@ -228,6 +229,45 @@ def test_rebuild_candidate_indexes_requires_promoted_materialization() -> None:
 
     with pytest.raises(SystemExit, match="2"):
         materialize.main(["--all", "--rebuild-candidate-indexes"])
+
+
+def test_all_requires_candidate_publication() -> None:
+    from lynchpin.cli import materialize
+
+    with pytest.raises(SystemExit, match="2"):
+        materialize.main(["--all"])
+
+
+def test_bootstrap_uses_the_strict_empty_generation_route(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.cli import materialize
+    from lynchpin.materialization import MaterializedDataset
+
+    calls: dict[str, object] = {}
+    rows = [
+        MaterializedDataset(
+            name="fixture", status="ready", authority="fixture", query_surface="fixture",
+            materialized_paths=(), raw_roots=(), row_count=1, first_date=date(2026, 5, 1),
+            last_date=date(2026, 5, 2), materialization_hint="refresh", reason="ready",
+        )
+    ]
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [])
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr(materialize, "_record_incremental_phase", lambda *_args, **_kwargs: None)
+    candidate = SimpleNamespace(candidate=tmp_path / "candidate.duckdb", refresh_id="candidate")
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.bootstrap_candidate_generation",
+        lambda: calls.setdefault("bootstrap", True) and nullcontext(candidate),
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.generation_refresh_id", lambda _path: "current")
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    monkeypatch.setattr(snapshot, "main", lambda _argv: 0)
+    assert materialize.main([
+        "--all", "--promote", "--bootstrap", "--start", "2026-05-01", "--end", "2026-05-02",
+        "--progress", "quiet",
+    ]) == 0
+    assert calls == {"bootstrap": True}
 
 
 def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_path: Path) -> None:

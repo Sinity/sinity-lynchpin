@@ -29,7 +29,7 @@ from pathlib import Path
 import signal
 import struct
 import threading
-from typing import TYPE_CHECKING, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Iterator, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -73,6 +73,21 @@ class CandidateGeneration:
     expected_graph_refresh_id: str | None = None
     predecessor_identity: tuple[int, int, int] | None = None
     phase_evidence: list[dict[str, object]] = field(default_factory=list)
+
+
+@dataclass
+class ServingGeneration:
+    """One lock-consistent observation of the published serving triple.
+
+    The shared publication lock remains held while callers inspect the
+    connection, snapshot path, and status manifest.  A publisher therefore
+    cannot replace one member of the triple between those observations.
+    """
+
+    connection: Any
+    database_path: Path
+    snapshot_path: Path
+    manifest: dict[str, object] | None
 
 
 def in_candidate_generation() -> bool:
@@ -301,6 +316,11 @@ def _promotion_lock_path(canonical: Path) -> Path:
     return canonical.with_name(f".{canonical.name}.promotion.lock")
 
 
+def _writer_reservation_lock_path(canonical: Path) -> Path:
+    """Return the lock that admits exactly one candidate builder."""
+    return canonical.with_name(f".{canonical.name}.writer.lock")
+
+
 def _artifact_identity(path: Path) -> dict[str, int]:
     stat = path.stat()
     return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size}
@@ -386,8 +406,8 @@ def _reconcile_publication(canonical: Path) -> None:
 
 @contextmanager
 def _promotion_lock(canonical: Path) -> Iterator[None]:
-    """Hold the process-wide writer lock from predecessor capture to publish."""
-    lock_path = _promotion_lock_path(canonical)
+    """Reserve the sole candidate builder without blocking serving readers."""
+    lock_path = _writer_reservation_lock_path(canonical)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
@@ -413,6 +433,18 @@ def _publication_read_lock(canonical: Path) -> Iterator[None]:
 
 
 @contextmanager
+def _publication_write_lock(canonical: Path) -> Iterator[None]:
+    """Exclude complete serving observations only while publishing a triple."""
+    fd = os.open(_promotion_lock_path(canonical), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+@contextmanager
 def _stable_publication_read(canonical: Path) -> Iterator[None]:
     """Open only after any active publication has completed or been recovered."""
     while True:
@@ -423,7 +455,7 @@ def _stable_publication_read(canonical: Path) -> Iterator[None]:
         # A durable intent without a lock owner is an interrupted publisher.
         # Reconcile while holding the same exclusive lock that protects a live
         # publisher, then retry the stable shared-lock read path.
-        with _promotion_lock(canonical):
+        with _publication_write_lock(canonical):
             _reconcile_publication(canonical)
 
 
@@ -483,6 +515,8 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
         write_substrate_status_manifest,
     )
 
+    # Building the snapshot and manifest touches only candidate artifacts, so
+    # do it before acquiring the short publication lock.
     candidate_snapshot = update_read_snapshot(generation.candidate)
     if candidate_snapshot is None:
         raise RuntimeError("candidate substrate disappeared before snapshot publication")
@@ -505,59 +539,60 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
     for artifact in (generation.candidate, candidate_snapshot, candidate_manifest):
         _fsync_file(artifact)
 
-    serving_snapshot = generation.canonical.with_suffix(".read-snapshot.duckdb")
-    serving_manifest = substrate_status_manifest_path(generation.canonical)
-    replacements = (
-        (generation.candidate, generation.canonical),
-        (candidate_snapshot, serving_snapshot),
-        (candidate_manifest, serving_manifest),
-    )
-    if generation.predecessor_identity is not None:
-        current = _artifact_identity(generation.canonical)
-        if current != {
-            "device": generation.predecessor_identity[0],
-            "inode": generation.predecessor_identity[1],
-            "size": generation.predecessor_identity[2],
-        }:
-            raise CandidateGenerationRejected("candidate predecessor changed before publication")
-    targets = tuple(target for _candidate, target in replacements)
-    had_target = {target for target in targets if target.exists()}
-    backups = _publication_backups(targets)
-    intent = {
-        "schema": "lynchpin.substrate-publication.v1",
-        "replacements": [
-            {
-                "candidate": str(candidate),
-                "target": str(target),
-                "identity": _artifact_identity(candidate),
-            }
-            for candidate, target in replacements
-        ],
-        "backups": {str(target): str(backup) for target, backup in backups.items()},
-        "had_target": [str(target) for target in had_target],
-    }
-    intent_path = _publication_intent_path(generation.canonical)
-    replaced: list[Path] = []
-    try:
-        _write_publication_intent(intent_path, intent)
-        _publication_step("intent-durable")
-        for index, (candidate, target) in enumerate(replacements):
-            _replace(candidate, target)
-            replaced.append(target)
-            _fsync_directory(generation.canonical.parent)
-            _publication_step(f"replacement-{index}-durable")
-        intent_path.unlink(missing_ok=True)
-        _fsync_directory(generation.canonical.parent)
-        _publication_step("intent-cleared")
-    except Exception:
-        _rollback_publication(
-            backups=backups,
-            replaced=tuple(replaced),
-            had_target=had_target,
+    with _publication_write_lock(generation.canonical):
+        if generation.predecessor_identity is not None:
+            current = _artifact_identity(generation.canonical)
+            if current != {
+                "device": generation.predecessor_identity[0],
+                "inode": generation.predecessor_identity[1],
+                "size": generation.predecessor_identity[2],
+            }:
+                raise CandidateGenerationRejected("candidate predecessor changed before publication")
+        serving_snapshot = generation.canonical.with_suffix(".read-snapshot.duckdb")
+        serving_manifest = substrate_status_manifest_path(generation.canonical)
+        replacements = (
+            (generation.candidate, generation.canonical),
+            (candidate_snapshot, serving_snapshot),
+            (candidate_manifest, serving_manifest),
         )
-        intent_path.unlink(missing_ok=True)
-        _fsync_directory(generation.canonical.parent)
-        raise
+        targets = tuple(target for _candidate, target in replacements)
+        had_target = {target for target in targets if target.exists()}
+        backups = _publication_backups(targets)
+        intent = {
+            "schema": "lynchpin.substrate-publication.v1",
+            "replacements": [
+                {
+                    "candidate": str(candidate),
+                    "target": str(target),
+                    "identity": _artifact_identity(candidate),
+                }
+                for candidate, target in replacements
+            ],
+            "backups": {str(target): str(backup) for target, backup in backups.items()},
+            "had_target": [str(target) for target in had_target],
+        }
+        intent_path = _publication_intent_path(generation.canonical)
+        replaced: list[Path] = []
+        try:
+            _write_publication_intent(intent_path, intent)
+            _publication_step("intent-durable")
+            for index, (candidate, target) in enumerate(replacements):
+                _replace(candidate, target)
+                replaced.append(target)
+                _fsync_directory(generation.canonical.parent)
+                _publication_step(f"replacement-{index}-durable")
+            intent_path.unlink(missing_ok=True)
+            _fsync_directory(generation.canonical.parent)
+            _publication_step("intent-cleared")
+        except Exception:
+            _rollback_publication(
+                backups=backups,
+                replaced=tuple(replaced),
+                had_target=had_target,
+            )
+            intent_path.unlink(missing_ok=True)
+            _fsync_directory(generation.canonical.parent)
+            raise
 
 
 def _quote_identifier(identifier: str) -> str:
@@ -961,7 +996,8 @@ def candidate_generation(
     published = False
     with _promotion_lock(canonical), _candidate_interruption_handlers():
         try:
-            _reconcile_publication(canonical)
+            with _publication_write_lock(canonical):
+                _reconcile_publication(canonical)
             _archive_interrupted_candidates(canonical)
             from lynchpin.substrate.run_steps import log_phase_evidence, measure_phase
 
@@ -972,12 +1008,13 @@ def candidate_generation(
             if bootstrap:
                 serving_artifacts = (
                     canonical,
+                    _wal_path(canonical),
                     substrate_read_snapshot_path(),
                     canonical.with_suffix(".manifest.json"),
                 )
                 if any(path.exists() for path in serving_artifacts):
                     raise CandidateGenerationRejected(
-                        "candidate bootstrap requires no serving database, snapshot, or manifest"
+                        "candidate bootstrap requires no serving database, WAL, snapshot, or manifest"
                     )
                 seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"] = "bootstrap"
                 seed_source = canonical
@@ -989,20 +1026,24 @@ def candidate_generation(
                         conn.execute("CHECKPOINT")
             elif rebuild_indexes:
                 seed_mode: Literal["reflink", "logical-index-rebuild"] = "logical-index-rebuild"
-                seed_source = _latest_verified_generation(canonical)
-                with measure_phase("candidate_write") as seed_measurement:
-                    _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
+                with _publication_read_lock(canonical):
+                    seed_source = _latest_verified_generation(canonical)
+                    with measure_phase("candidate_write") as seed_measurement:
+                        _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
             else:
-                if generation_refresh_id(canonical) is None:
-                    raise CandidateGenerationRejected(
-                        "steady-state candidate generation requires a verified canonical "
-                        "generation; use --rebuild-candidate-indexes only for audited recovery"
-                    )
-                seed_mode = "reflink"
-                seed_source = canonical
-                with measure_phase("candidate_write") as seed_measurement:
-                    _reflink_clone(canonical, candidate)
-            predecessor = _artifact_identity(canonical) if canonical.exists() else None
+                with _publication_read_lock(canonical):
+                    if generation_refresh_id(canonical) is None:
+                        raise CandidateGenerationRejected(
+                            "steady-state candidate generation requires a verified canonical "
+                            "generation; use --bootstrap for an empty substrate or "
+                            "--rebuild-candidate-indexes for audited recovery"
+                        )
+                    seed_mode = "reflink"
+                    seed_source = canonical
+                    with measure_phase("candidate_write") as seed_measurement:
+                        _reflink_clone(canonical, candidate)
+            with _publication_read_lock(canonical):
+                predecessor = _artifact_identity(canonical) if canonical.exists() else None
             candidate_phase = _record_candidate_phase(
                 candidate,
                 refresh_id=refresh_id,
@@ -1134,6 +1175,7 @@ def connect(
     import duckdb
 
     target = path if path is not None else substrate_path()
+    canonical_target = target
     candidate = _substrate_path_override.get()
     if candidate is not None and not read_only and target != candidate:
         raise CandidateGenerationRejected(
@@ -1142,17 +1184,17 @@ def connect(
     serving_target = target == substrate_path() and _substrate_path_override.get() is None
     if serving_target and not read_only:
         if target.exists() or _publication_intent_path(target).exists():
-            with _promotion_lock(target):
+            with _publication_write_lock(target):
                 _reconcile_publication(target)
-        if not rebuild_corrupt and substrate_read_snapshot_path().exists():
+        if not rebuild_corrupt:
             raise CandidateGenerationRejected(
-                "direct substrate writes are rejected while a read snapshot serves readers; "
-                "run the writer through candidate_generation"
+                "direct canonical substrate writes are rejected; run the writer through "
+                "candidate_generation or bootstrap_candidate_generation"
             )
     # A failed recovery may leave a clean but unpromoted canonical database.
     # Prefer the prior verified snapshot in that state rather than making read
     # clients observe an empty schema as if it were a successful generation.
-    if read_only and snapshot_fallback and target == substrate_path():
+    if read_only and snapshot_fallback and canonical_target == substrate_path():
         snapshot = substrate_read_snapshot_path()
         if (
             generation_refresh_id(target) is None
@@ -1164,7 +1206,11 @@ def connect(
     # an existing writer in the same interpreter). Both signal "canonical
     # is unavailable in our preferred mode"; fall back to the snapshot
     # in either case.
-    stable_read = _stable_publication_read(target) if serving_target and read_only else nullcontext()
+    stable_read = (
+        _stable_publication_read(canonical_target)
+        if serving_target and read_only
+        else nullcontext()
+    )
     with stable_read:
         try:
             conn = duckdb.connect(str(target), read_only=read_only)
@@ -1179,10 +1225,63 @@ def connect(
                 if not snapshot.exists():
                     raise
                 conn = duckdb.connect(str(snapshot), read_only=True)
-    try:
-        yield conn
-    finally:
-        conn.close()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+
+@contextmanager
+def serving_generation(path: Path | None = None) -> Iterator[ServingGeneration]:
+    """Yield a connection and status manifest from one published generation.
+
+    This is the API for consumers that need the serving database, immutable
+    snapshot, and manifest to agree.  It holds the shared publication lock for
+    the entire observation, including the DuckDB connection lifetime.
+    """
+    import duckdb
+
+    target = path if path is not None else substrate_path()
+    if target != substrate_path() or _substrate_path_override.get() is not None:
+        with connect(target, read_only=True) as conn:
+            yield ServingGeneration(
+                connection=conn,
+                database_path=target,
+                snapshot_path=target.with_suffix(".read-snapshot.duckdb"),
+                manifest=None,
+            )
+        return
+
+    from lynchpin.substrate.status_manifest import _load_stable_substrate_status_manifest
+
+    with _stable_publication_read(target):
+        selected = target
+        snapshot = substrate_read_snapshot_path()
+        if generation_refresh_id(target) is None and generation_refresh_id(snapshot) is not None:
+            selected = snapshot
+        try:
+            conn = duckdb.connect(str(selected), read_only=True)
+        except (duckdb.IOException, duckdb.ConnectionException, duckdb.InternalException):
+            if selected == snapshot or not snapshot.exists():
+                raise
+            selected = snapshot
+            conn = duckdb.connect(str(selected), read_only=True)
+        try:
+            yield ServingGeneration(
+                connection=conn,
+                database_path=selected,
+                snapshot_path=snapshot,
+                # The only serving manifest describes canonical inode metadata.
+                # A fallback snapshot has no matching sidecar, so returning the
+                # canonical manifest here would create a mixed generation.
+                manifest=(
+                    _load_stable_substrate_status_manifest(target)
+                    if selected == target
+                    else None
+                ),
+            )
+        finally:
+            conn.close()
 
 
 def reset_substrate(path: Path | None = None) -> None:

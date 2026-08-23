@@ -100,8 +100,8 @@ def test_ensure_substrate_materialized_for_read_reports_caller(monkeypatch) -> N
         def to_json(self) -> dict[str, object]:
             return {"name": "evidence_graph_substrate", "status": "ready"}
 
-    def fake_ensure_materialized(name, *, window=None):
-        calls.append((name, window))
+    def fake_ensure_materialized(name, *, window=None, budget=None):
+        calls.append((name, window, budget))
         return Result()
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure_materialized)
@@ -114,6 +114,7 @@ def test_ensure_substrate_materialized_for_read_reports_caller(monkeypatch) -> N
     assert calls == [(
         "evidence_graph_substrate",
         (date(2026, 5, 1), date(2026, 5, 2)),
+        "manual",
     )]
     assert payload == {
         "name": "evidence_graph_substrate",
@@ -140,7 +141,7 @@ def test_ensure_substrate_materialized_for_read_logs_when_blocked(monkeypatch, c
 
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window=None: BlockedResult(),
+        lambda name, *, window=None, budget=None: BlockedResult(),
     )
 
     with caplog.at_level(logging.WARNING, logger="lynchpin.mcp.tools._utils"):
@@ -169,7 +170,7 @@ def test_ensure_substrate_materialized_for_read_does_not_log_when_ready(monkeypa
 
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window=None: ReadyResult(),
+        lambda name, *, window=None, budget=None: ReadyResult(),
     )
 
     with caplog.at_level(logging.WARNING, logger="lynchpin.mcp.tools._utils"):
