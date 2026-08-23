@@ -125,6 +125,8 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     ]
     forwarded: dict[str, list[str]] = {}
     calls: dict[str, object] = {}
+    phase_order: list[str] = []
+    phase_evidence: list[tuple[str, int | None]] = []
 
     monkeypatch.setattr(
         materialize,
@@ -137,13 +139,27 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
         lambda plan, window=None, continue_on_error=False: calls.update(
             run_window=window,
             continue_on_error=continue_on_error,
-        ) or list(plan),
+        ) or phase_order.append("source_reads") or list(plan),
     )
     monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
-    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", nullcontext)
+    candidate = SimpleNamespace(candidate=tmp_path / "candidate.duckdb", refresh_id="candidate")
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.candidate_generation",
+        lambda **kwargs: calls.update(candidate_kwargs=kwargs) or nullcontext(candidate),
+    )
+    monkeypatch.setattr("lynchpin.substrate.connection.generation_refresh_id", lambda _path: "current")
+    monkeypatch.setattr(
+        materialize,
+        "_record_incremental_phase",
+        lambda _generation, measurement, *, count: phase_evidence.append((measurement.phase, count)),
+    )
     import lynchpin.cli.substrate_snapshot as snapshot
 
-    monkeypatch.setattr(snapshot, "main", lambda argv: forwarded.setdefault("argv", argv) and 0)
+    monkeypatch.setattr(
+        snapshot,
+        "main",
+        lambda argv: phase_order.append("graph_compute") or forwarded.setdefault("argv", argv) and 0,
+    )
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
 
     code = materialize.main(["--all", "--promote", "--history", "incremental"])
@@ -151,11 +167,64 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     assert code == 0
     assert calls["maintenance"] is True
     assert calls["run_window"] is None
+    assert calls["candidate_kwargs"] == {}
     assert "--incremental-tail-start" in forwarded["argv"]
     tail_index = forwarded["argv"].index("--incremental-tail-start")
     assert forwarded["argv"][tail_index + 1] == "2026-05-08"
     assert "--existing-products" in forwarded["argv"]
     assert "--graph-only" in forwarded["argv"]
+    assert phase_order == ["source_reads", "graph_compute"]
+    assert phase_evidence == [
+        ("source_reads", 1),
+        ("graph_compute", 1),
+        ("verification", 1),
+    ]
+
+
+def test_incremental_rebuild_candidate_indexes_is_explicit(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.cli import materialize
+    from lynchpin.materialization import MaterializedDataset
+
+    rows = [
+        MaterializedDataset(
+            name="fixture",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 5, 1),
+            last_date=date(2026, 5, 2),
+            materialization_hint="refresh",
+            reason="ready",
+        )
+    ]
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [])
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.candidate_generation",
+        lambda **kwargs: calls.update(kwargs) or nullcontext(),
+    )
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    monkeypatch.setattr(snapshot, "main", lambda _argv: 0)
+    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
+
+    assert materialize.main([
+        "--all", "--promote", "--history", "incremental",
+        "--rebuild-candidate-indexes", "--progress", "quiet",
+    ]) == 0
+    assert calls == {"rebuild_indexes": True}
+
+
+def test_rebuild_candidate_indexes_requires_promoted_materialization() -> None:
+    from lynchpin.cli import materialize
+
+    with pytest.raises(SystemExit, match="2"):
+        materialize.main(["--all", "--rebuild-candidate-indexes"])
 
 
 def test_promote_without_all_uses_existing_canonical_products(monkeypatch, tmp_path: Path) -> None:

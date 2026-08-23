@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 
 import duckdb
 
-from lynchpin.substrate.run_steps import record_run_step, reconcile_orphaned_running_steps
+from lynchpin.substrate.run_steps import (
+    measure_phase,
+    record_phase_evidence,
+    record_run_step,
+    reconcile_orphaned_running_steps,
+)
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -121,3 +127,34 @@ def test_reconcile_handles_multiple_orphaned_steps_independently() -> None:
         ).fetchall()
     )
     assert latest_by_step == {"r1:a": "orphaned", "r1:b": "running", "r2:a": "orphaned"}
+
+
+def test_phase_evidence_persists_wall_cpu_io_and_count() -> None:
+    conn = _connect()
+    with measure_phase("source_reads") as measurement:
+        _ = sum(range(100))
+
+    record_phase_evidence(
+        conn,
+        refresh_id="incremental-fixture",
+        measurement=measurement,
+        count=3,
+    )
+
+    step, status, message, row_count, started_at, finished_at = conn.execute(
+        "SELECT step, status, message, row_count, started_at, finished_at "
+        "FROM substrate_run_step"
+    ).fetchone()
+    payload = json.loads(message)
+    assert step == "incremental_source_reads"
+    assert status == "ok"
+    assert row_count == 3
+    assert started_at <= finished_at
+    assert payload["schema"] == "lynchpin.incremental-phase.v1"
+    assert payload["phase"] == "source_reads"
+    assert payload["count"] == 3
+    assert payload["wall_seconds"] >= 0
+    assert payload["cpu_user_seconds"] >= 0
+    assert payload["cpu_system_seconds"] >= 0
+    assert payload["read_bytes"] is None or payload["read_bytes"] >= 0
+    assert payload["write_bytes"] is None or payload["write_bytes"] >= 0

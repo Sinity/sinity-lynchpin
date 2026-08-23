@@ -19,12 +19,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
+import errno
+import fcntl
 import logging
 from pathlib import Path
-import shutil
 import signal
 import threading
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Iterator, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -63,6 +64,7 @@ class CandidateGeneration:
     canonical: Path
     refresh_id: str
     seed_source: Path
+    seed_mode: Literal["reflink", "logical-index-rebuild"]
 
 
 def in_candidate_generation() -> bool:
@@ -108,11 +110,13 @@ def update_read_snapshot(path: Path | None = None) -> Path | None:
     snapshot = canonical.with_suffix(".read-snapshot.duckdb")
     if not canonical.exists():
         return None
-    # Use shutil.copy2 to preserve mtime; DuckDB doesn't keep external
-    # state in extended attributes so this is safe. Atomic-rename pattern:
-    # write to .tmp first, then rename — readers never see a partial copy.
+    # Same-filesystem reflinks preserve an immutable verified generation without
+    # rereading or rewriting its historical pages. Atomic rename means readers
+    # see either the previous complete snapshot or this complete clone.
     tmp = snapshot.with_suffix(".tmp")
-    shutil.copy2(canonical, tmp)
+    if tmp.exists():
+        tmp.unlink()
+    _reflink_clone(canonical, tmp)
     tmp.replace(snapshot)
     return snapshot
 
@@ -290,6 +294,32 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+# linux/fs.h FICLONE: clone source extents into an empty destination file.
+# The managed derived root is Btrfs; refusing a non-CoW filesystem is safer
+# than silently returning to whole-generation reads and writes.
+_FICLONE = 0x40049409
+
+
+def _reflink_clone(source: Path, destination: Path) -> None:
+    """Create a same-filesystem CoW clone without a full logical reseed."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with source.open("rb") as src, destination.open("xb") as dst:
+            fcntl.ioctl(dst.fileno(), _FICLONE, src.fileno())
+    except OSError as exc:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        if exc.errno in {errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV, errno.EINVAL}:
+            raise CandidateGenerationRejected(
+                "steady-state candidate generation requires a same-filesystem "
+                "copy-on-write clone; use --rebuild-candidate-indexes for the "
+                "explicit logical recovery path"
+            ) from exc
+        raise
+
+
 def _base_table_names(conn: "duckdb.DuckDBPyConnection", catalog: str | None = None) -> set[str]:
     """Return main-schema base tables for the current or attached catalog."""
     if catalog is None:
@@ -433,19 +463,43 @@ def _latest_verified_generation(canonical: Path) -> Path:
     return max(verified, key=lambda item: (item[0], item[1].name))[1]
 
 
+def _record_candidate_phase(
+    candidate: Path,
+    *,
+    refresh_id: str,
+    measurement: object,
+    count: int | None,
+) -> None:
+    """Append phase evidence while the candidate is the only writable generation."""
+    import duckdb
+
+    from lynchpin.substrate.run_steps import PhaseMeasurement, record_phase_evidence
+
+    assert isinstance(measurement, PhaseMeasurement)
+    with duckdb.connect(str(candidate)) as conn:
+        record_phase_evidence(
+            conn,
+            refresh_id=refresh_id,
+            measurement=measurement,
+            count=count,
+        )
+        conn.execute("CHECKPOINT")
+
+
 @contextmanager
-def candidate_generation() -> Iterator[CandidateGeneration]:
+def candidate_generation(
+    *, rebuild_indexes: bool = False
+) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
-    Every candidate is seeded by copying logical rows from the newest readable
-    verified generation. This recreates DuckDB's physical index structures and
-    never clones the ART pages that repeatedly became unwritable after a
-    physical file copy. A prior candidate or corruption quarantine can seed
-    recovery when the current serving file is unreadable. Serving sidecars are
-    not touched until the candidate has a successful promotion record and
-    source-status coverage. SIGINT and SIGTERM unwind this context so candidate
-    artifacts are archived; they are deferred only while the serving
-    database/snapshot/manifest triple is being published.
+    Ordinary incremental promotion uses a same-filesystem copy-on-write clone
+    of the verified canonical generation. It therefore preserves compatible
+    predecessor coverage without full logical reads or historical writes.
+    ``rebuild_indexes=True`` is the explicit audited recovery path: it finds a
+    readable verified retained generation and copies logical rows into fresh
+    DuckDB index structures. Neither path seeds an empty candidate. Serving
+    sidecars are untouched until verification succeeds, and SIGINT/SIGTERM
+    archive only the candidate until the serving triple is published.
     """
     canonical = substrate_path()
     refresh_id = uuid4().hex
@@ -457,8 +511,30 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
     with _candidate_interruption_handlers():
         try:
             _archive_interrupted_candidates(canonical)
-            seed_source = _latest_verified_generation(canonical)
-            _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
+            from lynchpin.substrate.run_steps import log_phase_evidence, measure_phase
+
+            if rebuild_indexes:
+                seed_mode: Literal["reflink", "logical-index-rebuild"] = "logical-index-rebuild"
+                seed_source = _latest_verified_generation(canonical)
+                with measure_phase("candidate_write") as seed_measurement:
+                    _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
+            else:
+                if generation_refresh_id(canonical) is None:
+                    raise CandidateGenerationRejected(
+                        "steady-state candidate generation requires a verified canonical "
+                        "generation; use --rebuild-candidate-indexes only for audited recovery"
+                    )
+                seed_mode = "reflink"
+                seed_source = canonical
+                with measure_phase("candidate_write") as seed_measurement:
+                    _reflink_clone(canonical, candidate)
+            _record_candidate_phase(
+                candidate,
+                refresh_id=refresh_id,
+                measurement=seed_measurement,
+                count=candidate.stat().st_size,
+            )
+            log_phase_evidence(seed_measurement, count=candidate.stat().st_size)
 
             token = _substrate_path_override.set(candidate)
             generation = CandidateGeneration(
@@ -466,13 +542,19 @@ def candidate_generation() -> Iterator[CandidateGeneration]:
                 canonical=canonical,
                 refresh_id=refresh_id,
                 seed_source=seed_source,
+                seed_mode=seed_mode,
             )
             yield generation
             if generation_refresh_id(candidate) is None:
                 raise RuntimeError("candidate has no verified promoted generation")
-            with _defer_candidate_interruptions() as deferred:
-                _publish_candidate(generation)
-                published = True
+            with measure_phase("publication") as publication_measurement:
+                with _defer_candidate_interruptions() as deferred:
+                    _publish_candidate(generation)
+                    published = True
+            # The serving triple has already moved, so this terminal metric is
+            # deliberately journal-visible rather than another post-publication
+            # database write that would make the snapshot stale.
+            log_phase_evidence(publication_measurement, count=3)
             if deferred:
                 raise CandidateGenerationInterrupted(deferred[0])
         except BaseException as exc:

@@ -17,7 +17,17 @@ from ..materialization import (
     plan_materializations,
     run_materialization_plan,
 )
-from ..substrate.connection import CandidateGenerationInterrupted, CandidateGenerationRejected
+from ..substrate.connection import (
+    CandidateGeneration,
+    CandidateGenerationInterrupted,
+    CandidateGenerationRejected,
+)
+from ..substrate.run_steps import (
+    PhaseMeasurement,
+    log_phase_evidence,
+    measure_phase,
+    record_phase_evidence,
+)
 
 _PROGRESS_FORMAT = "plain"
 
@@ -48,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="write JSON audit rows after materialization")
     parser.add_argument("--plan-json", action="store_true", help="write the materialization plan as JSON and exit without changing products")
     parser.add_argument("--force", action="store_true", help="rebuild all locally materializable products")
+    parser.add_argument(
+        "--rebuild-candidate-indexes",
+        action="store_true",
+        help="explicit audited recovery: copy verified logical rows into fresh DuckDB indexes",
+    )
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
     global _PROGRESS_FORMAT
@@ -57,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--all is required unless --promote builds a snapshot from canonical products")
     if args.force and not args.all:
         parser.error("--force requires --all")
+    if args.rebuild_candidate_indexes and not (args.all and args.promote):
+        parser.error("--rebuild-candidate-indexes requires --all --promote")
 
     # An explicit --start/--end bounds every window-aware materializer to that
     # request. Incremental maintenance instead asks the planner for a separate
@@ -92,17 +109,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.promote:
         from lynchpin.substrate.connection import candidate_generation
 
-        _progress("seeding candidate from verified logical rows with fresh DuckDB indexes")
-        generation_context = candidate_generation()
+        if args.rebuild_candidate_indexes:
+            _progress("rebuilding candidate indexes from verified logical rows")
+            generation_context = candidate_generation(rebuild_indexes=True)
+        else:
+            _progress("cloning verified candidate generation with copy-on-write extents")
+            generation_context = candidate_generation()
     else:
         generation_context = nullcontext()
 
     try:
-        with generation_context:
-            run_materialization_plan(
-                plan,
-                window=window,
-                continue_on_error=args.promote,
+        with generation_context as generation:
+            # These stages are deliberately sequential. Materializers publish
+            # the canonical tail that graph construction must consume, so
+            # parallel execution would race the requested tail rather than
+            # shorten an independent critical path. The candidate remains the
+            # single deterministic substrate writer throughout.
+            with _measure_incremental_phase("source_reads") as source_measurement:
+                completed_steps = run_materialization_plan(
+                    plan,
+                    window=window,
+                    continue_on_error=args.promote,
+                )
+            _record_incremental_phase(
+                generation,
+                source_measurement,
+                count=len(completed_steps),
             )
             _progress("canonical materialization complete")
             if args.promote:
@@ -153,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.all or args.history == "incremental":
                     forwarded.extend(("--existing-products", "--graph-only"))
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
-                code = snapshot_main(forwarded)
+                with _measure_incremental_phase("graph_compute") as graph_measurement:
+                    code = snapshot_main(forwarded)
+                _record_incremental_phase(generation, graph_measurement, count=1)
                 if code:
                     raise _CandidateRejected(
                         code,
@@ -161,7 +195,18 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 _progress("substrate snapshot promotion complete")
             _progress("auditing materialization readiness")
-            rows = audit_materialization()
+            with _measure_incremental_phase("verification") as verification_measurement:
+                rows = audit_materialization()
+                if generation is not None:
+                    from lynchpin.substrate.connection import generation_refresh_id
+
+                    if generation_refresh_id(generation.candidate) is None:
+                        raise _CandidateRejected(1, "candidate verification found no promoted generation")
+            _record_incremental_phase(
+                generation,
+                verification_measurement,
+                count=len(rows),
+            )
             if args.json:
                 sys.stdout.write(
                     json.dumps([row.to_json() for row in rows], indent=2, sort_keys=True)
@@ -191,6 +236,31 @@ def _progress(message: str) -> None:
     else:
         sys.stderr.write(f"[{stamp}] materialize: {message}\n")
     sys.stderr.flush()
+
+
+def _measure_incremental_phase(phase: str) -> PhaseMeasurement:
+    return measure_phase(phase)
+
+
+def _record_incremental_phase(
+    generation: CandidateGeneration | None,
+    measurement: PhaseMeasurement,
+    *,
+    count: int | None,
+) -> None:
+    """Append phase evidence only when this invocation owns a candidate."""
+    if generation is None:
+        return
+    from lynchpin.substrate.connection import connect
+    with connect(generation.candidate) as conn:
+        record_phase_evidence(
+            conn,
+            refresh_id=generation.refresh_id,
+            measurement=measurement,
+            count=count,
+        )
+        conn.execute("CHECKPOINT")
+    log_phase_evidence(measurement, count=count)
 
 
 def _all_history_window() -> tuple[date, date]:

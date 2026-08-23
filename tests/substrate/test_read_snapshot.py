@@ -288,8 +288,9 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
     update_read_snapshot()
     expected_counts = _base_table_counts(isolated_substrate)
 
-    with candidate_generation() as generation:
+    with candidate_generation(rebuild_indexes=True) as generation:
         assert generation.seed_source == isolated_substrate
+        assert generation.seed_mode == "logical-index-rebuild"
         candidate_counts = _base_table_counts(generation.candidate)
         assert {
             table: count
@@ -301,7 +302,7 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
             if table != "substrate_run_step"
         }
         assert candidate_counts["substrate_run_step"] == (
-            expected_counts["substrate_run_step"] + 1
+            expected_counts["substrate_run_step"] + 2
         )
         with duckdb.connect(str(generation.candidate), read_only=True) as conn:
             assert conn.execute(
@@ -354,7 +355,7 @@ def test_candidate_generation_recovers_from_archived_verified_source(
     archived = isolated_substrate.with_name("substrate.candidate-recovery.duckdb.retained")
     isolated_substrate.replace(archived)
 
-    with candidate_generation() as generation:
+    with candidate_generation(rebuild_indexes=True) as generation:
         assert generation.seed_source == archived
         _record_verified_generation(generation.candidate, "current")
 
@@ -388,13 +389,56 @@ def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
     monkeypatch.setattr(connection, "_base_table_names", incompatible_tables)
 
     with pytest.raises(CandidateGenerationRejected, match="matching source"):
-        with candidate_generation():
+        with candidate_generation(rebuild_indexes=True):
             pass
 
     assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
     assert generation_refresh_id(isolated_substrate) == "prior"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
     assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+
+
+def test_ordinary_candidate_reflinks_verified_predecessor_without_logical_reseed(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.substrate.connection as connection
+
+    _record_verified_generation(isolated_substrate, "prior")
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute(
+            "INSERT INTO activity_content_day (date, refresh_id) VALUES ('2026-08-21', 'prior')"
+        )
+    update_read_snapshot()
+    monkeypatch.setattr(
+        connection,
+        "_logical_index_rebuild_seed",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("ordinary maintenance must not reseed logical rows")),
+    )
+
+    with candidate_generation() as generation:
+        assert generation.seed_mode == "reflink"
+        with duckdb.connect(str(generation.candidate), read_only=True) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM activity_content_day WHERE refresh_id = 'prior'"
+            ).fetchone() == (1,)
+        _record_verified_generation(generation.candidate, "current")
+
+    assert generation_refresh_id(isolated_substrate) == "current"
+    with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM activity_content_day WHERE refresh_id = 'prior'"
+        ).fetchone() == (1,)
+
+
+def test_ordinary_candidate_rejects_missing_verified_predecessor(
+    isolated_substrate: Path,
+) -> None:
+    with pytest.raises(CandidateGenerationRejected, match="requires a verified canonical"):
+        with candidate_generation():
+            pass
+
+    assert not isolated_substrate.exists()
 
 
 def test_candidate_failure_retains_verified_serving_generation(

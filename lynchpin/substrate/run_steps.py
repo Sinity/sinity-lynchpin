@@ -3,10 +3,112 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import logging
+from pathlib import Path
+import resource
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import duckdb
+
+
+log = logging.getLogger(__name__)
+
+
+def _process_io_bytes() -> tuple[int | None, int | None]:
+    """Return Linux process read/write counters without adding a telemetry store."""
+    try:
+        values = {
+            key: int(value)
+            for key, value in (
+                line.split(":", 1)
+                for line in Path("/proc/self/io").read_text(encoding="utf-8").splitlines()
+            )
+        }
+    except (OSError, ValueError):
+        return None, None
+    return values.get("read_bytes"), values.get("write_bytes")
+
+
+class PhaseMeasurement:
+    """Process-local wall, CPU, and IO deltas for one promotion phase."""
+
+    def __init__(self, phase: str) -> None:
+        self.phase = phase
+        self.started_at = datetime.now(timezone.utc)
+        self.finished_at: datetime | None = None
+        self._wall_started = time.monotonic()
+        self._usage_started = resource.getrusage(resource.RUSAGE_SELF)
+        self._read_started, self._write_started = _process_io_bytes()
+
+    def finish(self) -> None:
+        if self.finished_at is not None:
+            return
+        self.finished_at = datetime.now(timezone.utc)
+        usage_finished = resource.getrusage(resource.RUSAGE_SELF)
+        read_finished, write_finished = _process_io_bytes()
+        self.wall_seconds = round(time.monotonic() - self._wall_started, 6)
+        self.cpu_user_seconds = round(usage_finished.ru_utime - self._usage_started.ru_utime, 6)
+        self.cpu_system_seconds = round(usage_finished.ru_stime - self._usage_started.ru_stime, 6)
+        self.read_bytes = _delta(self._read_started, read_finished)
+        self.write_bytes = _delta(self._write_started, write_finished)
+
+    def payload(self, *, count: int | None) -> dict[str, object]:
+        if self.finished_at is None:
+            raise RuntimeError(f"phase {self.phase} has not finished")
+        return {
+            "schema": "lynchpin.incremental-phase.v1",
+            "phase": self.phase,
+            "count": count,
+            "wall_seconds": self.wall_seconds,
+            "cpu_user_seconds": self.cpu_user_seconds,
+            "cpu_system_seconds": self.cpu_system_seconds,
+            "read_bytes": self.read_bytes,
+            "write_bytes": self.write_bytes,
+        }
+
+    def __enter__(self) -> "PhaseMeasurement":
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.finish()
+
+
+def _delta(start: int | None, end: int | None) -> int | None:
+    return end - start if start is not None and end is not None else None
+
+
+def measure_phase(phase: str) -> PhaseMeasurement:
+    """Measure a phase before persisting it to the existing run-step receipt."""
+    return PhaseMeasurement(phase)
+
+
+def record_phase_evidence(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    measurement: PhaseMeasurement,
+    count: int | None,
+) -> None:
+    """Persist machine-readable phase evidence without a new telemetry database."""
+    payload = measurement.payload(count=count)
+    record_run_step(
+        conn,
+        refresh_id=refresh_id,
+        step=f"incremental_{measurement.phase}",
+        status="ok",
+        message=json.dumps(payload, sort_keys=True),
+        row_count=count,
+        started_at=measurement.started_at,
+        finished_at=measurement.finished_at,
+    )
+
+
+def log_phase_evidence(measurement: PhaseMeasurement, *, count: int | None) -> None:
+    """Expose the same receipt shape to the materialization unit journal."""
+    log.info("incremental_phase=%s", json.dumps(measurement.payload(count=count), sort_keys=True))
 
 
 def reconcile_orphaned_running_steps(
@@ -94,4 +196,11 @@ def record_run_step(
     )
 
 
-__all__ = ["record_run_step", "reconcile_orphaned_running_steps"]
+__all__ = [
+    "PhaseMeasurement",
+    "log_phase_evidence",
+    "measure_phase",
+    "record_phase_evidence",
+    "record_run_step",
+    "reconcile_orphaned_running_steps",
+]
