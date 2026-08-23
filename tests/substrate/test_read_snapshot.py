@@ -6,6 +6,7 @@ lock for 30-60+ minutes; MCP needs a path to read regardless.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -429,8 +430,24 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
                 sum(expected_counts.values()) - expected_counts["substrate_meta"],
             )
         _record_verified_generation(generation.candidate, "current")
+        bind_candidate_publication(generation, "current", require_graph=False)
 
     assert generation_refresh_id(isolated_substrate) == "current"
+    with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
+        attempt = json.loads(
+            conn.execute(
+                """
+                SELECT message FROM substrate_run_step
+                WHERE refresh_id = 'current' AND step = 'candidate_attempt_evidence'
+                """
+            ).fetchone()[0]
+        )
+    assert attempt["candidate_seed"]["mode"] == "logical-index-rebuild"
+    assert attempt["candidate_seed"]["source"] == str(isolated_substrate)
+    assert attempt["candidate_seed"]["logical_rows_reconstructed"] == (
+        sum(expected_counts.values()) - expected_counts["substrate_meta"]
+    )
+    assert attempt["candidate_seed"]["candidate_bytes"] > 0
     with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
         assert conn.execute(
             "SELECT count(*) FROM activity_content_day WHERE refresh_id = 'prior'"
@@ -566,13 +583,38 @@ def test_ordinary_candidate_reflinks_verified_predecessor_without_logical_reseed
 
     with candidate_generation() as generation:
         assert generation.seed_mode == "reflink"
+        assert generation.seed_logical_rows == 0
         with duckdb.connect(str(generation.candidate), read_only=True) as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM activity_content_day WHERE refresh_id = 'prior'"
             ).fetchone() == (1,)
         _record_verified_generation(generation.candidate, "current")
+        bind_candidate_publication(generation, "current", require_graph=False)
 
     assert generation_refresh_id(isolated_substrate) == "current"
+    with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
+        attempt = json.loads(
+            conn.execute(
+                """
+                SELECT message FROM substrate_run_step
+                WHERE refresh_id = 'current' AND step = 'candidate_attempt_evidence'
+                """
+            ).fetchone()[0]
+        )
+        phase = json.loads(
+            conn.execute(
+                """
+                SELECT message FROM substrate_run_step
+                WHERE refresh_id = ? AND step = 'incremental_candidate_write'
+                """,
+                [generation.refresh_id],
+            ).fetchone()[0]
+        )
+    assert attempt["candidate_seed"]["mode"] == "reflink"
+    assert attempt["candidate_seed"]["logical_rows_reconstructed"] == 0
+    assert {
+        metric["name"]: metric["value"] for metric in phase["metrics"]
+    }["candidate_seed_logical_rows"] == 0
     with duckdb.connect(str(isolated_substrate), read_only=True) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM activity_content_day WHERE refresh_id = 'prior'"

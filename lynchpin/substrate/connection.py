@@ -69,6 +69,7 @@ class CandidateGeneration:
     refresh_id: str
     seed_source: Path
     seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"]
+    seed_logical_rows: int
     expected_refresh_id: str | None = None
     expected_graph_refresh_id: str | None = None
     predecessor_identity: tuple[int, int, int] | None = None
@@ -711,7 +712,7 @@ def _base_table_names(conn: "duckdb.DuckDBPyConnection", catalog: str | None = N
     return {str(row[0]) for row in rows}
 
 
-def _logical_index_rebuild_seed(source: Path, candidate: Path, refresh_id: str) -> None:
+def _logical_index_rebuild_seed(source: Path, candidate: Path, refresh_id: str) -> int:
     """Copy verified logical rows into fresh schema and index structures.
 
     This deliberately does not copy DuckDB pages, checkpoints, or WAL state.
@@ -790,6 +791,7 @@ def _logical_index_rebuild_seed(source: Path, candidate: Path, refresh_id: str) 
             row_count=copied_rows,
         )
         conn.execute("CHECKPOINT")
+    return copied_rows
 
 
 def _latest_verified_generation(canonical: Path) -> Path:
@@ -962,6 +964,12 @@ def _bind_candidate_attempt_evidence(generation: CandidateGeneration) -> None:
                     "schema": "lynchpin.candidate-attempt-evidence.v1",
                     "candidate_attempt_id": generation.refresh_id,
                     "published_refresh_id": generation.expected_refresh_id,
+                    "candidate_seed": {
+                        "mode": generation.seed_mode,
+                        "source": str(generation.seed_source),
+                        "logical_rows_reconstructed": generation.seed_logical_rows,
+                        "candidate_bytes": generation.candidate.stat().st_size,
+                    },
                     "phases": generation.phase_evidence,
                 },
                 sort_keys=True,
@@ -1018,6 +1026,7 @@ def candidate_generation(
                     )
                 seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"] = "bootstrap"
                 seed_source = canonical
+                seed_logical_rows = 0
                 with measure_phase("candidate_write") as seed_measurement:
                     import duckdb
 
@@ -1029,7 +1038,9 @@ def candidate_generation(
                 with _publication_read_lock(canonical):
                     seed_source = _latest_verified_generation(canonical)
                     with measure_phase("candidate_write") as seed_measurement:
-                        _logical_index_rebuild_seed(seed_source, candidate, refresh_id)
+                        seed_logical_rows = _logical_index_rebuild_seed(
+                            seed_source, candidate, refresh_id
+                        )
             else:
                 with _publication_read_lock(canonical):
                     if generation_refresh_id(canonical) is None:
@@ -1040,6 +1051,7 @@ def candidate_generation(
                         )
                     seed_mode = "reflink"
                     seed_source = canonical
+                    seed_logical_rows = 0
                     with measure_phase("candidate_write") as seed_measurement:
                         _reflink_clone(canonical, candidate)
             with _publication_read_lock(canonical):
@@ -1054,6 +1066,11 @@ def candidate_generation(
                         "unit": "bytes",
                         "value": candidate.stat().st_size,
                     },
+                    {
+                        "name": "candidate_seed_logical_rows",
+                        "unit": "rows",
+                        "value": seed_logical_rows,
+                    },
                 ),
             )
             log_phase_evidence(
@@ -1063,6 +1080,11 @@ def candidate_generation(
                         "name": "candidate_generation_size",
                         "unit": "bytes",
                         "value": candidate.stat().st_size,
+                    },
+                    {
+                        "name": "candidate_seed_logical_rows",
+                        "unit": "rows",
+                        "value": seed_logical_rows,
                     },
                 ),  # type: ignore[arg-type]
             )
@@ -1074,6 +1096,7 @@ def candidate_generation(
                 refresh_id=refresh_id,
                 seed_source=seed_source,
                 seed_mode=seed_mode,
+                seed_logical_rows=seed_logical_rows,
                 predecessor_identity=(
                     predecessor["device"], predecessor["inode"], predecessor["size"]
                 ) if predecessor is not None else None,

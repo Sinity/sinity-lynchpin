@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from datetime import date
+import json
 from pathlib import Path
 import signal
 from types import SimpleNamespace
@@ -182,6 +183,146 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     assert phase_evidence[0][1][0]["unit"] == "steps"
     assert phase_evidence[1][1][0]["unit"] == "refreshes"
     assert phase_evidence[2][1][0]["unit"] == "datasets"
+
+
+def test_incremental_history_reflinks_real_candidate_without_logical_reseed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Routine CLI maintenance reaches the real reflink candidate builder.
+
+    The logical seed helper is deliberately fatal here.  This joins the CLI
+    routing contract to the real candidate builder, rather than proving the
+    two halves independently with a mocked candidate context.
+    """
+    from lynchpin.cli import materialize
+    from lynchpin.materialization import MaterializationPlanStep, MaterializedDataset
+    import lynchpin.substrate.connection as connection
+
+    canonical = tmp_path / "duck" / "substrate.duckdb"
+    canonical.parent.mkdir()
+    monkeypatch.setattr(
+        connection,
+        "substrate_path",
+        lambda: connection._substrate_path_override.get() or canonical,
+    )
+    monkeypatch.setattr(
+        connection,
+        "_filesystem_type",
+        lambda _path: connection._BTRFS_SUPER_MAGIC,
+    )
+    monkeypatch.setattr(connection, "_file_flags", lambda _path: 0)
+    with duckdb.connect(str(canonical)) as conn:
+        connection.apply_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES ('prior', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES ('prior', 'fixture', 'stage', 'ok', NULL, 1, NULL, NULL, now())
+            """
+        )
+
+    before = MaterializedDataset(
+        name="activity_content",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 12),
+        materialization_hint="refresh",
+        reason="tail stale",
+        tail_stale=True,
+    )
+    step = MaterializationPlanStep(
+        name="activity_content",
+        before=before,
+        action="materialize",
+        materialization_hint="refresh",
+        reason="incremental tail",
+        window=(date(2026, 5, 8), date(2026, 5, 13)),
+    )
+    ready_rows = [
+        MaterializedDataset(
+            name="activity_content",
+            status="ready",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 5, 1),
+            last_date=date(2026, 5, 12),
+            materialization_hint="refresh",
+            reason="ready",
+        )
+    ]
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **_kwargs: [step])
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *_args, **_kwargs: [step])
+    monkeypatch.setattr(materialize, "audit_materialization", lambda: ready_rows)
+    monkeypatch.setattr(
+        connection,
+        "_logical_index_rebuild_seed",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("routine CLI must not reseed logical rows")),
+    )
+
+    from lynchpin.cli import substrate_snapshot
+
+    def fake_snapshot(argv: list[str]) -> int:
+        start = date.fromisoformat(argv[argv.index("--start") + 1])
+        end = date.fromisoformat(argv[argv.index("--end") + 1])
+        refresh_id = substrate_snapshot._snapshot_refresh_id(start=start, end=end, projects=())
+        with connection.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO evidence_graph_build
+                (refresh_id, start_date, end_date, mode, projects, node_count, edge_count, caveats, generated_at)
+                VALUES (?, ?, ?, 'materialized', [], 0, 0, '[]', now())
+                """,
+                [refresh_id, start, end],
+            )
+            conn.execute(
+                """
+                INSERT INTO substrate_source_status
+                (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+                VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 0, ?, ?, now())
+                """,
+                [refresh_id, start, end],
+            )
+            conn.execute(
+                """
+                INSERT INTO substrate_promotion_run
+                (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+                VALUES (?, 'ok', NULL, ?, ?, 'test', '{}', now(), now())
+                """,
+                [refresh_id, start, end],
+            )
+        return 0
+
+    monkeypatch.setattr(substrate_snapshot, "main", fake_snapshot)
+
+    assert materialize.main(["--all", "--promote", "--history", "incremental", "--progress", "quiet"]) == 0
+
+    with duckdb.connect(str(canonical), read_only=True) as conn:
+        message = conn.execute(
+            """
+            SELECT message FROM substrate_run_step
+            WHERE step = 'candidate_attempt_evidence'
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            """
+        ).fetchone()[0]
+    assert json.loads(message)["candidate_seed"]["mode"] == "reflink"
+    assert json.loads(message)["candidate_seed"]["logical_rows_reconstructed"] == 0
 
 
 def test_incremental_rebuild_candidate_indexes_is_explicit(monkeypatch, tmp_path: Path) -> None:
