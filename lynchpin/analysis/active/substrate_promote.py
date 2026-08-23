@@ -114,6 +114,27 @@ def run_substrate_promote(
     started_at = datetime.now(timezone.utc)
     refresh_id = refresh_id or f"dag:{started_at.isoformat()}"
     try:
+        from lynchpin.substrate.connection import (
+            candidate_generation,
+            in_candidate_generation,
+            substrate_read_snapshot_path,
+        )
+
+        if not in_candidate_generation() and substrate_read_snapshot_path().exists():
+            with candidate_generation():
+                return _do_promote(
+                    commit_facts_file=commit_facts_file,
+                    file_changes_file=file_changes_file,
+                    symbol_changes_file=symbol_changes_file,
+                    pr_review_file=pr_review_file,
+                    ai_attribution_file=ai_attribution_file,
+                    refresh_id=refresh_id,
+                    selection=selection,
+                    write_evidence_graph=write_evidence_graph,
+                    window_start=window_start,
+                    window_end=window_end,
+                    full_repromote=full_repromote,
+                )
         return _do_promote(
             commit_facts_file=commit_facts_file,
             file_changes_file=file_changes_file,
@@ -171,17 +192,7 @@ def _do_promote(
         window_start = window_start or prev_month_start
         window_end = window_end or today
 
-    # rebuild_corrupt=True: this is the main writer for every
-    # substrate-promoted source (commits, AI events, machine telemetry, ...).
-    # A DuckDB internal metadata-pointer corruption on the canonical file (a
-    # real, observed failure mode — see .lynchpin/duck/substrate.duckdb.corrupt-*
-    # quarantine files and commit 31065834) previously only had an opt-in
-    # recovery path wired into the code-snapshot and GitHub-context
-    # materializers; the main promotion path silently raised/aborted instead.
-    # Restoring from the last read-snapshot and retrying here means a
-    # recurrence of that corruption self-heals instead of quietly stalling
-    # every source's promotion (sinnix-kx4).
-    with connect(substrate_path(), rebuild_corrupt=True) as conn:
+    with connect(substrate_path()) as conn:
         apply_schema(conn)
 
         orphaned = reconcile_orphaned_running_steps(
@@ -343,25 +354,6 @@ def _do_promote(
         counts,
     )
 
-    # Update the read snapshot so MCP read tools have a usable copy during the
-    # NEXT promote's write window. The exclusive lock is released when the
-    # ``connect`` context manager exits above, so we can copy the canonical file
-    # here. Failure is non-fatal: readers will fall back to the prior snapshot
-    # or hit the lock error.
-    try:
-        from lynchpin.substrate.connection import update_read_snapshot
-
-        update_read_snapshot()
-    except Exception as exc:  # pragma: no cover — best-effort
-        log.warning("read-snapshot update failed (non-fatal): %s", exc)
-
-    try:
-        from lynchpin.substrate.status_manifest import write_substrate_status_manifest
-
-        write_substrate_status_manifest()
-    except Exception as exc:  # pragma: no cover — best-effort
-        log.warning("substrate status manifest update failed (non-fatal): %s", exc)
-
     return PromotionRunResult(
         refresh_id=refresh_id or "",
         status=status,
@@ -467,6 +459,11 @@ def _record_failed_promotion_run(
     try:
         from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
+        from lynchpin.substrate.connection import in_candidate_generation
+
+        if not in_candidate_generation():
+            log.warning("substrate_promote: skipped failed-run receipt outside candidate publication")
+            return
         with connect(substrate_path()) as conn:
             apply_schema(conn)
             _record_promotion_run(

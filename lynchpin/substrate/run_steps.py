@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 import resource
 import time
@@ -24,8 +25,9 @@ class PhaseMetric(TypedDict):
 
 
 class IoSample(TypedDict):
-    attribution: Literal["cgroup", "process"]
+    attribution: Literal["cgroup-dedicated", "cgroup-shared", "process"]
     scope: str
+    unit: str | None
     read_bytes: int | None
     write_bytes: int | None
 
@@ -67,9 +69,16 @@ def _cgroup_io_bytes() -> IoSample | None:
             write_bytes += int(fields.get("wbytes", "0"))
     except (OSError, StopIteration, ValueError):
         return None
+    unit = relative.rsplit("/", 1)[-1] if relative else None
+    dedicated = bool(os.environ.get("INVOCATION_ID")) and bool(unit and unit.endswith((".service", ".scope")))
     return {
-        "attribution": "cgroup",
-        "scope": f"cgroup:/{relative}",
+        "attribution": "cgroup-dedicated" if dedicated else "cgroup-shared",
+        "scope": (
+            f"phase-local:cgroup:/{relative}"
+            if dedicated
+            else f"shared-cgroup-aggregate:/{relative}"
+        ),
+        "unit": unit,
         "read_bytes": read_bytes,
         "write_bytes": write_bytes,
     }
@@ -83,6 +92,7 @@ def _io_sample() -> IoSample:
     return {
         "attribution": "process",
         "scope": "process:self",
+        "unit": None,
         "read_bytes": read_bytes,
         "write_bytes": write_bytes,
     }
@@ -115,6 +125,7 @@ class PhaseMeasurement:
             self.io = {
                 "attribution": self._io_started["attribution"],
                 "scope": self._io_started["scope"],
+                "unit": self._io_started["unit"],
                 "read_bytes": _delta(self._io_started["read_bytes"], io_finished["read_bytes"]),
                 "write_bytes": _delta(self._io_started["write_bytes"], io_finished["write_bytes"]),
             }
@@ -124,6 +135,7 @@ class PhaseMeasurement:
             self.io = {
                 "attribution": "process",
                 "scope": "process:self",
+                "unit": None,
                 "read_bytes": None,
                 "write_bytes": None,
             }

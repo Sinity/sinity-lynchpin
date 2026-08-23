@@ -432,7 +432,7 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
     Returns total rows inserted across all 6 tables.
     """
     from ..sources.github_context import iter_github_context
-    from ..substrate.connection import connect, update_read_snapshot
+    from ..substrate.connection import connect
     from ..substrate.github import (
         promote_github_issue_comments,
         promote_github_issues,
@@ -534,7 +534,7 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
                     "url": rc.url,
                 })
 
-    with connect(rebuild_corrupt=True) as conn:
+    with connect() as conn:
         n = 0
         n += promote_github_issues(conn, rows=issue_rows)
         n += promote_github_issue_comments(conn, rows=issue_comment_rows)
@@ -543,7 +543,6 @@ def _promote_github_context_to_substrate(ndjson_path: Path) -> int:
         n += promote_github_pr_reviews(conn, rows=pr_review_rows)
         n += promote_github_pr_review_comments(conn, rows=pr_review_comment_rows)
 
-    update_read_snapshot()
     log.info(
         "github_context substrate: %d issues, %d issue_comments, %d prs, "
         "%d pr_comments, %d reviews, %d review_comments",
@@ -564,17 +563,11 @@ def _is_duckdb_fatal_connection_error(exc: Exception) -> bool:
 
 
 def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionResult:
-    """Promote GitHub context, rebuilding the derived DB after a fatal write.
-
-    Some checkpoint corruptions leave canonical and snapshot files readable but
-    unsafe under promotion. Retrying or copying either generation cannot recover
-    that state. Atomically install a clean schema before the single retry; every
-    GitHub promoter then idempotently replaces the fixed ``latest`` partition.
-    """
+    """Promote GitHub context and reject corrupt stores without empty recovery."""
     attempts = 0
     rebuilt_after_corruption = False
     quarantined_path: str | None = None
-    while attempts < 2:
+    while attempts < 1:
         attempts += 1
         try:
             rows = _promote_github_context_to_substrate(ndjson_path)
@@ -599,23 +592,15 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
                         "candidate promotion was stopped before a clean schema could replace it"
                     ) from exc
                 try:
-                    quarantine = rebuild_corrupt_substrate()
+                    rebuild_corrupt_substrate()
                 except Exception as recovery_exc:
-                    log.warning("github_context substrate recovery failed: %s", recovery_exc)
+                    log.warning("github_context substrate corruption was archived: %s", recovery_exc)
                     return SubstratePromotionResult(
                         rows=0,
                         status="degraded",
                         attempts=attempts,
                         error=str(recovery_exc),
                     )
-                rebuilt_after_corruption = True
-                quarantined_path = str(quarantine)
-                log.warning(
-                    "github_context substrate checkpoint failed; installed clean "
-                    "derived schema and quarantined canonical at %s",
-                    quarantine,
-                )
-                continue
             log.warning("github_context substrate promotion failed: %s", exc)
             return SubstratePromotionResult(
                 rows=0,

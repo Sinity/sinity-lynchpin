@@ -19,6 +19,9 @@ def substrate_status_manifest_path(path: Path | None = None) -> Path:
 
 def load_current_substrate_status_manifest(path: Path | None = None) -> dict[str, Any] | None:
     target = Path(path or substrate_path())
+    from lynchpin.substrate.connection import _reconcile_publication
+
+    _reconcile_publication(target)
     manifest_path = substrate_status_manifest_path(target)
     if not target.exists() or not manifest_path.exists():
         return None

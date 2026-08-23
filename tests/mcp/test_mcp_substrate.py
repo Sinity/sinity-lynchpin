@@ -693,6 +693,8 @@ def test_readiness_report_uses_verified_snapshot_when_canonical_is_unready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import duckdb
+
     db_path = setup_substrate(tmp_path, monkeypatch)
 
     from lynchpin.mcp.tools.substrate import substrate_readiness_report
@@ -719,7 +721,7 @@ def test_readiness_report_uses_verified_snapshot_when_canonical_is_unready(
             """
         )
     update_read_snapshot(db_path)
-    with connect(db_path) as conn:
+    with duckdb.connect(str(db_path)) as conn:
         conn.execute("DELETE FROM substrate_source_status")
         conn.execute("DELETE FROM substrate_promotion_run")
 

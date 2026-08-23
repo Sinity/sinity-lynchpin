@@ -172,8 +172,8 @@ def test_phase_evidence_prefers_cgroup_unit_io(monkeypatch) -> None:
 
     samples = iter(
         (
-            {"attribution": "cgroup", "scope": "cgroup:/system.slice/lynchpin.service", "read_bytes": 11, "write_bytes": 13},
-            {"attribution": "cgroup", "scope": "cgroup:/system.slice/lynchpin.service", "read_bytes": 19, "write_bytes": 23},
+            {"attribution": "cgroup-dedicated", "scope": "phase-local:cgroup:/system.slice/lynchpin.service", "unit": "lynchpin.service", "read_bytes": 11, "write_bytes": 13},
+            {"attribution": "cgroup-dedicated", "scope": "phase-local:cgroup:/system.slice/lynchpin.service", "unit": "lynchpin.service", "read_bytes": 19, "write_bytes": 23},
         )
     )
     monkeypatch.setattr(run_steps, "_cgroup_io_bytes", lambda: next(samples))
@@ -183,8 +183,32 @@ def test_phase_evidence_prefers_cgroup_unit_io(monkeypatch) -> None:
 
     payload = measurement.payload()
     assert payload["io"] == {
-        "attribution": "cgroup",
-        "scope": "cgroup:/system.slice/lynchpin.service",
+        "attribution": "cgroup-dedicated",
+        "scope": "phase-local:cgroup:/system.slice/lynchpin.service",
+        "unit": "lynchpin.service",
+        "read_bytes": 8,
+        "write_bytes": 10,
+    }
+
+
+def test_phase_evidence_labels_shared_cgroup_as_aggregate(monkeypatch) -> None:
+    import lynchpin.substrate.run_steps as run_steps
+
+    samples = iter(
+        (
+            {"attribution": "cgroup-shared", "scope": "shared-cgroup-aggregate:/user.slice", "unit": "user.slice", "read_bytes": 11, "write_bytes": 13},
+            {"attribution": "cgroup-shared", "scope": "shared-cgroup-aggregate:/user.slice", "unit": "user.slice", "read_bytes": 19, "write_bytes": 23},
+        )
+    )
+    monkeypatch.setattr(run_steps, "_cgroup_io_bytes", lambda: next(samples))
+
+    with measure_phase("graph_compute") as measurement:
+        pass
+
+    assert measurement.payload()["io"] == {
+        "attribution": "cgroup-shared",
+        "scope": "shared-cgroup-aggregate:/user.slice",
+        "unit": "user.slice",
         "read_bytes": 8,
         "write_bytes": 10,
     }

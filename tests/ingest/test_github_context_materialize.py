@@ -84,36 +84,35 @@ def test_candidate_checkpoint_corruption_aborts_without_clean_rebuild(monkeypatc
     assert not rebuilt
 
 
-def test_substrate_promotion_rebuilds_corrupt_db_before_retry(monkeypatch, tmp_path: Path) -> None:
+def test_substrate_promotion_archives_corrupt_db_without_empty_retry(monkeypatch, tmp_path: Path) -> None:
     calls = 0
     recovered: list[str] = []
 
     def promote(_path: Path) -> int:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            raise RuntimeError(
-                "database has been invalidated; Failed to create checkpoint: "
-                "Invalid node type for TransformToDeprecated: 0"
-            )
-        return 17
+        raise RuntimeError(
+            "database has been invalidated; Failed to create checkpoint: "
+            "Invalid node type for TransformToDeprecated: 0"
+        )
 
     monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
     monkeypatch.setattr(
         "lynchpin.substrate.connection.rebuild_corrupt_substrate",
-        lambda: recovered.append("called") or Path("/tmp/substrate.corrupt"),
+        lambda: recovered.append("called") or (_ for _ in ()).throw(
+            RuntimeError("corrupt substrate was archived")
+        ),
     )
 
     result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
 
     assert result == materializer.SubstratePromotionResult(
-        rows=17,
-        status="ok",
-        attempts=2,
-        rebuilt_after_corruption=True,
-        quarantined_path="/tmp/substrate.corrupt",
+        rows=0,
+        status="degraded",
+        attempts=1,
+        error="corrupt substrate was archived",
     )
-    assert calls == 2
+    assert calls == 1
     assert len(recovered) == 1
 
 

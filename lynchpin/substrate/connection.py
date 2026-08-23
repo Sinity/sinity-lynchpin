@@ -22,6 +22,7 @@ from datetime import datetime
 import ctypes
 import errno
 import fcntl
+import json
 import logging
 import os
 from pathlib import Path
@@ -69,6 +70,7 @@ class CandidateGeneration:
     seed_source: Path
     seed_mode: Literal["reflink", "logical-index-rebuild"]
     expected_refresh_id: str | None = None
+    predecessor_identity: tuple[int, int, int] | None = None
     phase_evidence: list[dict[str, object]] = field(default_factory=list)
 
 
@@ -277,9 +279,120 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def _fsync_file(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _replace(source: Path, destination: Path) -> None:
     """Indirection kept injectable for publication-failure regression tests."""
     source.replace(destination)
+
+
+def _publication_intent_path(canonical: Path) -> Path:
+    return canonical.with_name(f".{canonical.name}.publication.json")
+
+
+def _artifact_identity(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {"device": stat.st_dev, "inode": stat.st_ino, "size": stat.st_size}
+
+
+def _identity_matches(path: Path, identity: dict[str, object]) -> bool:
+    try:
+        return _artifact_identity(path) == identity
+    except OSError:
+        return False
+
+
+def _write_publication_intent(path: Path, intent: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(intent, sort_keys=True), encoding="utf-8")
+    _fsync_file(temporary)
+    _replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _publication_step(_step: str) -> None:
+    """Injectable durable-step hook used to simulate process death in tests."""
+
+
+def _reconcile_publication(canonical: Path) -> None:
+    """Finish or roll back an interrupted serving-triple publication.
+
+    The intent is persisted before a serving name changes. A reader calls this
+    before opening the substrate, so a SIGKILL between individual renames never
+    exposes a mixed database, snapshot, and manifest generation.
+    """
+    intent_path = _publication_intent_path(canonical)
+    if not intent_path.exists():
+        return
+    try:
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        replacements = intent["replacements"]
+        backups = intent["backups"]
+        had_target = set(intent["had_target"])
+        if not isinstance(replacements, list) or not isinstance(backups, dict):
+            raise ValueError("invalid publication intent")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise CandidateGenerationRejected("unreadable substrate publication intent") from exc
+
+    pending: list[dict[str, object]] = []
+    published: list[dict[str, object]] = []
+    inconsistent = False
+    for entry in replacements:
+        if not isinstance(entry, dict):
+            inconsistent = True
+            continue
+        target = Path(str(entry["target"]))
+        candidate = Path(str(entry["candidate"]))
+        identity = entry["identity"]
+        if not isinstance(identity, dict):
+            inconsistent = True
+        elif _identity_matches(target, identity):
+            published.append(entry)
+        elif _identity_matches(candidate, identity):
+            pending.append(entry)
+        else:
+            inconsistent = True
+    if not inconsistent:
+        try:
+            for entry in pending:
+                _replace(Path(str(entry["candidate"])), Path(str(entry["target"])))
+                published.append(entry)
+            _fsync_directory(canonical.parent)
+        except OSError:
+            inconsistent = True
+    if inconsistent:
+        for entry in reversed(published):
+            target = Path(str(entry["target"]))
+            backup_name = backups.get(str(target))
+            if backup_name:
+                _replace(Path(str(backup_name)), target)
+            elif str(target) not in had_target:
+                target.unlink(missing_ok=True)
+        _fsync_directory(canonical.parent)
+    intent_path.unlink(missing_ok=True)
+    _fsync_directory(canonical.parent)
+
+
+@contextmanager
+def _promotion_lock(canonical: Path) -> Iterator[None]:
+    """Hold the process-wide writer lock from predecessor capture to publish."""
+    lock_path = canonical.with_name(f".{canonical.name}.promotion.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CandidateGenerationRejected("another substrate promotion owns the writer lock") from exc
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _publication_backups(targets: tuple[Path, ...]) -> dict[Path, Path]:
@@ -324,7 +437,7 @@ def _assert_candidate_manifest_identity(candidate_manifest: Path, expected_refre
 
 
 def _publish_candidate(generation: CandidateGeneration) -> None:
-    """Publish a checked candidate with matching database and manifest sidecars."""
+    """Publish a checked candidate with durable intent and read reconciliation."""
     from lynchpin.substrate.status_manifest import (
         substrate_status_manifest_path,
         write_substrate_status_manifest,
@@ -345,6 +458,9 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
     if generation.expected_refresh_id is not None:
         _assert_candidate_manifest_identity(candidate_manifest, generation.expected_refresh_id)
 
+    for artifact in (generation.candidate, candidate_snapshot, candidate_manifest):
+        _fsync_file(artifact)
+
     serving_snapshot = generation.canonical.with_suffix(".read-snapshot.duckdb")
     serving_manifest = substrate_status_manifest_path(generation.canonical)
     replacements = (
@@ -352,24 +468,51 @@ def _publish_candidate(generation: CandidateGeneration) -> None:
         (candidate_snapshot, serving_snapshot),
         (candidate_manifest, serving_manifest),
     )
+    if generation.predecessor_identity is not None:
+        current = _artifact_identity(generation.canonical)
+        if current != {
+            "device": generation.predecessor_identity[0],
+            "inode": generation.predecessor_identity[1],
+            "size": generation.predecessor_identity[2],
+        }:
+            raise CandidateGenerationRejected("candidate predecessor changed before publication")
     targets = tuple(target for _candidate, target in replacements)
     had_target = {target for target in targets if target.exists()}
     backups = _publication_backups(targets)
+    intent = {
+        "schema": "lynchpin.substrate-publication.v1",
+        "replacements": [
+            {
+                "candidate": str(candidate),
+                "target": str(target),
+                "identity": _artifact_identity(candidate),
+            }
+            for candidate, target in replacements
+        ],
+        "backups": {str(target): str(backup) for target, backup in backups.items()},
+        "had_target": [str(target) for target in had_target],
+    }
+    intent_path = _publication_intent_path(generation.canonical)
     replaced: list[Path] = []
     try:
-        for candidate, target in replacements:
+        _write_publication_intent(intent_path, intent)
+        _publication_step("intent-durable")
+        for index, (candidate, target) in enumerate(replacements):
             _replace(candidate, target)
             replaced.append(target)
+            _fsync_directory(generation.canonical.parent)
+            _publication_step(f"replacement-{index}-durable")
+        intent_path.unlink(missing_ok=True)
         _fsync_directory(generation.canonical.parent)
-    except BaseException:
-        try:
-            _rollback_publication(
-                backups=backups,
-                replaced=tuple(replaced),
-                had_target=had_target,
-            )
-        except BaseException as rollback_exc:
-            raise RuntimeError("candidate publication and rollback both failed") from rollback_exc
+        _publication_step("intent-cleared")
+    except Exception:
+        _rollback_publication(
+            backups=backups,
+            replaced=tuple(replaced),
+            had_target=had_target,
+        )
+        intent_path.unlink(missing_ok=True)
+        _fsync_directory(generation.canonical.parent)
         raise
 
 
@@ -744,8 +887,9 @@ def candidate_generation(
     )
     token = None
     published = False
-    with _candidate_interruption_handlers():
+    with _promotion_lock(canonical), _candidate_interruption_handlers():
         try:
+            _reconcile_publication(canonical)
             _archive_interrupted_candidates(canonical)
             from lynchpin.substrate.run_steps import log_phase_evidence, measure_phase
 
@@ -764,6 +908,7 @@ def candidate_generation(
                 seed_source = canonical
                 with measure_phase("candidate_write") as seed_measurement:
                     _reflink_clone(canonical, candidate)
+            predecessor = _artifact_identity(canonical) if canonical.exists() else None
             candidate_phase = _record_candidate_phase(
                 candidate,
                 refresh_id=refresh_id,
@@ -794,6 +939,9 @@ def candidate_generation(
                 refresh_id=refresh_id,
                 seed_source=seed_source,
                 seed_mode=seed_mode,
+                predecessor_identity=(
+                    predecessor["device"], predecessor["inode"], predecessor["size"]
+                ) if predecessor is not None else None,
             )
             generation.phase_evidence.append(candidate_phase)
             yield generation
@@ -841,49 +989,20 @@ def _quarantine_suffix() -> str:
 def rebuild_corrupt_substrate(
     canonical: Path | None = None,
 ) -> Path:
-    """Atomically replace a broken derived substrate with a clean schema.
+    """Archive a corrupt generation and require verified logical recovery.
 
-    DuckDB internal metadata/checkpoint errors can leave both canonical and
-    read-snapshot generations readable while making promotion abort inside the
-    engine. Reusing either file is therefore unsafe. Build and checkpoint a
-    fresh temporary database first; only then quarantine canonical and WAL and
-    atomically install the clean derived store. The old read snapshot remains
-    available to readers until the next successful promotion replaces it.
-
-    Also quarantines any stale ``.wal`` sitting next to the corrupt canonical:
-    that WAL holds uncheckpointed writes against the *broken* base file, and
-    DuckDB replays it by file position on next open. Copying an older,
-    unrelated snapshot into place while leaving that WAL behind would replay
-    mismatched transactions on top of it — reintroducing corruption instead
-    of recovering from it.
+    A readable snapshot does not prove a safe write predecessor. The corrupt
+    database and WAL are retained for evidence, then the caller must invoke
+    the explicit logical candidate rebuild from a verified generation.
     """
     canonical = canonical if canonical is not None else substrate_path()
-    rebuilt = canonical.with_suffix(".rebuild.tmp")
-    if rebuilt.exists():
-        rebuilt.unlink()
-    try:
-        import duckdb
-
-        with duckdb.connect(str(rebuilt)) as conn:
-            apply_schema(conn)
-            conn.execute("CHECKPOINT")
-    except Exception as rebuild_exc:
-        if rebuilt.exists():
-            rebuilt.unlink()
-        raise RuntimeError(
-            "clean substrate rebuild failed before canonical replacement; "
-            "canonical database was left in place"
-        ) from rebuild_exc
-
-    suffix = _quarantine_suffix()
-    quarantine = canonical.with_name(canonical.name + suffix)
-    if canonical.exists():
-        canonical.replace(quarantine)
-    wal = canonical.with_name(canonical.name + ".wal")
-    if wal.exists():
-        wal.replace(wal.with_name(wal.name + suffix))
-    rebuilt.replace(canonical)
-    return quarantine
+    archived = _archive_candidate(canonical, "corrupt")
+    if not archived:
+        raise CandidateGenerationRejected("corrupt substrate disappeared before it could be archived")
+    raise CandidateGenerationRejected(
+        "corrupt substrate was archived; rerun --all --promote --rebuild-candidate-indexes "
+        "to rebuild from a verified logical predecessor"
+    )
 
 
 @contextmanager
@@ -915,6 +1034,13 @@ def connect(
         raise CandidateGenerationRejected(
             "candidate generation cannot write outside its staged substrate"
         )
+    if target == substrate_path() and _substrate_path_override.get() is None:
+        _reconcile_publication(target)
+        if not read_only and not rebuild_corrupt and substrate_read_snapshot_path().exists():
+            raise CandidateGenerationRejected(
+                "direct substrate writes are rejected while a read snapshot serves readers; "
+                "run the writer through candidate_generation"
+            )
     # A failed recovery may leave a clean but unpromoted canonical database.
     # Prefer the prior verified snapshot in that state rather than making read
     # clients observe an empty schema as if it were a successful generation.
@@ -936,7 +1062,6 @@ def connect(
         if not read_only or not snapshot_fallback:
             if rebuild_corrupt and not read_only and isinstance(exc, duckdb.InternalException):
                 rebuild_corrupt_substrate(target)
-                conn = duckdb.connect(str(target), read_only=False)
             else:
                 raise
         else:

@@ -70,7 +70,7 @@ def materialize_code_snapshots() -> dict[str, Any]:
         promote_code_snapshot_runs,
         promote_code_snapshot_slices,
     )
-    from lynchpin.substrate.connection import connect, update_read_snapshot
+    from lynchpin.substrate.connection import connect
 
     output_root = code_snapshots_path()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -91,11 +91,10 @@ def materialize_code_snapshots() -> dict[str, Any]:
         )
         raise MaterializationError("code_snapshots", reason=str(first_err))
 
-    with connect(rebuild_corrupt=True) as conn:
+    with connect() as conn:
         n_runs = promote_code_snapshot_runs(conn, rows=run_rows)
         n_slices = promote_code_snapshot_slices(conn, rows=slice_rows)
 
-    update_read_snapshot()
     manifest = {
         "dataset": "code_snapshots",
         "row_count": n_runs + n_slices,

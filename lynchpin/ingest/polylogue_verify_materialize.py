@@ -19,7 +19,7 @@ def materialize_polylogue_verify_runs() -> dict[str, Any]:
     """Promote every recorded Polylogue verification run into the substrate."""
     from lynchpin.core.config import get_config
     from lynchpin.sources.polylogue_verify import iter_verify_runs, verify_history_path
-    from lynchpin.substrate.connection import connect, update_read_snapshot
+    from lynchpin.substrate.connection import connect
     from lynchpin.substrate.polylogue_verify import promote_polylogue_verify_runs
     from lynchpin.substrate.schema import polylogue_verify_ddl
 
@@ -31,7 +31,7 @@ def materialize_polylogue_verify_runs() -> dict[str, Any]:
         )
 
     rows = list(iter_verify_runs(history))
-    with connect(rebuild_corrupt=True) as conn:
+    with connect() as conn:
         # Additive table: create it in place rather than forcing a
         # SUBSTRATE_VERSION bump, which drops and rebuilds every product.
         # The table is fully re-promoted from the complete history on every
@@ -50,7 +50,6 @@ def materialize_polylogue_verify_runs() -> dict[str, Any]:
             conn.execute(statement)
         promoted = promote_polylogue_verify_runs(conn, rows=rows)
 
-    update_read_snapshot()
     checkouts = sorted(
         {row["checkout_name"] for row in rows if row.get("checkout_name")}
     )

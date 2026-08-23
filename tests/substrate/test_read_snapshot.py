@@ -6,8 +6,10 @@ lock for 30-60+ minutes; MCP needs a path to read regardless.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import signal
+import warnings
 
 import duckdb
 import pytest
@@ -60,6 +62,45 @@ def _record_verified_generation(path: Path, refresh_id: str) -> None:
             """,
             [refresh_id],
         )
+
+
+def _contending_candidate() -> None:
+    try:
+        with candidate_generation():
+            pass
+    except CandidateGenerationRejected:
+        os._exit(0)
+    else:
+        os._exit(1)
+
+
+def _kill_candidate_at_durable_step(crash_step: str) -> None:
+    import lynchpin.substrate.connection as connection
+
+    def die(step: str) -> None:
+        if step == crash_step:
+            os._exit(137)
+
+    connection._publication_step = die
+    with candidate_generation() as generation:
+        _record_verified_generation(generation.candidate, "current")
+
+
+def _fresh_process_reconcile(path: str) -> None:
+    from lynchpin.substrate.connection import _reconcile_publication
+
+    try:
+        _reconcile_publication(Path(path))
+    except Exception:  # noqa: BLE001 - report the fresh-process failure via exit status.
+        os._exit(1)
+    else:
+        os._exit(0)
+
+
+def _fork_for_crash_simulation() -> int:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return os.fork()
 
 
 def test_update_read_snapshot_creates_copy(isolated_substrate: Path) -> None:
@@ -219,12 +260,11 @@ def test_connect_read_only_falls_back_to_snapshot_on_internal_open_error(
         assert reader.execute("SELECT v FROM x").fetchone() == (11,)
 
 
-def test_connect_write_can_rebuild_corrupt_canonical(
+def test_connect_write_archives_corrupt_canonical_and_rejects_empty_rebuild(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Opt-in write recovery quarantines an unreadable derived canonical and
-    resumes from a clean schema rather than reusing a suspect snapshot."""
+    """Recovery must never make a clean-but-empty schema look usable."""
     canonical = isolated_substrate
     with duckdb.connect(str(canonical)) as conn:
         conn.execute("CREATE TABLE x (v INTEGER)")
@@ -244,21 +284,18 @@ def test_connect_write_can_rebuild_corrupt_canonical(
 
     monkeypatch.setattr(duckdb, "connect", flaky_connect)
 
-    with connect(rebuild_corrupt=True) as writer:
-        assert writer.execute(
-            "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() is not None
+    with pytest.raises(CandidateGenerationRejected, match="rebuild-candidate-indexes"):
+        with connect(rebuild_corrupt=True):
+            pass
 
     quarantined = list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
     assert len(quarantined) == 1
     assert quarantined[0].read_bytes() == b"not a duckdb database"
-    with duckdb.connect(str(canonical), read_only=True) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables"
-        ).fetchone()[0] > 1
+    assert not canonical.exists()
+    assert generation_refresh_id(substrate_read_snapshot_path()) is None
 
 
-def test_rebuild_corrupt_substrate_installs_clean_schema(
+def test_rebuild_corrupt_substrate_archives_and_never_installs_empty_schema(
     isolated_substrate: Path,
 ) -> None:
     from lynchpin.substrate.connection import rebuild_corrupt_substrate
@@ -269,19 +306,16 @@ def test_rebuild_corrupt_substrate_installs_clean_schema(
         conn.execute("INSERT INTO x VALUES (17)")
     canonical.write_bytes(b"broken canonical")
 
-    quarantine = rebuild_corrupt_substrate(canonical)
+    with pytest.raises(CandidateGenerationRejected, match="verified logical predecessor"):
+        rebuild_corrupt_substrate(canonical)
 
-    assert quarantine.read_bytes() == b"broken canonical"
-    with duckdb.connect(str(canonical), read_only=True) as conn:
-        assert conn.execute(
-            "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() is not None
-        assert conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables"
-        ).fetchone()[0] > 1
+    quarantined = list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"broken canonical"
+    assert not canonical.exists()
 
 
-def test_rebuild_keeps_canonical_when_clean_schema_creation_fails(
+def test_rebuild_corrupt_archives_without_attempting_schema_creation(
     isolated_substrate: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -294,12 +328,11 @@ def test_rebuild_keeps_canonical_when_clean_schema_creation_fails(
         lambda _conn: (_ for _ in ()).throw(RuntimeError("schema failed")),
     )
 
-    with pytest.raises(RuntimeError, match="failed before canonical replacement"):
+    with pytest.raises(CandidateGenerationRejected, match="verified logical predecessor"):
         rebuild_corrupt_substrate(canonical)
 
-    assert canonical.read_bytes() == b"canonical retained"
-    assert not list(canonical.parent.glob("substrate.duckdb.corrupt-*"))
-    assert not canonical.with_suffix(".rebuild.tmp").exists()
+    assert not canonical.exists()
+    assert len(list(canonical.parent.glob("substrate.duckdb.corrupt-*"))) == 1
 
 
 def _base_table_counts(path: Path) -> dict[str, int]:
@@ -748,6 +781,90 @@ def test_candidate_publication_defers_signal_until_serving_triple_is_complete(
     assert manifest is not None
     assert manifest["latest_refresh_id"] == "current"
     assert not list(isolated_substrate.parent.glob("substrate.candidate-*"))
+
+
+@pytest.mark.parametrize(
+    "crash_step",
+    (
+        "intent-durable",
+        "replacement-0-durable",
+        "replacement-1-durable",
+        "replacement-2-durable",
+        "intent-cleared",
+    ),
+)
+def test_fresh_read_reconciles_every_interrupted_publication_step(
+    isolated_substrate: Path,
+    crash_step: str,
+) -> None:
+    """The next process sees one complete prior or current triple, never a mix."""
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+
+    writer = _fork_for_crash_simulation()
+    if writer == 0:
+        _kill_candidate_at_durable_step(crash_step)
+        os._exit(0)
+    _, writer_status = os.waitpid(writer, 0)
+    assert os.waitstatus_to_exitcode(writer_status) == 137
+
+    reader = _fork_for_crash_simulation()
+    if reader == 0:
+        _fresh_process_reconcile(str(isolated_substrate))
+    _, reader_status = os.waitpid(reader, 0)
+    assert os.waitstatus_to_exitcode(reader_status) == 0
+
+    manifest = load_current_substrate_status_manifest(isolated_substrate)
+    assert manifest is not None
+    refreshes = {
+        generation_refresh_id(isolated_substrate),
+        generation_refresh_id(substrate_read_snapshot_path()),
+        manifest["latest_refresh_id"],
+    }
+    assert refreshes == {"current"}
+
+
+def test_candidate_rejects_stale_predecessor_before_overwriting_newer_generation(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+
+    with pytest.raises(CandidateGenerationRejected, match="predecessor changed"):
+        with candidate_generation() as generation:
+            newer = isolated_substrate.with_name("newer.duckdb")
+            _record_verified_generation(newer, "newer")
+            newer.replace(isolated_substrate)
+            _record_verified_generation(generation.candidate, "stale")
+
+    assert generation_refresh_id(isolated_substrate) == "newer"
+
+
+def test_independent_promoter_cannot_clone_or_publish_while_lock_is_held(
+    isolated_substrate: Path,
+) -> None:
+    """The OS lock spans candidate setup, not only the final publication."""
+    import lynchpin.substrate.connection as connection
+
+    _record_verified_generation(isolated_substrate, "prior")
+    with connection._promotion_lock(isolated_substrate):
+        process = _fork_for_crash_simulation()
+        if process == 0:
+            _contending_candidate()
+        _, status = os.waitpid(process, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+
+
+def test_direct_writer_is_rejected_when_a_read_snapshot_is_serving(
+    isolated_substrate: Path,
+) -> None:
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot()
+
+    with pytest.raises(CandidateGenerationRejected, match="candidate_generation"):
+        with connect():
+            pass
 
 
 def test_connect_prefers_verified_snapshot_to_unready_canonical(
