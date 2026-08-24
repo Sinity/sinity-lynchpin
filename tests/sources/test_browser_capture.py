@@ -83,6 +83,19 @@ def test_malformed_and_unsupported_captures_are_reported_without_fabricated_reco
     assert unsupported_capture.conversations == ()
 
 
+def test_generic_json_ids_are_not_fabricated_as_conversations(tmp_path: Path) -> None:
+    capture_path = tmp_path / "records.json"
+    capture_path.write_text(
+        json.dumps([{"id": "record-1", "title": "Ordinary record"}]),
+        encoding="utf-8",
+    )
+
+    capture = parse_browser_capture(capture_path)
+
+    assert capture.parse_status == "unrecognized_structured"
+    assert capture.conversations == ()
+
+
 def test_oversized_structured_capture_hashes_in_chunks_without_reading_payload(
     tmp_path: Path, monkeypatch
 ) -> None:

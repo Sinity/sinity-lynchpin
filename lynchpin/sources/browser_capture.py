@@ -438,10 +438,12 @@ def _conversation_from_item(item: dict[str, object]) -> BrowserConversation | No
     created_at = _timestamp(_first_value(item, "create_time", "created_at", "created", "timestamp"))
     updated_at = _timestamp(_first_value(item, "update_time", "updated_at", "updated", "modified_at"))
     messages = _messages_from_item(item)
-    if conversation_id is None and canonical_url is None and not messages:
+    if not messages:
         return None
     if provider is None and "mapping" in item:
         provider = "chatgpt"
+    if provider is None:
+        return None
     keys = _deduplication_keys(provider, conversation_id, canonical_url, messages)
     return BrowserConversation(
         provider=provider,
