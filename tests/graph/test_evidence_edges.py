@@ -9,6 +9,7 @@ from lynchpin.graph.evidence_edges import (
     mentions_project_edges,
     overlap_edges_via_substrate,
     same_project_day_edges,
+    cross_boundary_edges,
     temporal_overlap_edges,
 )
 
@@ -195,6 +196,41 @@ def test_same_project_day_edges_emits_only_cross_source_pairs() -> None:
     edge_pairs = {(e.source_id.split('-')[0], e.target_id.split('-')[0]) for e in edges}
     for source_a, source_b in edge_pairs:
         assert source_a != source_b, f"same-source edge found: {source_a} ↔ {source_b}"
+
+
+def test_cross_boundary_edges_preserves_boundary_edges_without_tail_tail_work(monkeypatch) -> None:
+    from lynchpin.graph import evidence_edges
+    from lynchpin.core.evidence_graph import EvidenceEdge
+
+    day = date(2026, 5, 24)
+    boundary = EvidenceNode(id="boundary", kind="commit", source="git", date=day, project="p", summary="boundary")
+    tail_a = EvidenceNode(id="tail-a", kind="github_ref", source="github", date=day, project="p", summary="tail a")
+    tail_b = EvidenceNode(id="tail-b", kind="raw_log", source="raw_log", date=day, project="p", summary="tail b")
+    calls: list[tuple[str, int]] = []
+
+    def same(nodes):
+        calls.append(("same_project_day", len(nodes)))
+        return (
+            EvidenceEdge(nodes[0].id, nodes[1].id, "same_project_day", "boundary", 0.4),
+        )
+
+    monkeypatch.setattr(evidence_edges, "same_project_day_edges", same)
+    for name in (
+        "temporal_overlap_edges",
+        "temporal_proximity_edges",
+        "polylogue_work_event_tool_overlap_edges",
+        "mentions_project_edges",
+    ):
+        monkeypatch.setattr(evidence_edges, name, lambda _nodes: ())
+    monkeypatch.setattr(evidence_edges, "overlap_edges_via_substrate", lambda _nodes, **_kwargs: ())
+
+    edges = cross_boundary_edges((boundary,), (tail_a, tail_b))
+
+    assert {(edge.source_id, edge.target_id) for edge in edges} == {
+        ("boundary", "tail-a"),
+        ("boundary", "tail-b"),
+    }
+    assert calls == [("same_project_day", 2), ("same_project_day", 2)]
 
 
 def test_temporal_overlap_edges_group_by_project_and_stop_at_interval_end() -> None:

@@ -208,6 +208,20 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
     with connect(db) as conn:
         apply_schema(conn)
         graph_mod.promote_evidence_graph(conn, refresh_id="old", graph=predecessor)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES ('old', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES ('old', 'evidence_graph', 'graph', 'ok', NULL, 3, NULL, NULL, now())
+            """
+        )
         counts = graph_mod.promote_incremental_evidence_graph(
             conn,
             previous_refresh_id="old",
@@ -430,14 +444,11 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
         if record.message.startswith("evidence_graph_performance ")
     ]
     by_stage = {metric["stage"]: metric for metric in metrics}
-    assert by_stage["crossing_python_edges"]["edge_count"] == 0
-    assert by_stage["crossing_sql_edges"]["sql_edge_count"] == 1
-    assert by_stage["crossing_sql_edges"]["crossing_edge_count"] == 0
+    assert by_stage["crossing_boundary_edges"]["edge_count"] == 0
     assert set(by_stage) == {
         "predecessor_boundary",
         "tail_graph_build",
-        "crossing_python_edges",
-        "crossing_sql_edges",
+        "crossing_boundary_edges",
         "candidate_graph_write",
         "analysis_claim_build",
         "candidate_claim_write",
@@ -446,6 +457,58 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
         {"elapsed_seconds", "cpu_seconds", "average_cpu_cores"} <= metric.keys()
         for metric in metrics
     )
+
+
+def test_compatible_predecessor_requires_success_and_exact_scope(tmp_path: Path) -> None:
+    import duckdb
+
+    from lynchpin.substrate.connection import apply_schema
+    from lynchpin.substrate.graph import compatible_graph_predecessor, promote_evidence_graph
+
+    db = tmp_path / "sub.duckdb"
+    graph = _make_evidence_graph()
+    with duckdb.connect(str(db)) as conn:
+        apply_schema(conn)
+        promote_evidence_graph(conn, refresh_id="all-ok", graph=graph)
+        promote_evidence_graph(conn, refresh_id="project-ok", graph=graph, projects=("alpha",))
+        promote_evidence_graph(conn, refresh_id="all-failed", graph=graph)
+        conn.executemany(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES (?, ?, NULL, NULL, NULL, 'test', '{}', now(), now())
+            """,
+            [("all-ok", "ok"), ("project-ok", "ok"), ("all-failed", "error")],
+        )
+        conn.executemany(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 3, NULL, NULL, now())
+            """,
+            [("all-ok",), ("project-ok",), ("all-failed",)],
+        )
+
+        assert compatible_graph_predecessor(
+            conn,
+            current_refresh_id="new-all",
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 5),
+        ) == "all-ok"
+        assert compatible_graph_predecessor(
+            conn,
+            current_refresh_id="new-alpha",
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 5),
+            projects=("alpha",),
+        ) == "project-ok"
+        assert compatible_graph_predecessor(
+            conn,
+            current_refresh_id="new-beta",
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 5),
+            projects=("beta",),
+        ) is None
 
 
 def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path: Path) -> None:

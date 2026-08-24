@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
-from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+from ..core.evidence_graph import EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
@@ -344,49 +344,19 @@ def materialize_incremental_evidence_graph(
     tail_ids = {node.id for node in tail_graph.nodes}
     relation_nodes = [node for node in boundary_nodes if node.id not in tail_ids and node.date < tail_start]
     relation_nodes.extend(tail_graph.nodes)
-    relation_ids = {node.id for node in relation_nodes}
-    crossing_edges: list[EvidenceEdge] = []
-    crossing_python_started = sample_performance()
-    for builder in (
-        evidence_edges.same_project_day_edges,
-        evidence_edges.temporal_overlap_edges,
-        evidence_edges.temporal_proximity_edges,
-        evidence_edges.polylogue_work_event_tool_overlap_edges,
-        evidence_edges.mentions_project_edges,
-    ):
-        crossing_edges.extend(
-            edge
-            for edge in builder(relation_nodes)
-            if edge.source_id in relation_ids
-            and edge.target_id in relation_ids
-            and ((edge.source_id in tail_ids) != (edge.target_id in tail_ids))
+    crossing_started = sample_performance()
+    crossing_edges = list(
+        evidence_edges.cross_boundary_edges(
+            tuple(node for node in relation_nodes if node.id not in tail_ids),
+            tail_graph.nodes,
         )
+    )
     log_performance(
         log,
         component="incremental_graph",
-        stage="crossing_python_edges",
-        started=crossing_python_started,
+        stage="crossing_boundary_edges",
+        started=crossing_started,
         edge_count=len(crossing_edges),
-    )
-    crossing_sql_started = sample_performance()
-    sql_edges = evidence_edges.overlap_edges_via_substrate(
-        relation_nodes,
-        refresh_id=f"overlap:{tail_graph.generated_at.isoformat()}",
-    )
-    crossing_edges.extend(
-        edge
-        for edge in sql_edges
-        if edge.source_id in relation_ids
-        and edge.target_id in relation_ids
-        and ((edge.source_id in tail_ids) != (edge.target_id in tail_ids))
-    )
-    log_performance(
-        log,
-        component="incremental_graph",
-        stage="crossing_sql_edges",
-        started=crossing_sql_started,
-        sql_edge_count=len(sql_edges),
-        crossing_edge_count=len(crossing_edges),
     )
     incremental_graph = EvidenceGraph(
         start=tail_start,

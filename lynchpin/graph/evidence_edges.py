@@ -535,6 +535,42 @@ def temporal_proximity_edges(
     return tuple(edges)
 
 
+def cross_boundary_edges(
+    boundary_nodes: Sequence[EvidenceNode],
+    tail_nodes: Sequence[EvidenceNode],
+) -> tuple[EvidenceEdge, ...]:
+    """Build only predecessor↔tail edges for an incremental graph.
+
+    The tail graph already contains every tail-internal edge.  Calling the
+    ordinary builders with ``boundary + tail`` would recompute that quadratic
+    portion and then discard it.  Pairwise builder calls are intentionally
+    limited to one boundary node and one tail node, so this route cannot emit
+    or spend work on tail↔tail relations.
+    """
+    builders = (
+        same_project_day_edges,
+        temporal_overlap_edges,
+        temporal_proximity_edges,
+        polylogue_work_event_tool_overlap_edges,
+        mentions_project_edges,
+        overlap_edges_via_substrate,
+    )
+    edges: list[EvidenceEdge] = []
+    for boundary in boundary_nodes:
+        for tail in tail_nodes:
+            for builder in builders:
+                kwargs = {"refresh_id": "incremental-boundary"} if builder is overlap_edges_via_substrate else {}
+                edges.extend(
+                    edge
+                    for edge in builder((boundary, tail), **kwargs)
+                    if {edge.source_id, edge.target_id} == {boundary.id, tail.id}
+                )
+    unique: dict[tuple[str, str, str], EvidenceEdge] = {}
+    for edge in edges:
+        unique[(edge.source_id, edge.target_id, edge.relation)] = edge
+    return tuple(unique.values())
+
+
 def node_time_sort_key(node: EvidenceNode) -> tuple[str, str, str]:
     anchor = node_anchor_time(node)
     return (anchor.isoformat() if anchor is not None else "", node.source, node.id)
@@ -556,6 +592,7 @@ def proximity_weight(gap_min: int) -> float:
 
 __all__ = [
     "load_symbol_changes_index",
+    "cross_boundary_edges",
     "mentions_project_edges",
     "overlap_edges_via_substrate",
     "polylogue_work_event_tool_overlap_edges",

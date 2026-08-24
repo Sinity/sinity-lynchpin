@@ -510,35 +510,40 @@ def compatible_graph_predecessor(
 ) -> str | None:
     """Return the compatible predecessor for one incremental generation.
 
-    The current window-derived refresh ID is the publication identity.  On a
-    first advancing-end run, copy the newest compatible predecessor.  On a
-    rerun where no older compatible build exists, reusing the current partition
-    is safe because the tail replacement is idempotent.
+    Only a graph that belongs to a successful promotion and has an ``ok`` graph
+    readiness row is eligible.  Scope is exact: an all-project generation is
+    never used as a project-scoped predecessor and vice versa.  In particular,
+    a failed or partial graph row left behind by a prior attempt cannot become
+    the historical carrier merely because it is newer.
     """
-    predicates = """
-        start_date <= ? AND end_date >= ?
-        AND (len(projects) = 0 OR projects = ?)
-    """
+    requested_projects = sorted(set(projects))
+    scope_predicate = "len(graph.projects) = 0" if not requested_projects else "graph.projects = ?"
+    params: list[Any] = [full_start, tail_start]
+    if requested_projects:
+        params.append(requested_projects)
+    params.extend([current_refresh_id])
     row = conn.execute(
         f"""
-        SELECT refresh_id
-        FROM evidence_graph_build
-        WHERE {predicates} AND refresh_id <> ?
-        ORDER BY generated_at DESC, materialized_at DESC
+        SELECT graph.refresh_id
+        FROM evidence_graph_build AS graph
+        JOIN substrate_promotion_run AS promotion
+          ON promotion.refresh_id = graph.refresh_id
+         AND promotion.status = 'ok'
+        WHERE graph.start_date <= ?
+          AND graph.end_date >= ?
+          AND {scope_predicate}
+          AND graph.refresh_id <> ?
+          AND EXISTS (
+              SELECT 1
+              FROM substrate_source_status AS readiness
+              WHERE readiness.refresh_id = graph.refresh_id
+                AND readiness.source = 'evidence_graph'
+                AND readiness.status = 'ok'
+          )
+        ORDER BY graph.generated_at DESC, graph.materialized_at DESC
         LIMIT 1
         """,
-        [full_start, tail_start, list(projects), current_refresh_id],
-    ).fetchone()
-    if row is not None:
-        return str(row[0])
-    row = conn.execute(
-        f"""
-        SELECT refresh_id
-        FROM evidence_graph_build
-        WHERE {predicates} AND refresh_id = ?
-        LIMIT 1
-        """,
-        [full_start, tail_start, list(projects), current_refresh_id],
+        params,
     ).fetchone()
     return str(row[0]) if row is not None else None
 
@@ -561,14 +566,44 @@ def promote_incremental_evidence_graph(
     tail are replaced from ``graph``; caller-provided graph edges include both
     tail-internal and boundary-crossing relations.
     """
-    predecessor = conn.execute(
-        "SELECT 1 FROM evidence_graph_build WHERE refresh_id = ?",
-        [previous_refresh_id],
-    ).fetchone()
+    requested_projects = sorted(set(projects))
+    replacing_existing_refresh = previous_refresh_id == refresh_id
+    if replacing_existing_refresh:
+        predecessor = conn.execute(
+            """
+            SELECT 1
+            FROM evidence_graph_build AS graph
+            WHERE graph.refresh_id = ?
+              AND graph.start_date <= ?
+              AND graph.end_date >= ?
+              AND ((len(graph.projects) = 0 AND ? = []) OR graph.projects = ?)
+            """,
+            [previous_refresh_id, full_start, tail_start, requested_projects, requested_projects],
+        ).fetchone()
+    else:
+        predecessor = conn.execute(
+            """
+            SELECT 1
+            FROM evidence_graph_build AS graph
+            JOIN substrate_promotion_run AS promotion
+              ON promotion.refresh_id = graph.refresh_id
+             AND promotion.status = 'ok'
+            WHERE graph.refresh_id = ?
+              AND graph.start_date <= ?
+              AND graph.end_date >= ?
+              AND ((len(graph.projects) = 0 AND ? = []) OR graph.projects = ?)
+              AND EXISTS (
+                  SELECT 1 FROM substrate_source_status AS readiness
+                  WHERE readiness.refresh_id = graph.refresh_id
+                    AND readiness.source = 'evidence_graph'
+                    AND readiness.status = 'ok'
+              )
+            """,
+            [previous_refresh_id, full_start, tail_start, requested_projects, requested_projects],
+        ).fetchone()
     if predecessor is None:
         raise ValueError(f"incremental graph predecessor is missing: {previous_refresh_id}")
 
-    replacing_existing_refresh = previous_refresh_id == refresh_id
     conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_node_ids (id VARCHAR PRIMARY KEY)")
     if graph.nodes:
         conn.executemany(
