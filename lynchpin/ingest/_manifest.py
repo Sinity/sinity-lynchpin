@@ -151,7 +151,10 @@ def _read_manifest_dict(path: Path) -> dict[str, Any]:
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a temp-file-then-rename swap."""
-    _atomic_write(path, lambda handle: handle.write(text))
+    def write_text(handle: TextIO) -> None:
+        handle.write(text)
+
+    _atomic_write(path, write_text)
 
 
 def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -> None:
