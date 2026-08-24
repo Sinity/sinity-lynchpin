@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import inspect
 import json
+import logging
 import os
 import sqlite3
 from collections.abc import Callable
@@ -157,6 +158,7 @@ from .sources.temporal_signals import temporal_signals_manifest_path, temporal_s
 from .sources.sleep_productivity import sleep_productivity_manifest_path, sleep_productivity_path
 from .sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION, github_context_manifest_path, github_context_path
 
+log = logging.getLogger(__name__)
 
 Status = DatasetStatus
 MaterializationStatus = Literal[
@@ -691,6 +693,9 @@ def run_materialization_plan(
         if step.action != "materialize":
             continue
         started = datetime.now(timezone.utc)
+        from .substrate.run_steps import measure_phase
+
+        measurement = measure_phase(f"materialize:{step.name}")
         _record_materialization_step(
             refresh_id,
             step.name,
@@ -699,16 +704,25 @@ def run_materialization_plan(
             started_at=started,
         )
         try:
-            report = _run_materializer(
-                materializers[step.name],
-                window=step.window if step.window is not None else window,
-            )
+            with measurement:
+                report = _run_materializer(
+                    materializers[step.name],
+                    window=step.window if step.window is not None else window,
+                )
         except Exception as exc:
+            effective_window = step.window if step.window is not None else window
             _record_materialization_step(
                 refresh_id,
                 step.name,
                 "error",
-                str(exc),
+                json.dumps(
+                    {
+                        "error": str(exc),
+                        "measurement": measurement.payload(),
+                        "effective_window": _window_payload(effective_window),
+                    },
+                    sort_keys=True,
+                ),
                 started_at=started,
                 finished_at=datetime.now(timezone.utc),
             )
@@ -720,11 +734,27 @@ def run_materialization_plan(
                 continue
             raise
         row_count = report.get("row_count") if isinstance(report, dict) else None
+        effective_window = step.window if step.window is not None else window
         _record_materialization_step(
             refresh_id,
             step.name,
             "ok",
-            "materialized",
+            json.dumps(
+                {
+                    "status": "materialized",
+                    "measurement": measurement.payload(
+                        metrics=(
+                            {
+                                "name": "row_count",
+                                "unit": "rows",
+                                "value": _int_or_none(row_count) or 0,
+                            },
+                        )
+                    ),
+                    "effective_window": _window_payload(effective_window),
+                },
+                sort_keys=True,
+            ),
             row_count=_int_or_none(row_count),
             started_at=started,
             finished_at=datetime.now(timezone.utc),
@@ -1201,7 +1231,7 @@ def _record_materialization_step(
     row_count: int | None = None,
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
-) -> None:
+) -> bool:
     try:
         from .substrate.connection import (
             apply_schema,
@@ -1216,7 +1246,7 @@ def _record_materialization_step(
         # manifest/read-snapshot generation identity. Candidate promotions retain
         # the rows because they publish fresh matching sidecars on success.
         if not in_candidate_generation():
-            return
+            return True
         with connect(substrate_path()) as conn:
             apply_schema(conn)
             record_run_step(
@@ -1229,9 +1259,25 @@ def _record_materialization_step(
                 started_at=started_at,
                 finished_at=finished_at,
             )
-    except Exception:
-        # Observability must never make canonical product repair impossible.
-        return
+        return True
+    except Exception as exc:
+        # Observability must never make canonical product repair impossible,
+        # but losing the receipt is degraded evidence and must be visible.
+        log.warning(
+            "materialization receipt write failed: refresh_id=%s step=%s "
+            "status=%s error=%s",
+            refresh_id,
+            step,
+            "degraded",
+            exc,
+        )
+        return False
+
+
+def _window_payload(window: tuple[date, date] | None) -> dict[str, str] | None:
+    if window is None:
+        return None
+    return {"start": window[0].isoformat(), "end": window[1].isoformat()}
 
 
 def ensure_supported_materializations(*, cfg: LynchpinConfig | None = None) -> None:

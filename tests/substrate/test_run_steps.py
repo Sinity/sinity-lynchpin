@@ -212,3 +212,28 @@ def test_phase_evidence_labels_shared_cgroup_as_aggregate(monkeypatch) -> None:
         "read_bytes": 8,
         "write_bytes": 10,
     }
+
+
+def test_incremental_phase_receipt_failure_is_degraded_and_visible(monkeypatch, caplog) -> None:
+    from types import SimpleNamespace
+
+    from lynchpin.cli import materialize
+    from lynchpin.substrate.run_steps import measure_phase
+
+    monkeypatch.setattr(
+        "lynchpin.substrate.connection.connect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("receipt unavailable")),
+    )
+    generation = SimpleNamespace(candidate="candidate.duckdb", phase_evidence=[])
+    with measure_phase("graph_compute") as measurement:
+        pass
+
+    with caplog.at_level("WARNING", logger="lynchpin.cli.materialize"):
+        materialize._record_incremental_phase(
+            generation,
+            measurement,
+            metrics=({"name": "graph_promotions", "unit": "refreshes", "value": 1},),
+        )
+
+    assert generation.phase_evidence[0]["receipt_status"] == "degraded"
+    assert "receipt write failed" in caplog.text

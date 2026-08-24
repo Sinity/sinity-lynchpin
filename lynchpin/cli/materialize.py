@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import logging
 import signal
 import sys
 from datetime import date, datetime, timedelta
@@ -34,6 +35,7 @@ from ..substrate.run_steps import (
 )
 
 _PROGRESS_FORMAT = "plain"
+log = logging.getLogger(__name__)
 
 
 class _CandidateRejected(RuntimeError):
@@ -242,6 +244,22 @@ def main(argv: list[str] | None = None) -> int:
                 generation,
                 verification_measurement,
                 metrics=({"name": "audited_datasets", "unit": "datasets", "value": len(rows)},),
+                evidence={
+                    "audit_snapshot": [
+                        {
+                            "name": row.name,
+                            "status": row.status,
+                            "row_count": row.row_count,
+                            "first_date": row.first_date.isoformat() if row.first_date else None,
+                            "last_date": row.last_date.isoformat() if row.last_date else None,
+                            "reason": row.reason,
+                        }
+                        for row in rows
+                    ],
+                    "candidate_refresh_id": getattr(generation, "refresh_id", None),
+                    "candidate_seed_mode": getattr(generation, "seed_mode", None),
+                    "publication_refresh_id": getattr(generation, "expected_refresh_id", None),
+                },
             )
             if args.json:
                 sys.stdout.write(
@@ -283,21 +301,33 @@ def _record_incremental_phase(
     measurement: PhaseMeasurement,
     *,
     metrics: tuple[PhaseMetric, ...],
+    evidence: dict[str, object] | None = None,
 ) -> None:
     """Append phase evidence only when this invocation owns a candidate."""
     if generation is None:
         return
     from lynchpin.substrate.connection import connect
-    with connect(generation.candidate) as conn:
-        payload = record_phase_evidence(
-            conn,
-            refresh_id=generation.refresh_id,
-            measurement=measurement,
-            metrics=metrics,
+    try:
+        with connect(generation.candidate) as conn:
+            payload = record_phase_evidence(
+                conn,
+                refresh_id=generation.refresh_id,
+                measurement=measurement,
+                metrics=metrics,
+                evidence=evidence,
+            )
+            conn.execute("CHECKPOINT")
+    except Exception as exc:  # noqa: BLE001 - receipt loss must not hide completed work.
+        payload = measurement.payload(metrics=metrics, evidence=evidence)
+        payload["receipt_status"] = "degraded"
+        payload["receipt_error"] = f"{type(exc).__name__}: {exc}"
+        log.warning(
+            "incremental phase receipt write failed: phase=%s status=degraded error=%s",
+            measurement.phase,
+            exc,
         )
-        conn.execute("CHECKPOINT")
     generation.phase_evidence.append(payload)
-    log_phase_evidence(measurement, metrics=metrics)
+    log_phase_evidence(measurement, metrics=metrics, evidence=evidence)
 
 
 def _all_history_window() -> tuple[date, date]:

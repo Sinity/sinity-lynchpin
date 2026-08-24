@@ -140,10 +140,15 @@ class PhaseMeasurement:
                 "write_bytes": None,
             }
 
-    def payload(self, *, metrics: tuple[PhaseMetric, ...] = ()) -> dict[str, object]:
+    def payload(
+        self,
+        *,
+        metrics: tuple[PhaseMetric, ...] = (),
+        evidence: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         if self.finished_at is None:
             raise RuntimeError(f"phase {self.phase} has not finished")
-        return {
+        payload: dict[str, object] = {
             "schema": "lynchpin.incremental-phase.v2",
             "phase": self.phase,
             "metrics": list(metrics),
@@ -152,6 +157,9 @@ class PhaseMeasurement:
             "cpu_system_seconds": self.cpu_system_seconds,
             "io": self.io,
         }
+        if evidence is not None:
+            payload["evidence"] = evidence
+        return payload
 
     def __enter__(self) -> "PhaseMeasurement":
         return self
@@ -175,9 +183,10 @@ def record_phase_evidence(
     refresh_id: str,
     measurement: PhaseMeasurement,
     metrics: tuple[PhaseMetric, ...] = (),
+    evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Persist machine-readable phase evidence without a new telemetry database."""
-    payload = measurement.payload(metrics=metrics)
+    payload = measurement.payload(metrics=metrics, evidence=evidence)
     record_run_step(
         conn,
         refresh_id=refresh_id,
@@ -192,10 +201,16 @@ def record_phase_evidence(
 
 
 def log_phase_evidence(
-    measurement: PhaseMeasurement, *, metrics: tuple[PhaseMetric, ...] = ()
+    measurement: PhaseMeasurement,
+    *,
+    metrics: tuple[PhaseMetric, ...] = (),
+    evidence: dict[str, object] | None = None,
 ) -> None:
     """Expose the same receipt shape to the materialization unit journal."""
-    log.info("incremental_phase=%s", json.dumps(measurement.payload(metrics=metrics), sort_keys=True))
+    log.info(
+        "incremental_phase=%s",
+        json.dumps(measurement.payload(metrics=metrics, evidence=evidence), sort_keys=True),
+    )
 
 
 def reconcile_orphaned_running_steps(
