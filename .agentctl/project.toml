@@ -34,6 +34,7 @@ exec = ["just", "check"]
 pool = "bulk"
 result = "exit"
 cache = "tree+environment"
+scratch = "nvme"
 
 [operations.lint]
 description = "Run Lynchpin Ruff checks"
