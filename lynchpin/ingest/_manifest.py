@@ -10,9 +10,9 @@ prove an indexed, append-compatible generation before using the bounded route.
 
 from __future__ import annotations
 
-import json
 import errno
 import fcntl
+import json
 import os
 import stat
 import uuid
@@ -188,18 +188,28 @@ def atomic_write_indexed_ndjson(
     by the same logical date used by ``date_getter``.
     """
     serialize = dumps or (lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True))
-    tmp_path = _tmp_sibling(path)
+    fd, tmp_path = _open_temp(path)
+    owned_fd: int | None = fd
     offsets: dict[str, int] = {}
-    with tmp_path.open("wb") as handle:
-        for row in rows:
-            day = date_getter(row)
-            if day is not None:
-                offsets.setdefault(day.isoformat(), handle.tell())
-            handle.write(serialize(row).encode("utf-8"))
-            handle.write(b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    tmp_path.replace(path)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            owned_fd = None
+            for row in rows:
+                day = date_getter(row)
+                if day is not None:
+                    offsets.setdefault(day.isoformat(), handle.tell())
+                handle.write(serialize(row).encode("utf-8"))
+                handle.write(b"\n")
+            _preserve_existing_mode(path, tmp_path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        _fsync_parent_directory(path.parent)
+    except BaseException:
+        if owned_fd is not None:
+            os.close(owned_fd)
+        tmp_path.unlink(missing_ok=True)
+        raise
     return offsets
 
 
@@ -238,10 +248,9 @@ def replace_indexed_ndjson_tail(
     # serving file in place makes SIGTERM after truncate() indistinguishable
     # from a corrupt successful generation.  A reflink keeps the historical
     # extents shared and makes the only physical writes the replacement tail.
-    tmp_path = _tmp_sibling(path)
-    tmp_path.unlink(missing_ok=True)
+    clone_fd, tmp_path = _open_temp(path)
     try:
-        with path.open("rb") as source, tmp_path.open("xb") as clone:
+        with os.fdopen(clone_fd, "r+b") as clone, path.open("rb") as source:
             fcntl.ioctl(clone.fileno(), _FICLONE, source.fileno())
     except OSError as exc:
         tmp_path.unlink(missing_ok=True)
@@ -261,17 +270,14 @@ def replace_indexed_ndjson_tail(
                     next_offsets.setdefault(day.isoformat(), handle.tell())
                 handle.write(serialize(row).encode("utf-8"))
                 handle.write(b"\n")
+            _preserve_existing_mode(path, tmp_path)
             handle.flush()
             os.fsync(handle.fileno())
-        tmp_path.replace(path)
+        os.replace(tmp_path, path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
-    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+    _fsync_parent_directory(path.parent)
     return dict(sorted(next_offsets.items()))
 
 

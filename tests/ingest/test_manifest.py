@@ -5,15 +5,18 @@ import os
 import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from lynchpin.core.errors import MaterializationError
 from lynchpin.ingest._manifest import (
+    atomic_write_indexed_ndjson,
     atomic_write_ndjson,
     atomic_write_text,
     guard_incremental_shrinkage,
+    replace_indexed_ndjson_tail,
     write_manifest,
 )
 
@@ -74,6 +77,63 @@ def test_atomic_write_ndjson_writes_one_json_object_per_line(tmp_path) -> None:
     lines = target.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line) for line in lines] == rows
     assert target.stat().st_ino != old_inode
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
+
+
+def test_indexed_ndjson_publication_preserves_mode_and_offsets(tmp_path: Path) -> None:
+    target = tmp_path / "rows.ndjson"
+    target.write_text("stale\n", encoding="utf-8")
+    target.chmod(0o640)
+    rows = [
+        {"date": "2026-08-20", "value": 1},
+        {"date": "2026-08-20", "value": 2},
+        {"date": "2026-08-21", "value": 3},
+    ]
+
+    offsets = atomic_write_indexed_ndjson(
+        target,
+        rows,
+        date_getter=lambda row: date.fromisoformat(row["date"]),
+    )
+
+    encoded = [json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows]
+    assert offsets == {
+        "2026-08-20": 0,
+        "2026-08-21": len(encoded[0].encode()) + len(encoded[1].encode()) + 2,
+    }
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
+
+
+def test_indexed_tail_replacement_is_atomic_and_preserves_prefix(tmp_path: Path) -> None:
+    target = tmp_path / "rows.ndjson"
+    original = [
+        {"date": "2026-08-20", "value": 1},
+        {"date": "2026-08-21", "value": 2},
+        {"date": "2026-08-22", "value": 3},
+    ]
+    offsets = atomic_write_indexed_ndjson(
+        target,
+        original,
+        date_getter=lambda row: date.fromisoformat(row["date"]),
+    )
+    target.chmod(0o640)
+
+    next_offsets = replace_indexed_ndjson_tail(
+        target,
+        ({"date": "2026-08-21", "value": 20},),
+        start=date(2026, 8, 21),
+        date_getter=lambda row: date.fromisoformat(row["date"]),
+        offsets=offsets,
+    )
+
+    assert [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()] == [
+        original[0],
+        {"date": "2026-08-21", "value": 20},
+    ]
+    assert next_offsets["2026-08-20"] == 0
+    assert next_offsets["2026-08-21"] == offsets["2026-08-21"]
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
     assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
 
 
