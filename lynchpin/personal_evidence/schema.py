@@ -85,7 +85,7 @@ DDL_STATEMENTS = (
     ),
     table(
         "coverage_segment",
-        f'coverage_segment_id VARCHAR PRIMARY KEY,source VARCHAR NOT NULL,start TIMESTAMPTZ NOT NULL,"end" TIMESTAMPTZ NOT NULL,coverage_kind VARCHAR NOT NULL,completeness VARCHAR NOT NULL CHECK(completeness IN ({V})),known_gaps JSON NOT NULL DEFAULT \'[]\',freshness VARCHAR,reader VARCHAR NOT NULL,snapshot_id VARCHAR,source_object_id VARCHAR REFERENCES {SCHEMA_NAME}.source_object(source_object_id),{B.format(T=T)},{I.format(s=SCHEMA_NAME)},CHECK("end">=start)',
+        f'coverage_segment_id VARCHAR PRIMARY KEY,source VARCHAR NOT NULL,start TIMESTAMPTZ,"end" TIMESTAMPTZ,coverage_kind VARCHAR NOT NULL,completeness VARCHAR NOT NULL CHECK(completeness IN ({V})),known_gaps JSON NOT NULL DEFAULT \'[]\',freshness VARCHAR,reader VARCHAR NOT NULL,snapshot_id VARCHAR,source_object_id VARCHAR REFERENCES {SCHEMA_NAME}.source_object(source_object_id),{B.format(T=T)},{I.format(s=SCHEMA_NAME)},CHECK("end" IS NULL OR start IS NULL OR "end">=start)',
     ),
     table(
         "answer_card",

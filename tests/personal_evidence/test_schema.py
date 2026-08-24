@@ -167,6 +167,19 @@ def test_exact_enums_and_privacy_gate(tmp_path: Path) -> None:
             )
 
 
+def test_unavailable_coverage_preserves_unknown_time_bounds(tmp_path: Path) -> None:
+    with db(tmp_path / "e.duckdb") as conn:
+        conn.execute(
+            """INSERT INTO personal_evidence.coverage_segment
+            (coverage_segment_id,source,coverage_kind,completeness,reader,record_hash,
+             run_id,first_seen_run_id,last_seen_run_id)
+            VALUES ('gap','configured-source','unknown','unavailable','fixture','gap-hash','r1','r1','r1')"""
+        )
+        assert conn.execute(
+            'SELECT start,"end",completeness FROM personal_evidence.coverage_segment'
+        ).fetchone() == (None, None, "unavailable")
+
+
 def test_alias_quote_bitemporal_and_idempotent_incremental_rerun(
     tmp_path: Path,
 ) -> None:
