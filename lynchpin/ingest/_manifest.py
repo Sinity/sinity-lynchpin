@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -28,6 +29,15 @@ _SHRINK_GUARD_THRESHOLD = 0.5
 
 def _tmp_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.tmp")
+
+
+def _preserve_existing_mode(path: Path, tmp_path: Path) -> None:
+    """Keep the destination's mode when an existing file is replaced."""
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        return
+    tmp_path.chmod(mode)
 
 
 def guard_incremental_shrinkage(
@@ -90,6 +100,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a temp-file-then-rename swap."""
     tmp_path = _tmp_sibling(path)
     tmp_path.write_text(text, encoding="utf-8")
+    _preserve_existing_mode(path, tmp_path)
     tmp_path.replace(path)
 
 
@@ -108,6 +119,7 @@ def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -
         for row in rows:
             handle.write(serialize(row))
             handle.write("\n")
+    _preserve_existing_mode(path, tmp_path)
     tmp_path.replace(path)
 
 

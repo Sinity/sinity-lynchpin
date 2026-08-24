@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import stat
+from pathlib import Path
 
 import pytest
 
@@ -24,20 +26,54 @@ def test_atomic_write_text_leaves_no_tmp_sibling(tmp_path) -> None:
 def test_atomic_write_text_replaces_existing_content_wholesale(tmp_path) -> None:
     target = tmp_path / "out.json"
     target.write_text("stale content that should not survive", encoding="utf-8")
+    old_inode = target.stat().st_ino
 
     atomic_write_text(target, "fresh")
 
     assert target.read_text(encoding="utf-8") == "fresh"
+    assert target.stat().st_ino != old_inode
+    assert not (tmp_path / ".out.json.tmp").exists()
+
+
+def test_atomic_write_text_preserves_existing_mode(tmp_path) -> None:
+    target = tmp_path / "out.json"
+    target.write_text("stale", encoding="utf-8")
+    target.chmod(0o640)
+
+    atomic_write_text(target, "fresh")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_write_manifest_leaves_existing_output_on_text_write_failure(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "out.json"
+    target.write_text('{"old": true}\n', encoding="utf-8")
+
+    original_write_text = Path.write_text
+
+    def fail_temp_write(path: Path, text: str, *args, **kwargs) -> int:
+        if path == tmp_path / ".out.json.tmp":
+            raise OSError("simulated crash mid-write")
+        return original_write_text(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_temp_write)
+    with pytest.raises(OSError, match="simulated crash"):
+        write_manifest(target, {"new": True})
+
+    assert target.read_text(encoding="utf-8") == '{"old": true}\n'
 
 
 def test_atomic_write_ndjson_writes_one_json_object_per_line(tmp_path) -> None:
     target = tmp_path / "rows.ndjson"
     rows = [{"a": 1}, {"a": 2}, {"a": 3}]
+    target.write_text("stale\n", encoding="utf-8")
+    old_inode = target.stat().st_ino
 
     atomic_write_ndjson(target, rows)
 
     lines = target.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line) for line in lines] == rows
+    assert target.stat().st_ino != old_inode
     assert not (tmp_path / ".rows.ndjson.tmp").exists()
 
 
