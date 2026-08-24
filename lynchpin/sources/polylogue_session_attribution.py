@@ -44,8 +44,11 @@ _DEFAULT_SLACK_S = 30.0
 class SpanWindow(Protocol):
     """Anything with start/end datetimes — typically an AW focus span."""
 
-    start: datetime
-    end: datetime
+    @property
+    def start(self) -> datetime: ...
+
+    @property
+    def end(self) -> datetime: ...
 
 
 @dataclass(frozen=True)

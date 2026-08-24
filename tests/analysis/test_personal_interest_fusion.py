@@ -64,8 +64,6 @@ def test_personal_interest_trace_web_domains_use_real_per_day_dates(
     anchored on a single date. A domain visited on three distinct real days
     must report those three real days, not active_days=1 pinned to window
     start — regardless of how many visits happened on any one of them."""
-    from lynchpin.analysis import personal_interest_fusion as fusion
-
     def fake_domain_breakdown_by_day(*, start, end, top_n=200):
         return [
             (date(2026, 5, 1), "duckdb.org", 40),

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
-from ..core.evidence_graph import EvidenceGraph, EvidenceNode
+from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
@@ -347,7 +347,7 @@ def materialize_incremental_evidence_graph(
     relation_nodes = [node for node in boundary_nodes if node.id not in tail_ids and node.date < tail_start]
     relation_nodes.extend(tail_graph.nodes)
     relation_ids = {node.id for node in relation_nodes}
-    crossing_edges = []
+    crossing_edges: list[EvidenceEdge] = []
     crossing_python_started = sample_performance()
     for builder in (
         evidence_edges.same_project_day_edges,
