@@ -278,13 +278,7 @@ class MaterializationPlanStep:
 
 @dataclass(frozen=True)
 class MaterializerDependency:
-    """Declared resources for one materializer invocation.
-
-    Canonical materializers currently share process-global refresh guards and
-    append candidate substrate receipts.  That is a concrete write conflict,
-    so the planner must keep them in one deterministic writer wave until a
-    materializer advertises isolated output and receipt ownership.
-    """
+    """Declared read and write resources for one materializer invocation."""
 
     name: str
     reads: frozenset[str]
@@ -325,21 +319,43 @@ def materializer_dependency_model(
 def materializer_execution_waves(
     dependencies: Iterable[MaterializerDependency],
 ) -> tuple[tuple[MaterializerDependency, ...], ...]:
-    """Group only write-disjoint materializers; current contracts yield one wave."""
+    """Build dependency-ordered waves whose members are mutually non-conflicting."""
+    pending = list(dependencies)
+    names = [dependency.name for dependency in pending]
+    if len(set(names)) != len(names):
+        raise ValueError("materializer dependency names must be unique")
+    producers: dict[str, set[str]] = {}
+    for dependency in pending:
+        for resource in dependency.writes:
+            producers.setdefault(resource, set()).add(dependency.name)
+
     waves: list[list[MaterializerDependency]] = []
-    for dependency in dependencies:
-        for wave in waves:
-            occupied = frozenset().union(*(item.writes for item in wave))
+    completed: set[str] = set()
+    while pending:
+        ready = [
+            dependency
+            for dependency in pending
+            if all(producers.get(resource, set()) <= completed for resource in dependency.reads)
+        ]
+        if not ready:
+            blocked = ", ".join(dependency.name for dependency in pending)
+            raise ValueError(f"materializer dependency cycle or unresolved producer: {blocked}")
+
+        wave: list[MaterializerDependency] = []
+        for dependency in ready:
+            occupied_writes = frozenset().union(*(item.writes for item in wave))
             occupied_reads = frozenset().union(*(item.reads for item in wave))
             if (
-                occupied.isdisjoint(dependency.writes)
+                occupied_writes.isdisjoint(dependency.writes)
                 and occupied_reads.isdisjoint(dependency.writes)
-                and occupied.isdisjoint(dependency.reads)
+                and occupied_writes.isdisjoint(dependency.reads)
             ):
                 wave.append(dependency)
-                break
-        else:
-            waves.append([dependency])
+        if not wave:
+            raise RuntimeError("ready materializers could not form an execution wave")
+        waves.append(wave)
+        completed.update(dependency.name for dependency in wave)
+        pending = [dependency for dependency in pending if dependency.name not in completed]
     return tuple(tuple(wave) for wave in waves)
 
 

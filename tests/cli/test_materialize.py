@@ -667,7 +667,7 @@ def test_maintenance_plan_never_dispatches_unscoped_materializers(monkeypatch) -
     assert by_name["unwindowed"].window is None
 
 
-def test_materializer_dependency_model_requires_one_writer_wave() -> None:
+def test_materializer_dependency_model_parallelizes_independent_writers() -> None:
     from lynchpin.materialization import (
         MaterializationPlanStep,
         MaterializedDataset,
@@ -698,6 +698,53 @@ def test_materializer_dependency_model_requires_one_writer_wave() -> None:
 
     assert all(dependency.writes.isdisjoint(dependency.reads) for dependency in model)
     assert [[dependency.name for dependency in wave] for wave in waves] == [["one", "two"]]
+
+
+def test_materializer_execution_waves_never_schedule_consumers_before_producers() -> None:
+    from lynchpin.materialization import (
+        MaterializationPlanStep,
+        MaterializedDataset,
+        materializer_dependency_model,
+        materializer_execution_waves,
+    )
+
+    before = MaterializedDataset(
+        name="fixture",
+        status="partial",
+        authority="fixture",
+        query_surface="fixture",
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=1,
+        first_date=date(2026, 5, 1),
+        last_date=date(2026, 5, 2),
+        materialization_hint="refresh",
+        reason="tail stale",
+    )
+    plan = tuple(
+        MaterializationPlanStep(name, before, "materialize", "refresh", name)
+        for name in (
+            "activitywatch",
+            "activitywatch_event_index",
+            "activitywatch_derived",
+            "activity_content",
+            "personal_daily_signals",
+            "temporal_signals",
+        )
+    )
+
+    waves = materializer_execution_waves(materializer_dependency_model(plan))
+
+    positions = {
+        dependency.name: wave_index
+        for wave_index, wave in enumerate(waves)
+        for dependency in wave
+    }
+    assert positions["activitywatch"] < positions["activitywatch_event_index"]
+    assert positions["activitywatch_event_index"] < positions["activitywatch_derived"]
+    assert positions["activitywatch_derived"] < positions["activity_content"]
+    assert positions["activity_content"] < positions["personal_daily_signals"]
+    assert positions["activitywatch_derived"] < positions["temporal_signals"]
 
 
 def test_standalone_materialization_does_not_mutate_published_substrate(monkeypatch) -> None:
