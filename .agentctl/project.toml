@@ -78,7 +78,7 @@ exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--his
 pool = "bulk"
 result = "exit"
 cache = "none"
-timeout_seconds = 9000
+timeout_seconds = 18000
 exclusive_keys = ["lynchpin:canonical-products", "lynchpin:substrate-generation"]
 
 [operations.promote_full.parameters.rebuild_candidate_indexes]
