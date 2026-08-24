@@ -1100,3 +1100,242 @@ def test_incremental_watermark_appends_new_day_without_full_rescan(
             f"expected zero full-table ATTACH-scan inserts on the incremental "
             f"run, got {len(attach_scan_inserts)}"
         )
+
+
+def test_slow_fallback_failure_records_exact_stage_and_experiments_continue(
+    monkeypatch,
+):
+    """A fallback exception cannot hide the independent experiment stage."""
+    import duckdb
+
+    from lynchpin.analysis.active import substrate_promote_machine as machine_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_MACHINE,
+        SOURCE_MACHINE_EXPERIMENTS,
+        SourceSelection,
+        record_source_status,
+    )
+    from lynchpin.substrate.connection import apply_schema
+
+    refresh_id = "machine-stage-fallback-failure"
+    monkeypatch.setattr(machine_promote, "_machine_sqlite_path", lambda: None)
+    monkeypatch.setattr(
+        machine_promote,
+        "_promote_machine_slow",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("slow path checkpoint fixture")),
+    )
+
+    def promote_experiments(conn, refresh_id, window_start, window_end, counts, selection):
+        counts["machine_experiment_runs"] = 1
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=SOURCE_MACHINE_EXPERIMENTS,
+            status="ok",
+            reason=None,
+            row_count=1,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    monkeypatch.setattr(machine_promote, "_promote_experiments", promote_experiments)
+
+    with duckdb.connect() as conn:
+        apply_schema(conn)
+        machine_promote.promote_machine_tables(
+            conn,
+            refresh_id=refresh_id,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 1),
+            counts={},
+            selection=SourceSelection.from_collection(
+                {SOURCE_MACHINE, SOURCE_MACHINE_EXPERIMENTS}
+            ),
+        )
+
+        steps = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(
+                """
+                SELECT step, status, message
+                FROM (
+                    SELECT step, status, message,
+                           row_number() OVER (
+                               PARTITION BY step ORDER BY recorded_at DESC,
+                               CASE WHEN status = 'running' THEN 0 ELSE 1 END DESC
+                           ) AS rn
+                    FROM substrate_run_step
+                    WHERE refresh_id = ?
+                )
+                WHERE rn = 1
+                """,
+                [refresh_id],
+            ).fetchall()
+        }
+        statuses = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(
+                "SELECT source, status, reason FROM substrate_source_status "
+                "WHERE refresh_id = ?",
+                [refresh_id],
+            ).fetchall()
+        }
+
+    assert steps["promote_machine_slow_fallback"] == (
+        "error",
+        "RuntimeError: slow path checkpoint fixture",
+    )
+    assert steps["promote_machine_experiments"] == ("success", "finished")
+    assert statuses[SOURCE_MACHINE] == (
+        "error",
+        "RuntimeError: slow path checkpoint fixture",
+    )
+    assert statuses[SOURCE_MACHINE_EXPERIMENTS] == ("ok", None)
+
+
+def test_slow_table_stages_continue_and_keep_exact_failed_stage_evidence(
+    monkeypatch,
+):
+    """One table error leaves its sibling stage independently successful."""
+    import duckdb
+    from types import SimpleNamespace
+
+    from lynchpin.analysis.active import substrate_promote_machine as machine_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_MACHINE,
+        SOURCE_MACHINE_SERVICE_STATE,
+        SourceSelection,
+    )
+    from lynchpin.substrate.connection import apply_schema
+
+    refresh_id = "machine-table-stage-failure"
+    monkeypatch.setattr(machine_promote, "_machine_sqlite_path", lambda: None)
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda: SimpleNamespace(status="ready", reason=None),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.metric_samples",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("metric reader failed")),
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.service_states",
+        lambda **kwargs: iter(()),
+    )
+
+    with duckdb.connect() as conn:
+        apply_schema(conn)
+        machine_promote.promote_machine_tables(
+            conn,
+            refresh_id=refresh_id,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 1),
+            counts={},
+            selection=SourceSelection.from_collection(
+                {SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE}
+            ),
+        )
+
+        latest_steps = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(
+                """
+                SELECT step, status, message
+                FROM (
+                    SELECT step, status, message,
+                           row_number() OVER (
+                               PARTITION BY step ORDER BY recorded_at DESC,
+                               CASE WHEN status = 'running' THEN 0 ELSE 1 END DESC
+                           ) AS rn
+                    FROM substrate_run_step
+                    WHERE refresh_id = ?
+                )
+                WHERE rn = 1
+                """,
+                [refresh_id],
+            ).fetchall()
+        }
+
+    assert latest_steps["promote_machine_metric_sample"] == (
+        "error",
+        "RuntimeError: metric reader failed",
+    )
+    assert latest_steps["promote_machine_service_state"] == (
+        "success",
+        "finished",
+    )
+
+
+def test_failed_slow_table_does_not_publish_partial_refresh(
+    monkeypatch,
+):
+    """A source iterator failure preserves the prior refresh rows."""
+    import duckdb
+
+    from lynchpin.analysis.active import substrate_promote_machine as machine_promote
+    from lynchpin.analysis.active.substrate_promote_status import (
+        SOURCE_MACHINE,
+        SourceSelection,
+    )
+    from lynchpin.sources.machine import MachineMetricSample
+    from lynchpin.substrate.connection import apply_schema
+    from lynchpin.substrate.machine import promote_machine_metric_samples
+
+    refresh_id = "machine-partial-refresh"
+    old = MachineMetricSample(
+        observed_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+        host="old-host",
+        boot_id="boot-a",
+        source="machine.telemetry",
+        source_schema_version=1,
+    )
+    replacement = MachineMetricSample(
+        observed_at=datetime(2026, 5, 1, 11, 0, tzinfo=timezone.utc),
+        host="new-host",
+        boot_id="boot-a",
+        source="machine.telemetry",
+        source_schema_version=1,
+    )
+
+    def interrupted_samples(**kwargs):
+        yield replacement
+        raise RuntimeError("source iterator interrupted")
+
+    monkeypatch.setattr(machine_promote, "_machine_sqlite_path", lambda: None)
+    monkeypatch.setattr("lynchpin.sources.machine.metric_samples", interrupted_samples)
+    monkeypatch.setattr(
+        "lynchpin.sources.machine.readiness",
+        lambda: type("Ready", (), {"status": "ready", "reason": None})(),
+    )
+
+    with duckdb.connect() as conn:
+        apply_schema(conn)
+        assert (
+            promote_machine_metric_samples(
+                conn,
+                refresh_id=refresh_id,
+                samples=[old],
+            )
+            == 1
+        )
+        machine_promote.promote_machine_tables(
+            conn,
+            refresh_id=refresh_id,
+            window_start=date(2026, 5, 1),
+            window_end=date(2026, 5, 1),
+            counts={},
+            selection=SourceSelection.from_collection({SOURCE_MACHINE}),
+        )
+        rows = conn.execute(
+            "SELECT host, observed_at FROM machine_metric_sample "
+            "WHERE refresh_id = ?",
+            [refresh_id],
+        ).fetchall()
+        status = conn.execute(
+            "SELECT status, reason FROM substrate_source_status "
+            "WHERE refresh_id = ? AND source = ?",
+            [refresh_id, SOURCE_MACHINE],
+        ).fetchone()
+
+    assert rows == [("old-host", datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc))]
+    assert status == ("error", "RuntimeError: source iterator interrupted")

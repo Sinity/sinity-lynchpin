@@ -8,11 +8,12 @@ SQLite extension is unavailable or the canonical DB path is absent.
 from __future__ import annotations
 
 import gc
+from collections.abc import Callable
 from dataclasses import replace
 import json
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,184 @@ from .substrate_promote_status import (
 from lynchpin.substrate._helpers import _staging_table_name
 
 log = logging.getLogger(__name__)
+
+
+_MACHINE_STAGE_NAMES = {
+    SOURCE_MACHINE: "promote_machine_metric_sample",
+    SOURCE_MACHINE_SERVICE_STATE: "promote_machine_service_state",
+    SOURCE_MACHINE_GPU: "promote_machine_gpu_sample",
+    SOURCE_MACHINE_NETWORK: "promote_machine_network_sample",
+    SOURCE_MACHINE_PROCESS_IO_DELTA: "promote_machine_process_io_delta_sample",
+    SOURCE_MACHINE_PROCESS_MEMORY: "promote_machine_process_memory_sample",
+    SOURCE_MACHINE_CGROUP_MEMORY: "promote_machine_cgroup_memory_sample",
+    SOURCE_MACHINE_KILL_EVENT: "promote_machine_kill_event",
+    SOURCE_MACHINE_EXPERIMENTS: "promote_machine_experiments",
+}
+
+
+def _is_fatal_duckdb_error(exc: Exception) -> bool:
+    """Return whether ``exc`` invalidates the connection or its indexes.
+
+    DuckDB 1.1.3 exposes both ``FatalException`` and ``InternalException``.
+    The latter is also used for ordinary SQL errors, so the message check is
+    deliberately limited to the invalidation and ART/checkpoint signatures
+    that require a fresh connection. Retrying one of these on the same
+    connection is unsafe.
+    """
+    import duckdb
+
+    if isinstance(exc, duckdb.FatalException):
+        return True
+    message = str(exc)
+    return any(
+        marker in message
+        for marker in (
+            "database has been invalidated",
+            "Corrupted ART index",
+            "Failed to delete all rows from index",
+            "Invalid node type for TransformToDeprecated",
+            "Invalid node type for GetAllocatorIdx",
+            "Failed to create checkpoint",
+        )
+    )
+
+
+def _machine_stage_failure(
+    conn: Any,
+    *,
+    refresh_id: str,
+    stage: str,
+    source: str,
+    reason: str,
+    row_count: int,
+    window_start: date,
+    window_end: date,
+) -> None:
+    """Persist one failed stage and its source outcome, best effort.
+
+    The run-step receipt is written first because a source-status write can
+    itself fail after DuckDB invalidates a connection. A failure to write the
+    second receipt is logged rather than replacing the original stage error.
+    """
+    from lynchpin.substrate.run_steps import record_run_step
+
+    try:
+        record_run_step(
+            conn,
+            refresh_id=refresh_id,
+            step=stage,
+            status="error",
+            message=reason,
+            row_count=row_count,
+            finished_at=datetime.now(timezone.utc),
+        )
+    except Exception:
+        log.warning("substrate_promote: could not persist failed stage %s", stage, exc_info=True)
+    try:
+        record_source_status(
+            conn,
+            refresh_id=refresh_id,
+            source=source,
+            status="error",
+            reason=reason,
+            row_count=row_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except Exception:
+        log.warning("substrate_promote: could not persist failed source %s", source, exc_info=True)
+
+
+def _raise_fatal_machine_error(exc: Exception, *, stage: str) -> None:
+    """Stop after a known-invalidating DuckDB error using connection policy."""
+    from lynchpin.substrate.connection import (
+        CandidateGenerationRejected,
+        in_candidate_generation,
+        rebuild_corrupt_substrate,
+    )
+
+    if in_candidate_generation():
+        raise CandidateGenerationRejected(
+            f"machine stage {stage} invalidated the candidate substrate; "
+            "the candidate must be discarded and rebuilt from a verified generation"
+        ) from exc
+    try:
+        rebuild_corrupt_substrate()
+    except Exception as recovery_exc:
+        raise CandidateGenerationRejected(
+            f"machine stage {stage} hit a fatal DuckDB error; corrupt substrate "
+            f"was quarantined or recovery was rejected: {recovery_exc}"
+        ) from exc
+    raise CandidateGenerationRejected(
+        f"machine stage {stage} hit a fatal DuckDB error; substrate recovery is required"
+    ) from exc
+
+
+def _run_machine_stage(
+    conn: Any,
+    *,
+    refresh_id: str,
+    stage: str,
+    source: str,
+    counts: dict[str, int],
+    window_start: date,
+    window_end: date,
+    fn: Callable[[], None],
+) -> bool:
+    """Run one machine-table promotion with an append-only durable receipt."""
+    from lynchpin.substrate.run_steps import record_run_step
+
+    started_at = datetime.now(timezone.utc)
+    before = dict(counts)
+    record_run_step(
+        conn,
+        refresh_id=refresh_id,
+        step=stage,
+        status="running",
+        message="started",
+        started_at=started_at,
+    )
+    try:
+        fn()
+    except Exception as exc:
+        from lynchpin.substrate.connection import CandidateGenerationRejected
+
+        if isinstance(exc, CandidateGenerationRejected):
+            raise
+        reason = f"{type(exc).__name__}: {exc}"
+        row_count = _machine_count_delta(before, counts)
+        _machine_stage_failure(
+            conn,
+            refresh_id=refresh_id,
+            stage=stage,
+            source=source,
+            reason=reason,
+            row_count=row_count,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        if _is_fatal_duckdb_error(exc):
+            _raise_fatal_machine_error(exc, stage=stage)
+        log.warning("substrate_promote: %s failed: %s", stage, reason)
+        return False
+    finally:
+        gc.collect()
+
+    record_run_step(
+        conn,
+        refresh_id=refresh_id,
+        step=stage,
+        status="success",
+        message="finished",
+        row_count=_machine_count_delta(before, counts),
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+    )
+    return True
+
+
+def _machine_count_delta(before: dict[str, int], after: dict[str, int]) -> int:
+    return sum(max(0, int(value) - int(before.get(key, 0))) for key, value in after.items())
 
 
 def promote_machine_tables(
@@ -81,6 +260,12 @@ def promote_machine_tables(
             )
             fast_ok = True
         except Exception as exc:
+            from lynchpin.substrate.connection import CandidateGenerationRejected
+
+            if isinstance(exc, CandidateGenerationRejected):
+                raise
+            if _is_fatal_duckdb_error(exc):
+                _raise_fatal_machine_error(exc, stage="promote_machine_fast_setup")
             log.warning(
                 "substrate_promote: fast machine promotion failed, "
                 "falling back to Python iterator path: %s",
@@ -90,33 +275,35 @@ def promote_machine_tables(
     # ── slow path: Python row-by-row, fallback only ──
     # Guarded on fast_ok so the sqlite-backed tables are promoted exactly once;
     # running both paths would double-insert every row under one refresh_id.
-    steps: tuple[Any, ...] = ()
     if not fast_ok:
-        _promote_machine_slow(conn, refresh_id, window_start, window_end, counts, selection)
-        steps = (
-            _promote_machine_process_io_slow,
-            _promote_machine_process_memory_slow,
-            _promote_machine_cgroup_memory_slow,
-            _promote_machine_kill_event_slow,
+        _run_machine_stage(
+            conn,
+            refresh_id=refresh_id,
+            stage="promote_machine_slow_fallback",
+            source=SOURCE_MACHINE,
+            counts=counts,
+            window_start=window_start,
+            window_end=window_end,
+            fn=lambda: _promote_machine_slow(
+                conn, refresh_id, window_start, window_end, counts, selection
+            ),
         )
-    # Experiments are not a sqlite source (they are files under the machine
-    # host root), so they run on both paths.
-    steps += (_promote_experiments,)
 
-    # Each per-table promoter already records its own success/error status
-    # internally; call them as INDEPENDENT steps (not chained inside one shared
-    # try/except) so a bug in one — including one whose own exception handler
-    # itself raises, e.g. because a prior DuckDB internal error left the
-    # connection aborted — cannot silently skip the promotion attempt (and
-    # status write) for every source called after it. This was an observed real
-    # failure shape (sinnix-kx4): machine_experiments' substrate_source_status
-    # row went stale in lockstep with machine_cgroup_memory_sample's, both stuck
-    # on the same date, while sibling sources kept refreshing daily.
-    for step in steps:
-        try:
-            step(conn, refresh_id, window_start, window_end, counts, selection)
-        except Exception as exc:
-            log.warning("substrate_promote: %s failed: %s", step.__name__, exc)
+    # Experiments are not a sqlite source (they are files under the machine
+    # host root), so they run on both paths as their own durable stage.
+    if selection.includes(SOURCE_MACHINE_EXPERIMENTS):
+        _run_machine_stage(
+            conn,
+            refresh_id=refresh_id,
+            stage=_MACHINE_STAGE_NAMES[SOURCE_MACHINE_EXPERIMENTS],
+            source=SOURCE_MACHINE_EXPERIMENTS,
+            counts=counts,
+            window_start=window_start,
+            window_end=window_end,
+            fn=lambda: _promote_experiments(
+                conn, refresh_id, window_start, window_end, counts, selection
+            ),
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -444,50 +631,116 @@ def _promote_machine_fast(
     for src_table, dst_table, source, enabled in tables:
         if not enabled:
             continue
-        t0 = time.monotonic()
-        if lake_root is not None and src_table not in _UNINDEXED_MACHINE_TABLES:
-            _maybe_bootstrap_from_lake(
-                conn,
-                src_table=src_table,
-                dst_table=dst_table,
-                refresh_id=refresh_id,
-                lake_root=lake_root,
-                window_start=window_start,
-                window_end=window_end,
-                columns=projections[src_table][0],
-                overrides=projections[src_table][1],
-            )
-        watermark = None
-        if not full_repromote and src_table not in _UNINDEXED_MACHINE_TABLES:
-            watermark = conn.execute(
-                f"SELECT MAX(observed_at) FROM {dst_table} "
-                f"WHERE refresh_id = ? "
-                f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
-                f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
-                [
-                    refresh_id,
-                    window_start.isoformat(),
-                    (window_end + timedelta(days=1)).isoformat(),
-                ],
-            ).fetchone()[0]
-        if watermark is not None:
-            try:
-                row_count = _promote_machine_table_incremental(
+        def promote_table() -> None:
+            t0 = time.monotonic()
+            if lake_root is not None and src_table not in _UNINDEXED_MACHINE_TABLES:
+                _maybe_bootstrap_from_lake(
                     conn,
                     src_table=src_table,
                     dst_table=dst_table,
                     refresh_id=refresh_id,
-                    sqlite_path=sqlite_path,
+                    lake_root=lake_root,
                     window_start=window_start,
                     window_end=window_end,
-                    watermark=watermark,
+                    columns=projections[src_table][0],
+                    overrides=projections[src_table][1],
                 )
+            watermark = None
+            if not full_repromote and src_table not in _UNINDEXED_MACHINE_TABLES:
+                watermark = conn.execute(
+                    f"SELECT MAX(observed_at) FROM {dst_table} "
+                    f"WHERE refresh_id = ? "
+                    f"AND observed_at >= CAST(? AS TIMESTAMPTZ) "
+                    f"AND observed_at < CAST(? AS TIMESTAMPTZ)",
+                    [
+                        refresh_id,
+                        window_start.isoformat(),
+                        (window_end + timedelta(days=1)).isoformat(),
+                    ],
+                ).fetchone()[0]
+            if watermark is not None:
+                try:
+                    row_count = _promote_machine_table_incremental(
+                        conn,
+                        src_table=src_table,
+                        dst_table=dst_table,
+                        refresh_id=refresh_id,
+                        sqlite_path=sqlite_path,
+                        window_start=window_start,
+                        window_end=window_end,
+                        watermark=watermark,
+                    )
+                except Exception as exc:
+                    if _is_fatal_duckdb_error(exc):
+                        raise
+                    log.warning(
+                        "substrate_promote: %s incremental promotion failed, "
+                        "falling back to full re-promote: %s",
+                        dst_table,
+                        exc,
+                    )
+                else:
+                    counts[dst_table] = row_count
+                    log.info(
+                        "substrate_promote: %s ← %s (incremental, watermark %s): "
+                        "%s rows in %.1fs",
+                        dst_table,
+                        src_table,
+                        watermark,
+                        f"{row_count:,}",
+                        time.monotonic() - t0,
+                    )
+                    record_source_status(
+                        conn,
+                        refresh_id=refresh_id,
+                        source=source,
+                        status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                        reason=machine_ready.reason if not row_count else None,
+                        row_count=row_count,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                    return
+
+            # Stage a complete replacement outside the indexed target. The
+            # target therefore never indexes a synthetic refresh_id or updates
+            # a primary-key value during the final swap.
+            staging_table = _staging_table_name()
+            try:
+                columns, overrides = projections[src_table]
+                select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
+                # DuckDB does not push this predicate down into SQLite, so one
+                # statement per table is the measured scan-minimizing route.
+                date_filter, date_params = _source_window_filter(window_start, window_end)
+                conn.execute(
+                    f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
+                )
+                conn.execute(
+                    f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
+                    f"SELECT {select_exprs}, ? AS refresh_id "
+                    f"FROM machine_src.{src_table} {date_filter}",
+                    [refresh_id, *date_params],
+                )
+                gc.collect()
+                # DuckDB's primary-key index does not reflect an in-transaction
+                # DELETE, so target delete and insert remain separate autocommit
+                # statements. The temporary table eliminates the indexed UPDATE.
+                conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
+                conn.execute(
+                    f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
+                    f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
+                )
+                row_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]
                 counts[dst_table] = row_count
-                elapsed = time.monotonic() - t0
                 log.info(
-                    "substrate_promote: %s ← %s (incremental, watermark %s): "
-                    "%s rows in %.1fs",
-                    dst_table, src_table, watermark, f"{row_count:,}", elapsed,
+                    "substrate_promote: %s ← machine_src.%s: %s rows in %.1fs",
+                    dst_table,
+                    src_table,
+                    f"{row_count:,}",
+                    time.monotonic() - t0,
                 )
                 record_source_status(
                     conn,
@@ -499,99 +752,22 @@ def _promote_machine_fast(
                     window_start=window_start,
                     window_end=window_end,
                 )
-                continue
-            except Exception as exc:
-                log.warning(
-                    "substrate_promote: %s incremental promotion failed, "
-                    "falling back to full re-promote: %s",
-                    dst_table, exc,
-                )
-        # Stage a complete replacement outside the indexed target. The target
-        # therefore never indexes a synthetic refresh_id or updates a
-        # primary-key value during the final swap.
-        staging_table = _staging_table_name()
-        try:
-            columns, overrides = projections[src_table]
-            select_exprs = ", ".join(f"{overrides.get(c, c)} AS {c}" for c in columns)
-            # ONE statement for the whole window. DuckDB does not push this
-            # predicate down into SQLite -- EXPLAIN shows SQLITE_SCAN under a
-            # FILTER -- so every statement issued here reads the ENTIRE source
-            # table regardless of the WHERE and regardless of any observed_at
-            # index. Chunking therefore multiplies a full table scan by the
-            # chunk count and buys nothing: measured against the live 28 GB
-            # store, splitting a 90-day window into 4 monthly chunks took
-            # metric_sample from 23.6s to 65.5s for identical output.
-            #
-            # Chunking was originally per-day, and it is tempting to read it as
-            # a memory bound. It is not one. Commit memory here is dominated by
-            # the target table's ART indexes (machine_service_state carries a
-            # 5-column PK plus three secondary indexes), which are memory-
-            # resident, cannot spill, and accumulate across statements written
-            # under one refresh_id. Chunking a 16.6 M-row promote into 4 pieces
-            # hit the SAME "failed to pin block (5.5 GiB/5.5 GiB used)" commit
-            # failure as one statement did -- it just took 18 minutes to get
-            # there instead of 3. Bounding that cost is an index-design
-            # question, not a chunk-size one. Once the watermark path above is
-            # warm, this full path only runs for the first backfill of a given
-            # refresh_id/window or an explicit --full-repromote, which is where
-            # that memory cost belongs (a one-time or operator-invoked cost,
-            # not a steady-state one).
-            date_filter, date_params = _source_window_filter(window_start, window_end)
-            conn.execute(
-                f"CREATE TEMP TABLE {staging_table} AS SELECT * FROM {dst_table} WHERE FALSE"
-            )
-            conn.execute(
-                f"INSERT INTO {staging_table} ({', '.join(columns)}, refresh_id) "
-                f"SELECT {select_exprs}, ? AS refresh_id "
-                f"FROM machine_src.{src_table} {date_filter}",
-                [refresh_id, *date_params],
-            )
-            gc.collect()
-            # DuckDB's primary-key index does not reflect an in-transaction
-            # DELETE, so target delete and insert remain separate autocommit
-            # statements. The temporary table eliminates the indexed UPDATE.
-            conn.execute(f"DELETE FROM {dst_table} WHERE refresh_id = ?", [refresh_id])
-            conn.execute(
-                f"INSERT INTO {dst_table} ({', '.join(columns)}, refresh_id) "
-                f"SELECT {', '.join(columns)}, refresh_id FROM {staging_table}"
-            )
-            row_count = conn.execute(
-                f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
-                [refresh_id],
-            ).fetchone()[0]
-            counts[dst_table] = row_count
-            elapsed = time.monotonic() - t0
-            log.info(
-                "substrate_promote: %s ← machine_src.%s: %s rows in %.1fs",
-                dst_table, src_table, f"{row_count:,}", elapsed,
-            )
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source=source,
-                status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason if not row_count else None,
-                row_count=row_count,
-                window_start=window_start,
-                window_end=window_end,
-            )
-        except Exception as exc:
-            log.warning("substrate_promote: %s promotion failed: %s", dst_table, exc)
-            record_source_status(
-                conn,
-                refresh_id=refresh_id,
-                source=source,
-                status="error",
-                reason=str(exc),
-                row_count=0,
-                window_start=window_start,
-                window_end=window_end,
-            )
-        finally:
-            try:
-                conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
-            except Exception:
-                log.debug("could not drop machine promotion staging table", exc_info=True)
+            finally:
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                except Exception:
+                    log.debug("could not drop machine promotion staging table", exc_info=True)
+
+        _run_machine_stage(
+            conn,
+            refresh_id=refresh_id,
+            stage=_MACHINE_STAGE_NAMES[source],
+            source=source,
+            counts=counts,
+            window_start=window_start,
+            window_end=window_end,
+            fn=promote_table,
+        )
 
     total_elapsed = time.monotonic() - t_total
     log.info("substrate_promote: machine tables done in %.1fs", total_elapsed)
@@ -635,10 +811,10 @@ def _promote_machine_table_incremental(
     )
     kwargs = {sample_kwarg: reader(start=tail_start, end=window_end, path=sqlite_path)}
     promoter(conn, refresh_id=refresh_id, delete_existing=False, **kwargs)
-    return conn.execute(
+    return int(conn.execute(
         f"SELECT COUNT(*) FROM {dst_table} WHERE refresh_id = ?",
         [refresh_id],
-    ).fetchone()[0]
+    ).fetchone()[0])
 
 
 def _source_window_filter(window_start: date, window_end: date) -> tuple[str, list[str]]:
@@ -667,333 +843,85 @@ def _promote_machine_slow(
     counts: dict[str, int],
     selection: SourceSelection,
 ) -> None:
+    """Promote each SQLite-backed table through its own durable stage.
+
+    This definition intentionally follows the legacy private helpers above so
+    callers that imported those names during the incremental rollout remain
+    import-compatible. The fallback itself uses one stage per table and never
+    retries a failed table on the same connection.
+    """
+    from lynchpin.sources.machine import (
+        cgroup_memory_samples,
+        gpu_samples,
+        kill_events,
+        metric_samples,
+        network_samples,
+        process_io_delta_samples,
+        process_memory_samples,
+        readiness as machine_readiness,
+        service_states,
+    )
     from lynchpin.substrate.machine import (
+        promote_machine_cgroup_memory_samples,
         promote_machine_gpu_samples,
+        promote_machine_kill_events,
         promote_machine_metric_samples,
         promote_machine_network_samples,
-        promote_machine_cgroup_memory_samples,
         promote_machine_process_io_delta_samples,
         promote_machine_process_memory_samples,
         promote_machine_service_states,
     )
 
-    if not selection.includes(
-        SOURCE_MACHINE,
-        SOURCE_MACHINE_SERVICE_STATE,
-        SOURCE_MACHINE_GPU,
-        SOURCE_MACHINE_NETWORK,
-        SOURCE_MACHINE_PROCESS_IO_DELTA,
-        SOURCE_MACHINE_PROCESS_MEMORY,
-        SOURCE_MACHINE_CGROUP_MEMORY,
-    ):
-        return
+    stages = (
+        (SOURCE_MACHINE, "machine_metric_samples", metric_samples, promote_machine_metric_samples, "samples"),
+        (SOURCE_MACHINE_SERVICE_STATE, "machine_service_states", service_states, promote_machine_service_states, "states"),
+        (SOURCE_MACHINE_GPU, "machine_gpu_samples", gpu_samples, promote_machine_gpu_samples, "samples"),
+        (SOURCE_MACHINE_NETWORK, "machine_network_samples", network_samples, promote_machine_network_samples, "samples"),
+        (SOURCE_MACHINE_PROCESS_IO_DELTA, "machine_process_io_delta_samples", process_io_delta_samples, promote_machine_process_io_delta_samples, "samples"),
+        (SOURCE_MACHINE_PROCESS_MEMORY, "machine_process_memory_samples", process_memory_samples, promote_machine_process_memory_samples, "samples"),
+        (SOURCE_MACHINE_CGROUP_MEMORY, "machine_cgroup_memory_samples", cgroup_memory_samples, promote_machine_cgroup_memory_samples, "samples"),
+        (SOURCE_MACHINE_KILL_EVENT, "machine_kill_events", kill_events, promote_machine_kill_events, "events"),
+    )
+    for source, count_key, reader, promoter, kwarg in stages:
+        if not selection.includes(source):
+            continue
 
-    try:
-        from lynchpin.sources.machine import (
-            gpu_samples,
-            metric_samples,
-            network_samples,
-            process_io_delta_samples,
-            process_memory_samples,
-            cgroup_memory_samples,
-            readiness as machine_readiness,
-            service_states,
-        )
-
-        machine_ready = machine_readiness()
-        if selection.includes(SOURCE_MACHINE):
-            live_count = promote_machine_metric_samples(
+        def promote_table(
+            *,
+            source: str = source,
+            count_key: str = count_key,
+            reader: Any = reader,
+            promoter: Any = promoter,
+            kwarg: str = kwarg,
+        ) -> None:
+            machine_ready = machine_readiness()
+            rows = reader(start=window_start, end=window_end)
+            row_count = promoter(
                 conn,
                 refresh_id=refresh_id,
-                samples=metric_samples(start=window_start, end=window_end),
+                **{kwarg: rows},
             )
-            counts["machine_metric_samples"] = live_count
+            counts[count_key] = row_count
             record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE,
-                status="ok" if live_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=live_count,
-                window_start=window_start, window_end=window_end,
+                conn,
+                refresh_id=refresh_id,
+                source=source,
+                status="ok" if row_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
+                reason=machine_ready.reason if not row_count else None,
+                row_count=row_count,
+                window_start=window_start,
+                window_end=window_end,
             )
-        if selection.includes(SOURCE_MACHINE_SERVICE_STATE):
-            service_count = promote_machine_service_states(
-                conn, refresh_id=refresh_id,
-                states=service_states(start=window_start, end=window_end),
-            )
-            counts["machine_service_states"] = service_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_SERVICE_STATE,
-                status="ok" if service_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=service_count,
-                window_start=window_start, window_end=window_end,
-            )
-        if selection.includes(SOURCE_MACHINE_GPU):
-            gpu_count = promote_machine_gpu_samples(
-                conn, refresh_id=refresh_id,
-                samples=gpu_samples(start=window_start, end=window_end),
-            )
-            counts["machine_gpu_samples"] = gpu_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_GPU,
-                status="ok" if gpu_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=gpu_count,
-                window_start=window_start, window_end=window_end,
-            )
-        if selection.includes(SOURCE_MACHINE_NETWORK):
-            network_count = promote_machine_network_samples(
-                conn, refresh_id=refresh_id,
-                samples=network_samples(start=window_start, end=window_end),
-            )
-            counts["machine_network_samples"] = network_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_NETWORK,
-                status="ok" if network_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=network_count,
-                window_start=window_start, window_end=window_end,
-            )
-        if selection.includes(SOURCE_MACHINE_PROCESS_IO_DELTA):
-            process_io_count = promote_machine_process_io_delta_samples(
-                conn, refresh_id=refresh_id,
-                samples=process_io_delta_samples(start=window_start, end=window_end),
-            )
-            counts["machine_process_io_delta_samples"] = process_io_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_PROCESS_IO_DELTA,
-                status="ok" if process_io_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=process_io_count,
-                window_start=window_start, window_end=window_end,
-            )
-        if selection.includes(SOURCE_MACHINE_PROCESS_MEMORY):
-            process_memory_count = promote_machine_process_memory_samples(
-                conn, refresh_id=refresh_id,
-                samples=process_memory_samples(start=window_start, end=window_end),
-            )
-            counts["machine_process_memory_samples"] = process_memory_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_PROCESS_MEMORY,
-                status="ok" if process_memory_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=process_memory_count,
-                window_start=window_start, window_end=window_end,
-            )
-        if selection.includes(SOURCE_MACHINE_CGROUP_MEMORY):
-            cgroup_memory_count = promote_machine_cgroup_memory_samples(
-                conn, refresh_id=refresh_id,
-                samples=cgroup_memory_samples(start=window_start, end=window_end),
-            )
-            counts["machine_cgroup_memory_samples"] = cgroup_memory_count
-            record_source_status(
-                conn, refresh_id=refresh_id, source=SOURCE_MACHINE_CGROUP_MEMORY,
-                status="ok" if cgroup_memory_count else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-                reason=machine_ready.reason, row_count=cgroup_memory_count,
-                window_start=window_start, window_end=window_end,
-            )
-    except Exception as exc:
-        log.warning("substrate_promote: machine telemetry promotion skipped: %s", exc)
-        for source in (SOURCE_MACHINE, SOURCE_MACHINE_SERVICE_STATE, SOURCE_MACHINE_GPU, SOURCE_MACHINE_NETWORK, SOURCE_MACHINE_PROCESS_IO_DELTA, SOURCE_MACHINE_PROCESS_MEMORY, SOURCE_MACHINE_CGROUP_MEMORY):
-            if selection.includes(source):
-                record_source_status(
-                    conn, refresh_id=refresh_id, source=source,
-                    status="error", reason=str(exc), row_count=0,
-                    window_start=window_start, window_end=window_end,
-                )
 
-
-def _promote_machine_process_io_slow(
-    conn: Any,
-    refresh_id: str,
-    window_start: date,
-    window_end: date,
-    counts: dict[str, int],
-    selection: SourceSelection,
-) -> None:
-    if not selection.includes(SOURCE_MACHINE_PROCESS_IO_DELTA):
-        return
-    try:
-        from lynchpin.sources.machine import (
-            process_io_delta_samples,
-            readiness as machine_readiness,
-        )
-        from lynchpin.substrate.machine import promote_machine_process_io_delta_samples
-
-        machine_ready = machine_readiness()
-        process_io_count = promote_machine_process_io_delta_samples(
+        _run_machine_stage(
             conn,
             refresh_id=refresh_id,
-            samples=process_io_delta_samples(start=window_start, end=window_end),
-        )
-        counts["machine_process_io_delta_samples"] = process_io_count
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_PROCESS_IO_DELTA,
-            status="ok"
-            if process_io_count
-            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-            reason=machine_ready.reason,
-            row_count=process_io_count,
+            stage=_MACHINE_STAGE_NAMES[source],
+            source=source,
+            counts=counts,
             window_start=window_start,
             window_end=window_end,
-        )
-    except Exception as exc:
-        log.warning("substrate_promote: process I/O delta promotion skipped: %s", exc)
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_PROCESS_IO_DELTA,
-            status="error",
-            reason=str(exc),
-            row_count=0,
-            window_start=window_start,
-            window_end=window_end,
-        )
-
-
-def _promote_machine_process_memory_slow(
-    conn: Any,
-    refresh_id: str,
-    window_start: date,
-    window_end: date,
-    counts: dict[str, int],
-    selection: SourceSelection,
-) -> None:
-    if not selection.includes(SOURCE_MACHINE_PROCESS_MEMORY):
-        return
-    try:
-        from lynchpin.sources.machine import (
-            process_memory_samples,
-            readiness as machine_readiness,
-        )
-        from lynchpin.substrate.machine import promote_machine_process_memory_samples
-
-        machine_ready = machine_readiness()
-        process_memory_count = promote_machine_process_memory_samples(
-            conn,
-            refresh_id=refresh_id,
-            samples=process_memory_samples(start=window_start, end=window_end),
-        )
-        counts["machine_process_memory_samples"] = process_memory_count
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_PROCESS_MEMORY,
-            status="ok"
-            if process_memory_count
-            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-            reason=machine_ready.reason,
-            row_count=process_memory_count,
-            window_start=window_start,
-            window_end=window_end,
-        )
-    except Exception as exc:
-        log.warning("substrate_promote: process memory promotion skipped: %s", exc)
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_PROCESS_MEMORY,
-            status="error",
-            reason=str(exc),
-            row_count=0,
-            window_start=window_start,
-            window_end=window_end,
-        )
-
-
-def _promote_machine_cgroup_memory_slow(
-    conn: Any,
-    refresh_id: str,
-    window_start: date,
-    window_end: date,
-    counts: dict[str, int],
-    selection: SourceSelection,
-) -> None:
-    if not selection.includes(SOURCE_MACHINE_CGROUP_MEMORY):
-        return
-    try:
-        from lynchpin.sources.machine import (
-            cgroup_memory_samples,
-            readiness as machine_readiness,
-        )
-        from lynchpin.substrate.machine import promote_machine_cgroup_memory_samples
-
-        machine_ready = machine_readiness()
-        cgroup_memory_count = promote_machine_cgroup_memory_samples(
-            conn,
-            refresh_id=refresh_id,
-            samples=cgroup_memory_samples(start=window_start, end=window_end),
-        )
-        counts["machine_cgroup_memory_samples"] = cgroup_memory_count
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_CGROUP_MEMORY,
-            status="ok"
-            if cgroup_memory_count
-            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-            reason=machine_ready.reason,
-            row_count=cgroup_memory_count,
-            window_start=window_start,
-            window_end=window_end,
-        )
-    except Exception as exc:
-        log.warning("substrate_promote: cgroup memory promotion skipped: %s", exc)
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_CGROUP_MEMORY,
-            status="error",
-            reason=str(exc),
-            row_count=0,
-            window_start=window_start,
-            window_end=window_end,
-        )
-
-
-def _promote_machine_kill_event_slow(
-    conn: Any,
-    refresh_id: str,
-    window_start: date,
-    window_end: date,
-    counts: dict[str, int],
-    selection: SourceSelection,
-) -> None:
-    if not selection.includes(SOURCE_MACHINE_KILL_EVENT):
-        return
-    try:
-        from lynchpin.sources.machine import (
-            kill_events,
-            readiness as machine_readiness,
-        )
-        from lynchpin.substrate.machine import promote_machine_kill_events
-
-        machine_ready = machine_readiness()
-        kill_event_count = promote_machine_kill_events(
-            conn,
-            refresh_id=refresh_id,
-            events=kill_events(start=window_start, end=window_end),
-        )
-        counts["machine_kill_events"] = kill_event_count
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_KILL_EVENT,
-            status="ok"
-            if kill_event_count
-            else ("unavailable" if machine_ready.status == "unavailable" else "empty"),
-            reason=machine_ready.reason,
-            row_count=kill_event_count,
-            window_start=window_start,
-            window_end=window_end,
-        )
-    except Exception as exc:
-        log.warning("substrate_promote: kill event promotion skipped: %s", exc)
-        record_source_status(
-            conn,
-            refresh_id=refresh_id,
-            source=SOURCE_MACHINE_KILL_EVENT,
-            status="error",
-            reason=str(exc),
-            row_count=0,
-            window_start=window_start,
-            window_end=window_end,
+            fn=promote_table,
         )
 
 
@@ -1013,35 +941,27 @@ def _promote_experiments(
     if not selection.includes(SOURCE_MACHINE_EXPERIMENTS):
         return
 
-    try:
-        from lynchpin.sources.machine_experiments import experiment_root, experiment_runs
-        from lynchpin.substrate.machine import promote_machine_experiment_runs
+    from lynchpin.sources.machine_experiments import experiment_root, experiment_runs
+    from lynchpin.substrate.machine import promote_machine_experiment_runs
 
-        exp_root = experiment_root()
-        runs = _validated_experiment_runs(
-            experiment_runs(start=window_start, end=window_end)
-        )
-        run_count = promote_machine_experiment_runs(conn, refresh_id=refresh_id, runs=runs)
-        counts["machine_experiment_runs"] = run_count
-        exp_reason: str | None
-        if run_count:
-            status, exp_reason = "ok", None
-        elif exp_root.exists():
-            status, exp_reason = "empty", "no machine experiment manifests in window"
-        else:
-            status, exp_reason = "unavailable", f"machine experiment root not found at {exp_root}"
-        record_source_status(
-            conn, refresh_id=refresh_id, source=SOURCE_MACHINE_EXPERIMENTS,
-            status=status, reason=exp_reason, row_count=run_count,
-            window_start=window_start, window_end=window_end,
-        )
-    except Exception as exc:
-        log.warning("substrate_promote: machine experiment promotion skipped: %s", exc)
-        record_source_status(
-            conn, refresh_id=refresh_id, source=SOURCE_MACHINE_EXPERIMENTS,
-            status="error", reason=str(exc), row_count=0,
-            window_start=window_start, window_end=window_end,
-        )
+    exp_root = experiment_root()
+    runs = _validated_experiment_runs(
+        experiment_runs(start=window_start, end=window_end)
+    )
+    run_count = promote_machine_experiment_runs(conn, refresh_id=refresh_id, runs=runs)
+    counts["machine_experiment_runs"] = run_count
+    exp_reason: str | None
+    if run_count:
+        status, exp_reason = "ok", None
+    elif exp_root.exists():
+        status, exp_reason = "empty", "no machine experiment manifests in window"
+    else:
+        status, exp_reason = "unavailable", f"machine experiment root not found at {exp_root}"
+    record_source_status(
+        conn, refresh_id=refresh_id, source=SOURCE_MACHINE_EXPERIMENTS,
+        status=status, reason=exp_reason, row_count=run_count,
+        window_start=window_start, window_end=window_end,
+    )
 
 
 def _validated_experiment_runs(runs: Any) -> list[Any]:
