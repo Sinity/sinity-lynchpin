@@ -74,6 +74,15 @@ class ArchiveCapabilities:
 
 
 @dataclass(frozen=True)
+class TableIntrospectionCaveat:
+    """A table was discovered but one metadata operation could not inspect it."""
+
+    table: str
+    operation: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class DatabaseSchema:
     database: ArchiveDatabase
     database_list: tuple[str, ...]
@@ -82,7 +91,8 @@ class DatabaseSchema:
     data_version: int
     journal_mode: str
     tables: tuple[str, ...]
-    table_columns: tuple[tuple[str, tuple[str, ...]], ...]
+    table_columns: tuple[tuple[str, tuple[str, ...] | None], ...]
+    table_introspection_caveats: tuple[TableIntrospectionCaveat, ...]
     indexes: tuple[str, ...]
     triggers: tuple[str, ...]
     fts_tables: tuple[str, ...]
@@ -200,10 +210,21 @@ def introspect_database(database: ArchiveDatabase) -> DatabaseSchema:
         raise PolylogueArchiveUnavailableError(path=database.path, reason=str(exc)) from exc
     tables = tuple(str(row["name"]) for row in rows)
     with open_readonly(database.path) as conn:
-        table_columns = tuple(
-            (table, tuple(str(row["name"]) for row in conn.execute(f"PRAGMA table_xinfo({_quote(table)})")))
-            for table in tables
-        )
+        table_columns: list[tuple[str, tuple[str, ...] | None]] = []
+        table_introspection_caveats: list[TableIntrospectionCaveat] = []
+        for table in tables:
+            try:
+                columns = tuple(
+                    str(row["name"])
+                    for row in conn.execute(f"PRAGMA table_xinfo({_quote(table)})")
+                )
+            except sqlite3.Error as exc:
+                table_columns.append((table, None))
+                table_introspection_caveats.append(
+                    TableIntrospectionCaveat(table, "table_xinfo", str(exc))
+                )
+            else:
+                table_columns.append((table, columns))
         indexes = tuple(
             sorted(
                 {
@@ -224,7 +245,8 @@ def introspect_database(database: ArchiveDatabase) -> DatabaseSchema:
         data_version=data_version,
         journal_mode=journal_mode,
         tables=tables,
-        table_columns=table_columns,
+        table_columns=tuple(table_columns),
+        table_introspection_caveats=tuple(table_introspection_caveats),
         indexes=indexes,
         triggers=triggers,
         fts_tables=fts_tables,

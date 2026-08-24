@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 
 import pytest
@@ -79,6 +80,71 @@ def test_readiness_introspects_without_scanning_timestamp_coverage(tmp_path) -> 
     assert dict(index.table_columns)["sessions"] == (
         "native_id", "origin", "parent_session_id", "created_at_ms", "updated_at_ms"
     )
+
+
+def test_readiness_retains_capabilities_when_virtual_table_xinfo_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    root = _archive_root(tmp_path)
+    embeddings = root / "embeddings.db"
+    with sqlite3.connect(embeddings) as conn:
+        conn.execute("CREATE TABLE unavailable_vector (embedding_id TEXT)")
+
+    original_open_readonly = archive.open_readonly
+
+    class FailingXinfoConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, statement: str, *args, **kwargs):
+            if statement == 'PRAGMA table_xinfo("unavailable_vector")':
+                raise sqlite3.OperationalError("no such module: vec0")
+            return self._connection.execute(statement, *args, **kwargs)
+
+        def __getattr__(self, name: str):
+            return getattr(self._connection, name)
+
+    @contextmanager
+    def failing_open_readonly(path):
+        with original_open_readonly(path) as connection:
+            yield FailingXinfoConnection(connection)
+
+    monkeypatch.setattr(archive, "open_readonly", failing_open_readonly)
+
+    report = archive.readiness(root)
+
+    assert report.status == "ready"
+    assert (
+        report.reason
+        == "source authority and normalized index capabilities are available"
+    )
+    assert {schema.database.name for schema in report.schemas} == {
+        "source",
+        "index",
+        "embeddings",
+    }
+    assert all(
+        schema.capabilities.raw_sessions
+        for schema in report.schemas
+        if schema.database.name == "source"
+    )
+    assert all(
+        schema.capabilities.sessions and schema.capabilities.messages
+        for schema in report.schemas
+        if schema.database.name == "index"
+    )
+    embedding_schema = next(schema for schema in report.schemas if schema.database.name == "embeddings")
+    assert "unavailable_vector" in embedding_schema.tables
+    assert dict(embedding_schema.table_columns)["unavailable_vector"] is None
+    assert embedding_schema.table_introspection_caveats == (
+        archive.TableIntrospectionCaveat(
+            table="unavailable_vector",
+            operation="table_xinfo",
+            reason="no such module: vec0",
+        ),
+    )
+    assert embedding_schema.capabilities.embedding_status
+    assert embedding_schema.capabilities.embedding_metadata
 
 
 def test_snapshot_is_stable_and_readers_remain_read_only(tmp_path) -> None:
