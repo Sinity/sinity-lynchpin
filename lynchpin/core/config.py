@@ -228,7 +228,7 @@ class LynchpinConfig:
             os.environ.get("LYNCHPIN_BASELINE_DIR"), repo_artefacts_root / "baseline/latest"
         )
 
-        # captures_root/webhistory,asciinema,audio,screenshot,keylog,comms/irc
+        # formerly captures_root/webhistory,asciinema,audio,screenshot,keylog + comms/irc; all under activity/ since 2026-08-24
         # moved to data_root/activity or data_root/comms on 2026-08-17
         # (estate charter subject recut) -- still env-overridable, only the
         # hardcoded defaults changed.
@@ -317,7 +317,7 @@ class LynchpinConfig:
             ).split(":")
             if item
         )
-        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "comms/irc"))
+        irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "activity/irc"))
         raw_log_file = Path(os.environ.get(
             "LYNCHPIN_RAW_LOG_FILE", "/realm/data/knowledgebase/logs.raw-log.md"
         ))
