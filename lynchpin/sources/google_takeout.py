@@ -54,7 +54,7 @@ class TakeoutChromeHistoryBatch:
 
 def discover_takeout_archives(root: Path | None = None) -> tuple[Path, ...]:
     cfg = get_config()
-    root = root or cfg.exports_root / "google/raw/takeout"
+    root = root or cfg.accounts_root / "google/raw/takeout"
     if not root.exists():
         return ()
     return tuple(

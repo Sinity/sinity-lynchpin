@@ -60,7 +60,7 @@ def test_messenger_default_reader_materializes(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(exports_messenger, "get_config", lambda: SimpleNamespace(exports_root=tmp_path))
+    monkeypatch.setattr(exports_messenger, "get_config", lambda: SimpleNamespace(comms_root=tmp_path / "comms"))
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
         lambda name, *, window=None: calls.append((name, window)),
@@ -195,7 +195,7 @@ def test_raindrop_default_reader_materializes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         exports_raindrop,
         "get_config",
-        lambda: SimpleNamespace(exports_root=tmp_path, raindrop_dir=tmp_path, raindrop_csv=None),
+        lambda: SimpleNamespace(accounts_root=tmp_path, raindrop_dir=tmp_path, raindrop_csv=None),
     )
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
@@ -263,7 +263,7 @@ def test_raindrop_iterator_filters_half_open_logical_date_window(monkeypatch, tm
     monkeypatch.setattr(
         exports_raindrop,
         "get_config",
-        lambda: SimpleNamespace(exports_root=tmp_path, raindrop_dir=tmp_path, raindrop_csv=None),
+        lambda: SimpleNamespace(accounts_root=tmp_path, raindrop_dir=tmp_path, raindrop_csv=None),
     )
 
     rows = list(

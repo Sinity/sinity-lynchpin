@@ -166,7 +166,7 @@ def _configured_path(source: str) -> Path | None:
         "codex": cfg.codex_sessions_root,
         "dendron": cfg.dendron_root,
         "git_baseline": cfg.baseline_dir / "git_numstat.jsonl",
-        "gmail_takeout": cfg.exports_root / "google/raw/takeout",
+        "gmail_takeout": cfg.accounts_root / "google/raw/takeout",
         "goodreads": cfg.goodreads_library,
         "irc": cfg.irc_root,
         "irc_raw": cfg.irc_root / "_raw",

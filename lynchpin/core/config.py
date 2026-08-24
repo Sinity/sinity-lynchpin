@@ -30,7 +30,9 @@ class LynchpinConfig:
     sinnix_root: Path
     data_root: Path
     captures_root: Path
-    exports_root: Path
+    accounts_root: Path
+    comms_root: Path
+    health_root: Path
     derived_root: Path
     libraries_root: Path
     knowledgebase_root: Path
@@ -46,6 +48,7 @@ class LynchpinConfig:
     # Source paths
     activitywatch_db: Path
     activitywatch_archive_db_dir: Path
+    activitywatch_raw_dir: Path
     atuin_db: Path
     baseline_dir: Path
     webhistory_raw_dir: Path
@@ -164,7 +167,13 @@ class LynchpinConfig:
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm/data"))
         captures_root = Path(os.environ.get("LYNCHPIN_CAPTURES_ROOT", data_root / "captures"))
-        exports_root = Path(os.environ.get("LYNCHPIN_EXPORTS_ROOT", data_root / "exports"))
+        # Platform-account exports (google, reddit, spotify, raindrop, ...).
+        # Communication and health exports carry their own roots below: one
+        # subject spans several genera, so a single "exports" root cannot
+        # address them all.
+        accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "accounts"))
+        comms_root = Path(os.environ.get("LYNCHPIN_COMMS_ROOT", data_root / "comms"))
+        health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
         derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "derived/lynchpin"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
@@ -214,6 +223,10 @@ class LynchpinConfig:
         aw_archive_db_dir = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_ARCHIVE_DB_DIR",
             data_root / "activity/activitywatch/processed/archive-dbs",
+        ))
+        aw_raw_dir = Path(os.environ.get(
+            "LYNCHPIN_ACTIVITYWATCH_RAW_DIR",
+            data_root / "activity/activitywatch/activitywatch/raw",
         ))
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
         baseline_dir = _non_legacy_generated_path(
@@ -280,10 +293,10 @@ class LynchpinConfig:
         substack_downloader = Path(os.environ.get(
             "LYNCHPIN_SUBSTACK_DOWNLOADER", substack_root / "sbstck-dl/sbstck-dl"
         ))
-        # goodreads/wykop moved out of exports_root to data_root/accounts on
-        # 2026-08-17 (estate charter: platform-footprint exports route to
-        # accounts/, not exports/) -- both are still env-overridable, only the
-        # hardcoded default changed.
+        # goodreads/wykop moved to data_root/accounts on 2026-08-17 (estate
+        # charter: platform-footprint exports route to accounts/, not
+        # exports/) -- both are still env-overridable, only the hardcoded
+        # default changed. The generic root followed on 2026-08-24.
         goodreads_library = Path(os.environ.get(
             "LYNCHPIN_GOODREADS_LIBRARY", data_root / "accounts/goodreads/raw/library_export.csv"
         ))
@@ -390,7 +403,8 @@ class LynchpinConfig:
 
         return cls(
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
-            captures_root=captures_root, exports_root=exports_root, derived_root=derived_root, libraries_root=libraries_root,
+            captures_root=captures_root, accounts_root=accounts_root, comms_root=comms_root,
+            health_root=health_root, derived_root=derived_root, libraries_root=libraries_root,
             knowledgebase_root=knowledgebase_root,
             knowledge_archive_root=knowledge_archive_root,
             repo_artefacts_root=repo_artefacts_root,
@@ -402,6 +416,7 @@ class LynchpinConfig:
             velocity_output=velocity_output,
             webhistory_report_dir=webhistory_report_dir,
             activitywatch_db=aw_db, activitywatch_archive_db_dir=aw_archive_db_dir,
+            activitywatch_raw_dir=aw_raw_dir,
             atuin_db=atuin_db, baseline_dir=baseline_dir,
             webhistory_raw_dir=webhistory_raw_dir, webhistory_dir=webhistory_dir,
             webhistory_ndjson=webhistory_ndjson, sleep_jsonl=sleep_jsonl,

@@ -79,7 +79,7 @@ def test_coverage_report_uses_materialized_datasets(monkeypatch, tmp_path) -> No
             reddit_export_dir=tmp_path / "reddit",
             fbmessenger_gdpr_root=tmp_path / "messenger",
             raindrop_csv=tmp_path / "raindrop.csv",
-            exports_root=tmp_path / "exports",
+            accounts_root=tmp_path / "exports",
         ),
     )
 
@@ -137,7 +137,7 @@ def test_coverage_report_treats_end_as_exclusive(monkeypatch, tmp_path) -> None:
             reddit_export_dir=Path("/reddit"),
             fbmessenger_gdpr_root=Path("/messenger"),
             raindrop_csv=Path("/raindrop.csv"),
-            exports_root=tmp_path / "exports",
+            accounts_root=tmp_path / "exports",
         ),
     )
 
@@ -163,7 +163,7 @@ def test_coverage_report_reaudits_after_inline_materialization(monkeypatch, tmp_
     )
     monkeypatch.setattr(
         "lynchpin.graph.coverage.get_config",
-        lambda: SimpleNamespace(exports_root=tmp_path / "exports"),
+        lambda: SimpleNamespace(accounts_root=tmp_path / "exports"),
     )
 
     report = coverage_report(start=date(2026, 5, 20), end=date(2026, 5, 24))
@@ -185,7 +185,7 @@ def test_coverage_report_can_skip_inline_materialization_repair(monkeypatch, tmp
     )
     monkeypatch.setattr(
         "lynchpin.graph.coverage.get_config",
-        lambda: SimpleNamespace(exports_root=tmp_path / "exports"),
+        lambda: SimpleNamespace(accounts_root=tmp_path / "exports"),
     )
 
     report = coverage_report(

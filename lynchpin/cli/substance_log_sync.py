@@ -44,7 +44,7 @@ def _rawlog_path() -> Path:
 
 
 def _csv_path() -> Path:
-    return get_config().exports_root / "health/processed/substance_log_unified.csv"
+    return get_config().health_root / "processed/substance_log_unified.csv"
 
 
 def _known_substances(rows: list[dict[str, str]]) -> dict[str, str]:

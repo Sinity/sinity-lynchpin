@@ -28,7 +28,7 @@ def _env(tmp_path, monkeypatch, csv_rows, rawlog_text):
     _write_csv(csv_path, csv_rows)
     rawlog = tmp_path / "logs.raw-log.md"
     rawlog.write_text(rawlog_text)
-    monkeypatch.setattr(sync, "get_config", lambda: SimpleNamespace(exports_root=exports))
+    monkeypatch.setattr(sync, "get_config", lambda: SimpleNamespace(health_root=exports / "health"))
     monkeypatch.setattr(sync, "_rawlog_path", lambda: rawlog)
     return csv_path
 

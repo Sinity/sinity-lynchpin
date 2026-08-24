@@ -51,7 +51,7 @@ def _stream_files(root: Optional[Path] = None, *, ensure: bool = True) -> list[P
             from ..materialization import ensure_materialized
 
             ensure_materialized("spotify")
-        canonical = cfg.exports_root / "spotify/processed/streaming_history.ndjson"
+        canonical = cfg.accounts_root / "spotify/processed/streaming_history.ndjson"
         if canonical.exists():
             return [canonical]
         raise FileNotFoundError(

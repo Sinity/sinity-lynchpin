@@ -64,8 +64,8 @@ def materialize_communication_events(*, output: Path | None = None) -> dict[str,
 
 
 def communication_input_files(cfg: Any) -> tuple[Path, ...]:
-    messenger = cfg.exports_root / "comms/facebook-messenger/processed/canonical/messages.ndjson"
-    outlook = cfg.exports_root / "comms/outlook"
+    messenger = cfg.comms_root / "facebook-messenger/processed/canonical/messages.ndjson"
+    outlook = cfg.comms_root / "outlook"
     teams = cfg.teams_root
     paths: list[Path] = []
     if messenger.exists():
@@ -84,8 +84,8 @@ def communication_input_files(cfg: Any) -> tuple[Path, ...]:
 
 
 def _iter_all_events(cfg: Any) -> Iterator[CommunicationEvent]:
-    yield from _messenger_events(cfg.exports_root / "comms/facebook-messenger/processed/canonical/messages.ndjson")
-    yield from _outlook_events(cfg.exports_root / "comms/outlook")
+    yield from _messenger_events(cfg.comms_root / "facebook-messenger/processed/canonical/messages.ndjson")
+    yield from _outlook_events(cfg.comms_root / "outlook")
     yield from _themotte_events(cfg)
 
 

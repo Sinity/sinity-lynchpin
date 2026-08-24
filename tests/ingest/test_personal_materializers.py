@@ -131,7 +131,7 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
         "Cfg",
         (),
         {
-            "exports_root": exports,
+            "comms_root": exports / "comms",
             "libraries_root": tmp_path / "libraries",
             "teams_root": tmp_path / "teams",
             "fbmessenger_gdpr_root": tmp_path / "messenger",

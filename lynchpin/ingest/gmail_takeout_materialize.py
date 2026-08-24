@@ -38,7 +38,7 @@ def materialize_gmail_events(
     *, root: Path | None = None, output: Path | None = None
 ) -> dict[str, Any]:
     cfg = get_config()
-    archive_root = root or cfg.exports_root / "google/raw/takeout"
+    archive_root = root or cfg.accounts_root / "google/raw/takeout"
     output = output or gmail_events_path()
     output.parent.mkdir(parents=True, exist_ok=True)
     input_files = google_takeout_input_files(archive_root)

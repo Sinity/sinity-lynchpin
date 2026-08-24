@@ -171,7 +171,7 @@ def _normalize_thread_id(raw: str | None) -> str | None:
 
 def gmail_events_path() -> Path:
     cfg = get_config()
-    return cfg.exports_root / "google/processed/gmail/events.ndjson"
+    return cfg.accounts_root / "google/processed/gmail/events.ndjson"
 
 
 def gmail_manifest_path() -> Path:
@@ -244,7 +244,7 @@ def iter_gmail_messages(
     deduplication by Message-ID.
     """
     cfg = get_config()
-    archive_root = root or cfg.exports_root / "google/raw/takeout"
+    archive_root = root or cfg.accounts_root / "google/raw/takeout"
     for member, payload in iter_member_bytes(
         root=archive_root,
         products={"Mail"},

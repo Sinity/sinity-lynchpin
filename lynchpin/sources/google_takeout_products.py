@@ -50,7 +50,7 @@ class GoogleTakeoutDay:
 
 
 def google_takeout_products_dir() -> Path:
-    return get_config().exports_root / "google/processed/takeout-products"
+    return get_config().accounts_root / "google/processed/takeout-products"
 
 
 def iter_contacts(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
@@ -122,7 +122,7 @@ def iter_calendar(*, ensure: bool = True) -> Iterator[dict[str, Any]]:
     archive has been ingested yet.
     """
     del ensure
-    path = get_config().exports_root / "google/processed/calendar.jsonl"
+    path = get_config().accounts_root / "google/processed/calendar.jsonl"
     if not path.exists():
         return
     with path.open("r", encoding="utf-8") as handle:

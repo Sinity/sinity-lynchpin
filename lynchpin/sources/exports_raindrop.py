@@ -88,7 +88,7 @@ def iter_raindrop_bookmarks(
 ) -> Iterator[RaindropBookmark]:
     """Iterate Raindrop bookmarks, optionally bounded by half-open logical dates."""
     cfg = get_config()
-    canonical = cfg.exports_root / "raindrop/processed/bookmarks.csv"
+    canonical = cfg.accounts_root / "raindrop/processed/bookmarks.csv"
     if csv_path is None:
         if ensure:
             from ..materialization import ensure_materialized
@@ -193,7 +193,7 @@ def daily_raindrop_activity(*, start: date, end: date, ensure: bool = True) -> l
 def coverage_bounds() -> CoverageBounds | None:
     """Return observed date range from the raindrop materialization manifest."""
     cfg = get_config()
-    manifest_path = cfg.exports_root / "raindrop/processed/bookmarks.manifest.json"
+    manifest_path = cfg.accounts_root / "raindrop/processed/bookmarks.manifest.json"
     if not manifest_path.exists():
         return None
     try:

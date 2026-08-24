@@ -45,8 +45,7 @@ def source_readiness(
         end=materialization_end,
         repair_materializations=repair_materializations,
     ).by_source()
-    exports_root = getattr(cfg, "exports_root", None)
-    comms_root = exports_root / "comms" if exports_root is not None else None
+    comms_root = getattr(cfg, "comms_root", None)
     items: list[SourceReadiness] = [
         _path_source(
             "activitywatch",
@@ -181,8 +180,8 @@ def source_readiness(
         ),
         _path_source(
             "substance",
-            (cfg.exports_root / "health/processed/substance_log_unified.csv").exists(),
-            cfg.exports_root / "health/processed/substance_log_unified.csv",
+            (cfg.health_root / "processed/substance_log_unified.csv").exists(),
+            cfg.health_root / "processed/substance_log_unified.csv",
             "substance log is present",
             "substance log is missing",
             coverage=coverage.get("substance"),

@@ -57,7 +57,7 @@ class _ProductRow:
 
 
 def google_takeout_products_dir() -> Path:
-    return get_config().exports_root / "google/processed/takeout-products"
+    return get_config().accounts_root / "google/processed/takeout-products"
 
 
 def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str, Any]:

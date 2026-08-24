@@ -1106,7 +1106,7 @@ def _first_manifest(paths: Iterable[Path]) -> dict[str, Any]:
 
 
 def _spotify_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
-    root = cfg.exports_root / "spotify/processed"
+    root = cfg.accounts_root / "spotify/processed"
     return tuple(
         path
         for export_root in _spotify_roots(root)
@@ -1116,7 +1116,7 @@ def _spotify_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
 
 
 def _reddit_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
-    root = cfg.exports_root / "reddit/processed"
+    root = cfg.accounts_root / "reddit/processed"
     return tuple(
         path
         for export_root in _export_roots(root)
@@ -1478,7 +1478,7 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(output, manifest) if manifest else (output,),
-        raw_roots=(cfg.webhistory_raw_dir, cfg.webhistory_dir, cfg.exports_root / "google/raw/takeout"),
+        raw_roots=(cfg.webhistory_raw_dir, cfg.webhistory_dir, cfg.accounts_root / "google/raw/takeout"),
         row_count=row_count,
         first_date=first,
         last_date=last,
@@ -1489,7 +1489,7 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    raw_root = cfg.exports_root / "google/raw/takeout"
+    raw_root = cfg.accounts_root / "google/raw/takeout"
     archives = tuple(discover_takeout_archives(raw_root))
     inventory_dir = google_takeout_inventory_dir()
     manifest = inventory_dir / "manifest.json"
@@ -1673,7 +1673,7 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="ActivityWatch live SQLite plus exported backup DBs",
         query_surface="lynchpin.sources.activitywatch",
         materialized_paths=(path, manifest),
-        raw_roots=(cfg.activitywatch_db, cfg.exports_root / "activitywatch/raw"),
+        raw_roots=(cfg.activitywatch_db, cfg.activitywatch_raw_dir),
         row_count=_int_or_none(meta.get("row_count")) or archives,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -2531,7 +2531,7 @@ def _code_snapshots_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    root = cfg.exports_root / "health/processed"
+    root = cfg.health_root / "processed"
     files = tuple(root.glob("health_*.jsonl")) if root.exists() else ()
     status = "ready" if files else "missing"
     row_count, first, last = _jsonl_date_bounds(files)
@@ -2541,7 +2541,7 @@ def _health_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="Samsung Health raw exports",
         query_surface="lynchpin.sources.health",
         materialized_paths=files,
-        raw_roots=(cfg.exports_root / "health/raw",),
+        raw_roots=(cfg.health_root / "raw",),
         row_count=row_count if files else None,
         first_date=first,
         last_date=last,
@@ -2609,7 +2609,7 @@ def _sleep_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="Samsung Health/Sleep-as-Android exports",
         query_surface="lynchpin.sources.sleep",
         materialized_paths=(cfg.sleep_jsonl,),
-        raw_roots=(cfg.exports_root / "health/raw",),
+        raw_roots=(cfg.health_root / "raw",),
         row_count=row_count,
         first_date=first,
         last_date=last,
@@ -2619,7 +2619,7 @@ def _sleep_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
 
 
 def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    path = cfg.exports_root / "health/processed/substance_log_unified.csv"
+    path = cfg.health_root / "processed/substance_log_unified.csv"
     row_count, first, last = _csv_date_bounds((path,))
     return MaterializedDataset(
         name="substance",
@@ -2627,7 +2627,7 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="processed substance log CSV",
         query_surface="lynchpin.sources.substance",
         materialized_paths=(path,),
-        raw_roots=(cfg.exports_root / "health/processed",),
+        raw_roots=(cfg.health_root / "processed",),
         row_count=row_count,
         first_date=first,
         last_date=last,
@@ -2712,7 +2712,7 @@ def _reddit_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="Reddit GDPR export directories",
         query_surface="lynchpin.sources.reddit",
         materialized_paths=(root, manifest),
-        raw_roots=(cfg.exports_root / "reddit/processed", cfg.exports_root / "reddit/raw"),
+        raw_roots=(cfg.accounts_root / "reddit/processed", cfg.accounts_root / "reddit/raw"),
         row_count=row_count,
         first_date=first,
         last_date=last,
@@ -2753,7 +2753,7 @@ def _messenger_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="Facebook Messenger GDPR export",
         query_surface="lynchpin.sources.exports",
         materialized_paths=(messages, threads, manifest),
-        raw_roots=(cfg.exports_root / "comms/facebook-messenger/raw",),
+        raw_roots=(cfg.comms_root / "facebook-messenger/raw",),
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -2827,7 +2827,7 @@ def _communications_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority="canonical Messenger plus parseable Outlook communication exports",
         query_surface="lynchpin.sources.communications",
         materialized_paths=(path, manifest),
-        raw_roots=(cfg.exports_root / "comms",),
+        raw_roots=(cfg.comms_root,),
         row_count=row_count,
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -3020,7 +3020,7 @@ def _spotify_daily_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, manifest),
-        raw_roots=(cfg.exports_root / "spotify/processed",),
+        raw_roots=(cfg.accounts_root / "spotify/processed",),
         row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),

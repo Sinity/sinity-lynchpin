@@ -212,7 +212,7 @@ def _resolve_paths(paths: Optional[Sequence[Path]], filename: str, *, ensure: bo
 
         ensure_materialized("reddit")
     cfg = get_config()
-    canonical = cfg.exports_root / "reddit/processed/canonical" / filename
+    canonical = cfg.accounts_root / "reddit/processed/canonical" / filename
     if canonical.exists():
         return [canonical]
     raise FileNotFoundError(
@@ -398,7 +398,7 @@ def _message_paths(paths: Optional[Sequence[Path]] = None, *, ensure: bool = Tru
 
         ensure_materialized("reddit")
     cfg = get_config()
-    canonical = cfg.exports_root / "reddit/processed/canonical"
+    canonical = cfg.accounts_root / "reddit/processed/canonical"
     candidates = [
         canonical / "messages_archive_headers.csv",
         canonical / "message_headers.csv",
@@ -562,7 +562,7 @@ def daily_activity(*, start: date, end: date, ensure: bool = True) -> list[Reddi
 
 def coverage_bounds() -> CoverageBounds | None:
     cfg = get_config()
-    canonical = cfg.exports_root / "reddit/processed/canonical"
+    canonical = cfg.accounts_root / "reddit/processed/canonical"
     if not canonical.exists():
         return None
     dates = [

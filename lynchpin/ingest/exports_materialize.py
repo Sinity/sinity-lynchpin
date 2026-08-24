@@ -25,19 +25,19 @@ MESSENGER_CANONICAL_SCHEMA_VERSION = 1
 
 
 def spotify_streams_path() -> Path:
-    return get_config().exports_root / "spotify/processed/streaming_history.ndjson"
+    return get_config().accounts_root / "spotify/processed/streaming_history.ndjson"
 
 
 def reddit_canonical_dir() -> Path:
-    return get_config().exports_root / "reddit/processed/canonical"
+    return get_config().accounts_root / "reddit/processed/canonical"
 
 
 def raindrop_bookmarks_path() -> Path:
-    return get_config().exports_root / "raindrop/processed/bookmarks.csv"
+    return get_config().accounts_root / "raindrop/processed/bookmarks.csv"
 
 
 def messenger_canonical_dir() -> Path:
-    return get_config().exports_root / "comms/facebook-messenger/processed/canonical"
+    return get_config().comms_root / "facebook-messenger/processed/canonical"
 
 
 def materialize_all() -> dict[str, Any]:
@@ -51,7 +51,7 @@ def materialize_all() -> dict[str, Any]:
 
 def materialize_spotify() -> dict[str, Any]:
     cfg = get_config()
-    roots = _spotify_roots(cfg.exports_root / "spotify/processed")
+    roots = _spotify_roots(cfg.accounts_root / "spotify/processed")
     out = spotify_streams_path()
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -91,7 +91,7 @@ def materialize_spotify() -> dict[str, Any]:
 
 def materialize_reddit() -> dict[str, Any]:
     cfg = get_config()
-    source_root = cfg.exports_root / "reddit/processed"
+    source_root = cfg.accounts_root / "reddit/processed"
     out_dir = reddit_canonical_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -49,7 +49,7 @@ def test_materialize_google_takeout_products_ignores_calendar_export(monkeypatch
         )
         zf.writestr("Takeout/Calendar/example.ics", "BEGIN:VCALENDAR\nEND:VCALENDAR\n")
 
-    cfg = type("Cfg", (), {"exports_root": tmp_path / "exports"})()
+    cfg = type("Cfg", (), {"accounts_root": tmp_path / "exports"})()
     calls = []
     monkeypatch.setattr(google_takeout_products, "get_config", lambda: cfg)
     monkeypatch.setattr(source, "get_config", lambda: cfg)

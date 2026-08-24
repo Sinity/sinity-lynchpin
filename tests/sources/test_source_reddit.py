@@ -67,7 +67,7 @@ def test_reddit_default_comment_reader_materializes(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(reddit, "get_config", lambda: SimpleNamespace(exports_root=tmp_path))
+    monkeypatch.setattr(reddit, "get_config", lambda: SimpleNamespace(accounts_root=tmp_path))
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
         lambda name, *, window=None: calls.append((name, window)),

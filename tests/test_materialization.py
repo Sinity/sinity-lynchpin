@@ -271,7 +271,7 @@ def test_webhistory_audit_marks_manifest_with_changed_segment_files_partial(monk
         webhistory_ndjson=product,
         webhistory_raw_dir=tmp_path / "raw",
         webhistory_dir=tmp_path,
-        exports_root=tmp_path / "exports",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "full_history_manifest_path", lambda _output: manifest)
@@ -310,7 +310,7 @@ def test_webhistory_audit_uses_manifest_logical_bounds_without_scan(monkeypatch,
         webhistory_ndjson=product,
         webhistory_raw_dir=tmp_path / "raw",
         webhistory_dir=tmp_path,
-        exports_root=tmp_path / "exports",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "full_history_manifest_path", lambda _output: manifest)
@@ -356,7 +356,7 @@ def test_webhistory_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> 
         webhistory_ndjson=product,
         webhistory_raw_dir=tmp_path / "raw",
         webhistory_dir=tmp_path,
-        exports_root=tmp_path / "exports",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "full_history_manifest_path", lambda _output: manifest)
@@ -401,7 +401,7 @@ def test_webhistory_audit_missing_manifest_bounds_does_not_scan(monkeypatch, tmp
         webhistory_ndjson=product,
         webhistory_raw_dir=tmp_path / "raw",
         webhistory_dir=tmp_path,
-        exports_root=tmp_path / "exports",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "full_history_manifest_path", lambda _output: manifest)
@@ -458,7 +458,7 @@ def test_webhistory_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> Non
         webhistory_ndjson=product,
         webhistory_raw_dir=tmp_path / "raw",
         webhistory_dir=tmp_path,
-        exports_root=tmp_path / "exports",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "full_history_manifest_path", lambda _output: manifest)
@@ -543,7 +543,7 @@ def test_google_takeout_audit_marks_manifest_with_changed_archives_partial(monke
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -619,7 +619,7 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -694,7 +694,7 @@ def test_google_takeout_audit_marks_old_inventory_schema_partial(monkeypatch, tm
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -767,7 +767,7 @@ def test_google_takeout_audit_marks_old_product_schema_partial(monkeypatch, tmp_
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -826,7 +826,7 @@ def test_google_takeout_audit_marks_missing_gmail_product_partial(monkeypatch, t
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -899,7 +899,7 @@ def test_google_takeout_audit_marks_old_gmail_schema_partial(monkeypatch, tmp_pa
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path)
 
     monkeypatch.setattr(materialization, "google_takeout_inventory_dir", lambda: inventory_dir)
     monkeypatch.setattr(materialization, "google_takeout_products_dir", lambda: products_dir)
@@ -1567,7 +1567,7 @@ def test_spotify_audit_marks_manifest_with_changed_inputs_partial(monkeypatch, t
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path, spotify_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path, spotify_root=tmp_path)
 
     monkeypatch.setattr(materialization, "spotify_streams_path", lambda: product)
     monkeypatch.setattr(materialization, "_spotify_input_files", lambda _cfg: (source,))
@@ -1591,7 +1591,7 @@ def test_spotify_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:
         json.dumps({"row_count": 1, "first_date": "2026-01-01", "last_date": "2026-01-01"}),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=tmp_path, spotify_root=tmp_path)
+    cfg = SimpleNamespace(accounts_root=tmp_path, spotify_root=tmp_path)
 
     monkeypatch.setattr(materialization, "spotify_streams_path", lambda: product)
     monkeypatch.setattr(materialization, "_spotify_input_files", lambda _cfg: (source,))
@@ -1631,7 +1631,7 @@ def test_reddit_audit_uses_manifest_bounds(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(materialization, "reddit_canonical_dir", lambda: canonical)
 
-    row = materialization._reddit_dataset(SimpleNamespace(exports_root=tmp_path, reddit_export_dir=tmp_path))
+    row = materialization._reddit_dataset(SimpleNamespace(accounts_root=tmp_path, reddit_export_dir=tmp_path))
 
     assert row.status == "ready"
     assert row.row_count == 9
@@ -1667,7 +1667,7 @@ def test_reddit_audit_preserves_zero_manifest_row_count(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(materialization, "reddit_canonical_dir", lambda: canonical)
 
-    row = materialization._reddit_dataset(SimpleNamespace(exports_root=tmp_path, reddit_export_dir=tmp_path))
+    row = materialization._reddit_dataset(SimpleNamespace(accounts_root=tmp_path, reddit_export_dir=tmp_path))
 
     assert row.status == "ready"
     assert row.row_count == 0
@@ -1700,7 +1700,7 @@ def test_reddit_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(materialization, "reddit_canonical_dir", lambda: canonical)
 
-    row = materialization._reddit_dataset(SimpleNamespace(exports_root=tmp_path, reddit_export_dir=tmp_path))
+    row = materialization._reddit_dataset(SimpleNamespace(accounts_root=tmp_path, reddit_export_dir=tmp_path))
 
     assert row.status == "partial"
     assert "schema is older" in row.reason
@@ -1733,7 +1733,7 @@ def test_messenger_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None
         encoding="utf-8",
     )
     cfg = SimpleNamespace(
-        exports_root=tmp_path,
+        comms_root=tmp_path,
         fbmessenger_gdpr_root=tmp_path / "messenger/export",
         fbmessenger_db=tmp_path / "messenger.sqlite",
     )
@@ -1874,7 +1874,7 @@ def test_communications_audit_marks_manifest_with_changed_inputs_partial(monkeyp
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=exports, teams_root=tmp_path / "teams")
+    cfg = SimpleNamespace(comms_root=exports, teams_root=tmp_path / "teams")
 
     monkeypatch.setattr(materialization, "communication_events_path", lambda: product)
     monkeypatch.setattr(materialization, "communication_manifest_path", lambda: manifest)
@@ -1909,7 +1909,7 @@ def test_communications_audit_marks_old_schema_partial(monkeypatch, tmp_path) ->
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(exports_root=exports, teams_root=tmp_path / "teams")
+    cfg = SimpleNamespace(comms_root=exports, teams_root=tmp_path / "teams")
 
     monkeypatch.setattr(materialization, "communication_events_path", lambda: product)
     monkeypatch.setattr(materialization, "communication_manifest_path", lambda: manifest)
@@ -2185,7 +2185,8 @@ def test_activitywatch_audit_uses_live_sqlite_despite_stale_recovery_carrier(mon
     cfg = SimpleNamespace(
         activitywatch_db=db,
         activitywatch_archive_db_dir=tmp_path / "archive",
-        exports_root=tmp_path / "exports",
+        activitywatch_raw_dir=tmp_path / "activitywatch/raw",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: product)
@@ -2221,7 +2222,8 @@ def test_activitywatch_audit_uses_live_sqlite_despite_stale_recovery_schema(monk
     cfg = SimpleNamespace(
         activitywatch_db=db,
         activitywatch_archive_db_dir=tmp_path / "archive",
-        exports_root=tmp_path / "exports",
+        activitywatch_raw_dir=tmp_path / "activitywatch/raw",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: product)
@@ -2259,7 +2261,8 @@ def test_activitywatch_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
     cfg = SimpleNamespace(
         activitywatch_db=db,
         activitywatch_archive_db_dir=tmp_path / "archive",
-        exports_root=tmp_path / "exports",
+        activitywatch_raw_dir=tmp_path / "activitywatch/raw",
+        accounts_root=tmp_path / "exports",
     )
 
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: product)
@@ -2542,7 +2545,7 @@ def test_health_audit_uses_jsonl_manifest_counts(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    row = materialization._health_dataset(SimpleNamespace(exports_root=tmp_path))
+    row = materialization._health_dataset(SimpleNamespace(health_root=tmp_path / "health"))
 
     assert row.status == "ready"
     assert row.row_count == 9
@@ -2723,7 +2726,7 @@ def test_spotify_daily_audit_marks_manifest_with_changed_stream_product_partial(
     monkeypatch.setattr(materialization, "spotify_daily_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "spotify_daily_input_files", lambda: (streams,))
 
-    row = materialization._spotify_daily_dataset(SimpleNamespace(exports_root=tmp_path))
+    row = materialization._spotify_daily_dataset(SimpleNamespace(accounts_root=tmp_path))
 
     assert row.status == "partial"
     assert "older stream product" in row.reason
@@ -2752,7 +2755,7 @@ def test_spotify_daily_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(materialization, "spotify_daily_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "spotify_daily_input_files", lambda: ())
 
-    row = materialization._spotify_daily_dataset(SimpleNamespace(exports_root=tmp_path))
+    row = materialization._spotify_daily_dataset(SimpleNamespace(accounts_root=tmp_path))
 
     assert row.status == "partial"
     assert "schema is older" in row.reason
@@ -2783,7 +2786,7 @@ def test_spotify_daily_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
     monkeypatch.setattr(materialization, "spotify_daily_manifest_path", lambda: manifest)
     monkeypatch.setattr(materialization, "spotify_daily_input_files", lambda: ())
 
-    row = materialization._spotify_daily_dataset(SimpleNamespace(exports_root=tmp_path))
+    row = materialization._spotify_daily_dataset(SimpleNamespace(accounts_root=tmp_path))
 
     assert row.status == "ready"
     assert row.covered_dates == (date(2026, 5, 1), date(2026, 5, 3))

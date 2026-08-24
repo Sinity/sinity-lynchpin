@@ -21,7 +21,7 @@ def test_substance_entries_and_summaries(monkeypatch, tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(substance, "get_config", lambda: SimpleNamespace(exports_root=tmp_path))
+    monkeypatch.setattr(substance, "get_config", lambda: SimpleNamespace(health_root=tmp_path / "health"))
 
     rows = list(substance.entries())
     assert len(rows) == 3

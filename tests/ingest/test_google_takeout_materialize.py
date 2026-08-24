@@ -13,7 +13,7 @@ def test_materialize_google_takeout_inventory_writes_schema_version(monkeypatch,
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("Takeout/Tasks/Tasks.json", "{}")
 
-    cfg = type("Cfg", (), {"exports_root": tmp_path / "exports"})()
+    cfg = type("Cfg", (), {"accounts_root": tmp_path / "exports"})()
     monkeypatch.setattr(google_takeout_materialize, "get_config", lambda: cfg)
 
     manifest = google_takeout_materialize.materialize_google_takeout_inventory(root=raw)

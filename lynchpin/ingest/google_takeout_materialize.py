@@ -19,7 +19,7 @@ GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION = 1
 
 
 def google_takeout_inventory_dir() -> Path:
-    return get_config().exports_root / "google/processed/takeout-inventory"
+    return get_config().accounts_root / "google/processed/takeout-inventory"
 
 
 def materialize_google_takeout_inventory(*, root: Path | None = None) -> dict[str, Any]:
