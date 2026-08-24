@@ -353,7 +353,9 @@ def _ai_studio_conversation(
     rows = [
         row
         for row in (*raw_chunks, *pending)
-        if isinstance(row, dict) and isinstance(row.get("text"), str)
+        if isinstance(row, dict)
+        and isinstance(row.get("text"), str)
+        and bool(str(row["text"]).strip())
     ]
     messages = tuple(
         _message_from_item(

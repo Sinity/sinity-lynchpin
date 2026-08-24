@@ -189,7 +189,7 @@ def test_ai_studio_capture_preserves_roles_and_capture_time(tmp_path: Path) -> N
                         {"role": "model", "text": "Internal trace.", "isThought": True},
                         {"role": "model", "text": "A neutral answer."},
                     ],
-                    "pendingInputs": [],
+                    "pendingInputs": [{"role": "user", "text": "   "}],
                 },
                 "runSettings": {"model": "synthetic-gemini"},
                 "systemInstruction": {},
