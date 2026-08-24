@@ -37,16 +37,22 @@ _CAPABILITY_DATABASES = {
     "embedding_status": ("embeddings",),
     "embedding_metadata": ("embeddings",),
 }
-_DIRECT_OPERATOR_MATERIAL_ORIGINS = frozenset({"operator_direct"})
+_DIRECT_OPERATOR_MATERIAL_ORIGINS = frozenset({"human_authored", "operator_command"})
 _NON_OPERATOR_MATERIAL_ORIGINS = frozenset(
     {
         "assistant",
+        "assistant_authored",
+        "generated_analysis_pack",
+        "generated_context_pack",
         "model",
         "model_generated",
         "pasted",
         "quoted",
+        "runtime_context",
+        "runtime_protocol",
         "system",
         "tool",
+        "tool_result",
         "tool_generated",
     }
 )

@@ -67,7 +67,7 @@ def _archive_root(tmp_path):
             message_id = f"{session_id}:direct"
             conn.execute(
                 "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (message_id, session_id, "direct", "user", "operator_direct", 1767225600000 + index * 60_000, b"message-hash"),
+                (message_id, session_id, "direct", "user", "human_authored", 1767225600000 + index * 60_000, b"message-hash"),
             )
             conn.execute(
                 "INSERT INTO blocks VALUES (?, ?, ?, ?, ?)",
@@ -308,7 +308,7 @@ def test_user_authored_content_units_preserve_authorship_and_raw_locators(tmp_pa
         "claude-code",
         "codex",
     }
-    assert {unit.material_origin for unit in direct} == {"operator_direct"}
+    assert {unit.material_origin for unit in direct} == {"human_authored"}
     assert {unit.text for unit in direct}.isdisjoint({"pasted text", "model text", "tool text"})
     codex = next(unit for unit in direct if unit.session_origin == "codex")
     assert codex.session_native_id == "synthetic-session"
