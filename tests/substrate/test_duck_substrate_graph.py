@@ -470,6 +470,7 @@ def test_compatible_predecessor_requires_success_and_exact_scope(tmp_path: Path)
     with duckdb.connect(str(db)) as conn:
         apply_schema(conn)
         promote_evidence_graph(conn, refresh_id="all-ok", graph=graph)
+        promote_evidence_graph(conn, refresh_id="all-degraded", graph=graph)
         promote_evidence_graph(conn, refresh_id="project-ok", graph=graph, projects=("alpha",))
         promote_evidence_graph(conn, refresh_id="all-failed", graph=graph)
         conn.executemany(
@@ -478,7 +479,12 @@ def test_compatible_predecessor_requires_success_and_exact_scope(tmp_path: Path)
             (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
             VALUES (?, ?, NULL, NULL, NULL, 'test', '{}', now(), now())
             """,
-            [("all-ok", "ok"), ("project-ok", "ok"), ("all-failed", "error")],
+            [
+                ("all-ok", "ok"),
+                ("all-degraded", "degraded"),
+                ("project-ok", "ok"),
+                ("all-failed", "error"),
+            ],
         )
         conn.executemany(
             """
@@ -486,7 +492,7 @@ def test_compatible_predecessor_requires_success_and_exact_scope(tmp_path: Path)
             (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
             VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 3, NULL, NULL, now())
             """,
-            [("all-ok",), ("project-ok",), ("all-failed",)],
+            [("all-ok",), ("all-degraded",), ("project-ok",), ("all-failed",)],
         )
 
         assert compatible_graph_predecessor(
@@ -494,7 +500,7 @@ def test_compatible_predecessor_requires_success_and_exact_scope(tmp_path: Path)
             current_refresh_id="new-all",
             full_start=date(2026, 5, 1),
             tail_start=date(2026, 5, 5),
-        ) == "all-ok"
+        ) == "all-degraded"
         assert compatible_graph_predecessor(
             conn,
             current_refresh_id="new-alpha",
