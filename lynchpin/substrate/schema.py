@@ -43,6 +43,7 @@ DROP_STATEMENTS: tuple[str, ...] = (
     "DROP TABLE IF EXISTS machine_experiment_run",
     "DROP TABLE IF EXISTS work_observation_test_result",
     "DROP TABLE IF EXISTS work_observation_stage",
+    "DROP TABLE IF EXISTS work_observation_receipt_ref",
     "DROP TABLE IF EXISTS work_observation",
     "DROP TABLE IF EXISTS machine_network_sample",
     "DROP TABLE IF EXISTS machine_kill_event",

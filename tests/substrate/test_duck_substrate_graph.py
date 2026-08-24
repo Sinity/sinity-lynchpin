@@ -248,11 +248,12 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Normal maintenance replaces a tail without duplicating history."""
+    import duckdb
+
     from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
     from lynchpin.graph import context_pack, evidence_edges
-    import lynchpin.substrate as substrate
     from lynchpin.substrate import graph as graph_mod
-    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.connection import apply_schema, candidate_generation, connect
 
     predecessor = _make_evidence_graph()
     tail = EvidenceGraph(
@@ -284,12 +285,28 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
     db = tmp_path / "duck" / "substrate.duckdb"
     db.parent.mkdir()
-    with connect(db) as conn:
+    import lynchpin.substrate.connection as duck_conn
+
+    monkeypatch.setattr(duck_conn, "substrate_path", lambda: db)
+    with duckdb.connect(str(db)) as conn:
         apply_schema(conn)
         graph_mod.promote_evidence_graph(conn, refresh_id="stable", graph=predecessor)
+        conn.execute(
+            """
+            INSERT INTO substrate_promotion_run
+            (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+            VALUES ('stable', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+            (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+            VALUES ('stable', 'evidence_graph', 'graph', 'ok', NULL, 1, NULL, NULL, now())
+            """
+        )
 
     monkeypatch.setattr(context_pack, "build_evidence_graph", lambda **_kwargs: tail)
-    monkeypatch.setattr(substrate, "connect", lambda *_args, **_kwargs: connect(db))
     monkeypatch.setattr(evidence_edges, "same_project_day_edges", lambda _nodes: ())
     monkeypatch.setattr(evidence_edges, "temporal_overlap_edges", lambda _nodes: ())
     monkeypatch.setattr(evidence_edges, "temporal_proximity_edges", lambda _nodes: ())
@@ -306,11 +323,12 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     monkeypatch.setattr(evidence_edges, "mentions_project_edges", lambda _nodes: ())
 
     with caplog.at_level(logging.INFO, logger="lynchpin.graph.context_pack"):
-        context_pack.materialize_incremental_evidence_graph(
-            start=predecessor.start,
-            end=tail.end,
-            tail_start=tail.start,
-        )
+        with candidate_generation():
+            context_pack.materialize_incremental_evidence_graph(
+                start=predecessor.start,
+                end=tail.end,
+                tail_start=tail.start,
+            )
 
     from lynchpin.cli import substrate_snapshot
 
@@ -357,7 +375,11 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
 
 
 def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path: Path) -> None:
-    from lynchpin.substrate.claims import AnalysisClaimRow, promote_analysis_claims, promote_incremental_analysis_claims
+    from lynchpin.substrate.claims import (
+        AnalysisClaimRow,
+        promote_analysis_claims,
+        promote_incremental_analysis_claims,
+    )
     from lynchpin.substrate.connection import apply_schema, connect
 
     old = AnalysisClaimRow(
@@ -524,7 +546,13 @@ def test_finalize_graph_writes_to_substrate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """_finalize_graph writes to substrate when promotion is requested."""
-    from lynchpin.substrate.connection import apply_schema, connect
+    import duckdb
+
+    from lynchpin.substrate.connection import (
+        bind_candidate_publication,
+        bootstrap_candidate_generation,
+        connect,
+    )
 
     substrate = tmp_path / "substrate.duckdb"
     import lynchpin.substrate.connection as duck_conn
@@ -546,15 +574,35 @@ def test_finalize_graph_writes_to_substrate(
     ]
     edges: list[EvidenceEdge] = []
 
-    result = _finalize_graph(
-        nodes=nodes,
-        edges=edges,
-        start=date(2026, 5, 1),
-        end=date(2026, 5, 1),
-        mode="materialized",
-        generated_at=_dt(2026, 5, 1, 12),
-        promote=True,
-    )
+    refresh_id = "graph:2026-05-01:2026-05-01:all"
+    with bootstrap_candidate_generation() as generation:
+        result = _finalize_graph(
+            nodes=nodes,
+            edges=edges,
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 1),
+            mode="materialized",
+            generated_at=_dt(2026, 5, 1, 12),
+            promote=True,
+        )
+        with duckdb.connect(str(generation.candidate)) as conn:
+            conn.execute(
+                """
+                INSERT INTO substrate_promotion_run
+                (refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at)
+                VALUES (?, 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())
+                """,
+                [refresh_id],
+            )
+            conn.execute(
+                """
+                INSERT INTO substrate_source_status
+                (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+                VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 1, NULL, NULL, now())
+                """,
+                [refresh_id],
+            )
+        bind_candidate_publication(generation, refresh_id)
 
     # The function must return a valid EvidenceGraph regardless of substrate write.
     assert isinstance(result, EvidenceGraph)
@@ -565,8 +613,7 @@ def test_finalize_graph_writes_to_substrate(
 
     assert substrate.exists(), "Substrate file must have been created by the write."
 
-    with connect(substrate) as conn:
-        apply_schema(conn)  # idempotent — tables already there
+    with connect(substrate, read_only=True) as conn:
         loaded = load_evidence_graph(
             conn,
             start=date(2026, 5, 1),

@@ -378,6 +378,7 @@ def _dataset_builders() -> dict[str, Any]:
         "polylogue_verify_runs": _polylogue_verify_runs_dataset,
         "codex": _codex_dataset,
         "polylogue_devtools": _polylogue_devtools_dataset,
+        "agentctl": _agentctl_dataset,
         "activitywatch": _activitywatch_dataset,
         "activitywatch_event_index": _activitywatch_event_index_dataset,
         "activitywatch_derived": _activitywatch_derived_dataset,
@@ -2342,18 +2343,29 @@ def _themotte_operator_root(root: Path) -> Path:
 
 def _git_substrate_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     from .substrate.connection import serving_generation, substrate_path
-    from .substrate.status_manifest import substrate_status_manifest_path
+    from .substrate.status_manifest import (
+        load_current_substrate_status_manifest,
+        substrate_status_manifest_path,
+    )
 
     path = Path(substrate_path())
-    with serving_generation(path) as generation:
-        manifest = generation.manifest
-        if manifest is not None:
-            row = _git_substrate_dataset_from_manifest(cfg, path, manifest)
-            if row is not None:
-                return row
-        builds, latest_build_counts, latest_status, promotion_count = _duck_substrate_status_connection(
-            generation.connection
-        )
+    try:
+        manifest = load_current_substrate_status_manifest(path)
+    except OSError:
+        # A missing configured parent is a normal unavailable-substrate state
+        # during bootstrap and best-effort graph construction.
+        manifest = None
+    if manifest is not None:
+        row = _git_substrate_dataset_from_manifest(cfg, path, manifest)
+        if row is not None:
+            return row
+    try:
+        with serving_generation(path) as generation:
+            builds, latest_build_counts, latest_status, promotion_count = _duck_substrate_status_connection(
+                generation.connection
+            )
+    except Exception:  # Status reporting must degrade when no serving generation exists.
+        builds, latest_build_counts, latest_status, promotion_count = None, None, None, None
     latest_node_count = latest_build_counts[0] if latest_build_counts else None
     if builds and builds > 0 and latest_node_count and latest_node_count > 0:
         status: Status = "ready"
@@ -3094,6 +3106,54 @@ def _polylogue_devtools_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
             if present
             else f"Polylogue devtools ledgers missing under {cfg.polylogue_project_root}"
         ),
+    )
+
+
+def _agentctl_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
+    """Report the public AgentCTL observation route without materializing it.
+
+    AgentCTL owns the durable job records. Lynchpin only reads the supported
+    public envelope, so this is a live status check rather than a materializer
+    or a filesystem-backed product.
+    """
+    from .sources.agentctl import (
+        AgentctlObservationContractError,
+        AgentctlObservationUnavailable,
+        read_observation_snapshot,
+    )
+
+    contract = source_contract("agentctl")
+    try:
+        snapshot = read_observation_snapshot()
+    except AgentctlObservationUnavailable as error:
+        status: Status = "missing"
+        observations = ()
+        reason = f"AgentCTL public job-list route is unavailable: {error}"
+    except AgentctlObservationContractError as error:
+        status = "degraded"
+        observations = ()
+        reason = f"AgentCTL public job-list route violates its supported contract: {error}"
+    else:
+        observations = snapshot.observations
+        status = "ready" if observations else "empty"
+        reason = (
+            f"AgentCTL public job-list route returned {len(observations)} observations"
+            if observations
+            else "AgentCTL public job-list route is available but returned no observations"
+        )
+    observed_dates = tuple(row.started_at.date() for row in observations)
+    return MaterializedDataset(
+        name=contract.name,
+        status=status,
+        authority=contract.authority,
+        query_surface=contract.query_surface,
+        materialized_paths=(),
+        raw_roots=(),
+        row_count=len(observations) if status != "missing" else None,
+        first_date=min(observed_dates, default=None),
+        last_date=max(observed_dates, default=None),
+        materialization_hint=contract.materialization_hint,
+        reason=reason,
     )
 
 

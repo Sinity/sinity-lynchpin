@@ -1132,3 +1132,25 @@ def test_serving_generation_omits_manifest_for_snapshot_fallback(
         assert generation.connection.execute(
             "SELECT refresh_id FROM substrate_promotion_run"
         ).fetchone() == ("prior",)
+
+
+def test_serving_generation_normalizes_string_configured_path(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured substrate paths may be strings in established MCP callers."""
+    import lynchpin.substrate.connection as connection
+
+    _record_verified_generation(isolated_substrate, "prior")
+    update_read_snapshot(isolated_substrate)
+    monkeypatch.setattr(connection, "substrate_path", lambda: str(isolated_substrate))
+
+    with connection.serving_generation() as generation:
+        assert generation.database_path == isolated_substrate
+        assert generation.connection.execute(
+            "SELECT refresh_id FROM substrate_promotion_run"
+        ).fetchone() == ("prior",)
+
+    assert connection._promotion_lock_path(str(isolated_substrate)) == isolated_substrate.with_name(
+        f".{isolated_substrate.name}.promotion.lock"
+    )

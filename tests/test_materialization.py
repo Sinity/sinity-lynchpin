@@ -941,6 +941,30 @@ def test_materialization_contract_names_have_builders() -> None:
     assert tuple(_dataset_builders()) == SOURCE_CONTRACT_NAMES
 
 
+def test_agentctl_dataset_reports_only_public_route_observations(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    snapshot = SimpleNamespace(
+        observations=(
+            SimpleNamespace(started_at=datetime(2026, 8, 23, 23, tzinfo=timezone.utc)),
+            SimpleNamespace(started_at=datetime(2026, 8, 24, 1, tzinfo=timezone.utc)),
+        )
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.agentctl.read_observation_snapshot",
+        lambda: snapshot,
+    )
+
+    row = materialization._agentctl_dataset(SimpleNamespace())
+
+    assert row.status == "ready"
+    assert row.row_count == 2
+    assert row.first_date == date(2026, 8, 23)
+    assert row.last_date == date(2026, 8, 24)
+    assert row.materialized_paths == ()
+    assert row.raw_roots == ()
+
+
 def test_analysis_artifacts_dataset_reports_generated_products(tmp_path) -> None:
     from lynchpin.materialization import _analysis_artifacts_dataset
 
@@ -1220,6 +1244,8 @@ def test_materialization_contract_names_have_explicit_transparent_materializer_p
     assert materializer_names <= builder_names
     assert materializer_names == executable_contract_names
     assert "polylogue" not in materializer_names
+    assert source_contract("agentctl").materialization_mode == "live"
+    assert "agentctl" not in materializer_names
     assert "evidence_graph_substrate" not in materializer_names
     assert "title_metadata" in materializer_names
     assert "activitywatch_derived" in materializer_names
@@ -4069,11 +4095,13 @@ def test_substrate_status_manifest_records_latest_graph_bounds(tmp_path, monkeyp
 
 
 def test_substrate_dataset_falls_back_when_status_manifest_is_stale(tmp_path, monkeypatch) -> None:
+    import duckdb
+
     from lynchpin import materialization
     from lynchpin.substrate.status_manifest import substrate_status_manifest_path
 
     path = tmp_path / "substrate.duckdb"
-    path.write_bytes(b"duckdb fixture")
+    duckdb.connect(str(path)).close()
     manifest_path = substrate_status_manifest_path(path)
     manifest_path.write_text(
         json.dumps(
@@ -4090,7 +4118,11 @@ def test_substrate_dataset_falls_back_when_status_manifest_is_stale(tmp_path, mo
     )
 
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: path)
-    monkeypatch.setattr(materialization, "_duck_substrate_status", lambda _: (None, None, None, 3))
+    monkeypatch.setattr(
+        materialization,
+        "_duck_substrate_status_connection",
+        lambda _: (None, None, None, 3),
+    )
 
     row = materialization._git_substrate_dataset(
         SimpleNamespace(baseline_dir=tmp_path / "baseline", repo_root=tmp_path / "repo")

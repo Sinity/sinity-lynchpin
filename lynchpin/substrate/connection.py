@@ -111,6 +111,14 @@ def substrate_path() -> Path:
     return duck_dir / "substrate.duckdb"
 
 
+def _substrate_path_value(path: Path | str | None = None) -> Path:
+    """Coerce configured and explicit substrate paths at the public boundary."""
+    if path is not None:
+        return Path(path)
+    candidate = _substrate_path_override.get()
+    return candidate if candidate is not None else Path(substrate_path())
+
+
 def substrate_read_snapshot_path() -> Path:
     """Return the path to the read-only snapshot of the substrate.
 
@@ -123,14 +131,14 @@ def substrate_read_snapshot_path() -> Path:
     return Path(substrate_path()).with_suffix(".read-snapshot.duckdb")
 
 
-def update_read_snapshot(path: Path | None = None) -> Path | None:
+def update_read_snapshot(path: Path | str | None = None) -> Path | None:
     """Copy a substrate generation to its adjacent read-snapshot location.
 
     The optional path deliberately controls both the source and destination.
     Candidate promotion therefore creates a candidate snapshot instead of
     overwriting the serving snapshot before the candidate is verified.
     """
-    canonical = path if path is not None else substrate_path()
+    canonical = _substrate_path_value(path)
     snapshot = canonical.with_suffix(".read-snapshot.duckdb")
     if not canonical.exists():
         return None
@@ -313,8 +321,9 @@ def _publication_intent_path(canonical: Path) -> Path:
     return canonical.with_name(f".{canonical.name}.publication.json")
 
 
-def _promotion_lock_path(canonical: Path) -> Path:
-    return canonical.with_name(f".{canonical.name}.promotion.lock")
+def _promotion_lock_path(canonical: Path | str) -> Path:
+    target = _substrate_path_value(canonical)
+    return target.with_name(f".{target.name}.promotion.lock")
 
 
 def _writer_reservation_lock_path(canonical: Path) -> Path:
@@ -995,7 +1004,7 @@ def candidate_generation(
     it. Serving sidecars are untouched until verification succeeds, and SIGINT/SIGTERM
     archive only the candidate until the serving triple is published.
     """
-    canonical = substrate_path()
+    canonical = _substrate_path_value()
     refresh_id = uuid4().hex
     candidate = canonical.with_name(
         f"{canonical.stem}.candidate-{refresh_id}{canonical.suffix}"
@@ -1156,7 +1165,7 @@ def _quarantine_suffix() -> str:
 
 
 def rebuild_corrupt_substrate(
-    canonical: Path | None = None,
+    canonical: Path | str | None = None,
 ) -> Path:
     """Archive a corrupt generation and require verified logical recovery.
 
@@ -1164,7 +1173,7 @@ def rebuild_corrupt_substrate(
     database and WAL are retained for evidence, then the caller must invoke
     the explicit logical candidate rebuild from a verified generation.
     """
-    canonical = canonical if canonical is not None else substrate_path()
+    canonical = _substrate_path_value(canonical)
     archived = _archive_candidate(canonical, "corrupt")
     if not archived:
         raise CandidateGenerationRejected("corrupt substrate disappeared before it could be archived")
@@ -1176,7 +1185,7 @@ def rebuild_corrupt_substrate(
 
 @contextmanager
 def connect(
-    path: Path | None = None,
+    path: Path | str | None = None,
     *,
     read_only: bool = False,
     snapshot_fallback: bool = True,
@@ -1197,14 +1206,14 @@ def connect(
     """
     import duckdb
 
-    target = path if path is not None else substrate_path()
+    target = _substrate_path_value(path)
     canonical_target = target
     candidate = _substrate_path_override.get()
     if candidate is not None and not read_only and target != candidate:
         raise CandidateGenerationRejected(
             "candidate generation cannot write outside its staged substrate"
         )
-    serving_target = target == substrate_path() and _substrate_path_override.get() is None
+    serving_target = target == _substrate_path_value() and _substrate_path_override.get() is None
     if serving_target and not read_only:
         if target.exists() or _publication_intent_path(target).exists():
             with _publication_write_lock(target):
@@ -1217,7 +1226,7 @@ def connect(
     # A failed recovery may leave a clean but unpromoted canonical database.
     # Prefer the prior verified snapshot in that state rather than making read
     # clients observe an empty schema as if it were a successful generation.
-    if read_only and snapshot_fallback and canonical_target == substrate_path():
+    if read_only and snapshot_fallback and canonical_target == _substrate_path_value():
         snapshot = substrate_read_snapshot_path()
         if (
             generation_refresh_id(target) is None
@@ -1255,7 +1264,7 @@ def connect(
 
 
 @contextmanager
-def serving_generation(path: Path | None = None) -> Iterator[ServingGeneration]:
+def serving_generation(path: Path | str | None = None) -> Iterator[ServingGeneration]:
     """Yield a connection and status manifest from one published generation.
 
     This is the API for consumers that need the serving database, immutable
@@ -1264,8 +1273,8 @@ def serving_generation(path: Path | None = None) -> Iterator[ServingGeneration]:
     """
     import duckdb
 
-    target = path if path is not None else substrate_path()
-    if target != substrate_path() or _substrate_path_override.get() is not None:
+    target = _substrate_path_value(path)
+    if target != _substrate_path_value() or _substrate_path_override.get() is not None:
         with connect(target, read_only=True) as conn:
             yield ServingGeneration(
                 connection=conn,
@@ -1307,9 +1316,9 @@ def serving_generation(path: Path | None = None) -> Iterator[ServingGeneration]:
             conn.close()
 
 
-def reset_substrate(path: Path | None = None) -> None:
+def reset_substrate(path: Path | str | None = None) -> None:
     """Delete the substrate file. Used by tests and on schema-version bump."""
-    target = path if path is not None else substrate_path()
+    target = _substrate_path_value(path)
     if target.exists():
         target.unlink()
 
@@ -1349,7 +1358,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
 
 
 def prune_commit_history(
-    keep_latest_n: int = 1, dry_run: bool = True, path: Path | None = None
+    keep_latest_n: int = 1, dry_run: bool = True, path: Path | str | None = None
 ) -> dict[str, int]:
     """Remove stale refresh_ids from commit_fact and related tables.
 
@@ -1374,7 +1383,7 @@ def prune_commit_history(
             "refresh_ids_kept": [str, ...],
         }
     """
-    target = path if path is not None else substrate_path()
+    target = _substrate_path_value(path)
     read_only = dry_run  # Use read_only for dry_run mode
 
     with connect(target, read_only=read_only) as conn:

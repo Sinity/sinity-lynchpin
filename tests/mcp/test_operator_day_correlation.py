@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 
+import duckdb
+
 
 def _stub_signal_materialization(monkeypatch):
     calls = []
@@ -16,10 +18,10 @@ def _stub_signal_materialization(monkeypatch):
 
 
 def _seed(db, rows, refresh_id="r1"):
-    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.connection import apply_schema
     from lynchpin.substrate.personal import promote_operator_day_rows
 
-    with connect(db) as conn:
+    with duckdb.connect(str(db)) as conn:
         apply_schema(conn)
         promote_operator_day_rows(conn, refresh_id=refresh_id, rows=rows)
 

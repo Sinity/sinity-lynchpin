@@ -141,6 +141,31 @@ def test_source_observations_prefers_materialized_dates(monkeypatch, tmp_path) -
     assert path == source_path
 
 
+def test_source_observations_resolves_agentctl_from_public_observation_status(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source_observations,
+        "get_config",
+        lambda: SimpleNamespace(available_sources=lambda: {"agentctl": True}),
+    )
+
+    rows = source_observations._compute_source_observations(
+        date(2026, 8, 24),
+        {},
+        {"agentctl": (date(2026, 8, 24), None)},
+    )
+
+    assert rows == (
+        source_observations.SourceObservation(
+            source="agentctl",
+            available=True,
+            last_observed=date(2026, 8, 24),
+            basis="materialized",
+            recommendation=None,
+            path=None,
+        ),
+    )
+
+
 def test_coverage_bounds_audits_materialization_once(monkeypatch, tmp_path) -> None:
     from lynchpin.materialization import MaterializedDataset
 

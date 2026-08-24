@@ -3,17 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import duckdb
+
 
 def test_kind_audit_reports_source_label_disagreements(
     tmp_path: Path, monkeypatch
 ) -> None:
     from lynchpin.mcp.tools.health import kind_audit
-    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.connection import apply_schema
 
     db = tmp_path / "substrate.duckdb"
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: db)
 
-    with connect(db) as conn:
+    with duckdb.connect(str(db)) as conn:
         apply_schema(conn)
         conn.execute(
             """
