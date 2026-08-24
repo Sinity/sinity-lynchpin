@@ -10,6 +10,58 @@ from types import SimpleNamespace
 import duckdb
 import pytest
 
+
+def test_snapshot_promotion_counts_keep_unknown_for_partial_sources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lynchpin.cli import substrate_snapshot
+    import lynchpin.substrate.connection as connection
+
+    database = tmp_path / "substrate.duckdb"
+    monkeypatch.setattr(connection, "substrate_path", lambda: database)
+    refresh_id = substrate_snapshot._snapshot_refresh_id(
+        start=date(2026, 6, 1), end=date(2026, 6, 2), projects=()
+    )
+    token = connection._substrate_path_override.set(database)
+    try:
+        with connection.connect() as conn:
+            connection.apply_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO substrate_source_status
+                (refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at)
+                VALUES (?, 'evidence_graph', 'graph', 'partial', 'missing tail', 99, ?, ?, now())
+                """,
+                [refresh_id, date(2026, 6, 1), date(2026, 6, 2)],
+            )
+            conn.execute(
+                """
+                INSERT INTO evidence_graph_build
+                (refresh_id, start_date, end_date, mode, projects, node_count, edge_count, caveats, generated_at)
+                VALUES (?, ?, ?, 'materialized', [], 99, 88, '[]', now())
+                """,
+                [refresh_id, date(2026, 6, 1), date(2026, 6, 2)],
+            )
+
+        substrate_snapshot._record_snapshot_promotion_run(
+            start=date(2026, 6, 1), end=date(2026, 6, 2), projects=()
+        )
+
+        with connection.connect(read_only=True) as conn:
+            status, counts = conn.execute(
+                "SELECT status, counts FROM substrate_promotion_run WHERE refresh_id = ?",
+                [refresh_id],
+            ).fetchone()
+    finally:
+        connection._substrate_path_override.reset(token)
+    assert status == "degraded"
+    payload = json.loads(counts)
+    assert payload["evidence_graph_nodes"] is None
+    assert payload["evidence_graph_edges"] is None
+    assert payload["analysis_claims"] is None
+    assert payload["personal_daily_signal"] is None
+
+
 def test_plan_json_exits_before_materialization(monkeypatch, capsys) -> None:
     from lynchpin.cli import materialize
 

@@ -419,6 +419,7 @@ def _record_snapshot_promotion_run(
             """,
             [refresh_id],
         ).fetchall()
+        status_by_source = {str(row[0]): str(row[1]) for row in status_rows}
         graph_row = conn.execute(
             """
             SELECT node_count, edge_count
@@ -427,25 +428,32 @@ def _record_snapshot_promotion_run(
             """,
             [refresh_id],
         ).fetchone()
-        counts = {
-            "evidence_graph_nodes": int(graph_row[0]) if graph_row else None,
-            "evidence_graph_edges": int(graph_row[1]) if graph_row else None,
-            "analysis_claims": int(
+        graph_usable = status_by_source.get("evidence_graph") in {"ok", "empty"}
+        claims_count = None
+        personal_signal_count = None
+        if graph_usable:
+            claims_count = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM analysis_claim WHERE refresh_id = ?",
                     [refresh_id],
                 ).fetchone()[0]
-            ),
-            "personal_daily_signal": int(
+            )
+        if status_by_source.get("personal_daily_signal") in {"ok", "empty"}:
+            personal_signal_count = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM personal_daily_signal WHERE refresh_id = ?",
                     [refresh_id],
                 ).fetchone()[0]
-            ),
+            )
+        counts = {
+            "evidence_graph_nodes": int(graph_row[0]) if graph_row and graph_usable else None,
+            "evidence_graph_edges": int(graph_row[1]) if graph_row and graph_usable else None,
+            "analysis_claims": claims_count,
+            "personal_daily_signal": personal_signal_count,
         }
         status = "ok"
         reason = None
-        bad = [row for row in status_rows if row[1] in {"error", "unavailable"}]
+        bad = [row for row in status_rows if row[1] not in {"ok", "empty"}]
         if bad:
             status = "error" if any(row[1] == "error" for row in bad) else "degraded"
             reason = "; ".join(f"{row[0]}: {row[2] or row[1]}" for row in bad[:6])

@@ -11,6 +11,7 @@ import signal
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from ..core.config import get_config
 from ..core.errors import MaterializationError
@@ -121,10 +122,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.all:
         _progress("planning canonical materialization")
-        plan_kwargs: dict[str, object] = {"force": args.force, "window": window}
         if args.history == "incremental":
-            plan_kwargs["maintenance"] = True
-        plan = plan_materializations(**plan_kwargs)
+            plan = plan_materializations(force=args.force, window=window, maintenance=True)
+        else:
+            plan = plan_materializations(force=args.force, window=window)
     else:
         _progress("promoting from existing canonical products")
         plan = []
@@ -312,7 +313,7 @@ def _progress(message: str) -> None:
     sys.stderr.flush()
 
 
-def _candidate_context(factory, **kwargs):
+def _candidate_context(factory: Any, **kwargs: Any) -> Any:
     """Call candidate factories while keeping narrow test/dry-run shims compatible."""
     parameters = inspect.signature(factory).parameters
     if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
@@ -320,7 +321,7 @@ def _candidate_context(factory, **kwargs):
     return factory(**{key: value for key, value in kwargs.items() if key in parameters})
 
 
-def _run_materialization_plan(plan, **kwargs):
+def _run_materialization_plan(plan: Any, **kwargs: Any) -> Any:
     parameters = inspect.signature(run_materialization_plan).parameters
     if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
         return run_materialization_plan(plan, **kwargs)
@@ -345,11 +346,14 @@ def _record_incremental_phase(
     if generation is None:
         return
     from lynchpin.substrate.connection import connect
-    receipt_refresh_id = (
-        getattr(generation, "expected_refresh_id", None)
+    expected_refresh_id = getattr(generation, "expected_refresh_id", None)
+    receipt_refresh_id_value = (
+        expected_refresh_id
         or getattr(generation, "receipt_refresh_id", None)
-        or getattr(generation, "refresh_id", "unknown")
+        or getattr(generation, "refresh_id", None)
+        or "unknown"
     )
+    receipt_refresh_id: str = str(receipt_refresh_id_value)
     try:
         with connect(generation.candidate) as conn:
             payload = record_phase_evidence(
