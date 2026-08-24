@@ -140,7 +140,7 @@ class LynchpinConfig:
             "raw_log": self.raw_log_file.exists(),
             "machine": self.machine_telemetry_db.exists(),
             "xtask_history": self.xtask_history_db.exists(),
-            "gmail_takeout": (self.data_root / "accounts/google/raw/takeout").exists(),
+            "gmail_takeout": (self.accounts_root / "google/raw/takeout").exists(),
             "raindrop_live": _raindrop_live_available(),
             "sinnix_runtime_inventory": self.sinnix_runtime_inventory_json.exists(),
             "browser_bookmarks": self.browser_bookmarks_root.exists(),

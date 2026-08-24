@@ -20,6 +20,18 @@ def test_default_pytest_config_isolated_from_operator_data(tmp_path: Path) -> No
     assert cfg.substack_downloader.is_relative_to(tmp_path)
 
 
+def test_accounts_root_override_drives_gmail_availability(monkeypatch, tmp_path: Path) -> None:
+    accounts_root = tmp_path / "accounts-root"
+    (accounts_root / "google/raw/takeout").mkdir(parents=True)
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path / "default-data"))
+    monkeypatch.setenv("LYNCHPIN_ACCOUNTS_ROOT", str(accounts_root))
+
+    cfg = LynchpinConfig.from_env()
+
+    assert cfg.accounts_root == accounts_root
+    assert cfg.available_sources()["gmail_takeout"] is True
+
+
 def test_generated_roots_default_to_repo_local_dotfolder(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     monkeypatch.setenv("LYNCHPIN_REPO_ROOT", str(repo_root))
