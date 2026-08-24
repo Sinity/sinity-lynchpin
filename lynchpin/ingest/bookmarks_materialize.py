@@ -19,7 +19,7 @@ from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.bookmarks import BookmarkEvent, bookmarks_manifest_path, bookmarks_path
 from ..sources.web import normalize_url
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 _WEBKIT_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 _BOOKMARK_SQL = """
@@ -41,12 +41,17 @@ def materialize_bookmarks(*, root: Path | None = None, output: Path | None = Non
     rows = list(_dedupe(_iter_all_bookmarks(raw_roots)))
     rows.sort(key=lambda row: (row.added_at or datetime.min.replace(tzinfo=timezone.utc), row.normalized_url, row.title))
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            payload = asdict(row)
-            payload["added_at"] = row.added_at.isoformat() if row.added_at else None
-            payload["caveats"] = list(row.caveats)
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(
+        output,
+        (
+            {
+                **asdict(row),
+                "added_at": row.added_at.isoformat() if row.added_at else None,
+                "caveats": list(row.caveats),
+            }
+            for row in rows
+        ),
+    )
 
     first = next((row.added_at for row in rows if row.added_at), None)
     last = next((row.added_at for row in reversed(rows) if row.added_at), None)

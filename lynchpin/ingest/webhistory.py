@@ -37,7 +37,7 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import guard_incremental_shrinkage, write_manifest
+from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -186,20 +186,19 @@ def _write_raw_batch(
     out_path = raw_dir / f"{stem}_{start}_to_{end}.ndjson"
 
     if not dry_run:
-        with out_path.open("w", encoding="utf-8") as fh:
-            for v in visits:
-                fh.write(
-                    json.dumps(
-                        {
-                            "iso_time": v.timestamp.isoformat(),
-                            "url": v.url,
-                            "title": v.title,
-                            "source": v.source,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
+        atomic_write_ndjson(
+            out_path,
+            (
+                {
+                    "iso_time": v.timestamp.isoformat(),
+                    "url": v.url,
+                    "title": v.title,
+                    "source": v.source,
+                }
+                for v in visits
+            ),
+            dumps=lambda row: json.dumps(row, ensure_ascii=False),
+        )
 
     return {
         "source": source_name,
@@ -296,20 +295,19 @@ def dedup_raw_files(
         out_path = data_dir / f"{stem}_unique_{start}_to_{end}.ndjson"
 
         if not dry_run:
-            with out_path.open("w", encoding="utf-8") as fh:
-                for v in unique:
-                    fh.write(
-                        json.dumps(
-                            {
-                                "iso_time": v.timestamp.isoformat(),
-                                "url": v.url,
-                                "title": v.title,
-                                "source": v.source,
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
+            atomic_write_ndjson(
+                out_path,
+                (
+                    {
+                        "iso_time": v.timestamp.isoformat(),
+                        "url": v.url,
+                        "title": v.title,
+                        "source": v.source,
+                    }
+                    for v in unique
+                ),
+                dumps=lambda row: json.dumps(row, ensure_ascii=False),
+            )
 
         reports.append({
             "file": str(raw_path),
@@ -373,7 +371,6 @@ def build_full_history(
 
     visits.sort(key=lambda item: item[0])
 
-    tmp_output = output.with_name(f".{output.name}.tmp")
     if not dry_run:
         output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -382,40 +379,31 @@ def build_full_history(
     duplicate_count = 0
     output_source_counts: dict[str, int] = {}
 
-    handle = None if dry_run else tmp_output.open("w", encoding="utf-8")
-    try:
-        for timestamp, url, title, source in visits:
-            norm = normalize_url(url)
-            base = timestamp.replace(microsecond=0)
-            is_dup = False
-            for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-                key = (norm, base + timedelta(seconds=delta))
-                if key in seen:
-                    is_dup = True
-                    duplicate_count += 1
-                    break
-            if is_dup:
-                continue
-            seen[(norm, base)] = True
-            if handle is not None:
-                handle.write(
-                    json.dumps(
-                        {
-                            "url": url,
-                            "title": title,
-                            "norm": norm,
-                            "source": source,
-                            "iso_time": timestamp.isoformat(),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-            row_count += 1
-            output_source_counts[source] = output_source_counts.get(source, 0) + 1
-    finally:
-        if handle is not None:
-            handle.close()
+    output_rows: list[dict[str, str]] = []
+    for timestamp, url, title, source in visits:
+        norm = normalize_url(url)
+        base = timestamp.replace(microsecond=0)
+        is_dup = False
+        for delta in range(-tolerance_seconds, tolerance_seconds + 1):
+            key = (norm, base + timedelta(seconds=delta))
+            if key in seen:
+                is_dup = True
+                duplicate_count += 1
+                break
+        if is_dup:
+            continue
+        seen[(norm, base)] = True
+        output_rows.append(
+            {
+                "url": url,
+                "title": title,
+                "norm": norm,
+                "source": source,
+                "iso_time": timestamp.isoformat(),
+            }
+        )
+        row_count += 1
+        output_source_counts[source] = output_source_counts.get(source, 0) + 1
     if not dry_run:
         if start is not None and end is not None:
             guard_incremental_shrinkage(
@@ -423,9 +411,13 @@ def build_full_history(
                 row_count,
                 dataset="webhistory.full_history",
             )
-        tmp_output.replace(output)
+        atomic_write_ndjson(
+            output,
+            output_rows,
+            dumps=lambda row: json.dumps(row, ensure_ascii=False),
+        )
 
-    report = {
+    report: dict[str, Any] = {
         "output": str(output),
         "input_visits": len(segment_visits),
         "row_count": row_count,

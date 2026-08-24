@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import sys
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from ..core.io import latest_mtime_iso
 from ..sources.exports_messenger import iter_fbmessenger_messages, iter_fbmessenger_threads
 from ..sources.exports_raindrop import iter_raindrop_bookmarks_all
 from ..sources.spotify import iter_streams
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
 
 
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
@@ -276,18 +277,17 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         for key in row:
             if key not in fields:
                 fields.append(key)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fields)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    atomic_write_text(path, buffer.getvalue())
 
 
 def _write_ndjson(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _write_manifest(

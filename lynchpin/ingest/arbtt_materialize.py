@@ -18,7 +18,7 @@ from ..core.classify import resolve_project
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.arbtt import ArbttFocusEvent, arbtt_events_path, arbtt_manifest_path
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 _HEADER_RE = re.compile(r"^(?P<stamp>\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)")
 _WINDOW_RE = re.compile(r"^\s*\((?P<active>\*| )\)\s+(?P<program>.*?):\s*(?P<title>.*)$")
@@ -31,13 +31,18 @@ def materialize_arbtt_events(*, root: Path | None = None, output: Path | None = 
     rows = list(_dedupe(_iter_events(root)))
     rows.sort(key=lambda row: (row.timestamp, row.event_id))
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            payload = asdict(row)
-            payload["timestamp"] = row.timestamp.isoformat()
-            payload["tags"] = list(row.tags)
-            payload["caveats"] = list(row.caveats)
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(
+        output,
+        (
+            {
+                **asdict(row),
+                "timestamp": row.timestamp.isoformat(),
+                "tags": list(row.tags),
+                "caveats": list(row.caveats),
+            }
+            for row in rows
+        ),
+    )
     input_files = _capture_logs(root)
     manifest = {
         "dataset": "focus.arbtt.events",

@@ -7,12 +7,12 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.google_takeout import archive_inventory, discover_takeout_archives, iter_archive_members
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION = 1
@@ -33,41 +33,35 @@ def materialize_google_takeout_inventory(*, root: Path | None = None) -> dict[st
     input_files = google_takeout_input_files(root)
     product_counts: Counter[str] = Counter()
     member_count = 0
-    with archives_path.open("w", encoding="utf-8") as archive_handle:
-        for archive in archives:
-            archive_handle.write(
-                json.dumps(
-                    {
-                        "path": str(archive.path),
-                        "size_bytes": archive.size_bytes,
-                        "member_count": archive.member_count,
-                        "total_member_bytes": archive.total_member_bytes,
-                        "product_counts": dict(archive.product_counts),
-                        "chrome_history_members": archive.chrome_history_members,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-    with members_path.open("w", encoding="utf-8") as member_handle:
+    atomic_write_ndjson(
+        archives_path,
+        (
+            {
+                "path": str(archive.path),
+                "size_bytes": archive.size_bytes,
+                "member_count": archive.member_count,
+                "total_member_bytes": archive.total_member_bytes,
+                "product_counts": dict(archive.product_counts),
+                "chrome_history_members": archive.chrome_history_members,
+            }
+            for archive in archives
+        ),
+    )
+
+    def member_rows() -> Iterator[dict[str, Any]]:
+        nonlocal member_count
         for archive in archives:
             for member in iter_archive_members(archive.path):
                 product_counts[member.product] += 1
                 member_count += 1
-                member_handle.write(
-                    json.dumps(
-                        {
-                            "archive": str(member.archive),
-                            "path": member.path,
-                            "product": member.product,
-                            "size_bytes": member.size_bytes,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
-                )
+                yield {
+                    "archive": str(member.archive),
+                    "path": member.path,
+                    "product": member.product,
+                    "size_bytes": member.size_bytes,
+                }
+
+    atomic_write_ndjson(members_path, member_rows())
     manifest = {
         "dataset": "google.takeout.inventory",
         "schema_version": GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION,

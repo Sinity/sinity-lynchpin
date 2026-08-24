@@ -18,7 +18,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
@@ -29,7 +29,7 @@ from ..sources.gmail_takeout import (
     gmail_manifest_path,
     iter_gmail_messages_deduped,
 )
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 GMAIL_EVENTS_SCHEMA_VERSION = 1
 
@@ -49,15 +49,13 @@ def materialize_gmail_events(
     label_counts: Counter[str] = Counter()
     skipped_no_timestamp = 0
 
-    with output.open("w", encoding="utf-8") as handle:
+    def message_rows() -> Iterator[dict[str, Any]]:
+        nonlocal row_count, first_ts, last_ts, skipped_no_timestamp
         for msg in iter_gmail_messages_deduped(root=archive_root):
             if msg.timestamp is None:
                 skipped_no_timestamp += 1
                 continue
-            handle.write(
-                json.dumps(_message_payload(msg), ensure_ascii=False, sort_keys=True)
-                + "\n"
-            )
+            yield _message_payload(msg)
             row_count += 1
             ts_norm = _normalize(msg.timestamp)
             if first_ts is None or ts_norm < first_ts:
@@ -65,6 +63,8 @@ def materialize_gmail_events(
             if last_ts is None or ts_norm > last_ts:
                 last_ts = ts_norm
             label_counts[msg.label] += 1
+
+    atomic_write_ndjson(output, message_rows())
 
     manifest = {
         "dataset": "comms.gmail.events",

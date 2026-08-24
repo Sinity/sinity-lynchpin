@@ -9,7 +9,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.io import latest_mtime_iso
 from ..core.parse import local_tz
@@ -19,7 +19,7 @@ from ..sources.activitywatch import focus_spans
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from ..sources.title_metadata import hash_title, load_title_classification_map, normalize_title, title_metadata_path
 from ..sources.title_metadata_rules import classify_title_via_rules
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 ACTIVITY_CONTENT_SCHEMA_VERSION = 1
@@ -358,13 +358,14 @@ def materialize_activity_content(
 
     merged_by_day = {**existing_by_day, **by_day}
 
-    with output.open("w", encoding="utf-8") as handle:
-        for day in sorted(merged_by_day):
-            handle.write(json.dumps(merged_by_day[day], ensure_ascii=False, sort_keys=True) + "\n")
-    with usage_output.open("w", encoding="utf-8") as handle:
+    atomic_write_ndjson(output, (merged_by_day[day] for day in sorted(merged_by_day)))
+
+    def usage_rows() -> Iterator[dict[str, Any]]:
         for row in title_usage.iter_rows():
             row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            yield row
+
+    atomic_write_ndjson(usage_output, usage_rows())
 
     title_usage_count = title_usage.count()
     unmatched_title_count = title_usage.unmatched_count()

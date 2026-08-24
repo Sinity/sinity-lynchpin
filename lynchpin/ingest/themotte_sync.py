@@ -26,7 +26,7 @@ from typing import Any
 from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from ..sources.themotte import MESSAGE_FILENAME, NOTIFICATION_FILENAME, SYNC_MANIFEST_FILENAME, profile_root
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 THEMOTTE_BASE_URL = "https://www.themotte.org"
 THEMOTTE_SYNC_SCHEMA_VERSION = 1
@@ -411,9 +411,7 @@ def _chrome(target: str, *args: str, check: bool = True) -> str:
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(path, rows)
 
 
 def _dedupe(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:

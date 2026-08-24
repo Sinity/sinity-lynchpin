@@ -8,13 +8,13 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.errors import SchemaVersionError, SourceUnavailableError
 from ..core.io import latest_mtime_iso
 from ..sources.title_metadata import title_metadata_path
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 
 TITLE_METADATA_SCHEMA_VERSION = 1
@@ -42,15 +42,19 @@ def materialize_title_metadata(
     with duckdb.connect(str(db), read_only=True) as conn:
         table = _select_source_table(conn)
         result = conn.execute(f"SELECT * FROM {table} ORDER BY title_hash")
-        columns = [str(desc[0]) for desc in result.description]
-        with output.open("w", encoding="utf-8") as handle:
+        description = result.description
+        if description is None:
+            raise RuntimeError(f"source table {table} has no result description")
+        columns = [str(desc[0]) for desc in description]
+
+        def metadata_rows() -> Iterator[dict[str, Any]]:
+            nonlocal row_count
             while True:
                 rows = result.fetchmany(10_000)
                 if not rows:
                     break
                 for raw_row in rows:
                     payload = _canonical_payload(dict(zip(columns, raw_row)))
-                    handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
                     row_count += 1
                     source = payload.get("classification_source")
                     version = payload.get("model_version")
@@ -58,6 +62,9 @@ def materialize_title_metadata(
                         source_counts[str(source)] += 1
                     if version:
                         model_versions[str(version)] += 1
+                    yield payload
+
+        atomic_write_ndjson(output, metadata_rows())
 
     manifest = {
         "dataset": "lynchpin.title_metadata",

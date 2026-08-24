@@ -21,7 +21,7 @@ from ..sources.exports_messenger import is_operator_sender, iter_fbmessenger_mes
 from ..sources.themotte import input_files as themotte_input_files
 from ..sources.themotte import iter_messages as iter_themotte_messages
 from ..sources.themotte import iter_notifications as iter_themotte_notifications
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 _SENT_RE = re.compile(r"^\s*(Sent|Wysłano|Date):\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _TEAMS_RE = re.compile(r"^(?P<stamp>[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d\d:\d\d:\d\d\s+GMT[+-]\d{4}).*?--\s*(?P<kind>\w+)\s*--\s*(?P<body>.*)$")
@@ -35,13 +35,18 @@ def materialize_communication_events(*, output: Path | None = None) -> dict[str,
     rows = list(_dedupe(_iter_all_events(cfg)))
     rows.sort(key=lambda row: (row.timestamp or datetime.min.replace(tzinfo=timezone.utc), row.source, row.event_id))
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            payload = asdict(row)
-            payload["timestamp"] = row.timestamp.isoformat() if row.timestamp else None
-            payload["recipients"] = list(row.recipients)
-            payload["caveats"] = list(row.caveats)
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_ndjson(
+        output,
+        (
+            {
+                **asdict(row),
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                "recipients": list(row.recipients),
+                "caveats": list(row.caveats),
+            }
+            for row in rows
+        ),
+    )
 
     dated = [row.timestamp for row in rows if row.timestamp is not None]
     manifest = {
