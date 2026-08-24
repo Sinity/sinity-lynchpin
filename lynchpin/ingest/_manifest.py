@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -27,8 +29,19 @@ _SHRINK_GUARD_MIN_ROWS = 1000
 _SHRINK_GUARD_THRESHOLD = 0.5
 
 
-def _tmp_sibling(path: Path) -> Path:
-    return path.with_name(f".{path.name}.tmp")
+def _open_temp(path: Path) -> tuple[int, Path]:
+    """Create a uniquely named temp file beside *path* with normal umask."""
+    while True:
+        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            fd = os.open(
+                tmp_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o666,
+            )
+        except FileExistsError:
+            continue
+        return fd, tmp_path
 
 
 def _preserve_existing_mode(path: Path, tmp_path: Path) -> None:
@@ -38,6 +51,39 @@ def _preserve_existing_mode(path: Path, tmp_path: Path) -> None:
     except FileNotFoundError:
         return
     tmp_path.chmod(mode)
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    """Make a successful replacement durable in the containing directory."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(path, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _atomic_write(path: Path, write: Callable[[Any], None]) -> None:
+    """Write a temp file, then publish it with durable same-filesystem replace."""
+    fd, tmp_path = _open_temp(path)
+    owned_fd: int | None = fd
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            owned_fd = None
+            write(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _preserve_existing_mode(path, tmp_path)
+        os.replace(tmp_path, path)
+        _fsync_parent_directory(path.parent)
+    except BaseException:
+        if owned_fd is not None:
+            os.close(owned_fd)
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def guard_incremental_shrinkage(
@@ -98,10 +144,7 @@ def _read_manifest_dict(path: Path) -> dict[str, Any]:
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a temp-file-then-rename swap."""
-    tmp_path = _tmp_sibling(path)
-    tmp_path.write_text(text, encoding="utf-8")
-    _preserve_existing_mode(path, tmp_path)
-    tmp_path.replace(path)
+    _atomic_write(path, lambda handle: handle.write(text))
 
 
 def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -> None:
@@ -114,13 +157,13 @@ def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -
     writer) never observes a truncated file.
     """
     serialize = dumps or (lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True))
-    tmp_path = _tmp_sibling(path)
-    with tmp_path.open("w", encoding="utf-8") as handle:
+
+    def write_rows(handle: Any) -> None:
         for row in rows:
             handle.write(serialize(row))
             handle.write("\n")
-    _preserve_existing_mode(path, tmp_path)
-    tmp_path.replace(path)
+
+    _atomic_write(path, write_rows)
 
 
 def write_manifest(path: Path, fields: dict[str, Any]) -> None:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -20,7 +23,7 @@ def test_atomic_write_text_leaves_no_tmp_sibling(tmp_path) -> None:
     atomic_write_text(target, "hello")
 
     assert target.read_text(encoding="utf-8") == "hello"
-    assert not (tmp_path / ".out.json.tmp").exists()
+    assert not list(tmp_path.glob(".out.json.*.tmp"))
 
 
 def test_atomic_write_text_replaces_existing_content_wholesale(tmp_path) -> None:
@@ -32,7 +35,7 @@ def test_atomic_write_text_replaces_existing_content_wholesale(tmp_path) -> None
 
     assert target.read_text(encoding="utf-8") == "fresh"
     assert target.stat().st_ino != old_inode
-    assert not (tmp_path / ".out.json.tmp").exists()
+    assert not list(tmp_path.glob(".out.json.*.tmp"))
 
 
 def test_atomic_write_text_preserves_existing_mode(tmp_path) -> None:
@@ -45,22 +48,19 @@ def test_atomic_write_text_preserves_existing_mode(tmp_path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
 
 
-def test_write_manifest_leaves_existing_output_on_text_write_failure(monkeypatch, tmp_path) -> None:
+def test_atomic_write_text_cleans_temp_after_data_fsync_failure(monkeypatch, tmp_path) -> None:
     target = tmp_path / "out.json"
     target.write_text('{"old": true}\n', encoding="utf-8")
 
-    original_write_text = Path.write_text
+    def fail_fsync(_fd: int) -> None:
+        raise OSError("simulated data fsync failure")
 
-    def fail_temp_write(path: Path, text: str, *args, **kwargs) -> int:
-        if path == tmp_path / ".out.json.tmp":
-            raise OSError("simulated crash mid-write")
-        return original_write_text(path, text, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "write_text", fail_temp_write)
-    with pytest.raises(OSError, match="simulated crash"):
-        write_manifest(target, {"new": True})
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="simulated data fsync failure"):
+        atomic_write_text(target, "new")
 
     assert target.read_text(encoding="utf-8") == '{"old": true}\n'
+    assert not list(tmp_path.glob(".out.json.*.tmp"))
 
 
 def test_atomic_write_ndjson_writes_one_json_object_per_line(tmp_path) -> None:
@@ -74,7 +74,7 @@ def test_atomic_write_ndjson_writes_one_json_object_per_line(tmp_path) -> None:
     lines = target.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line) for line in lines] == rows
     assert target.stat().st_ino != old_inode
-    assert not (tmp_path / ".rows.ndjson.tmp").exists()
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
 
 
 def test_atomic_write_ndjson_never_leaves_partial_content_on_write_failure(tmp_path) -> None:
@@ -102,12 +102,94 @@ def test_atomic_write_ndjson_never_leaves_partial_content_on_write_failure(tmp_p
     except Boom:
         pass
 
-    # The original file must be untouched -- the temp file that absorbed the
-    # partial write was never renamed into place. A leftover ``.tmp`` sibling
-    # is acceptable (matches the codebase's existing tmp_output patterns,
-    # e.g. machine_materialize.py); what matters is that ``target`` itself
-    # was never truncated.
+    # The original file must be untouched, and the failed writer must clean up
+    # the temp file that absorbed the partial write.
     assert target.read_text(encoding="utf-8") == '{"a": "original intact content"}\n'
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["text", "ndjson"])
+def test_atomic_write_fsyncs_data_before_replace_and_directory_after(
+    monkeypatch, tmp_path, kind
+) -> None:
+    target = tmp_path / f"out.{kind}"
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def record_fsync(fd: int) -> None:
+        file_kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "data"
+        events.append(file_kind)
+        real_fsync(fd)
+
+    def record_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        events.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(os, "replace", record_replace)
+    if kind == "text":
+        atomic_write_text(target, "fresh")
+    else:
+        atomic_write_ndjson(target, [{"value": 1}])
+
+    assert events == ["data", "replace", "directory"]
+
+
+def test_overlapping_writers_get_distinct_same_directory_temps(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "rows.ndjson"
+    sources: list[Path] = []
+    source_lock = threading.Lock()
+    replace_barrier = threading.Barrier(2)
+    real_replace = os.replace
+
+    def record_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        with source_lock:
+            sources.append(Path(source))
+        replace_barrier.wait(timeout=5)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", record_replace)
+    rows_by_writer = (
+        [{"writer": "a", "index": index} for index in range(100)],
+        [{"writer": "b", "index": index} for index in range(100)],
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(atomic_write_ndjson, target, rows) for rows in rows_by_writer]
+        for future in futures:
+            future.result()
+
+    assert len(sources) == 2
+    assert len({source.name for source in sources}) == 2
+    published = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+    assert published in rows_by_writer
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
+
+
+def test_failed_writer_cleans_only_its_temp_during_overlap(tmp_path) -> None:
+    target = tmp_path / "rows.ndjson"
+    started = threading.Barrier(2)
+
+    def failing_rows():
+        yield {"writer": "failed"}
+        started.wait(timeout=5)
+        raise RuntimeError("simulated writer failure")
+
+    def successful_rows():
+        yield {"writer": "successful", "index": 0}
+        started.wait(timeout=5)
+        yield from ({"writer": "successful", "index": index} for index in range(1, 100))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        failed = executor.submit(atomic_write_ndjson, target, failing_rows())
+        successful = executor.submit(atomic_write_ndjson, target, successful_rows())
+        with pytest.raises(RuntimeError, match="simulated writer failure"):
+            failed.result()
+        successful.result()
+
+    published = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+    assert published == [{"writer": "successful", "index": index} for index in range(100)]
+    assert not list(tmp_path.glob(".rows.ndjson.*.tmp"))
 
 
 def test_write_manifest_is_atomic_and_adds_materialized_at(tmp_path) -> None:
