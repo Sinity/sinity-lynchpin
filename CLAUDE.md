@@ -29,15 +29,14 @@ the operator's datasets or generated personal results.
 - Commit and push verified work directly to `master` unless the operator or an
   active workflow says to hold.
 
-## Beads
+## Tasks
 
 Use `bd` for durable project work:
 
 ```bash
-bd prime
 bd ready --json
 bd show <id> --json
-bd update <id> --claim --json
+bd update <id> --status in_progress --json
 bd close <id> --reason "..." --json
 ```
 
@@ -131,8 +130,7 @@ direnv allow
 nix develop
 ```
 
-Use the wrapped command names inside the shell so long-running work receives the
-configured resource containment:
+Use ordinary commands for short foreground work:
 
 ```bash
 pytest -q                         # default non-live test suite
@@ -144,9 +142,21 @@ python -m lynchpin.cli.materialize --help
 python -m lynchpin.cli.current_state --start YYYY-MM-DD --end YYYY-MM-DD
 ```
 
-Do not invoke tests through `.venv/bin/python` or `python -m pytest`; that
-bypasses the devshell's command-name resource wrapper. Live/private integrations
-remain explicitly marked and are excluded from the default suite.
+Do not invoke tests through `.venv/bin/python`; use the devshell environment.
+Live/private integrations remain explicitly marked and are excluded from the
+default suite. Heavy or scheduled work uses the declared AgentCTL operations:
+
+```bash
+agentctl job start lynchpin check
+agentctl job start lynchpin materialize_plan
+agentctl job start lynchpin promote_incremental
+agentctl job start lynchpin promote_full
+agentctl job start lynchpin chisel
+```
+
+These operations currently wrap the procedural materializer. The planned
+typed materialization DAG and per-node AgentCTL execution are not current
+architecture. Do not document or code against them as if they already exist.
 
 When changing a contract:
 
@@ -162,6 +172,11 @@ When changing a contract:
 Generated products belong under the configured derived root or ignored
 `.lynchpin/` state. Do not commit generated personal analyses, local caches,
 substrate databases, operation receipts, or scratch packets.
+
+Polylogue's `.cache/verify` run data is disposable internal state, not an
+inter-project contract. Consume Polylogue verification or test-run evidence
+only through a declared stable export surface; otherwise mark the Lynchpin
+source unavailable rather than scraping receipts.
 
 ## Documentation
 
