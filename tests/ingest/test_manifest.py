@@ -113,12 +113,16 @@ def test_atomic_write_fsyncs_data_before_replace_and_directory_after(
     monkeypatch, tmp_path, kind
 ) -> None:
     target = tmp_path / f"out.{kind}"
+    target.write_text("old", encoding="utf-8")
+    target.chmod(0o640)
     events: list[str] = []
     real_fsync = os.fsync
     real_replace = os.replace
 
     def record_fsync(fd: int) -> None:
         file_kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "data"
+        if file_kind == "data":
+            assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o640
         events.append(file_kind)
         real_fsync(fd)
 

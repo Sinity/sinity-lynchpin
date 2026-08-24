@@ -71,9 +71,9 @@ def _atomic_write(path: Path, write: Callable[[Any], None]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             owned_fd = None
             write(handle)
+            _preserve_existing_mode(path, tmp_path)
             handle.flush()
             os.fsync(handle.fileno())
-        _preserve_existing_mode(path, tmp_path)
         os.replace(tmp_path, path)
         _fsync_parent_directory(path.parent)
     except BaseException:
