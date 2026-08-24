@@ -523,7 +523,9 @@ def reconstruct_daily_life(
     if end < start:
         raise ValueError("end must not precede start")
     local_as_of = as_local(as_of)
-    normalized_events = tuple(sorted((event for event in events if event.end <= local_as_of), key=lambda event: event.start))
+    normalized_events = tuple(
+        sorted((event for event in events if event.start < local_as_of), key=lambda event: event.start)
+    )
     normalized_coverage = tuple(sorted(coverage, key=lambda interval: interval.start))
     boundaries = _daily_boundaries(start, end, normalized_events)
     summaries: list[DailyLifeSummary] = []

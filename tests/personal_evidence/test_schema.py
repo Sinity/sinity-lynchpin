@@ -190,9 +190,6 @@ def test_alias_quote_bitemporal_and_idempotent_incremental_rerun(
             "SELECT count(*) FROM personal_evidence.source_object"
         ).fetchone() == (1,)
         assert conn.execute(
-            "SELECT first_seen_run_id FROM personal_evidence.source_object"
-        ).fetchone() == ("r1",)
-        assert conn.execute(
             "SELECT run_id FROM personal_evidence.source_object_seen ORDER BY run_id"
         ).fetchall() == [("r1",), ("r2",)]
         conn.execute(

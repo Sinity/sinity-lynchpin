@@ -41,7 +41,7 @@ DDL_STATEMENTS = (
     ),
     table(
         "source_object",
-        f"""source_object_id VARCHAR PRIMARY KEY,owner VARCHAR NOT NULL,source_kind VARCHAR NOT NULL,provider VARCHAR NOT NULL,canonical_ref VARCHAR NOT NULL,native_locator VARCHAR,snapshot_locator VARCHAR,content_hash VARCHAR NOT NULL,schema_version VARCHAR,data_version VARCHAR,captured_at TIMESTAMPTZ,coverage_start TIMESTAMPTZ,coverage_end TIMESTAMPTZ,collection_model VARCHAR,freshness VARCHAR,bytes BIGINT CHECK(bytes IS NULL OR bytes>=0),privacy_class VARCHAR NOT NULL DEFAULT 'raw_private' CHECK(privacy_class IN ({P})),run_id VARCHAR NOT NULL REFERENCES {SCHEMA_NAME}.incremental_run(run_id),ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,first_seen_run_id VARCHAR NOT NULL REFERENCES {SCHEMA_NAME}.incremental_run(run_id),last_seen_run_id VARCHAR NOT NULL REFERENCES {SCHEMA_NAME}.incremental_run(run_id),first_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,CHECK(coverage_end IS NULL OR coverage_start IS NULL OR coverage_end>=coverage_start)""",
+        f"""source_object_id VARCHAR PRIMARY KEY,owner VARCHAR NOT NULL,source_kind VARCHAR NOT NULL,provider VARCHAR NOT NULL,canonical_ref VARCHAR NOT NULL,native_locator VARCHAR,snapshot_locator VARCHAR,content_hash VARCHAR NOT NULL,schema_version VARCHAR,data_version VARCHAR,captured_at TIMESTAMPTZ,coverage_start TIMESTAMPTZ,coverage_end TIMESTAMPTZ,collection_model VARCHAR,freshness VARCHAR,bytes BIGINT CHECK(bytes IS NULL OR bytes>=0),privacy_class VARCHAR NOT NULL DEFAULT 'raw_private' CHECK(privacy_class IN ({P})),run_id VARCHAR NOT NULL REFERENCES {SCHEMA_NAME}.incremental_run(run_id),ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,CHECK(coverage_end IS NULL OR coverage_start IS NULL OR coverage_end>=coverage_start)""",
     ),
     table(
         "source_object_seen",
@@ -169,7 +169,7 @@ def upsert_source_object(
             content_hash=str(key[4]),
         )
     )
-    cols = "source_object_id,owner,source_kind,provider,canonical_ref,native_locator,snapshot_locator,content_hash,schema_version,data_version,captured_at,coverage_start,coverage_end,collection_model,freshness,bytes,privacy_class,run_id,first_seen_run_id,last_seen_run_id"
+    cols = "source_object_id,owner,source_kind,provider,canonical_ref,native_locator,snapshot_locator,content_hash,schema_version,data_version,captured_at,coverage_start,coverage_end,collection_model,freshness,bytes,privacy_class,run_id"
     data = (
         [source_object_id]
         + key[:4]
@@ -189,7 +189,7 @@ def upsert_source_object(
             )
         ]
         + [values.get("privacy_class", "raw_private")]
-        + [values["run_id"]] * 3
+        + [values["run_id"]]
     )
     conn.execute(
         f"INSERT INTO {SCHEMA_NAME}.source_object ({cols}) VALUES ({','.join('?' for _ in data)})",

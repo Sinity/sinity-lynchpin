@@ -240,3 +240,16 @@ def test_how_i_spend_my_days_returns_data_not_narrative_and_excludes_partial_day
     assert answer.seconds_for_activity(Activity.PROJECT_WORK) == pytest.approx(2 * 3600)
     assert answer.seconds_for_activity(Activity.MEDIA_OR_READING) == 0
     assert answer.agency_seconds.for_agency(Agency.DIRECT_OPERATOR) == pytest.approx(2 * 3600)
+
+
+def test_current_partial_day_clips_an_ongoing_event_at_as_of() -> None:
+    summary = what_did_i_do(
+        [event(dt(31, 8), dt(31, 14), Activity.PROJECT_WORK, Agency.DIRECT_OPERATOR)],
+        [CoverageInterval(dt(31, 6), dt(31, 18), "activity")],
+        day=date(2026, 8, 31),
+        as_of=dt(31, 12),
+    )
+
+    assert summary.status is DayStatus.PARTIAL
+    assert summary.end == dt(31, 12)
+    assert summary.seconds_for_activity(Activity.PROJECT_WORK) == pytest.approx(4 * 3600)
