@@ -50,7 +50,8 @@ def test_source_readiness_reports_polylogue_degradation(monkeypatch, tmp_path):
         fbmessenger_db = tmp_path / "messenger.sqlite"
         raindrop_csv = tmp_path / "raindrop.csv"
         accounts_root = tmp_path / "accounts"
-        comms_root = tmp_path / "comms"
+        data_root = tmp_path
+        comms_root = tmp_path / "derived/comms"
         health_root = tmp_path / "health"
 
         def available_sources(self):
@@ -208,7 +209,8 @@ def test_source_readiness_reflects_network_mode(monkeypatch, tmp_path):
         fbmessenger_db = tmp_path / "messenger.sqlite"
         raindrop_csv = tmp_path / "raindrop.csv"
         accounts_root = tmp_path / "accounts"
-        comms_root = tmp_path / "comms"
+        data_root = tmp_path
+        comms_root = tmp_path / "derived/comms"
         health_root = tmp_path / "health"
 
         def available_sources(self):
@@ -310,7 +312,8 @@ def test_source_readiness_reports_analysis_artifacts(monkeypatch, tmp_path):
         fbmessenger_db = tmp_path / "messenger.sqlite"
         raindrop_csv = tmp_path / "raindrop.csv"
         accounts_root = tmp_path / "accounts"
-        comms_root = tmp_path / "comms"
+        data_root = tmp_path
+        comms_root = tmp_path / "derived/comms"
         health_root = tmp_path / "health"
 
         def available_sources(self):
@@ -386,7 +389,8 @@ def test_source_readiness_uses_observed_source_observation_not_directory_mtime(
         fbmessenger_db = tmp_path / "messenger.sqlite"
         raindrop_csv = tmp_path / "raindrop.csv"
         accounts_root = tmp_path / "accounts"
-        comms_root = tmp_path / "comms"
+        data_root = tmp_path
+        comms_root = tmp_path / "derived/comms"
         health_root = tmp_path / "health"
 
         def available_sources(self):

@@ -1,6 +1,6 @@
 """Outlook PST work email source — historical workplace period.
 
-Data: /realm/data/comms/outlook/historical/jbr/raw/
+Data: /realm/data/accounts/outlook/historical/jbr/raw/
       (inbox_backup.pst, sent_backup.pst, deleted_backup.pst)
 
 Uses libpst (readpst) to extract PST to mbox, then Python's mailbox
@@ -33,7 +33,7 @@ from typing import Iterator, Optional
 
 from ..core.errors import SourceUnavailableError
 
-PST_ROOT = Path("/realm/data/comms/outlook/historical/jbr/raw")
+PST_ROOT = Path("/realm/data/accounts/outlook/historical/jbr/raw")
 MBOX_CACHE = Path("/tmp/outlook_extract/Plik danych programu Outlook")
 
 

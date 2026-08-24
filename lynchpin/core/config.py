@@ -29,9 +29,7 @@ class LynchpinConfig:
     local_root: Path
     sinnix_root: Path
     data_root: Path
-    captures_root: Path
     accounts_root: Path
-    comms_root: Path
     health_root: Path
     derived_root: Path
     libraries_root: Path
@@ -166,16 +164,13 @@ class LynchpinConfig:
     def from_env(cls) -> LynchpinConfig:
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
         data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm/data"))
-        captures_root = Path(os.environ.get("LYNCHPIN_CAPTURES_ROOT", data_root / "captures"))
-        # Platform-account exports (google, reddit, spotify, raindrop, ...).
-        # Communication and health exports carry their own roots below: one
-        # subject spans several genera, so a single "exports" root cannot
-        # address them all.
+        # Platform-account exports and bounded communication archives
+        # (google, reddit, spotify, raindrop, facebook-messenger, teams,
+        # outlook, ...). Health exports carry their own root below.
         accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "accounts"))
-        comms_root = Path(os.environ.get("LYNCHPIN_COMMS_ROOT", data_root / "comms"))
         health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
         derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "derived/lynchpin"))
-        libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", data_root / "libraries"))
+        libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library/media"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
         generated_root = _non_legacy_generated_path(
@@ -403,7 +398,7 @@ class LynchpinConfig:
 
         return cls(
             repo_root=repo_root, local_root=local_root, sinnix_root=sinnix_root, data_root=data_root,
-            captures_root=captures_root, accounts_root=accounts_root, comms_root=comms_root,
+            accounts_root=accounts_root,
             health_root=health_root, derived_root=derived_root, libraries_root=libraries_root,
             knowledgebase_root=knowledgebase_root,
             knowledge_archive_root=knowledge_archive_root,

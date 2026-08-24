@@ -38,7 +38,7 @@ def raindrop_bookmarks_path() -> Path:
 
 
 def messenger_canonical_dir() -> Path:
-    return get_config().comms_root / "facebook-messenger/processed/canonical"
+    return get_config().accounts_root / "facebook-messenger/processed/canonical"
 
 
 def materialize_all() -> dict[str, Any]:

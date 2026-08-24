@@ -137,12 +137,9 @@ def _find_session_dir(session_id: str, *, roots: tuple[Path, ...]) -> Optional[P
 
 def _default_session_roots() -> tuple[Path, ...]:
     cfg = get_config()
-    # asciinema_root is the current write target (activity/asciinema, 2026-08-17
-    # subject recut); captures_root/asciinema is where long-lived recorder
-    # processes launched before that recut are still writing (their
-    # --output-file was resolved at process start and does not follow a config
-    # change until the shell restarts) -- both are real, live data today.
-    return (cfg.asciinema_root, cfg.captures_root / "asciinema")
+    # asciinema_root is the sole write target (activity/asciinema; the
+    # pre-recut captures/asciinema shadow was merged into it on 2026-08-24).
+    return (cfg.asciinema_root,)
 
 
 def resolve_live_kitty_window(session_id: str) -> Optional[tuple[int, int]]:

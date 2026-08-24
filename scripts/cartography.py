@@ -12,7 +12,7 @@ enrich-dump family of tools; kept as a standalone script (like
 scripts/asciinema_index.py) rather than wired into the materialize DAG,
 since this is a periodic evidence-mining job, not a daily substrate input.
 
-Output: /realm/data/reports/cartography/<timestamp>/{evidence-bundle.json,skill-map.json}
+Output: /realm/data/derived/reports/cartography/<timestamp>/{evidence-bundle.json,skill-map.json}
 Re-derivable at any time; never writes to polylogue's or sinex's stores.
 
 Run: python scripts/cartography.py
@@ -29,7 +29,7 @@ from pathlib import Path
 
 from lynchpin.core.projects import PROJECT_ROOT
 
-OUTPUT_ROOT = Path("/realm/data/reports/cartography")
+OUTPUT_ROOT = Path("/realm/data/derived/reports/cartography")
 SINCE_DAYS = int(os.environ.get("SINNIX_CARTOGRAPHY_SINCE_DAYS", "90"))
 OPERATOR_AUTHOR = "Sinity"
 

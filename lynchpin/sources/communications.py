@@ -52,8 +52,8 @@ class CommunicationDayActivity:
 
 
 def communication_events_path(root: Path | None = None) -> Path:
-    base = root or get_config().comms_root
-    return base / "processed/communication_events.ndjson"
+    base = root or (get_config().data_root / "derived/comms")
+    return base / "communication_events.ndjson"
 
 
 def communication_manifest_path(root: Path | None = None) -> Path:

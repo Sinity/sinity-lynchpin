@@ -153,7 +153,7 @@ def _thread_files(paths: Optional[list[Path]], *, ensure: bool = True) -> list[P
 
         ensure_materialized("facebook_messenger")
     cfg = get_config()
-    canonical = cfg.comms_root / "facebook-messenger/processed/canonical"
+    canonical = cfg.accounts_root / "facebook-messenger/processed/canonical"
     canonical_threads = canonical / "threads.ndjson"
     if canonical_threads.exists():
         return [canonical_threads]
@@ -171,7 +171,7 @@ def _message_files(paths: Optional[list[Path]], *, ensure: bool = True) -> list[
 
         ensure_materialized("facebook_messenger")
     cfg = get_config()
-    canonical = cfg.comms_root / "facebook-messenger/processed/canonical"
+    canonical = cfg.accounts_root / "facebook-messenger/processed/canonical"
     canonical_messages = canonical / "messages.ndjson"
     if canonical_messages.exists():
         return [canonical_messages]

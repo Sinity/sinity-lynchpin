@@ -125,11 +125,11 @@ def capture_inventory(captures_root: Path | None = None) -> tuple[CaptureInvento
     """
     # Every registry entry lived under one shared captures_root before the
     # 2026-08-17 subject recut. All but comms_teams moved to activity/;
-    # comms_teams moved to comms/ (flattened, 2026-08-17 companion commit).
+    # comms_teams is a bounded platform export under accounts/ (comms/ retired 2026-08-24).
     # An explicit override still applies uniformly to every entry (tests rely
     # on this to point the whole registry at one fake tree).
     activity_base = captures_root if captures_root is not None else get_config().data_root / "activity"
-    comms_base = captures_root if captures_root is not None else get_config().data_root / "comms"
+    comms_base = captures_root if captures_root is not None else get_config().data_root / "accounts"
     items: list[CaptureInventoryItem] = []
     for item_id, rel_path, kind, note in _REGISTRY:
         base = comms_base if item_id == "comms_teams" else activity_base

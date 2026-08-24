@@ -1759,7 +1759,7 @@ def test_messenger_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> None
         encoding="utf-8",
     )
     cfg = SimpleNamespace(
-        comms_root=tmp_path,
+        accounts_root=tmp_path,
         fbmessenger_gdpr_root=tmp_path / "messenger/export",
         fbmessenger_db=tmp_path / "messenger.sqlite",
     )
@@ -1900,7 +1900,7 @@ def test_communications_audit_marks_manifest_with_changed_inputs_partial(monkeyp
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(comms_root=exports, teams_root=tmp_path / "teams")
+    cfg = SimpleNamespace(accounts_root=exports, teams_root=tmp_path / "teams")
 
     monkeypatch.setattr(materialization, "communication_events_path", lambda: product)
     monkeypatch.setattr(materialization, "communication_manifest_path", lambda: manifest)
@@ -1935,7 +1935,7 @@ def test_communications_audit_marks_old_schema_partial(monkeypatch, tmp_path) ->
         ),
         encoding="utf-8",
     )
-    cfg = SimpleNamespace(comms_root=exports, teams_root=tmp_path / "teams")
+    cfg = SimpleNamespace(accounts_root=exports, teams_root=tmp_path / "teams")
 
     monkeypatch.setattr(materialization, "communication_events_path", lambda: product)
     monkeypatch.setattr(materialization, "communication_manifest_path", lambda: manifest)

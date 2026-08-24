@@ -45,7 +45,7 @@ def source_readiness(
         end=materialization_end,
         repair_materializations=repair_materializations,
     ).by_source()
-    comms_root = getattr(cfg, "comms_root", None)
+    comms_product_root = cfg.data_root / "derived/comms"
     items: list[SourceReadiness] = [
         _path_source(
             "activitywatch",
@@ -97,8 +97,8 @@ def source_readiness(
         ),
         _optional_product_source(
             "communications",
-            comms_root,
-            "processed/communication_events.ndjson",
+            comms_product_root,
+            "communication_events.ndjson",
             "canonical communication event product is present",
             "canonical communication event product is missing",
         ),

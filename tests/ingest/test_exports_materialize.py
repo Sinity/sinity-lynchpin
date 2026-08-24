@@ -23,7 +23,7 @@ def test_communications_materialize_includes_themotte(tmp_path, monkeypatch) -> 
         "Cfg",
         (),
         {
-            "comms_root": tmp_path / "comms",
+            "accounts_root": tmp_path / "accounts",
             "teams_root": tmp_path / "teams",
             "themotte_root": tmp_path / "themotte",
             "themotte_username": "Sinity",

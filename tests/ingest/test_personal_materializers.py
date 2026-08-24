@@ -101,7 +101,7 @@ def test_discover_bookmark_files_finds_supported_names_once(tmp_path):
 
 def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
     exports = tmp_path / "exports"
-    outlook = exports / "comms" / "outlook" / "raw"
+    outlook = exports / "accounts" / "outlook" / "raw"
     outlook.mkdir(parents=True)
     csv_path = outlook / "sent.CSV"
     with csv_path.open("w", encoding="cp1250", newline="") as handle:
@@ -131,7 +131,8 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
         "Cfg",
         (),
         {
-            "comms_root": exports / "comms",
+            "data_root": exports,
+            "accounts_root": exports / "accounts",
             "libraries_root": tmp_path / "libraries",
             "teams_root": tmp_path / "teams",
             "fbmessenger_gdpr_root": tmp_path / "messenger",
@@ -144,7 +145,7 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
     monkeypatch.setattr("lynchpin.sources.communications.get_config", lambda: cfg)
 
     manifest = materialize_communication_events()
-    rows = list(iter_communication_events(exports / "comms/processed/communication_events.ndjson"))
+    rows = list(iter_communication_events(exports / "derived/comms/communication_events.ndjson"))
 
     assert manifest["row_count"] == 1
     assert manifest["schema_version"] == COMMUNICATION_EVENTS_SCHEMA_VERSION
