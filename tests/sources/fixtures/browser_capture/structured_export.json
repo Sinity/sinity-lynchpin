@@ -1,0 +1,40 @@
+[
+  {
+    "id": "demo-conversation",
+    "title": "Synthetic conversation",
+    "create_time": 1704067200.123,
+    "update_time": 1704067202,
+    "canonical_url": "https://chatgpt.example/c/demo-conversation?source=capture",
+    "mapping": {
+      "root-node": {
+        "parent": null,
+        "children": ["user-node"],
+        "message": null
+      },
+      "user-node": {
+        "parent": "root-node",
+        "children": ["assistant-node"],
+        "message": {
+          "id": "user-message",
+          "author": {"role": "user"},
+          "create_time": 1704067200.123,
+          "content": {"parts": ["Synthetic user message"]}
+        }
+      },
+      "assistant-node": {
+        "parent": "user-node",
+        "children": [],
+        "message": {
+          "id": "assistant-message",
+          "author": {"role": "assistant"},
+          "create_time": 1704067201,
+          "content": {"parts": ["Synthetic assistant response"]},
+          "metadata": {"model_slug": "synthetic-model", "is_regeneration": false},
+          "revision_id": "synthetic-revision",
+          "attachments": [{"id": "synthetic-attachment"}],
+          "source_documents": [{"document_id": "synthetic-document"}]
+        }
+      }
+    }
+  }
+]
