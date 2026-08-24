@@ -129,6 +129,24 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         materialization_hint="Polylogue devtools records this live; Lynchpin reads repo-local ledgers",
     ),
     SourceContract(
+        name="agentctl",
+        authority="AgentCTL versioned public job-list observation route",
+        query_surface="lynchpin.sources.agentctl.read_observation_snapshot",
+        materialization_hint="AgentCTL records jobs live; Lynchpin reads only agentctl job list",
+        required=False,
+        empty="valid",
+        query_mode="substrate",
+        collection_model="continuous",
+        materialization_mode="live",
+        materialization_target="substrate:work_observation",
+        substrate_tables=("work_observation", "work_observation_receipt_ref"),
+        mcp_tools=("lynchpin_machine",),
+        caveats=(
+            "read-only public lifecycle/resource observations; Lynchpin has no AgentCTL execution authority",
+            "raw argv, prompts, private payloads, logs, and result content remain outside DuckDB",
+        ),
+    ),
+    SourceContract(
         name="activitywatch",
         authority="ActivityWatch live SQLite plus exported backup DBs",
         query_surface="lynchpin.sources.activitywatch",
@@ -795,6 +813,15 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "caveats": (
             "Polylogue repo-local development tooling history; distinct from the Polylogue chat archive DB",
             ".agent/xtask rows are invocation events; .local/logs metrics can provide resource windows for machine attribution",
+        ),
+    },
+    "agentctl": {
+        "collection_model": "continuous",
+        "substrate_tables": ("work_observation", "work_observation_receipt_ref"),
+        "mcp_tools": ("lynchpin_machine",),
+        "caveats": (
+            "versioned public job-list snapshots are lifecycle observations, not a full event history",
+            "semantic joins require explicit Polylogue or Sinex receipt refs; raw logs and result artifacts remain external",
         ),
     },
     "spotify_daily": {

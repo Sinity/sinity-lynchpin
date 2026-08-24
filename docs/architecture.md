@@ -56,6 +56,8 @@ The substrate is a coherent analytical snapshot over a selected time window.
 Promoters load canonical rows into typed tables for work, projects, personal
 signals, machine state, GitHub/review context, claims, and graph products.
 
+AgentCTL job observations are promoted into the work substrate through its versioned public read route. They retain their source revision, public list-snapshot provenance, opaque artifact refs, lifecycle caveats, and optional explicit owner receipt refs. This does not make Lynchpin an AgentCTL client for execution: scheduling, cancellation, waiting, and supervision remain outside the source and substrate layers.
+
 Every coherent build has a `refresh_id`. Readers select a materialized refresh
 rather than joining arbitrary generations of tables. Substrate schema changes
 may rebuild the database because source inputs and materialized products remain

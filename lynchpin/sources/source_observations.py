@@ -184,6 +184,7 @@ def _configured_path(source: str) -> Path | None:
             if cfg.polylogue_devtools_xtask_jsonl.exists()
             else cfg.polylogue_devtools_logs_dir
         ),
+        "agentctl": None,
         "raw_log": cfg.raw_log_file,
         "samsung_gdpr_cloud": cfg.samsung_gdpr_cloud_dir,
         "sinnix_runtime_inventory": cfg.sinnix_runtime_inventory_json,

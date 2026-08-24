@@ -59,6 +59,20 @@ _WORK_OBSERVATION_COLUMNS = (
     "shm_used_max_mb",
     "process_count_max",
     "resource_sample_count",
+    "source_revision",
+    "source_generation",
+    "artifact_refs",
+    "caveats",
+    "outcome_known",
+    "cancellation_requested",
+    "recovery_state",
+)
+
+_WORK_OBSERVATION_RECEIPT_REF_COLUMNS = (
+    "source",
+    "source_id",
+    "receipt_owner",
+    "receipt_ref",
 )
 
 _WORK_OBSERVATION_STAGE_COLUMNS = (
@@ -126,6 +140,49 @@ def promote_polylogue_devtools_observations(
     )
 
 
+def promote_agentctl_observations(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+    delete_existing: bool = True,
+) -> int:
+    return _promote_work_observation_rows(
+        conn,
+        refresh_id=refresh_id,
+        rows=rows,
+        source="agentctl",
+        work_kind="agentctl_job",
+        delete_existing=delete_existing,
+    )
+
+
+def promote_agentctl_receipt_refs(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    rows: Iterable[Any],
+) -> int:
+    return promote_rows(
+        conn,
+        table="work_observation_receipt_ref",
+        columns=_WORK_OBSERVATION_RECEIPT_REF_COLUMNS,
+        refresh_id=refresh_id,
+        rows=(
+            (row, receipt)
+            for row in rows
+            for receipt in getattr(row, "receipt_refs", ())
+        ),
+        extractor=lambda pair: (
+            pair[0].source,
+            pair[0].source_id,
+            pair[1].owner,
+            pair[1].ref,
+        ),
+        batch_size=10_000,
+    )
+
+
 def _promote_work_observation_rows(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -189,6 +246,13 @@ def _promote_work_observation_rows(
             r.shm_used_max_mb,
             r.process_count_max,
             r.resource_sample_count,
+            getattr(r, "source_revision", None),
+            getattr(r, "source_generation_json", "{}"),
+            getattr(r, "artifact_refs_json", "[]"),
+            getattr(r, "caveats_json", "[]"),
+            getattr(r, "outcome_known", None),
+            getattr(r, "cancellation_requested", None),
+            getattr(r, "recovery_state", None),
         ),
         batch_size=10_000,
     )
@@ -283,7 +347,9 @@ def load_work_observations(
         f"""
         SELECT source, source_id, work_kind, project, command, cwd,
                started_at, ended_at, duration_s, status, exit_code, host,
-               git_commit, git_dirty, live_stage, args, refresh_id
+               git_commit, git_dirty, live_stage, args, source_revision,
+               source_generation, artifact_refs, caveats, outcome_known,
+               cancellation_requested, recovery_state, refresh_id
         FROM work_observation
         {where}
         ORDER BY started_at DESC, source_id DESC
@@ -297,6 +363,8 @@ def load_work_observations(
 
 __all__ = [
     "load_work_observations",
+    "promote_agentctl_observations",
+    "promote_agentctl_receipt_refs",
     "promote_polylogue_devtools_observations",
     "promote_work_observation_stages",
     "promote_work_observation_test_results",

@@ -196,6 +196,44 @@ def test_promote_polylogue_devtools_observations_round_trip(tmp_path):
     assert resource == (20.0, 4.0)
 
 
+def test_promote_agentctl_observations_is_idempotent_and_keeps_explicit_refs(tmp_path):
+    from lynchpin.sources.agentctl import read_observation_snapshot
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.work_observations import (
+        promote_agentctl_observations,
+        promote_agentctl_receipt_refs,
+    )
+
+    envelope = {
+        "schema": 1,
+        "ok": True,
+        "payload": {"kind": "inline", "value": {"snapshot": {"ordering": "created_at_desc_job_id_desc", "ceiling": []}, "truncated": False, "jobs": [{
+            "job_id": "22222222-2222-2222-2222-222222222222", "kind": "declared-operation", "project_id": "sinex", "operation": "check", "created_at": "2026-08-24T00:00:00+00:00", "timeout_seconds": 60,
+            "artifacts": {"log": {"ref": "sinnix://jobs/222/log"}, "result": None},
+            "semantic_receipts": [{"owner": "polylogue", "ref": "polylogue://receipts/222"}],
+            "state": {"phase": "cancelled", "terminal": True, "observed_at": "2026-08-24T00:01:00+00:00", "systemd": {"MemoryPeak": "1048576", "ExecMainStatus": "143"}},
+        }]}},
+    }
+    rows = read_observation_snapshot(loader=lambda: envelope).observations
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert promote_agentctl_observations(conn, refresh_id="r1", rows=rows) == 1
+        assert promote_agentctl_observations(conn, refresh_id="r1", rows=rows) == 1
+        assert promote_agentctl_receipt_refs(conn, refresh_id="r1", rows=rows) == 1
+        assert promote_agentctl_receipt_refs(conn, refresh_id="r1", rows=rows) == 1
+        observation = conn.execute("SELECT source_revision, source_generation, artifact_refs, outcome_known, cancellation_requested, recovery_state FROM work_observation").fetchone()
+        refs = conn.execute("SELECT receipt_owner, receipt_ref FROM work_observation_receipt_ref").fetchall()
+        count = conn.execute("SELECT COUNT(*) FROM work_observation").fetchone()[0]
+
+    assert count == 1
+    assert observation[0].startswith("sha256:")
+    assert '"contract_schema":1' in observation[1]
+    assert observation[2] == '["sinnix://jobs/222/log"]'
+    assert observation[3:] == (True, True, None)
+    assert refs == [("polylogue", "polylogue://receipts/222")]
+
+
 def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
     """Regression: xtask + polylogue devtools share the work_observation table
     under one refresh_id. promote_rows deletes by refresh_id alone, so the

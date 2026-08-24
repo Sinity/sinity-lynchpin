@@ -1356,6 +1356,13 @@ def test_work_source_promotion_streams_source_iterables(
         lambda *a, **k: tmp_path / "xtask.db",
     )
     monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda: True)
+    class AgentctlSnapshot:
+        observations = ()
+
+    monkeypatch.setattr(
+        "lynchpin.sources.agentctl.read_observation_snapshot",
+        lambda: AgentctlSnapshot(),
+    )
     monkeypatch.setattr(
         "lynchpin.sources.xtask_history.iter_all_invocations",
         lambda **kwargs: source_rows("xtask"),
@@ -1379,6 +1386,14 @@ def test_work_source_promotion_streams_source_iterables(
     monkeypatch.setattr(
         "lynchpin.substrate.work_observations.promote_polylogue_devtools_observations",
         lambda conn, refresh_id, rows, delete_existing=True: consume("polylogue", rows),
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_agentctl_observations",
+        lambda conn, refresh_id, rows, delete_existing=True: 0,
+    )
+    monkeypatch.setattr(
+        "lynchpin.substrate.work_observations.promote_agentctl_receipt_refs",
+        lambda conn, refresh_id, rows: 0,
     )
     monkeypatch.setattr(
         "lynchpin.substrate.work_observations.promote_work_observation_stages",

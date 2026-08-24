@@ -27,11 +27,17 @@ def promote_work_sources(
     if not selection.includes(SOURCE_WORK_OBSERVATIONS):
         return
     try:
+        from lynchpin.sources.agentctl import (
+            AgentctlObservationError,
+            read_observation_snapshot,
+        )
         from lynchpin.sources.polylogue_devtools import available as polylogue_devtools_available
         from lynchpin.sources.polylogue_devtools import iter_invocations as iter_polylogue_invocations
         from lynchpin.sources.xtask_history import iter_all_invocations, xtask_history_path
         from lynchpin.sources.xtask_history import iter_all_stage_timings, iter_all_test_results
         from lynchpin.substrate.work_observations import (
+            promote_agentctl_observations,
+            promote_agentctl_receipt_refs,
             promote_polylogue_devtools_observations,
             promote_work_observation_stages,
             promote_work_observation_test_results,
@@ -44,13 +50,24 @@ def promote_work_sources(
         # `xtask history unify`.
         has_xtask = xtask_history_path().exists()
         has_polylogue_devtools = polylogue_devtools_available()
-        if not has_xtask and not has_polylogue_devtools:
+        agentctl_unavailable_reason: str | None
+        try:
+            agentctl_snapshot = read_observation_snapshot()
+        except AgentctlObservationError as error:
+            agentctl_snapshot = None
+            agentctl_unavailable_reason = str(error)
+        else:
+            agentctl_unavailable_reason = None
+        if not has_xtask and not has_polylogue_devtools and agentctl_snapshot is None:
             record_source_status(
                 conn,
                 refresh_id=refresh_id,
                 source=SOURCE_WORK_OBSERVATIONS,
                 status="unavailable",
-                reason="no xtask history database or Polylogue devtool ledgers found",
+                reason=(
+                    "no xtask history database, Polylogue devtool ledgers, or "
+                    f"AgentCTL observations found ({agentctl_unavailable_reason})"
+                ),
                 row_count=0,
                 window_start=window_start,
                 window_end=window_end,
@@ -60,6 +77,15 @@ def promote_work_sources(
         start_dt, end_dt = _work_window_bounds(window_start, window_end)
         rows = iter_all_invocations(start=start_dt, end=end_dt) if has_xtask else ()
         polylogue_rows = iter_polylogue_invocations(start=start_dt, end=end_dt) if has_polylogue_devtools else ()
+        agentctl_rows = (
+            tuple(
+                row
+                for row in agentctl_snapshot.observations
+                if start_dt <= row.started_at < end_dt
+            )
+            if agentctl_snapshot is not None
+            else ()
+        )
         # xtask invocations and Polylogue devtool observations share the
         # work_observation table under one refresh_id. promote_rows deletes by
         # refresh_id alone (not by source), so two source-scoped delete+insert
@@ -79,9 +105,21 @@ def promote_work_sources(
             rows=polylogue_rows,
             delete_existing=False,
         ) if has_polylogue_devtools else 0
+        counts["agentctl_work_observations"] = promote_agentctl_observations(
+            conn,
+            refresh_id=refresh_id,
+            rows=agentctl_rows,
+            delete_existing=False,
+        ) if agentctl_snapshot is not None else 0
+        counts["agentctl_receipt_refs"] = promote_agentctl_receipt_refs(
+            conn,
+            refresh_id=refresh_id,
+            rows=agentctl_rows,
+        ) if agentctl_snapshot is not None else 0
         counts["work_observations"] = (
             counts["xtask_work_observations"]
             + counts["polylogue_devtools_work_observations"]
+            + counts["agentctl_work_observations"]
         )
         stages = iter_all_stage_timings(start=start_dt, end=end_dt) if has_xtask else ()
         counts["work_observation_stages"] = promote_work_observation_stages(
@@ -100,11 +138,15 @@ def promote_work_sources(
             source_bits.append("xtask")
         if has_polylogue_devtools:
             source_bits.append("polylogue_devtools")
+        if agentctl_snapshot is not None:
+            source_bits.append("agentctl")
         breakdown = (
             f"xtask_invocations={counts['xtask_work_observations']}, "
             f"xtask_stages={counts['work_observation_stages']}, "
             f"xtask_tests={counts['work_observation_test_results']}, "
-            f"polylogue_devtools={counts['polylogue_devtools_work_observations']}"
+            f"polylogue_devtools={counts['polylogue_devtools_work_observations']}, "
+            f"agentctl={counts['agentctl_work_observations']}, "
+            f"agentctl_receipt_refs={counts['agentctl_receipt_refs']}"
         )
         # Surface the silent-starvation case: xtask DBs were present and their
         # stage/test ledgers promoted rows, yet zero invocations landed. That
@@ -133,6 +175,8 @@ def promote_work_sources(
         else:
             status = "ok"
             reason = breakdown
+        if agentctl_snapshot is None and (has_xtask or has_polylogue_devtools):
+            reason = f"{reason}; AgentCTL observations unavailable: {agentctl_unavailable_reason}"
         record_source_status(
             conn,
             refresh_id=refresh_id,
@@ -143,6 +187,7 @@ def promote_work_sources(
                 counts["work_observations"]
                 + counts["work_observation_stages"]
                 + counts["work_observation_test_results"]
+                + counts["agentctl_receipt_refs"]
             ),
             window_start=window_start,
             window_end=window_end,

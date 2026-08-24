@@ -35,7 +35,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 41
+SUBSTRATE_VERSION = 42
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 log = logging.getLogger(__name__)

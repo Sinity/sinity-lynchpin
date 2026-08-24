@@ -1087,6 +1087,13 @@ DDL_STATEMENTS: tuple[str, ...] = (
         shm_used_max_mb         DOUBLE,
         process_count_max       INTEGER,
         resource_sample_count   INTEGER,
+        source_revision         VARCHAR,
+        source_generation       JSON NOT NULL DEFAULT '{}',
+        artifact_refs           JSON NOT NULL DEFAULT '[]',
+        caveats                 JSON NOT NULL DEFAULT '[]',
+        outcome_known           BOOLEAN,
+        cancellation_requested  BOOLEAN,
+        recovery_state          VARCHAR,
         refresh_id              VARCHAR NOT NULL,
         materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (source, source_id, refresh_id)
@@ -1096,6 +1103,22 @@ DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX work_observation_project_time ON work_observation(project, started_at)",
     "CREATE INDEX work_observation_status ON work_observation(status)",
     "CREATE INDEX work_observation_refresh_id ON work_observation(refresh_id)",
+    # ────────────────────────────────────────────────────────────────────
+    # work_observation_receipt_ref — explicit owner-native semantic joins
+    # ────────────────────────────────────────────────────────────────────
+    """
+    CREATE TABLE work_observation_receipt_ref (
+        source                  VARCHAR NOT NULL,
+        source_id               VARCHAR NOT NULL,
+        receipt_owner           VARCHAR NOT NULL,
+        receipt_ref             VARCHAR NOT NULL,
+        refresh_id              VARCHAR NOT NULL,
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (source, source_id, receipt_owner, receipt_ref, refresh_id)
+    )
+    """,
+    "CREATE INDEX work_observation_receipt_ref_lookup ON work_observation_receipt_ref(receipt_owner, receipt_ref)",
+    "CREATE INDEX work_observation_receipt_ref_refresh_id ON work_observation_receipt_ref(refresh_id)",
     # ────────────────────────────────────────────────────────────────────
     # work_observation_stage — stage timing children from xtask ledgers
     # ────────────────────────────────────────────────────────────────────
