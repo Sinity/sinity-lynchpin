@@ -19,12 +19,14 @@ import json
 import logging
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal
+from threading import Lock
 
 from .core.cache import files_signature
 from .core.config import LynchpinConfig, get_config
@@ -189,6 +191,7 @@ _TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
 # would replay the full history each time. Keep the honest partial status, but
 # allow an explicit ``force`` call to opt into another rebuild.
 _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = False
+_MATERIALIZATION_RECEIPT_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -292,21 +295,31 @@ def materializer_dependency_model(
     plan: Iterable[MaterializationPlanStep],
 ) -> tuple[MaterializerDependency, ...]:
     """Return the actual read/write model used to schedule a materialization plan."""
-    return tuple(
-        MaterializerDependency(
-            name=step.name,
-            reads=frozenset({f"owner-native:{step.name}"}),
-            writes=frozenset(
-                {
-                    f"canonical-product:{step.name}",
-                    "materialization-process-state",
-                    "candidate-substrate-receipts",
-                }
-            ),
+    dependencies: list[MaterializerDependency] = []
+    canonical_reads: dict[str, frozenset[str]] = {
+        "activitywatch_event_index": frozenset({"canonical-product:activitywatch"}),
+        "activitywatch_derived": frozenset({"canonical-product:activitywatch_event_index", "canonical-product:activitywatch"}),
+        "activity_content": frozenset({"canonical-product:activitywatch_derived", "canonical-product:title_metadata"}),
+        "personal_daily_signals": frozenset(
+            {
+                "canonical-product:activity_content",
+                "canonical-product:activitywatch_derived",
+                "canonical-product:title_metadata",
+            }
+        ),
+        "temporal_signals": frozenset({"canonical-product:activitywatch_derived"}),
+    }
+    for step in plan:
+        if step.action != "materialize":
+            continue
+        dependencies.append(
+            MaterializerDependency(
+                name=step.name,
+                reads=frozenset({f"owner-native:{step.name}", *canonical_reads.get(step.name, frozenset())}),
+                writes=frozenset({f"canonical-product:{step.name}"}),
+            )
         )
-        for step in plan
-        if step.action == "materialize"
-    )
+    return tuple(dependencies)
 
 
 def materializer_execution_waves(
@@ -317,7 +330,12 @@ def materializer_execution_waves(
     for dependency in dependencies:
         for wave in waves:
             occupied = frozenset().union(*(item.writes for item in wave))
-            if occupied.isdisjoint(dependency.writes):
+            occupied_reads = frozenset().union(*(item.reads for item in wave))
+            if (
+                occupied.isdisjoint(dependency.writes)
+                and occupied_reads.isdisjoint(dependency.writes)
+                and occupied.isdisjoint(dependency.reads)
+            ):
                 wave.append(dependency)
                 break
         else:
@@ -687,11 +705,15 @@ def run_materialization_plan(
     global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
 
     materializers = _materializers()
+    step_list = tuple(step for step in steps if step.action == "materialize")
+    by_name = {step.name: step for step in step_list}
+    dependencies = materializer_dependency_model(step_list)
+    waves = materializer_execution_waves(dependencies)
     ran: list[MaterializationPlanStep] = []
     refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
-    for step in steps:
-        if step.action != "materialize":
-            continue
+    ran_lock = Lock()
+
+    def run_one(step: MaterializationPlanStep) -> None:
         started = datetime.now(timezone.utc)
         from .substrate.run_steps import measure_phase
 
@@ -731,9 +753,10 @@ def run_materialization_plan(
             if isinstance(exc, CandidateGenerationRejected):
                 raise
             if continue_on_error:
-                continue
+                return
             raise
         row_count = report.get("row_count") if isinstance(report, dict) else None
+        reported_row_count = _int_or_none(row_count)
         effective_window = step.window if step.window is not None else window
         _record_materialization_step(
             refresh_id,
@@ -744,24 +767,38 @@ def run_materialization_plan(
                     "status": "materialized",
                     "measurement": measurement.payload(
                         metrics=(
-                            {
-                                "name": "row_count",
-                                "unit": "rows",
-                                "value": _int_or_none(row_count) or 0,
-                            },
+                            (
+                                {
+                                    "name": "row_count",
+                                    "unit": "rows",
+                                    "value": reported_row_count,
+                                },
+                            )
+                            if reported_row_count is not None
+                            else ()
                         )
                     ),
                     "effective_window": _window_payload(effective_window),
                 },
                 sort_keys=True,
             ),
-            row_count=_int_or_none(row_count),
+            row_count=reported_row_count,
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )
         if step.name == "activity_content":
             _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
-        ran.append(step)
+        with ran_lock:
+            ran.append(step)
+
+    for wave in waves:
+        if len(wave) == 1:
+            run_one(by_name[wave[0].name])
+            continue
+        with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="lynchpin-materialize") as executor:
+            futures = [executor.submit(run_one, by_name[item.name]) for item in wave]
+            for future in futures:
+                future.result()
     return ran
 
 
@@ -1247,18 +1284,19 @@ def _record_materialization_step(
         # the rows because they publish fresh matching sidecars on success.
         if not in_candidate_generation():
             return True
-        with connect(substrate_path()) as conn:
-            apply_schema(conn)
-            record_run_step(
-                conn,
-                refresh_id=refresh_id,
-                step=f"materialize:{step}",
-                status=status,
-                message=message,
-                row_count=row_count,
-                started_at=started_at,
-                finished_at=finished_at,
-            )
+        with _MATERIALIZATION_RECEIPT_LOCK:
+            with connect(substrate_path()) as conn:
+                apply_schema(conn)
+                record_run_step(
+                    conn,
+                    refresh_id=refresh_id,
+                    step=f"materialize:{step}",
+                    status=status,
+                    message=message,
+                    row_count=row_count,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
         return True
     except Exception as exc:
         # Observability must never make canonical product repair impossible,

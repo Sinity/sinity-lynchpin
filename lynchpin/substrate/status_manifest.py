@@ -144,7 +144,13 @@ def _read_substrate_status(path: Path) -> dict[str, Any]:
         "promotion_count": promotion_count,
         "status": status,
         "reason": reason,
-        "row_count": latest_node_count or builds or promotion_count,
+        "row_count": (
+            latest_node_count
+            if latest_node_count is not None
+            else builds
+            if builds is not None
+            else promotion_count
+        ),
     }
 
 

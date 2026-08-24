@@ -1325,7 +1325,7 @@ DDL_STATEMENTS = (
         kind            VARCHAR NOT NULL DEFAULT 'stage',
         status          VARCHAR NOT NULL,
         reason          VARCHAR,
-        row_count       INTEGER NOT NULL DEFAULT 0,
+        row_count       INTEGER,
         window_start    DATE,
         window_end      DATE,
         recorded_at     TIMESTAMPTZ NOT NULL,

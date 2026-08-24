@@ -141,6 +141,31 @@ def test_update_read_snapshot_skips_missing_canonical(
     assert update_read_snapshot() is None
 
 
+def test_update_read_snapshot_failure_keeps_previous_snapshot_atomic(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lynchpin.substrate.connection as connection
+
+    with duckdb.connect(str(isolated_substrate)) as conn:
+        conn.execute("CREATE TABLE x (v INTEGER)")
+        conn.execute("INSERT INTO x VALUES (42)")
+    update_read_snapshot()
+    snapshot = substrate_read_snapshot_path()
+
+    def interrupted_clone(source: Path, destination: Path) -> None:
+        destination.write_bytes(source.read_bytes()[:8])
+        raise OSError("clone interrupted")
+
+    monkeypatch.setattr(connection, "_reflink_clone", interrupted_clone)
+    with pytest.raises(OSError, match="clone interrupted"):
+        update_read_snapshot()
+
+    with duckdb.connect(str(snapshot), read_only=True) as conn:
+        assert conn.execute("SELECT v FROM x").fetchone() == (42,)
+    assert not snapshot.with_suffix(".tmp").exists()
+
+
 def _allow_reflink_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     import lynchpin.substrate.connection as connection
 

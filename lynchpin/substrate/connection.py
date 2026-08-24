@@ -35,7 +35,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 42
+SUBSTRATE_VERSION = 43
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ class CandidateGeneration:
     seed_source: Path
     seed_mode: Literal["reflink", "logical-index-rebuild", "bootstrap"]
     seed_logical_rows: int
+    receipt_refresh_id: str | None = None
     expected_refresh_id: str | None = None
     expected_graph_refresh_id: str | None = None
     predecessor_identity: tuple[int, int, int] | None = None
@@ -148,8 +149,12 @@ def update_read_snapshot(path: Path | str | None = None) -> Path | None:
     tmp = snapshot.with_suffix(".tmp")
     if tmp.exists():
         tmp.unlink()
-    _reflink_clone(canonical, tmp)
-    tmp.replace(snapshot)
+    try:
+        _reflink_clone(canonical, tmp)
+        tmp.replace(snapshot)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     _fsync_directory(snapshot.parent)
     return snapshot
 
@@ -856,6 +861,7 @@ def _record_candidate_phase(
     refresh_id: str,
     measurement: object,
     metrics: tuple[dict[str, object], ...],
+    receipt_refresh_id: str | None = None,
 ) -> dict[str, object]:
     """Append phase evidence while the candidate is the only writable generation."""
     import duckdb
@@ -863,14 +869,27 @@ def _record_candidate_phase(
     from lynchpin.substrate.run_steps import PhaseMeasurement, record_phase_evidence
 
     assert isinstance(measurement, PhaseMeasurement)
-    with duckdb.connect(str(candidate)) as conn:
-        payload = record_phase_evidence(
-            conn,
-            refresh_id=refresh_id,
-            measurement=measurement,
-            metrics=metrics,  # type: ignore[arg-type]
+    target_refresh_id = receipt_refresh_id or refresh_id
+    try:
+        with duckdb.connect(str(candidate)) as conn:
+            payload = record_phase_evidence(
+                conn,
+                refresh_id=target_refresh_id,
+                measurement=measurement,
+                metrics=metrics,  # type: ignore[arg-type]
+            )
+            conn.execute("CHECKPOINT")
+        payload["refresh_id"] = target_refresh_id
+    except Exception as exc:  # noqa: BLE001 - receipt loss must not discard canonical work.
+        payload = measurement.payload(metrics=metrics)  # type: ignore[arg-type]
+        payload["refresh_id"] = target_refresh_id
+        payload["receipt_status"] = "degraded"
+        payload["receipt_error"] = f"{type(exc).__name__}: {exc}"
+        log.warning(
+            "candidate seed receipt write failed: refresh_id=%s status=degraded error=%s",
+            target_refresh_id,
+            exc,
         )
-        conn.execute("CHECKPOINT")
     return payload
 
 
@@ -962,35 +981,54 @@ def _bind_candidate_attempt_evidence(generation: CandidateGeneration) -> None:
 
     from lynchpin.substrate.run_steps import record_run_step
 
-    with duckdb.connect(str(generation.candidate)) as conn:
-        record_run_step(
-            conn,
-            refresh_id=generation.expected_refresh_id,
-            step="candidate_attempt_evidence",
-            status="ok",
-            message=json.dumps(
-                {
-                    "schema": "lynchpin.candidate-attempt-evidence.v1",
-                    "candidate_attempt_id": generation.refresh_id,
-                    "published_refresh_id": generation.expected_refresh_id,
-                    "candidate_seed": {
-                        "mode": generation.seed_mode,
-                        "source": str(generation.seed_source),
-                        "logical_rows_reconstructed": generation.seed_logical_rows,
-                        "candidate_bytes": generation.candidate.stat().st_size,
+    try:
+        with duckdb.connect(str(generation.candidate)) as conn:
+            record_run_step(
+                conn,
+                refresh_id=generation.expected_refresh_id,
+                step="candidate_attempt_evidence",
+                status="ok",
+                message=json.dumps(
+                    {
+                        "schema": "lynchpin.candidate-attempt-evidence.v1",
+                        "candidate_attempt_id": generation.refresh_id,
+                        "published_refresh_id": generation.expected_refresh_id,
+                        "candidate_seed": {
+                            "mode": generation.seed_mode,
+                            "source": str(generation.seed_source),
+                            "logical_rows_reconstructed": generation.seed_logical_rows,
+                            "candidate_bytes": generation.candidate.stat().st_size,
+                        },
+                        "phases": generation.phase_evidence,
                     },
-                    "phases": generation.phase_evidence,
-                },
-                sort_keys=True,
-            ),
-            row_count=None,
+                    sort_keys=True,
+                ),
+                row_count=None,
+            )
+            conn.execute("CHECKPOINT")
+    except Exception as exc:  # noqa: BLE001 - canonical work is already complete.
+        generation.phase_evidence.append(
+            {
+                "schema": "lynchpin.candidate-attempt-evidence.v1",
+                "refresh_id": generation.expected_refresh_id,
+                "receipt_status": "degraded",
+                "receipt_error": f"{type(exc).__name__}: {exc}",
+                "published_refresh_id": generation.expected_refresh_id,
+            }
         )
-        conn.execute("CHECKPOINT")
+        log.warning(
+            "candidate attempt receipt write failed: refresh_id=%s status=degraded error=%s",
+            generation.expected_refresh_id,
+            exc,
+        )
 
 
 @contextmanager
 def candidate_generation(
-    *, rebuild_indexes: bool = False, bootstrap: bool = False
+    *,
+    rebuild_indexes: bool = False,
+    bootstrap: bool = False,
+    receipt_refresh_id: str | None = None,
 ) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
@@ -1068,6 +1106,7 @@ def candidate_generation(
             candidate_phase = _record_candidate_phase(
                 candidate,
                 refresh_id=refresh_id,
+                receipt_refresh_id=receipt_refresh_id,
                 measurement=seed_measurement,
                 metrics=(
                     {
@@ -1106,6 +1145,7 @@ def candidate_generation(
                 seed_source=seed_source,
                 seed_mode=seed_mode,
                 seed_logical_rows=seed_logical_rows,
+                receipt_refresh_id=receipt_refresh_id,
                 predecessor_identity=(
                     predecessor["device"], predecessor["inode"], predecessor["size"]
                 ) if predecessor is not None else None,
@@ -1154,9 +1194,11 @@ def candidate_generation(
 
 
 @contextmanager
-def bootstrap_candidate_generation() -> Iterator[CandidateGeneration]:
+def bootstrap_candidate_generation(
+    *, receipt_refresh_id: str | None = None
+) -> Iterator[CandidateGeneration]:
     """Explicit initial/recovery API for an empty serving-artifact set only."""
-    with candidate_generation(bootstrap=True) as generation:
+    with candidate_generation(bootstrap=True, receipt_refresh_id=receipt_refresh_id) as generation:
         yield generation
 
 

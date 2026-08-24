@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+import inspect
 import json
 import logging
 import signal
@@ -102,6 +103,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.history == "incremental" and not (args.all and args.promote):
         parser.error("--history incremental requires --all --promote")
 
+    publication_refresh_id: str | None = None
+    if args.promote:
+        if args.history in {"all", "incremental"}:
+            start_d, end_d = _all_history_window()
+            args.start = start_d.isoformat()
+            args.end = end_d.isoformat()
+        elif not args.start or not args.end:
+            parser.error("--promote requires --start and --end unless --history all or incremental is used")
+        from .substrate_snapshot import _snapshot_refresh_id
+
+        publication_refresh_id = _snapshot_refresh_id(
+            start=date.fromisoformat(args.start),
+            end=date.fromisoformat(args.end),
+            projects=(),
+        )
+
     if args.all:
         _progress("planning canonical materialization")
         plan_kwargs: dict[str, object] = {"force": args.force, "window": window}
@@ -114,8 +131,6 @@ def main(argv: list[str] | None = None) -> int:
     _progress(f"plan ready: {len(plan)} step(s)")
     dependency_model = materializer_dependency_model(plan)
     writer_waves = materializer_execution_waves(dependency_model)
-    if any(len(wave) != 1 for wave in writer_waves):
-        raise RuntimeError("materializer dependency model admitted an unimplemented parallel writer wave")
     if args.plan_json:
         sys.stdout.write(json.dumps([step.to_json() for step in plan], indent=2, sort_keys=True) + "\n")
         return 0
@@ -130,24 +145,35 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.bootstrap:
             _progress("bootstrapping an empty substrate through candidate publication")
-            generation_context = bootstrap_candidate_generation()
+            generation_context = _candidate_context(
+                bootstrap_candidate_generation,
+                receipt_refresh_id=publication_refresh_id,
+            )
         elif args.rebuild_candidate_indexes:
             _progress("rebuilding candidate indexes from verified logical rows")
-            generation_context = candidate_generation(rebuild_indexes=True)
+            generation_context = _candidate_context(
+                candidate_generation,
+                rebuild_indexes=True,
+                receipt_refresh_id=publication_refresh_id,
+            )
         else:
             _progress("cloning verified candidate generation with copy-on-write extents")
-            generation_context = candidate_generation()
+            generation_context = _candidate_context(
+                candidate_generation,
+                receipt_refresh_id=publication_refresh_id,
+            )
     else:
         generation_context = nullcontext()
 
     try:
         with generation_context as generation:
-            # The dependency model currently exposes one writer wave because
-            # every materializer mutates shared process state and candidate
-            # receipts. Graph construction is a barrier after that wave.
+            # Independent source reads/computations share waves; canonical
+            # product writes and receipt writes are serialized by their own
+            # paths/locks. Graph construction remains a barrier after them.
             with _measure_incremental_phase("source_reads") as source_measurement:
-                completed_steps = run_materialization_plan(
+                completed_steps = _run_materialization_plan(
                     plan,
+                    refresh_id=publication_refresh_id,
                     window=window,
                     continue_on_error=args.promote,
                 )
@@ -162,28 +188,22 @@ def main(argv: list[str] | None = None) -> int:
             _progress("canonical materialization complete")
             if args.promote:
                 incremental_tail_start: date | None = None
-                if args.history in {"all", "incremental"}:
-                    start_d, end_d = _all_history_window()
-                    args.start = start_d.isoformat()
-                    args.end = end_d.isoformat()
-                    if args.history == "incremental":
-                        refreshed_windows = [
-                            step.window
-                            for step in plan
-                            if step.action == "materialize" and step.window is not None
-                        ]
-                        incremental_tail_start = min(
-                            (item[0] for item in refreshed_windows),
-                            default=max(start_d, end_d - timedelta(days=7)),
-                        )
-                        _progress(
-                            "derived incremental graph tail: "
-                            f"{incremental_tail_start.isoformat()}..{args.end}"
-                        )
-                    else:
-                        _progress(f"derived all-history promotion window: {args.start}..{args.end}")
-                elif not args.start or not args.end:
-                    parser.error("--promote requires --start and --end unless --history all or incremental is used")
+                if args.history == "incremental":
+                    refreshed_windows = [
+                        step.window
+                        for step in plan
+                        if step.action == "materialize" and step.window is not None
+                    ]
+                    incremental_tail_start = min(
+                        (item[0] for item in refreshed_windows),
+                        default=max(date.fromisoformat(args.start), date.fromisoformat(args.end) - timedelta(days=7)),
+                    )
+                    _progress(
+                        "derived incremental graph tail: "
+                        f"{incremental_tail_start.isoformat()}..{args.end}"
+                    )
+                elif args.history == "all":
+                    _progress(f"derived all-history promotion window: {args.start}..{args.end}")
                 date.fromisoformat(args.start)
                 date.fromisoformat(args.end)
                 from .substrate_snapshot import main as snapshot_main
@@ -292,6 +312,24 @@ def _progress(message: str) -> None:
     sys.stderr.flush()
 
 
+def _candidate_context(factory, **kwargs):
+    """Call candidate factories while keeping narrow test/dry-run shims compatible."""
+    parameters = inspect.signature(factory).parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return factory(**kwargs)
+    return factory(**{key: value for key, value in kwargs.items() if key in parameters})
+
+
+def _run_materialization_plan(plan, **kwargs):
+    parameters = inspect.signature(run_materialization_plan).parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return run_materialization_plan(plan, **kwargs)
+    return run_materialization_plan(
+        plan,
+        **{key: value for key, value in kwargs.items() if key in parameters},
+    )
+
+
 def _measure_incremental_phase(phase: str) -> PhaseMeasurement:
     return measure_phase(phase)
 
@@ -307,18 +345,25 @@ def _record_incremental_phase(
     if generation is None:
         return
     from lynchpin.substrate.connection import connect
+    receipt_refresh_id = (
+        getattr(generation, "expected_refresh_id", None)
+        or getattr(generation, "receipt_refresh_id", None)
+        or getattr(generation, "refresh_id", "unknown")
+    )
     try:
         with connect(generation.candidate) as conn:
             payload = record_phase_evidence(
                 conn,
-                refresh_id=generation.refresh_id,
+                refresh_id=receipt_refresh_id,
                 measurement=measurement,
                 metrics=metrics,
                 evidence=evidence,
             )
             conn.execute("CHECKPOINT")
+        payload["refresh_id"] = receipt_refresh_id
     except Exception as exc:  # noqa: BLE001 - receipt loss must not hide completed work.
         payload = measurement.payload(metrics=metrics, evidence=evidence)
+        payload["refresh_id"] = receipt_refresh_id
         payload["receipt_status"] = "degraded"
         payload["receipt_error"] = f"{type(exc).__name__}: {exc}"
         log.warning(

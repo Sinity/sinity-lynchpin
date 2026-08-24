@@ -251,7 +251,7 @@ def _record_snapshot_materialization_statuses(
                 kind="dataset",
                 status=status,
                 reason=None if status == "ok" else row.reason,
-                row_count=row.row_count or 0,
+                row_count=row.row_count,
                 window_start=start,
                 window_end=end,
             )
@@ -273,7 +273,7 @@ def _record_snapshot_materialization_statuses(
                 if graph_coherent
                 else "snapshot graph generation does not match the publication refresh identity"
             ),
-            row_count=int(graph_row[0]) if graph_coherent else 0,
+            row_count=int(graph_row[0]) if graph_coherent else None,
             window_start=start,
             window_end=end,
         )
@@ -428,8 +428,8 @@ def _record_snapshot_promotion_run(
             [refresh_id],
         ).fetchone()
         counts = {
-            "evidence_graph_nodes": int(graph_row[0]) if graph_row else 0,
-            "evidence_graph_edges": int(graph_row[1]) if graph_row else 0,
+            "evidence_graph_nodes": int(graph_row[0]) if graph_row else None,
+            "evidence_graph_edges": int(graph_row[1]) if graph_row else None,
             "analysis_claims": int(
                 conn.execute(
                     "SELECT COUNT(*) FROM analysis_claim WHERE refresh_id = ?",

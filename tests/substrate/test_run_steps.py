@@ -236,4 +236,54 @@ def test_incremental_phase_receipt_failure_is_degraded_and_visible(monkeypatch, 
         )
 
     assert generation.phase_evidence[0]["receipt_status"] == "degraded"
+    assert generation.phase_evidence[0]["refresh_id"] == "unknown"
     assert "receipt write failed" in caplog.text
+
+
+def test_candidate_seed_receipt_failure_is_visible_without_aborting(monkeypatch, caplog) -> None:
+    import duckdb
+    from pathlib import Path
+    from lynchpin.substrate.connection import _record_candidate_phase
+
+    monkeypatch.setattr(duckdb, "connect", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("seed receipt unavailable")))
+    with measure_phase("candidate_write") as measurement:
+        pass
+
+    with caplog.at_level("WARNING", logger="lynchpin.substrate.connection"):
+        payload = _record_candidate_phase(
+            Path("candidate.duckdb"),
+            refresh_id="candidate-attempt",
+            receipt_refresh_id="publication-refresh",
+            measurement=measurement,
+            metrics=({"name": "candidate_generation_size", "unit": "bytes", "value": 1},),
+        )
+
+    assert payload["receipt_status"] == "degraded"
+    assert payload["refresh_id"] == "publication-refresh"
+    assert "publication-refresh" in caplog.text
+
+
+def test_candidate_attempt_receipt_failure_is_visible_after_canonical_work(monkeypatch, caplog) -> None:
+    import duckdb
+    from pathlib import Path
+    from types import SimpleNamespace
+    from lynchpin.substrate.connection import _bind_candidate_attempt_evidence
+
+    monkeypatch.setattr(duckdb, "connect", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("attempt receipt unavailable")))
+    generation = SimpleNamespace(
+        expected_refresh_id="publication-refresh",
+        candidate=Path("candidate.duckdb"),
+        refresh_id="candidate-attempt",
+        seed_mode="reflink",
+        seed_source=Path("source.duckdb"),
+        seed_logical_rows=0,
+        phase_evidence=[],
+    )
+
+    with caplog.at_level("WARNING", logger="lynchpin.substrate.connection"):
+        _bind_candidate_attempt_evidence(generation)
+
+    assert generation.phase_evidence[-1]["receipt_status"] == "degraded"
+    assert generation.phase_evidence[-1]["refresh_id"] == "publication-refresh"
+    assert generation.phase_evidence[-1]["published_refresh_id"] == "publication-refresh"
+    assert "attempt receipt unavailable" in caplog.text

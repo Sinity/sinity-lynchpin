@@ -137,9 +137,10 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     monkeypatch.setattr(
         materialize,
         "run_materialization_plan",
-        lambda plan, window=None, continue_on_error=False: calls.update(
+        lambda plan, window=None, continue_on_error=False, **kwargs: calls.update(
             run_window=window,
             continue_on_error=continue_on_error,
+            run_kwargs=kwargs,
         ) or phase_order.append("source_reads") or list(plan),
     )
     monkeypatch.setattr(materialize, "audit_materialization", lambda: rows)
@@ -168,7 +169,8 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     assert code == 0
     assert calls["maintenance"] is True
     assert calls["run_window"] is None
-    assert calls["candidate_kwargs"] == {}
+    assert calls["run_kwargs"]["refresh_id"] == "current-state:2026-05-01:2026-05-13:all"
+    assert calls["candidate_kwargs"]["receipt_refresh_id"] == "current-state:2026-05-01:2026-05-13:all"
     assert "--incremental-tail-start" in forwarded["argv"]
     tail_index = forwarded["argv"].index("--incremental-tail-start")
     assert forwarded["argv"][tail_index + 1] == "2026-05-08"
@@ -362,7 +364,10 @@ def test_incremental_rebuild_candidate_indexes_is_explicit(monkeypatch, tmp_path
         "--all", "--promote", "--history", "incremental",
         "--rebuild-candidate-indexes", "--progress", "quiet",
     ]) == 0
-    assert calls == {"rebuild_indexes": True}
+    assert calls == {
+        "rebuild_indexes": True,
+        "receipt_refresh_id": "current-state:2026-05-01:2026-05-03:all",
+    }
 
 
 def test_rebuild_candidate_indexes_requires_promoted_materialization() -> None:
@@ -639,8 +644,8 @@ def test_materializer_dependency_model_requires_one_writer_wave() -> None:
     model = materializer_dependency_model(plan)
     waves = materializer_execution_waves(model)
 
-    assert all("candidate-substrate-receipts" in dependency.writes for dependency in model)
-    assert [[dependency.name for dependency in wave] for wave in waves] == [["one"], ["two"]]
+    assert all(dependency.writes.isdisjoint(dependency.reads) for dependency in model)
+    assert [[dependency.name for dependency in wave] for wave in waves] == [["one", "two"]]
 
 
 def test_standalone_materialization_does_not_mutate_published_substrate(monkeypatch) -> None:
@@ -659,6 +664,7 @@ def test_standalone_materialization_does_not_mutate_published_substrate(monkeypa
 
 def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:
     from lynchpin import materialization
+    from threading import Barrier
 
     before = materialization.MaterializedDataset(
         name="fixture",
@@ -682,12 +688,21 @@ def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:
         ),
     ]
     events: list[tuple[str, str]] = []
+    barrier = Barrier(2)
+    def broken():
+        barrier.wait(timeout=2)
+        raise RuntimeError("repomix unavailable")
+
+    def healthy():
+        barrier.wait(timeout=2)
+        return {"row_count": 4}
+
     monkeypatch.setattr(
         materialization,
         "_materializers",
         lambda: {
-            "broken": lambda: (_ for _ in ()).throw(RuntimeError("repomix unavailable")),
-            "healthy": lambda: {"row_count": 4},
+            "broken": broken,
+            "healthy": healthy,
         },
     )
     monkeypatch.setattr(
@@ -699,12 +714,12 @@ def test_promote_continues_after_one_materializer_failure(monkeypatch) -> None:
     ran = materialization.run_materialization_plan(steps, continue_on_error=True)
 
     assert [step.name for step in ran] == ["healthy"]
-    assert events == [
+    assert sorted(events) == sorted([
         ("broken", "started"),
         ("broken", "error"),
         ("healthy", "started"),
         ("healthy", "ok"),
-    ]
+    ])
 
 
 def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -> None:
