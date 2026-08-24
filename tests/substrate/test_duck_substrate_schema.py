@@ -182,6 +182,58 @@ def test_promote_personal_daily_signal_coalesces_exact_duplicate_dimensions(tmp_
     assert rows == [("sleep_minutes", 480.0), ("sleep_score", 60.0)]
 
 
+def test_incremental_personal_daily_signal_preserves_history_and_matches_full_output(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import promote_personal_daily_signals
+
+    predecessor_rows = [
+        ("webhistory", date(2026, 5, 1), "visit_count", 10.0, {}),
+        ("webhistory", date(2026, 5, 5), "visit_count", 50.0, {}),
+    ]
+    refreshed_rows = [
+        ("webhistory", date(2026, 5, 5), "visit_count", 55.0, {}),
+        ("webhistory", date(2026, 5, 6), "visit_count", 60.0, {}),
+    ]
+    full_rows = [predecessor_rows[0], *refreshed_rows]
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_personal_daily_signals(conn, refresh_id="prior", rows=predecessor_rows)
+        promote_personal_daily_signals(
+            conn,
+            refresh_id="incremental",
+            previous_refresh_id="prior",
+            incremental_tail_start=date(2026, 5, 5),
+            rows=refreshed_rows,
+        )
+        promote_personal_daily_signals(conn, refresh_id="full", rows=full_rows)
+        before_rerun = conn.execute(
+            "SELECT source, date, metric, value, dimensions FROM personal_daily_signal "
+            "WHERE refresh_id = 'incremental' ORDER BY date, metric"
+        ).fetchall()
+        promote_personal_daily_signals(
+            conn,
+            refresh_id="incremental",
+            previous_refresh_id="incremental",
+            incremental_tail_start=date(2026, 5, 5),
+            rows=refreshed_rows,
+        )
+        after_rerun = conn.execute(
+            "SELECT source, date, metric, value, dimensions FROM personal_daily_signal "
+            "WHERE refresh_id = 'incremental' ORDER BY date, metric"
+        ).fetchall()
+        full = conn.execute(
+            "SELECT source, date, metric, value, dimensions FROM personal_daily_signal "
+            "WHERE refresh_id = 'full' ORDER BY date, metric"
+        ).fetchall()
+
+    assert before_rerun == after_rerun == full
+    assert before_rerun[0][1] == date(2026, 5, 1)
+    assert before_rerun[1][3] == 55.0
+
+
 def test_apply_schema_recreates_on_version_bump(tmp_path: Path) -> None:
     """Downgrading the stored version triggers drop+recreate; commit_fact is empty afterward."""
     from lynchpin.substrate.connection import apply_schema, connect

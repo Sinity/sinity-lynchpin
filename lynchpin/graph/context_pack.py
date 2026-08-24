@@ -292,27 +292,25 @@ def materialize_incremental_evidence_graph(
     from .evidence_graph import _dedupe_edges
     from lynchpin.substrate import apply_schema, connect
     from lynchpin.substrate.graph import (
+        compatible_graph_predecessor,
         load_evidence_graph_boundary_nodes,
         promote_incremental_evidence_graph,
     )
 
+    refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects)
+
     predecessor_started = sample_performance()
     with connect() as conn:
         apply_schema(conn)
-        previous = conn.execute(
-            """
-            SELECT refresh_id
-            FROM evidence_graph_build
-            WHERE start_date <= ? AND end_date >= ?
-              AND (len(projects) = 0 OR projects = ?)
-            ORDER BY generated_at DESC
-            LIMIT 1
-            """,
-            [start, tail_start, list(projects or ())],
-        ).fetchone()
-        if previous is None:
+        previous_refresh_id = compatible_graph_predecessor(
+            conn,
+            current_refresh_id=refresh_id,
+            full_start=start,
+            tail_start=tail_start,
+            projects=tuple(projects or ()),
+        )
+        if previous_refresh_id is None:
             raise RuntimeError("incremental graph promotion requires a compatible predecessor")
-        previous_refresh_id = str(previous[0])
         boundary_nodes = load_evidence_graph_boundary_nodes(
             conn,
             refresh_id=previous_refresh_id,
@@ -361,7 +359,7 @@ def materialize_incremental_evidence_graph(
             for edge in builder(relation_nodes)
             if edge.source_id in relation_ids
             and edge.target_id in relation_ids
-            and (edge.source_id in tail_ids or edge.target_id in tail_ids)
+            and ((edge.source_id in tail_ids) != (edge.target_id in tail_ids))
         )
     log_performance(
         log,
@@ -380,7 +378,7 @@ def materialize_incremental_evidence_graph(
         for edge in sql_edges
         if edge.source_id in relation_ids
         and edge.target_id in relation_ids
-        and (edge.source_id in tail_ids or edge.target_id in tail_ids)
+        and ((edge.source_id in tail_ids) != (edge.target_id in tail_ids))
     )
     log_performance(
         log,
@@ -401,16 +399,15 @@ def materialize_incremental_evidence_graph(
     )
     with connect() as conn:
         apply_schema(conn)
-        # A candidate begins as a complete verified substrate generation, so
-        # the predecessor graph already exists in this database. Reuse that
-        # refresh ID and replace only its bounded tail. Allocating a fresh ID
-        # would copy every historical node and edge into a second partition
-        # before replacing the same small tail.
+        # The window-derived refresh ID is the serving/publication identity.
+        # Copy the predecessor into that new partition and replace only its
+        # bounded tail; graph, claims, readiness, and publication then agree
+        # on one generation even when the requested end advances.
         graph_write_started = sample_performance()
         promote_incremental_evidence_graph(
             conn,
             previous_refresh_id=previous_refresh_id,
-            refresh_id=previous_refresh_id,
+            refresh_id=refresh_id,
             graph=incremental_graph,
             full_start=start,
             tail_start=tail_start,
@@ -440,7 +437,7 @@ def materialize_incremental_evidence_graph(
         promote_incremental_analysis_claims(
             conn,
             previous_refresh_id=previous_refresh_id,
-            refresh_id=previous_refresh_id,
+            refresh_id=refresh_id,
             tail_start=tail_start,
             claims=claims,
         )

@@ -290,8 +290,28 @@ def promote_personal_daily_signals(
     *,
     refresh_id: str,
     rows: Iterable[tuple[str, date, str, float, dict[str, Any]]],
+    previous_refresh_id: str | None = None,
+    incremental_tail_start: date | None = None,
 ) -> int:
-    """INSERT normalized daily personal-source signals."""
+    """INSERT normalized daily personal-source signals.
+
+    An incremental snapshot is a new refresh partition.  Copy the verified
+    predecessor before the tail, then replace only ``[incremental_tail_start,
+    end)`` with the newly coalesced rows.  This keeps sparse coverage and
+    makes an empty tail an intentional replacement rather than a reason to
+    retain stale dates.
+    """
+    if incremental_tail_start is not None:
+        if previous_refresh_id is None:
+            raise ValueError("incremental daily-signal promotion requires a predecessor refresh_id")
+        return _promote_incremental_personal_daily_signals(
+            conn,
+            refresh_id=refresh_id,
+            previous_refresh_id=previous_refresh_id,
+            tail_start=incremental_tail_start,
+            rows=rows,
+        )
+
     def extract(row: tuple[str, date, str, float, dict[str, Any]]) -> tuple[Any, ...]:
         dimensions = json.dumps(row[4], sort_keys=True)
         return (
@@ -310,6 +330,54 @@ def promote_personal_daily_signals(
         refresh_id=refresh_id,
         rows=_coalesce_daily_signals(rows),
         extractor=extract,
+    )
+
+
+def _promote_incremental_personal_daily_signals(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    previous_refresh_id: str,
+    tail_start: date,
+    rows: Iterable[tuple[str, date, str, float, dict[str, Any]]],
+) -> int:
+    """Copy predecessor history and replace the daily-signal tail in SQL."""
+    if previous_refresh_id != refresh_id:
+        conn.execute("DELETE FROM personal_daily_signal WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            """
+            INSERT INTO personal_daily_signal (
+                source, date, metric, value, dimensions, dimension_key, refresh_id
+            )
+            SELECT source, date, metric, value, dimensions, dimension_key, ?
+            FROM personal_daily_signal
+            WHERE refresh_id = ? AND date < ?
+            """,
+            [refresh_id, previous_refresh_id, tail_start],
+        )
+    else:
+        conn.execute(
+            "DELETE FROM personal_daily_signal WHERE refresh_id = ? AND date >= ?",
+            [refresh_id, tail_start],
+        )
+
+    def tail_rows() -> Iterable[tuple[str, date, str, float, dict[str, Any]]]:
+        for row in _coalesce_daily_signals(rows):
+            if row[1] >= tail_start:
+                yield row
+
+    def extract(row: tuple[str, date, str, float, dict[str, Any]]) -> tuple[Any, ...]:
+        dimensions = json.dumps(row[4], sort_keys=True)
+        return row[0], row[1], row[2], float(row[3]), dimensions, dimensions
+
+    return promote_rows(
+        conn,
+        table="personal_daily_signal",
+        columns=_PERSONAL_DAILY_SIGNAL_COLUMNS,
+        refresh_id=refresh_id,
+        rows=tail_rows(),
+        extractor=extract,
+        delete_existing=False,
     )
 
 

@@ -225,6 +225,17 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
             tail_start=date(2026, 5, 5),
         )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="new")
+        full = EvidenceGraph(
+            start=predecessor.start,
+            end=tail.end,
+            generated_at=tail.generated_at,
+            mode=tail.mode,
+            nodes=(*predecessor.nodes, *tail.nodes),
+            edges=(*predecessor.edges, *tail.edges),
+            caveats=(),
+        )
+        graph_mod.promote_evidence_graph(conn, refresh_id="full", graph=full)
+        loaded_full = graph_mod.load_evidence_graph(conn, refresh_id="full")
 
     assert counts == {"build": 1, "nodes": 4, "edges": 3}
     assert same_refresh_counts == counts
@@ -240,6 +251,15 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
     assert ("commit:sha001", "commit:tail", "temporal_overlap") in {
         (edge.source_id, edge.target_id, edge.relation) for edge in loaded.edges
     }
+    assert loaded_full is not None
+    assert {
+        (edge.source_id, edge.target_id, edge.relation, edge.evidence)
+        for edge in loaded.edges
+    } == {
+        (edge.source_id, edge.target_id, edge.relation, edge.evidence)
+        for edge in loaded_full.edges
+    }
+    assert {node.id for node in loaded.nodes} == {node.id for node in loaded_full.nodes}
 
 
 def test_incremental_context_graph_reuses_candidate_predecessor(
@@ -270,6 +290,14 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
                 project="lynchpin",
                 summary="tail commit",
             ),
+            EvidenceNode(
+                id="commit:tail2",
+                kind="commit",
+                source="git",
+                date=date(2026, 5, 7),
+                project="lynchpin",
+                summary="second tail commit",
+            ),
         ),
         edges=(
             EvidenceEdge(
@@ -287,7 +315,11 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
     db.parent.mkdir()
     import lynchpin.substrate.connection as duck_conn
 
-    monkeypatch.setattr(duck_conn, "substrate_path", lambda: db)
+    monkeypatch.setattr(
+        duck_conn,
+        "substrate_path",
+        lambda: duck_conn._substrate_path_override.get() or db,
+    )
     with duckdb.connect(str(db)) as conn:
         apply_schema(conn)
         graph_mod.promote_evidence_graph(conn, refresh_id="stable", graph=predecessor)
@@ -307,13 +339,20 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
         )
 
     monkeypatch.setattr(context_pack, "build_evidence_graph", lambda **_kwargs: tail)
-    monkeypatch.setattr(evidence_edges, "same_project_day_edges", lambda _nodes: ())
+    tail_tail_edge = EvidenceEdge(
+        source_id="commit:tail",
+        target_id="commit:tail2",
+        relation="same_project_day",
+        evidence="tail-internal edge",
+        weight=1.0,
+    )
+    monkeypatch.setattr(evidence_edges, "same_project_day_edges", lambda _nodes: (tail_tail_edge,))
     monkeypatch.setattr(evidence_edges, "temporal_overlap_edges", lambda _nodes: ())
     monkeypatch.setattr(evidence_edges, "temporal_proximity_edges", lambda _nodes: ())
     monkeypatch.setattr(
         evidence_edges,
         "overlap_edges_via_substrate",
-        lambda _nodes, **_kwargs: (),
+        lambda _nodes, **_kwargs: (tail_tail_edge,),
     )
     monkeypatch.setattr(
         evidence_edges,
@@ -330,28 +369,60 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
                 tail_start=tail.start,
             )
 
+    monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: ())
     from lynchpin.cli import substrate_snapshot
+
+    with candidate_generation():
+        substrate_snapshot._record_snapshot_materialization_statuses(
+            start=predecessor.start,
+            end=tail.end,
+            projects=(),
+        )
+        substrate_snapshot._record_snapshot_promotion_run(
+            start=predecessor.start,
+            end=tail.end,
+            projects=(),
+        )
 
     with connect(db, read_only=True) as conn:
         refresh_ids = conn.execute(
             "SELECT refresh_id FROM evidence_graph_build ORDER BY refresh_id"
         ).fetchall()
-        loaded = graph_mod.load_evidence_graph(conn, refresh_id="stable")
+        current_refresh_id = context_pack._current_state_refresh_id(
+            start=predecessor.start,
+            end=tail.end,
+            projects=(),
+        )
+        loaded = graph_mod.load_evidence_graph(conn, refresh_id=current_refresh_id)
         current_row = substrate_snapshot._current_graph_row(
             conn,
             start=predecessor.start,
             end=tail.end,
             projects=(),
         )
+        current_refresh_id_row = conn.execute(
+            "SELECT refresh_id FROM substrate_promotion_run "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+        current_graph_status = conn.execute(
+            """
+            SELECT refresh_id, status FROM substrate_source_status
+            WHERE source = 'evidence_graph'
+            ORDER BY recorded_at DESC LIMIT 1
+            """
+        ).fetchone()
 
-    assert refresh_ids == [("stable",)]
-    assert current_row == (4, 3)
+    assert refresh_ids == [("current-state:2026-05-01:2026-05-08:all",), ("stable",)]
+    assert current_row == (5, 3)
+    assert current_refresh_id_row == ("current-state:2026-05-01:2026-05-08:all",)
+    assert current_graph_status == ("current-state:2026-05-01:2026-05-08:all", "ok")
     assert loaded is not None
     assert {node.id for node in loaded.nodes} == {
         "commit:sha001",
         "ai_work:ev001",
         "github:pr99",
         "commit:tail",
+        "commit:tail2",
     }
     metrics = [
         json.loads(record.message.removeprefix("evidence_graph_performance "))
@@ -359,6 +430,9 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
         if record.message.startswith("evidence_graph_performance ")
     ]
     by_stage = {metric["stage"]: metric for metric in metrics}
+    assert by_stage["crossing_python_edges"]["edge_count"] == 0
+    assert by_stage["crossing_sql_edges"]["sql_edge_count"] == 1
+    assert by_stage["crossing_sql_edges"]["crossing_edge_count"] == 0
     assert set(by_stage) == {
         "predecessor_boundary",
         "tail_graph_build",

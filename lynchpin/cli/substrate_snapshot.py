@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from .current_state import main as current_state_main
 
 _PROGRESS_FORMAT = "plain"
+log = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         end=date.fromisoformat(args.end),
         projects=tuple(args.projects or ()),
         ensure_products=not args.existing_products,
+        incremental_tail_start=tail_start,
     )
     _record_run_step(refresh_id, "personal_daily_signal", "ok", "daily personal/content rows promoted")
     _progress("recording promotion run")
@@ -160,6 +163,11 @@ def _record_run_step(
                 row_count=row_count,
             )
     except Exception as exc:
+        log.warning(
+            "substrate snapshot receipt write failed: step=%s status=degraded error=%s",
+            step,
+            exc,
+        )
         _progress(f"run-step observability skipped for {step}: {exc}")
 
 
@@ -202,6 +210,18 @@ def _current_graph_row(
     return int(row[0]), int(row[1])
 
 
+def _current_graph_refresh_id(
+    conn: object,
+    *,
+    refresh_id: str,
+) -> str | None:
+    row = conn.execute(
+        "SELECT refresh_id FROM evidence_graph_build WHERE refresh_id = ? LIMIT 1",
+        [refresh_id],
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
 def _record_snapshot_materialization_statuses(
     *,
     start: date,
@@ -241,13 +261,19 @@ def _record_snapshot_materialization_statuses(
             end=end,
             projects=projects,
         )
+        graph_refresh_id = _current_graph_refresh_id(conn, refresh_id=refresh_id)
+        graph_coherent = graph_row is not None and graph_refresh_id == refresh_id
         record_source_status(
             conn,
             refresh_id=refresh_id,
             source=SOURCE_EVIDENCE_GRAPH,
-            status="ok" if graph_row else "error",
-            reason=None if graph_row else "evidence graph build row is missing after snapshot promotion",
-            row_count=int(graph_row[0]) if graph_row else 0,
+            status="ok" if graph_coherent else "error",
+            reason=(
+                None
+                if graph_coherent
+                else "snapshot graph generation does not match the publication refresh identity"
+            ),
+            row_count=int(graph_row[0]) if graph_coherent else 0,
             window_start=start,
             window_end=end,
         )
@@ -259,6 +285,7 @@ def _promote_snapshot_daily_signals(
     end: date,
     projects: tuple[str, ...],
     ensure_products: bool = True,
+    incremental_tail_start: date | None = None,
 ) -> None:
     from lynchpin.analysis.active.substrate_promote_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
@@ -281,12 +308,28 @@ def _promote_snapshot_daily_signals(
     if ensure_products:
         for product in ("title_metadata", "activity_content", "personal_daily_signals"):
             ensure_materialized(product, window=(start, end))
-    rows = [
+    signal_start = incremental_tail_start or start
+    rows = (
         (row.source, row.date, row.metric, row.value, row.dimensions)
-        for row in iter_personal_daily_signals(start=start, end=end, ensure=False)
-    ]
+        for row in iter_personal_daily_signals(start=signal_start, end=end, ensure=False)
+    )
     with connect(substrate_path()) as conn:
         apply_schema(conn)
+        previous_refresh_id = None
+        if incremental_tail_start is not None:
+            from lynchpin.substrate.graph import compatible_graph_predecessor
+
+            previous_refresh_id = compatible_graph_predecessor(
+                conn,
+                current_refresh_id=refresh_id,
+                full_start=start,
+                tail_start=incremental_tail_start,
+                projects=projects,
+            )
+            if previous_refresh_id is None:
+                raise RuntimeError(
+                    "incremental daily-signal promotion requires a compatible graph predecessor"
+                )
         # The substrate personal promoters own their transactions through
         # promote_rows(). Starting an outer transaction here would nest those
         # transactions and abort as soon as the first non-empty product is
@@ -317,7 +360,13 @@ def _promote_snapshot_daily_signals(
                 if row.last_date is not None and row.first_date is not None
             ),
         )
-        count = promote_personal_daily_signals(conn, refresh_id=refresh_id, rows=rows)
+        count = promote_personal_daily_signals(
+            conn,
+            refresh_id=refresh_id,
+            rows=rows,
+            previous_refresh_id=previous_refresh_id,
+            incremental_tail_start=incremental_tail_start,
+        )
         record_source_status(
             conn,
             refresh_id=refresh_id,
@@ -370,12 +419,14 @@ def _record_snapshot_promotion_run(
             """,
             [refresh_id],
         ).fetchall()
-        graph_row = _current_graph_row(
-            conn,
-            start=start,
-            end=end,
-            projects=projects,
-        )
+        graph_row = conn.execute(
+            """
+            SELECT node_count, edge_count
+            FROM evidence_graph_build
+            WHERE refresh_id = ?
+            """,
+            [refresh_id],
+        ).fetchone()
         counts = {
             "evidence_graph_nodes": int(graph_row[0]) if graph_row else 0,
             "evidence_graph_edges": int(graph_row[1]) if graph_row else 0,

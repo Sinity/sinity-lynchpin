@@ -152,7 +152,7 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
     monkeypatch.setattr(
         materialize,
         "_record_incremental_phase",
-        lambda _generation, measurement, *, metrics: phase_evidence.append((measurement.phase, metrics)),
+        lambda _generation, measurement, *, metrics, **_kwargs: phase_evidence.append((measurement.phase, metrics)),
     )
     import lynchpin.cli.substrate_snapshot as snapshot
 
@@ -774,7 +774,10 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
     monkeypatch.setattr("lynchpin.substrate.personal.promote_activity_content_days", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("lynchpin.substrate.personal.promote_activity_content_buckets", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("lynchpin.substrate.personal.promote_activity_title_usage", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr("lynchpin.substrate.personal.promote_personal_daily_signals", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        "lynchpin.substrate.personal.promote_personal_daily_signals",
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
+    )
     monkeypatch.setattr(
         "lynchpin.analysis.active.substrate_promote_status.record_source_status",
         lambda *_args, **_kwargs: None,
@@ -797,9 +800,9 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
         ("personal_daily_signals", (date(2026, 5, 1), date(2026, 5, 2))),
     ]
     assert read_windows == [
-        ("personal_daily_signals", date(2026, 5, 1), date(2026, 5, 2), False),
         ("activity_content_days", date(2026, 5, 1), date(2026, 5, 2), False),
         ("activity_title_usage", date(2026, 5, 1), date(2026, 5, 2), False),
+        ("personal_daily_signals", date(2026, 5, 1), date(2026, 5, 2), False),
     ]
     assert "BEGIN TRANSACTION" not in executed_sql
 
@@ -870,3 +873,32 @@ def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
         "projects": (),
     }
     assert promoted["ensure_products"] is False
+
+
+def test_snapshot_threads_incremental_tail_to_daily_signal_promotion(monkeypatch) -> None:
+    import lynchpin.cli.substrate_snapshot as snapshot
+
+    promoted: dict[str, object] = {}
+    incremental: dict[str, object] = {}
+    monkeypatch.setattr(snapshot, "_record_run_step", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_record_snapshot_materialization_statuses", lambda **_kwargs: None)
+    monkeypatch.setattr(snapshot, "_record_snapshot_promotion_run", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "lynchpin.graph.context_pack.materialize_incremental_evidence_graph",
+        lambda **kwargs: incremental.update(kwargs),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_promote_snapshot_daily_signals",
+        lambda **kwargs: promoted.update(kwargs),
+    )
+
+    assert snapshot.main(
+        [
+            "--start", "2026-05-01", "--end", "2026-05-10",
+            "--incremental-tail-start", "2026-05-08",
+            "--existing-products", "--graph-only", "--progress", "quiet",
+        ]
+    ) == 0
+    assert incremental["tail_start"] == date(2026, 5, 8)
+    assert promoted["incremental_tail_start"] == date(2026, 5, 8)

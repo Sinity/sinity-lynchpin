@@ -500,6 +500,49 @@ def load_evidence_graph_boundary_nodes(
     )
 
 
+def compatible_graph_predecessor(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    current_refresh_id: str,
+    full_start: date,
+    tail_start: date,
+    projects: Sequence[str] = (),
+) -> str | None:
+    """Return the compatible predecessor for one incremental generation.
+
+    The current window-derived refresh ID is the publication identity.  On a
+    first advancing-end run, copy the newest compatible predecessor.  On a
+    rerun where no older compatible build exists, reusing the current partition
+    is safe because the tail replacement is idempotent.
+    """
+    predicates = """
+        start_date <= ? AND end_date >= ?
+        AND (len(projects) = 0 OR projects = ?)
+    """
+    row = conn.execute(
+        f"""
+        SELECT refresh_id
+        FROM evidence_graph_build
+        WHERE {predicates} AND refresh_id <> ?
+        ORDER BY generated_at DESC, materialized_at DESC
+        LIMIT 1
+        """,
+        [full_start, tail_start, list(projects), current_refresh_id],
+    ).fetchone()
+    if row is not None:
+        return str(row[0])
+    row = conn.execute(
+        f"""
+        SELECT refresh_id
+        FROM evidence_graph_build
+        WHERE {predicates} AND refresh_id = ?
+        LIMIT 1
+        """,
+        [full_start, tail_start, list(projects), current_refresh_id],
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def promote_incremental_evidence_graph(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -773,6 +816,7 @@ def promote_evidence_graph(
 __all__ = [
     "compute_file_overlap_edges",
     "compute_symbol_overlap_edges",
+    "compatible_graph_predecessor",
     "list_evidence_graph_builds",
     "load_evidence_graph",
     "load_evidence_graph_boundary_nodes",
