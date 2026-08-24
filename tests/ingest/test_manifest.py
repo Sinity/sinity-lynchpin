@@ -136,6 +136,24 @@ def test_atomic_write_fsyncs_data_before_replace_and_directory_after(
     assert events == ["data", "replace", "directory"]
 
 
+def test_atomic_write_reports_parent_fsync_failure_after_publication(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "out.json"
+    target.write_text("old", encoding="utf-8")
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("simulated parent fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="simulated parent fsync failure"):
+        atomic_write_text(target, "new")
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob(".out.json.*.tmp"))
+
+
 def test_overlapping_writers_get_distinct_same_directory_temps(monkeypatch, tmp_path) -> None:
     target = tmp_path / "rows.ndjson"
     sources: list[Path] = []
