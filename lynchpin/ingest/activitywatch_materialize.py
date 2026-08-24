@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import heapq
+from itertools import chain
 import json
 import sys
 from datetime import date, datetime, timedelta
@@ -21,7 +22,12 @@ from ..sources.activitywatch_raw import (
     events_from_activitywatch_dbs,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
+from ._manifest import (
+    atomic_write_indexed_ndjson,
+    guard_incremental_shrinkage,
+    replace_indexed_ndjson_tail,
+    write_manifest,
+)
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
@@ -58,48 +64,93 @@ def materialize_activitywatch_events(
         kwargs.update(start=window[0], end=window[1])
     raw = events_from_activitywatch_dbs(BUCKET_PREFIXES, **kwargs)
     cleaned = dedup_and_merge(raw) if dedupe else raw
-    existing = (
-        _iter_existing_rows(output, start=start, end=end)
-        if start is not None and end is not None and output.exists()
-        else iter(())
+    manifest_path = output.with_suffix(".manifest.json")
+    previous_manifest = _read_manifest(manifest_path)
+    bounded_tail = (
+        start is not None
+        and end is not None
+        and _can_replace_tail(output, previous_manifest, end=end)
     )
-    ordered = _merge_existing_rows(existing, cleaned)
-    row_count = 0
-    observed_dates: set[date] = set()
-    first_start: datetime | None = None
-    last_start: datetime | None = None
-
+    carrier_start = start - timedelta(days=1) if start is not None else None
+    if bounded_tail:
+        assert carrier_start is not None and start is not None
+        boundary_rows = _iter_indexed_rows(
+            output,
+            previous_manifest.get("row_offsets"),
+            start=carrier_start,
+            stop=start,
+        )
+        ordered = chain(boundary_rows, (_event_row(event) for event in cleaned))
+    else:
+        existing = (
+            _iter_existing_rows(output, start=start, end=end)
+            if start is not None and end is not None and output.exists()
+            else iter(())
+        )
+        ordered = _merge_existing_rows(existing, (_event_row(event) for event in cleaned))
+    ordered = list(sorted(ordered, key=lambda item: (_row_logical_date(item) or date.min, _row_key(item))))
+    valid_rows: list[tuple[dict[str, Any], datetime]] = []
+    row_counts: dict[str, int] = {}
+    for row in ordered:
+        try:
+            start_dt = datetime.fromisoformat(str(row["start"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        valid_rows.append((row, start_dt))
+        day = logical_date(start_dt).isoformat()
+        row_counts[day] = row_counts.get(day, 0) + 1
+    row_count = len(valid_rows)
+    first_start = min((item[1] for item in valid_rows), default=None)
+    last_start = max((item[1] for item in valid_rows), default=None)
+    observed_dates = {logical_date(item[1]) for item in valid_rows}
     def tracked_rows():
-        nonlocal row_count, first_start, last_start
-        for row in ordered:
-            try:
-                start_dt = datetime.fromisoformat(str(row["start"]).replace("Z", "+00:00"))
-            except (KeyError, TypeError, ValueError):
-                continue
-            row_count += 1
-            first_start = start_dt if first_start is None else min(first_start, start_dt)
-            last_start = start_dt if last_start is None else max(last_start, start_dt)
-            observed_dates.add(logical_date(start_dt))
+        for row, _start_dt in valid_rows:
             yield row
 
-    temporary_output = output.with_name(f".{output.name}.materialize-tmp")
     try:
-        _write_ndjson(temporary_output, tracked_rows())
+        combined_count = _combined_row_count(
+            previous_manifest, row_count, bounded_tail=bounded_tail, start=carrier_start
+        )
         if start is not None and end is not None:
             guard_incremental_shrinkage(
-                output.with_suffix(".manifest.json"),
-                row_count,
+                manifest_path,
+                combined_count,
                 dataset="activitywatch.events",
             )
-        temporary_output.replace(output)
+        if bounded_tail:
+            assert carrier_start is not None
+            row_offsets = replace_indexed_ndjson_tail(
+                output,
+                tracked_rows(),
+                start=carrier_start,
+                date_getter=_row_logical_date,
+                offsets=previous_manifest.get("row_offsets"),
+            )
+            row_offsets = {
+                **{
+                    day: offset
+                    for day, offset in (
+                        previous_manifest.get("row_offsets", {})
+                        if isinstance(previous_manifest.get("row_offsets"), dict)
+                        else {}
+                    ).items()
+                    if isinstance(offset, int) and carrier_start is not None and _safe_date(day) < carrier_start
+                },
+                **row_offsets,
+            }
+        else:
+            row_offsets = atomic_write_indexed_ndjson(
+                output,
+                tracked_rows(),
+                date_getter=_row_logical_date,
+            )
     except Exception:
-        temporary_output.unlink(missing_ok=True)
         raise
     verified_bounds = (
         (min(observed_dates), max(observed_dates)) if observed_dates else None
     )
     covered_dates = _merge_covered_dates(
-        manifest=output.with_suffix(".manifest.json"),
+        manifest=manifest_path,
         observed_dates=observed_dates,
         start=start,
         end=end,
@@ -109,7 +160,7 @@ def materialize_activitywatch_events(
         "dataset": "activitywatch.events",
         "schema_version": ACTIVITYWATCH_EVENTS_SCHEMA_VERSION,
         "materialized_path": str(output),
-        "row_count": row_count,
+        "row_count": _combined_row_count(previous_manifest, row_count, bounded_tail=bounded_tail, start=carrier_start),
         "first_date": covered_dates[0].isoformat() if covered_dates else None,
         "last_date": covered_dates[-1].isoformat() if covered_dates else None,
         "first_timestamp_date": first_start.date().isoformat() if first_start else None,
@@ -120,16 +171,21 @@ def materialize_activitywatch_events(
         "window_start": start.isoformat() if start is not None else None,
         "window_end": end.isoformat() if end is not None else None,
         "window_semantics": "start inclusive, end exclusive" if start is not None and end is not None else None,
+        "row_order": "logical_date",
+        "row_offsets": row_offsets,
+        "row_counts": _combined_row_counts(previous_manifest, row_counts, bounded_tail=bounded_tail),
         "bucket_prefixes": list(BUCKET_PREFIXES),
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
     }
-    write_manifest(output.with_suffix(".manifest.json"), manifest)
+    write_manifest(manifest_path, manifest)
     return manifest
 
 
-def _event_row(event: AWEvent) -> dict[str, Any]:
+def _event_row(event: AWEvent | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(event, dict):
+        return event
     return {
         "bucket": event.bucket,
         "start": event.start.isoformat(),
@@ -179,8 +235,108 @@ def _merge_existing_rows(existing, cleaned):
         yield row
 
 
-def _write_ndjson(path: Path, rows) -> None:
-    atomic_write_ndjson(path, rows)
+def _read_manifest(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _iter_indexed_rows(
+    path: Path,
+    offsets: object,
+    *,
+    start: date,
+    stop: date,
+):
+    if not isinstance(offsets, dict):
+        return
+    parsed: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            parsed.append((date.fromisoformat(str(raw_day)), raw_offset))
+        except ValueError:
+            continue
+    if not parsed:
+        return
+    seek = max((offset for day, offset in parsed if day <= start), default=min(offset for _, offset in parsed))
+    with path.open("rb") as handle:
+        handle.seek(seek)
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                row = json.loads(raw_line)
+                day = _row_logical_date(row)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if day is None:
+                continue
+            if day >= stop:
+                break
+            if day >= start and isinstance(row, dict):
+                yield row
+
+
+def _safe_date(value: object) -> date:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return date.max
+
+
+def _can_replace_tail(path: Path, manifest: dict[str, Any], *, end: date) -> bool:
+    if not path.exists() or manifest.get("row_order") != "logical_date":
+        return False
+    offsets = manifest.get("row_offsets")
+    if not isinstance(offsets, dict) or not offsets:
+        return False
+    last = _safe_date(manifest.get("last_date"))
+    return last != date.max and end >= last + timedelta(days=1)
+
+
+def _combined_row_count(
+    previous_manifest: dict[str, Any],
+    tail_count: int,
+    *,
+    bounded_tail: bool,
+    start: date | None,
+) -> int:
+    if not bounded_tail:
+        return tail_count
+    previous = previous_manifest.get("row_count")
+    counts = previous_manifest.get("row_counts")
+    if not isinstance(previous, int) or not isinstance(counts, dict):
+        return tail_count
+    old_tail = sum(
+        value
+        for day, value in counts.items()
+        if isinstance(value, int) and start is not None and _safe_date(day) >= start
+    )
+    return previous - old_tail + tail_count
+
+
+def _combined_row_counts(
+    previous_manifest: dict[str, Any],
+    tail_counts: dict[str, int],
+    *,
+    bounded_tail: bool,
+) -> dict[str, int]:
+    if not bounded_tail:
+        return tail_counts
+    previous = previous_manifest.get("row_counts")
+    combined = dict(previous) if isinstance(previous, dict) else {}
+    start = min((_safe_date(day) for day in tail_counts), default=date.max)
+    for day in tuple(combined):
+        if _safe_date(day) >= start:
+            combined.pop(day, None)
+    combined.update(tail_counts)
+    return {str(day): int(value) for day, value in combined.items() if isinstance(value, int)}
 
 
 def _row_logical_date(row: dict[str, Any]) -> date | None:

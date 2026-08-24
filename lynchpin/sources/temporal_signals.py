@@ -61,7 +61,8 @@ def iter_temporal_signals(
             f"canonical temporal signal product is missing: {target}. "
             "Run python -m lynchpin.ingest.temporal_signals_materialize."
         )
-    with target.open(encoding="utf-8") as handle:
+    handle = _open_window(target, start=start)
+    with handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -72,7 +73,7 @@ def iter_temporal_signals(
             if start is not None and event_date < start:
                 continue
             if end is not None and event_date >= end:
-                continue
+                break
             event_payload = payload.get("payload")
             yield TemporalSignalEvent(
                 kind=str(payload.get("kind") or ""),
@@ -81,6 +82,45 @@ def iter_temporal_signals(
                 summary=str(payload.get("summary") or ""),
                 payload=event_payload if isinstance(event_payload, dict) else {},
             )
+
+
+def _open_window(path: Path, *, start: date | None):
+    handle = path.open(encoding="utf-8")
+    if start is None:
+        return handle
+    try:
+        payload = json.loads(path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+        offsets = payload.get("row_offsets") if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError):
+        offsets = None
+    if not isinstance(offsets, dict):
+        return handle
+    candidates: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if day <= start:
+            candidates.append((day, raw_offset))
+    if candidates:
+        handle.seek(max(candidates)[1])
+        return handle
+    future: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if day > start:
+            future.append((day, raw_offset))
+    if future:
+        handle.seek(min(future)[1])
+    return handle
 
 
 # ---------------------------------------------------------------------------

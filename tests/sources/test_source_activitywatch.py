@@ -274,6 +274,35 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
     assert [event.data for event in web] == [{"url": "https://example.com"}]
 
 
+def test_activitywatch_canonical_fallback_seeks_indexed_tail(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
+    from lynchpin.sources.activitywatch_raw import _events_from_ndjson
+
+    path = tmp_path / "events.ndjson"
+    rows = [
+        {"bucket": "aw-watcher-window_host", "start": "2026-03-13T10:00:00+00:00", "end": "2026-03-13T10:05:00+00:00", "data": {"app": "old"}},
+        {"bucket": "aw-watcher-window_host", "start": "2026-03-14T10:00:00+00:00", "end": "2026-03-14T10:05:00+00:00", "data": {"app": "tail"}},
+        {"bucket": "aw-watcher-window_host", "start": "2026-03-15T10:00:00+00:00", "end": "2026-03-15T10:05:00+00:00", "data": {"app": "future"}},
+    ]
+    offsets = atomic_write_indexed_ndjson(
+        path,
+        rows,
+        date_getter=lambda row: date.fromisoformat(row["start"][:10]),
+    )
+    path.with_suffix(".manifest.json").write_text(
+        json.dumps({"row_order": "logical_date", "row_offsets": offsets}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "lynchpin.sources.activitywatch_raw._load_all_events",
+        lambda _path: (_ for _ in ()).throw(AssertionError("historical carrier must not be parsed")),
+    )
+
+    events = list(_events_from_ndjson(path, bucket_prefix="aw-watcher-window_", start=datetime(2026, 3, 14, tzinfo=UTC), end=datetime(2026, 3, 15, tzinfo=UTC)))
+
+    assert [event.data["app"] for event in events] == ["tail"]
+
+
 def test_activitywatch_events_use_live_db_after_index_tail(monkeypatch) -> None:
     """A request after the indexed tail must avoid rebuilding canonical NDJSON."""
     live_event = SimpleNamespace(

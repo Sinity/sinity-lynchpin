@@ -18,7 +18,13 @@ from ..sources.personal_signals import (
 )
 from .exports_materialize import spotify_streams_path
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
+from ._manifest import (
+    atomic_write_indexed_ndjson,
+    atomic_write_ndjson,
+    guard_incremental_shrinkage,
+    replace_indexed_ndjson_tail,
+    write_manifest,
+)
 
 
 SignalRow = tuple[str, date, str, float, dict[str, Any]]
@@ -33,62 +39,101 @@ def materialize_personal_daily_signals(
     end: date | None = None,
 ) -> dict[str, Any]:
     output = output or personal_daily_signals_path()
+    bounded_tail = False
+    previous_manifest: dict[str, Any] = {}
     if (start is None) != (end is None):
         raise MaterializationError("personal_signals_materialize", reason="personal daily-signal materialization requires both start and end")
     if start is not None and end is not None:
         if end <= start:
             raise MaterializationError("personal_signals_materialize", reason="personal daily-signal materialization end must be after start")
         window_rows, input_files = _window_personal_daily_signal_rows_with_inputs(start, end)
-        rows = _merge_existing_signal_rows(
-            output=output,
-            start=start,
-            end=end,
-            window_rows=window_rows,
+        previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
+        bounded_tail = _can_replace_tail(output, previous_manifest, start=start, end=end)
+        rows = window_rows if bounded_tail else _merge_existing_signal_rows(
+            output=output, start=start, end=end, window_rows=window_rows
         )
-        signal_dates = [row[1] for row in rows]
+        signal_dates = [row[1] for row in (window_rows if bounded_tail else rows)]
         covered_dates = _merge_covered_dates(
             manifest=output.with_suffix(".manifest.json"),
             start=start,
             end=end,
-            verified_bounds=(min(signal_dates), max(signal_dates)) if signal_dates else None,
+            verified_bounds=_combined_bounds(previous_manifest, signal_dates),
         )
     else:
         rows, input_files = _personal_daily_signal_rows_with_inputs()
         covered_dates = tuple(sorted({row[1] for row in rows}))
     rows.sort(key=lambda row: (row[1], row[0], row[2], json.dumps(row[4], sort_keys=True)))
     output.parent.mkdir(parents=True, exist_ok=True)
+    encoded_rows = [
+        {
+            "source": source,
+            "date": day.isoformat(),
+            "metric": metric,
+            "value": value,
+            "dimensions": dimensions,
+        }
+        for source, day, metric, value, dimensions in rows
+    ]
+    old_counts = _int_dict(previous_manifest.get("row_counts"))
+    if start is not None and end is not None and bounded_tail:
+        row_counts = {}
+        for day, count in old_counts.items():
+            try:
+                if date.fromisoformat(day) < start:
+                    row_counts[day] = count
+            except ValueError:
+                continue
+        for row in encoded_rows:
+            day = str(row["date"])
+            row_counts[day] = row_counts.get(day, 0) + 1
+        total_row_count = sum(row_counts.values())
+    else:
+        row_counts = dict(Counter(str(row["date"]) for row in encoded_rows))
+        total_row_count = len(encoded_rows)
     if start is not None and end is not None:
         guard_incremental_shrinkage(
             output.with_suffix(".manifest.json"),
-            len(rows),
+            total_row_count,
             dataset="lynchpin.personal_daily_signals",
         )
-    atomic_write_ndjson(
-        output,
-        (
-            {
-                "source": source,
-                "date": day.isoformat(),
-                "metric": metric,
-                "value": value,
-                "dimensions": dimensions,
-            }
-            for source, day, metric, value, dimensions in rows
-        ),
-    )
-    counts = Counter(source for source, *_ in rows)
+    if start is not None and end is not None and bounded_tail:
+        row_offsets = replace_indexed_ndjson_tail(
+            output,
+            encoded_rows,
+            start=start,
+            date_getter=lambda row: date.fromisoformat(str(row["date"])),
+            offsets=previous_manifest.get("row_offsets"),
+        )
+    else:
+        row_offsets = atomic_write_indexed_ndjson(
+            output,
+            encoded_rows,
+            date_getter=lambda row: date.fromisoformat(str(row["date"])),
+        )
+    counts = Counter(str(row["source"]) for row in encoded_rows)
+    all_dates = [row[1] for row in rows]
+    if bounded_tail:
+        for key in ("first_date", "last_date"):
+            raw = previous_manifest.get(key)
+            if isinstance(raw, str):
+                try:
+                    all_dates.append(date.fromisoformat(raw))
+                except ValueError:
+                    pass
     manifest = _manifest(
         dataset="lynchpin.personal_daily_signals",
         schema_version=PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
         output=output,
-        row_count=len(rows),
-        first_date=min((row[1] for row in rows), default=None),
-        last_date=max((row[1] for row in rows), default=None),
+        row_count=total_row_count,
+        first_date=min(all_dates, default=None),
+        last_date=max(all_dates, default=None),
         source_counts=dict(sorted(counts.items())),
         input_files=input_files,
         covered_dates=covered_dates,
         window_start=start,
         window_end=end,
+        row_offsets=row_offsets,
+        row_counts=dict(sorted(row_counts.items())),
     )
     write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
@@ -596,6 +641,53 @@ def _personal_daily_signal_input_files(
     return tuple(dict.fromkeys(paths))
 
 
+def _read_manifest(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _int_dict(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items() if isinstance(item, int)}
+
+
+def _can_replace_tail(
+    output: Path,
+    manifest: dict[str, Any],
+    *,
+    start: date,
+    end: date,
+) -> bool:
+    if not output.exists() or not isinstance(manifest.get("row_offsets"), dict):
+        return False
+    last = manifest.get("last_date")
+    try:
+        return isinstance(last, str) and end >= date.fromisoformat(last) + timedelta(days=1)
+    except ValueError:
+        return False
+
+
+def _combined_bounds(
+    previous_manifest: dict[str, Any],
+    signal_dates: list[date],
+) -> tuple[date, date] | None:
+    bounds: list[date] = list(signal_dates)
+    for key in ("first_date", "last_date"):
+        raw = previous_manifest.get(key)
+        if isinstance(raw, str):
+            try:
+                bounds.append(date.fromisoformat(raw))
+            except ValueError:
+                pass
+    return (min(bounds), max(bounds)) if bounds else None
+
+
 def _manifest(
     *,
     dataset: str,
@@ -609,6 +701,8 @@ def _manifest(
     covered_dates: tuple[date, ...] = (),
     window_start: date | None = None,
     window_end: date | None = None,
+    row_offsets: dict[str, int] | None = None,
+    row_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "dataset": dataset,
@@ -621,6 +715,7 @@ def _manifest(
         "input_latest_mtime": latest_mtime_iso(input_files),
         "covered_dates": [day.isoformat() for day in covered_dates],
         "covered_date_count": len(covered_dates),
+        "row_order": "logical_date",
     }
     if window_start is not None and window_end is not None:
         manifest["window_start"] = window_start.isoformat()
@@ -630,6 +725,10 @@ def _manifest(
         manifest["schema_version"] = schema_version
     if source_counts is not None:
         manifest["source_counts"] = source_counts
+    if row_offsets is not None:
+        manifest["row_offsets"] = row_offsets
+    if row_counts is not None:
+        manifest["row_counts"] = row_counts
     return manifest
 
 

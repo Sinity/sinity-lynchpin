@@ -376,6 +376,30 @@ def test_materialize_personal_daily_signals_merges_window_and_tracks_precise_cov
     assert manifest["window_semantics"] == "start inclusive, end exclusive"
 
 
+def test_personal_daily_signals_empty_tail_preserves_indexed_history(monkeypatch, tmp_path):
+    output = tmp_path / "personal_daily_signals.ndjson"
+    initial = [("keylog", date(2026, 5, 1), "keypress_count", 10.0, {})]
+    monkeypatch.setattr(
+        "lynchpin.ingest.personal_signals_materialize._personal_daily_signal_rows_with_inputs",
+        lambda: (initial, ()),
+    )
+    materialize_personal_daily_signals(output=output)
+    monkeypatch.setattr(
+        "lynchpin.ingest.personal_signals_materialize._window_personal_daily_signal_rows_with_inputs",
+        lambda _start, _end: ([], ()),
+    )
+
+    manifest = materialize_personal_daily_signals(
+        output=output,
+        start=date(2026, 5, 2),
+        end=date(2026, 5, 4),
+    )
+
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 1
+    assert manifest["row_count"] == 1
+    assert manifest["row_counts"] == {"2026-05-01": 1}
+
+
 def test_personal_daily_signal_inputs_fall_back_to_raw_roots(tmp_path) -> None:
     from lynchpin.ingest.personal_signals_materialize import _personal_daily_signal_input_files
     from lynchpin.materialization import MaterializedDataset

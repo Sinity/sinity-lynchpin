@@ -275,11 +275,15 @@ def _events_from_ndjson(
 ) -> Iterator[AWEvent]:
     """Yield AW events matching ``bucket_prefix`` and overlapping [start, end).
 
-    Backed by a process-cached full parse — the 450MB NDJSON is parsed
-    exactly once per process, then sliced in memory per call. The cache
-    is keyed by the file path and refreshes when ``path.stat()`` changes
-    (mtime + size), so a re-materialize is observed automatically.
+    New canonical carriers publish a logical-day byte index.  Those reads
+    seek directly to the requested tail and stop at the end boundary.  Older
+    carriers retain the cached full-parse fallback for explicit recovery.
     """
+    manifest = path.with_suffix(".manifest.json")
+    indexed = _indexed_ndjson_window(path, manifest, bucket_prefix=bucket_prefix, start=start, end=end)
+    if indexed is not None:
+        yield from indexed
+        return
     by_bucket = _load_events_by_bucket(path)
     for bucket, bucket_events in by_bucket.items():
         if not bucket.startswith(bucket_prefix):
@@ -297,6 +301,63 @@ def _events_from_ndjson(
             if event.end <= start:
                 continue
             yield event
+
+
+def _indexed_ndjson_window(
+    path: Path,
+    manifest: Path,
+    *,
+    bucket_prefix: str,
+    start: datetime,
+    end: datetime,
+) -> Iterator[AWEvent] | None:
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("row_order") != "logical_date":
+        return None
+    offsets = payload.get("row_offsets")
+    if not isinstance(offsets, dict):
+        return None
+    parsed: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            parsed.append((date.fromisoformat(str(raw_day)), raw_offset))
+        except ValueError:
+            continue
+    if not parsed:
+        return None
+    logical_start = logical_date(start)
+    seek = max((offset for day, offset in parsed if day <= logical_start), default=min(offset for _, offset in parsed))
+
+    def iterator() -> Iterator[AWEvent]:
+        with path.open("rb") as handle:
+            handle.seek(seek)
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                try:
+                    row = json.loads(raw_line)
+                    event_start = datetime.fromisoformat(str(row["start"]).replace("Z", "+00:00"))
+                    event_end = datetime.fromisoformat(str(row["end"]).replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if event_start >= end:
+                    break
+                if not str(row.get("bucket") or "").startswith(bucket_prefix) or event_end <= start:
+                    continue
+                data = row.get("data")
+                yield AWEvent(
+                    bucket=str(row.get("bucket") or ""),
+                    start=event_start,
+                    end=event_end,
+                    data=data if isinstance(data, dict) else {},
+                )
+
+    return iterator()
 
 
 def _load_events_by_bucket(path: Path) -> dict[str, tuple[AWEvent, ...]]:

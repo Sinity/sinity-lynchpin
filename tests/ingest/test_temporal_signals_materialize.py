@@ -92,6 +92,36 @@ def test_materialize_temporal_signals_merges_window_and_tracks_covered_dates(mon
     ]
 
 
+def test_temporal_signals_empty_tail_preserves_indexed_history(monkeypatch, tmp_path) -> None:
+    output = tmp_path / "signals.ndjson"
+    event = SimpleNamespace(
+        kind="temporal_trend",
+        signal="deep_work_min",
+        event_date=date(2026, 5, 1),
+        summary="stable",
+        payload={"value": 1},
+    )
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize._ensure_temporal_inputs",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize.detect_temporal_signals",
+        lambda **_kwargs: (event,),
+    )
+    materialize_temporal_signals(start=date(2026, 5, 1), end=date(2026, 5, 2), output=output)
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize.detect_temporal_signals",
+        lambda **_kwargs: (),
+    )
+
+    manifest = materialize_temporal_signals(start=date(2026, 5, 2), end=date(2026, 5, 4), output=output)
+
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 1
+    assert manifest["row_count"] == 1
+    assert manifest["row_counts"] == {"2026-05-01": 1}
+
+
 def test_temporal_inputs_refresh_only_activitywatch_tail(monkeypatch) -> None:
     from lynchpin.ingest.temporal_signals_materialize import _ensure_temporal_inputs
 

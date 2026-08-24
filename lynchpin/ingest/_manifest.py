@@ -1,15 +1,11 @@
 """Shared atomic-write helpers for ingest materializers.
 
-Every materializer here rewrites its full canonical NDJSON (and manifest)
-on each run -- incremental runs read the existing file, merge in the
-window they just computed, and rewrite the whole thing. A direct
-``path.open("w")``/``path.write_text()`` truncates the file before the new
-content is fully written, so a crash mid-write, an OOM kill, or two
-overlapping runs of the same materializer can leave a torn/partial file on
-disk (confirmed: a single truncated line in atuin's history.ndjson,
-lynchpin-mxo). Writing to a sibling temp file and renaming into place is
-atomic on the same filesystem (POSIX ``rename(2)``): a reader either sees
-the old complete file or the new complete file, never a partial one.
+Full rebuilds write a sibling temporary file and rename it into place. Indexed
+logical-day products may instead replace only a proven tail, preserving the
+historical prefix and its byte offsets. A direct ``path.open("w")`` /
+``path.write_text()`` truncates a carrier before the new content is complete,
+so full rebuilds always use the atomic temporary-file path; tail callers must
+prove an indexed, append-compatible generation before using the bounded route.
 """
 
 from __future__ import annotations
@@ -20,7 +16,7 @@ import stat
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, TextIO
 
@@ -172,6 +168,81 @@ def atomic_write_ndjson(path: Path, rows: Iterable[Any], *, dumps: Any = None) -
             handle.write("\n")
 
     _atomic_write(path, write_rows)
+
+
+def atomic_write_indexed_ndjson(
+    path: Path,
+    rows: Iterable[Any],
+    *,
+    date_getter: Callable[[Any], date | None],
+    dumps: Any = None,
+) -> dict[str, int]:
+    """Atomically write NDJSON and record the first byte offset for each day.
+
+    The index is deliberately a small logical-day index, not one entry per
+    row.  Readers can seek directly to the beginning of a bounded tail and
+    avoid parsing the historical carrier.  Callers must provide rows ordered
+    by the same logical date used by ``date_getter``.
+    """
+    serialize = dumps or (lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True))
+    tmp_path = _tmp_sibling(path)
+    offsets: dict[str, int] = {}
+    with tmp_path.open("wb") as handle:
+        for row in rows:
+            day = date_getter(row)
+            if day is not None:
+                offsets.setdefault(day.isoformat(), handle.tell())
+            handle.write(serialize(row).encode("utf-8"))
+            handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp_path.replace(path)
+    return offsets
+
+
+def replace_indexed_ndjson_tail(
+    path: Path,
+    rows: Iterable[Any],
+    *,
+    start: date,
+    date_getter: Callable[[Any], date | None],
+    offsets: object = None,
+    dumps: Any = None,
+) -> dict[str, int]:
+    """Replace a sorted NDJSON tail in place and return its new day index.
+
+    This is intentionally only used for a proven append/tail window.  The
+    caller must fall back to ``atomic_write_indexed_ndjson`` when the existing
+    manifest has no offsets or when the requested window is in the middle of
+    history.  The historical prefix is never read or rewritten.
+    """
+    if not path.exists() or not isinstance(offsets, dict):
+        raise ValueError("indexed tail replacement requires an existing indexed NDJSON product")
+    parsed: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            parsed.append((date.fromisoformat(str(raw_day)), raw_offset))
+        except ValueError:
+            continue
+    if not parsed:
+        raise ValueError("indexed tail replacement requires at least one valid day offset")
+    tail_offset = min((offset for day, offset in parsed if day >= start), default=path.stat().st_size)
+    serialize = dumps or (lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True))
+    next_offsets = {day.isoformat(): offset for day, offset in parsed if day < start}
+    with path.open("r+b") as handle:
+        handle.seek(tail_offset)
+        handle.truncate()
+        for row in rows:
+            day = date_getter(row)
+            if day is not None:
+                next_offsets.setdefault(day.isoformat(), handle.tell())
+            handle.write(serialize(row).encode("utf-8"))
+            handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return dict(sorted(next_offsets.items()))
 
 
 def write_manifest(path: Path, fields: dict[str, Any]) -> None:

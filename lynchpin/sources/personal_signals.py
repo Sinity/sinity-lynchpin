@@ -93,7 +93,8 @@ def iter_personal_daily_signals(
             f"canonical personal daily-signal materialization is missing: {target}. "
             "Run python -m lynchpin.cli.materialize --all."
         )
-    with target.open(encoding="utf-8") as handle:
+    handle = _open_window(target, start=start, end=end)
+    with handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -104,7 +105,7 @@ def iter_personal_daily_signals(
             if start is not None and row_date < start:
                 continue
             if end is not None and row_date >= end:
-                continue
+                break
             dimensions = payload.get("dimensions")
             yield PersonalDailySignal(
                 source=str(payload.get("source") or ""),
@@ -132,7 +133,8 @@ def iter_spotify_daily_signals(
             f"canonical Spotify daily materialization is missing: {target}. "
             "Run python -m lynchpin.cli.materialize --all."
         )
-    with target.open(encoding="utf-8") as handle:
+    handle = _open_window(target, start=start, end=end)
+    with handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -143,7 +145,7 @@ def iter_spotify_daily_signals(
             if start is not None and row_date < start:
                 continue
             if end is not None and row_date >= end:
-                continue
+                break
             yield SpotifyDailySignal(
                 date=row_date,
                 track_count=int(payload.get("track_count") or 0),
@@ -153,3 +155,53 @@ def iter_spotify_daily_signals(
                 top_artists=tuple(str(item) for item in payload.get("top_artists") or ()),
                 top_tracks=tuple(str(item) for item in payload.get("top_tracks") or ()),
             )
+
+
+def _open_window(
+    path: Path,
+    *,
+    start: date | None,
+    end: date | None,
+):
+    """Open a daily product at its indexed tail when the manifest permits it."""
+    handle = path.open(encoding="utf-8")
+    if start is None:
+        return handle
+    manifest_path = path.with_suffix(".manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        offset = _indexed_offset(manifest.get("row_offsets"), start=start)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        offset = None
+    if offset is None:
+        return handle
+    handle.seek(offset)
+    return handle
+
+
+def _indexed_offset(offsets: object, *, start: date) -> int | None:
+    if not isinstance(offsets, dict):
+        return None
+    candidates: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if day <= start:
+            candidates.append((day, raw_offset))
+    if candidates:
+        return max(candidates)[1]
+    future: list[tuple[date, int]] = []
+    for raw_day, raw_offset in offsets.items():
+        if not isinstance(raw_offset, int):
+            continue
+        try:
+            day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if day > start:
+            future.append((day, raw_offset))
+    return min(future)[1] if future else None

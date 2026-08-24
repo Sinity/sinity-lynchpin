@@ -17,7 +17,12 @@ from ..sources.temporal_signals import (
     detect_temporal_signals,
     temporal_signals_path,
 )
-from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
+from ._manifest import (
+    atomic_write_indexed_ndjson,
+    guard_incremental_shrinkage,
+    replace_indexed_ndjson_tail,
+    write_manifest,
+)
 from .manifest_windows import merge_manifest_covered_dates
 
 
@@ -46,13 +51,54 @@ def materialize_temporal_signals(
             ensure_inputs=False,
         )
     ]
-    rows = _merge_existing_rows(output=output, start=start, end=end, window_rows=window_rows)
+    previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
+    bounded_tail = _can_replace_tail(output, previous_manifest, start=start, end=end)
+    rows = window_rows if bounded_tail else _merge_existing_rows(
+        output=output, start=start, end=end, window_rows=window_rows
+    )
     rows.sort(key=lambda row: (row["event_date"], row["kind"], row["signal"], json.dumps(row["payload"], sort_keys=True)))
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    guard_incremental_shrinkage(output.with_suffix(".manifest.json"), len(rows), dataset="lynchpin.temporal_signals")
-    atomic_write_ndjson(output, rows)
-
+    if bounded_tail:
+        old_counts = {
+            str(day): int(value)
+            for day, value in (previous_manifest.get("row_counts") or {}).items()
+            if isinstance(value, int) and str(day) < start.isoformat()
+        }
+        for row in rows:
+            day = str(row["event_date"])
+            old_counts[day] = old_counts.get(day, 0) + 1
+        total_row_count = sum(old_counts.values())
+    else:
+        total_row_count = len(rows)
+    guard_incremental_shrinkage(output.with_suffix(".manifest.json"), total_row_count, dataset="lynchpin.temporal_signals")
+    if bounded_tail:
+        row_offsets = replace_indexed_ndjson_tail(
+            output,
+            rows,
+            start=start,
+            date_getter=lambda row: date.fromisoformat(str(row["event_date"])),
+            offsets=previous_manifest.get("row_offsets"),
+        )
+        row_counts = {
+            str(day): int(value)
+            for day, value in (previous_manifest.get("row_counts") or {}).items()
+            if isinstance(value, int) and str(day) < start.isoformat()
+        }
+        for row in rows:
+            day = str(row["event_date"])
+            row_counts[day] = row_counts.get(day, 0) + 1
+    else:
+        row_offsets = atomic_write_indexed_ndjson(
+            output,
+            rows,
+            date_getter=lambda row: date.fromisoformat(str(row["event_date"])),
+        )
+        total_row_count = len(rows)
+        row_counts = {}
+        for row in rows:
+            day = str(row["event_date"])
+            row_counts[day] = row_counts.get(day, 0) + 1
     input_files = _temporal_input_files(start, end)
     event_dates = [date.fromisoformat(str(row["event_date"])) for row in rows]
     covered_dates = _merge_covered_dates(
@@ -74,7 +120,7 @@ def materialize_temporal_signals(
         "window_end": end.isoformat(),
         "window_semantics": "[start, end) — start inclusive, end exclusive",
         "baseline_days": ANOMALY_BASELINE_DAYS,
-        "row_count": len(rows),
+        "row_count": total_row_count,
         "kind_counts": dict(sorted(counts.items())),
         "covered_dates": [day.isoformat() for day in covered_dates],
         "covered_date_count": len(covered_dates),
@@ -83,6 +129,9 @@ def materialize_temporal_signals(
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
+        "row_offsets": row_offsets,
+        "row_counts": dict(sorted(row_counts.items())),
+        "row_order": "logical_date",
     }
     write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
@@ -151,6 +200,32 @@ def _read_existing_rows(path: Path) -> list[SignalRow]:
             if isinstance(payload, dict):
                 rows.append(payload)
     return rows
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _can_replace_tail(
+    output: Path,
+    manifest: dict[str, Any],
+    *,
+    start: date,
+    end: date,
+) -> bool:
+    if not output.exists() or not isinstance(manifest.get("row_offsets"), dict):
+        return False
+    last = manifest.get("last_date")
+    try:
+        return isinstance(last, str) and end >= date.fromisoformat(last) + timedelta(days=1)
+    except ValueError:
+        return False
 
 
 def _merge_covered_dates(
