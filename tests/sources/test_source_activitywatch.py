@@ -4,6 +4,7 @@ These are unit tests using synthetic data, not live DB queries.
 """
 
 import json
+import pytest
 import sqlite3
 from datetime import datetime, date, timezone
 from pathlib import Path
@@ -258,10 +259,6 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
         return SimpleNamespace(status="ready")
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
-    monkeypatch.setattr(
-        "lynchpin.sources.activitywatch_raw._load_all_events",
-        lambda _path: (_ for _ in ()).throw(AssertionError("full canonical parse should not run")),
-    )
 
     window = list(events("aw-watcher-window_", start=dt(8), end=dt(13)))
     web = list(events("aw-watcher-web-", start=dt(8), end=dt(13)))
@@ -281,6 +278,7 @@ def test_activitywatch_canonical_fallback_seeks_indexed_tail(monkeypatch, tmp_pa
     path = tmp_path / "events.ndjson"
     rows = [
         {"bucket": "aw-watcher-window_host", "start": "2026-03-13T10:00:00+00:00", "end": "2026-03-13T10:05:00+00:00", "data": {"app": "old"}},
+        {"bucket": "aw-watcher-window_host", "start": "2026-03-13T23:30:00+00:00", "end": "2026-03-14T00:30:00+00:00", "data": {"app": "cross-boundary"}},
         {"bucket": "aw-watcher-window_host", "start": "2026-03-14T10:00:00+00:00", "end": "2026-03-14T10:05:00+00:00", "data": {"app": "tail"}},
         {"bucket": "aw-watcher-window_host", "start": "2026-03-15T10:00:00+00:00", "end": "2026-03-15T10:05:00+00:00", "data": {"app": "future"}},
     ]
@@ -293,14 +291,10 @@ def test_activitywatch_canonical_fallback_seeks_indexed_tail(monkeypatch, tmp_pa
         json.dumps({"row_order": "logical_date", "row_offsets": offsets}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "lynchpin.sources.activitywatch_raw._load_all_events",
-        lambda _path: (_ for _ in ()).throw(AssertionError("historical carrier must not be parsed")),
-    )
 
     events = list(_events_from_ndjson(path, bucket_prefix="aw-watcher-window_", start=datetime(2026, 3, 14, tzinfo=UTC), end=datetime(2026, 3, 15, tzinfo=UTC)))
 
-    assert [event.data["app"] for event in events] == ["tail"]
+    assert [event.data["app"] for event in events] == ["cross-boundary", "tail"]
 
 
 def test_activitywatch_events_use_live_db_after_index_tail(monkeypatch) -> None:
@@ -363,29 +357,17 @@ def test_activitywatch_ndjson_fallback_normalizes_naive_bounds(monkeypatch, tmp_
         return SimpleNamespace(status="ready" if name == "activitywatch" else "failed")
 
     monkeypatch.setattr("lynchpin.materialization.ensure_materialized", fake_ensure)
-    monkeypatch.setattr(
-        "lynchpin.sources.activitywatch_raw._load_events_by_bucket",
-        lambda _path: {
-            "aw-watcher-window_host": (
-                SimpleNamespace(
-                    bucket="aw-watcher-window_host",
-                    start=dt(9),
-                    end=dt(10),
-                    data={"app": "kitty"},
-                ),
+    from lynchpin.sources.activitywatch_raw import _events_from_ndjson
+
+    with pytest.raises(Exception, match="logical-day index"):
+        list(
+            _events_from_ndjson(
+                path,
+                bucket_prefix="aw-watcher-window_",
+                start=datetime(2026, 3, 15, 8),
+                end=datetime(2026, 3, 15, 11),
             )
-        },
-    )
-
-    rows = list(
-        events(
-            "aw-watcher-window_",
-            start=datetime(2026, 3, 15, 8),
-            end=datetime(2026, 3, 15, 11),
         )
-    )
-
-    assert [row.data["app"] for row in rows] == ["kitty"]
 
 
 def test_activitywatch_raw_falls_back_to_live_db_when_canonical_refresh_fails(

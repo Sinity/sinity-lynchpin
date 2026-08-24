@@ -37,6 +37,7 @@ def materialize_personal_daily_signals(
     output: Path | None = None,
     start: date | None = None,
     end: date | None = None,
+    refresh_id: str | None = None,
 ) -> dict[str, Any]:
     output = output or personal_daily_signals_path()
     bounded_tail = False
@@ -49,9 +50,12 @@ def materialize_personal_daily_signals(
         window_rows, input_files = _window_personal_daily_signal_rows_with_inputs(start, end)
         previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
         bounded_tail = _can_replace_tail(output, previous_manifest, start=start, end=end)
-        rows = window_rows if bounded_tail else _merge_existing_signal_rows(
-            output=output, start=start, end=end, window_rows=window_rows
-        )
+        if output.exists() and not bounded_tail:
+            raise MaterializationError(
+                "lynchpin.personal_daily_signals",
+                reason="incremental daily-signal materialization requires an indexed append-compatible tail",
+            )
+        rows = window_rows
         signal_dates = [row[1] for row in (window_rows if bounded_tail else rows)]
         covered_dates = _merge_covered_dates(
             manifest=output.with_suffix(".manifest.json"),
@@ -134,6 +138,7 @@ def materialize_personal_daily_signals(
         window_end=end,
         row_offsets=row_offsets,
         row_counts=dict(sorted(row_counts.items())),
+        refresh_id=refresh_id,
     )
     write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
@@ -504,51 +509,6 @@ def _window_personal_daily_signal_rows(
     return rows
 
 
-def _merge_existing_signal_rows(
-    *,
-    output: Path,
-    start: date,
-    end: date,
-    window_rows: list[SignalRow],
-) -> list[SignalRow]:
-    outside_window = [
-        row for row in _read_existing_signal_rows(output)
-        if not (start <= row[1] < end)
-    ]
-    return [*outside_window, *window_rows]
-
-
-def _read_existing_signal_rows(path: Path) -> list[SignalRow]:
-    if not path.exists():
-        return []
-    rows: list[SignalRow] = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            try:
-                row_date = date.fromisoformat(str(payload["date"]))
-            except (KeyError, ValueError):
-                continue
-            dimensions = payload.get("dimensions")
-            rows.append(
-                (
-                    str(payload.get("source") or ""),
-                    row_date,
-                    str(payload.get("metric") or ""),
-                    float(payload.get("value") or 0.0),
-                    dimensions if isinstance(dimensions, dict) else {},
-                )
-            )
-    return rows
-
-
 def _merge_covered_dates(
     *,
     manifest: Path,
@@ -703,6 +663,7 @@ def _manifest(
     window_end: date | None = None,
     row_offsets: dict[str, int] | None = None,
     row_counts: dict[str, int] | None = None,
+    refresh_id: str | None = None,
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "dataset": dataset,
@@ -716,6 +677,7 @@ def _manifest(
         "covered_dates": [day.isoformat() for day in covered_dates],
         "covered_date_count": len(covered_dates),
         "row_order": "logical_date",
+        "refresh_id": refresh_id,
     }
     if window_start is not None and window_end is not None:
         manifest["window_start"] = window_start.isoformat()

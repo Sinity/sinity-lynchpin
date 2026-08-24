@@ -35,6 +35,7 @@ def materialize_temporal_signals(
     start: date | None = None,
     end: date | None = None,
     output: Path | None = None,
+    refresh_id: str | None = None,
 ) -> dict[str, Any]:
     output = output or temporal_signals_path()
     start, end = _default_window(start, end)
@@ -53,9 +54,12 @@ def materialize_temporal_signals(
     ]
     previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
     bounded_tail = _can_replace_tail(output, previous_manifest, start=start, end=end)
-    rows = window_rows if bounded_tail else _merge_existing_rows(
-        output=output, start=start, end=end, window_rows=window_rows
-    )
+    if output.exists() and not bounded_tail:
+        raise MaterializationError(
+            "lynchpin.temporal_signals",
+            reason="incremental temporal-signal materialization requires an indexed append-compatible tail",
+        )
+    rows = window_rows
     rows.sort(key=lambda row: (row["event_date"], row["kind"], row["signal"], json.dumps(row["payload"], sort_keys=True)))
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -101,11 +105,20 @@ def materialize_temporal_signals(
             row_counts[day] = row_counts.get(day, 0) + 1
     input_files = _temporal_input_files(start, end)
     event_dates = [date.fromisoformat(str(row["event_date"])) for row in rows]
+    verified_dates = list(event_dates)
+    if bounded_tail:
+        for key in ("first_date", "last_date"):
+            raw = previous_manifest.get(key)
+            if isinstance(raw, str):
+                try:
+                    verified_dates.append(date.fromisoformat(raw))
+                except ValueError:
+                    pass
     covered_dates = _merge_covered_dates(
         manifest=output.with_suffix(".manifest.json"),
         start=start,
         end=end,
-        verified_bounds=(min(event_dates), max(event_dates)) if event_dates else None,
+        verified_bounds=(min(verified_dates), max(verified_dates)) if verified_dates else None,
     )
     counts = Counter(str(row["kind"]) for row in rows)
     # window_semantics: [start, end) — start is inclusive, end is exclusive.
@@ -132,6 +145,7 @@ def materialize_temporal_signals(
         "row_offsets": row_offsets,
         "row_counts": dict(sorted(row_counts.items())),
         "row_order": "logical_date",
+        "refresh_id": refresh_id,
     }
     write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
@@ -169,37 +183,6 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
     first = min(first for first, _last in bounds if first is not None)
     last = max(last for _first, last in bounds if last is not None)
     return first, last + timedelta(days=1)
-
-
-def _merge_existing_rows(
-    *,
-    output: Path,
-    start: date,
-    end: date,
-    window_rows: list[SignalRow],
-) -> list[SignalRow]:
-    outside_window = [
-        row for row in _read_existing_rows(output)
-        if not (start <= date.fromisoformat(str(row["event_date"])) < end)
-    ]
-    return [*outside_window, *window_rows]
-
-
-def _read_existing_rows(path: Path) -> list[SignalRow]:
-    if not path.exists():
-        return []
-    rows: list[SignalRow] = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                rows.append(payload)
-    return rows
 
 
 def _read_manifest(path: Path) -> dict[str, Any]:

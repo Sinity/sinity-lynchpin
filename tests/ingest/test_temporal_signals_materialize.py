@@ -12,23 +12,29 @@ from lynchpin.sources.temporal_signals import iter_temporal_signals
 
 
 def test_materialize_temporal_signals_merges_window_and_tracks_covered_dates(monkeypatch, tmp_path) -> None:
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
+
     output = tmp_path / "signals.ndjson"
-    output.write_text(
-        json.dumps(
-            {
-                "kind": "temporal_anomaly",
-                "signal": "old",
-                "event_date": "2026-05-01",
-                "summary": "old",
-                "payload": {"value": 1},
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    indexed_rows = [{
+        "kind": "temporal_anomaly",
+        "signal": "old",
+        "event_date": "2026-05-01",
+        "summary": "old",
+        "payload": {"value": 1},
+    }]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        indexed_rows,
+        date_getter=lambda row: date.fromisoformat(row["event_date"]),
     )
     output.with_suffix(".manifest.json").write_text(
-        json.dumps({"covered_dates": ["2026-05-01"]}),
+        json.dumps({
+            "row_order": "logical_date",
+            "row_offsets": offsets,
+            "row_counts": {"2026-05-01": 1},
+            "last_date": "2026-05-01",
+            "covered_dates": ["2026-05-01"],
+        }),
         encoding="utf-8",
     )
     detector_calls = []

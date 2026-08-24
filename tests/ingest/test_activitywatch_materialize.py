@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -88,11 +89,6 @@ def test_activitywatch_incremental_tail_does_not_read_or_rewrite_history(monkeyp
     activitywatch_materialize.materialize_activitywatch_events(output=output)
 
     monkeypatch.setattr(activitywatch_materialize, "events_from_activitywatch_dbs", lambda *_args, **_kwargs: iter([tail]))
-    monkeypatch.setattr(
-        activitywatch_materialize,
-        "_iter_existing_rows",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("tail refresh must not scan history")),
-    )
     manifest = activitywatch_materialize.materialize_activitywatch_events(
         output=output,
         start=date(2026, 6, 6),
@@ -104,48 +100,86 @@ def test_activitywatch_incremental_tail_does_not_read_or_rewrite_history(monkeyp
     assert manifest["row_order"] == "logical_date"
 
 
+def test_activitywatch_tail_clone_failure_keeps_serving_carrier(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.ingest._manifest import (
+        atomic_write_indexed_ndjson,
+        replace_indexed_ndjson_tail,
+    )
+
+    output = tmp_path / "events.ndjson"
+    rows = [{
+        "bucket": "aw-watcher-window_host",
+        "start": "2026-06-05T08:00:00+00:00",
+        "end": "2026-06-05T09:00:00+00:00",
+        "data": {"app": "serving"},
+    }]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        rows,
+        date_getter=lambda row: date.fromisoformat(row["start"][:10]),
+    )
+    before = output.read_bytes()
+
+    def fail_clone(*_args, **_kwargs):
+        raise OSError(95, "reflink unavailable")
+
+    monkeypatch.setattr("lynchpin.ingest._manifest.fcntl.ioctl", fail_clone)
+    with pytest.raises(activitywatch_materialize.MaterializationError, match="copy-on-write"):
+        replace_indexed_ndjson_tail(
+            output,
+            [{
+                "bucket": "aw-watcher-window_host",
+                "start": "2026-06-06T08:00:00+00:00",
+                "end": "2026-06-06T09:00:00+00:00",
+                "data": {"app": "new"},
+            }],
+            start=date(2026, 6, 6),
+            date_getter=lambda row: date.fromisoformat(row["start"][:10]),
+            offsets=offsets,
+        )
+    assert output.read_bytes() == before
+    assert not output.with_name(f".{output.name}.tmp").exists()
+
+
 def test_materialize_activitywatch_events_replaces_only_requested_window(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
-    output.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-window_host",
-                        "start": "2026-06-05T08:00:00+00:00",
-                        "end": "2026-06-05T09:00:00+00:00",
-                        "data": {"app": "before"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-window_host",
-                        "start": "2026-06-06T08:00:00+00:00",
-                        "end": "2026-06-06T09:00:00+00:00",
-                        "data": {"app": "old-window"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "bucket": "aw-watcher-window_host",
-                        "start": "2026-06-07T08:00:00+00:00",
-                        "end": "2026-06-07T09:00:00+00:00",
-                        "data": {"app": "after"},
-                    }
-                ),
-            ]
+    rows = [
+        json.dumps(
+            {
+                "bucket": "aw-watcher-window_host",
+                "start": "2026-06-05T08:00:00+00:00",
+                "end": "2026-06-05T09:00:00+00:00",
+                "data": {"app": "before"},
+            }
         )
-        + "\n",
+    ]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    indexed_rows = [json.loads(row) for row in rows]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        indexed_rows,
+        date_getter=lambda row: date.fromisoformat(row["start"][:10]),
+    )
+    output.with_suffix(".manifest.json").write_text(
+        json.dumps({
+            "row_order": "logical_date",
+            "row_offsets": offsets,
+            "last_date": "2026-06-05",
+            "row_count": len(indexed_rows),
+            "row_counts": {"2026-06-05": 1},
+        }),
         encoding="utf-8",
     )
     replacement = AWEvent(
         bucket="aw-watcher-window_host",
-        start=datetime(2026, 6, 6, 8, tzinfo=timezone.utc),
-        end=datetime(2026, 6, 6, 8, 30, tzinfo=timezone.utc),
-        data={"app": "new-window"},
+        start=datetime(2026, 6, 7, 8, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 7, 8, 30, tzinfo=timezone.utc),
+        data={"app": "new-tail"},
     )
     calls: list[tuple[object, datetime | None, datetime | None]] = []
 
@@ -160,21 +194,21 @@ def test_materialize_activitywatch_events_replaces_only_requested_window(monkeyp
     manifest = activitywatch_materialize.materialize_activitywatch_events(
         output=output,
         start=date(2026, 6, 6),
-        end=date(2026, 6, 7),
+        end=date(2026, 6, 8),
     )
 
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     apps = {row["data"]["app"] for row in rows}
-    assert apps == {"before", "new-window", "after"}
+    assert apps == {"before", "new-tail"}
     assert manifest["window_start"] == "2026-06-06"
-    assert manifest["window_end"] == "2026-06-07"
+    assert manifest["window_end"] == "2026-06-08"
     assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06", "2026-06-07"]
     assert manifest["covered_date_count"] == 3
     assert len(calls) == 1
     assert all(call[1] is not None and call[2] is not None for call in calls)
 
 
-def test_materialize_activitywatch_events_skips_corrupt_existing_rows_for_window(
+def test_materialize_activitywatch_events_rejects_unindexed_incremental_carrier(
     monkeypatch, tmp_path
 ):
     from lynchpin.ingest import activitywatch_materialize
@@ -212,45 +246,40 @@ def test_materialize_activitywatch_events_skips_corrupt_existing_rows_for_window
         lambda prefix, *, start=None, end=None, **_kwargs: iter([replacement]),
     )
 
-    manifest = activitywatch_materialize.materialize_activitywatch_events(
-        output=output,
-        start=date(2026, 6, 6),
-        end=date(2026, 6, 7),
-    )
-
-    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
-    assert [row["data"]["app"] for row in rows] == ["before", "new-window"]
-    assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06"]
+    with pytest.raises(activitywatch_materialize.MaterializationError, match="indexed append-compatible tail"):
+        activitywatch_materialize.materialize_activitywatch_events(
+            output=output,
+            start=date(2026, 6, 6),
+            end=date(2026, 6, 7),
+        )
 
 
 def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
-    output.write_text(
-        "\n".join(
-            json.dumps(row)
-            for row in (
-                {
-                    "bucket": "aw-watcher-window_host",
-                    "start": "2026-06-05T08:00:00+00:00",
-                    "end": "2026-06-05T09:00:00+00:00",
-                    "data": {"app": "before"},
-                },
-                {
-                    "bucket": "aw-watcher-window_host",
-                    "start": "2026-06-09T08:00:00+00:00",
-                    "end": "2026-06-09T09:00:00+00:00",
-                    "data": {"app": "after"},
-                },
-            )
-        )
-        + "\n",
-        encoding="utf-8",
+    indexed_rows = [{
+        "bucket": "aw-watcher-window_host",
+        "start": "2026-06-05T08:00:00+00:00",
+        "end": "2026-06-05T09:00:00+00:00",
+        "data": {"app": "before"},
+    }]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        indexed_rows,
+        date_getter=lambda row: date.fromisoformat(row["start"][:10]),
     )
     output.with_suffix(".manifest.json").write_text(
-        json.dumps({"covered_dates": ["2026-06-05", "2026-06-09"]}),
+        json.dumps({
+            "row_order": "logical_date",
+            "row_offsets": offsets,
+            "covered_dates": ["2026-06-05"],
+            "last_date": "2026-06-05",
+            "row_count": 1,
+            "row_counts": {"2026-06-05": 1},
+        }),
         encoding="utf-8",
     )
 
@@ -266,12 +295,7 @@ def test_materialize_activitywatch_events_records_zero_row_window_days(monkeypat
         end=date(2026, 6, 8),
     )
 
-    assert manifest["covered_dates"] == [
-        "2026-06-05",
-        "2026-06-06",
-        "2026-06-07",
-        "2026-06-09",
-    ]
+    assert manifest["covered_dates"] == ["2026-06-05", "2026-06-06", "2026-06-07"]
 
 
 def test_materialize_activitywatch_events_purges_phantom_covered_dates(monkeypatch, tmp_path):
@@ -283,25 +307,27 @@ def test_materialize_activitywatch_events_purges_phantom_covered_dates(monkeypat
     materialization run just because the run's own window lies elsewhere.
     """
     from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
 
     output = tmp_path / "events.ndjson"
     cfg = SimpleNamespace(activitywatch_db=tmp_path / "aw.db", activitywatch_archive_db_dir=tmp_path / "archive")
-    output.write_text(
-        json.dumps(
-            {
-                "bucket": "aw-watcher-window_host",
-                "start": "2026-06-05T08:00:00+00:00",
-                "end": "2026-06-05T09:00:00+00:00",
-                "data": {"app": "real"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    indexed_rows = [{
+        "bucket": "aw-watcher-window_host",
+        "start": "2026-06-05T08:00:00+00:00",
+        "end": "2026-06-05T09:00:00+00:00",
+        "data": {"app": "real"},
+    }]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        indexed_rows,
+        date_getter=lambda row: date.fromisoformat(row["start"][:10]),
     )
     output.with_suffix(".manifest.json").write_text(
         json.dumps(
-            {
-                "first_date": "2010-01-01",
+                {
+                    "row_order": "logical_date",
+                    "row_offsets": offsets,
+                    "first_date": "2010-01-01",
                 "last_date": "2026-06-05",
                 "covered_dates": ["2010-01-01", "2010-01-02", "2017-01-30", "2026-06-05"],
             }

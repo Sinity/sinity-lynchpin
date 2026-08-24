@@ -11,6 +11,8 @@ prove an indexed, append-compatible generation before using the bounded route.
 from __future__ import annotations
 
 import json
+import errno
+import fcntl
 import os
 import stat
 import uuid
@@ -24,6 +26,7 @@ from ..core.errors import MaterializationError
 
 _SHRINK_GUARD_MIN_ROWS = 1000
 _SHRINK_GUARD_THRESHOLD = 0.5
+_FICLONE = 0x40049409
 
 
 def _open_temp(path: Path) -> tuple[int, Path]:
@@ -231,17 +234,44 @@ def replace_indexed_ndjson_tail(
     tail_offset = min((offset for day, offset in parsed if day >= start), default=path.stat().st_size)
     serialize = dumps or (lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True))
     next_offsets = {day.isoformat(): offset for day, offset in parsed if day < start}
-    with path.open("r+b") as handle:
-        handle.seek(tail_offset)
-        handle.truncate()
-        for row in rows:
-            day = date_getter(row)
-            if day is not None:
-                next_offsets.setdefault(day.isoformat(), handle.tell())
-            handle.write(serialize(row).encode("utf-8"))
-            handle.write(b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    # Fork the carrier with CoW before touching the tail.  Rewriting the
+    # serving file in place makes SIGTERM after truncate() indistinguishable
+    # from a corrupt successful generation.  A reflink keeps the historical
+    # extents shared and makes the only physical writes the replacement tail.
+    tmp_path = _tmp_sibling(path)
+    tmp_path.unlink(missing_ok=True)
+    try:
+        with path.open("rb") as source, tmp_path.open("xb") as clone:
+            fcntl.ioctl(clone.fileno(), _FICLONE, source.fileno())
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        if exc.errno in {errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV, errno.EINVAL}:
+            raise MaterializationError(
+                "indexed NDJSON tail",
+                reason="tail replacement requires a same-filesystem copy-on-write carrier clone",
+            ) from exc
+        raise
+    try:
+        with tmp_path.open("r+b") as handle:
+            handle.seek(tail_offset)
+            handle.truncate()
+            for row in rows:
+                day = date_getter(row)
+                if day is not None:
+                    next_offsets.setdefault(day.isoformat(), handle.tell())
+                handle.write(serialize(row).encode("utf-8"))
+                handle.write(b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
     return dict(sorted(next_offsets.items()))
 
 

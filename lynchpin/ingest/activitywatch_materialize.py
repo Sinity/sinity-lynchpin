@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import heapq
+from collections.abc import Iterable
 from itertools import chain
 import json
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..core.config import get_config
 from ..core.errors import MaterializationError
@@ -17,10 +17,10 @@ from ..core.io import latest_mtime_iso
 from ..core.primitives import date_to_dt_range, logical_date
 from ..sources.activitywatch_dedup import dedup_and_merge
 from ..sources.activitywatch_raw import (
-    AWEvent,
     canonical_activitywatch_events_path,
     events_from_activitywatch_dbs,
 )
+from ..sources.activitywatch_models import AWEvent
 from .manifest_windows import merge_manifest_covered_dates
 from ._manifest import (
     atomic_write_indexed_ndjson,
@@ -39,6 +39,7 @@ def materialize_activitywatch_events(
     dedupe: bool = True,
     start: date | None = None,
     end: date | None = None,
+    refresh_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the canonical AW events NDJSON.
 
@@ -59,10 +60,16 @@ def materialize_activitywatch_events(
     window = _exclusive_window(start, end)
 
     # Request bucket order so deduplication can consume one bucket at a time.
-    kwargs = {"order": "bucket", "dedupe": False}
-    if window is not None:
-        kwargs.update(start=window[0], end=window[1])
-    raw = events_from_activitywatch_dbs(BUCKET_PREFIXES, **kwargs)
+    if window is None:
+        raw = events_from_activitywatch_dbs(BUCKET_PREFIXES, order="bucket", dedupe=False)
+    else:
+        raw = events_from_activitywatch_dbs(
+            BUCKET_PREFIXES,
+            start=window[0],
+            end=window[1],
+            order="bucket",
+            dedupe=False,
+        )
     cleaned = dedup_and_merge(raw) if dedupe else raw
     manifest_path = output.with_suffix(".manifest.json")
     previous_manifest = _read_manifest(manifest_path)
@@ -71,7 +78,17 @@ def materialize_activitywatch_events(
         and end is not None
         and _can_replace_tail(output, previous_manifest, end=end)
     )
+    if start is not None and end is not None and output.exists() and not bounded_tail:
+        raise MaterializationError(
+            "activitywatch.events",
+            reason=(
+                "incremental ActivityWatch materialization only accepts an indexed "
+                "append-compatible tail; run an explicit full rebuild for a middle "
+                "window or an unindexed carrier"
+            ),
+        )
     carrier_start = start - timedelta(days=1) if start is not None else None
+    ordered: Iterable[dict[str, Any]]
     if bounded_tail:
         assert carrier_start is not None and start is not None
         boundary_rows = _iter_indexed_rows(
@@ -82,12 +99,7 @@ def materialize_activitywatch_events(
         )
         ordered = chain(boundary_rows, (_event_row(event) for event in cleaned))
     else:
-        existing = (
-            _iter_existing_rows(output, start=start, end=end)
-            if start is not None and end is not None and output.exists()
-            else iter(())
-        )
-        ordered = _merge_existing_rows(existing, (_event_row(event) for event in cleaned))
+        ordered = (_event_row(event) for event in cleaned)
     ordered = list(sorted(ordered, key=lambda item: (_row_logical_date(item) or date.min, _row_key(item))))
     valid_rows: list[tuple[dict[str, Any], datetime]] = []
     row_counts: dict[str, int] = {}
@@ -103,7 +115,7 @@ def materialize_activitywatch_events(
     first_start = min((item[1] for item in valid_rows), default=None)
     last_start = max((item[1] for item in valid_rows), default=None)
     observed_dates = {logical_date(item[1]) for item in valid_rows}
-    def tracked_rows():
+    def tracked_rows() -> Iterator[dict[str, Any]]:
         for row, _start_dt in valid_rows:
             yield row
 
@@ -178,6 +190,7 @@ def materialize_activitywatch_events(
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
+        "refresh_id": refresh_id,
     }
     write_manifest(manifest_path, manifest)
     return manifest
@@ -205,36 +218,6 @@ def _row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
-def _iter_existing_rows(path: Path, *, start: date, end: date):
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                day = _row_logical_date(payload)
-                if day is not None and not (start <= day < end):
-                    yield payload
-
-
-def _merge_existing_rows(existing, cleaned):
-    rows = heapq.merge(
-        existing,
-        (_event_row(event) for event in cleaned),
-        key=_row_key,
-    )
-    previous_key = None
-    for row in rows:
-        key = _row_key(row)
-        if key == previous_key:
-            continue
-        previous_key = key
-        yield row
-
-
 def _read_manifest(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -251,7 +234,7 @@ def _iter_indexed_rows(
     *,
     start: date,
     stop: date,
-):
+) -> Iterator[dict[str, Any]]:
     if not isinstance(offsets, dict):
         return
     parsed: list[tuple[date, int]] = []

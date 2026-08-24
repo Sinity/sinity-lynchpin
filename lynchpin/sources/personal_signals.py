@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TextIO
 
 from ..core.config import get_config
 from .activity_content import (
@@ -162,7 +162,7 @@ def _open_window(
     *,
     start: date | None,
     end: date | None,
-):
+)-> TextIO:
     """Open a daily product at its indexed tail when the manifest permits it."""
     handle = path.open(encoding="utf-8")
     if start is None:

@@ -730,6 +730,7 @@ def run_materialization_plan(
                 report = _run_materializer(
                     materializers[step.name],
                     window=step.window if step.window is not None else window,
+                    refresh_id=refresh_id,
                 )
         except Exception as exc:
             effective_window = step.window if step.window is not None else window
@@ -819,13 +820,15 @@ def _run_materializer(
     materializer: Callable[..., Any],
     *,
     window: tuple[date, date] | None,
+    refresh_id: str | None = None,
 ) -> Any:
-    if window is None:
-        return materializer()
     signature = inspect.signature(materializer)
-    if "start" not in signature.parameters or "end" not in signature.parameters:
-        return materializer()
-    return materializer(start=window[0], end=window[1])
+    kwargs: dict[str, Any] = {}
+    if window is not None and "start" in signature.parameters and "end" in signature.parameters:
+        kwargs.update(start=window[0], end=window[1])
+    if refresh_id is not None and "refresh_id" in signature.parameters:
+        kwargs["refresh_id"] = refresh_id
+    return materializer(**kwargs)
 
 
 def ensure_materialized(

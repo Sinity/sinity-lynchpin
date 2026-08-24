@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TextIO
 
 from ..core.analytics import (
     anomaly_score,
@@ -84,7 +84,7 @@ def iter_temporal_signals(
             )
 
 
-def _open_window(path: Path, *, start: date | None):
+def _open_window(path: Path, *, start: date | None) -> TextIO:
     handle = path.open(encoding="utf-8")
     if start is None:
         return handle

@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import json
 import heapq
-import logging
 import sqlite3
+import functools
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
-from bisect import bisect_left
 from pathlib import Path
 from typing import Any, Dict, Iterator, Literal, Optional, Sequence
 
-import functools
 
 from ..core.cache import file_signature
 from ..core.config import get_config
+from ..core.errors import MaterializationError
 from ..core.parse import as_local
 from ..core.primitives import logical_date
 from .activitywatch_event_index import (
@@ -23,9 +22,6 @@ from .activitywatch_event_index import (
     iter_indexed_activitywatch_events,
 )
 from .activitywatch_models import AWEvent
-
-log = logging.getLogger(__name__)
-
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     path = Path(db_path).expanduser() if db_path else get_config().activitywatch_db
@@ -100,7 +96,13 @@ def events(
                 f"canonical ActivityWatch materialization is missing: {path}. "
                 "Run python -m lynchpin.ingest.activitywatch_materialize."
             )
-        yield from _events_from_ndjson(path, bucket_prefix=bucket_prefix, start=start, end=end)
+        try:
+            yield from _events_from_ndjson(path, bucket_prefix=bucket_prefix, start=start, end=end)
+        except MaterializationError:
+            # An unindexed legacy carrier cannot be read in a bounded way.
+            # Return to the owner-native SQLite source, whose indexed query is
+            # physically bounded, instead of parsing all historical NDJSON.
+            yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end)
         return
     yield from events_from_activitywatch_dbs(bucket_prefix, start=start, end=end, db_path=db_path)
 
@@ -223,6 +225,8 @@ def _candidate_may_overlap(
         return False
     if bounds is None:
         return True
+    if not isinstance(bounds, tuple):
+        return bool(bounds)
     first_ns, last_ns = bounds
     if end is not None and first_ns >= int(end.timestamp() * 1_000_000_000):
         return False
@@ -273,34 +277,22 @@ def _events_from_ndjson(
     start: datetime,
     end: datetime,
 ) -> Iterator[AWEvent]:
-    """Yield AW events matching ``bucket_prefix`` and overlapping [start, end).
+    """Yield indexed canonical events matching a bounded window.
 
-    New canonical carriers publish a logical-day byte index.  Those reads
-    seek directly to the requested tail and stop at the end boundary.  Older
-    carriers retain the cached full-parse fallback for explicit recovery.
+    A legacy carrier without a logical-day index is deliberately rejected.
+    Falling back to a full parse here would make a small derived read scan all
+    history; callers should use the owner-native bounded source or rebuild the
+    carrier first.
     """
     manifest = path.with_suffix(".manifest.json")
     indexed = _indexed_ndjson_window(path, manifest, bucket_prefix=bucket_prefix, start=start, end=end)
     if indexed is not None:
         yield from indexed
         return
-    by_bucket = _load_events_by_bucket(path)
-    for bucket, bucket_events in by_bucket.items():
-        if not bucket.startswith(bucket_prefix):
-            continue
-        starts = tuple(event.start for event in bucket_events)
-        idx = bisect_left(starts, start)
-        # Non-window events can overlap the left edge. Step back until events no
-        # longer cross the requested start; zero-duration window events stay at
-        # idx and keep their existing implicit-duration behavior downstream.
-        while idx > 0 and bucket_events[idx - 1].end > start:
-            idx -= 1
-        for event in bucket_events[idx:]:
-            if event.start >= end:
-                break
-            if event.end <= start:
-                continue
-            yield event
+    raise MaterializationError(
+        "activitywatch.events",
+        reason="canonical ActivityWatch carrier has no logical-day index; bounded reads require a rebuild",
+    )
 
 
 def _indexed_ndjson_window(
@@ -331,7 +323,8 @@ def _indexed_ndjson_window(
     if not parsed:
         return None
     logical_start = logical_date(start)
-    seek = max((offset for day, offset in parsed if day <= logical_start), default=min(offset for _, offset in parsed))
+    boundary_day = logical_start - timedelta(days=1)
+    seek = max((offset for day, offset in parsed if day <= boundary_day), default=min(offset for _, offset in parsed))
 
     def iterator() -> Iterator[AWEvent]:
         with path.open("rb") as handle:
@@ -358,85 +351,6 @@ def _indexed_ndjson_window(
                 )
 
     return iterator()
-
-
-def _load_events_by_bucket(path: Path) -> dict[str, tuple[AWEvent, ...]]:
-    """Return cached AW events grouped by bucket and sorted by start time.
-
-    ``activitywatch.daily_activity`` calls multiple derived helpers over the
-    same window. Each helper queries one bucket prefix; scanning the full parsed
-    450MB event list for every prefix made one-shot refreshes spend tens of
-    seconds before the first daily row. Bucket indexing keeps the full-file parse
-    cost once per process, then slices only the matching bucket.
-    """
-    return _load_events_by_bucket_keyed(path, file_signature(path))
-
-
-@functools.lru_cache(maxsize=2)
-def _load_events_by_bucket_keyed(
-    path: Path,
-    signature: object,
-) -> dict[str, tuple[AWEvent, ...]]:
-    del signature
-    buckets: dict[str, list[AWEvent]] = {}
-    for event in _load_all_events(path):
-        buckets.setdefault(event.bucket, []).append(event)
-    return {bucket: tuple(events) for bucket, events in buckets.items()}
-
-
-def _load_all_events(path: Path) -> list[AWEvent]:
-    """Parse the entire AW NDJSON once per process. Caller filters.
-
-    Cached process-level keyed by ``(path, file_signature(path))`` so a
-    re-materialize invalidates the cache automatically within the same
-    process AND a stale process serving an older parse is bounded — first
-    call after the materialize sees the new signature, prior entries
-    drop on LRU eviction.
-
-    Persistent caching via cachew was attempted but rejected:
-    ``AWEvent.data: Dict[str, object]`` is not a cacheable schema. The
-    process-level layer is the layer we get. Long-running MCP server /
-    substrate promote benefit; one-shot CLIs pay the full parse each
-    invocation.
-
-    Returns events sorted by ``start`` so callers can stop scanning early.
-    """
-    return _load_all_events_keyed(path, file_signature(path))
-
-
-@functools.lru_cache(maxsize=2)
-def _load_all_events_keyed(
-    path: Path, signature: object,
-) -> list[AWEvent]:
-    """Inner cache target. The signature parameter participates in the
-    LRU key so re-materialize forces a re-parse on next call."""
-    del signature  # not used by the body, just the cache key
-    rows: list[AWEvent] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                log.warning("activitywatch_raw: skipping corrupted NDJSON line in %s", path)
-                continue
-            bucket = str(payload.get("bucket") or "")
-            if not bucket:
-                continue
-            event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
-            event_end = datetime.fromisoformat(str(payload["end"]).replace("Z", "+00:00"))
-            data = payload.get("data")
-            rows.append(
-                AWEvent(
-                    bucket=bucket,
-                    start=event_start,
-                    end=event_end,
-                    data=data if isinstance(data, dict) else {},
-                )
-            )
-    rows.sort(key=lambda event: event.start)
-    return rows
 
 
 def event_bounds(bucket_prefix: str, *, db_path: Optional[Path] = None) -> tuple[date | None, date | None, int]:

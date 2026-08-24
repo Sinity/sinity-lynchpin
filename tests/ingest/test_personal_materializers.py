@@ -317,39 +317,30 @@ def test_materialize_personal_daily_signals_records_used_product_high_water(monk
 
 
 def test_materialize_personal_daily_signals_merges_window_and_tracks_precise_coverage(monkeypatch, tmp_path):
+    from lynchpin.ingest._manifest import atomic_write_indexed_ndjson
+
     output = tmp_path / "personal_daily_signals.ndjson"
-    output.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "source": "activity_content",
-                        "date": "2026-05-01",
-                        "metric": "focused_minutes",
-                        "value": 10,
-                        "dimensions": {},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "source": "activity_content",
-                        "date": "2026-05-02",
-                        "metric": "focused_minutes",
-                        "value": 20,
-                        "dimensions": {},
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
+    indexed_rows = [{
+        "source": "activity_content",
+        "date": "2026-05-01",
+        "metric": "focused_minutes",
+        "value": 10,
+        "dimensions": {},
+    }]
+    offsets = atomic_write_indexed_ndjson(
+        output,
+        indexed_rows,
+        date_getter=lambda row: date.fromisoformat(row["date"]),
     )
     output.with_suffix(".manifest.json").write_text(
         json.dumps(
             {
-                "covered_dates": ["2026-05-01", "2026-05-02"],
+                "row_order": "logical_date",
+                "row_offsets": offsets,
+                "row_counts": {"2026-05-01": 1},
+                "covered_dates": ["2026-05-01"],
                 "first_date": "2026-05-01",
-                "last_date": "2026-05-02",
+                "last_date": "2026-05-01",
                 "input_file_count": 0,
             }
         ),
