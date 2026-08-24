@@ -331,7 +331,7 @@ def classify_speaker(
 def _extract_relay_target(messages: list[IRCRawMessage]) -> str | None:
     """Extract the most common relay target from ``<speaker>`` prefixes."""
     relay_re = re.compile(r"^<(\S+)>")
-    targets = Counter()
+    targets: Counter[str] = Counter()
     for m in messages[:200]:
         match = relay_re.match(m.text)
         if match:

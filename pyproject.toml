@@ -166,7 +166,7 @@ files = [
     "lynchpin/sources/health_loaders.py",
     "lynchpin/sources/health_models.py",
     "lynchpin/sources/__init__.py",
-    "lynchpin/sources/irc.py",
+    "lynchpin/sources/irc_raw.py",
     "lynchpin/sources/keylog.py",
     "lynchpin/sources/machine.py",
     "lynchpin/sources/machine_models.py",

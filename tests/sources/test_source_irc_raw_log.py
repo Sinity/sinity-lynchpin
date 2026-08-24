@@ -2,49 +2,7 @@
 
 from datetime import date
 
-from lynchpin.sources import irc, irc_raw, raw_log
-
-
-def test_irc_parses_processed_conversation_file(tmp_path):
-    root = tmp_path / "_processed" / "sinity"
-    root.mkdir(parents=True)
-    (root / "0001_lesswrong_20260421T100000_20260421T101000.log").write_text(
-        "=== Conversation 1 | #lesswrong | 20260421T100000 -> 20260421T101000 | sources: concat.log | sinity_lines: 1 | mentions: 1 | total: 2\n"
-        "2026-04-21 10:00:00\talice\tSinity: ping\n"
-        "2026-04-21 10:01:00\tsinity\tpong\n"
-    )
-
-    rows = irc.conversations_in_range(start=date(2026, 4, 21), end=date(2026, 4, 21), root=tmp_path)
-
-    assert len(rows) == 1
-    assert rows[0].channel == "#lesswrong"
-    assert rows[0].sinity_lines == 1
-    assert rows[0].mention_lines == 1
-    assert rows[0].messages[1].text == "pong"
-
-
-def test_irc_range_can_treat_end_as_exclusive(tmp_path):
-    root = tmp_path / "_processed" / "sinity"
-    root.mkdir(parents=True)
-    (root / "0001_lesswrong_20260421T100000_20260421T101000.log").write_text(
-        "=== Conversation 1 | #lesswrong | 20260421T100000 -> 20260421T101000 | sources: concat.log | sinity_lines: 1 | mentions: 1 | total: 2\n"
-        "2026-04-21 10:00:00\talice\tSinity: ping\n"
-        "2026-04-21 10:01:00\tsinity\tpong\n"
-    )
-    (root / "0002_lesswrong_20260422T100000_20260422T101000.log").write_text(
-        "=== Conversation 2 | #lesswrong | 20260422T100000 -> 20260422T101000 | sources: concat.log | sinity_lines: 1 | mentions: 1 | total: 2\n"
-        "2026-04-22 10:00:00\talice\tSinity: ping\n"
-        "2026-04-22 10:01:00\tsinity\tpong\n"
-    )
-
-    rows = irc.conversations_in_range(
-        start=date(2026, 4, 21),
-        end=date(2026, 4, 22),
-        root=tmp_path,
-        end_exclusive=True,
-    )
-
-    assert [row.conversation_id for row in rows] == ["1"]
+from lynchpin.sources import irc_raw, raw_log
 
 
 def test_raw_log_parses_timestamped_entries(tmp_path):
