@@ -30,6 +30,7 @@ ParseStatus = Literal[
     "skipped_oversized",
 ]
 TimestampPrecision = Literal["second", "millisecond", "microsecond", "unknown"]
+FingerprintStatus = Literal["hashed", "not_requested"]
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFAULT_MAX_STRUCTURED_BYTES = 16 * 1024 * 1024
 _STRUCTURED_FORMATS = frozenset(("json", "ndjson", "html"))
@@ -79,7 +80,8 @@ class BrowserCaptureFile:
     resolved_path: Path
     size_bytes: int
     capture_mtime: datetime
-    content_sha256: str
+    content_sha256: str | None
+    fingerprint_status: FingerprintStatus
     mime_type: str
     format: str
     provider: str | None
@@ -98,6 +100,7 @@ __all__ = [
     "BrowserTimestamp",
     "DEFAULT_MAX_STRUCTURED_BYTES",
     "HASH_CHUNK_BYTES",
+    "FingerprintStatus",
     "ParseStatus",
     "TimestampPrecision",
     "inventory_browser_captures",
@@ -109,6 +112,7 @@ def inventory_browser_captures(
     inbox_root: Path,
     *,
     max_structured_bytes: int = DEFAULT_MAX_STRUCTURED_BYTES,
+    hash_unsupported: bool = False,
 ) -> tuple[BrowserCaptureFile, ...]:
     """Inventory an inbox recursively without writing to owner-native files.
 
@@ -133,6 +137,7 @@ def inventory_browser_captures(
                     root_link=root_link,
                     root_resolved=root_resolved,
                     max_structured_bytes=max_structured_bytes,
+                    hash_content=hash_unsupported or _format_for(path)[0] in _STRUCTURED_FORMATS,
                 )
             )
     return tuple(captures)
@@ -144,6 +149,7 @@ def parse_browser_capture(
     root_link: Path | None = None,
     root_resolved: Path | None = None,
     max_structured_bytes: int = DEFAULT_MAX_STRUCTURED_BYTES,
+    hash_content: bool = True,
 ) -> BrowserCaptureFile:
     """Read one capture and return inventory metadata plus structured records."""
     if max_structured_bytes < 0:
@@ -152,8 +158,9 @@ def parse_browser_capture(
     root_link = root_link or path.parent
     root_resolved = root_resolved or root_link.resolve()
     stat = path.stat()
-    content_sha256 = _sha256_file(path)
     format_name, mime_type = _format_for(path)
+    content_sha256 = _sha256_file(path) if hash_content else None
+    fingerprint_status: FingerprintStatus = "hashed" if hash_content else "not_requested"
     conversations: tuple[BrowserConversation, ...] = ()
     parse_status: ParseStatus
     parse_error: str | None = None
@@ -170,7 +177,11 @@ def parse_browser_capture(
         except json.JSONDecodeError:
             parse_status, parse_error = "malformed", "invalid json"
         else:
-            conversations = _conversations_from_payload(decoded)
+            conversations = _conversations_from_payload(
+                decoded,
+                capture_fallback_id=path.stem,
+                capture_time=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            )
             parse_status = "parsed" if conversations else "unrecognized_structured"
     elif format_name == "ndjson":
         payload = path.read_bytes()
@@ -181,7 +192,11 @@ def parse_browser_capture(
         except json.JSONDecodeError:
             parse_status, parse_error = "malformed", "invalid ndjson"
         else:
-            conversations = _conversations_from_payload(decoded_rows)
+            conversations = _conversations_from_payload(
+                decoded_rows,
+                capture_fallback_id=path.stem,
+                capture_time=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            )
             parse_status = "parsed" if conversations else "unrecognized_structured"
     elif format_name == "html":
         payload = path.read_bytes()
@@ -189,7 +204,11 @@ def parse_browser_capture(
         if embedded is None:
             parse_status, parse_error = "unsupported_format", "no embedded structured state"
         else:
-            conversations = _conversations_from_payload(embedded)
+            conversations = _conversations_from_payload(
+                embedded,
+                capture_fallback_id=path.stem,
+                capture_time=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            )
             parse_status = "parsed" if conversations else "unrecognized_structured"
     else:
         parse_status, parse_error = "unsupported_format", "format has no structured parser"
@@ -208,6 +227,7 @@ def parse_browser_capture(
         size_bytes=stat.st_size,
         capture_mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         content_sha256=content_sha256,
+        fingerprint_status=fingerprint_status,
         mime_type=mime_type,
         format=format_name,
         provider=provider,
@@ -290,7 +310,14 @@ def _embedded_json(payload: bytes) -> object | None:
     return None
 
 
-def _conversations_from_payload(payload: object) -> tuple[BrowserConversation, ...]:
+def _conversations_from_payload(
+    payload: object,
+    *,
+    capture_fallback_id: str | None = None,
+    capture_time: datetime | None = None,
+) -> tuple[BrowserConversation, ...]:
+    if isinstance(payload, dict) and _is_ai_studio_payload(payload):
+        return (_ai_studio_conversation(payload, capture_fallback_id, capture_time),)
     if isinstance(payload, list):
         candidates = payload
     elif isinstance(payload, dict):
@@ -299,6 +326,96 @@ def _conversations_from_payload(payload: object) -> tuple[BrowserConversation, .
         return ()
     conversations = [_conversation_from_item(candidate) for candidate in candidates if isinstance(candidate, dict)]
     return tuple(conversation for conversation in conversations if conversation is not None)
+
+
+def _is_ai_studio_payload(payload: dict[str, object]) -> bool:
+    chunked = payload.get("chunkedPrompt")
+    settings = payload.get("runSettings")
+    return (
+        isinstance(chunked, dict)
+        and isinstance(chunked.get("chunks"), list)
+        and isinstance(settings, dict)
+        and isinstance(settings.get("model"), str)
+    )
+
+
+def _ai_studio_conversation(
+    payload: dict[str, object],
+    capture_fallback_id: str | None,
+    capture_time: datetime | None,
+) -> BrowserConversation:
+    chunked = payload["chunkedPrompt"]
+    assert isinstance(chunked, dict)
+    raw_chunks_value = chunked.get("chunks", [])
+    pending_value = chunked.get("pendingInputs", [])
+    raw_chunks = raw_chunks_value if isinstance(raw_chunks_value, list) else []
+    pending = pending_value if isinstance(pending_value, list) else []
+    rows = [
+        row
+        for row in (*raw_chunks, *pending)
+        if isinstance(row, dict) and isinstance(row.get("text"), str)
+    ]
+    messages = tuple(
+        _message_from_item(
+            {
+                "id": f"{capture_fallback_id or 'capture'}:{index}",
+                "role": _ai_studio_role(row),
+                "text": row["text"],
+            }
+        )
+        for index, row in enumerate(rows)
+    )
+    settings = payload.get("runSettings")
+    model = settings.get("model") if isinstance(settings, dict) else None
+    messages = tuple(
+        BrowserMessage(
+            message_id=message.message_id,
+            parent_message_id=messages[index - 1].message_id if index else None,
+            branch_id=None,
+            role=message.role,
+            content=message.content,
+            content_sha256=message.content_sha256,
+            created_at=message.created_at,
+            edited_at=message.edited_at,
+            revision_id=None,
+            is_regeneration=None,
+            model=str(model) if message.role != "user" and model else None,
+            attachment_references=(),
+            source_document_references=(),
+        )
+        for index, message in enumerate(messages)
+    )
+    captured = BrowserTimestamp(capture_time, "microsecond" if capture_time else "unknown")
+    capture_id = capture_fallback_id
+    return BrowserConversation(
+        provider="gemini",
+        conversation_id=None,
+        capture_id=capture_id,
+        canonical_url=None,
+        title=None,
+        created_at=BrowserTimestamp(None, "unknown"),
+        updated_at=captured,
+        messages=messages,
+        deduplication_keys=tuple(
+            dict.fromkeys(
+                (
+                    *((f"capture:gemini:{capture_id}",) if capture_id else ()),
+                    *_deduplication_keys("gemini", None, None, messages),
+                )
+            )
+        ),
+    )
+
+
+def _ai_studio_role(row: dict[str, object]) -> str:
+    role = str(row.get("role") or "unknown").lower()
+    if bool(row.get("isThought")):
+        return "model_thought"
+    if role in {"user", "human"}:
+        return "user"
+    if role in {"model", "assistant"}:
+        return "assistant"
+    return "unknown"
 
 
 def _conversation_candidates(payload: dict[str, object]) -> list[object]:

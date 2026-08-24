@@ -29,6 +29,7 @@ def test_inventory_records_link_resolution_fingerprint_and_structured_state(tmp_
     assert capture.resolved_path == capture_path.resolve()
     assert capture.size_bytes == len(payload)
     assert capture.content_sha256 == hashlib.sha256(payload).hexdigest()
+    assert capture.fingerprint_status == "hashed"
     assert capture.capture_mtime.tzinfo is not None
     assert capture.mime_type == "application/json"
     assert capture.format == "json"
@@ -138,3 +139,65 @@ def test_oversized_structured_capture_hashes_in_chunks_without_reading_payload(
     assert sum(length for _, length in reads) == capture_size
     assert all(size == HASH_CHUNK_BYTES for size, _ in reads)
     assert max(length for _, length in reads) == HASH_CHUNK_BYTES
+
+
+def test_inventory_does_not_read_large_unsupported_files_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    unsupported = tmp_path / "recording.bin"
+    with unsupported.open("wb") as handle:
+        handle.truncate(HASH_CHUNK_BYTES * 8)
+
+    original_open = Path.open
+
+    def reject_content_read(path: Path, *args, **kwargs):
+        if path == unsupported and args == ("rb",):
+            raise AssertionError("unsupported inventory file was read")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_content_read)
+
+    capture = inventory_browser_captures(tmp_path)[0]
+
+    assert capture.parse_status == "unsupported_format"
+    assert capture.content_sha256 is None
+    assert capture.fingerprint_status == "not_requested"
+    assert capture.size_bytes == HASH_CHUNK_BYTES * 8
+
+
+def test_ai_studio_capture_preserves_roles_and_capture_time(tmp_path: Path) -> None:
+    capture_path = tmp_path / "neutral.aistudio.json"
+    capture_path.write_text(
+        json.dumps(
+            {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "A neutral question."},
+                        {"role": "model", "text": "Internal trace.", "isThought": True},
+                        {"role": "model", "text": "A neutral answer."},
+                    ],
+                    "pendingInputs": [],
+                },
+                "runSettings": {"model": "synthetic-gemini"},
+                "systemInstruction": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    capture = parse_browser_capture(capture_path)
+
+    assert capture.parse_status == "parsed"
+    assert capture.provider == "gemini"
+    assert capture.conversation_id is None
+    assert capture.capture_id == "neutral.aistudio"
+    conversation = capture.conversations[0]
+    assert conversation.created_at.value is None
+    assert conversation.updated_at.value == capture.capture_mtime
+    assert [message.role for message in conversation.messages] == [
+        "user",
+        "model_thought",
+        "assistant",
+    ]
+    assert conversation.messages[1].model == "synthetic-gemini"
+    assert conversation.messages[1].parent_message_id == conversation.messages[0].message_id
