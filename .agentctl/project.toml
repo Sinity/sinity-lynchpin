@@ -50,6 +50,15 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
+[operations.chisel]
+description = "Build the complete configured cross-project Chisel report portfolio"
+exec = ["just", "chisel"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 900
+
 [operations.promote_incremental]
 description = "Refresh canonical products and atomically promote an incremental substrate generation"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "incremental", "--progress", "json"]
