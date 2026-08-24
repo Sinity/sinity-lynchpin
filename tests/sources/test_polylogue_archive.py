@@ -300,6 +300,7 @@ def test_user_authored_content_units_preserve_authorship_and_raw_locators(tmp_pa
 
     direct = list(archive.iter_user_authored_content_units(snapshot))
     uncertain = list(archive.iter_uncertain_authorship_content_units(snapshot))
+    relevant = list(archive.iter_operator_relevant_content_units(snapshot))
 
     assert {unit.session_origin for unit in direct} == {
         "chatgpt",
@@ -336,6 +337,9 @@ def test_user_authored_content_units_preserve_authorship_and_raw_locators(tmp_pa
             content_hash="6f746865722d626c6f636b2d68617368",
         )
     ]
+    assert {unit.locator for unit in relevant} == {
+        unit.locator for unit in (*direct, *uncertain)
+    }
 
 
 def test_schema_mismatch_and_missing_archive_degrade_through_typed_results(tmp_path) -> None:

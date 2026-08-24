@@ -604,6 +604,11 @@ def iter_uncertain_authorship_content_units(snapshot: ArchiveSnapshot):
     yield from _iter_content_units(snapshot, authorship="uncertain")
 
 
+def iter_operator_relevant_content_units(snapshot: ArchiveSnapshot):
+    """Yield direct and uncertain user-role blocks in one classified source scan."""
+    yield from _iter_content_units(snapshot, authorship="relevant")
+
+
 def iter_sessions(snapshot: ArchiveSnapshot):
     """Yield session metadata from a coherent snapshot."""
     for row in _records(snapshot, "sessions", {
@@ -749,6 +754,16 @@ def _iter_content_units(snapshot: ArchiveSnapshot, *, authorship: str):
         )
         parameters = (*direct, *non_operator)
         reason = "user role is present but material_origin does not prove direct operator authorship"
+    elif authorship == "relevant":
+        uncertain_placeholders = ", ".join("?" for _ in (*direct, *non_operator))
+        direct_placeholders = ", ".join("?" for _ in direct)
+        origin_predicate = (
+            f"(LOWER(m.{_quote('material_origin')}) IN ({direct_placeholders}) OR "
+            f"m.{_quote('material_origin')} IS NULL OR "
+            f"LOWER(m.{_quote('material_origin')}) NOT IN ({uncertain_placeholders}))"
+        )
+        parameters = (*direct, *direct, *non_operator)
+        reason = "classified from user role and material_origin"
     else:
         raise ValueError(f"unknown content-unit authorship class: {authorship}")
     statement = f"""
@@ -769,12 +784,21 @@ def _iter_content_units(snapshot: ArchiveSnapshot, *, authorship: str):
         JOIN {_quote(sessions)} AS s ON s.{_quote('session_id')} = m.{_quote('session_id')}
         JOIN {_quote(blocks)} AS b ON b.{_quote('message_id')} = m.{_quote('message_id')}
         WHERE {role_predicate} AND {origin_predicate}
-        ORDER BY m.{_quote('occurred_at_ms')}, m.{_quote('message_id')}, b.{_quote('block_id')}
     """
     with open_readonly(snapshot.path) as conn:
         for row in conn.execute(statement, parameters):
             message_locator = _serialized_value(row["message_locator"], milliseconds=False)
             block_locator = _serialized_value(row["block_locator"], milliseconds=False)
+            row_authorship = authorship
+            row_reason = reason
+            if authorship == "relevant":
+                material_origin = str(row["material_origin"] or "").lower()
+                row_authorship = "operator_direct" if material_origin in direct else "uncertain"
+                row_reason = (
+                    "user role and material_origin prove direct operator authorship"
+                    if row_authorship == "operator_direct"
+                    else "user role is present but material_origin does not prove direct operator authorship"
+                )
             yield ArchiveContentUnit(
                 locator=_content_unit_locator(message_locator, block_locator),
                 message_locator=message_locator,
@@ -785,8 +809,8 @@ def _iter_content_units(snapshot: ArchiveSnapshot, *, authorship: str):
                 raw_session_locator=_serialized_value(row["raw_session_locator"], milliseconds=False),
                 role=_serialized_value(row["role"], milliseconds=False),
                 material_origin=_serialized_value(row["material_origin"], milliseconds=False),
-                authorship=authorship,
-                authorship_reason=reason,
+                authorship=row_authorship,
+                authorship_reason=row_reason,
                 occurred_at=_serialized_value(row["occurred_at_ms"], milliseconds=True),
                 text=_serialized_value(row["text"], milliseconds=False),
                 block_kind=_serialized_value(row["block_kind"], milliseconds=False),
