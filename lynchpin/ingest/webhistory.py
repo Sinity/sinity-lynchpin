@@ -379,41 +379,45 @@ def build_full_history(
     duplicate_count = 0
     output_source_counts: dict[str, int] = {}
 
-    output_rows: list[dict[str, str]] = []
-    for timestamp, url, title, source in visits:
-        norm = normalize_url(url)
-        base = timestamp.replace(microsecond=0)
-        is_dup = False
-        for delta in range(-tolerance_seconds, tolerance_seconds + 1):
-            key = (norm, base + timedelta(seconds=delta))
-            if key in seen:
-                is_dup = True
-                duplicate_count += 1
-                break
-        if is_dup:
-            continue
-        seen[(norm, base)] = True
-        output_rows.append(
-            {
+    def deduplicated_rows():
+        nonlocal duplicate_count, row_count
+        for timestamp, url, title, source in visits:
+            norm = normalize_url(url)
+            base = timestamp.replace(microsecond=0)
+            is_dup = False
+            for delta in range(-tolerance_seconds, tolerance_seconds + 1):
+                key = (norm, base + timedelta(seconds=delta))
+                if key in seen:
+                    is_dup = True
+                    duplicate_count += 1
+                    break
+            if is_dup:
+                continue
+            seen[(norm, base)] = True
+            row_count += 1
+            output_source_counts[source] = output_source_counts.get(source, 0) + 1
+            yield {
                 "url": url,
                 "title": title,
                 "norm": norm,
                 "source": source,
                 "iso_time": timestamp.isoformat(),
             }
-        )
-        row_count += 1
-        output_source_counts[source] = output_source_counts.get(source, 0) + 1
-    if not dry_run:
-        if start is not None and end is not None:
+
+        if not dry_run and start is not None and end is not None:
             guard_incremental_shrinkage(
                 full_history_manifest_path(output),
                 row_count,
                 dataset="webhistory.full_history",
             )
+
+    if dry_run:
+        for _row in deduplicated_rows():
+            pass
+    else:
         atomic_write_ndjson(
             output,
-            output_rows,
+            deduplicated_rows(),
             dumps=lambda row: json.dumps(row, ensure_ascii=False),
         )
 
