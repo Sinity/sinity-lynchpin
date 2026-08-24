@@ -19,9 +19,10 @@ import os
 import stat
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator, TextIO
 
 from ..core.errors import MaterializationError
 
@@ -63,14 +64,15 @@ def _fsync_parent_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _atomic_write(path: Path, write: Callable[[Any], None]) -> None:
-    """Write a temp file, then publish it with durable same-filesystem replace."""
+@contextmanager
+def atomic_text_writer(path: Path) -> Iterator[TextIO]:
+    """Yield a streaming writer and durably publish it only on clean exit."""
     fd, tmp_path = _open_temp(path)
     owned_fd: int | None = fd
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             owned_fd = None
-            write(handle)
+            yield handle
             _preserve_existing_mode(path, tmp_path)
             handle.flush()
             os.fsync(handle.fileno())
@@ -84,6 +86,12 @@ def _atomic_write(path: Path, write: Callable[[Any], None]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def _atomic_write(path: Path, write: Callable[[TextIO], None]) -> None:
+    """Write a temp file, then publish it with durable same-filesystem replace."""
+    with atomic_text_writer(path) as handle:
+        write(handle)
 
 
 def guard_incremental_shrinkage(

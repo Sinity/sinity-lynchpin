@@ -30,7 +30,7 @@ from ..sources.github_context import (
     github_context_path,
     github_item_to_payload,
 )
-from ._manifest import write_manifest
+from ._manifest import atomic_write_ndjson, write_manifest
 
 log = logging.getLogger(__name__)
 
@@ -415,14 +415,8 @@ def _write_product(
     manifest: dict[str, Any],
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    tmp_output = output.with_name(f".{output.name}.tmp")
-    tmp_manifest = output.with_suffix(".manifest.json.tmp")
-    with tmp_output.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    write_manifest(tmp_manifest, manifest)
-    tmp_output.replace(output)
-    tmp_manifest.replace(output.with_suffix(".manifest.json"))
+    atomic_write_ndjson(output, rows)
+    write_manifest(output.with_suffix(".manifest.json"), manifest)
 
 
 def _promote_github_context_to_substrate(ndjson_path: Path) -> int:

@@ -9,6 +9,7 @@ import json
 import re
 import sys
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import StringIO
@@ -19,7 +20,7 @@ from ..core.config import get_config
 from ..core.io import latest_mtime_iso
 from .google_takeout_materialize import google_takeout_input_files, google_takeout_inventory_dir, materialize_google_takeout_inventory
 from ..sources.google_takeout import TakeoutMember, discover_takeout_archives, iter_member_bytes
-from ._manifest import write_manifest
+from ._manifest import atomic_text_writer, write_manifest
 
 GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION = 1
 
@@ -80,15 +81,15 @@ def materialize_google_takeout_products(*, root: Path | None = None) -> dict[str
     bounds: dict[str, tuple[str | None, str | None]] = {name: (None, None) for name in paths}
     errors: Counter[str] = Counter()
 
-    handles = {name: path.open("w", encoding="utf-8") for name, path in paths.items()}
-    try:
+    with ExitStack() as publications:
+        handles = {
+            name: publications.enter_context(atomic_text_writer(path))
+            for name, path in paths.items()
+        }
         for item in _iter_structured_rows(root=root):
             _write_row(handles[item.product], seen[item.product], counts, bounds, item.product, item.row)
         for row in _iter_asset_rows(root=root):
             _write_row(handles["assets"], seen["assets"], counts, bounds, "assets", row)
-    finally:
-        for handle in handles.values():
-            handle.close()
 
     first_date, last_date = _merge_bounds(bounds.values())
     manifest = {

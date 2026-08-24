@@ -27,7 +27,7 @@ from ..sources.machine import (
     service_cgroup_pressure_samples,
     service_states,
 )
-from ._manifest import write_manifest
+from ._manifest import atomic_text_writer, write_manifest
 
 
 MACHINE_TELEMETRY_SCHEMA_VERSION = 1
@@ -170,7 +170,6 @@ def _materialize_table(
 ) -> dict[str, Any]:
     output = canonical_machine_table_path(name)
     output.parent.mkdir(parents=True, exist_ok=True)
-    tmp_output = output.with_name(output.name + ".tmp")
     row_count = 0
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
@@ -187,7 +186,7 @@ def _materialize_table(
         observed_dates.add(timestamp.date())
         handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
-    with tmp_output.open("w", encoding="utf-8") as handle:
+    with atomic_text_writer(output) as handle:
         if start is not None and end is not None:
             existing_rows = iter(_iter_existing_rows(output))
             first_after_window: MachineRow | None = None
@@ -210,7 +209,6 @@ def _materialize_table(
             for sample in rows_fn():
                 write_row(handle, sample_to_json(sample))
 
-    tmp_output.replace(output)
     covered_dates = _covered_dates_for_table(
         name,
         observed_dates=observed_dates,

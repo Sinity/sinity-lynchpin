@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_config
+from ._manifest import atomic_write_ndjson, atomic_write_text
 
 RAINDROP_API_BASE = "https://api.raindrop.io/rest/v1"
 _AGENIX_TOKEN_PATH = Path("/run/agenix/raindrop-token")
@@ -85,7 +86,9 @@ def _get_json(path: str, token: str) -> dict[str, Any]:
 
 def _dump_paginated(path_template: str, out_path: Path, token: str, *, delay_s: float = 0.15) -> int:
     count = 0
-    with out_path.open("w", encoding="utf-8") as handle:
+
+    def rows() -> Iterator[dict[str, Any]]:
+        nonlocal count
         page = 0
         while True:
             data = _get_json(path_template.format(page=page), token)
@@ -93,22 +96,23 @@ def _dump_paginated(path_template: str, out_path: Path, token: str, *, delay_s: 
             if not items:
                 break
             for item in items:
-                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+                yield item
             count += len(items)
             page += 1
             time.sleep(delay_s)
+
+    atomic_write_ndjson(out_path, rows(), dumps=lambda row: json.dumps(row, ensure_ascii=False))
     return count
 
 
 def export_metadata(out_dir: Path, token: str) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "collections-root.json").write_text(
-        json.dumps(_get_json("/collections", token)), encoding="utf-8"
+    atomic_write_text(out_dir / "collections-root.json", json.dumps(_get_json("/collections", token)))
+    atomic_write_text(
+        out_dir / "collections-children.json",
+        json.dumps(_get_json("/collections/childrens", token)),
     )
-    (out_dir / "collections-children.json").write_text(
-        json.dumps(_get_json("/collections/childrens", token)), encoding="utf-8"
-    )
-    (out_dir / "tags.json").write_text(json.dumps(_get_json("/tags/0", token)), encoding="utf-8")
+    atomic_write_text(out_dir / "tags.json", json.dumps(_get_json("/tags/0", token)))
     counts = {
         "active": _dump_paginated(
             "/raindrops/0?perpage=50&page={page}", out_dir / "raindrops-all.jsonl", token
@@ -124,7 +128,7 @@ def export_metadata(out_dir: Path, token: str) -> dict[str, int]:
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         **counts,
     }
-    (out_dir / "EXPORT-MANIFEST.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    atomic_write_text(out_dir / "EXPORT-MANIFEST.json", json.dumps(manifest, indent=1))
     return counts
 
 
