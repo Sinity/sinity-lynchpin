@@ -730,6 +730,8 @@ def run_materialization_plan(
     ran_lock = Lock()
 
     def run_one(step: MaterializationPlanStep) -> None:
+        global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
+
         started = datetime.now(timezone.utc)
         from .substrate.run_steps import measure_phase
 
