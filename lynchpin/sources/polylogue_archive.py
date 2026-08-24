@@ -37,6 +37,19 @@ _CAPABILITY_DATABASES = {
     "embedding_status": ("embeddings",),
     "embedding_metadata": ("embeddings",),
 }
+_DIRECT_OPERATOR_MATERIAL_ORIGINS = frozenset({"operator_direct"})
+_NON_OPERATOR_MATERIAL_ORIGINS = frozenset(
+    {
+        "assistant",
+        "model",
+        "model_generated",
+        "pasted",
+        "quoted",
+        "system",
+        "tool",
+        "tool_generated",
+    }
+)
 
 
 class PolylogueArchiveUnavailableError(SourceUnavailableError):
@@ -103,7 +116,50 @@ class DatabaseSchema:
 class ArchiveCoverage:
     status: str
     reason: str
-    collection_model: str = "historical"
+    collection_model: str = "unknown"
+    collection_model_reason: str = "the archive schema does not declare capture continuity"
+    min_timestamp: str | None = None
+    max_timestamp: str | None = None
+    session_count: int | None = None
+    message_count: int | None = None
+    authored_user_message_count: int | None = None
+    origins: tuple["ArchiveOriginCoverage", ...] = ()
+
+
+@dataclass(frozen=True)
+class ArchiveOriginCoverage:
+    """Aggregate counts for one provider or archive origin."""
+
+    origin: str | None
+    session_count: int
+    message_count: int
+    authored_user_message_count: int | None
+
+
+@dataclass(frozen=True)
+class ArchiveFtsSurfaceReadiness:
+    """Freshness ledger state for a single FTS surface."""
+
+    surface: str
+    state: str | None
+    checked_at: str | None
+    source_row_count: int | None
+    fts_row_count: int | None
+    missing_row_count: int | None
+    excess_row_count: int | None
+    duplicate_row_count: int | None
+    identity_mismatch_row_count: int | None
+    detail: str | None
+
+
+@dataclass(frozen=True)
+class ArchiveFtsReadiness:
+    """Explicit FTS readiness. A virtual table alone is not ready evidence."""
+
+    status: str
+    reason: str
+    fts_tables: tuple[str, ...]
+    surfaces: tuple[ArchiveFtsSurfaceReadiness, ...]
 
 
 @dataclass(frozen=True)
@@ -151,6 +207,27 @@ class ArchiveBlock:
     locator: str | None
     message_locator: str | None
     kind: str | None
+    content_hash: str | None
+
+
+@dataclass(frozen=True)
+class ArchiveContentUnit:
+    """A text block with direct-authorship evidence preserved alongside it."""
+
+    locator: str | None
+    message_locator: str | None
+    block_locator: str | None
+    session_locator: str | None
+    session_origin: str | None
+    session_native_id: str | None
+    raw_session_locator: str | None
+    role: str | None
+    material_origin: str | None
+    authorship: str
+    authorship_reason: str
+    occurred_at: str | None
+    text: str | None
+    block_kind: str | None
     content_hash: str | None
 
 
@@ -342,6 +419,185 @@ def snapshot_capability(capability: str, destination: Path, root: Path | None = 
     return snapshot_database(database_for_capability(capability, root), destination)
 
 
+def coverage_summary(snapshot: ArchiveSnapshot) -> ArchiveCoverage:
+    """Return bounded coverage and freshness aggregates from one snapshot.
+
+    The result describes observed archive rows only. It never asserts that a
+    gap represents inactivity or that the archive was captured continuously.
+    """
+    schema, tables = _snapshot_schema(snapshot)
+    sessions = _matching_table(set(schema.tables), "sessions")
+    messages = _matching_table(set(schema.tables), "messages")
+    if sessions is None or messages is None:
+        return ArchiveCoverage(
+            "unknown",
+            "coverage requires normalized session and message tables",
+        )
+    session_columns = tables[sessions]
+    message_columns = tables[messages]
+    required_session = {"session_id", "origin", "created_at_ms", "updated_at_ms", "authored_user_message_count"}
+    required_message = {"message_id", "session_id", "occurred_at_ms"}
+    missing = sorted((required_session - session_columns) | (required_message - message_columns))
+    if missing:
+        return ArchiveCoverage(
+            "unknown",
+            f"unsupported normalized schema; missing columns: {', '.join(missing)}",
+        )
+    with open_readonly(snapshot.path) as conn:
+        totals = conn.execute(
+            f"""
+            SELECT
+                (SELECT COUNT(*) FROM {_quote(sessions)}) AS session_count,
+                (SELECT COUNT(*) FROM {_quote(messages)}) AS message_count,
+                (SELECT COALESCE(SUM({_quote('authored_user_message_count')}), 0) FROM {_quote(sessions)}) AS authored_user_message_count,
+                (
+                    SELECT MIN(timestamp_ms) FROM (
+                        SELECT {_quote('created_at_ms')} AS timestamp_ms FROM {_quote(sessions)}
+                        UNION ALL SELECT {_quote('updated_at_ms')} FROM {_quote(sessions)}
+                        UNION ALL SELECT {_quote('occurred_at_ms')} FROM {_quote(messages)}
+                    ) WHERE timestamp_ms IS NOT NULL
+                ) AS min_timestamp_ms,
+                (
+                    SELECT MAX(timestamp_ms) FROM (
+                        SELECT {_quote('created_at_ms')} AS timestamp_ms FROM {_quote(sessions)}
+                        UNION ALL SELECT {_quote('updated_at_ms')} FROM {_quote(sessions)}
+                        UNION ALL SELECT {_quote('occurred_at_ms')} FROM {_quote(messages)}
+                    ) WHERE timestamp_ms IS NOT NULL
+                ) AS max_timestamp_ms
+            """
+        ).fetchone()
+        message_counts = {
+            row["origin"]: int(row["message_count"])
+            for row in conn.execute(
+                f"""
+                SELECT s.{_quote('origin')} AS origin, COUNT(m.{_quote('message_id')}) AS message_count
+                FROM {_quote(sessions)} AS s
+                LEFT JOIN {_quote(messages)} AS m ON m.{_quote('session_id')} = s.{_quote('session_id')}
+                GROUP BY s.{_quote('origin')}
+                """
+            )
+        }
+        origins = tuple(
+            ArchiveOriginCoverage(
+                origin=row["origin"],
+                session_count=int(row["session_count"]),
+                message_count=message_counts.get(row["origin"], 0),
+                authored_user_message_count=int(row["authored_user_message_count"]),
+            )
+            for row in conn.execute(
+                f"""
+                SELECT {_quote('origin')} AS origin, COUNT(*) AS session_count,
+                       COALESCE(SUM({_quote('authored_user_message_count')}), 0) AS authored_user_message_count
+                FROM {_quote(sessions)}
+                GROUP BY {_quote('origin')}
+                ORDER BY {_quote('origin')}
+                """
+            )
+        )
+    return ArchiveCoverage(
+        "bounded",
+        "aggregates are from one coherent SQLite snapshot",
+        collection_model="incremental_archive",
+        collection_model_reason=(
+            "the normalized archive is incrementally materialized; upstream capture continuity is not established"
+        ),
+        min_timestamp=_milliseconds_to_iso(totals["min_timestamp_ms"]),
+        max_timestamp=_milliseconds_to_iso(totals["max_timestamp_ms"]),
+        session_count=int(totals["session_count"]),
+        message_count=int(totals["message_count"]),
+        authored_user_message_count=int(totals["authored_user_message_count"]),
+        origins=origins,
+    )
+
+
+def fts_readiness(snapshot: ArchiveSnapshot) -> ArchiveFtsReadiness:
+    """Read the FTS freshness ledger without rebuilding or querying FTS data."""
+    schema, tables = _snapshot_schema(snapshot)
+    if not schema.fts_tables:
+        return ArchiveFtsReadiness("unavailable", "no FTS virtual table is present", (), ())
+    state_table = "fts_freshness_state"
+    if state_table not in tables:
+        return ArchiveFtsReadiness(
+            "unknown",
+            "FTS virtual tables are present but no freshness ledger is available",
+            schema.fts_tables,
+            (),
+        )
+    required = {
+        "surface",
+        "state",
+        "checked_at",
+        "source_rows",
+        "indexed_rows",
+        "missing_rows",
+        "excess_rows",
+        "duplicate_rows",
+        "detail",
+        "identity_mismatch_rows",
+    }
+    missing = sorted(required - tables[state_table])
+    if missing:
+        return ArchiveFtsReadiness(
+            "unknown",
+            f"unsupported FTS freshness schema; missing columns: {', '.join(missing)}",
+            schema.fts_tables,
+            (),
+        )
+    with open_readonly(snapshot.path) as conn:
+        surfaces = tuple(
+            ArchiveFtsSurfaceReadiness(
+                surface=str(row["surface"]),
+                state=_serialized_value(row["state"], milliseconds=False),
+                checked_at=_serialized_value(row["checked_at"], milliseconds=False),
+                source_row_count=_optional_int(row["source_rows"]),
+                fts_row_count=_optional_int(row["indexed_rows"]),
+                missing_row_count=_optional_int(row["missing_rows"]),
+                excess_row_count=_optional_int(row["excess_rows"]),
+                duplicate_row_count=_optional_int(row["duplicate_rows"]),
+                identity_mismatch_row_count=_optional_int(row["identity_mismatch_rows"]),
+                detail=_serialized_value(row["detail"], milliseconds=False),
+            )
+            for row in conn.execute(
+                f"SELECT {', '.join(_quote(column) for column in sorted(required))} "
+                f"FROM {_quote(state_table)} ORDER BY {_quote('surface')}"
+            )
+        )
+    if not surfaces:
+        return ArchiveFtsReadiness("unknown", "FTS freshness ledger has no surface rows", schema.fts_tables, ())
+    states = {surface.state for surface in surfaces}
+    counts_match = all(
+        surface.source_row_count is not None
+        and surface.fts_row_count is not None
+        and surface.missing_row_count is not None
+        and surface.excess_row_count is not None
+        and surface.duplicate_row_count is not None
+        and surface.identity_mismatch_row_count is not None
+        and surface.source_row_count == surface.fts_row_count
+        and surface.missing_row_count == 0
+        and surface.excess_row_count == 0
+        and surface.duplicate_row_count == 0
+        and surface.identity_mismatch_row_count == 0
+        for surface in surfaces
+    )
+    if states <= {"ready"} and counts_match:
+        status, reason = "ready", "all FTS freshness ledger surfaces report ready"
+    elif "stale" in states or not counts_match:
+        status, reason = "stale", "one or more FTS freshness ledger surfaces are stale or row counts disagree"
+    else:
+        status, reason = "unknown", "FTS freshness ledger reports an unrecognized state"
+    return ArchiveFtsReadiness(status, reason, schema.fts_tables, surfaces)
+
+
+def iter_user_authored_content_units(snapshot: ArchiveSnapshot):
+    """Yield only block units whose role and material origin prove direct authorship."""
+    yield from _iter_content_units(snapshot, authorship="operator_direct")
+
+
+def iter_uncertain_authorship_content_units(snapshot: ArchiveSnapshot):
+    """Yield user-role blocks whose material origin does not prove direct authorship."""
+    yield from _iter_content_units(snapshot, authorship="uncertain")
+
+
 def iter_sessions(snapshot: ArchiveSnapshot):
     """Yield session metadata from a coherent snapshot."""
     for row in _records(snapshot, "sessions", {
@@ -436,6 +692,102 @@ def _records(
             }
 
 
+def _snapshot_schema(
+    snapshot: ArchiveSnapshot,
+) -> tuple[DatabaseSchema, dict[str, set[str]]]:
+    schema = introspect_database(ArchiveDatabase(snapshot.database.name, snapshot.path))
+    return schema, {
+        table: set(columns or ())
+        for table, columns in schema.table_columns
+    }
+
+
+def _iter_content_units(snapshot: ArchiveSnapshot, *, authorship: str):
+    schema, tables = _snapshot_schema(snapshot)
+    sessions = _matching_table(set(schema.tables), "sessions")
+    messages = _matching_table(set(schema.tables), "messages")
+    blocks = _matching_table(set(schema.tables), "blocks")
+    if sessions is None or messages is None or blocks is None:
+        raise PolylogueArchiveSchemaError(
+            found=schema.tables,
+            expected="normalized session, message, and block tables",
+        )
+    required = {
+        sessions: {"session_id", "native_id", "origin", "raw_id"},
+        messages: {"message_id", "session_id", "role", "material_origin", "occurred_at_ms"},
+        blocks: {"block_id", "message_id", "text", "block_type", "content_hash"},
+    }
+    missing = {
+        table: sorted(columns - tables[table])
+        for table, columns in required.items()
+        if columns - tables[table]
+    }
+    if missing:
+        raise PolylogueArchiveSchemaError(
+            found=missing,
+            expected="direct-authorship content-unit columns",
+        )
+    direct = tuple(sorted(_DIRECT_OPERATOR_MATERIAL_ORIGINS))
+    non_operator = tuple(sorted(_NON_OPERATOR_MATERIAL_ORIGINS))
+    role_predicate = f"LOWER(m.{_quote('role')}) = 'user'"
+    if authorship == "operator_direct":
+        placeholders = ", ".join("?" for _ in direct)
+        origin_predicate = f"LOWER(m.{_quote('material_origin')}) IN ({placeholders})"
+        parameters = direct
+        reason = "user role and material_origin prove direct operator authorship"
+    elif authorship == "uncertain":
+        placeholders = ", ".join("?" for _ in (*direct, *non_operator))
+        origin_predicate = (
+            f"(m.{_quote('material_origin')} IS NULL OR "
+            f"LOWER(m.{_quote('material_origin')}) NOT IN ({placeholders}))"
+        )
+        parameters = (*direct, *non_operator)
+        reason = "user role is present but material_origin does not prove direct operator authorship"
+    else:
+        raise ValueError(f"unknown content-unit authorship class: {authorship}")
+    statement = f"""
+        SELECT
+            m.{_quote('message_id')} AS message_locator,
+            s.{_quote('session_id')} AS session_locator,
+            s.{_quote('origin')} AS session_origin,
+            s.{_quote('native_id')} AS session_native_id,
+            s.{_quote('raw_id')} AS raw_session_locator,
+            m.{_quote('role')} AS role,
+            m.{_quote('material_origin')} AS material_origin,
+            m.{_quote('occurred_at_ms')} AS occurred_at_ms,
+            b.{_quote('block_id')} AS block_locator,
+            b.{_quote('text')} AS text,
+            b.{_quote('block_type')} AS block_kind,
+            b.{_quote('content_hash')} AS content_hash
+        FROM {_quote(messages)} AS m
+        JOIN {_quote(sessions)} AS s ON s.{_quote('session_id')} = m.{_quote('session_id')}
+        JOIN {_quote(blocks)} AS b ON b.{_quote('message_id')} = m.{_quote('message_id')}
+        WHERE {role_predicate} AND {origin_predicate}
+        ORDER BY m.{_quote('occurred_at_ms')}, m.{_quote('message_id')}, b.{_quote('block_id')}
+    """
+    with open_readonly(snapshot.path) as conn:
+        for row in conn.execute(statement, parameters):
+            message_locator = _serialized_value(row["message_locator"], milliseconds=False)
+            block_locator = _serialized_value(row["block_locator"], milliseconds=False)
+            yield ArchiveContentUnit(
+                locator=_content_unit_locator(message_locator, block_locator),
+                message_locator=message_locator,
+                block_locator=block_locator,
+                session_locator=_serialized_value(row["session_locator"], milliseconds=False),
+                session_origin=_serialized_value(row["session_origin"], milliseconds=False),
+                session_native_id=_serialized_value(row["session_native_id"], milliseconds=False),
+                raw_session_locator=_serialized_value(row["raw_session_locator"], milliseconds=False),
+                role=_serialized_value(row["role"], milliseconds=False),
+                material_origin=_serialized_value(row["material_origin"], milliseconds=False),
+                authorship=authorship,
+                authorship_reason=reason,
+                occurred_at=_serialized_value(row["occurred_at_ms"], milliseconds=True),
+                text=_serialized_value(row["text"], milliseconds=False),
+                block_kind=_serialized_value(row["block_kind"], milliseconds=False),
+                content_hash=_serialized_value(row["content_hash"], milliseconds=False),
+            )
+
+
 def _matching_table(tables: set[str], capability: str) -> str | None:
     return next((table for table in _TABLES[capability] if table in tables), None)
 
@@ -454,6 +806,22 @@ def _serialized_value(value: object, *, milliseconds: bool) -> str | None:
     if isinstance(value, bytes):
         return value.hex()
     return str(value)
+
+
+def _milliseconds_to_iso(value: object) -> str | None:
+    if value is None:
+        return None
+    return _serialized_value(value, milliseconds=True)
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if value is not None else None
+
+
+def _content_unit_locator(message_locator: str | None, block_locator: str | None) -> str | None:
+    if message_locator is None or block_locator is None:
+        return None
+    return f"{message_locator}:{block_locator}"
 
 
 def _pragma_int(conn: sqlite3.Connection, name: str) -> int:

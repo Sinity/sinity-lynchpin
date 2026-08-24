@@ -27,17 +27,73 @@ def _archive_root(tmp_path):
     with sqlite3.connect(root / "index.db") as conn:
         conn.executescript(
             """
-            CREATE TABLE sessions (native_id TEXT, origin TEXT, parent_session_id TEXT, created_at_ms INTEGER, updated_at_ms INTEGER);
-            CREATE TABLE messages (session_id TEXT, native_id TEXT, role TEXT, occurred_at_ms INTEGER, content_hash BLOB);
-            CREATE TABLE blocks (block_id TEXT, message_id TEXT, block_type TEXT, content_hash BLOB);
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY, native_id TEXT, origin TEXT, raw_id TEXT,
+                parent_session_id TEXT, created_at_ms INTEGER, updated_at_ms INTEGER,
+                authored_user_message_count INTEGER
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY, session_id TEXT, native_id TEXT, role TEXT,
+                material_origin TEXT, occurred_at_ms INTEGER, content_hash BLOB
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY, message_id TEXT, block_type TEXT, text TEXT, content_hash BLOB
+            );
             CREATE TABLE session_links (src_session_id TEXT, dst_origin TEXT, dst_native_id TEXT, link_type TEXT, resolved_dst_session_id TEXT);
             CREATE VIRTUAL TABLE messages_fts USING fts5(message_id, text);
+            CREATE TABLE fts_freshness_state (
+                surface TEXT, state TEXT, checked_at TEXT, source_rows INTEGER, indexed_rows INTEGER,
+                missing_rows INTEGER, excess_rows INTEGER, duplicate_rows INTEGER, detail TEXT,
+                identity_mismatch_rows INTEGER
+            );
             """
         )
-        conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?)", ("synthetic-session", "codex-session", "claude-code-session:parent", 1767225600000, 1767225660000))
-        conn.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?)", ("codex-session:synthetic-session", "synthetic-message", "user", 1767225600000, b"message-hash"))
-        conn.execute("INSERT INTO blocks VALUES (?, ?, ?, ?)", ("synthetic-block", "codex-session:synthetic-session:synthetic-message", "text", b"block-hash"))
-        conn.execute("INSERT INTO session_links VALUES (?, ?, ?, ?, ?)", ("codex-session:synthetic-session", "claude-code-session", "parent", "fork", None))
+        origins = ("chatgpt", "claude-ai", "gemini", "claude-code", "codex")
+        for index, origin in enumerate(origins):
+            session_id = f"{origin}:synthetic-session"
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    "synthetic-session",
+                    origin,
+                    f"raw-{origin}",
+                    "claude-code:parent" if origin == "codex" else None,
+                    1767225600000 + index * 60_000,
+                    1767225660000 + index * 60_000,
+                    1,
+                ),
+            )
+            message_id = f"{session_id}:direct"
+            conn.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_id, session_id, "direct", "user", "operator_direct", 1767225600000 + index * 60_000, b"message-hash"),
+            )
+            conn.execute(
+                "INSERT INTO blocks VALUES (?, ?, ?, ?, ?)",
+                (f"block-{origin}", message_id, "text", f"direct text {origin}", b"block-hash"),
+            )
+        codex_session = "codex:synthetic-session"
+        for native_id, role, material_origin in (
+            ("pasted", "user", "pasted"),
+            ("model", "assistant", "model_generated"),
+            ("tool", "tool", "tool_generated"),
+            ("uncertain", "user", None),
+        ):
+            message_id = f"{codex_session}:{native_id}"
+            conn.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_id, codex_session, native_id, role, material_origin, 1767225900000, b"other-message-hash"),
+            )
+            conn.execute(
+                "INSERT INTO blocks VALUES (?, ?, ?, ?, ?)",
+                (f"block-{native_id}", message_id, "text", f"{native_id} text", b"other-block-hash"),
+            )
+        conn.execute("INSERT INTO session_links VALUES (?, ?, ?, ?, ?)", (codex_session, "claude-code", "parent", "fork", None))
+        conn.execute(
+            "INSERT INTO fts_freshness_state VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("messages", "stale", "2026-01-01T00:10:00Z", 9, 5, 4, 0, 0, "synthetic stale index", 0),
+        )
     with sqlite3.connect(root / "embeddings.db") as conn:
         conn.executescript(
             """
@@ -59,10 +115,20 @@ def test_direct_archive_routes_normalized_capabilities_to_index(tmp_path) -> Non
     assert archive.database_for_capability("lineage", root).name == "index"
     assert archive.database_for_capability("embedding_status", root).name == "embeddings"
 
-    assert list(archive.iter_sessions(index_snapshot)) == [archive.ArchiveSession("codex-session:synthetic-session", None, "codex-session", "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z", "claude-code-session:parent")]
-    assert list(archive.iter_messages(index_snapshot)) == [archive.ArchiveMessage("codex-session:synthetic-session:synthetic-message", "codex-session:synthetic-session", "user", "user", "2026-01-01T00:00:00Z", "6d6573736167652d68617368")]
-    assert list(archive.iter_blocks(index_snapshot)) == [archive.ArchiveBlock("synthetic-block", "codex-session:synthetic-session:synthetic-message", "text", "626c6f636b2d68617368")]
-    assert list(archive.iter_lineages(index_snapshot)) == [archive.ArchiveLineage("codex-session:synthetic-session", "claude-code-session:parent", "fork")]
+    sessions = list(archive.iter_sessions(index_snapshot))
+    messages = list(archive.iter_messages(index_snapshot))
+    blocks = list(archive.iter_blocks(index_snapshot))
+
+    assert {session.origin for session in sessions} == {
+        "chatgpt",
+        "claude-ai",
+        "gemini",
+        "claude-code",
+        "codex",
+    }
+    assert len(messages) == 9
+    assert len(blocks) == 9
+    assert list(archive.iter_lineages(index_snapshot)) == [archive.ArchiveLineage("codex:synthetic-session", "claude-code:parent", "fork")]
 
 
 def test_readiness_introspects_without_scanning_timestamp_coverage(tmp_path) -> None:
@@ -77,9 +143,8 @@ def test_readiness_introspects_without_scanning_timestamp_coverage(tmp_path) -> 
     assert index.capabilities.sessions and index.capabilities.messages and index.capabilities.blocks
     assert index.capabilities.lineage and index.capabilities.fts
     assert embeddings.capabilities.embedding_status and embeddings.capabilities.embedding_metadata
-    assert dict(index.table_columns)["sessions"] == (
-        "native_id", "origin", "parent_session_id", "created_at_ms", "updated_at_ms"
-    )
+    assert {"origin", "created_at_ms", "updated_at_ms", "authored_user_message_count"} <= set(dict(index.table_columns)["sessions"] or ())
+    assert {"role", "material_origin", "occurred_at_ms"} <= set(dict(index.table_columns)["messages"] or ())
 
 
 def test_readiness_retains_capabilities_when_virtual_table_xinfo_is_unavailable(
@@ -151,12 +216,126 @@ def test_snapshot_is_stable_and_readers_remain_read_only(tmp_path) -> None:
     root = _archive_root(tmp_path)
     snapshot = archive.snapshot_capability("messages", tmp_path / "private-run", root)
     with sqlite3.connect(root / "index.db") as conn:
-        conn.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?)", ("codex-session:synthetic-session", "later", "assistant", 1767225720000, b"later"))
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("codex:synthetic-session:later", "codex:synthetic-session", "later", "assistant", "model_generated", 1767225720000, b"later"),
+        )
 
-    assert "codex-session:synthetic-session:later" not in {row.locator for row in archive.iter_messages(snapshot)}
+    assert "codex:synthetic-session:later" not in {row.locator for row in archive.iter_messages(snapshot)}
     with archive.open_readonly(snapshot.path) as conn:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("DELETE FROM messages")
+
+
+def test_coverage_summary_stratifies_origins_and_bounds_freshness(tmp_path) -> None:
+    root = _archive_root(tmp_path)
+    snapshot = archive.snapshot_capability("messages", tmp_path / "private-run", root)
+
+    coverage = archive.coverage_summary(snapshot)
+
+    assert coverage.status == "bounded"
+    assert coverage.collection_model == "incremental_archive"
+    assert coverage.session_count == 5
+    assert coverage.message_count == 9
+    assert coverage.authored_user_message_count == 5
+    assert coverage.min_timestamp == "2026-01-01T00:00:00Z"
+    assert coverage.max_timestamp == "2026-01-01T00:05:00Z"
+    assert {(item.origin, item.session_count, item.message_count, item.authored_user_message_count) for item in coverage.origins} == {
+        ("chatgpt", 1, 1, 1),
+        ("claude-ai", 1, 1, 1),
+        ("gemini", 1, 1, 1),
+        ("claude-code", 1, 1, 1),
+        ("codex", 1, 5, 1),
+    }
+
+
+def test_coverage_summary_marks_unsupported_schema_unknown(tmp_path) -> None:
+    root = _archive_root(tmp_path)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute("ALTER TABLE messages RENAME COLUMN occurred_at_ms TO unsupported_time")
+    snapshot = archive.snapshot_capability("messages", tmp_path / "private-run", root)
+
+    coverage = archive.coverage_summary(snapshot)
+
+    assert coverage.status == "unknown"
+    assert "occurred_at_ms" in coverage.reason
+
+
+def test_fts_readiness_reports_stale_and_ready_counts_without_rebuild(tmp_path) -> None:
+    root = _archive_root(tmp_path)
+    stale_snapshot = archive.snapshot_capability("fts", tmp_path / "stale-run", root)
+
+    stale = archive.fts_readiness(stale_snapshot)
+
+    assert stale.status == "stale"
+    assert stale.surfaces == (
+        archive.ArchiveFtsSurfaceReadiness(
+            surface="messages",
+            state="stale",
+            checked_at="2026-01-01T00:10:00Z",
+            source_row_count=9,
+            fts_row_count=5,
+            missing_row_count=4,
+            excess_row_count=0,
+            duplicate_row_count=0,
+            identity_mismatch_row_count=0,
+            detail="synthetic stale index",
+        ),
+    )
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            "UPDATE fts_freshness_state SET state = 'ready', indexed_rows = source_rows, missing_rows = 0"
+        )
+    ready_snapshot = archive.snapshot_capability("fts", tmp_path / "ready-run", root)
+
+    ready = archive.fts_readiness(ready_snapshot)
+
+    assert ready.status == "ready"
+    assert ready.surfaces[0].source_row_count == ready.surfaces[0].fts_row_count == 9
+
+
+def test_user_authored_content_units_preserve_authorship_and_raw_locators(tmp_path) -> None:
+    root = _archive_root(tmp_path)
+    snapshot = archive.snapshot_capability("messages", tmp_path / "private-run", root)
+
+    direct = list(archive.iter_user_authored_content_units(snapshot))
+    uncertain = list(archive.iter_uncertain_authorship_content_units(snapshot))
+
+    assert {unit.session_origin for unit in direct} == {
+        "chatgpt",
+        "claude-ai",
+        "gemini",
+        "claude-code",
+        "codex",
+    }
+    assert {unit.material_origin for unit in direct} == {"operator_direct"}
+    assert {unit.text for unit in direct}.isdisjoint({"pasted text", "model text", "tool text"})
+    codex = next(unit for unit in direct if unit.session_origin == "codex")
+    assert codex.session_native_id == "synthetic-session"
+    assert codex.raw_session_locator == "raw-codex"
+    assert codex.block_locator == "block-codex"
+    assert codex.block_kind == "text"
+    assert codex.content_hash == "626c6f636b2d68617368"
+    assert codex.occurred_at == "2026-01-01T00:04:00Z"
+    assert uncertain == [
+        archive.ArchiveContentUnit(
+            locator="codex:synthetic-session:uncertain:block-uncertain",
+            message_locator="codex:synthetic-session:uncertain",
+            block_locator="block-uncertain",
+            session_locator="codex:synthetic-session",
+            session_origin="codex",
+            session_native_id="synthetic-session",
+            raw_session_locator="raw-codex",
+            role="user",
+            material_origin=None,
+            authorship="uncertain",
+            authorship_reason="user role is present but material_origin does not prove direct operator authorship",
+            occurred_at="2026-01-01T00:05:00Z",
+            text="uncertain text",
+            block_kind="text",
+            content_hash="6f746865722d626c6f636b2d68617368",
+        )
+    ]
 
 
 def test_schema_mismatch_and_missing_archive_degrade_through_typed_results(tmp_path) -> None:
