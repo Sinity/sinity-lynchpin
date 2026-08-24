@@ -510,8 +510,10 @@ def compatible_graph_predecessor(
 ) -> str | None:
     """Return the compatible predecessor for one incremental generation.
 
-    Only a graph that belongs to a successful promotion and has an ``ok`` graph
-    readiness row is eligible.  Scope is exact: an all-project generation is
+    Only a graph that belongs to a published promotion (``ok`` or ``degraded``)
+    and has an ``ok`` graph readiness row is eligible. A degraded generation
+    can have incomplete optional sources while its graph carrier remains valid.
+    Scope is exact: an all-project generation is
     never used as a project-scoped predecessor and vice versa.  In particular,
     a failed or partial graph row left behind by a prior attempt cannot become
     the historical carrier merely because it is newer.
@@ -528,7 +530,7 @@ def compatible_graph_predecessor(
         FROM evidence_graph_build AS graph
         JOIN substrate_promotion_run AS promotion
           ON promotion.refresh_id = graph.refresh_id
-         AND promotion.status = 'ok'
+         AND promotion.status IN ('ok', 'degraded')
         WHERE graph.start_date <= ?
           AND graph.end_date >= ?
           AND {scope_predicate}
@@ -587,7 +589,7 @@ def promote_incremental_evidence_graph(
             FROM evidence_graph_build AS graph
             JOIN substrate_promotion_run AS promotion
               ON promotion.refresh_id = graph.refresh_id
-             AND promotion.status = 'ok'
+             AND promotion.status IN ('ok', 'degraded')
             WHERE graph.refresh_id = ?
               AND graph.start_date <= ?
               AND graph.end_date >= ?
