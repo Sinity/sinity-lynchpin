@@ -472,7 +472,8 @@ def _summarize_day(
         if segment.agency is Agency.MIXED or len(set(segment.component_activities) - {Activity.UNKNOWN}) > 1
         for ref in segment.evidence_refs
     )
-    ratio = lambda value: value / duration if duration else 0.0
+    def ratio(value: float) -> float:
+        return value / duration if duration else 0.0
     inputs = DayTypeInputs(
         ratio(coverage_total),
         ratio(unknown_total),
