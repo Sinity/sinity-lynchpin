@@ -32,6 +32,8 @@ import threading
 from typing import TYPE_CHECKING, Any, Iterator, Literal
 from uuid import uuid4
 
+from lynchpin.substrate.locking import publication_lock
+
 if TYPE_CHECKING:
     import duckdb
 
@@ -326,11 +328,6 @@ def _publication_intent_path(canonical: Path) -> Path:
     return canonical.with_name(f".{canonical.name}.publication.json")
 
 
-def _promotion_lock_path(canonical: Path | str) -> Path:
-    target = _substrate_path_value(canonical)
-    return target.with_name(f".{target.name}.promotion.lock")
-
-
 def _writer_reservation_lock_path(canonical: Path) -> Path:
     """Return the lock that admits exactly one candidate builder."""
     return canonical.with_name(f".{canonical.name}.writer.lock")
@@ -438,25 +435,15 @@ def _promotion_lock(canonical: Path) -> Iterator[None]:
 @contextmanager
 def _publication_read_lock(canonical: Path) -> Iterator[None]:
     """Prevent an active publisher from moving serving artifacts during open."""
-    fd = os.open(_promotion_lock_path(canonical), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_SH)
+    with publication_lock(canonical, exclusive=False):
         yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 
 
 @contextmanager
 def _publication_write_lock(canonical: Path) -> Iterator[None]:
     """Exclude complete serving observations only while publishing a triple."""
-    fd = os.open(_promotion_lock_path(canonical), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    with publication_lock(canonical, exclusive=True):
         yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 
 
 @contextmanager

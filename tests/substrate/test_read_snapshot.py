@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import threading
 import warnings
 
@@ -38,6 +39,7 @@ from lynchpin.substrate.status_manifest import (
 def isolated_substrate(monkeypatch, tmp_path: Path) -> Path:
     """Point substrate_path at an isolated tmp file for this test."""
     target = tmp_path / "substrate.duckdb"
+    monkeypatch.setenv("LYNCHPIN_SUBSTRATE_LOCK_ROOT", str(tmp_path / "runtime-locks"))
     monkeypatch.setattr(
         "lynchpin.substrate.connection.substrate_path",
         lambda: target,
@@ -1176,6 +1178,33 @@ def test_serving_generation_normalizes_string_configured_path(
             "SELECT refresh_id FROM substrate_promotion_run"
         ).fetchone() == ("prior",)
 
-    assert connection._promotion_lock_path(str(isolated_substrate)) == isolated_substrate.with_name(
-        f".{isolated_substrate.name}.promotion.lock"
-    )
+
+def test_read_only_canonical_uses_writable_runtime_publication_lock(
+    isolated_substrate: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Serving reads retain publication consistency without checkout writes."""
+    from lynchpin.substrate.locking import publication_lock_path
+
+    canonical = isolated_substrate.parent / "canonical" / isolated_substrate.name
+    canonical.parent.mkdir()
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: canonical)
+    lock_root = isolated_substrate.parent / "runtime-locks"
+    lock_root.mkdir()
+    _record_verified_generation(canonical, "prior")
+    original_mode = stat.S_IMODE(canonical.parent.stat().st_mode)
+    os.chmod(canonical.parent, 0o555)
+    try:
+        with connect(read_only=True) as conn:
+            assert conn.execute(
+                "SELECT refresh_id FROM substrate_promotion_run"
+            ).fetchone() == ("prior",)
+    finally:
+        os.chmod(canonical.parent, original_mode)
+
+    lock_path = publication_lock_path(canonical)
+    assert lock_path.parent == lock_root
+    assert lock_path.exists()
+    assert not canonical.with_name(
+        f".{canonical.name}.promotion.lock"
+    ).exists()
