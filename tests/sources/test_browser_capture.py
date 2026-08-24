@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from lynchpin.sources.browser_capture import inventory_browser_captures, parse_browser_capture
+from lynchpin.sources.browser_capture import HASH_CHUNK_BYTES, inventory_browser_captures, parse_browser_capture
 
 
 FIXTURE = Path(__file__).parent / "fixtures/browser_capture/structured_export.json"
@@ -80,3 +80,61 @@ def test_malformed_and_unsupported_captures_are_reported_without_fabricated_reco
     assert unsupported_capture.parse_status == "unsupported_format"
     assert unsupported_capture.parse_error == "format has no structured parser"
     assert unsupported_capture.conversations == ()
+
+
+def test_oversized_structured_capture_hashes_in_chunks_without_reading_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_path = tmp_path / "oversized.json"
+    capture_size = (HASH_CHUNK_BYTES * 3) + 17
+    with capture_path.open("wb") as handle:
+        handle.truncate(capture_size)
+
+    original_open = Path.open
+    reads: list[tuple[int, int]] = []
+
+    class RecordingReader:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self.handle.read(size)
+            reads.append((size, len(chunk)))
+            return chunk
+
+    def tracked_open(path: Path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        if path == capture_path and args == ("rb",):
+            return RecordingReader(handle)
+        return handle
+
+    def reject_read_bytes(path: Path) -> bytes:
+        raise AssertionError(f"unexpected whole-file read: {path}")
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+
+    capture = parse_browser_capture(capture_path, max_structured_bytes=HASH_CHUNK_BYTES)
+
+    expected_hash = hashlib.sha256()
+    remaining = capture_size
+    while remaining:
+        chunk_size = min(remaining, HASH_CHUNK_BYTES)
+        expected_hash.update(b"\0" * chunk_size)
+        remaining -= chunk_size
+
+    assert capture.size_bytes == capture_size
+    assert capture.content_sha256 == expected_hash.hexdigest()
+    assert capture.parse_status == "skipped_oversized"
+    assert capture.parse_error == f"structured file exceeds maximum parse size of {HASH_CHUNK_BYTES} bytes"
+    assert capture.conversations == ()
+    assert sum(length for _, length in reads) == capture_size
+    assert all(size == HASH_CHUNK_BYTES for size, _ in reads)
+    assert max(length for _, length in reads) == HASH_CHUNK_BYTES

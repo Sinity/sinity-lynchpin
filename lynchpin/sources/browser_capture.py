@@ -27,8 +27,12 @@ ParseStatus = Literal[
     "malformed",
     "unsupported_format",
     "unrecognized_structured",
+    "skipped_oversized",
 ]
 TimestampPrecision = Literal["second", "millisecond", "microsecond", "unknown"]
+HASH_CHUNK_BYTES = 1024 * 1024
+DEFAULT_MAX_STRUCTURED_BYTES = 16 * 1024 * 1024
+_STRUCTURED_FORMATS = frozenset(("json", "ndjson", "html"))
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,8 @@ __all__ = [
     "BrowserConversation",
     "BrowserMessage",
     "BrowserTimestamp",
+    "DEFAULT_MAX_STRUCTURED_BYTES",
+    "HASH_CHUNK_BYTES",
     "ParseStatus",
     "TimestampPrecision",
     "inventory_browser_captures",
@@ -99,7 +105,11 @@ __all__ = [
 ]
 
 
-def inventory_browser_captures(inbox_root: Path) -> tuple[BrowserCaptureFile, ...]:
+def inventory_browser_captures(
+    inbox_root: Path,
+    *,
+    max_structured_bytes: int = DEFAULT_MAX_STRUCTURED_BYTES,
+) -> tuple[BrowserCaptureFile, ...]:
     """Inventory an inbox recursively without writing to owner-native files.
 
     ``root_link`` retains the caller-supplied path while ``root_resolved`` and
@@ -117,7 +127,14 @@ def inventory_browser_captures(inbox_root: Path) -> tuple[BrowserCaptureFile, ..
             path = Path(directory) / filename
             if path.is_symlink() or not path.is_file():
                 continue
-            captures.append(parse_browser_capture(path, root_link=root_link, root_resolved=root_resolved))
+            captures.append(
+                parse_browser_capture(
+                    path,
+                    root_link=root_link,
+                    root_resolved=root_resolved,
+                    max_structured_bytes=max_structured_bytes,
+                )
+            )
     return tuple(captures)
 
 
@@ -126,20 +143,26 @@ def parse_browser_capture(
     *,
     root_link: Path | None = None,
     root_resolved: Path | None = None,
+    max_structured_bytes: int = DEFAULT_MAX_STRUCTURED_BYTES,
 ) -> BrowserCaptureFile:
     """Read one capture and return inventory metadata plus structured records."""
+    if max_structured_bytes < 0:
+        raise ValueError("max_structured_bytes must not be negative")
     link_path = path
     root_link = root_link or path.parent
     root_resolved = root_resolved or root_link.resolve()
     stat = path.stat()
-    payload = path.read_bytes()
-    content_sha256 = hashlib.sha256(payload).hexdigest()
+    content_sha256 = _sha256_file(path)
     format_name, mime_type = _format_for(path)
     conversations: tuple[BrowserConversation, ...] = ()
     parse_status: ParseStatus
     parse_error: str | None = None
 
-    if format_name == "json":
+    if format_name in _STRUCTURED_FORMATS and stat.st_size > max_structured_bytes:
+        parse_status = "skipped_oversized"
+        parse_error = f"structured file exceeds maximum parse size of {max_structured_bytes} bytes"
+    elif format_name == "json":
+        payload = path.read_bytes()
         try:
             decoded = json.loads(payload.decode("utf-8"))
         except UnicodeDecodeError:
@@ -150,6 +173,7 @@ def parse_browser_capture(
             conversations = _conversations_from_payload(decoded)
             parse_status = "parsed" if conversations else "unrecognized_structured"
     elif format_name == "ndjson":
+        payload = path.read_bytes()
         try:
             decoded_rows = _decode_ndjson(payload)
         except UnicodeDecodeError:
@@ -160,6 +184,7 @@ def parse_browser_capture(
             conversations = _conversations_from_payload(decoded_rows)
             parse_status = "parsed" if conversations else "unrecognized_structured"
     elif format_name == "html":
+        payload = path.read_bytes()
         embedded = _embedded_json(payload)
         if embedded is None:
             parse_status, parse_error = "unsupported_format", "no embedded structured state"
@@ -193,6 +218,14 @@ def parse_browser_capture(
         conversations=conversations,
         deduplication_keys=deduplication_keys,
     )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(HASH_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _format_for(path: Path) -> tuple[str, str]:
