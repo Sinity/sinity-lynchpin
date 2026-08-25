@@ -79,7 +79,7 @@ def _install_synthetic_history(
         aw_rows.append(_make_aw_row(d, active_hours=4.0 + (i % 3), deep_work_min=target * 0.5))
 
     monkeypatch.setattr(
-        "lynchpin.sources.sleep.sleep_productivity",
+        "lynchpin.sources.sleep_productivity.iter_sleep_productivity",
         lambda **kwargs: sp_rows,
     )
     monkeypatch.setattr(
@@ -142,7 +142,10 @@ def test_weak_fit_returns_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
         health_rows.append(_make_health_row(d, hrv=42.0, resting_hr=60.0))
         aw_rows.append(_make_aw_row(d, active_hours=5.0, deep_work_min=70.0))
 
-    monkeypatch.setattr("lynchpin.sources.sleep.sleep_productivity", lambda **kwargs: sp_rows)
+    monkeypatch.setattr(
+        "lynchpin.sources.sleep_productivity.iter_sleep_productivity",
+        lambda **kwargs: sp_rows,
+    )
     monkeypatch.setattr("lynchpin.sources.health.daily_health_summary", lambda **kwargs: health_rows)
     monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_daily_activity", lambda **kwargs: aw_rows)
 
