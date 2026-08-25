@@ -290,6 +290,7 @@
           cores = ''${LYNCHPIN_NIX_CORES:-4}
           fallback = true"
           export PYTHONUSERBASE=$PWD/.pyuser
+          export LYNCHPIN_REPO_ROOT=$PWD
           export PYTHONPATH=$PWD
         '';
         mkLynchpinShell =
