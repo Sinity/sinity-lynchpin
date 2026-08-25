@@ -503,7 +503,7 @@ def _substrate_build_for_window(
         "SELECT refresh_id, start_date, end_date, materialized_at "
         "FROM evidence_graph_build "
         "WHERE start_date <= ? AND end_date >= ? AND len(projects) = 0 "
-        "ORDER BY end_date DESC, materialized_at DESC LIMIT 1",
+        "ORDER BY end_date ASC, start_date DESC, materialized_at DESC LIMIT 1",
         [window[0], window[1]],
     ).fetchone()
     if row is None:
