@@ -294,6 +294,7 @@ def materialize_incremental_evidence_graph(
     from .evidence_graph import _dedupe_edges
     from lynchpin.substrate import apply_schema, connect
     from lynchpin.substrate.graph import (
+        archive_evidence_graph_partition,
         compatible_graph_predecessor,
         load_evidence_graph_boundary_nodes,
         promote_incremental_evidence_graph,
@@ -320,6 +321,10 @@ def materialize_incremental_evidence_graph(
         )
         if previous_refresh_id is None:
             raise RuntimeError("incremental graph promotion requires a compatible predecessor")
+        if previous_refresh_id == refresh_id:
+            previous_refresh_id = archive_evidence_graph_partition(
+                conn, refresh_id=refresh_id
+            )
         boundary_nodes = load_evidence_graph_boundary_nodes(
             conn,
             refresh_id=previous_refresh_id,

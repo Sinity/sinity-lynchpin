@@ -798,30 +798,9 @@ def promote_incremental_evidence_graph(
         )
 
     if replacing_existing_refresh:
-        # A logical retry must not mutate its already-published physical
-        # partition. Besides preserving evidence, this avoids a DuckDB 1.1
-        # internal abort when deleting indexed rows from a large partition.
-        # Rekey the immutable partition inside this candidate, then publish
-        # the retry as the usual bounded overlay under the logical id.
-        archived_refresh_id = f"{refresh_id}:partition:{uuid.uuid4().hex}"
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            conn.execute(
-                "UPDATE evidence_edge SET refresh_id = ? WHERE refresh_id = ?",
-                [archived_refresh_id, refresh_id],
-            )
-            conn.execute(
-                "UPDATE evidence_node SET refresh_id = ? WHERE refresh_id = ?",
-                [archived_refresh_id, refresh_id],
-            )
-            conn.execute(
-                "UPDATE evidence_graph_build SET refresh_id = ? WHERE refresh_id = ?",
-                [archived_refresh_id, refresh_id],
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+        archived_refresh_id = archive_evidence_graph_partition(
+            conn, refresh_id=refresh_id
+        )
         previous_refresh_id = archived_refresh_id
         replacing_existing_refresh = False
 
@@ -1088,6 +1067,37 @@ def promote_incremental_evidence_graph(
     return {"build": 1, "nodes": node_count, "edges": edge_count}
 
 
+def archive_evidence_graph_partition(
+    conn: "duckdb.DuckDBPyConnection", *, refresh_id: str
+) -> str:
+    """Rekey one physical graph partition so its logical ID can be retried.
+
+    The operation runs before graph construction in the normal incremental
+    path. Keeping it separate prevents the large indexed update from sharing
+    a process memory peak with graph-source and analysis-overlay state.
+    """
+    archived_refresh_id = f"{refresh_id}:partition:{uuid.uuid4().hex}"
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            "UPDATE evidence_edge SET refresh_id = ? WHERE refresh_id = ?",
+            [archived_refresh_id, refresh_id],
+        )
+        conn.execute(
+            "UPDATE evidence_node SET refresh_id = ? WHERE refresh_id = ?",
+            [archived_refresh_id, refresh_id],
+        )
+        conn.execute(
+            "UPDATE evidence_graph_build SET refresh_id = ? WHERE refresh_id = ?",
+            [archived_refresh_id, refresh_id],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return archived_refresh_id
+
+
 def promote_evidence_graph(
     conn: "duckdb.DuckDBPyConnection",
     *,
@@ -1195,6 +1205,7 @@ __all__ = [
     "compute_symbol_overlap_edges",
     "compatible_graph_predecessor",
     "list_evidence_graph_builds",
+    "archive_evidence_graph_partition",
     "load_evidence_graph",
     "load_evidence_graph_boundary_nodes",
     "promote_evidence_graph",
