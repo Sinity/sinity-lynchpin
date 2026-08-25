@@ -181,6 +181,11 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
 
     monkeypatch.setattr(connection, "candidate_generation", candidate_generation)
     monkeypatch.setattr(
+        agentctl_plan.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="0123456789abcdef"),
+    )
+    monkeypatch.setattr(
         connection,
         "bind_candidate_publication",
         lambda generation, refresh_id: observed.update(
@@ -205,7 +210,10 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
         input_generation="abcdef0123456789remainder",
     )
 
-    expected = "current-state:2026-08-20:2026-08-27:all:generation:abcdef0123456789"
+    expected = (
+        "current-state:2026-08-20:2026-08-27:all:"
+        "generation:abcdef0123456789-0123456789ab"
+    )
     assert observed == {
         "receipt_refresh_id": expected,
         "snapshot_refresh_id": expected,

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import uuid
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -214,7 +215,7 @@ def run_promotion_node(
 
     environment_key = "LYNCHPIN_GRAPH_GENERATION"
     previous_generation = os.environ.get(environment_key)
-    os.environ[environment_key] = input_generation[:16]
+    os.environ[environment_key] = f"{input_generation[:16]}-{uuid.uuid4().hex[:12]}"
     try:
         refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
         with candidate_generation(receipt_refresh_id=refresh_id) as generation:
