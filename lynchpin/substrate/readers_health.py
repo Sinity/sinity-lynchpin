@@ -41,20 +41,28 @@ def load_evidence_node_by_source(
     refresh_id: str,
 ) -> list[tuple[Any, ...]]:
     """Return (source, node_count, project_count, date_span_days, has_caveats)."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("id", "source", "project", "date", "caveats"),
+        key_columns=("id",),
+    )
     return conn.execute(
-        """
+        f"""
         SELECT
             source,
             COUNT(*) AS node_count,
             COUNT(DISTINCT project) AS project_count,
             COALESCE(DATE_DIFF('day', MIN(date), MAX(date)), 0) AS date_span_days,
             COALESCE(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END), 0) > 0 AS has_caveats
-        FROM evidence_node
-        WHERE refresh_id = ?
+        FROM {relation}
         GROUP BY source
         ORDER BY node_count DESC
         """,
-        [refresh_id],
+        params,
     ).fetchall()
 
 
@@ -210,18 +218,26 @@ def load_evidence_node_source_caveats(
     refresh_id: str,
 ) -> list[tuple[Any, ...]]:
     """Return (source, node_count, caveated_pct) rows."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("id", "source", "caveats"),
+        key_columns=("id",),
+    )
     return conn.execute(
-        """
+        f"""
         SELECT source,
                COUNT(*) AS node_count,
                ROUND(SUM(CASE WHEN json_array_length(caveats) > 0 THEN 1 ELSE 0 END)
                      * 100.0 / COUNT(*), 1) AS caveated_pct
-        FROM evidence_node
-        WHERE refresh_id = ?
+        FROM {relation}
         GROUP BY source
         ORDER BY node_count DESC
         """,
-        [refresh_id],
+        params,
     ).fetchall()
 
 
@@ -234,14 +250,30 @@ def load_project_day_anomaly_rows(
     refresh_id: str,
 ) -> list[tuple[Any, ...]]:
     """Return (project, date, commit_count, ai_work_event_count, focus_seconds, source_count)."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=(
+            "project",
+            "date",
+            "commit_count",
+            "ai_work_event_count",
+            "focus_seconds",
+            "source_count",
+        ),
+        key_columns=("project", "date"),
+    )
     return conn.execute(
-        """
+        f"""
         SELECT project, date, commit_count, ai_work_event_count,
                focus_seconds, source_count
-        FROM project_day_correlation
-        WHERE refresh_id = ? AND source_count >= 1
+        FROM {relation}
+        WHERE source_count >= 1
         """,
-        [refresh_id],
+        params,
     ).fetchall()
 
 

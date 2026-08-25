@@ -81,7 +81,9 @@ def promote_incremental_analysis_claims(
     """Copy predecessor claims and replace only the refreshed tail."""
     rows = list(claims)
     replacing_existing_refresh = previous_refresh_id == refresh_id
-    conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_claim_ids (id VARCHAR PRIMARY KEY)")
+    conn.execute(
+        "CREATE OR REPLACE TEMPORARY TABLE incremental_claim_ids (id VARCHAR PRIMARY KEY)"
+    )
     if rows:
         conn.executemany(
             "INSERT INTO incremental_claim_ids VALUES (?)",
@@ -146,7 +148,9 @@ def promote_incremental_analysis_claims(
                 ],
             )
         count = int(
-            conn.execute("SELECT COUNT(*) FROM analysis_claim WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+            conn.execute(
+                "SELECT COUNT(*) FROM analysis_claim WHERE refresh_id = ?", [refresh_id]
+            ).fetchone()[0]
         )
         conn.execute("COMMIT")
     except Exception:
@@ -172,11 +176,34 @@ def load_analysis_claims(
     min_confidence: float | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
+    from lynchpin.substrate.graph import _logical_graph_relation
+
     clauses: list[str] = []
     params: list[Any] = []
+    relation = "analysis_claim"
     if refresh_id is not None:
-        clauses.append("refresh_id = ?")
-        params.append(refresh_id)
+        relation, params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="analysis_claim",
+            columns=(
+                "refresh_id",
+                "claim_id",
+                "claim_type",
+                "project",
+                "date",
+                "support_level",
+                "confidence",
+                "score",
+                "summary",
+                "source_ids",
+                "relation_ids",
+                "caveats",
+                "payload",
+                "materialized_at",
+            ),
+            key_columns=("claim_id",),
+        )
     if project is not None:
         clauses.append("project = ?")
         params.append(project)
@@ -199,7 +226,7 @@ def load_analysis_claims(
         SELECT refresh_id, claim_id, claim_type, project, date, support_level,
                confidence, score, summary, source_ids, relation_ids, caveats, payload,
                materialized_at
-        FROM analysis_claim
+        FROM {relation}
         {where}
         ORDER BY confidence DESC, score DESC, date DESC NULLS LAST, project
         LIMIT ?
@@ -215,11 +242,33 @@ def load_claim_evidence(
     claim_id: str,
     refresh_id: str | None = None,
 ) -> dict[str, Any] | None:
-    params: list[Any] = [claim_id]
-    refresh_clause = ""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    params: list[Any] = []
     if refresh_id is not None:
-        refresh_clause = " AND refresh_id = ?"
-        params.append(refresh_id)
+        claim_relation, relation_params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="analysis_claim",
+            columns=(
+                "refresh_id",
+                "claim_id",
+                "claim_type",
+                "project",
+                "date",
+                "support_level",
+                "confidence",
+                "score",
+                "summary",
+                "source_ids",
+                "relation_ids",
+                "caveats",
+                "payload",
+                "materialized_at",
+            ),
+            key_columns=("claim_id",),
+        )
+        params.extend(relation_params)
     else:
         refresh_id = best_materialized_refresh_id(
             conn,
@@ -228,17 +277,37 @@ def load_claim_evidence(
         )
         if refresh_id is None:
             return None
-        refresh_clause = " AND refresh_id = ?"
-        params.append(refresh_id)
+        claim_relation, params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="analysis_claim",
+            columns=(
+                "refresh_id",
+                "claim_id",
+                "claim_type",
+                "project",
+                "date",
+                "support_level",
+                "confidence",
+                "score",
+                "summary",
+                "source_ids",
+                "relation_ids",
+                "caveats",
+                "payload",
+                "materialized_at",
+            ),
+            key_columns=("claim_id",),
+        )
+    params.append(claim_id)
     row = conn.execute(
-        """
+        f"""
         SELECT refresh_id, claim_id, claim_type, project, date, support_level,
                confidence, score, summary, source_ids, relation_ids, caveats, payload,
                materialized_at
-        FROM analysis_claim
+        FROM {claim_relation}
         WHERE claim_id = ?
         """
-        + refresh_clause
         + " ORDER BY materialized_at DESC LIMIT 1",
         params,
     ).fetchone()
@@ -251,15 +320,30 @@ def load_claim_evidence(
     edges = []
     if source_ids:
         placeholders = ", ".join("?" for _ in source_ids)
+        node_relation, node_params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="evidence_node",
+            columns=("id", "kind", "source", "date", "project", "summary"),
+            key_columns=("id",),
+        )
         nodes = conn.execute(
-            f"SELECT id, kind, source, date, project, summary FROM evidence_node WHERE refresh_id = ? AND id IN ({placeholders})",
-            [claim["refresh_id"], *source_ids],
+            f"SELECT id, kind, source, date, project, summary FROM {node_relation} WHERE id IN ({placeholders})",
+            [*node_params, *source_ids],
         ).fetchall()
     if relation_ids:
         placeholders = ", ".join("?" for _ in relation_ids)
+        edge_relation, edge_params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="evidence_edge",
+            columns=("source_id", "target_id", "relation", "evidence", "weight"),
+            key_columns=("source_id", "target_id", "relation"),
+            cutoff_column=None,
+        )
         edges = conn.execute(
-            f"SELECT source_id, target_id, relation, evidence, weight FROM evidence_edge WHERE refresh_id = ? AND source_id || '->' || target_id || ':' || relation IN ({placeholders})",
-            [claim["refresh_id"], *relation_ids],
+            f"SELECT source_id, target_id, relation, evidence, weight FROM {edge_relation} WHERE source_id || '->' || target_id || ':' || relation IN ({placeholders})",
+            [*edge_params, *relation_ids],
         ).fetchall()
     claim["evidence_nodes"] = [
         {
