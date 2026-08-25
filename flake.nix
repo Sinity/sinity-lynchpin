@@ -290,11 +290,7 @@
           cores = ''${LYNCHPIN_NIX_CORES:-4}
           fallback = true"
           export PYTHONUSERBASE=$PWD/.pyuser
-          if [ -d /realm/project/polylogue/polylogue ]; then
-            export PYTHONPATH=/realm/project/polylogue:$PWD''${PYTHONPATH:+:$PYTHONPATH}
-          else
-            export PYTHONPATH=$PWD''${PYTHONPATH:+:$PYTHONPATH}
-          fi
+          export PYTHONPATH=$PWD
         '';
         mkLynchpinShell =
           profileName: packages:
