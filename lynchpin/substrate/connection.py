@@ -1374,7 +1374,20 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current != SUBSTRATE_VERSION:
+    if current == 43 and SUBSTRATE_VERSION == 44:
+        conn.execute(
+            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+            "predecessor_refresh_id VARCHAR"
+        )
+        conn.execute(
+            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+            "predecessor_tail_start DATE"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
+            [str(SUBSTRATE_VERSION)],
+        )
+    elif current != SUBSTRATE_VERSION:
         for stmt in DROP_STATEMENTS:
             conn.execute(stmt)
         for stmt in DDL_STATEMENTS:

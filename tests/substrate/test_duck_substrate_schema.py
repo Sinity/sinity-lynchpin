@@ -254,6 +254,50 @@ def test_apply_schema_recreates_on_version_bump(tmp_path: Path) -> None:
     assert count == 0
 
 
+def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    """The additive graph-lineage rollout must retain the verified predecessor."""
+    from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
+
+    assert SUBSTRATE_VERSION == 44
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO evidence_graph_build "
+            "(refresh_id, start_date, end_date, mode, projects, node_count, "
+            "edge_count, caveats, generated_at) VALUES "
+            "('verified', DATE '2026-01-01', DATE '2026-08-25', 'current-state', "
+            "[], 12, 34, '[]', now())"
+        )
+        views = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+        ).fetchall()
+        for (view_name,) in views:
+            conn.execute(f'DROP VIEW "{view_name}"')
+        indexes = conn.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE table_name = 'evidence_graph_build'"
+        ).fetchall()
+        for (index_name,) in indexes:
+            conn.execute(f'DROP INDEX "{index_name}"')
+        conn.execute("ALTER TABLE evidence_graph_build DROP predecessor_refresh_id")
+        conn.execute("ALTER TABLE evidence_graph_build DROP predecessor_tail_start")
+        conn.execute("UPDATE substrate_meta SET value = '43' WHERE key = 'version'")
+
+        apply_schema(conn)
+
+        assert conn.execute(
+            "SELECT refresh_id, node_count, edge_count, predecessor_refresh_id, "
+            "predecessor_tail_start FROM evidence_graph_build"
+        ).fetchall() == [("verified", 12, 34, None, None)]
+        assert conn.execute(
+            "SELECT value FROM substrate_meta WHERE key = 'version'"
+        ).fetchone() == ("44",)
+
+
 def test_substrate_path_uses_local_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
