@@ -24,8 +24,16 @@ def load_velocity_series(
     projects: tuple[str, ...] | None = None,
 ) -> list[tuple[Any, ...]]:
     """Return (project, date, commit_count, rolling_avg, cumulative, source_count) rows."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date", "commit_count", "source_count"),
+        key_columns=("project", "date"),
+    )
     proj_filter = ""
-    params: list[Any] = [refresh_id]
     if projects:
         placeholders = ",".join(["?"] * len(projects))
         proj_filter = f"AND project IN ({placeholders})"
@@ -42,8 +50,8 @@ def load_velocity_series(
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                ) AS cumulative,
                source_count
-        FROM project_day_correlation
-        WHERE refresh_id = ? AND commit_count > 0 {proj_filter}
+        FROM {relation}
+        WHERE commit_count > 0 {proj_filter}
         ORDER BY project, date
     """
     return conn.execute(sql, params).fetchall()
@@ -58,12 +66,21 @@ def load_velocity_window(
     refresh_id: str,
 ) -> tuple[Any, Any] | None:
     """Return (min_date, max_date) for the refresh window."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date"),
+        key_columns=("project", "date"),
+    )
     return conn.execute(
-        """
+        f"""
         SELECT MIN(date), MAX(date)
-        FROM project_day_correlation WHERE refresh_id = ?
+        FROM {relation}
         """,
-        [refresh_id],
+        params,
     ).fetchone()
 
 
@@ -74,8 +91,16 @@ def load_velocity_project_summary(
     projects: tuple[str, ...] | None = None,
 ) -> list[tuple[Any, ...]]:
     """Return (project, commits, active_days, avg_daily) per project."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date", "commit_count"),
+        key_columns=("project", "date"),
+    )
     proj_filter = ""
-    params: list[Any] = [refresh_id]
     if projects:
         placeholders = ",".join(["?"] * len(projects))
         proj_filter = f"AND project IN ({placeholders})"
@@ -87,8 +112,8 @@ def load_velocity_project_summary(
                SUM(commit_count) AS commits,
                COUNT(*) AS active_days,
                ROUND(AVG(commit_count), 1) AS avg_daily
-        FROM project_day_correlation
-        WHERE refresh_id = ? AND commit_count > 0 {proj_filter}
+        FROM {relation}
+        WHERE commit_count > 0 {proj_filter}
         GROUP BY project ORDER BY commits DESC
         """,
         params,
@@ -102,8 +127,16 @@ def load_velocity_peak(
     projects: tuple[str, ...] | None = None,
 ) -> tuple[Any, ...] | None:
     """Return (project, date, commit_count) for the single peak day."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date", "commit_count"),
+        key_columns=("project", "date"),
+    )
     proj_filter = ""
-    params: list[Any] = [refresh_id]
     if projects:
         placeholders = ",".join(["?"] * len(projects))
         proj_filter = f"AND project IN ({placeholders})"
@@ -112,8 +145,8 @@ def load_velocity_peak(
     return conn.execute(
         f"""
         SELECT project, date, commit_count
-        FROM project_day_correlation
-        WHERE refresh_id = ? {proj_filter}
+        FROM {relation}
+        WHERE TRUE {proj_filter}
         ORDER BY commit_count DESC LIMIT 1
         """,
         params,
@@ -130,26 +163,28 @@ def load_symbol_velocity_rows(
     projects: tuple[str, ...] | None = None,
 ) -> list[tuple[Any, ...]]:
     """Return (project, date, commit_count, symbols_added, symbols_modified, symbols_renamed, symbols_total)."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, relation_params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date", "commit_count"),
+        key_columns=("project", "date"),
+    )
     outer_filter = ""
     inner_filter = ""
-    params: list[Any] = [refresh_id, refresh_id]
+    params: list[Any] = [*relation_params, refresh_id]
     if projects:
         placeholders = ",".join(["?"] * len(projects))
         outer_filter = f"AND p.project IN ({placeholders})"
         inner_filter = f"AND project IN ({placeholders})"
-        params = [refresh_id, *projects, refresh_id, *projects]
+        params = [*relation_params, refresh_id, *projects]
 
     return conn.execute(
         f"""
-        SELECT COALESCE(p.project, sym.project) AS project,
-               COALESCE(p.date, sym.date) AS date,
-               COALESCE(p.commit_count, 0) AS commit_count,
-               COALESCE(sym.added, 0) AS symbols_added,
-               COALESCE(sym.modified, 0) AS symbols_modified,
-               COALESCE(sym.renamed, 0) AS symbols_renamed,
-               COALESCE(sym.total, 0) AS symbols_total
-        FROM project_day_correlation p
-        FULL OUTER JOIN (
+        WITH p AS {relation},
+        sym AS (
             SELECT project, date,
                    SUM(CASE WHEN change_type = 'ADDED' THEN 1 ELSE 0 END) AS added,
                    SUM(CASE WHEN change_type = 'MODIFIED' THEN 1 ELSE 0 END) AS modified,
@@ -158,8 +193,16 @@ def load_symbol_velocity_rows(
             FROM symbol_change
             WHERE refresh_id = ? {inner_filter}
             GROUP BY project, date
-        ) sym ON p.project = sym.project AND p.date = sym.date
-           AND p.refresh_id = ?
+        )
+        SELECT COALESCE(p.project, sym.project) AS project,
+               COALESCE(p.date, sym.date) AS date,
+               COALESCE(p.commit_count, 0) AS commit_count,
+               COALESCE(sym.added, 0) AS symbols_added,
+               COALESCE(sym.modified, 0) AS symbols_modified,
+               COALESCE(sym.renamed, 0) AS symbols_renamed,
+               COALESCE(sym.total, 0) AS symbols_total
+        FROM p
+        FULL OUTER JOIN sym ON p.project = sym.project AND p.date = sym.date
         {outer_filter}
         ORDER BY project, date
         """,

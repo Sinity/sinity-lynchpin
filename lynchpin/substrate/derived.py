@@ -53,12 +53,37 @@ def load_project_day_correlations(
     DuckDB ARRAY_AGG results (Python list) are converted to tuple; NULL arrays
     become empty tuples.
     """
-    clauses: list[str] = []
-    params: list[Any] = []
+    from lynchpin.substrate.graph import _logical_graph_relation
 
+    relation = "project_day_correlation"
+    params: list[Any] = []
     if refresh_id is not None:
-        clauses.append("refresh_id = ?")
-        params.append(refresh_id)
+        relation, params = _logical_graph_relation(
+            conn,
+            refresh_id=refresh_id,
+            table="project_day_correlation",
+            columns=(
+                "project",
+                "date",
+                "refresh_id",
+                "commit_count",
+                "ai_session_count",
+                "ai_work_event_count",
+                "github_item_count",
+                "focus_count",
+                "terminal_count",
+                "raw_log_count",
+                "commit_shas",
+                "conversation_ids",
+                "github_node_ids",
+                "focus_seconds",
+                "shell_seconds",
+                "source_count",
+            ),
+            key_columns=("project", "date"),
+        )
+    clauses: list[str] = []
+
     if start is not None and end is not None:
         clauses.append("date BETWEEN ? AND ?")
         params.extend([start, end])
@@ -82,7 +107,7 @@ def load_project_day_correlations(
             raw_log_count,
             commit_shas, conversation_ids, github_node_ids,
             focus_seconds, shell_seconds, source_count
-        FROM project_day_correlation
+        FROM {relation}
         {where}
         ORDER BY date, project
     """
@@ -169,12 +194,34 @@ def load_issue_closure_chain_walks(
     payload).  The reachable_node_ids DuckDB list is converted to tuple; NULL
     arrays become empty tuples.
     """
-    clauses: list[str] = []
-    params: list[Any] = []
+    if refresh_id is None:
+        latest = conn.execute(
+            "SELECT refresh_id FROM evidence_graph_build "
+            "ORDER BY generated_at DESC LIMIT 1"
+        ).fetchone()
+        refresh_id = str(latest[0]) if latest is not None else None
+        if refresh_id is None:
+            return []
+    from lynchpin.substrate.graph import _logical_graph_relation
 
-    if refresh_id is not None:
-        clauses.append("refresh_id = ?")
-        params.append(refresh_id)
+    node_relation, node_params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("refresh_id", "id", "kind", "project", "payload"),
+        key_columns=("id",),
+    )
+    edge_relation, edge_params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_edge",
+        columns=("refresh_id", "source_id", "target_id", "relation"),
+        key_columns=("source_id", "target_id", "relation"),
+        cutoff_column=None,
+    )
+    clauses: list[str] = []
+    params: list[Any] = [*node_params, *edge_params]
+
     if project is not None:
         clauses.append("project = ?")
         params.append(project)
@@ -184,10 +231,40 @@ def load_issue_closure_chain_walks(
 
     where = build_where(clauses, params)
     sql = f"""
+        WITH RECURSIVE logical_nodes AS {node_relation},
+        logical_edges AS {edge_relation},
+        refs AS (
+            SELECT n.refresh_id, n.id AS root_id, n.id AS reachable_id,
+                   n.project,
+                   COALESCE(
+                       json_extract_string(n.payload, '$.number'),
+                       CAST(json_extract(n.payload, '$.number') AS VARCHAR)
+                   ) AS issue_number,
+                   0 AS depth
+            FROM logical_nodes n
+            WHERE n.kind = 'github_issue'
+               OR (n.kind = 'github_ref'
+                   AND json_extract_string(n.payload, '$.kind') = 'issue')
+            UNION ALL
+            SELECT r.refresh_id, r.root_id, e.target_id, r.project,
+                   r.issue_number, r.depth + 1
+            FROM refs r
+            JOIN logical_edges e
+              ON e.source_id = r.reachable_id
+             AND e.relation IN ('references', 'mentions_project')
+            WHERE r.depth < 5
+        ), walks AS (
+            SELECT refresh_id, root_id, project, issue_number,
+                   ARRAY_AGG(DISTINCT reachable_id ORDER BY reachable_id) AS reachable_node_ids,
+                   MAX(depth) AS chain_depth,
+                   COUNT(DISTINCT reachable_id) AS reachable_count
+            FROM refs
+            GROUP BY refresh_id, root_id, project, issue_number
+        )
         SELECT
             refresh_id, root_id, project, issue_number,
             reachable_node_ids, chain_depth, reachable_count
-        FROM issue_closure_chain_walk
+        FROM walks
         {where}
         ORDER BY project, root_id
     """

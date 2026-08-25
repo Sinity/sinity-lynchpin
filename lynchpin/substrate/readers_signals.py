@@ -22,12 +22,21 @@ def load_source_co_occurrence(
     refresh_id: str,
 ) -> list[tuple[Any, ...]]:
     """Return (source_a, source_b, co_occurring_days) cross-source co-occurrence rows."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("id", "source", "project", "date"),
+        key_columns=("id",),
+    )
     return conn.execute(
-        """
+        f"""
         WITH source_days AS (
             SELECT DISTINCT source, project, date
-            FROM evidence_node
-            WHERE refresh_id = ? AND project IS NOT NULL
+            FROM {relation}
+            WHERE project IS NOT NULL
         )
         SELECT a.source AS source_a, b.source AS source_b,
                COUNT(*) AS co_occurring_days
@@ -37,7 +46,7 @@ def load_source_co_occurrence(
         HAVING COUNT(*) >= 3
         ORDER BY co_occurring_days DESC
         """,
-        [refresh_id],
+        params,
     ).fetchall()
 
 
@@ -129,13 +138,35 @@ def load_project_health_rows(
     project: str | None = None,
 ) -> list[tuple[Any, ...]]:
     """Return (project, commits, active_days, prs, avg_merge_hours, symbol_changes, daily_churn_rate)."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, relation_params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="project_day_correlation",
+        columns=("project", "date", "commit_count"),
+        key_columns=("project", "date"),
+    )
     proj_filter = "AND p.project = ?" if project else ""
-    params: list[Any] = [refresh_id, refresh_id, refresh_id]
+    params: list[Any] = [*relation_params, refresh_id, refresh_id]
     if project:
         params.append(project)
 
     return conn.execute(
         f"""
+        WITH p AS {relation},
+        pr AS (
+            SELECT project, COUNT(*) AS pr_count,
+                   AVG(time_to_merge_minutes)/60.0 AS avg_merge_hours
+            FROM pr_review_row WHERE refresh_id=?
+            GROUP BY project
+        ),
+        sym AS (
+            SELECT project, COUNT(*) AS symbol_changes,
+                   COUNT(*)*1.0/COUNT(DISTINCT date) AS churn_rate
+            FROM symbol_change WHERE refresh_id=?
+            GROUP BY project
+        )
         SELECT p.project,
                COALESCE(SUM(p.commit_count),0) AS commits,
                COUNT(DISTINCT p.date) AS active_days,
@@ -143,20 +174,10 @@ def load_project_health_rows(
                COALESCE(ROUND(pr.avg_merge_hours,1),0) AS avg_merge_hours,
                COALESCE(sym.symbol_changes,0) AS symbol_changes,
                COALESCE(ROUND(sym.churn_rate,1),0) AS daily_churn_rate
-        FROM project_day_correlation p
-        LEFT JOIN (
-            SELECT project, COUNT(*) AS pr_count,
-                   AVG(time_to_merge_minutes)/60.0 AS avg_merge_hours
-            FROM pr_review_row WHERE refresh_id=?
-            GROUP BY project
-        ) pr ON p.project=pr.project
-        LEFT JOIN (
-            SELECT project, COUNT(*) AS symbol_changes,
-                   COUNT(*)*1.0/COUNT(DISTINCT date) AS churn_rate
-            FROM symbol_change WHERE refresh_id=?
-            GROUP BY project
-        ) sym ON p.project=sym.project
-        WHERE p.refresh_id=? AND p.commit_count>0 {proj_filter}
+        FROM p
+        LEFT JOIN pr ON p.project=pr.project
+        LEFT JOIN sym ON p.project=sym.project
+        WHERE p.commit_count>0 {proj_filter}
         GROUP BY p.project, pr.pr_count, pr.avg_merge_hours,
                  sym.symbol_changes, sym.churn_rate
         ORDER BY commits DESC
@@ -227,7 +248,7 @@ def load_operator_day_lag_correlation(
     """Return (pearson_r, n) for a specific lag between two operator_day metrics."""
     # Note: metric_a and metric_b are pre-validated against the whitelist in the tool.
     return conn.execute(
-        f'''
+        f"""
         SELECT corr(b."{metric_b}", a."{metric_a}"), COUNT(*)
         FROM operator_day a
         JOIN operator_day b
@@ -236,7 +257,7 @@ def load_operator_day_lag_correlation(
         WHERE a.refresh_id = ?
           AND a."{metric_a}" IS NOT NULL
           AND b."{metric_b}" IS NOT NULL
-        ''',
+        """,
         [refresh_id],
     ).fetchone()
 
@@ -301,19 +322,27 @@ def load_ai_session_timestamps_in_range(
     project: str | None = None,
 ) -> list[Any]:
     """Return start_ts timestamps for evidence_node ai_session rows in date range."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("id", "kind", "start_ts", "project", "date"),
+        key_columns=("id",),
+    )
     node_filter = ""
-    params: list[Any] = [refresh_id, start, end]
+    params.extend([start, end])
     if project:
         node_filter = " AND project = ?"
         params.append(project)
     return [
         r[0]
         for r in conn.execute(
-            "SELECT start_ts FROM evidence_node "
-            "WHERE refresh_id = ? AND kind = 'ai_session' "
+            f"SELECT start_ts FROM {relation} "
+            "WHERE kind = 'ai_session' "
             "AND start_ts IS NOT NULL "
-            "AND start_ts::DATE BETWEEN ? AND ?"
-            + node_filter,
+            "AND start_ts::DATE BETWEEN ? AND ?" + node_filter,
             params,
         ).fetchall()
     ]
@@ -327,13 +356,23 @@ def load_pressure_timestamps_in_range(
     end: date,
 ) -> list[Any]:
     """Return start_ts timestamps for machine_episode evidence nodes in date range."""
+    from lynchpin.substrate.graph import _logical_graph_relation
+
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=("id", "kind", "start_ts", "date"),
+        key_columns=("id",),
+    )
+    params.extend([start, end])
     return [
         r[0]
         for r in conn.execute(
-            "SELECT start_ts FROM evidence_node "
-            "WHERE refresh_id = ? AND kind = 'machine_episode' "
+            f"SELECT start_ts FROM {relation} "
+            "WHERE kind = 'machine_episode' "
             "AND start_ts IS NOT NULL AND start_ts::DATE BETWEEN ? AND ?",
-            [refresh_id, start, end],
+            params,
         ).fetchall()
     ]
 

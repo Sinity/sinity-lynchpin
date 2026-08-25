@@ -167,6 +167,7 @@ def compute_file_overlap_edges(
     (list_intersect does not guarantee order).
     """
     from lynchpin.core.evidence_graph import EvidenceEdge
+
     clauses: list[str] = ["overlap_count > 0"]
     params: list[Any] = []
     if we_refresh_id is not None:
@@ -213,6 +214,7 @@ def compute_symbol_overlap_edges(
     non-deterministic order; we sort in Python before formatting.
     """
     from lynchpin.core.evidence_graph import EvidenceEdge
+
     clauses: list[str] = ["symbol_count > 0"]
     params: list[Any] = []
     if we_refresh_id is not None:
@@ -306,8 +308,14 @@ def load_evidence_graph(
         return None
 
     (
-        rid, start_date, end_date, build_mode, generated_at, build_caveats,
-        predecessor_rid, predecessor_tail_start,
+        rid,
+        start_date,
+        end_date,
+        build_mode,
+        generated_at,
+        build_caveats,
+        predecessor_rid,
+        predecessor_tail_start,
     ) = build_rows[0]
 
     lineage = _graph_lineage(
@@ -389,11 +397,16 @@ def load_evidence_graph(
             params.extend([partition_id, cutoff, partition_id, cutoff])
         for row in conn.execute(sql, params).fetchall():
             key = (str(row[0]), str(row[1]), str(row[2]))
-            if key not in shadowed_edge_ids and key[0] not in newer_partition_ids and key[1] not in newer_partition_ids:
+            if (
+                key not in shadowed_edge_ids
+                and key[0] not in newer_partition_ids
+                and key[1] not in newer_partition_ids
+            ):
                 edge_rows.append(row)
             shadowed_edge_ids.add(key)
         newer_partition_ids.update(
-            str(row[0]) for row in conn.execute(
+            str(row[0])
+            for row in conn.execute(
                 "SELECT id FROM evidence_node WHERE refresh_id = ?", [partition_id]
             ).fetchall()
         )
@@ -457,16 +470,73 @@ def _graph_lineage(
     return lineage
 
 
+def _logical_graph_relation(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    table: str,
+    columns: Sequence[str],
+    key_columns: Sequence[str],
+    cutoff_column: str | None = "date",
+) -> tuple[str, list[Any]]:
+    """Return a bounded SQL relation for the logical graph at ``refresh_id``.
+
+    Incremental graph tables retain one physical partition per generation. The
+    newest partition replaces predecessor rows in its tail, while older rows
+    remain authoritative before that cutoff. This relation applies those same
+    rules to any graph-backed table and shadows rows by the supplied logical
+    key. Identifiers are code-owned table/column names, not user input.
+    """
+    lineage = _graph_lineage(conn, refresh_id=refresh_id)
+    if not columns or not key_columns:
+        raise ValueError("logical graph relations require columns and keys")
+    selected = ", ".join(columns)
+    keys = ", ".join(key_columns)
+    parts: list[str] = []
+    params: list[Any] = []
+    for rank, (partition_id, cutoff) in enumerate(lineage):
+        clauses = ["refresh_id = ?"]
+        params.append(partition_id)
+        if cutoff is not None and cutoff_column is not None:
+            clauses.append(f"({cutoff_column} IS NULL OR {cutoff_column} < ?)")
+            params.append(cutoff)
+        parts.append(
+            f"SELECT {selected}, {rank} AS _lineage_rank FROM {table} "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+    union = " UNION ALL ".join(parts)
+    relation = (
+        f"(SELECT {selected} FROM ({union}) AS _graph_rows "
+        f"QUALIFY ROW_NUMBER() OVER "
+        f"(PARTITION BY {keys} ORDER BY _lineage_rank) = 1)"
+    )
+    return relation, params
+
+
 # ── evidence_graph ────────────────────────────────────────────────────────────
 
 
 _EVIDENCE_NODE_COLUMNS = (
-    "id", "kind", "source", "date", "project", "summary",
-    "start_ts", "end_ts", "url", "payload", "provenance", "caveats",
+    "id",
+    "kind",
+    "source",
+    "date",
+    "project",
+    "summary",
+    "start_ts",
+    "end_ts",
+    "url",
+    "payload",
+    "provenance",
+    "caveats",
 )
 
 _EVIDENCE_EDGE_COLUMNS = (
-    "source_id", "target_id", "relation", "evidence", "weight",
+    "source_id",
+    "target_id",
+    "relation",
+    "evidence",
+    "weight",
 )
 
 
@@ -493,15 +563,31 @@ def _extract_node(node: Any) -> tuple[Any, ...]:
         provenance_struct = None
     kind_str = node.kind if isinstance(node.kind, str) else str(node.kind)
     return (
-        node.id, kind_str, node.source, node.date, node.project, node.summary,
-        node.start, node.end, node.url, payload_json, provenance_struct, node_caveats_json,
+        node.id,
+        kind_str,
+        node.source,
+        node.date,
+        node.project,
+        node.summary,
+        node.start,
+        node.end,
+        node.url,
+        payload_json,
+        provenance_struct,
+        node_caveats_json,
     )
 
 
 def _extract_edge(edge: Any) -> tuple[Any, ...]:
-    relation_str = edge.relation if isinstance(edge.relation, str) else str(edge.relation)
+    relation_str = (
+        edge.relation if isinstance(edge.relation, str) else str(edge.relation)
+    )
     return (
-        edge.source_id, edge.target_id, relation_str, edge.evidence, float(edge.weight),
+        edge.source_id,
+        edge.target_id,
+        relation_str,
+        edge.evidence,
+        float(edge.weight),
     )
 
 
@@ -524,18 +610,37 @@ def load_evidence_graph_boundary_nodes(
 
     lookback_start = tail_start - timedelta(days=lookback_days)
     boundary_start = datetime.combine(tail_start, time.min).astimezone()
+    relation, params = _logical_graph_relation(
+        conn,
+        refresh_id=refresh_id,
+        table="evidence_node",
+        columns=(
+            "id",
+            "kind",
+            "source",
+            "date",
+            "project",
+            "summary",
+            "start_ts",
+            "end_ts",
+            "url",
+            "payload",
+            "provenance",
+            "caveats",
+        ),
+        key_columns=("id",),
+    )
     rows = conn.execute(
-        """
+        f"""
         SELECT id, kind, source, date, project, summary,
                start_ts, end_ts, url, payload, provenance, caveats
-        FROM evidence_node
-        WHERE refresh_id = ?
-          AND (
+        FROM {relation}
+        WHERE (
               date >= ?
               OR (end_ts IS NOT NULL AND end_ts >= ?)
           )
         """,
-        [refresh_id, lookback_start, boundary_start],
+        [*params, lookback_start, boundary_start],
     ).fetchall()
     return tuple(
         EvidenceNode(
@@ -588,7 +693,9 @@ def compatible_graph_predecessor(
     the historical carrier merely because it is newer.
     """
     requested_projects = sorted(set(projects))
-    scope_predicate = "len(graph.projects) = 0" if not requested_projects else "graph.projects = ?"
+    scope_predicate = (
+        "len(graph.projects) = 0" if not requested_projects else "graph.projects = ?"
+    )
     params: list[Any] = [full_start, tail_start]
     if requested_projects:
         params.append(requested_projects)
@@ -649,7 +756,13 @@ def promote_incremental_evidence_graph(
               AND graph.end_date >= ?
               AND ((len(graph.projects) = 0 AND ? = []) OR graph.projects = ?)
             """,
-            [previous_refresh_id, full_start, tail_start, requested_projects, requested_projects],
+            [
+                previous_refresh_id,
+                full_start,
+                tail_start,
+                requested_projects,
+                requested_projects,
+            ],
         ).fetchone()
     else:
         predecessor = conn.execute(
@@ -670,12 +783,22 @@ def promote_incremental_evidence_graph(
                     AND readiness.status = 'ok'
               )
             """,
-            [previous_refresh_id, full_start, tail_start, requested_projects, requested_projects],
+            [
+                previous_refresh_id,
+                full_start,
+                tail_start,
+                requested_projects,
+                requested_projects,
+            ],
         ).fetchone()
     if predecessor is None:
-        raise ValueError(f"incremental graph predecessor is missing: {previous_refresh_id}")
+        raise ValueError(
+            f"incremental graph predecessor is missing: {previous_refresh_id}"
+        )
 
-    conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_node_ids (id VARCHAR PRIMARY KEY)")
+    conn.execute(
+        "CREATE OR REPLACE TEMPORARY TABLE incremental_node_ids (id VARCHAR PRIMARY KEY)"
+    )
     if graph.nodes:
         conn.executemany(
             "INSERT INTO incremental_node_ids VALUES (?)",
@@ -698,14 +821,18 @@ def promote_incremental_evidence_graph(
             existing_graph_counts = (int(existing_row[0]), int(existing_row[1]))
             existing_overlay = (existing_row[2], existing_row[3])
             existing_partition_counts = (
-                int(conn.execute(
-                    "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
-                    [refresh_id],
-                ).fetchone()[0]),
-                int(conn.execute(
-                    "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
-                    [refresh_id],
-                ).fetchone()[0]),
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
+                        [refresh_id],
+                    ).fetchone()[0]
+                ),
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
+                        [refresh_id],
+                    ).fetchone()[0]
+                ),
             )
     if not replacing_existing_refresh:
         counts_row = conn.execute(
@@ -713,7 +840,9 @@ def promote_incremental_evidence_graph(
             [previous_refresh_id],
         ).fetchone()
         if counts_row is None:
-            raise ValueError(f"incremental graph predecessor counts are missing: {previous_refresh_id}")
+            raise ValueError(
+                f"incremental graph predecessor counts are missing: {previous_refresh_id}"
+            )
         predecessor_node_count, predecessor_edge_count = map(int, counts_row)
         conn.execute(
             "CREATE OR REPLACE TEMPORARY TABLE predecessor_removed_node_ids (id VARCHAR PRIMARY KEY)"
@@ -756,15 +885,21 @@ def promote_incremental_evidence_graph(
             edge_sql += " ON CONFLICT (source_id, target_id, relation) DO NOTHING"
             conn.execute(edge_sql, edge_params)
         removed_node_count = int(
-            conn.execute("SELECT COUNT(*) FROM predecessor_removed_node_ids").fetchone()[0]
+            conn.execute(
+                "SELECT COUNT(*) FROM predecessor_removed_node_ids"
+            ).fetchone()[0]
         )
         removed_edge_count = int(
-            conn.execute("SELECT COUNT(*) FROM predecessor_removed_edge_ids").fetchone()[0]
+            conn.execute(
+                "SELECT COUNT(*) FROM predecessor_removed_edge_ids"
+            ).fetchone()[0]
         )
     if not replacing_existing_refresh:
         conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
         conn.execute("DELETE FROM evidence_node WHERE refresh_id = ?", [refresh_id])
-        conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            "DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id]
+        )
     else:
         # DuckDB 1.1 cannot reinsert a primary-key value in the same explicit
         # transaction that deleted it. Clear the replacement tail in its own
@@ -803,7 +938,9 @@ def promote_incremental_evidence_graph(
             "DELETE FROM evidence_node WHERE refresh_id = ? AND id IN (SELECT id FROM incremental_node_ids)",
             [refresh_id],
         )
-        conn.execute("DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id])
+        conn.execute(
+            "DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id]
+        )
     conn.execute("BEGIN TRANSACTION")
     try:
         if not replacing_existing_refresh:
@@ -837,14 +974,18 @@ def promote_incremental_evidence_graph(
         )
         if replacing_existing_refresh and existing_graph_counts is not None:
             current_partition_counts = (
-                int(conn.execute(
-                    "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
-                    [refresh_id],
-                ).fetchone()[0]),
-                int(conn.execute(
-                    "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
-                    [refresh_id],
-                ).fetchone()[0]),
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
+                        [refresh_id],
+                    ).fetchone()[0]
+                ),
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
+                        [refresh_id],
+                    ).fetchone()[0]
+                ),
             )
             node_count = (
                 existing_graph_counts[0]
@@ -858,17 +999,27 @@ def promote_incremental_evidence_graph(
             )
         elif replacing_existing_refresh:
             node_count = int(
-                conn.execute("SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+                conn.execute(
+                    "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]
             )
             edge_count = int(
-                conn.execute("SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+                conn.execute(
+                    "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]
             )
         else:
             node_count = predecessor_node_count - removed_node_count + len(graph.nodes)
             edge_count = predecessor_edge_count - removed_edge_count + len(graph.edges)
         caveats_json = json.dumps(
             [
-                {"source": caveat.source, "status": caveat.status, "message": caveat.message}
+                {
+                    "source": caveat.source,
+                    "status": caveat.status,
+                    "message": caveat.message,
+                }
                 for caveat in graph.caveats
             ]
         )
@@ -892,8 +1043,11 @@ def promote_incremental_evidence_graph(
                 predecessor_refresh_id, predecessor_tail_start
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            build_values + [
-                existing_overlay[0] if replacing_existing_refresh else previous_refresh_id,
+            build_values
+            + [
+                existing_overlay[0]
+                if replacing_existing_refresh
+                else previous_refresh_id,
                 existing_overlay[1] if replacing_existing_refresh else tail_start,
             ],
         )
@@ -902,7 +1056,9 @@ def promote_incremental_evidence_graph(
         try:
             conn.execute("ROLLBACK")
         except Exception as rollback_exc:  # noqa: BLE001 - preserve original promote failure.
-            log.warning("promote_incremental_evidence_graph: rollback failed: %s", rollback_exc)
+            log.warning(
+                "promote_incremental_evidence_graph: rollback failed: %s", rollback_exc
+            )
         raise
     return {"build": 1, "nodes": node_count, "edges": edge_count}
 
@@ -951,8 +1107,15 @@ def promote_evidence_graph(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                refresh_id, graph.start, graph.end, mode_str, list(projects),
-                len(graph.nodes), len(graph.edges), caveats_json, graph.generated_at,
+                refresh_id,
+                graph.start,
+                graph.end,
+                mode_str,
+                list(projects),
+                len(graph.nodes),
+                len(graph.edges),
+                caveats_json,
+                graph.generated_at,
             ],
         )
 
@@ -987,12 +1150,17 @@ def promote_evidence_graph(
         try:
             conn.execute("ROLLBACK")
         except Exception as rollback_exc:  # noqa: BLE001 - preserve original promote failure.
-            log.warning("promote_evidence_graph: rollback failed after promote error: %s", rollback_exc)
+            log.warning(
+                "promote_evidence_graph: rollback failed after promote error: %s",
+                rollback_exc,
+            )
         raise
 
     log.info(
         "promote_evidence_graph: refresh_id=%s nodes=%d edges=%d",
-        refresh_id, node_count, edge_count,
+        refresh_id,
+        node_count,
+        edge_count,
     )
     return {"build": 1, "nodes": node_count, "edges": edge_count}
 
