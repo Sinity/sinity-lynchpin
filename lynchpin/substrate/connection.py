@@ -37,7 +37,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 43
+SUBSTRATE_VERSION = 44
 """Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
 
 log = logging.getLogger(__name__)

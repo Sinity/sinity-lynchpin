@@ -172,7 +172,7 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
     assert ("ai_work:ev001", "github:pr99", "references") in loaded_relations
 
 
-def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail(tmp_path: Path) -> None:
+def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_tail(tmp_path: Path) -> None:
     from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
     from lynchpin.substrate import graph as graph_mod
     from lynchpin.substrate.connection import apply_schema, connect
@@ -239,6 +239,13 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
             tail_start=date(2026, 5, 5),
         )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="new")
+        current_partition = conn.execute(
+            "SELECT COUNT(*), MIN(date), MAX(date) FROM evidence_node WHERE refresh_id = 'new'"
+        ).fetchone()
+        overlay = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = 'new'"
+        ).fetchone()
         full = EvidenceGraph(
             start=predecessor.start,
             end=tail.end,
@@ -252,6 +259,8 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
         loaded_full = graph_mod.load_evidence_graph(conn, refresh_id="full")
 
     assert counts == {"build": 1, "nodes": 4, "edges": 3}
+    assert current_partition == (1, date(2026, 5, 6), date(2026, 5, 6))
+    assert overlay == ("old", date(2026, 5, 5))
     assert same_refresh_counts == counts
     assert loaded is not None
     assert loaded.start == predecessor.start

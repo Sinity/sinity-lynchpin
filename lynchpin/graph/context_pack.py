@@ -279,9 +279,10 @@ def materialize_incremental_evidence_graph(
 ) -> EvidenceGraph:
     """Replace a bounded graph tail while publishing a coherent full graph.
 
-    The predecessor is copied inside DuckDB, not rebuilt through Python. We
-    rebuild all nodes from ``tail_start`` forward, plus every relation between
-    that tail and predecessor nodes that can still participate in a relation.
+    The candidate already contains the predecessor through copy-on-write. The
+    graph build records that predecessor and writes only nodes from
+    ``tail_start`` forward, plus every relation between that tail and
+    predecessor nodes that can still participate in a relation.
     The latter includes a bounded date lookback and any earlier interval still
     open at the boundary, so long-lived sessions are not silently disconnected.
     """
