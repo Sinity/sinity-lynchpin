@@ -49,6 +49,10 @@ _CANDIDATE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _PREVIOUS_TOKEN_RE = re.compile(
     r"^previous-[0-9]{8}T[0-9]{6}[+-][0-9]{4}-[0-9a-f]{32}$"
 )
+_FAILED_CANDIDATE_TOKEN_RE = re.compile(
+    r"^(?:failed|cancelled|interrupted)-"
+    r"[0-9]{8}T[0-9]{6}[+-][0-9]{4}-[0-9a-f]{32}$"
+)
 
 
 class CandidateGenerationInterrupted(KeyboardInterrupt):
@@ -625,13 +629,33 @@ def _previous_artifact(canonical: Path, path: Path) -> tuple[str, str] | None:
     return None
 
 
+def _failed_candidate_artifact(canonical: Path, path: Path) -> bool:
+    """Recognize only adjacent legacy archives with a closed candidate identity."""
+    if path.parent != canonical.parent or path.is_symlink():
+        return False
+    prefix = f"{canonical.stem}.candidate-"
+    marker = f"{canonical.suffix}."
+    if not path.name.startswith(prefix) or marker not in path.name:
+        return False
+    identity, separator, token = path.name[len(prefix) :].partition(marker)
+    return (
+        bool(separator)
+        and _CANDIDATE_ID_RE.fullmatch(identity) is not None
+        and _FAILED_CANDIDATE_TOKEN_RE.fullmatch(token) is not None
+    )
+
+
 def substrate_retention_census(path: Path | str | None = None) -> dict[str, object]:
     """Describe eligible previous triples without changing the substrate."""
     canonical = _substrate_path_value(path)
     groups: dict[str, dict[str, Path]] = {}
     invalid: list[str] = []
     eligible: list[str] = []
+    failed_candidates: list[str] = []
     for entry in canonical.parent.iterdir():
+        if _failed_candidate_artifact(canonical, entry):
+            failed_candidates.append(str(entry))
+            continue
         parsed = _previous_artifact(canonical, entry)
         if parsed is None:
             continue
@@ -667,6 +691,7 @@ def substrate_retention_census(path: Path | str | None = None) -> dict[str, obje
         "verified_previous": triples,
         "eligible_previous": eligible,
         "invalid_previous": invalid,
+        "failed_candidates": sorted(failed_candidates),
     }
 
 
@@ -692,6 +717,10 @@ def substrate_retention_plan(
         for value in eligible
         if isinstance(value, str) and value not in kept_paths
     )
+    failed_candidates = census["failed_candidates"]
+    assert isinstance(failed_candidates, list)
+    if not retain_failed:
+        delete.extend(value for value in failed_candidates if isinstance(value, str))
     return {
         "canonical": str(canonical),
         "retain_failed": retain_failed,
@@ -717,7 +746,10 @@ def apply_substrate_retention(
         assert isinstance(planned_delete, list)
         for value in planned_delete:
             target = Path(str(value))
-            if target.parent != canonical.parent or _previous_artifact(canonical, target) is None:
+            if target.parent != canonical.parent or (
+                _previous_artifact(canonical, target) is None
+                and not _failed_candidate_artifact(canonical, target)
+            ):
                 raise CandidateGenerationRejected("retention plan contained an unsafe path")
             target.unlink(missing_ok=True)
             deleted.append(str(target))

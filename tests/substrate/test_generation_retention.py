@@ -91,6 +91,27 @@ def test_retention_keeps_one_verified_previous_and_never_serving_names(
     assert all(path.exists() for path in serving)
 
 
+def test_retention_removes_closed_failed_candidates_unless_retained(
+    isolated_substrate: Path,
+) -> None:
+    _verified(isolated_substrate, "serving")
+    token = "20260101T000000+0000-" + "b" * 32
+    failed = isolated_substrate.with_name(
+        "substrate.candidate-" + "a" * 32 + f".duckdb.failed-{token}"
+    )
+    failed.write_bytes(b"failed candidate")
+
+    retained = apply_substrate_retention(dry_run=True, retain_failed=True)
+    assert str(failed) not in retained["delete"]
+    assert failed.exists()
+
+    plan = apply_substrate_retention(dry_run=True)
+    assert str(failed) in plan["delete"]
+    applied = apply_substrate_retention(dry_run=False)
+    assert str(failed) in applied["deleted"]
+    assert not failed.exists()
+
+
 def test_failed_candidate_leaves_only_small_receipt_unless_retained(
     isolated_substrate: Path,
 ) -> None:
