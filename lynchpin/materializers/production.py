@@ -64,13 +64,19 @@ def _step(
     reason: str,
     window: tuple[date, date] | None,
 ) -> PlanStep:
+    generation = _audit()._dataset_fingerprint(row)
+    spec = replace(
+        spec,
+        input_generation=generation,
+        output=replace(spec.output, generation=generation),
+    )
     return PlanStep(
         product=spec.product,
         spec=spec,
         dependencies=tuple(sorted(dependency.product for dependency in spec.dependencies)),
         requested_window=window,
         effective_window=window,
-        input_generation=spec.input_generation,
+        input_generation=generation,
         raw_read_permission=spec.raw_read_permission,
         output=spec.output,
         phase=spec.phase,

@@ -51,6 +51,90 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
+[operations.schedule_convergence]
+description = "Plan and submit bounded typed materialization nodes through AgentCTL"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "submit"]
+pool = "normal"
+result = "json"
+cache = "none"
+timeout_seconds = 300
+exclusive_keys = ["lynchpin:convergence-scheduling"]
+
+[operations.materialize_node]
+description = "Execute one typed canonical-product materialization node"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "node"]
+pool = "normal"
+result = "json"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 3600
+plan_node = true
+
+[operations.materialize_node.parameters.product]
+type = "string"
+flag = "--product"
+required = true
+max_length = 128
+grammar = "safe-token"
+
+[operations.materialize_node.parameters.input_generation]
+type = "string"
+flag = "--input-generation"
+required = true
+max_length = 128
+grammar = "safe-token"
+
+[operations.materialize_node.parameters.start]
+type = "string"
+flag = "--start"
+max_length = 10
+grammar = "safe-token"
+
+[operations.materialize_node.parameters.end]
+type = "string"
+flag = "--end"
+max_length = 10
+grammar = "safe-token"
+
+[operations.promote_node]
+description = "Atomically publish one bounded substrate graph tail"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
+pool = "bulk"
+result = "json"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 7200
+exclusive_keys = ["lynchpin:substrate-generation"]
+plan_node = true
+
+[operations.promote_node.parameters.start]
+type = "string"
+flag = "--start"
+required = true
+max_length = 10
+grammar = "safe-token"
+
+[operations.promote_node.parameters.end]
+type = "string"
+flag = "--end"
+required = true
+max_length = 10
+grammar = "safe-token"
+
+[operations.promote_node.parameters.tail_start]
+type = "string"
+flag = "--tail-start"
+required = true
+max_length = 10
+grammar = "safe-token"
+
+[operations.promote_node.parameters.input_generation]
+type = "string"
+flag = "--input-generation"
+required = true
+max_length = 128
+grammar = "safe-token"
+
 [operations.chisel]
 description = "Build the complete configured cross-project Chisel report portfolio"
 exec = ["just", "chisel"]

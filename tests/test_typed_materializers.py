@@ -146,7 +146,19 @@ def test_production_plans_are_serializable_and_fully_declared(monkeypatch) -> No
     from lynchpin import materialization
 
     rows = [
-        SimpleNamespace(name=name, status="pending", reason="test")
+        SimpleNamespace(
+            name=name,
+            status="pending",
+            reason="test",
+            first_date=None,
+            last_date=None,
+            covered_dates=(),
+            row_count=0,
+            materialized_paths=(),
+            raw_roots=(),
+            tail_stale=False,
+            repair_required=False,
+        )
         for name in PRODUCT_CATALOG
     ]
     monkeypatch.setattr(materialization, "audit_materialization", lambda **_kwargs: rows)
