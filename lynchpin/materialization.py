@@ -502,6 +502,13 @@ def _materializers() -> dict[str, Callable[..., Any]]:
     }
 
 
+def describe_existing_materializers() -> tuple[Any, ...]:
+    """Describe the procedural registry without executing nested convergence."""
+    from .materializers.legacy import describe_existing_materializers as describe
+
+    return describe()
+
+
 def _materialize_webhistory(*, start: date | None = None, end: date | None = None) -> None:
     """Capture live browser history, then merge it into the canonical NDJSON.
 
