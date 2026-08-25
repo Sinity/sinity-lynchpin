@@ -129,7 +129,7 @@ def run_substrate_promote(
                     "ordinary substrate promotion requires a verified serving generation; "
                     "use bootstrap_candidate_generation only for explicit initial recovery"
                 )
-            with candidate_generation() as generation:
+            with candidate_generation(receipt_refresh_id=refresh_id) as generation:
                 result = _do_promote(
                     commit_facts_file=commit_facts_file,
                     file_changes_file=file_changes_file,

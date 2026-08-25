@@ -531,27 +531,21 @@ def test_substrate_promote_records_stage_error_before_reraising(
             write_evidence_graph=False,
         )
 
-    archived_candidates = list(
-        substrate_path().parent.glob("substrate.candidate-*.duckdb.failed-*")
-    )
-    assert len(archived_candidates) == 1
-    with duckdb.connect(str(archived_candidates[0]), read_only=True) as conn:
-        rows = conn.execute(
-            """
-            SELECT step, status, message, row_count, finished_at
-            FROM substrate_run_step
-            WHERE refresh_id = ? AND step = 'promote_artifacts'
-            ORDER BY rowid
-            """,
-            [refresh_id],
-        ).fetchall()
+    receipts = list(substrate_path().parent.glob("candidate-receipt-*.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    rows = [
+        row
+        for row in receipt["run_steps"]
+        if row.get("step") == "promote_artifacts"
+    ]
 
-    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+    assert [(row["step"], row["status"], row["message"], row["row_count"]) for row in rows] == [
         ("promote_artifacts", "running", "started", None),
         ("promote_artifacts", "error", "RuntimeError: stage exploded", 0),
     ]
-    assert rows[0][4] is None
-    assert rows[1][4] is not None
+    assert rows[0]["finished_at"] is None
+    assert rows[1]["finished_at"] is not None
 
 
 def test_failed_current_refresh_cannot_publish_inherited_predecessor(
@@ -609,7 +603,11 @@ def test_failed_current_refresh_cannot_publish_inherited_predecessor(
     manifest = load_current_substrate_status_manifest(canonical)
     assert manifest is not None
     assert manifest["latest_refresh_id"] == "prior"
-    assert list(canonical.parent.glob("substrate.candidate-*.failed-*"))
+    receipts = list(canonical.parent.glob("candidate-receipt-*.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["logical_refresh_id"] == "current"
+    assert receipt["status"] == "failed"
 
 
 def test_snapshot_loss_still_isolates_partial_promotion_failure(

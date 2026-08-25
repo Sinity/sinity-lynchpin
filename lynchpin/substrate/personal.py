@@ -7,8 +7,8 @@ import json
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import date
-from typing import TYPE_CHECKING, Any
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 from ._helpers import promote_rows
 
@@ -90,9 +90,10 @@ def _resolved_rows(
             "SELECT natural_key FROM substrate_product_tombstone WHERE product = ? AND refresh_id = ?",
             [product, partition],
         ).fetchall():
+            if natural_key not in blocked:
+                chosen.pop(natural_key, None)
             blocked.add(natural_key)
-            chosen.pop(natural_key, None)
-    return list(chosen.values())
+    return [chosen[natural_key] for natural_key in sorted(chosen, key=repr)]
 
 
 def _promote_tail_rows(

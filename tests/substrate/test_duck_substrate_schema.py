@@ -299,6 +299,18 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
         ).fetchone() == ("45",)
+        migrated_indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT index_name FROM duckdb_indexes() "
+                "WHERE table_name IN ('substrate_product_lineage', "
+                "'substrate_product_tombstone')"
+            ).fetchall()
+        }
+        assert {
+            "substrate_product_lineage_predecessor",
+            "substrate_product_tombstone_key",
+        } <= migrated_indexes
 
 
 def test_signal_lineage_rejects_cycles_and_missing_predecessors(tmp_path: Path) -> None:
@@ -363,6 +375,42 @@ def test_title_overlay_writes_changes_and_reuses_unchanged_input(tmp_path: Path)
             conn, refresh_id="same", path=str(new_path), previous_refresh_id="new", input_fingerprint="f2"
         ) == 0
         assert conn.execute("SELECT COUNT(*) FROM title_classification WHERE refresh_id='same'").fetchone()[0] == 0
+
+
+def test_newer_row_reintroduces_key_tombstoned_by_older_partition(tmp_path: Path) -> None:
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import _resolved_rows
+
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO substrate_product_lineage "
+            "(product, refresh_id, predecessor_refresh_id, mode) VALUES "
+            "('title_metadata', 'base', NULL, 'full'), "
+            "('title_metadata', 'deleted', 'base', 'incremental'), "
+            "('title_metadata', 'restored', 'deleted', 'incremental')"
+        )
+        conn.execute(
+            "INSERT INTO substrate_product_tombstone "
+            "(product, refresh_id, natural_key) "
+            "VALUES ('title_metadata', 'deleted', 'restored-key')"
+        )
+        conn.execute(
+            "INSERT INTO title_classification "
+            "(title_hash, app, normalized_title, refresh_id) "
+            "VALUES ('restored-key', 'app', 'restored', 'restored')"
+        )
+
+        rows = _resolved_rows(
+            conn,
+            product="title_metadata",
+            refresh_id="restored",
+            table="title_classification",
+            columns=("title_hash", "normalized_title"),
+            key=lambda row: row[0],
+        )
+
+    assert rows == [("restored-key", "restored")]
 
 
 def test_substrate_path_uses_local_root(

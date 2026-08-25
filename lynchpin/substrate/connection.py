@@ -265,6 +265,7 @@ def _write_candidate_receipt(
     status: str,
     error: BaseException | None,
     phase_evidence: list[dict[str, object]] | None = None,
+    run_steps: list[dict[str, object]] | None = None,
 ) -> Path:
     """Persist bounded evidence before removing an abandoned candidate."""
     receipt = canonical.with_name(f"{_CANDIDATE_RECEIPT_PREFIX}{attempt_id}.json")
@@ -275,6 +276,7 @@ def _write_candidate_receipt(
         "status": status,
         "error": f"{type(error).__name__}: {error}" if error is not None else None,
         "phase_evidence": (phase_evidence or [])[-16:],
+        "run_steps": (run_steps or [])[-64:],
     }
     temporary = receipt.with_name(f".{receipt.name}.tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -283,6 +285,37 @@ def _write_candidate_receipt(
     _fsync_directory(receipt.parent)
     _prune_candidate_receipts(canonical)
     return receipt
+
+
+def _candidate_run_step_evidence(
+    candidate: Path, logical_refresh_id: str | None
+) -> list[dict[str, object]]:
+    """Extract bounded post-mortem evidence before an abandoned DB is removed."""
+    if logical_refresh_id is None or not candidate.exists():
+        return []
+    try:
+        import duckdb
+
+        with duckdb.connect(str(candidate), read_only=True) as conn:
+            rows = conn.execute(
+                "SELECT step, status, message, row_count, started_at, finished_at "
+                "FROM substrate_run_step WHERE refresh_id = ? "
+                "ORDER BY rowid DESC LIMIT 64",
+                [logical_refresh_id],
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - a corrupt candidate may be unreadable.
+        return [{"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}]
+    return [
+        {
+            "step": row[0],
+            "status": row[1],
+            "message": row[2],
+            "row_count": row[3],
+            "started_at": row[4].isoformat() if row[4] is not None else None,
+            "finished_at": row[5].isoformat() if row[5] is not None else None,
+        }
+        for row in reversed(rows)
+    ]
 
 
 def _prune_candidate_receipts(canonical: Path) -> tuple[Path, ...]:
@@ -1413,6 +1446,7 @@ def candidate_generation(
                 status=status,
                 error=exc,
                 phase_evidence=generation.phase_evidence if generation is not None else None,
+                run_steps=_candidate_run_step_evidence(candidate, logical_refresh_id),
             )
             if not published and not retain_failed:
                 _remove_candidate(candidate, canonical)
@@ -1647,6 +1681,14 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             natural_key VARCHAR NOT NULL,
             materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (product, refresh_id, natural_key))""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS substrate_product_lineage_predecessor "
+            "ON substrate_product_lineage(predecessor_refresh_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key "
+            "ON substrate_product_tombstone(product, natural_key)"
+        )
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],

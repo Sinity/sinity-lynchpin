@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import date, timedelta
 from typing import Any
@@ -18,6 +20,16 @@ from .substrate_promote_status import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _latest_product_refresh(conn: Any, product: str, refresh_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT refresh_id FROM substrate_product_lineage "
+        "WHERE product = ? AND refresh_id != ? "
+        "ORDER BY materialized_at DESC LIMIT 1",
+        [product, refresh_id],
+    ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def promote_personal_sources(
@@ -249,12 +261,31 @@ def promote_personal_sources(
     if selection.includes(SOURCE_TITLE_CLASSIFICATION):
         try:
             ensure_input_product("title_metadata")
-            from lynchpin.sources.title_metadata import title_metadata_path
+            from lynchpin.sources.title_metadata import (
+                title_metadata_manifest_path,
+                title_metadata_path,
+            )
+
+            manifest_path = title_metadata_manifest_path()
+            manifest_fingerprint = (
+                hashlib.sha256(
+                    json.dumps(
+                        json.loads(manifest_path.read_text(encoding="utf-8")),
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                if manifest_path.exists()
+                else None
+            )
 
             counts["title_classification"] = promote_title_classifications_from_path(
                 conn,
                 refresh_id=refresh_id,
                 path=str(title_metadata_path()),
+                previous_refresh_id=_latest_product_refresh(
+                    conn, "title_metadata", refresh_id
+                ),
+                input_fingerprint=manifest_fingerprint,
             )
             record_source_status(
                 conn,
@@ -291,20 +322,35 @@ def promote_personal_sources(
                 if row.last_date is not None
                 and row.first_date is not None
             ]
+            day_predecessor = _latest_product_refresh(
+                conn, "activity_content_day", refresh_id
+            )
+            bucket_predecessor = _latest_product_refresh(
+                conn, "activity_content_bucket", refresh_id
+            )
+            usage_predecessor = _latest_product_refresh(
+                conn, "activity_title_usage", refresh_id
+            )
             counts["activity_content_day"] = promote_activity_content_days(
                 conn,
                 refresh_id=refresh_id,
                 rows=content_rows,
+                previous_refresh_id=day_predecessor,
+                incremental_tail_start=window_start if day_predecessor else None,
             )
             counts["activity_content_bucket"] = promote_activity_content_buckets(
                 conn,
                 refresh_id=refresh_id,
                 rows=content_rows,
+                previous_refresh_id=bucket_predecessor,
+                incremental_tail_start=window_start if bucket_predecessor else None,
             )
             counts["activity_title_usage"] = promote_activity_title_usage(
                 conn,
                 refresh_id=refresh_id,
                 rows=usage_rows,
+                previous_refresh_id=usage_predecessor,
+                incremental_tail_start=window_start if usage_predecessor else None,
             )
             row_count = counts["activity_content_day"] + counts["activity_content_bucket"] + counts["activity_title_usage"]
             record_source_status(
@@ -340,10 +386,15 @@ def promote_personal_sources(
                 (row.source, row.date, row.metric, row.value, row.dimensions)
                 for row in iter_personal_daily_signals(start=window_start, end=window_end, ensure=False)
             ]
+            signal_predecessor = _latest_product_refresh(
+                conn, "personal_daily_signals", refresh_id
+            )
             counts["personal_daily_signal"] = promote_personal_daily_signals(
                 conn,
                 refresh_id=refresh_id,
                 rows=signal_rows,
+                previous_refresh_id=signal_predecessor,
+                incremental_tail_start=window_start if signal_predecessor else None,
             )
             record_source_status(
                 conn,
