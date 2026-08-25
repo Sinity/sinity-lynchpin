@@ -694,6 +694,30 @@ def plan_materializations(
                     window=step_window,
                 )
             )
+    if maintenance:
+        materialized_windows = [
+            step.window
+            for step in steps
+            if step.action == "materialize" and step.window is not None
+        ]
+        if materialized_windows:
+            graph_tail_start = min(window[0] for window in materialized_windows)
+            steps = [
+                replace(
+                    step,
+                    window=(graph_tail_start, step.window[1]),
+                    reason=(
+                        f"{step.reason}; widened to the shared graph tail so downstream "
+                        "keybind attribution reuses this artifact instead of rescanning raw keylog"
+                    ),
+                )
+                if step.name == "keylog_analysis"
+                and step.action == "materialize"
+                and step.window is not None
+                and step.window[0] > graph_tail_start
+                else step
+                for step in steps
+            ]
     return steps
 
 

@@ -46,6 +46,16 @@ class KeylogEvent:
 
 
 @dataclass(frozen=True)
+class _KeylogAnalysisRecord:
+    ts: datetime
+    event: str
+    keycode: str | None
+    changed: bool | None
+    modifiers: tuple[str, ...]
+    text: str | None
+
+
+@dataclass(frozen=True)
 class KeylogDayActivity:
     date: date
     event_count: int
@@ -160,6 +170,37 @@ def events(
             keycode=rec.get("keycode"),
             changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
             modifiers=_modifier_state(rec),
+        )
+
+    for path in _candidate_files(start_local, end_local, ensure=ensure):
+        yield from read_jsonl_with(path, _hydrate, source_name="keylog")
+
+
+def _analysis_records(
+    *,
+    start: datetime,
+    end: datetime,
+    ensure: bool = True,
+) -> Iterator[_KeylogAnalysisRecord]:
+    """Yield the analysis-only union of press metadata and snapshot text."""
+
+    start_local = as_local(start)
+    end_local = as_local(end)
+
+    def _hydrate(rec: dict[str, Any]) -> _KeylogAnalysisRecord | None:
+        ts = parse_datetime(rec.get("ts"))
+        if ts is None:
+            return None
+        ts_local = as_local(ts)
+        if ts_local < start_local or ts_local >= end_local:
+            return None
+        return _KeylogAnalysisRecord(
+            ts=ts_local,
+            event=str(rec.get("event") or ""),
+            keycode=rec.get("keycode"),
+            changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
+            modifiers=_modifier_state(rec),
+            text=_text_payload(rec),
         )
 
     for path in _candidate_files(start_local, end_local, ensure=ensure):
