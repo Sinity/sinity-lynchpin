@@ -333,6 +333,10 @@ def materialize_incremental_evidence_graph(
         projects=projects,
         include_github_frontier=include_github_frontier,
         exclude_analysis_artifacts=exclude_analysis_artifacts,
+        # Snapshot promotion records authoritative dataset readiness after the
+        # graph write. Re-running the full catalog audit here walks historical
+        # carriers and defeats bounded incremental maintenance.
+        include_source_readiness=False,
     )
     log_performance(
         log,

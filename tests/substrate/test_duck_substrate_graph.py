@@ -477,7 +477,13 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
             """
         )
 
-    monkeypatch.setattr(context_pack, "build_evidence_graph", lambda **_kwargs: tail)
+    build_kwargs: dict[str, object] = {}
+
+    def build_tail(**kwargs: object) -> EvidenceGraph:
+        build_kwargs.update(kwargs)
+        return tail
+
+    monkeypatch.setattr(context_pack, "build_evidence_graph", build_tail)
     tail_tail_edge = EvidenceEdge(
         source_id="commit:tail",
         target_id="commit:tail2",
@@ -507,6 +513,8 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
                 end=tail.end,
                 tail_start=tail.start,
             )
+
+    assert build_kwargs["include_source_readiness"] is False
 
     monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: ())
     from lynchpin.cli import substrate_snapshot
