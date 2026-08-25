@@ -686,6 +686,7 @@ def promote_incremental_evidence_graph(
     removed_node_count = 0
     removed_edge_count = 0
     existing_graph_counts: tuple[int, int] | None = None
+    existing_partition_counts: tuple[int, int] = (0, 0)
     existing_overlay: tuple[str | None, date | None] = (None, None)
     if replacing_existing_refresh:
         existing_row = conn.execute(
@@ -696,6 +697,16 @@ def promote_incremental_evidence_graph(
         if existing_row is not None:
             existing_graph_counts = (int(existing_row[0]), int(existing_row[1]))
             existing_overlay = (existing_row[2], existing_row[3])
+            existing_partition_counts = (
+                int(conn.execute(
+                    "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]),
+                int(conn.execute(
+                    "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]),
+            )
     if not replacing_existing_refresh:
         counts_row = conn.execute(
             "SELECT node_count, edge_count FROM evidence_graph_build WHERE refresh_id = ?",
@@ -825,7 +836,26 @@ def promote_incremental_evidence_graph(
             wrap_transaction=False,
         )
         if replacing_existing_refresh and existing_graph_counts is not None:
-            node_count, edge_count = existing_graph_counts
+            current_partition_counts = (
+                int(conn.execute(
+                    "SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]),
+                int(conn.execute(
+                    "SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?",
+                    [refresh_id],
+                ).fetchone()[0]),
+            )
+            node_count = (
+                existing_graph_counts[0]
+                - existing_partition_counts[0]
+                + current_partition_counts[0]
+            )
+            edge_count = (
+                existing_graph_counts[1]
+                - existing_partition_counts[1]
+                + current_partition_counts[1]
+            )
         elif replacing_existing_refresh:
             node_count = int(
                 conn.execute("SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?", [refresh_id]).fetchone()[0]

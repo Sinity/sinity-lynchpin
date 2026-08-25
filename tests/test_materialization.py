@@ -4603,6 +4603,48 @@ def test_planned_activity_content_materialization_prevents_snapshot_replay(monke
     assert calls["materialize"] == 1
 
 
+def test_parallel_materializers_inherit_candidate_context(monkeypatch) -> None:
+    from contextvars import ContextVar
+
+    from lynchpin import materialization
+
+    candidate = ContextVar("candidate", default=None)
+    observed: list[str | None] = []
+
+    def materializer() -> dict[str, int]:
+        observed.append(candidate.get())
+        return {"row_count": 1}
+
+    steps = [
+        materialization.MaterializationPlanStep(
+            name=name,
+            before=None,
+            action="materialize",
+            materialization_hint="materialize",
+            reason="test",
+        )
+        for name in ("first", "second")
+    ]
+    monkeypatch.setattr(
+        materialization,
+        "_materializers",
+        lambda: {"first": materializer, "second": materializer},
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_record_materialization_step",
+        lambda *_args, **_kwargs: None,
+    )
+
+    token = candidate.set("candidate-generation")
+    try:
+        materialization.run_materialization_plan(steps)
+    finally:
+        candidate.reset(token)
+
+    assert observed == ["candidate-generation", "candidate-generation"]
+
+
 def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
     from lynchpin.ingest.substack_materialize import materialize_substack

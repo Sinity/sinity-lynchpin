@@ -285,6 +285,73 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
     assert {node.id for node in loaded.nodes} == {node.id for node in loaded_full.nodes}
 
 
+def test_same_refresh_graph_replacement_recomputes_logical_counts(tmp_path: Path) -> None:
+    from lynchpin.core.evidence_graph import EvidenceGraph, EvidenceNode
+    from lynchpin.substrate import graph as graph_mod
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    predecessor = _make_evidence_graph()
+    populated_tail = EvidenceGraph(
+        start=date(2026, 5, 5),
+        end=date(2026, 5, 8),
+        generated_at=datetime(2026, 5, 8, 12, tzinfo=UTC),
+        mode="materialized",
+        nodes=(
+            EvidenceNode(
+                id="commit:tail",
+                kind="commit",
+                source="git",
+                date=date(2026, 5, 6),
+                project="lynchpin",
+                summary="tail commit",
+            ),
+        ),
+        edges=(),
+        caveats=(),
+    )
+    empty_tail = EvidenceGraph(
+        start=date(2026, 5, 5),
+        end=date(2026, 5, 8),
+        generated_at=datetime(2026, 5, 8, 12, tzinfo=UTC),
+        mode="materialized",
+        nodes=(),
+        edges=(),
+        caveats=(),
+    )
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        graph_mod.promote_evidence_graph(conn, refresh_id="old", graph=predecessor)
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, mode, counts, started_at, finished_at) "
+            "VALUES ('old', 'ok', 'test', '{}', now(), now())"
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, row_count, recorded_at) "
+            "VALUES ('old', 'evidence_graph', 'graph', 'ok', 3, now())"
+        )
+        graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="old",
+            refresh_id="new",
+            graph=populated_tail,
+            full_start=predecessor.start,
+            tail_start=date(2026, 5, 5),
+        )
+        counts = graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="new",
+            refresh_id="new",
+            graph=empty_tail,
+            full_start=predecessor.start,
+            tail_start=date(2026, 5, 5),
+        )
+
+    assert counts == {"build": 1, "nodes": 3, "edges": 2}
+
+
 def test_incremental_graph_three_generation_counts_shadow_grandparent_replacement(
     tmp_path: Path,
 ) -> None:

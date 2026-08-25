@@ -20,6 +20,7 @@ import logging
 import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -839,7 +840,13 @@ def run_materialization_plan(
             run_one(by_name[wave[0].name])
             continue
         with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="lynchpin-materialize") as executor:
-            futures = [executor.submit(run_one, by_name[item.name]) for item in wave]
+            # Context variables carry candidate-generation bindings.  Worker
+            # threads do not inherit them, and one Context cannot be entered
+            # concurrently, so capture a distinct copy for every submission.
+            futures = [
+                executor.submit(copy_context().run, run_one, by_name[item.name])
+                for item in wave
+            ]
             for future in futures:
                 future.result()
     return ran
