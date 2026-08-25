@@ -81,6 +81,12 @@ def promote_incremental_analysis_claims(
     """Copy predecessor claims and replace only the refreshed tail."""
     rows = list(claims)
     replacing_existing_refresh = previous_refresh_id == refresh_id
+    conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_claim_ids (id VARCHAR PRIMARY KEY)")
+    if rows:
+        conn.executemany(
+            "INSERT INTO incremental_claim_ids VALUES (?)",
+            [(row.claim_id,) for row in rows],
+        )
     if not replacing_existing_refresh:
         conn.execute("DELETE FROM analysis_claim WHERE refresh_id = ?", [refresh_id])
     else:
@@ -89,11 +95,6 @@ def promote_incremental_analysis_claims(
             [refresh_id, tail_start],
         )
         if rows:
-            conn.execute("CREATE OR REPLACE TEMPORARY TABLE incremental_claim_ids (id VARCHAR PRIMARY KEY)")
-            conn.executemany(
-                "INSERT INTO incremental_claim_ids VALUES (?)",
-                [(row.claim_id,) for row in rows],
-            )
             conn.execute(
                 "DELETE FROM analysis_claim WHERE refresh_id = ? AND claim_id IN (SELECT id FROM incremental_claim_ids)",
                 [refresh_id],
@@ -110,7 +111,9 @@ def promote_incremental_analysis_claims(
                 SELECT ?, claim_id, claim_type, project, date, support_level,
                        confidence, score, summary, source_ids, relation_ids, caveats, payload
                 FROM analysis_claim
-                WHERE refresh_id = ? AND (date IS NULL OR date < ?)
+                WHERE refresh_id = ?
+                  AND (date IS NULL OR date < ?)
+                  AND claim_id NOT IN (SELECT id FROM incremental_claim_ids)
                 """,
                 [refresh_id, previous_refresh_id, tail_start],
             )

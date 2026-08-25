@@ -575,6 +575,51 @@ def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path
     assert ids == {"old", "tail"}
 
 
+def test_promote_incremental_analysis_claims_replaces_regenerated_historical_claim(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from lynchpin.substrate.claims import (
+        AnalysisClaimRow,
+        promote_analysis_claims,
+        promote_incremental_analysis_claims,
+    )
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    historical = AnalysisClaimRow(
+        claim_id="stable",
+        claim_type="machine_attribution",
+        project="lynchpin",
+        date=date(2026, 5, 1),
+        support_level="supported",
+        confidence=0.9,
+        score=1.0,
+        summary="predecessor",
+        source_ids=(),
+        relation_ids=(),
+        caveats=(),
+        payload={},
+    )
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_analysis_claims(conn, refresh_id="previous", claims=(historical,))
+        count = promote_incremental_analysis_claims(
+            conn,
+            previous_refresh_id="previous",
+            refresh_id="next",
+            tail_start=date(2026, 5, 5),
+            claims=(replace(historical, summary="regenerated"),),
+        )
+        rows = conn.execute(
+            "SELECT claim_id, summary FROM analysis_claim WHERE refresh_id = 'next'"
+        ).fetchall()
+
+    assert count == 1
+    assert rows == [("stable", "regenerated")]
+
+
 def test_promote_evidence_graph_idempotent(tmp_path: Path) -> None:
     """Promoting the same graph twice under refresh_id='r1' must not double rows."""
     from lynchpin.substrate import graph as graph_mod
