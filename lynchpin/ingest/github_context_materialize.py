@@ -565,7 +565,6 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
         attempts += 1
         try:
             from ..substrate.connection import (
-                bootstrap_candidate_generation,
                 candidate_generation,
                 in_candidate_generation,
                 substrate_path,
@@ -582,11 +581,16 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
                 with candidate_generation():
                     rows = _promote_github_context_to_substrate(ndjson_path)
             else:
-                # An absent serving substrate is only legal through the
-                # explicit initial-recovery API.  Do not silently treat a
-                # missing canonical as an ordinary incremental promotion.
-                with bootstrap_candidate_generation():
-                    rows = _promote_github_context_to_substrate(ndjson_path)
+                # These six tables are only one product inside a complete
+                # substrate generation.  A partial bootstrap cannot satisfy
+                # the publication contract, so retain the canonical NDJSON
+                # and let the full convergence run consume it.
+                return SubstratePromotionResult(
+                    rows=0,
+                    status="deferred",
+                    attempts=attempts,
+                    error="serving substrate is absent; full convergence bootstrap required",
+                )
             return SubstratePromotionResult(
                 rows=rows,
                 status="ok",

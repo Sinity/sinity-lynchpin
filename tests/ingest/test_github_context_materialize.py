@@ -169,7 +169,7 @@ def test_substrate_promotion_reports_failed_rebuild_as_degraded(monkeypatch, tmp
     assert entered == ["candidate"]
 
 
-def test_substrate_promotion_uses_bootstrap_boundary_without_serving_generation(
+def test_substrate_promotion_defers_until_full_bootstrap_without_serving_generation(
     monkeypatch, tmp_path: Path
 ) -> None:
     entered = _stub_candidate_publication_boundary(monkeypatch, tmp_path, serving=False)
@@ -177,9 +177,10 @@ def test_substrate_promotion_uses_bootstrap_boundary_without_serving_generation(
 
     result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
 
-    assert result.rows == 3
-    assert result.status == "ok"
-    assert entered == ["bootstrap"]
+    assert result.rows == 0
+    assert result.status == "deferred"
+    assert result.error == "serving substrate is absent; full convergence bootstrap required"
+    assert entered == []
 
 
 def test_substrate_promotion_reuses_outer_candidate_boundary(monkeypatch, tmp_path: Path) -> None:
