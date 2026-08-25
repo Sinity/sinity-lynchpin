@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -295,6 +296,7 @@ def _promote_snapshot_daily_signals(
     from lynchpin.sources.activity_content import iter_activity_content_days, iter_activity_title_usage
     from lynchpin.sources.personal_signals import iter_personal_daily_signals
     from lynchpin.sources.title_metadata import title_metadata_path
+    from lynchpin.sources.title_metadata import title_metadata_manifest_path
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
     from lynchpin.substrate.personal import (
         promote_activity_content_buckets,
@@ -335,30 +337,45 @@ def _promote_snapshot_daily_signals(
         # transactions and abort as soon as the first non-empty product is
         # promoted. Each product is therefore committed independently, while
         # the source-status rows record the resulting counts.
+        manifest_path = title_metadata_manifest_path()
+        manifest_fingerprint = None
+        if manifest_path.exists():
+            manifest_fingerprint = hashlib.sha256(
+                json.dumps(json.loads(manifest_path.read_text(encoding="utf-8")), sort_keys=True).encode()
+            ).hexdigest()
         title_count = promote_title_classifications_from_path(
             conn,
             refresh_id=refresh_id,
             path=str(title_metadata_path()),
+            previous_refresh_id=previous_refresh_id,
+            input_fingerprint=manifest_fingerprint,
         )
-        content_rows = list(iter_activity_content_days(start=start, end=end, ensure=False))
+        content_start = incremental_tail_start or start
+        content_rows = list(iter_activity_content_days(start=content_start, end=end, ensure=False))
         content_count = promote_activity_content_days(
             conn,
             refresh_id=refresh_id,
             rows=content_rows,
+            previous_refresh_id=previous_refresh_id,
+            incremental_tail_start=incremental_tail_start,
         )
         bucket_count = promote_activity_content_buckets(
             conn,
             refresh_id=refresh_id,
             rows=content_rows,
+            previous_refresh_id=previous_refresh_id,
+            incremental_tail_start=incremental_tail_start,
         )
         usage_count = promote_activity_title_usage(
             conn,
             refresh_id=refresh_id,
             rows=(
                 row
-                for row in iter_activity_title_usage(start=start, end=end, ensure=False)
+                for row in iter_activity_title_usage(start=content_start, end=end, ensure=False)
                 if row.last_date is not None and row.first_date is not None
             ),
+            previous_refresh_id=previous_refresh_id,
+            incremental_tail_start=incremental_tail_start,
         )
         count = promote_personal_daily_signals(
             conn,

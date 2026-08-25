@@ -37,7 +37,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 44
+SUBSTRATE_VERSION = 45
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1375,7 +1375,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current == 43 and SUBSTRATE_VERSION == 44:
+    if current == 43 and SUBSTRATE_VERSION == 45:
         conn.execute(
             "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
             "predecessor_refresh_id VARCHAR"
@@ -1384,6 +1384,41 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
             "predecessor_tail_start DATE"
         )
+        conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_lineage (
+            product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+            predecessor_refresh_id VARCHAR, replacement_start DATE,
+            input_fingerprint VARCHAR, mode VARCHAR NOT NULL,
+            materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (product, refresh_id))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_tombstone (
+            product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+            natural_key VARCHAR NOT NULL,
+            materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (product, refresh_id, natural_key))""")
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
+            [str(SUBSTRATE_VERSION)],
+        )
+    elif current == 44 and SUBSTRATE_VERSION == 45:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS substrate_product_lineage (
+                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+                predecessor_refresh_id VARCHAR, replacement_start DATE,
+                input_fingerprint VARCHAR, mode VARCHAR NOT NULL,
+                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (product, refresh_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS substrate_product_lineage_predecessor ON substrate_product_lineage(predecessor_refresh_id)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS substrate_product_tombstone (
+                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
+                natural_key VARCHAR NOT NULL,
+                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (product, refresh_id, natural_key)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key ON substrate_product_tombstone(product, natural_key)")
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],

@@ -347,22 +347,41 @@ def load_activity_title_usage_by_dimension(
     start: date,
     end: date,
     dimension: str,
+    refresh_id: str | None = None,
 ) -> list[tuple[Any, ...]]:
     """Return (first_date, dim_value, focused_seconds) grouped by dimension.
 
     Note: ``dimension`` is pre-validated by the caller against a whitelist.
     """
-    sql = f"""
-        SELECT
-            CAST(first_date AS DATE) as date,
-            COALESCE({dimension}, 'unknown') as dim_value,
-            SUM(focused_seconds) as focused_seconds
-        FROM activity_title_usage
-        WHERE first_date <= ? AND last_date >= ?
-        GROUP BY date, dim_value
-        ORDER BY date, focused_seconds DESC
-    """
-    return conn.execute(sql, [end, start]).fetchall()
+    if refresh_id is None:
+        row = conn.execute(
+            "SELECT refresh_id FROM substrate_product_lineage WHERE product='activity_title_usage' "
+            "ORDER BY materialized_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return []
+        refresh_id = str(row[0])
+    from .personal import _resolved_rows
+    rows = _resolved_rows(
+        conn, product="activity_title_usage", refresh_id=refresh_id,
+        table="activity_title_usage",
+        columns=("title_hash", "app", "normalized_title", "example_title", "focused_seconds", "span_count",
+                 "first_date", "last_date", "matched", "classification_source", "confidence", "activity",
+                 "content_type", "attention_level", "topic_category", "platform"),
+        key=lambda row: f"{row[0]}\x1f{row[1]}",
+    )
+    index = {name: i for i, name in enumerate((
+        "title_hash", "app", "normalized_title", "example_title", "focused_seconds", "span_count",
+        "first_date", "last_date", "matched", "classification_source", "confidence", "activity",
+        "content_type", "attention_level", "topic_category", "platform",
+    ))}[dimension]
+    totals: dict[tuple[Any, Any], float] = {}
+    for row in rows:
+        if row[6] <= end and row[7] >= start:
+            key = (row[6], row[index] or "unknown")
+            totals[key] = totals.get(key, 0.0) + float(row[4])
+    return sorted(((day, label, seconds) for (day, label), seconds in totals.items()),
+                  key=lambda row: (row[0], -row[2]))
 
 
 __all__ = [
