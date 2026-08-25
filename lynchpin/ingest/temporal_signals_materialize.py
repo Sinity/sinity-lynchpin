@@ -259,7 +259,9 @@ def _index_legacy_tail(
                 counts[raw_day] = counts.get(raw_day, 0) + 1
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return None
-    if previous_day != last_day:
+    # Coverage may legitimately end on a day with no emitted signal, so the
+    # final row can precede the manifest's last verified date.
+    if previous_day is None or previous_day > last_day:
         return None
     return offsets, counts
 

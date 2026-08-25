@@ -143,8 +143,8 @@ def test_temporal_signals_indexes_legacy_sorted_history_once(monkeypatch, tmp_pa
     output.write_text("".join(json.dumps(row) + "\n" for row in old_rows), encoding="utf-8")
     output.with_suffix(".manifest.json").write_text(
         json.dumps({
-            "last_date": "2026-05-02",
-            "covered_dates": ["2026-05-01", "2026-05-02"],
+            "last_date": "2026-05-03",
+            "covered_dates": ["2026-05-01", "2026-05-02", "2026-05-03"],
             "row_count": 2,
         }),
         encoding="utf-8",
@@ -152,7 +152,7 @@ def test_temporal_signals_indexes_legacy_sorted_history_once(monkeypatch, tmp_pa
     new_event = SimpleNamespace(
         kind="temporal_trend",
         signal="new",
-        event_date=date(2026, 5, 3),
+        event_date=date(2026, 5, 4),
         summary="new",
         payload={},
     )
@@ -170,14 +170,14 @@ def test_temporal_signals_indexes_legacy_sorted_history_once(monkeypatch, tmp_pa
     )
 
     manifest = materialize_temporal_signals(
-        start=date(2026, 5, 3), end=date(2026, 5, 4), output=output
+        start=date(2026, 5, 4), end=date(2026, 5, 5), output=output
     )
 
     assert [row.signal for row in iter_temporal_signals(output)] == ["old", "old", "new"]
     assert manifest["row_counts"] == {
         "2026-05-01": 1,
         "2026-05-02": 1,
-        "2026-05-03": 1,
+        "2026-05-04": 1,
     }
     assert set(manifest["row_offsets"]) == set(manifest["row_counts"])
 
