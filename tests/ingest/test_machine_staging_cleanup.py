@@ -105,3 +105,33 @@ def test_cleanup_machine_staging_cli_requires_explicit_mode_and_writes_receipt(
     assert json.loads(capsys.readouterr().out) == payload
     assert payload["deleted_bytes"] == len(b"stale")
     assert not stale.exists()
+
+
+def test_cleanup_machine_staging_rechecks_activity_at_deletion_boundary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(machine_materialize, "MACHINE_TABLES", ("metric_sample",))
+    monkeypatch.setattr(
+        machine_materialize,
+        "canonical_machine_table_path",
+        lambda name: tmp_path / f"{name}.ndjson",
+    )
+    stale = tmp_path / "metric_sample.ndjson.tmp"
+    stale.write_bytes(b"claimed-by-writer")
+    _age(stale)
+    probes = iter((False, True))
+    monkeypatch.setattr(
+        machine_materialize,
+        "_path_is_open",
+        lambda _path: next(probes),
+    )
+
+    report = machine_materialize.cleanup_machine_staging(
+        grace_period_s=1,
+        apply=True,
+        now=10_000,
+    )
+
+    assert report["deleted_bytes"] == 0
+    assert report["entries"][0]["disposition"] == "active"
+    assert stale.exists()

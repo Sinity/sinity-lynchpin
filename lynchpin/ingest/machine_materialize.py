@@ -147,6 +147,9 @@ def cleanup_machine_staging(
                     current.st_mode
                 ):
                     raise RuntimeError("candidate identity changed before deletion")
+                if _path_is_open(candidate):
+                    entries.append({**base, "disposition": "active"})
+                    continue
                 candidate.unlink()
             except (OSError, RuntimeError) as exc:
                 entries.append(
