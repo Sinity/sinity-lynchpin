@@ -114,7 +114,7 @@ def test_ensure_substrate_materialized_for_read_reports_caller(monkeypatch) -> N
     assert calls == [(
         "evidence_graph_substrate",
         (date(2026, 5, 1), date(2026, 5, 2)),
-        "manual",
+        "inline",
     )]
     assert payload == {
         "name": "evidence_graph_substrate",

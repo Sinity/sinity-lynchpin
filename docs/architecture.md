@@ -98,9 +98,17 @@ results.
 ## Freshness and convergence
 
 Read paths may converge an owned materialized product when its contract permits
-bounded rebuilding. They do not launch an uncontrolled scan of every raw source
-for every query. Status surfaces report whether a result is ready, degraded,
-missing, or stale and preserve the reason.
+bounded rebuilding. Normal unpinned substrate reads use the typed convergence
+plan, durable coverage, source fingerprints, and a short freshness interval to
+reuse warm decisions and single-flight identical work. They do not launch an
+uncontrolled scan of every raw source for every query. Explicit refresh-pinned
+reads remain immutable. Status surfaces report whether a result is ready,
+degraded, missing, or stale and preserve the reason.
+
+AgentCTL or nightly semantic scheduling can call
+`python -m lynchpin.cli.converge --start YYYY-MM-DD --end YYYY-MM-DD --json`
+for a serializable dry-run plan, adding `--execute` to publish bounded work and
+record the receipt in the existing freshness ledger.
 
 The normal lifecycle is:
 
