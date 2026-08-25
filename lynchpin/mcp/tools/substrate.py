@@ -125,7 +125,7 @@ def query_substrate(
 
     max_rows is capped at 10 000.
     """
-    from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.connection import substrate_path
 
     if not _is_select_only(sql):
         raise ValueError(
@@ -136,8 +136,12 @@ def query_substrate(
     effective_max = min(max_rows, _MAX_ROWS_HARD_CAP)
     params = list(parameters) if parameters else []
 
+    ensure_substrate_materialized_for_read(caller="query_substrate")
+    from lynchpin.substrate.connection import serving_generation
+
     path = substrate_path()
-    with connect(path, read_only=True) as conn:
+    with serving_generation(path) as serving:
+        conn = serving.connection
         result = conn.execute(sql, params)
         columns = [desc[0] for desc in result.description]
         # Fetch one extra row to detect truncation without a separate COUNT query

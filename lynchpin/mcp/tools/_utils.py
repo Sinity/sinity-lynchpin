@@ -82,10 +82,10 @@ def ensure_substrate_materialized_for_read(
 ) -> dict[str, Any]:
     """Inspect the substrate product before a read.
 
-    This deliberately does not enqueue work or hide a full promotion inside
-    normal MCP reads. ``evidence_graph_substrate`` is a derived substrate product:
-    if the existing DuckDB substrate is usable this returns ``ready``; if not,
-    the materialization layer reports why the product cannot be advanced locally.
+    Normal unpinned reads may perform one bounded tail convergence through the
+    materialization boundary. The materialization layer inspects durable graph
+    coverage and source fingerprints, then either reuses the serving generation,
+    publishes a bounded candidate, or reports why explicit maintenance is needed.
 
     Every caller of this function discards its return value directly (it's
     called purely for the check, not the payload) — so when the requested
@@ -107,9 +107,9 @@ def ensure_substrate_materialized_for_read(
     result = ensure_materialized(
         "evidence_graph_substrate",
         window=window,
-        budget="manual",
+        budget="inline",
     )
-    if result.status not in ("ready", "pinned"):
+    if result.status not in ("ready", "updated", "pinned"):
         log.warning(
             "mcp.%s: evidence_graph_substrate is not ready for window=%s "
             "(status=%s reason=%r) — read is proceeding anyway and may "

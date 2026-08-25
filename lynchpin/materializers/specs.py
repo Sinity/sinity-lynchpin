@@ -58,7 +58,7 @@ class ArtifactRef:
     generation: str
     partitions: tuple[PartitionRef, ...] = ()
 
-    def to_dict(self) -> dict[str, JSON]:
+    def to_dict(self) -> dict[str, Any]:
         return {"product": self.product, "kind": self.kind, "identity": self.identity, "generation": self.generation, "partitions": [p.to_dict() for p in self.partitions]}
 
     @classmethod
@@ -71,7 +71,7 @@ class Dependency:
     product: str
     required: bool = True
 
-    def to_dict(self) -> dict[str, JSON]:
+    def to_dict(self) -> dict[str, Any]:
         return {"product": self.product, "required": self.required}
 
     @classmethod
@@ -98,7 +98,7 @@ class ProductSpec:
         object.__setattr__(self, "dependencies", tuple(self.dependencies))
         object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
 
-    def to_dict(self) -> dict[str, JSON]:
+    def to_dict(self) -> dict[str, Any]:
         return {"product": self.product, "version": self.version, "handler": self.handler, "input_generation": self.input_generation, "output": self.output.to_dict(), "dependencies": [d.to_dict() for d in self.dependencies], "payload": dict(self.payload), "raw_read_permission": self.raw_read_permission}
 
     @classmethod
@@ -116,7 +116,7 @@ class ConvergenceRequest:
         object.__setattr__(self, "products", tuple(self.products))
         object.__setattr__(self, "input_generations", MappingProxyType(dict(self.input_generations)))
 
-    def to_dict(self) -> dict[str, JSON]:
+    def to_dict(self) -> dict[str, Any]:
         return {"products": list(self.products), "requested_window": _window(self.requested_window), "input_generations": dict(self.input_generations)}
 
     @classmethod
@@ -135,7 +135,7 @@ class PlanStep:
     raw_read_permission: str
     output: ArtifactRef
 
-    def to_dict(self) -> dict[str, JSON]:
+    def to_dict(self) -> dict[str, Any]:
         return {"product": self.product, "spec": self.spec.to_dict(), "dependencies": list(self.dependencies), "requested_window": _window(self.requested_window), "effective_window": _window(self.effective_window), "input_generation": self.input_generation, "raw_read_permission": self.raw_read_permission, "output": self.output.to_dict()}
 
     @classmethod
