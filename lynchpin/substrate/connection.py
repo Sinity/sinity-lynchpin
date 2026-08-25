@@ -8,9 +8,9 @@ Concurrency: single writer (materialization DAG); many readers via DuckDB's MVCC
 We never run concurrent writers today; the assumption is documented here so
 future MCP-server work knows the constraint.
 
-Schema versioning: we track ``SUBSTRATE_VERSION``. When it changes, the
-``apply_schema`` step drops + recreates rather than migrating — the substrate
-is *derived* from sources, not authoritative. Re-promote is cheap.
+Schema versioning tracks ``SUBSTRATE_VERSION``. Explicit additive transitions
+migrate in place; incompatible or unknown versions drop and recreate because
+the substrate is derived from sources rather than authoritative.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     import duckdb
 
 SUBSTRATE_VERSION = 44
-"""Bump on schema-incompatible changes; triggers drop-and-rebuild on next promote."""
+"""Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
 _CANCELLATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
@@ -1355,8 +1355,9 @@ def reset_substrate(path: Path | str | None = None) -> None:
 def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     """Apply the substrate DDL idempotently.
 
-    Reads ``SUBSTRATE_VERSION`` from a ``substrate_meta`` table. If absent
-    or stale, drops all tables and re-applies the full DDL. Otherwise no-op.
+    Reads ``SUBSTRATE_VERSION`` from a ``substrate_meta`` table. Declared
+    additive transitions migrate in place; absent, unknown, or incompatible
+    versions drop all tables and reapply the full DDL. Otherwise this is a no-op.
     """
     from lynchpin.substrate.schema import DDL_STATEMENTS, DROP_STATEMENTS
     from lynchpin.substrate.views import ensure_views
