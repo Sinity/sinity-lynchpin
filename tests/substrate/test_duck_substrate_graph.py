@@ -292,34 +292,24 @@ def test_incremental_graph_three_generation_counts_shadow_grandparent_replacemen
     from lynchpin.substrate import graph as graph_mod
     from lynchpin.substrate.connection import apply_schema, connect
 
-    def graph(*, generation: str, node_date: date, edge_evidence: str) -> EvidenceGraph:
+    def graph(*, generation: str, node_id: str, node_date: date, edge_evidence: str) -> EvidenceGraph:
         return EvidenceGraph(
             start=date(2026, 5, 1),
             end=date(2026, 5, 10),
             generated_at=datetime(2026, 5, 1, 12, tzinfo=UTC),
             mode="materialized",
-            nodes=(
-                EvidenceNode(
-                    id="anchor",
-                    kind="commit",
-                    source="git",
-                    date=date(2026, 5, 1),
-                    project="lynchpin",
-                    summary="anchor",
-                ),
-                EvidenceNode(
-                    id="stable",
-                    kind="commit",
-                    source="git",
-                    date=node_date,
-                    project="lynchpin",
-                    summary=generation,
-                ),
-            ),
+            nodes=(EvidenceNode(
+                id=node_id,
+                kind="commit",
+                source="git",
+                date=node_date,
+                project="lynchpin",
+                summary=generation,
+            ),),
             edges=(
                 EvidenceEdge(
                     source_id="anchor",
-                    target_id="stable",
+                    target_id=node_id,
                     relation="replacement",
                     evidence=edge_evidence,
                     weight=1.0,
@@ -334,7 +324,18 @@ def test_incremental_graph_three_generation_counts_shadow_grandparent_replacemen
         graph_mod.promote_evidence_graph(
             conn,
             refresh_id="grandparent",
-            graph=graph(generation="grandparent", node_date=date(2026, 5, 1), edge_evidence="g0"),
+            graph=EvidenceGraph(
+                start=date(2026, 5, 1),
+                end=date(2026, 5, 10),
+                generated_at=datetime(2026, 5, 1, 12, tzinfo=UTC),
+                mode="materialized",
+                nodes=(
+                    EvidenceNode("anchor", "commit", "git", date(2026, 5, 1), "lynchpin", "anchor"),
+                    EvidenceNode("stable", "commit", "git", date(2026, 5, 1), "lynchpin", "grandparent"),
+                ),
+                edges=(EvidenceEdge("anchor", "stable", "replacement", "g0", 1.0),),
+                caveats=(),
+            ),
         )
         for refresh_id in ("grandparent",):
             conn.execute(
@@ -353,7 +354,12 @@ def test_incremental_graph_three_generation_counts_shadow_grandparent_replacemen
             conn,
             previous_refresh_id="grandparent",
             refresh_id="parent",
-            graph=graph(generation="parent", node_date=date(2026, 5, 5), edge_evidence="g1"),
+            graph=graph(
+                generation="parent-tail",
+                node_id="parent-tail",
+                node_date=date(2026, 5, 5),
+                edge_evidence="parent-edge",
+            ),
             full_start=date(2026, 5, 1),
             tail_start=date(2026, 5, 5),
         )
@@ -371,17 +377,28 @@ def test_incremental_graph_three_generation_counts_shadow_grandparent_replacemen
             conn,
             previous_refresh_id="parent",
             refresh_id="current",
-            graph=graph(generation="current", node_date=date(2026, 5, 6), edge_evidence="g2"),
+            graph=graph(
+                generation="current",
+                node_id="stable",
+                node_date=date(2026, 5, 6),
+                edge_evidence="g2",
+            ),
             full_start=date(2026, 5, 1),
             tail_start=date(2026, 5, 6),
         )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="current")
 
-    assert counts == {"build": 1, "nodes": 2, "edges": 1}
+    assert counts == {"build": 1, "nodes": 3, "edges": 2}
     assert loaded is not None
-    assert {node.id for node in loaded.nodes} == {"anchor", "stable"}
+    assert {node.id for node in loaded.nodes} == {"anchor", "parent-tail", "stable"}
     assert next(node for node in loaded.nodes if node.id == "stable").summary == "current"
-    assert [(edge.relation, edge.evidence) for edge in loaded.edges] == [("replacement", "g2")]
+    assert {
+        (edge.source_id, edge.target_id, edge.relation, edge.evidence)
+        for edge in loaded.edges
+    } == {
+        ("anchor", "parent-tail", "replacement", "parent-edge"),
+        ("anchor", "stable", "replacement", "g2"),
+    }
 
 
 def test_incremental_context_graph_reuses_candidate_predecessor(

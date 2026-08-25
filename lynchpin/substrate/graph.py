@@ -432,6 +432,15 @@ def _graph_lineage(
     predecessor_tail_start: date | None = None,
 ) -> list[tuple[str, date | None]]:
     """Return newest-to-oldest physical graph partitions and their cutoffs."""
+    if predecessor_refresh_id is None or predecessor_tail_start is None:
+        build_row = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [refresh_id],
+        ).fetchone()
+        predecessor_refresh_id, predecessor_tail_start = (
+            build_row if build_row is not None else (None, None)
+        )
     lineage: list[tuple[str, date | None]] = [(refresh_id, None)]
     current_refresh_id = predecessor_refresh_id
     current_tail_start = predecessor_tail_start
