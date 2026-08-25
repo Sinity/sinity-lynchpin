@@ -556,7 +556,7 @@ def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
         "end": date(2026, 5, 2),
         "projects": (),
     }
-    assert promoted["ensure_products"] is False
+    assert promoted == {}
 
 
 def test_snapshot_threads_incremental_tail_to_daily_signal_promotion(monkeypatch) -> None:
@@ -585,4 +585,4 @@ def test_snapshot_threads_incremental_tail_to_daily_signal_promotion(monkeypatch
         ]
     ) == 0
     assert incremental["tail_start"] == date(2026, 5, 8)
-    assert promoted["incremental_tail_start"] == date(2026, 5, 8)
+    assert promoted == {}

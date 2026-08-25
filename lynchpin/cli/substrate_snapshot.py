@@ -109,16 +109,17 @@ def main(argv: list[str] | None = None) -> int:
         projects=tuple(args.projects or ()),
     )
     _record_run_step(refresh_id, "dataset_readiness", "ok", "dataset readiness statuses recorded")
-    _progress("promoting daily personal-signal rows")
-    _record_run_step(refresh_id, "personal_daily_signal", "started", "promoting daily personal/content rows")
-    _promote_snapshot_daily_signals(
-        start=date.fromisoformat(args.start),
-        end=date.fromisoformat(args.end),
-        projects=tuple(args.projects or ()),
-        ensure_products=not args.existing_products,
-        incremental_tail_start=tail_start,
-    )
-    _record_run_step(refresh_id, "personal_daily_signal", "ok", "daily personal/content rows promoted")
+    if not args.graph_only:
+        _progress("promoting daily personal-signal rows")
+        _record_run_step(refresh_id, "personal_daily_signal", "started", "promoting daily personal/content rows")
+        _promote_snapshot_daily_signals(
+            start=date.fromisoformat(args.start),
+            end=date.fromisoformat(args.end),
+            projects=tuple(args.projects or ()),
+            ensure_products=not args.existing_products,
+            incremental_tail_start=tail_start,
+        )
+        _record_run_step(refresh_id, "personal_daily_signal", "ok", "daily personal/content rows promoted")
     _progress("recording promotion run")
     _record_run_step(refresh_id, "promotion_run", "started", "recording promotion run")
     _record_snapshot_promotion_run(
