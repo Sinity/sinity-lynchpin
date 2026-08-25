@@ -128,6 +128,60 @@ def test_temporal_signals_empty_tail_preserves_indexed_history(monkeypatch, tmp_
     assert manifest["row_counts"] == {"2026-05-01": 1}
 
 
+def test_temporal_signals_indexes_legacy_sorted_history_once(monkeypatch, tmp_path) -> None:
+    output = tmp_path / "signals.ndjson"
+    old_rows = [
+        {
+            "kind": "temporal_trend",
+            "signal": "old",
+            "event_date": day,
+            "summary": "old",
+            "payload": {},
+        }
+        for day in ("2026-05-01", "2026-05-02")
+    ]
+    output.write_text("".join(json.dumps(row) + "\n" for row in old_rows), encoding="utf-8")
+    output.with_suffix(".manifest.json").write_text(
+        json.dumps({
+            "last_date": "2026-05-02",
+            "covered_dates": ["2026-05-01", "2026-05-02"],
+            "row_count": 2,
+        }),
+        encoding="utf-8",
+    )
+    new_event = SimpleNamespace(
+        kind="temporal_trend",
+        signal="new",
+        event_date=date(2026, 5, 3),
+        summary="new",
+        payload={},
+    )
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize._ensure_temporal_inputs",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize.detect_temporal_signals",
+        lambda **_kwargs: (new_event,),
+    )
+    monkeypatch.setattr(
+        "lynchpin.ingest.temporal_signals_materialize._temporal_input_files",
+        lambda *_args: (),
+    )
+
+    manifest = materialize_temporal_signals(
+        start=date(2026, 5, 3), end=date(2026, 5, 4), output=output
+    )
+
+    assert [row.signal for row in iter_temporal_signals(output)] == ["old", "old", "new"]
+    assert manifest["row_counts"] == {
+        "2026-05-01": 1,
+        "2026-05-02": 1,
+        "2026-05-03": 1,
+    }
+    assert set(manifest["row_offsets"]) == set(manifest["row_counts"])
+
+
 def test_temporal_inputs_refresh_only_activitywatch_tail(monkeypatch) -> None:
     from lynchpin.ingest.temporal_signals_materialize import _ensure_temporal_inputs
 

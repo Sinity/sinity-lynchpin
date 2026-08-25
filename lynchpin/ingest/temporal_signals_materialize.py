@@ -55,6 +55,16 @@ def materialize_temporal_signals(
     previous_manifest = _read_manifest(output.with_suffix(".manifest.json"))
     bounded_tail = _can_replace_tail(output, previous_manifest, start=start, end=end)
     if output.exists() and not bounded_tail:
+        legacy_index = _index_legacy_tail(output, previous_manifest, end=end)
+        if legacy_index is not None:
+            offsets, counts = legacy_index
+            previous_manifest = {
+                **previous_manifest,
+                "row_offsets": offsets,
+                "row_counts": counts,
+            }
+            bounded_tail = True
+    if output.exists() and not bounded_tail:
         raise MaterializationError(
             "lynchpin.temporal_signals",
             reason="incremental temporal-signal materialization requires an indexed append-compatible tail",
@@ -209,6 +219,49 @@ def _can_replace_tail(
         return isinstance(last, str) and end >= date.fromisoformat(last) + timedelta(days=1)
     except ValueError:
         return False
+
+
+def _index_legacy_tail(
+    output: Path,
+    manifest: dict[str, Any],
+    *,
+    end: date,
+) -> tuple[dict[str, int], dict[str, int]] | None:
+    """Prove and index a legacy sorted carrier once, without rewriting history."""
+    last = manifest.get("last_date")
+    try:
+        last_day = date.fromisoformat(last) if isinstance(last, str) else None
+        if last_day is None or end < last_day + timedelta(days=1):
+            return None
+    except ValueError:
+        return None
+    offsets: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    previous_day: date | None = None
+    try:
+        with output.open("rb") as handle:
+            while True:
+                offset = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    return None
+                raw_day = payload.get("event_date")
+                if not isinstance(raw_day, str):
+                    return None
+                day = date.fromisoformat(raw_day)
+                if previous_day is not None and day < previous_day:
+                    return None
+                previous_day = day
+                offsets.setdefault(raw_day, offset)
+                counts[raw_day] = counts.get(raw_day, 0) + 1
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if previous_day != last_day:
+        return None
+    return offsets, counts
 
 
 def _merge_covered_dates(
