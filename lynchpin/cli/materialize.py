@@ -123,7 +123,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.all:
         _progress("planning canonical materialization")
         if args.history == "incremental":
-            plan = plan_materializations(force=args.force, window=window, maintenance=True)
+            plan = plan_materializations(
+                force=args.force,
+                window=window,
+                maintenance=True,
+                maintenance_end=date.fromisoformat(args.end),
+            )
         else:
             plan = plan_materializations(force=args.force, window=window)
     else:

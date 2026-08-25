@@ -142,6 +142,7 @@ def build_evidence_graph(
     promote: bool = False,
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
+    include_source_readiness: bool = True,
 ) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
 
@@ -232,6 +233,7 @@ def build_evidence_graph(
         promote=promote,
         promote_refresh_id=promote_refresh_id,
         promote_projects=promote_projects,
+        include_source_readiness=include_source_readiness,
     )
 
 
@@ -261,6 +263,7 @@ def _finalize_graph(
     promote: bool = False,
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
+    include_source_readiness: bool = True,
 ) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     if len(nodes) > 100_000:
@@ -337,16 +340,19 @@ def _finalize_graph(
     edges.extend(mentions_edges)
     log.info("evidence_graph: added %d mentions-project edges", len(mentions_edges))
 
-    log.info("evidence_graph: checking source readiness")
-    readiness = source_readiness(
-        start=start,
-        end=end,
-        include_polylogue_product_counts=True,
-        include_github_frontier=mode == "network",
-        include_analysis_inventory=True,
-        repair_materializations=False,
-    )
-    caveats = dedupe_caveats(tuple(readiness.caveats) + tuple(source_caveats))
+    readiness_caveats: tuple[EvidenceCaveat, ...] = ()
+    if include_source_readiness:
+        log.info("evidence_graph: checking source readiness")
+        readiness = source_readiness(
+            start=start,
+            end=end,
+            include_polylogue_product_counts=True,
+            include_github_frontier=mode == "network",
+            include_analysis_inventory=True,
+            repair_materializations=False,
+        )
+        readiness_caveats = tuple(readiness.caveats)
+    caveats = dedupe_caveats(readiness_caveats + tuple(source_caveats))
     deduped_nodes = _dedupe_nodes(nodes)
     node_ids = {node.id for node in deduped_nodes}
     deduped_edges = tuple(

@@ -172,7 +172,7 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
     assert ("ai_work:ev001", "github:pr99", "references") in loaded_relations
 
 
-def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail(tmp_path: Path) -> None:
+def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_tail(tmp_path: Path) -> None:
     from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
     from lynchpin.substrate import graph as graph_mod
     from lynchpin.substrate.connection import apply_schema, connect
@@ -239,6 +239,13 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
             tail_start=date(2026, 5, 5),
         )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="new")
+        current_partition = conn.execute(
+            "SELECT COUNT(*), MIN(date), MAX(date) FROM evidence_node WHERE refresh_id = 'new'"
+        ).fetchone()
+        overlay = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = 'new'"
+        ).fetchone()
         full = EvidenceGraph(
             start=predecessor.start,
             end=tail.end,
@@ -252,6 +259,8 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
         loaded_full = graph_mod.load_evidence_graph(conn, refresh_id="full")
 
     assert counts == {"build": 1, "nodes": 4, "edges": 3}
+    assert current_partition == (1, date(2026, 5, 6), date(2026, 5, 6))
+    assert overlay == ("old", date(2026, 5, 5))
     assert same_refresh_counts == counts
     assert loaded is not None
     assert loaded.start == predecessor.start
@@ -274,6 +283,122 @@ def test_promote_incremental_evidence_graph_copies_predecessor_and_replaces_tail
         for edge in loaded_full.edges
     }
     assert {node.id for node in loaded.nodes} == {node.id for node in loaded_full.nodes}
+
+
+def test_incremental_graph_three_generation_counts_shadow_grandparent_replacement(
+    tmp_path: Path,
+) -> None:
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.substrate import graph as graph_mod
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    def graph(*, generation: str, node_id: str, node_date: date, edge_evidence: str) -> EvidenceGraph:
+        return EvidenceGraph(
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 10),
+            generated_at=datetime(2026, 5, 1, 12, tzinfo=UTC),
+            mode="materialized",
+            nodes=(EvidenceNode(
+                id=node_id,
+                kind="commit",
+                source="git",
+                date=node_date,
+                project="lynchpin",
+                summary=generation,
+            ),),
+            edges=(
+                EvidenceEdge(
+                    source_id="anchor",
+                    target_id=node_id,
+                    relation="replacement",
+                    evidence=edge_evidence,
+                    weight=1.0,
+                ),
+            ),
+            caveats=(),
+        )
+
+    db = tmp_path / "three-generation.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        graph_mod.promote_evidence_graph(
+            conn,
+            refresh_id="grandparent",
+            graph=EvidenceGraph(
+                start=date(2026, 5, 1),
+                end=date(2026, 5, 10),
+                generated_at=datetime(2026, 5, 1, 12, tzinfo=UTC),
+                mode="materialized",
+                nodes=(
+                    EvidenceNode("anchor", "commit", "git", date(2026, 5, 1), "lynchpin", "anchor"),
+                    EvidenceNode("stable", "commit", "git", date(2026, 5, 1), "lynchpin", "grandparent"),
+                ),
+                edges=(EvidenceEdge("anchor", "stable", "replacement", "g0", 1.0),),
+                caveats=(),
+            ),
+        )
+        for refresh_id in ("grandparent",):
+            conn.execute(
+                "INSERT INTO substrate_promotion_run "
+                "(refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at) "
+                "VALUES (?, 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())",
+                [refresh_id],
+            )
+            conn.execute(
+                "INSERT INTO substrate_source_status "
+                "(refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at) "
+                "VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 2, NULL, NULL, now())",
+                [refresh_id],
+            )
+        graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="grandparent",
+            refresh_id="parent",
+            graph=graph(
+                generation="parent-tail",
+                node_id="parent-tail",
+                node_date=date(2026, 5, 5),
+                edge_evidence="parent-edge",
+            ),
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 5),
+        )
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at) "
+            "VALUES ('parent', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())"
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at) "
+            "VALUES ('parent', 'evidence_graph', 'graph', 'ok', NULL, 2, NULL, NULL, now())"
+        )
+        counts = graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="parent",
+            refresh_id="current",
+            graph=graph(
+                generation="current",
+                node_id="stable",
+                node_date=date(2026, 5, 6),
+                edge_evidence="g2",
+            ),
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 6),
+        )
+        loaded = graph_mod.load_evidence_graph(conn, refresh_id="current")
+
+    assert counts == {"build": 1, "nodes": 3, "edges": 2}
+    assert loaded is not None
+    assert {node.id for node in loaded.nodes} == {"anchor", "parent-tail", "stable"}
+    assert next(node for node in loaded.nodes if node.id == "stable").summary == "current"
+    assert {
+        (edge.source_id, edge.target_id, edge.relation, edge.evidence)
+        for edge in loaded.edges
+    } == {
+        ("anchor", "parent-tail", "replacement", "parent-edge"),
+        ("anchor", "stable", "replacement", "g2"),
+    }
 
 
 def test_incremental_context_graph_reuses_candidate_predecessor(
@@ -352,7 +477,13 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
             """
         )
 
-    monkeypatch.setattr(context_pack, "build_evidence_graph", lambda **_kwargs: tail)
+    build_kwargs: dict[str, object] = {}
+
+    def build_tail(**kwargs: object) -> EvidenceGraph:
+        build_kwargs.update(kwargs)
+        return tail
+
+    monkeypatch.setattr(context_pack, "build_evidence_graph", build_tail)
     tail_tail_edge = EvidenceEdge(
         source_id="commit:tail",
         target_id="commit:tail2",
@@ -382,6 +513,8 @@ def test_incremental_context_graph_reuses_candidate_predecessor(
                 end=tail.end,
                 tail_start=tail.start,
             )
+
+    assert build_kwargs["include_source_readiness"] is False
 
     monkeypatch.setattr("lynchpin.materialization.audit_materialization", lambda: ())
     from lynchpin.cli import substrate_snapshot
@@ -573,6 +706,51 @@ def test_promote_incremental_analysis_claims_replaces_same_refresh_tail(tmp_path
 
     assert count == 2
     assert ids == {"old", "tail"}
+
+
+def test_promote_incremental_analysis_claims_replaces_regenerated_historical_claim(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from lynchpin.substrate.claims import (
+        AnalysisClaimRow,
+        promote_analysis_claims,
+        promote_incremental_analysis_claims,
+    )
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    historical = AnalysisClaimRow(
+        claim_id="stable",
+        claim_type="machine_attribution",
+        project="lynchpin",
+        date=date(2026, 5, 1),
+        support_level="supported",
+        confidence=0.9,
+        score=1.0,
+        summary="predecessor",
+        source_ids=(),
+        relation_ids=(),
+        caveats=(),
+        payload={},
+    )
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_analysis_claims(conn, refresh_id="previous", claims=(historical,))
+        count = promote_incremental_analysis_claims(
+            conn,
+            previous_refresh_id="previous",
+            refresh_id="next",
+            tail_start=date(2026, 5, 5),
+            claims=(replace(historical, summary="regenerated"),),
+        )
+        rows = conn.execute(
+            "SELECT claim_id, summary FROM analysis_claim WHERE refresh_id = 'next'"
+        ).fetchall()
+
+    assert count == 1
+    assert rows == [("stable", "regenerated")]
 
 
 def test_promote_evidence_graph_idempotent(tmp_path: Path) -> None:

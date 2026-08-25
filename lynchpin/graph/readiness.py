@@ -139,9 +139,18 @@ class _TrainingRow:
 def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
     from ..sources.activitywatch_derived import iter_derived_daily_activity
     from ..sources.health import daily_health_summary
-    from ..sources.sleep import sleep_productivity
+    from ..sources.sleep_productivity import iter_sleep_productivity
 
-    sp = sleep_productivity(start=start, end=end)
+    # The canonical product already owns the expensive sleep/ActivityWatch
+    # join. Recomputing it here makes each graph refresh rescan raw daily
+    # ActivityWatch and keylog carriers across the training window.
+    sp = list(
+        iter_sleep_productivity(
+            start=start,
+            end=end + timedelta(days=1),
+            ensure=False,
+        )
+    )
     if not sp:
         return []
     sp_by_date = {row.sleep_date: row for row in sp if row.sleep_score is not None}

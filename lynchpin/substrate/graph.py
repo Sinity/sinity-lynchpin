@@ -276,7 +276,8 @@ def load_evidence_graph(
     # ------------------------------------------------------------------
     if refresh_id is not None:
         build_rows = conn.execute(
-            "SELECT refresh_id, start_date, end_date, mode, generated_at, caveats "
+            "SELECT refresh_id, start_date, end_date, mode, generated_at, caveats, "
+            "predecessor_refresh_id, predecessor_tail_start "
             "FROM evidence_graph_build WHERE refresh_id = ?",
             [refresh_id],
         ).fetchall()
@@ -295,7 +296,8 @@ def load_evidence_graph(
             b_params.append(list(projects))
         b_where = build_where(b_clauses, b_params)
         build_rows = conn.execute(
-            f"SELECT refresh_id, start_date, end_date, mode, generated_at, caveats "
+            f"SELECT refresh_id, start_date, end_date, mode, generated_at, caveats, "
+            f"predecessor_refresh_id, predecessor_tail_start "
             f"FROM evidence_graph_build {b_where} ORDER BY generated_at DESC LIMIT 1",
             b_params,
         ).fetchall()
@@ -303,20 +305,37 @@ def load_evidence_graph(
     if not build_rows:
         return None
 
-    rid, start_date, end_date, build_mode, generated_at, build_caveats = build_rows[0]
+    (
+        rid, start_date, end_date, build_mode, generated_at, build_caveats,
+        predecessor_rid, predecessor_tail_start,
+    ) = build_rows[0]
+
+    lineage = _graph_lineage(
+        conn,
+        refresh_id=str(rid),
+        predecessor_refresh_id=predecessor_rid,
+        predecessor_tail_start=predecessor_tail_start,
+    )
 
     # ------------------------------------------------------------------
     # 2. Hydrate nodes
     # ------------------------------------------------------------------
-    node_rows = conn.execute(
-        """
-        SELECT id, kind, source, date, project, summary,
-               start_ts, end_ts, url, payload, provenance, caveats
-        FROM evidence_node
-        WHERE refresh_id = ?
-        """,
-        [rid],
-    ).fetchall()
+    node_rows: list[tuple[Any, ...]] = []
+    shadowed_ids: set[str] = set()
+    for partition_id, cutoff in lineage:
+        sql = (
+            "SELECT id, kind, source, date, project, summary, start_ts, end_ts, "
+            "url, payload, provenance, caveats FROM evidence_node WHERE refresh_id = ?"
+        )
+        params: list[Any] = [partition_id]
+        if cutoff is not None:
+            sql += " AND date < ?"
+            params.append(cutoff)
+        partition_rows = conn.execute(sql, params).fetchall()
+        for row in partition_rows:
+            if str(row[0]) not in shadowed_ids:
+                node_rows.append(row)
+        shadowed_ids.update(str(row[0]) for row in partition_rows)
 
     nodes: list[EvidenceNode] = []
     for (
@@ -353,14 +372,31 @@ def load_evidence_graph(
     # ------------------------------------------------------------------
     # 3. Hydrate edges
     # ------------------------------------------------------------------
-    edge_rows = conn.execute(
-        """
-        SELECT source_id, target_id, relation, evidence, weight
-        FROM evidence_edge
-        WHERE refresh_id = ?
-        """,
-        [rid],
-    ).fetchall()
+    edge_rows: list[tuple[Any, ...]] = []
+    shadowed_edge_ids: set[tuple[str, str, str]] = set()
+    newer_partition_ids: set[str] = set()
+    for partition_id, cutoff in lineage:
+        sql = (
+            "SELECT source_id, target_id, relation, evidence, weight "
+            "FROM evidence_edge WHERE refresh_id = ?"
+        )
+        params = [partition_id]
+        if cutoff is not None:
+            sql += (
+                " AND source_id NOT IN (SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?)"
+                " AND target_id NOT IN (SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?)"
+            )
+            params.extend([partition_id, cutoff, partition_id, cutoff])
+        for row in conn.execute(sql, params).fetchall():
+            key = (str(row[0]), str(row[1]), str(row[2]))
+            if key not in shadowed_edge_ids and key[0] not in newer_partition_ids and key[1] not in newer_partition_ids:
+                edge_rows.append(row)
+            shadowed_edge_ids.add(key)
+        newer_partition_ids.update(
+            str(row[0]) for row in conn.execute(
+                "SELECT id FROM evidence_node WHERE refresh_id = ?", [partition_id]
+            ).fetchall()
+        )
 
     edges: list[EvidenceEdge] = []
     for e_source_id, e_target_id, e_relation, e_evidence, e_weight in edge_rows:
@@ -386,6 +422,39 @@ def load_evidence_graph(
         edges=tuple(edges),
         caveats=_hydrate_caveats(build_caveats),
     )
+
+
+def _graph_lineage(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    predecessor_refresh_id: str | None = None,
+    predecessor_tail_start: date | None = None,
+) -> list[tuple[str, date | None]]:
+    """Return newest-to-oldest physical graph partitions and their cutoffs."""
+    if predecessor_refresh_id is None or predecessor_tail_start is None:
+        build_row = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [refresh_id],
+        ).fetchone()
+        predecessor_refresh_id, predecessor_tail_start = (
+            build_row if build_row is not None else (None, None)
+        )
+    lineage: list[tuple[str, date | None]] = [(refresh_id, None)]
+    current_refresh_id = predecessor_refresh_id
+    current_tail_start = predecessor_tail_start
+    while current_refresh_id is not None and current_tail_start is not None:
+        lineage.append((str(current_refresh_id), current_tail_start))
+        parent = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [current_refresh_id],
+        ).fetchone()
+        current_refresh_id, current_tail_start = (
+            parent if parent is not None else (None, None)
+        )
+    return lineage
 
 
 # ── evidence_graph ────────────────────────────────────────────────────────────
@@ -560,13 +629,13 @@ def promote_incremental_evidence_graph(
     tail_start: date,
     projects: Sequence[str] = (),
 ) -> dict[str, int]:
-    """Publish a new full graph by copying its predecessor and replacing a tail.
+    """Publish a new full graph by overlaying its predecessor and replacing a tail.
 
     The database already belongs to a candidate generation, so this operation
-    changes only that candidate. Historical rows are copied inside DuckDB rather
-    than hydrated and reinserted through Python. Rows and relations touching the
-    tail are replaced from ``graph``; caller-provided graph edges include both
-    tail-internal and boundary-crossing relations.
+    changes only that candidate. A new refresh records the predecessor
+    partition instead of copying its historical rows. Rows and relations
+    touching the tail are replaced from ``graph``; caller-provided graph edges
+    include both tail-internal and boundary-crossing relations.
     """
     requested_projects = sorted(set(projects))
     replacing_existing_refresh = previous_refresh_id == refresh_id
@@ -611,6 +680,75 @@ def promote_incremental_evidence_graph(
         conn.executemany(
             "INSERT INTO incremental_node_ids VALUES (?)",
             [(node.id,) for node in graph.nodes],
+        )
+    predecessor_node_count = 0
+    predecessor_edge_count = 0
+    removed_node_count = 0
+    removed_edge_count = 0
+    existing_graph_counts: tuple[int, int] | None = None
+    existing_overlay: tuple[str | None, date | None] = (None, None)
+    if replacing_existing_refresh:
+        existing_row = conn.execute(
+            "SELECT node_count, edge_count, predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [refresh_id],
+        ).fetchone()
+        if existing_row is not None:
+            existing_graph_counts = (int(existing_row[0]), int(existing_row[1]))
+            existing_overlay = (existing_row[2], existing_row[3])
+    if not replacing_existing_refresh:
+        counts_row = conn.execute(
+            "SELECT node_count, edge_count FROM evidence_graph_build WHERE refresh_id = ?",
+            [previous_refresh_id],
+        ).fetchone()
+        if counts_row is None:
+            raise ValueError(f"incremental graph predecessor counts are missing: {previous_refresh_id}")
+        predecessor_node_count, predecessor_edge_count = map(int, counts_row)
+        conn.execute(
+            "CREATE OR REPLACE TEMPORARY TABLE predecessor_removed_node_ids (id VARCHAR PRIMARY KEY)"
+        )
+        conn.execute(
+            "CREATE OR REPLACE TEMPORARY TABLE predecessor_removed_edge_ids "
+            "(source_id VARCHAR, target_id VARCHAR, relation VARCHAR, "
+            "PRIMARY KEY (source_id, target_id, relation))"
+        )
+        predecessor_lineage = _graph_lineage(conn, refresh_id=previous_refresh_id)
+        for partition_id, cutoff in predecessor_lineage:
+            node_sql = (
+                "INSERT INTO predecessor_removed_node_ids "
+                "SELECT id FROM evidence_node WHERE refresh_id = ? "
+                "AND (date >= ? OR id IN (SELECT id FROM incremental_node_ids))"
+            )
+            node_params: list[Any] = [partition_id, tail_start]
+            if cutoff is not None:
+                node_sql += " AND date < ?"
+                node_params.append(cutoff)
+            node_sql += " ON CONFLICT (id) DO NOTHING"
+            conn.execute(node_sql, node_params)
+
+            edge_sql = (
+                "INSERT INTO predecessor_removed_edge_ids "
+                "SELECT source_id, target_id, relation FROM evidence_edge "
+                "WHERE refresh_id = ? "
+                "AND (source_id IN (SELECT id FROM predecessor_removed_node_ids) "
+                "OR target_id IN (SELECT id FROM predecessor_removed_node_ids))"
+            )
+            edge_params: list[Any] = [partition_id]
+            if cutoff is not None:
+                edge_sql += (
+                    " AND source_id NOT IN (SELECT id FROM evidence_node "
+                    "WHERE refresh_id = ? AND date >= ?)"
+                    " AND target_id NOT IN (SELECT id FROM evidence_node "
+                    "WHERE refresh_id = ? AND date >= ?)"
+                )
+                edge_params.extend([partition_id, cutoff, partition_id, cutoff])
+            edge_sql += " ON CONFLICT (source_id, target_id, relation) DO NOTHING"
+            conn.execute(edge_sql, edge_params)
+        removed_node_count = int(
+            conn.execute("SELECT COUNT(*) FROM predecessor_removed_node_ids").fetchone()[0]
+        )
+        removed_edge_count = int(
+            conn.execute("SELECT COUNT(*) FROM predecessor_removed_edge_ids").fetchone()[0]
         )
     if not replacing_existing_refresh:
         conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])
@@ -658,41 +796,10 @@ def promote_incremental_evidence_graph(
     conn.execute("BEGIN TRANSACTION")
     try:
         if not replacing_existing_refresh:
-            conn.execute(
-                """
-                INSERT INTO evidence_node (refresh_id, id, kind, source, date, project,
-                                           summary, start_ts, end_ts, url, payload,
-                                           provenance, caveats)
-                SELECT ?, id, kind, source, date, project, summary, start_ts, end_ts,
-                       url, payload, provenance, caveats
-                FROM evidence_node
-                WHERE refresh_id = ?
-                  AND date < ?
-                  AND id NOT IN (SELECT id FROM incremental_node_ids)
-                """,
-                [refresh_id, previous_refresh_id, tail_start],
-            )
-            conn.execute(
-                """
-                INSERT INTO evidence_edge (refresh_id, source_id, target_id, relation,
-                                           evidence, weight)
-                SELECT ?, edge.source_id, edge.target_id, edge.relation, edge.evidence,
-                       edge.weight
-                FROM evidence_edge AS edge
-                JOIN evidence_node AS source_node
-                  ON source_node.refresh_id = edge.refresh_id
-                 AND source_node.id = edge.source_id
-                JOIN evidence_node AS target_node
-                  ON target_node.refresh_id = edge.refresh_id
-                 AND target_node.id = edge.target_id
-                WHERE edge.refresh_id = ?
-                  AND source_node.date < ?
-                  AND target_node.date < ?
-                  AND source_node.id NOT IN (SELECT id FROM incremental_node_ids)
-                  AND target_node.id NOT IN (SELECT id FROM incremental_node_ids)
-                """,
-                [refresh_id, previous_refresh_id, tail_start, tail_start],
-            )
+            # The candidate is already a copy-on-write clone of the verified
+            # predecessor. Keep historical rows in that partition and record
+            # the bounded overlay on the new build instead of copying them.
+            pass
         promote_rows(
             conn,
             table="evidence_node",
@@ -717,12 +824,18 @@ def promote_incremental_evidence_graph(
             delete_existing=False,
             wrap_transaction=False,
         )
-        node_count = int(
-            conn.execute("SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
-        )
-        edge_count = int(
-            conn.execute("SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
-        )
+        if replacing_existing_refresh and existing_graph_counts is not None:
+            node_count, edge_count = existing_graph_counts
+        elif replacing_existing_refresh:
+            node_count = int(
+                conn.execute("SELECT COUNT(*) FROM evidence_node WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+            )
+            edge_count = int(
+                conn.execute("SELECT COUNT(*) FROM evidence_edge WHERE refresh_id = ?", [refresh_id]).fetchone()[0]
+            )
+        else:
+            node_count = predecessor_node_count - removed_node_count + len(graph.nodes)
+            edge_count = predecessor_edge_count - removed_edge_count + len(graph.edges)
         caveats_json = json.dumps(
             [
                 {"source": caveat.source, "status": caveat.status, "message": caveat.message}
@@ -745,10 +858,14 @@ def promote_incremental_evidence_graph(
             """
             INSERT INTO evidence_graph_build (
                 refresh_id, start_date, end_date, mode, projects,
-                node_count, edge_count, caveats, generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                node_count, edge_count, caveats, generated_at,
+                predecessor_refresh_id, predecessor_tail_start
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            build_values,
+            build_values + [
+                existing_overlay[0] if replacing_existing_refresh else previous_refresh_id,
+                existing_overlay[1] if replacing_existing_refresh else tail_start,
+            ],
         )
         conn.execute("COMMIT")
     except Exception:

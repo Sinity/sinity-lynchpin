@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,29 @@ from lynchpin.sources.github import (
     GitHubReviewComment,
 )
 from lynchpin.sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION
+
+
+def _stub_candidate_publication_boundary(monkeypatch, tmp_path: Path, *, serving: bool) -> list[str]:
+    entered: list[str] = []
+
+    @contextmanager
+    def candidate():
+        entered.append("candidate")
+        yield None
+
+    @contextmanager
+    def bootstrap():
+        entered.append("bootstrap")
+        yield None
+
+    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", candidate)
+    monkeypatch.setattr("lynchpin.substrate.connection.bootstrap_candidate_generation", bootstrap)
+    monkeypatch.setattr("lynchpin.substrate.connection.in_candidate_generation", lambda: False)
+    substrate = tmp_path / "substrate.duckdb"
+    if serving:
+        substrate.touch()
+    monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: substrate)
+    return entered
 
 
 def _item(*, repo: str = "lynchpin", kind: str = "issue", number: int = 1) -> GitHubItem:
@@ -97,6 +121,7 @@ def test_substrate_promotion_archives_corrupt_db_without_empty_retry(monkeypatch
         )
 
     monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+    entered = _stub_candidate_publication_boundary(monkeypatch, tmp_path, serving=True)
     monkeypatch.setattr(
         "lynchpin.substrate.connection.rebuild_corrupt_substrate",
         lambda: recovered.append("called") or (_ for _ in ()).throw(
@@ -114,6 +139,7 @@ def test_substrate_promotion_archives_corrupt_db_without_empty_retry(monkeypatch
     )
     assert calls == 1
     assert len(recovered) == 1
+    assert entered == ["candidate"]
 
 
 def test_substrate_promotion_reports_failed_rebuild_as_degraded(monkeypatch, tmp_path: Path) -> None:
@@ -125,6 +151,7 @@ def test_substrate_promotion_reports_failed_rebuild_as_degraded(monkeypatch, tmp
         raise RuntimeError("database has been invalidated")
 
     monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", promote)
+    entered = _stub_candidate_publication_boundary(monkeypatch, tmp_path, serving=True)
     monkeypatch.setattr(
         "lynchpin.substrate.connection.rebuild_corrupt_substrate",
         lambda: (_ for _ in ()).throw(RuntimeError("clean rebuild failed")),
@@ -139,6 +166,39 @@ def test_substrate_promotion_reports_failed_rebuild_as_degraded(monkeypatch, tmp
         error="clean rebuild failed",
     )
     assert calls == 1
+    assert entered == ["candidate"]
+
+
+def test_substrate_promotion_uses_bootstrap_boundary_without_serving_generation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    entered = _stub_candidate_publication_boundary(monkeypatch, tmp_path, serving=False)
+    monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", lambda _path: 3)
+
+    result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
+
+    assert result.rows == 3
+    assert result.status == "ok"
+    assert entered == ["bootstrap"]
+
+
+def test_substrate_promotion_reuses_outer_candidate_boundary(monkeypatch, tmp_path: Path) -> None:
+    entered: list[str] = []
+    monkeypatch.setattr("lynchpin.substrate.connection.in_candidate_generation", lambda: True)
+    monkeypatch.setattr(materializer, "_promote_github_context_to_substrate", lambda _path: 4)
+
+    def fail_if_nested():
+        entered.append("nested")
+        raise AssertionError("github context promotion nested a candidate generation")
+
+    monkeypatch.setattr("lynchpin.substrate.connection.candidate_generation", fail_if_nested)
+    monkeypatch.setattr("lynchpin.substrate.connection.bootstrap_candidate_generation", fail_if_nested)
+
+    result = materializer._promote_github_context_with_retry(tmp_path / "context.ndjson")
+
+    assert result.rows == 4
+    assert result.status == "ok"
+    assert entered == []
 
 
 def test_materialize_github_context_refreshes_open_lists_without_gh_cache(

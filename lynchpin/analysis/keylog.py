@@ -322,14 +322,15 @@ def _quoted_bind_lines(text: str) -> tuple[str, ...]:
     return tuple(rows)
 
 
-def analyze_keylog(
+def _analyze_keylog_bundle(
     *,
     start: date,
     end: date,
     bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
     chord_window_ms: int = 1500,
-) -> KeylogAnalysis:
-    """Analyze keylog metadata over an inclusive date window."""
+    text_top_n: int = 1000,
+) -> tuple[KeylogAnalysis, KeylogTextContentAnalysis]:
+    """Analyze metadata and optional text in one pass over the raw day files."""
 
     start_dt, end_dt = date_to_dt_range(start, end)
     bind_rows = parse_hyprland_keybinds(bindings_path)
@@ -337,6 +338,8 @@ def analyze_keylog(
     usage_counter: Counter[tuple[date, str, str]] = Counter()
     temporal_counter: Counter[tuple[str, int, int]] = Counter()
     shape_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    text_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    text_terms: Counter[str] = Counter()
     source_event_count = 0
 
     recent_modifiers: dict[str, datetime] = {}
@@ -344,9 +347,18 @@ def analyze_keylog(
     # Keylog files are append-only daily JSONL products, and ``keylog.events``
     # yields them in UTC filename order. Process the stream directly so the
     # analysis does not retain and sort millions of press events at once.
-    for event in keylog.events(start=start_dt, end=end_dt, kinds={"press"}):
-        source_event_count += 1
+    for event in keylog._analysis_records(start=start_dt, end=end_dt):
         day = logical_date(event.ts)
+        if event.text is not None:
+            text_by_day[day]["snapshots"] += 1
+            text_by_day[day]["chars"] += len(event.text)
+            words = _content_terms(event.text)
+            text_by_day[day]["words"] += len(words)
+            text_by_day[day]["lines"] += event.text.count("\n") + 1
+            text_terms.update(words)
+        if event.event != "press":
+            continue
+        source_event_count += 1
         key = _normalize_event_key(event.keycode)
         if key is None:
             continue
@@ -416,7 +428,7 @@ def analyze_keylog(
         )
         for day, counts in sorted(shape_by_day.items())
     )
-    return KeylogAnalysis(
+    analysis = KeylogAnalysis(
         start=start,
         end=end,
         source_event_count=source_event_count,
@@ -434,6 +446,52 @@ def analyze_keylog(
             "keybind usage falls back to adjacent modifier keypresses within the chord window",
         ),
     )
+    text_days = tuple(
+        KeylogTextContentDay(
+            date=day,
+            snapshot_count=counts["snapshots"],
+            char_count=counts["chars"],
+            word_count=counts["words"],
+            line_count=counts["lines"],
+        )
+        for day, counts in sorted(text_by_day.items())
+    )
+    text_content = KeylogTextContentAnalysis(
+        start=start,
+        end=end,
+        snapshot_count=sum(row.snapshot_count for row in text_days),
+        char_count=sum(row.char_count for row in text_days),
+        word_count=sum(row.word_count for row in text_days),
+        line_count=sum(row.line_count for row in text_days),
+        days=text_days,
+        top_terms=tuple(
+            KeylogTextTerm(term=term, count=count)
+            for term, count in text_terms.most_common(max(0, text_top_n))
+        ),
+        caveats=(
+            "text-content analysis only uses explicit snapshot text fields",
+            "current captures may contain no snapshot text, yielding zero rows",
+        ),
+    )
+    return analysis, text_content
+
+
+def analyze_keylog(
+    *,
+    start: date,
+    end: date,
+    bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
+    chord_window_ms: int = 1500,
+) -> KeylogAnalysis:
+    """Analyze keylog metadata over an inclusive date window."""
+
+    analysis, _text_content = _analyze_keylog_bundle(
+        start=start,
+        end=end,
+        bindings_path=bindings_path,
+        chord_window_ms=chord_window_ms,
+    )
+    return analysis
 
 
 def analyze_keylog_text_content(
@@ -495,7 +553,12 @@ def write_keylog_analysis(
     bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
 ) -> KeylogAnalysis:
     target = out or Path(resolve_analysis_path("keylog_analysis.json"))
-    analysis = analyze_keylog(start=start, end=end, bindings_path=bindings_path)
+    analysis, text_content = _analyze_keylog_bundle(
+        start=start,
+        end=end,
+        bindings_path=bindings_path,
+        text_top_n=1000,
+    )
     payload = analysis.to_json()
     input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
     payload.update(
@@ -507,11 +570,7 @@ def write_keylog_analysis(
             "input_latest_mtime": latest_mtime_iso(input_files),
         }
     )
-    payload["text_content"] = analyze_keylog_text_content(
-        start=start,
-        end=end,
-        top_n=1000,
-    ).to_json()
+    payload["text_content"] = text_content.to_json()
     save_json(target, payload, sort_keys=True)
     return analysis
 

@@ -2466,6 +2466,50 @@ def test_incremental_maintenance_defers_unverified_index_repair(monkeypatch) -> 
     assert "explicit full repair" in plan[0].reason
 
 
+def test_incremental_maintenance_builds_keylog_artifact_for_shared_graph_tail(
+    monkeypatch,
+) -> None:
+    from lynchpin import materialization
+
+    rows = [
+        MaterializedDataset(
+            name=name,
+            status="partial",
+            authority="fixture",
+            query_surface="fixture",
+            materialized_paths=(),
+            raw_roots=(),
+            row_count=1,
+            first_date=date(2026, 6, 1),
+            last_date=date(2026, 6, 24),
+            materialization_hint="refresh",
+            reason="tail changed",
+        )
+        for name in ("keylog_analysis", "temporal_signals")
+    ]
+    monkeypatch.setattr(materialization, "audit_materialization", lambda cfg=None: rows)
+    monkeypatch.setattr(
+        materialization,
+        "_materializers",
+        lambda: {
+            row.name: lambda start=None, end=None: {}
+            for row in rows
+        },
+    )
+
+    plan = materialization.plan_materializations(
+        maintenance=True,
+        maintenance_end=date(2026, 6, 27),
+    )
+
+    windows = {step.name: step.window for step in plan}
+    assert windows == {
+        "keylog_analysis": (date(2026, 6, 20), date(2026, 6, 27)),
+        "temporal_signals": (date(2026, 6, 20), date(2026, 6, 27)),
+    }
+    assert "shared graph tail" in plan[0].reason
+
+
 def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
     from lynchpin.materialization import _materialized_enough_for_window
 

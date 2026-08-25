@@ -183,16 +183,16 @@ def test_keylog_analysis_keybind_usage_uses_logical_day_boundary(tmp_path, monke
     assert analysis.text_shape_days[0].date == date(2026, 6, 4)
 
 
-def test_keylog_analysis_requests_only_press_events(monkeypatch, tmp_path) -> None:
+def test_keylog_analysis_reads_the_combined_analysis_stream_once(monkeypatch, tmp_path) -> None:
     calls = []
     bindings = tmp_path / "bindings.nix"
     bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
 
-    def fake_events(*, start, end, kinds=None):
-        calls.append((start, end, kinds))
+    def fake_records(*, start, end):
+        calls.append((start, end))
         return iter(())
 
-    monkeypatch.setattr(keylog, "events", fake_events)
+    monkeypatch.setattr(keylog, "_analysis_records", fake_records)
 
     analysis = keylog_analysis.analyze_keylog(
         start=date(2026, 6, 5),
@@ -200,7 +200,7 @@ def test_keylog_analysis_requests_only_press_events(monkeypatch, tmp_path) -> No
         bindings_path=bindings,
     )
 
-    assert calls[0][2] == {"press"}
+    assert len(calls) == 1
     assert analysis.source_event_count == 0
 
 
@@ -220,6 +220,15 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
     bindings = tmp_path / "bindings.nix"
     bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
     monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    read_jsonl_with = keylog.read_jsonl_with
+    scans = 0
+
+    def counted_read_jsonl_with(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return read_jsonl_with(*args, **kwargs)
+
+    monkeypatch.setattr(keylog, "read_jsonl_with", counted_read_jsonl_with)
     out = tmp_path / "analysis.json"
 
     analysis = keylog_analysis.write_keylog_analysis(
@@ -239,6 +248,7 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
     assert saved["text_content"]["snapshot_count"] == 1
     assert saved["text_content"]["word_count"] == 3
     assert saved["text_content"]["top_terms"][0] == {"term": "secret", "count": 1}
+    assert scans == 1
     assert "Secret Lynchpin words" not in out.read_text(encoding="utf-8")
     assert saved["caveats"]
 

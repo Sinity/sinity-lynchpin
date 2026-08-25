@@ -220,6 +220,7 @@ def test_incremental_history_uses_per_step_tails_and_incremental_graph(monkeypat
 
     assert code == 0
     assert calls["maintenance"] is True
+    assert calls["maintenance_end"] == date(2026, 5, 13)
     assert calls["run_window"] is None
     assert calls["run_kwargs"]["refresh_id"] == "current-state:2026-05-01:2026-05-13:all"
     assert calls["candidate_kwargs"]["receipt_refresh_id"] == "current-state:2026-05-01:2026-05-13:all"

@@ -541,11 +541,11 @@ def cross_boundary_edges(
 ) -> tuple[EvidenceEdge, ...]:
     """Build only predecessor↔tail edges for an incremental graph.
 
-    The tail graph already contains every tail-internal edge.  Calling the
-    ordinary builders with ``boundary + tail`` would recompute that quadratic
-    portion and then discard it.  Pairwise builder calls are intentionally
-    limited to one boundary node and one tail node, so this route cannot emit
-    or spend work on tail↔tail relations.
+    The tail graph already contains every tail-internal edge.  Run each
+    indexed/grouped builder once over the bounded boundary+tail set, then keep
+    only edges crossing the partition.  Invoking every builder separately for
+    every boundary×tail pair turns a modest bounded window into millions of
+    Python calls and is substantially slower than the builders' own grouping.
     """
     builders = (
         same_project_day_edges,
@@ -555,16 +555,28 @@ def cross_boundary_edges(
         mentions_project_edges,
         overlap_edges_via_substrate,
     )
+    boundary_ids = {node.id for node in boundary_nodes}
+    tail_ids = {node.id for node in tail_nodes}
+    combined = tuple(boundary_nodes) + tuple(tail_nodes)
     edges: list[EvidenceEdge] = []
-    for boundary in boundary_nodes:
-        for tail in tail_nodes:
-            for builder in builders:
-                kwargs = {"refresh_id": "incremental-boundary"} if builder is overlap_edges_via_substrate else {}
-                edges.extend(
-                    edge
-                    for edge in builder((boundary, tail), **kwargs)
-                    if {edge.source_id, edge.target_id} == {boundary.id, tail.id}
-                )
+    for builder in builders:
+        kwargs = (
+            {"refresh_id": "incremental-boundary"}
+            if builder is overlap_edges_via_substrate
+            else {}
+        )
+        edges.extend(
+            edge
+            for edge in builder(combined, **kwargs)
+            if (
+                edge.source_id in boundary_ids
+                and edge.target_id in tail_ids
+            )
+            or (
+                edge.source_id in tail_ids
+                and edge.target_id in boundary_ids
+            )
+        )
     unique: dict[tuple[str, str, str], EvidenceEdge] = {}
     for edge in edges:
         unique[(edge.source_id, edge.target_id, edge.relation)] = edge

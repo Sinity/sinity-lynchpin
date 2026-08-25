@@ -1191,7 +1191,9 @@ DDL_STATEMENTS = (
         edge_count      INTEGER NOT NULL DEFAULT 0,
         caveats         JSON NOT NULL DEFAULT '[]',  -- list[{source, status, message}]
         generated_at    TIMESTAMPTZ NOT NULL,
-        materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        predecessor_refresh_id VARCHAR,
+        predecessor_tail_start DATE
     )
     """,
         "CREATE INDEX evidence_graph_build_window ON evidence_graph_build(start_date, end_date, mode)",
