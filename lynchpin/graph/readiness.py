@@ -138,7 +138,7 @@ class _TrainingRow:
 
 def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
     from ..sources.activitywatch_derived import iter_derived_daily_activity
-    from ..sources.health import daily_health_summary
+    from ..sources.personal_signals import iter_personal_daily_signals
     from ..sources.sleep_productivity import iter_sleep_productivity
 
     # The canonical product already owns the expensive sleep/ActivityWatch
@@ -155,12 +155,15 @@ def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
         return []
     sp_by_date = {row.sleep_date: row for row in sp if row.sleep_score is not None}
 
-    health_by_date = {
-        row.date: row
-        for row in daily_health_summary(start=start, end=end)
-    }
+    health_by_date: dict[date, dict[str, float]] = {}
+    for row in iter_personal_daily_signals(start=start, end=end + timedelta(days=1), ensure=False):
+        if row.source == "health" and row.metric in {"hrv_rmssd", "resting_heart_rate"}:
+            health_by_date.setdefault(row.date, {})[row.metric] = row.value
 
-    aw_by_date = {row.date: row for row in iter_derived_daily_activity(start=start, end=end)}
+    aw_by_date = {
+        row.date: row
+        for row in iter_derived_daily_activity(start=start, end=end, ensure=False)
+    }
 
     rows: list[_TrainingRow] = []
     for sleep_date, sp_row in sorted(sp_by_date.items()):
@@ -172,7 +175,7 @@ def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
         prior_aw = aw_by_date.get(sleep_date)
         if hr is None or prior_aw is None:
             continue
-        if hr.hrv_rmssd_avg is None or hr.heart_rate_resting is None:
+        if "hrv_rmssd" not in hr or "resting_heart_rate" not in hr:
             continue
         if sp_row.sleep_score is None:
             continue
@@ -182,8 +185,8 @@ def _build_training_rows(*, start: date, end: date) -> list[_TrainingRow]:
                 workday=workday,
                 sleep_hours=float(sp_row.sleep_hours),
                 sleep_score=float(sp_row.sleep_score),
-                hrv_rmssd=float(hr.hrv_rmssd_avg),
-                resting_hr=float(hr.heart_rate_resting),
+                hrv_rmssd=float(hr["hrv_rmssd"]),
+                resting_hr=float(hr["resting_heart_rate"]),
                 prior_focus_hours=float(prior_aw.active_hours),
                 prior_deep_work_min=float(prior_aw.deep_work_min),
                 target_deep_work_min=float(target),
@@ -200,30 +203,50 @@ def _features_for_target(target_date: date) -> dict[str, float] | None:
     that same prior day.
     """
     from ..sources.activitywatch_derived import iter_derived_daily_activity
-    from ..sources.health import daily_health_summary
-    from ..sources.sleep import sleep_for_date
+    from ..sources.personal_signals import iter_personal_daily_signals
+    from ..sources.sleep_productivity import iter_sleep_productivity
 
     sleep_date = target_date - timedelta(days=1)
-    entry = sleep_for_date(sleep_date)
-    if entry is None or entry.avg_score is None or entry.total_minutes is None:
-        return None
-    health = next(
-        (r for r in daily_health_summary(start=sleep_date, end=sleep_date)),
+    entry = next(
+        iter_sleep_productivity(
+            start=sleep_date,
+            end=sleep_date + timedelta(days=1),
+            ensure=False,
+        ),
         None,
     )
-    if health is None or health.hrv_rmssd_avg is None or health.heart_rate_resting is None:
+    if entry is None or entry.sleep_score is None:
+        return None
+    health = {
+        row.metric: row.value
+        for row in iter_personal_daily_signals(
+            start=sleep_date,
+            end=sleep_date + timedelta(days=1),
+            ensure=False,
+        )
+        if row.source == "health"
+        and row.metric in {"hrv_rmssd", "resting_heart_rate"}
+    }
+    if "hrv_rmssd" not in health or "resting_heart_rate" not in health:
         return None
     prior_day = next(
-        (r for r in iter_derived_daily_activity(start=sleep_date, end=sleep_date)),
+        (
+            r
+            for r in iter_derived_daily_activity(
+                start=sleep_date,
+                end=sleep_date + timedelta(days=1),
+                ensure=False,
+            )
+        ),
         None,
     )
     if prior_day is None:
         return None
     return {
-        "sleep_hours": float(entry.total_minutes) / 60.0,
-        "sleep_score": float(entry.avg_score),
-        "hrv_rmssd": float(health.hrv_rmssd_avg),
-        "resting_hr": float(health.heart_rate_resting),
+        "sleep_hours": float(entry.sleep_hours),
+        "sleep_score": float(entry.sleep_score),
+        "hrv_rmssd": float(health["hrv_rmssd"]),
+        "resting_hr": float(health["resting_heart_rate"]),
         "prior_focus_hours": float(prior_day.active_hours),
         "prior_deep_work_min": float(prior_day.deep_work_min),
     }

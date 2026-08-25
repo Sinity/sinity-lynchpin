@@ -32,12 +32,11 @@ def _make_sleep_productivity_row(
     )
 
 
-def _make_health_row(on: date, *, hrv: float, resting_hr: float) -> SimpleNamespace:
-    return SimpleNamespace(
-        date=on,
-        hrv_rmssd_avg=hrv,
-        heart_rate_resting=resting_hr,
-    )
+def _make_health_rows(on: date, *, hrv: float, resting_hr: float) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(source="health", date=on, metric="hrv_rmssd", value=hrv),
+        SimpleNamespace(source="health", date=on, metric="resting_heart_rate", value=resting_hr),
+    ]
 
 
 def _make_aw_row(on: date, *, active_hours: float, deep_work_min: float) -> SimpleNamespace:
@@ -75,30 +74,29 @@ def _install_synthetic_history(
         sp_rows.append(_make_sleep_productivity_row(
             d, sleep_hours=sleep_hours, sleep_score=sleep_score, target_deep_work=target
         ))
-        health_rows.append(_make_health_row(d, hrv=40.0 + (i % 6), resting_hr=58.0 + (i % 4)))
+        health_rows.extend(_make_health_rows(d, hrv=40.0 + (i % 6), resting_hr=58.0 + (i % 4)))
         aw_rows.append(_make_aw_row(d, active_hours=4.0 + (i % 3), deep_work_min=target * 0.5))
 
     monkeypatch.setattr(
         "lynchpin.sources.sleep_productivity.iter_sleep_productivity",
-        lambda **kwargs: sp_rows,
+        lambda **kwargs: (
+            row
+            for row in sp_rows
+            if kwargs.get("start") is None or kwargs["start"] <= row.sleep_date < kwargs["end"]
+        ),
     )
     monkeypatch.setattr(
-        "lynchpin.sources.health.daily_health_summary",
-        lambda **kwargs: health_rows,
+        "lynchpin.sources.personal_signals.iter_personal_daily_signals",
+        lambda **kwargs: (
+            row
+            for row in health_rows
+            if kwargs.get("start") is None or kwargs["start"] <= row.date < kwargs["end"]
+        ),
     )
     monkeypatch.setattr(
         "lynchpin.sources.activitywatch_derived.iter_derived_daily_activity",
         lambda **kwargs: aw_rows,
     )
-
-    # Forecast inputs (sleep night before target)
-    monkeypatch.setattr(
-        "lynchpin.sources.sleep.sleep_for_date",
-        lambda d: SimpleNamespace(
-            avg_score=75.0, total_minutes=420.0, date=d, segments=()
-        ),
-    )
-
 
 def test_strong_correlation_yields_forecast(monkeypatch: pytest.MonkeyPatch) -> None:
     target = date(2026, 5, 7)
@@ -139,14 +137,14 @@ def test_weak_fit_returns_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
             d, sleep_hours=7.0, sleep_score=80.0,
             target_deep_work=(i * 13 % 100) + 50,
         ))
-        health_rows.append(_make_health_row(d, hrv=42.0, resting_hr=60.0))
+        health_rows.extend(_make_health_rows(d, hrv=42.0, resting_hr=60.0))
         aw_rows.append(_make_aw_row(d, active_hours=5.0, deep_work_min=70.0))
 
     monkeypatch.setattr(
         "lynchpin.sources.sleep_productivity.iter_sleep_productivity",
-        lambda **kwargs: sp_rows,
+        lambda **kwargs: iter(sp_rows),
     )
-    monkeypatch.setattr("lynchpin.sources.health.daily_health_summary", lambda **kwargs: health_rows)
+    monkeypatch.setattr("lynchpin.sources.personal_signals.iter_personal_daily_signals", lambda **kwargs: health_rows)
     monkeypatch.setattr("lynchpin.sources.activitywatch_derived.iter_derived_daily_activity", lambda **kwargs: aw_rows)
 
     result = build_readiness_forecast(target_date=target, window_days=60)
