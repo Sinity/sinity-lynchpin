@@ -1,7 +1,9 @@
 from datetime import date
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 from lynchpin.cli import current_state
 from lynchpin.graph.context_pack import ContextPackSubstrateRequiredError
@@ -81,6 +83,7 @@ def test_current_state_tool_targets_cli_module():
         text=True,
         timeout=30,
         check=False,
+        env={**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}"},
     )
 
     assert result.returncode == 0

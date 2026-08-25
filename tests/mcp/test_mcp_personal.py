@@ -1349,7 +1349,10 @@ class TestActivitySemanticDaily:
             (date(2026, 5, 22), "learning", 5400.0),  # 90 min
         ]
 
-        with patch("lynchpin.substrate.connection.connect") as mock_connect:
+        with patch("lynchpin.substrate.connection.connect") as mock_connect, patch(
+            "lynchpin.substrate.readers_signals.load_activity_title_usage_by_dimension",
+            return_value=mock_rows,
+        ):
             mock_conn = MagicMock()
             mock_connect.return_value.__enter__.return_value = mock_conn
             mock_conn.execute.return_value.fetchall.return_value = mock_rows
@@ -1395,7 +1398,10 @@ class TestActivitySemanticDaily:
         valid_dims = ["topic_category", "attention_level", "activity", "platform", "mode"]
         mock_rows = [(date(2026, 5, 20), "test", 3600.0)]
 
-        with patch("lynchpin.substrate.connection.connect") as mock_connect:
+        with patch("lynchpin.substrate.connection.connect") as mock_connect, patch(
+            "lynchpin.substrate.readers_signals.load_activity_title_usage_by_dimension",
+            return_value=mock_rows,
+        ):
             mock_conn = MagicMock()
             mock_connect.return_value.__enter__.return_value = mock_conn
             mock_conn.execute.return_value.fetchall.return_value = mock_rows
@@ -1412,7 +1418,10 @@ class TestActivitySemanticDaily:
         """Verify empty results are handled correctly."""
         from lynchpin.mcp.tools.personal import activity_semantic_daily
 
-        with patch("lynchpin.substrate.connection.connect") as mock_connect:
+        with patch("lynchpin.substrate.connection.connect") as mock_connect, patch(
+            "lynchpin.substrate.readers_signals.load_activity_title_usage_by_dimension",
+            return_value=[],
+        ):
             mock_conn = MagicMock()
             mock_connect.return_value.__enter__.return_value = mock_conn
             mock_conn.execute.return_value.fetchall.return_value = []

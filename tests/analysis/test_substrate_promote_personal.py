@@ -48,18 +48,22 @@ def test_promote_personal_sources_bounds_activity_content_reads(monkeypatch) -> 
     )
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_activity_content_days",
-        lambda _conn, *, refresh_id, rows: len(list(rows)),
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_activity_content_buckets",
-        lambda _conn, *, refresh_id, rows: len(list(rows)),
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_activity_title_usage",
-        lambda _conn, *, refresh_id, rows: len(list(rows)),
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
         "lynchpin.analysis.active.substrate_promote_personal.record_source_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.active.substrate_promote_personal._latest_product_refresh",
         lambda *_args, **_kwargs: None,
     )
 
@@ -120,14 +124,18 @@ def test_promote_personal_sources_uses_preconverged_personal_products(monkeypatc
     )
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_spotify_daily_rows",
-        lambda _conn, *, refresh_id, rows: len(list(rows)),
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
         "lynchpin.substrate.personal.promote_personal_daily_signals",
-        lambda _conn, *, refresh_id, rows: len(list(rows)),
+        lambda _conn, *, rows, **_kwargs: len(list(rows)),
     )
     monkeypatch.setattr(
         "lynchpin.analysis.active.substrate_promote_personal.record_source_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.active.substrate_promote_personal._latest_product_refresh",
         lambda *_args, **_kwargs: None,
     )
 
