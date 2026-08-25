@@ -211,7 +211,9 @@ def test_cross_boundary_edges_preserves_boundary_edges_without_tail_tail_work(mo
     def same(nodes):
         calls.append(("same_project_day", len(nodes)))
         return (
-            EvidenceEdge(nodes[0].id, nodes[1].id, "same_project_day", "boundary", 0.4),
+            EvidenceEdge("boundary", "tail-a", "same_project_day", "boundary", 0.4),
+            EvidenceEdge("boundary", "tail-b", "same_project_day", "boundary", 0.4),
+            EvidenceEdge("tail-a", "tail-b", "same_project_day", "tail only", 0.4),
         )
 
     monkeypatch.setattr(evidence_edges, "same_project_day_edges", same)
@@ -230,7 +232,7 @@ def test_cross_boundary_edges_preserves_boundary_edges_without_tail_tail_work(mo
         ("boundary", "tail-a"),
         ("boundary", "tail-b"),
     }
-    assert calls == [("same_project_day", 2), ("same_project_day", 2)]
+    assert calls == [("same_project_day", 3)]
 
 
 def test_temporal_overlap_edges_group_by_project_and_stop_at_interval_end() -> None:
