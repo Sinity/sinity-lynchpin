@@ -65,7 +65,7 @@ def materialize_activitywatch_events(
     output.parent.mkdir(parents=True, exist_ok=True)
     store = activitywatch_events_partition_store(output)
     input_signature = _input_signature(input_files)
-    if start is None and end is None and store.manifest_path.exists():
+    if start is None and end is None and store.selection_is_readable():
         metadata = store.metadata
         if metadata.get("input_signature") == input_signature:
             return _read_manifest(output.with_suffix(".manifest.json"))

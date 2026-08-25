@@ -76,6 +76,20 @@ def test_interrupted_manifest_publish_keeps_previous_selection_readable(monkeypa
     assert store.read(selected) == b"old"
 
 
+def test_selection_readability_rejects_a_missing_selected_artifact(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "store")
+    ref = store.put(
+        ProductPartitionKey.day("events", "2026-08-25"),
+        b"selected",
+        format="ndjson",
+    )
+    assert store.selection_is_readable()
+
+    (store.root / ref.path).unlink()
+
+    assert not store.selection_is_readable()
+
+
 def test_manifest_serialization_is_deterministic(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "store")
     created = datetime(2026, 8, 25, tzinfo=timezone.utc)

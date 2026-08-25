@@ -242,6 +242,27 @@ class ArtifactStore:
             raise FileNotFoundError(f"selected partition is missing: {path}")
         return path.read_bytes()
 
+    def selection_is_readable(self) -> bool:
+        """Return whether the published logical selection is complete on disk."""
+        if not self.manifest_path.is_file():
+            return False
+        try:
+            raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            selected = raw.get("partitions")
+            if not isinstance(selected, list):
+                return False
+            refs = tuple(ArtifactRef.from_dict(item) for item in selected)
+            root = self.root.resolve()
+            for ref in refs:
+                path = (self.root / ref.path).resolve()
+                if root not in path.parents or not path.is_file():
+                    return False
+                if path.stat().st_size != ref.byte_count:
+                    return False
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return True
+
     def publish(
         self,
         partitions: Mapping[ProductPartitionKey, ArtifactRef],

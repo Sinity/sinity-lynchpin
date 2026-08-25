@@ -571,7 +571,7 @@ def write_keylog_analysis(
                 )
             if migrated:
                 store.publish(migrated, metadata={"migration": "legacy-monolith", "validated": True})
-    if store.manifest_path.exists() and store.metadata.get("input_signature") == input_signature and target.exists():
+    if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and target.exists():
         payload = load_json(target)
         if isinstance(payload, dict):
             return _analysis_from_payload(payload)

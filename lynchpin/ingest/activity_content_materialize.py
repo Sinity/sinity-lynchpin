@@ -272,7 +272,11 @@ def materialize_activity_content(
     partition_store = ArtifactStore(output.with_name(f".{output.stem}.partitions"))
     usage_partition_store = ArtifactStore(usage_output.with_name(f".{usage_output.stem}.partitions"))
     input_signature = _input_signature(input_files)
-    if not bounded_request and partition_store.manifest_path.exists():
+    if (
+        not bounded_request
+        and partition_store.selection_is_readable()
+        and usage_partition_store.selection_is_readable()
+    ):
         metadata = partition_store.metadata
         if metadata.get("input_signature") == input_signature and output.exists():
             return _read_manifest(output.with_suffix(".manifest.json"))

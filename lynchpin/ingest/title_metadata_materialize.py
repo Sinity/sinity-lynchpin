@@ -33,7 +33,7 @@ def materialize_title_metadata(
     output.parent.mkdir(parents=True, exist_ok=True)
     store = ArtifactStore(output.with_name(f".{output.stem}.partitions"))
     input_signature = _input_signature(db)
-    if store.manifest_path.exists() and store.metadata.get("input_signature") == input_signature and output.exists():
+    if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and output.exists():
         return _read_manifest(output.with_suffix(".manifest.json"))
     _migrate_title_store(store, output, db)
 
