@@ -564,7 +564,29 @@ def _promote_github_context_with_retry(ndjson_path: Path) -> SubstratePromotionR
     while attempts < 1:
         attempts += 1
         try:
-            rows = _promote_github_context_to_substrate(ndjson_path)
+            from ..substrate.connection import (
+                bootstrap_candidate_generation,
+                candidate_generation,
+                in_candidate_generation,
+                substrate_path,
+            )
+
+            if in_candidate_generation():
+                rows = _promote_github_context_to_substrate(ndjson_path)
+            elif substrate_path().exists():
+                # GitHub context is a source product refresh, but its six
+                # derived tables are still part of the serving substrate.
+                # Stage those writes in the normal candidate-generation
+                # publication boundary so a Chisel prerequisite cannot mutate
+                # the canonical DuckDB file directly.
+                with candidate_generation():
+                    rows = _promote_github_context_to_substrate(ndjson_path)
+            else:
+                # An absent serving substrate is only legal through the
+                # explicit initial-recovery API.  Do not silently treat a
+                # missing canonical as an ordinary incremental promotion.
+                with bootstrap_candidate_generation():
+                    rows = _promote_github_context_to_substrate(ndjson_path)
             return SubstratePromotionResult(
                 rows=rows,
                 status="ok",
