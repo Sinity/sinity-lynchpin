@@ -8,6 +8,19 @@ from pathlib import Path
 from lynchpin import materialization
 
 
+def _result(name: str, *, changed: bool = False) -> materialization.MaterializationResult:
+    return materialization.MaterializationResult(
+        name=name,
+        status="updated" if changed else "ready",
+        changed=changed,
+        reason="fixture",
+        elapsed_ms=1,
+        product_paths=(),
+        source_high_water={},
+        coverage={},
+    )
+
+
 def _row(name: str, *, last: date | None, status: str = "ready") -> materialization.MaterializedDataset:
     return materialization.MaterializedDataset(
         name=name,
@@ -26,15 +39,14 @@ def _row(name: str, *, last: date | None, status: str = "ready") -> materializat
 
 def test_warm_read_is_a_noop_after_the_first_durable_check(monkeypatch) -> None:
     calls = 0
-    row = _row("activitywatch", last=date(2026, 8, 3))
 
-    def audit(_name: str, *, cfg):
+    def ensure(_name: str, **_kwargs):
         nonlocal calls
         calls += 1
-        return row
+        return _result("activitywatch")
 
-    monkeypatch.setattr(materialization, "_audit_one", audit)
-    monkeypatch.setattr(materialization, "_materializers", lambda: {})
+    materialization._READ_CONVERGENCE_CACHE.clear()
+    monkeypatch.setattr(materialization, "_ensure_materialized_typed", ensure)
     window = (date(2026, 8, 1), date(2026, 8, 3))
 
     first = materialization.ensure_materialized("activitywatch", window=window)
@@ -46,49 +58,30 @@ def test_warm_read_is_a_noop_after_the_first_durable_check(monkeypatch) -> None:
 
 
 def test_missing_tail_uses_only_the_bounded_tail(monkeypatch) -> None:
-    calls: list[tuple[date | None, date | None]] = []
     before = _row("activitywatch", last=date(2026, 8, 3))
-    after = _row("activitywatch", last=date(2026, 8, 6))
-    audits = iter((before, after))
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: before)
 
-    def audit(_name: str, *, cfg):
-        return next(audits)
-
-    def materialize(*, start=None, end=None):
-        calls.append((start, end))
-
-    monkeypatch.setattr(materialization, "_audit_one", audit)
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch": materialize})
-    result = materialization.ensure_materialized(
-        "activitywatch", window=(date(2026, 8, 1), date(2026, 8, 6))
+    plan = materialization.plan_read_convergence(
+        product="activitywatch",
+        window=(date(2026, 8, 1), date(2026, 8, 6)),
     )
 
-    assert result.status == "updated"
-    assert calls == [(date(2026, 8, 3), date(2026, 8, 6))]
+    assert plan.action == "converge"
+    assert plan.effective_window == (date(2026, 8, 3), date(2026, 8, 6))
 
 
 def test_identical_concurrent_reads_single_flight_the_materializer(monkeypatch) -> None:
     calls = 0
     lock = threading.Lock()
-    before = _row("activitywatch_event_index", last=date(2026, 8, 3))
-    after = _row("activitywatch_event_index", last=date(2026, 8, 6))
-    audits = iter((before, after))
-
-    def audit(_name: str, *, cfg):
-        return next(audits)
-
-    def materialize(*, start=None, end=None):
+    def ensure(name: str, **_kwargs):
         nonlocal calls
         with lock:
             calls += 1
         time.sleep(0.05)
+        return _result(name, changed=True)
 
-    monkeypatch.setattr(materialization, "_audit_one", audit)
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"activitywatch_event_index": materialize},
-    )
+    materialization._READ_CONVERGENCE_CACHE.clear()
+    monkeypatch.setattr(materialization, "_ensure_materialized_typed", ensure)
     window = (date(2026, 8, 1), date(2026, 8, 6))
     results = []
 

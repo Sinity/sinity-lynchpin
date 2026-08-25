@@ -18,12 +18,14 @@ import json
 import logging
 import os
 import sqlite3
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal
 from threading import Lock
+from time import monotonic
 
 from .core.cache import files_signature
 from .core.config import LynchpinConfig, get_config
@@ -121,7 +123,7 @@ from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
 from .sources.irc_raw import irc_events_path, irc_manifest_path, irc_raw_root
 from .sources.substack import substack_input_files, substack_manifest_path, substack_path
 from .materializers.production import (
-    ensure_materialized,  # noqa: F401
+    ensure_materialized as _ensure_materialized_typed,
     materializer_dependency_model,
     materializer_execution_waves,
     plan_materializations,
@@ -153,6 +155,7 @@ Status = DatasetStatus
 MaterializationStatus = Literal[
     "ready",
     "updated",
+    "pinned",
     "blocked",
     "degraded",
     "failed",
@@ -179,6 +182,18 @@ _TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
 # allow an explicit ``force`` call to opt into another rebuild.
 _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = False
 _MATERIALIZATION_RECEIPT_LOCK = Lock()
+READ_CONVERGENCE_FRESHNESS_SECONDS = 30.0
+READ_CONVERGENCE_MAX_DAYS = 31
+READ_CONVERGENCE_OVERLAP_DAYS = 7
+_READ_CONVERGENCE_OVERLAPS = {
+    "activitywatch": 2,
+    "activitywatch_event_index": 2,
+    "activity_content": 2,
+    "activitywatch_derived": 2,
+}
+_READ_CONVERGENCE_LOCK = Lock()
+_READ_CONVERGENCE_FLIGHTS: dict[str, Future["MaterializationResult"]] = {}
+_READ_CONVERGENCE_CACHE: dict[str, tuple[float, "MaterializationResult"]] = {}
 
 
 @dataclass(frozen=True)
@@ -269,6 +284,115 @@ class MaterializationResult:
         }
 
 
+@dataclass(frozen=True)
+class ReadConvergencePlan:
+    """Bounded decision shared by ordinary reads and scheduled maintenance."""
+
+    product: str
+    requested_window: tuple[date, date] | None
+    effective_window: tuple[date, date] | None
+    action: str
+    reason: str
+    source_fingerprint: str
+    predecessor_refresh_id: str | None = None
+    tail_start: date | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "product": self.product,
+            "requested_window": _window_payload(self.requested_window),
+            "effective_window": _window_payload(self.effective_window),
+            "action": self.action,
+            "reason": self.reason,
+            "source_fingerprint": self.source_fingerprint,
+            "predecessor_refresh_id": self.predecessor_refresh_id,
+            "tail_start": self.tail_start.isoformat() if self.tail_start else None,
+        }
+
+
+def ensure_materialized(
+    name: str,
+    *,
+    window: tuple[date, date] | None = None,
+    budget: MaterializationBudget = "inline",
+    force: bool = False,
+    cfg: LynchpinConfig | None = None,
+) -> MaterializationResult:
+    """Converge a normal read once per bounded freshness and input key."""
+    cfg = cfg or get_config()
+    if budget == "manual" or force:
+        return _ensure_materialized_once(
+            name, window=window, budget=budget, force=force, cfg=cfg
+        )
+    key = _read_convergence_key(name, window=window, cfg=cfg)
+    return _singleflight_read_convergence(
+        key,
+        lambda: _ensure_materialized_once(
+            name, window=window, budget=budget, force=force, cfg=cfg
+        ),
+    )
+
+
+def _ensure_materialized_once(
+    name: str,
+    *,
+    window: tuple[date, date] | None,
+    budget: MaterializationBudget,
+    force: bool,
+    cfg: LynchpinConfig,
+) -> MaterializationResult:
+    if name == "evidence_graph_substrate" and budget != "manual":
+        return _ensure_substrate_materialized_for_read(window=window)
+    return _ensure_materialized_typed(
+        name, window=window, budget=budget, force=force, cfg=cfg
+    )
+
+
+def _read_convergence_key(
+    name: str, *, window: tuple[date, date] | None, cfg: LynchpinConfig
+) -> str:
+    from .materializers import canonical_json
+
+    derived_root = getattr(cfg, "derived_root", getattr(cfg, "local_root", ""))
+    return canonical_json(
+        {
+            "product": name,
+            "window": _window_payload(window),
+            "derived_root": str(derived_root),
+        }
+    )
+
+
+def _singleflight_read_convergence(
+    key: str, operation: Any
+) -> MaterializationResult:
+    now = monotonic()
+    with _READ_CONVERGENCE_LOCK:
+        cached = _READ_CONVERGENCE_CACHE.get(key)
+        if cached is not None and now - cached[0] < READ_CONVERGENCE_FRESHNESS_SECONDS:
+            return replace(cached[1], reason=f"bounded freshness reuse: {cached[1].reason}")
+        flight = _READ_CONVERGENCE_FLIGHTS.get(key)
+        leader = flight is None
+        if leader:
+            flight = Future()
+            _READ_CONVERGENCE_FLIGHTS[key] = flight
+    assert flight is not None
+    if not leader:
+        return flight.result()
+    try:
+        result = operation()
+    except BaseException as exc:
+        flight.set_exception(exc)
+        with _READ_CONVERGENCE_LOCK:
+            _READ_CONVERGENCE_FLIGHTS.pop(key, None)
+        raise
+    with _READ_CONVERGENCE_LOCK:
+        _READ_CONVERGENCE_CACHE[key] = (monotonic(), result)
+        _READ_CONVERGENCE_FLIGHTS.pop(key, None)
+    flight.set_result(result)
+    return result
+
+
 def audit_materialization(
     *,
     cfg: LynchpinConfig | None = None,
@@ -343,6 +467,349 @@ def _dataset_builders() -> dict[str, Any]:
         "code_snapshots": _code_snapshots_dataset,
         "ambient_intelligence": _ambient_intelligence_dataset,
     }
+
+
+def _dataset_fingerprint(row: MaterializedDataset) -> str:
+    import hashlib
+
+    from .materializers import canonical_json
+
+    payload = {
+        "name": row.name,
+        "status": row.status,
+        "coverage": materialized_dataset_coverage(row),
+        "source_high_water": _source_high_water(row),
+    }
+    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+
+
+def _substrate_fingerprint(conn: Any) -> str:
+    import hashlib
+
+    from .materializers import canonical_json
+
+    rows = conn.execute(
+        "SELECT source, status, reason, row_count, window_start, window_end, "
+        "recorded_at FROM substrate_source_status "
+        "ORDER BY source, recorded_at, refresh_id"
+    ).fetchall()
+    return hashlib.sha256(canonical_json(rows).encode()).hexdigest()
+
+
+def _substrate_build_for_window(
+    conn: Any, window: tuple[date, date]
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT refresh_id, start_date, end_date, materialized_at "
+        "FROM evidence_graph_build "
+        "WHERE start_date <= ? AND end_date >= ? AND len(projects) = 0 "
+        "ORDER BY end_date DESC, materialized_at DESC LIMIT 1",
+        [window[0], window[1]],
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "refresh_id": str(row[0]),
+        "start": row[1],
+        "end": row[2],
+        "materialized_at": row[3],
+    }
+
+
+def _substrate_predecessor(
+    conn: Any, window: tuple[date, date]
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT refresh_id, start_date, end_date, materialized_at "
+        "FROM evidence_graph_build "
+        "WHERE start_date = ? AND end_date > ? AND end_date < ? "
+        "AND len(projects) = 0 "
+        "ORDER BY end_date DESC, materialized_at DESC LIMIT 1",
+        [window[0], window[0], window[1]],
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "refresh_id": str(row[0]),
+        "start": row[1],
+        "end": row[2],
+        "materialized_at": row[3],
+    }
+
+
+def plan_read_convergence(
+    *,
+    product: str = "evidence_graph_substrate",
+    window: tuple[date, date] | None = None,
+    cfg: LynchpinConfig | None = None,
+) -> ReadConvergencePlan:
+    """Return the bounded convergence decision used by reads and maintenance."""
+    cfg = cfg or get_config()
+    if product != "evidence_graph_substrate":
+        row = _audit_one(product, cfg=cfg)
+        if row.status == "ready" and _materialized_enough_for_window(row, window):
+            return ReadConvergencePlan(
+                product,
+                window,
+                None,
+                "skip",
+                "durable coverage and source fingerprint are current",
+                _dataset_fingerprint(row),
+            )
+        effective = window
+        if window is not None and row.last_date is not None:
+            overlap = _READ_CONVERGENCE_OVERLAPS.get(
+                product, READ_CONVERGENCE_OVERLAP_DAYS
+            )
+            effective = (
+                max(window[0], min(row.last_date, window[1] - timedelta(days=overlap))),
+                window[1],
+            )
+        return ReadConvergencePlan(
+            product,
+            window,
+            effective,
+            "converge",
+            row.reason,
+            _dataset_fingerprint(row),
+        )
+
+    from .substrate.connection import generation_refresh_id, serving_generation
+
+    if window is None:
+        try:
+            with serving_generation() as generation:
+                refresh_id = generation_refresh_id(generation.database_path)
+        except Exception as exc:
+            return ReadConvergencePlan(
+                product, None, None, "blocked", str(exc), "unavailable"
+            )
+        return ReadConvergencePlan(
+            product,
+            None,
+            None,
+            "inspect",
+            "the serving generation is already the bounded read",
+            refresh_id or "unavailable",
+        )
+
+    try:
+        with serving_generation() as generation:
+            conn = generation.connection
+            fingerprint = _substrate_fingerprint(conn)
+            build = _substrate_build_for_window(conn, window)
+            stale = build is not None and bool(
+                conn.execute(
+                    "SELECT 1 FROM substrate_source_status "
+                    "WHERE recorded_at > ? AND refresh_id <> ? LIMIT 1",
+                    [build["materialized_at"], build["refresh_id"]],
+                ).fetchone()
+            )
+            if build is not None and not stale:
+                return ReadConvergencePlan(
+                    product,
+                    window,
+                    None,
+                    "skip",
+                    "durable graph coverage and source fingerprint are current",
+                    fingerprint,
+                )
+            predecessor = _substrate_predecessor(conn, window)
+    except Exception as exc:
+        return ReadConvergencePlan(
+            product,
+            window,
+            None,
+            "blocked",
+            f"substrate coverage inspection failed: {exc}",
+            "unavailable",
+        )
+    if predecessor is None:
+        return ReadConvergencePlan(
+            product,
+            window,
+            None,
+            "blocked",
+            "normal reads require an existing compatible historical base",
+            fingerprint,
+        )
+    if window[1] - predecessor["end"] > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
+        return ReadConvergencePlan(
+            product,
+            window,
+            None,
+            "blocked",
+            f"requested tail exceeds the {READ_CONVERGENCE_MAX_DAYS}-day read budget",
+            fingerprint,
+            predecessor_refresh_id=predecessor["refresh_id"],
+        )
+    tail_start = max(
+        window[0], predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS)
+    )
+    return ReadConvergencePlan(
+        product,
+        window,
+        window,
+        "converge",
+        "compatible graph predecessor has a bounded missing or stale tail",
+        fingerprint,
+        predecessor_refresh_id=predecessor["refresh_id"],
+        tail_start=tail_start,
+    )
+
+
+def _execute_substrate_convergence(plan: ReadConvergencePlan) -> str:
+    from .cli.substrate_snapshot import _snapshot_refresh_id
+    from .cli.substrate_snapshot import main as snapshot_main
+    from .substrate.connection import bind_candidate_publication, candidate_generation
+
+    if plan.tail_start is None or plan.requested_window is None:
+        raise ValueError("substrate convergence plan is incomplete")
+    start, end = plan.requested_window
+    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
+    with candidate_generation(receipt_refresh_id=refresh_id) as generation:
+        code = snapshot_main(
+            [
+                "--start",
+                start.isoformat(),
+                "--end",
+                end.isoformat(),
+                "--incremental-tail-start",
+                plan.tail_start.isoformat(),
+                "--existing-products",
+                "--graph-only",
+                "--progress",
+                "quiet",
+            ]
+        )
+        if code:
+            raise RuntimeError(f"bounded substrate convergence exited with code {code}")
+        bind_candidate_publication(generation, refresh_id)
+    return refresh_id
+
+
+def _ensure_substrate_materialized_for_read(
+    *, window: tuple[date, date] | None
+) -> MaterializationResult:
+    from .substrate.connection import substrate_path
+
+    started = datetime.now(timezone.utc)
+    plan = plan_read_convergence(window=window)
+    if plan.action != "converge":
+        status: MaterializationStatus = (
+            "ready" if plan.action in {"skip", "inspect"} else "blocked"
+        )
+        return MaterializationResult(
+            plan.product,
+            status,
+            False,
+            plan.reason,
+            _elapsed_ms(started),
+            (substrate_path(),),
+            {"source_fingerprint": plan.source_fingerprint},
+            {"requested_window": _window_payload(window), "action": plan.action},
+        )
+    try:
+        refresh_id = _execute_substrate_convergence(plan)
+    except Exception as exc:
+        return MaterializationResult(
+            plan.product,
+            "failed",
+            False,
+            str(exc),
+            _elapsed_ms(started),
+            (substrate_path(),),
+            {"source_fingerprint": plan.source_fingerprint},
+            {"requested_window": _window_payload(window), "action": plan.action},
+            (type(exc).__name__,),
+        )
+    return MaterializationResult(
+        plan.product,
+        "updated",
+        True,
+        "bounded substrate tail converged and one generation was published",
+        _elapsed_ms(started),
+        (substrate_path(),),
+        {
+            "source_fingerprint": plan.source_fingerprint,
+            "refresh_id": refresh_id,
+        },
+        {"requested_window": _window_payload(window), "action": plan.action},
+    )
+
+
+def run_read_convergence(
+    plan: ReadConvergencePlan,
+    *,
+    cfg: LynchpinConfig | None = None,
+    caller: str = "scheduled_convergence",
+) -> dict[str, Any]:
+    """Execute a bounded plan and retain one diagnostic freshness receipt."""
+    if plan.action == "skip":
+        result = MaterializationResult(
+            plan.product,
+            "ready",
+            False,
+            plan.reason,
+            0,
+            (),
+            {"source_fingerprint": plan.source_fingerprint},
+            {"requested_window": _window_payload(plan.requested_window)},
+        )
+    elif plan.action == "blocked":
+        result = MaterializationResult(
+            plan.product,
+            "blocked",
+            False,
+            plan.reason,
+            0,
+            (),
+            {"source_fingerprint": plan.source_fingerprint},
+            {"requested_window": _window_payload(plan.requested_window)},
+        )
+    elif plan.product == "evidence_graph_substrate":
+        result = _ensure_substrate_materialized_for_read(window=plan.requested_window)
+    else:
+        result = ensure_materialized(
+            plan.product, window=plan.effective_window, cfg=cfg, force=True
+        )
+    from .core.freshness import FreshnessReceipt, record_receipt
+
+    receipt_id = f"convergence:{plan.product}:{datetime.now(timezone.utc).isoformat()}"
+    record_receipt(
+        FreshnessReceipt(
+            receipt_id=receipt_id,
+            target=f"materialization:{plan.product}",
+            decision="refresh_sync" if result.changed else result.status,
+            caller=caller,
+            reason=result.reason,
+            requested_start=(
+                plan.requested_window[0].isoformat() if plan.requested_window else None
+            ),
+            requested_end=(
+                plan.requested_window[1].isoformat() if plan.requested_window else None
+            ),
+            snapshot_refresh_id=(
+                result.source_high_water.get("refresh_id")
+                if isinstance(result.source_high_water.get("refresh_id"), str)
+                else None
+            ),
+            artifact_paths=tuple(str(path) for path in result.product_paths),
+            artifact_statuses=(
+                {
+                    "status": result.status,
+                    "changed": result.changed,
+                    "source_fingerprint": plan.source_fingerprint,
+                },
+            ),
+            created_at_utc=datetime.now(timezone.utc).isoformat(),
+            elapsed_ms=result.elapsed_ms,
+            caveats=result.diagnostics,
+        )
+    )
+    return {"plan": plan.to_json(), "result": result.to_json(), "receipt_id": receipt_id}
+
+
 def substrate_materialization_snapshot(
     path: Path,
     *,

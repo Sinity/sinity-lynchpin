@@ -342,8 +342,9 @@ def test_promote_sigterm_archives_candidate_and_returns_signal_status(
     assert candidate_path is not None
     assert not candidate_path.exists()
     assert not candidate_path.with_name(f"{candidate_path.name}.wal").exists()
-    assert list(candidate_path.parent.glob(f"{candidate_path.name}.cancelled-*"))
-    assert list(candidate_path.parent.glob(f"{candidate_path.name}.wal.cancelled-*"))
+    receipts = list(candidate_path.parent.glob("candidate-receipt-*.json"))
+    assert len(receipts) == 1
+    assert json.loads(receipts[0].read_text())["status"] == "interrupted"
     assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
     assert connection.generation_refresh_id(canonical) == "prior"
     assert connection.generation_refresh_id(connection.substrate_read_snapshot_path()) == "prior"
@@ -443,7 +444,10 @@ def test_snapshot_daily_signals_ensures_products_before_promoting(monkeypatch) -
     )
     monkeypatch.setattr("lynchpin.sources.activity_content.iter_activity_content_days", fake_iter_activity_content_days)
     monkeypatch.setattr("lynchpin.sources.activity_content.iter_activity_title_usage", fake_iter_activity_title_usage)
-    monkeypatch.setattr("lynchpin.sources.title_metadata.title_metadata_path", lambda: Path("fixture.duckdb"))
+    monkeypatch.setattr(
+        "lynchpin.sources.title_metadata.title_metadata_path",
+        lambda _root=None: Path("fixture.duckdb"),
+    )
     monkeypatch.setattr("lynchpin.substrate.connection.substrate_path", lambda: Path("fixture.duckdb"))
     monkeypatch.setattr("lynchpin.substrate.connection.apply_schema", lambda _conn: None)
     monkeypatch.setattr("lynchpin.substrate.connection.connect", lambda *_args, **_kwargs: Connect())
