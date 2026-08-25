@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import logging
+import os
 from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
@@ -241,7 +242,9 @@ def _current_state_refresh_id(
     projects: Sequence[str] | None,
 ) -> str:
     project_key = ",".join(sorted(projects or ())) if projects else "all"
-    return f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
+    logical_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
+    generation = os.environ.get("LYNCHPIN_GRAPH_GENERATION")
+    return f"{logical_id}:generation:{generation}" if generation else logical_id
 
 
 def materialize_evidence_graph(

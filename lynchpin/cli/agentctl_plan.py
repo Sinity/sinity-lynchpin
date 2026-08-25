@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from dataclasses import replace
@@ -211,25 +212,34 @@ def run_promotion_node(
     from lynchpin.cli.substrate_snapshot import main as snapshot_main
     from lynchpin.substrate.connection import bind_candidate_publication, candidate_generation
 
-    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
-    with candidate_generation(receipt_refresh_id=refresh_id) as generation:
-        code = snapshot_main(
-            [
-                "--start",
-                start.isoformat(),
-                "--end",
-                end.isoformat(),
-                "--incremental-tail-start",
-                tail_start.isoformat(),
-                "--existing-products",
-                "--graph-only",
-                "--progress",
-                "quiet",
-            ]
-        )
-        if code:
-            raise RuntimeError(f"substrate promotion exited with code {code}")
-        bind_candidate_publication(generation, refresh_id)
+    environment_key = "LYNCHPIN_GRAPH_GENERATION"
+    previous_generation = os.environ.get(environment_key)
+    os.environ[environment_key] = input_generation[:16]
+    try:
+        refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
+        with candidate_generation(receipt_refresh_id=refresh_id) as generation:
+            code = snapshot_main(
+                [
+                    "--start",
+                    start.isoformat(),
+                    "--end",
+                    end.isoformat(),
+                    "--incremental-tail-start",
+                    tail_start.isoformat(),
+                    "--existing-products",
+                    "--graph-only",
+                    "--progress",
+                    "quiet",
+                ]
+            )
+            if code:
+                raise RuntimeError(f"substrate promotion exited with code {code}")
+            bind_candidate_publication(generation, refresh_id)
+    finally:
+        if previous_generation is None:
+            os.environ.pop(environment_key, None)
+        else:
+            os.environ[environment_key] = previous_generation
     return {
         "schema": "lynchpin.promotion-node-result.v1",
         "status": "succeeded",

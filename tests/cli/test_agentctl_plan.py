@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import contextmanager
 
 
 def _step(
@@ -165,3 +166,50 @@ def test_product_node_rejects_a_stale_scheduled_generation(monkeypatch) -> None:
             planned_dependencies=False,
             window=(date(2026, 8, 24), date(2026, 8, 26)),
         )
+
+
+def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
+    from lynchpin.cli import agentctl_plan, substrate_snapshot
+    from lynchpin.substrate import connection
+
+    observed: dict[str, object] = {}
+
+    @contextmanager
+    def candidate_generation(*, receipt_refresh_id: str):
+        observed["receipt_refresh_id"] = receipt_refresh_id
+        yield "candidate"
+
+    monkeypatch.setattr(connection, "candidate_generation", candidate_generation)
+    monkeypatch.setattr(
+        connection,
+        "bind_candidate_publication",
+        lambda generation, refresh_id: observed.update(
+            generation=generation, publication_refresh_id=refresh_id
+        ),
+    )
+    monkeypatch.setattr(
+        substrate_snapshot,
+        "main",
+        lambda _argv: observed.update(
+            snapshot_refresh_id=substrate_snapshot._snapshot_refresh_id(
+                start=date(2026, 8, 20), end=date(2026, 8, 27), projects=()
+            )
+        )
+        or 0,
+    )
+
+    result = agentctl_plan.run_promotion_node(
+        start=date(2026, 8, 20),
+        end=date(2026, 8, 27),
+        tail_start=date(2026, 8, 25),
+        input_generation="abcdef0123456789remainder",
+    )
+
+    expected = "current-state:2026-08-20:2026-08-27:all:generation:abcdef0123456789"
+    assert observed == {
+        "receipt_refresh_id": expected,
+        "snapshot_refresh_id": expected,
+        "generation": "candidate",
+        "publication_refresh_id": expected,
+    }
+    assert result["refresh_id"] == expected
