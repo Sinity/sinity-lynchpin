@@ -26,6 +26,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import signal
 import struct
 import threading
@@ -42,6 +43,11 @@ SUBSTRATE_VERSION = 44
 
 log = logging.getLogger(__name__)
 _CANCELLATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+_CANDIDATE_RECEIPT_PREFIX = "candidate-receipt-"
+_CANDIDATE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_PREVIOUS_TOKEN_RE = re.compile(
+    r"^previous-[0-9]{8}T[0-9]{6}[+-][0-9]{4}-[0-9a-f]{32}$"
+)
 
 
 class CandidateGenerationInterrupted(KeyboardInterrupt):
@@ -219,7 +225,7 @@ def _candidate_artifacts(candidate: Path) -> tuple[Path, ...]:
 
 
 def _archive_candidate(candidate: Path, label: str) -> tuple[Path, ...]:
-    """Preserve an abandoned candidate and every adjacent publication sidecar."""
+    """Preserve a non-candidate diagnostic artifact such as a corrupt database."""
     archived = tuple(
         artifact
         for path in _candidate_artifacts(candidate)
@@ -234,16 +240,86 @@ def _archive_candidate(candidate: Path, label: str) -> tuple[Path, ...]:
     return archived
 
 
+def _candidate_path(canonical: Path, attempt_id: str) -> Path:
+    if not _CANDIDATE_ID_RE.fullmatch(attempt_id):
+        raise CandidateGenerationRejected("invalid candidate attempt identity")
+    return canonical.with_name(f"{canonical.stem}.candidate-{attempt_id}{canonical.suffix}")
+
+
+def _valid_candidate_path(canonical: Path, path: Path) -> bool:
+    return (
+        path.parent == canonical.parent
+        and not path.is_symlink()
+        and path.name.startswith(f"{canonical.stem}.candidate-")
+        and path.suffix == canonical.suffix
+        and _CANDIDATE_ID_RE.fullmatch(path.stem.rsplit("-", 1)[-1]) is not None
+    )
+
+
+def _write_candidate_receipt(
+    canonical: Path,
+    *,
+    attempt_id: str,
+    logical_refresh_id: str | None,
+    status: str,
+    error: BaseException | None,
+    phase_evidence: list[dict[str, object]] | None = None,
+) -> Path:
+    """Persist bounded evidence before removing an abandoned candidate."""
+    receipt = canonical.with_name(f"{_CANDIDATE_RECEIPT_PREFIX}{attempt_id}.json")
+    payload = {
+        "schema": "lynchpin.substrate-candidate-receipt.v1",
+        "candidate_attempt_id": attempt_id,
+        "logical_refresh_id": logical_refresh_id,
+        "status": status,
+        "error": f"{type(error).__name__}: {error}" if error is not None else None,
+        "phase_evidence": (phase_evidence or [])[-16:],
+    }
+    temporary = receipt.with_name(f".{receipt.name}.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    _fsync_file(temporary)
+    _replace(temporary, receipt)
+    _fsync_directory(receipt.parent)
+    return receipt
+
+
+def _remove_candidate(candidate: Path, canonical: Path) -> tuple[Path, ...]:
+    """Remove only a validated candidate and its known sidecars."""
+    if not _valid_candidate_path(canonical, candidate):
+        raise CandidateGenerationRejected("candidate cleanup path is outside the substrate directory")
+    removed: list[Path] = []
+    for artifact in _candidate_artifacts(candidate):
+        if artifact.exists():
+            artifact.unlink()
+            removed.append(artifact)
+    if removed:
+        _fsync_directory(canonical.parent)
+    return tuple(removed)
+
+
+def _recover_interrupted_candidate(canonical: Path, candidate: Path) -> None:
+    """Extract a small receipt and discard an unclean candidate on startup."""
+    attempt_id = candidate.stem.rsplit("-", 1)[-1]
+    try:
+        _write_candidate_receipt(
+            canonical,
+            attempt_id=attempt_id,
+            logical_refresh_id=None,
+            status="interrupted",
+            error=None,
+        )
+        _remove_candidate(candidate, canonical)
+    except OSError:
+        log.exception("could not clean interrupted candidate: %s", candidate)
+
+
 def _archive_interrupted_candidates(canonical: Path) -> None:
-    """Archive candidates left behind when a process exits without unwinding."""
+    """Bound candidates left behind when a process exits without unwinding."""
     pattern = f"{canonical.stem}.candidate-*{canonical.suffix}"
     for candidate in canonical.parent.glob(pattern):
-        archived = _archive_candidate(candidate, "interrupted")
-        if archived:
-            log.warning(
-                "recovered interrupted candidate generation while retaining canonical generation: %s",
-                canonical,
-            )
+        if _valid_candidate_path(canonical, candidate):
+            _recover_interrupted_candidate(canonical, candidate)
+            log.warning("removed interrupted candidate while retaining canonical generation: %s", canonical)
 
 
 def _raise_candidate_interruption(signal_number: int, _frame: object) -> None:
@@ -296,9 +372,10 @@ def _defer_candidate_interruptions() -> Iterator[list[int]]:
             signal.signal(signal_number, previous_handler)
 
 
-def _archive_name(path: Path, label: str) -> Path:
+def _archive_name(path: Path, label: str, token: str | None = None) -> Path:
+    suffix = token or f"{datetime.now().astimezone():%Y%m%dT%H%M%S%z}-{uuid4().hex}"
     return path.with_name(
-        f"{path.name}.{label}-{datetime.now().astimezone():%Y%m%dT%H%M%S%z}-{uuid4().hex}"
+        f"{path.name}.{label}-{suffix}"
     )
 
 
@@ -464,14 +541,136 @@ def _stable_publication_read(canonical: Path) -> Iterator[None]:
 def _publication_backups(targets: tuple[Path, ...]) -> dict[Path, Path]:
     """Hard-link serving artifacts before any atomic replacement occurs."""
     backups: dict[Path, Path] = {}
+    token = f"{datetime.now().astimezone():%Y%m%dT%H%M%S%z}-{uuid4().hex}"
     for target in targets:
         if target.exists():
-            backup = _archive_name(target, "previous")
+            backup = _archive_name(target, "previous", token)
             os.link(target, backup)
             backups[target] = backup
     if backups:
         _fsync_directory(targets[0].parent)
     return backups
+
+
+def _previous_artifact(canonical: Path, path: Path) -> tuple[str, str] | None:
+    """Return (role, token) only for a canonical, adjacent previous artifact."""
+    if path.parent != canonical.parent or path.is_symlink():
+        return None
+    roles = {
+        canonical.name: "database",
+        canonical.with_suffix(".read-snapshot.duckdb").name: "snapshot",
+        canonical.with_suffix(".manifest.json").name: "manifest",
+    }
+    for base_name, role in roles.items():
+        prefix = f"{base_name}."
+        if path.name.startswith(prefix):
+            token = path.name[len(prefix) :]
+            if _PREVIOUS_TOKEN_RE.fullmatch(token):
+                return role, token.removeprefix("previous-")
+    return None
+
+
+def substrate_retention_census(path: Path | str | None = None) -> dict[str, object]:
+    """Describe eligible previous triples without changing the substrate."""
+    canonical = _substrate_path_value(path)
+    groups: dict[str, dict[str, Path]] = {}
+    invalid: list[str] = []
+    eligible: list[str] = []
+    for entry in canonical.parent.iterdir():
+        parsed = _previous_artifact(canonical, entry)
+        if parsed is None:
+            continue
+        role, token = parsed
+        groups.setdefault(token, {})[role] = entry
+
+    triples: list[dict[str, object]] = []
+    for token, artifacts in groups.items():
+        database = artifacts.get("database")
+        complete = all(role in artifacts for role in ("database", "snapshot", "manifest"))
+        verified = database is not None and generation_refresh_id(database) is not None
+        eligible.extend(str(p) for p in artifacts.values())
+        if not complete or not verified:
+            invalid.extend(str(p) for p in artifacts.values())
+            continue
+        assert database is not None
+        refresh_id = generation_refresh_id(database)
+        triples.append(
+            {
+                "token": token,
+                "refresh_id": refresh_id,
+                "artifacts": {role: str(artifacts[role]) for role in artifacts},
+            }
+        )
+    triples.sort(key=lambda item: str(item["token"]), reverse=True)
+    return {
+        "canonical": str(canonical),
+        "serving": [
+            str(canonical),
+            str(canonical.with_suffix(".read-snapshot.duckdb")),
+            str(canonical.with_suffix(".manifest.json")),
+        ],
+        "verified_previous": triples,
+        "eligible_previous": eligible,
+        "invalid_previous": invalid,
+    }
+
+
+def substrate_retention_plan(
+    path: Path | str | None = None, *, retain_failed: bool = False
+) -> dict[str, object]:
+    """Return the bounded deletion plan; this function never deletes files."""
+    canonical = _substrate_path_value(path)
+    census = substrate_retention_census(canonical)
+    verified = census["verified_previous"]
+    assert isinstance(verified, list)
+    keep = verified[:1]
+    eligible = census["eligible_previous"]
+    assert isinstance(eligible, list)
+    delete: list[str] = []
+    kept_paths = {
+        str(value)
+        for triple in keep
+        for value in (triple["artifacts"].values() if isinstance(triple, dict) else ())
+    }
+    delete.extend(
+        value
+        for value in eligible
+        if isinstance(value, str) and value not in kept_paths
+    )
+    return {
+        "canonical": str(canonical),
+        "retain_failed": retain_failed,
+        "keep_previous": keep,
+        "delete": delete,
+        "invalid_not_eligible": [],
+        "dry_run": True,
+    }
+
+
+def apply_substrate_retention(
+    path: Path | str | None = None, *, dry_run: bool = True, retain_failed: bool = False
+) -> dict[str, object]:
+    """Apply a validated bounded retention plan, or return it as a dry run."""
+    canonical = _substrate_path_value(path)
+    if dry_run:
+        return substrate_retention_plan(canonical, retain_failed=retain_failed)
+    with _publication_write_lock(canonical):
+        _reconcile_publication(canonical)
+        plan = substrate_retention_plan(canonical, retain_failed=retain_failed)
+        deleted: list[str] = []
+        planned_delete = plan["delete"]
+        assert isinstance(planned_delete, list)
+        for value in planned_delete:
+            target = Path(str(value))
+            if target.parent != canonical.parent or _previous_artifact(canonical, target) is None:
+                raise CandidateGenerationRejected("retention plan contained an unsafe path")
+            target.unlink(missing_ok=True)
+            deleted.append(str(target))
+        if deleted:
+            _fsync_directory(canonical.parent)
+        plan["deleted"] = deleted
+        plan["dry_run"] = False
+        return plan
 
 
 def _rollback_publication(
@@ -806,14 +1005,16 @@ def _latest_verified_generation(canonical: Path) -> Path:
     import duckdb
 
     candidates = [canonical]
-    candidates.extend(
-        path
-        for path in canonical.parent.glob(f"{canonical.stem}*.duckdb*")
-        if path.is_file()
-        and path != canonical
-        and ".read-snapshot.duckdb" not in path.name
-        and ".wal" not in path.name
-    )
+    census = substrate_retention_census(canonical)
+    verified_previous = census["verified_previous"]
+    assert isinstance(verified_previous, list)
+    for triple in verified_previous:
+        assert isinstance(triple, dict)
+        artifacts = triple["artifacts"]
+        assert isinstance(artifacts, dict)
+        database = artifacts.get("database")
+        if database is not None:
+            candidates.append(Path(str(database)))
     verified: list[tuple[datetime, Path]] = []
     for path in candidates:
         refresh_id = generation_refresh_id(path)
@@ -1016,6 +1217,7 @@ def candidate_generation(
     rebuild_indexes: bool = False,
     bootstrap: bool = False,
     receipt_refresh_id: str | None = None,
+    retain_failed: bool = False,
 ) -> Iterator[CandidateGeneration]:
     """Stage a complete materialization before replacing the serving generation.
 
@@ -1031,11 +1233,10 @@ def candidate_generation(
     """
     canonical = _substrate_path_value()
     refresh_id = uuid4().hex
-    candidate = canonical.with_name(
-        f"{canonical.stem}.candidate-{refresh_id}{canonical.suffix}"
-    )
+    candidate = _candidate_path(canonical, refresh_id)
     token = None
     published = False
+    generation: CandidateGeneration | None = None
     with _promotion_lock(canonical), _candidate_interruption_handlers():
         try:
             with _publication_write_lock(canonical):
@@ -1162,18 +1363,43 @@ def candidate_generation(
                     {"name": "published_artifacts", "unit": "artifacts", "value": 3},
                 ),  # type: ignore[arg-type]
             )
+            # Publication has completed atomically; only now may older rollback
+            # triples be removed. The census and path validation protect all
+            # serving names from this cleanup.
+            apply_substrate_retention(generation.canonical, dry_run=False)
             if deferred:
                 raise CandidateGenerationInterrupted(deferred[0])
         except BaseException as exc:
+            if isinstance(exc, CandidateGenerationInterrupted):
+                status = "interrupted"
+            elif isinstance(exc, Exception):
+                status = "failed"
+            else:
+                status = "cancelled"
+            attempt_id = generation.refresh_id if generation is not None else refresh_id
+            logical_refresh_id = (
+                (
+                    generation.expected_refresh_id or generation.receipt_refresh_id
+                    if generation is not None
+                    else receipt_refresh_id
+                )
+            )
+            _write_candidate_receipt(
+                canonical,
+                attempt_id=attempt_id,
+                logical_refresh_id=logical_refresh_id,
+                status=status,
+                error=exc,
+                phase_evidence=generation.phase_evidence if generation is not None else None,
+            )
+            if not published and not retain_failed:
+                _remove_candidate(candidate, canonical)
             if published:
                 log.warning(
                     "candidate generation was published before %s; canonical generation is serving: %s",
                     type(exc).__name__,
                     canonical,
                 )
-            else:
-                label = "failed" if isinstance(exc, Exception) else "cancelled"
-                _archive_candidate(candidate, label)
             raise
         finally:
             if token is not None:
@@ -1182,10 +1408,14 @@ def candidate_generation(
 
 @contextmanager
 def bootstrap_candidate_generation(
-    *, receipt_refresh_id: str | None = None
+    *, receipt_refresh_id: str | None = None, retain_failed: bool = False
 ) -> Iterator[CandidateGeneration]:
     """Explicit initial/recovery API for an empty serving-artifact set only."""
-    with candidate_generation(bootstrap=True, receipt_refresh_id=receipt_refresh_id) as generation:
+    with candidate_generation(
+        bootstrap=True,
+        receipt_refresh_id=receipt_refresh_id,
+        retain_failed=retain_failed,
+    ) as generation:
         yield generation
 
 
