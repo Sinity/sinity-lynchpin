@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..materialization import MaterializationResult
 
 _INCREMENTAL_MAX_CATCHUP_DAYS = 31
+_MAINTENANCE_DEBOUNCE_SECONDS = 15 * 60
 _INCREMENTAL_OVERLAP_DAYS: dict[str, int] = {
     "activitywatch": 2,
     "activitywatch_event_index": 2,
@@ -278,6 +279,11 @@ def plan_materializations(
                 action, reason = "check-only", "incremental maintenance requires an explicit full repair before this product is historically verified"
             elif row.status == "ready" and not row.tail_stale:
                 action, reason = "skip", "canonical product is ready"
+            elif _recently_materialized(row):
+                action, reason = (
+                    "skip",
+                    "canonical product was refreshed within the maintenance debounce window",
+                )
             elif spec.window_policy == "unbounded":
                 action, reason = "check-only", "incremental maintenance requires an explicit repair for this unwindowed materializer"
             else:
@@ -314,6 +320,19 @@ def plan_materializations(
                 for step in steps
             ]
     return steps
+
+
+def _recently_materialized(row: Any) -> bool:
+    """Prevent a live tail from invalidating the run that just produced it."""
+    mtimes = [
+        path.stat().st_mtime
+        for path in row.materialized_paths
+        if path.exists() and path.is_file()
+    ]
+    if not mtimes:
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - max(mtimes)
+    return 0 <= age_seconds <= _MAINTENANCE_DEBOUNCE_SECONDS
 
 
 def materializer_dependency_model(plan: Iterable[PlanStep]) -> tuple[PlanStep, ...]:

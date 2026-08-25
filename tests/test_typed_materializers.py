@@ -187,3 +187,26 @@ def test_resource_and_dependency_order_is_deterministic() -> None:
     plan = ConvergencePlanner(specs).plan(ConvergenceRequest(("z", "b")))
     waves = materializer_execution_waves(tuple(replace_step(step, action="materialize") for step in plan.steps))
     assert [[step.product for step in wave] for wave in waves] == [["a", "b"], ["z"]]
+
+
+def test_maintenance_debounce_uses_the_newest_product_output(tmp_path) -> None:
+    from os import utime
+    from time import time
+    from types import SimpleNamespace
+
+    from lynchpin.materializers.production import _recently_materialized
+
+    stale = tmp_path / "stale.json"
+    recent = tmp_path / "recent.json"
+    stale.write_text("{}")
+    recent.write_text("{}")
+    old = time() - 3600
+    utime(stale, (old, old))
+
+    assert _recently_materialized(
+        SimpleNamespace(materialized_paths=(stale, recent))
+    )
+    utime(recent, (old, old))
+    assert not _recently_materialized(
+        SimpleNamespace(materialized_paths=(stale, recent))
+    )
