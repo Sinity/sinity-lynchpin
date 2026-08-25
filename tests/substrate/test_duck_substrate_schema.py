@@ -186,7 +186,7 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
     from datetime import date
 
     from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.personal import promote_personal_daily_signals
+    from lynchpin.substrate.personal import load_personal_daily_signals, promote_personal_daily_signals
 
     predecessor_rows = [
         ("webhistory", date(2026, 5, 1), "visit_count", 10.0, {}),
@@ -228,10 +228,13 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
             "SELECT source, date, metric, value, dimensions FROM personal_daily_signal "
             "WHERE refresh_id = 'full' ORDER BY date, metric"
         ).fetchall()
+        logical = load_personal_daily_signals(conn, refresh_id="incremental")
 
-    assert before_rerun == after_rerun == full
-    assert before_rerun[0][1] == date(2026, 5, 1)
-    assert before_rerun[1][3] == 55.0
+    assert before_rerun == after_rerun
+    assert len(before_rerun) == 2
+    assert logical == [row[:5] for row in full]
+    assert logical[0][1] == date(2026, 5, 1)
+    assert logical[1][3] == 55.0
 
 
 def test_apply_schema_recreates_on_version_bump(tmp_path: Path) -> None:
@@ -260,7 +263,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 44
+    assert SUBSTRATE_VERSION == 45
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -295,7 +298,71 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("44",)
+        ).fetchone() == ("45",)
+
+
+def test_signal_lineage_rejects_cycles_and_missing_predecessors(tmp_path: Path) -> None:
+    from datetime import date
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import load_personal_daily_signals
+
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO substrate_product_lineage "
+            "(product, refresh_id, predecessor_refresh_id, replacement_start, mode) "
+            "VALUES ('personal_daily_signals', 'a', 'b', ?, 'incremental'), "
+            "('personal_daily_signals', 'b', 'a', ?, 'incremental')",
+            [date(2026, 1, 1), date(2026, 1, 1)],
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            load_personal_daily_signals(conn, refresh_id="a")
+        conn.execute("DELETE FROM substrate_product_lineage")
+        conn.execute(
+            "INSERT INTO substrate_product_lineage "
+            "(product, refresh_id, predecessor_refresh_id, replacement_start, mode) "
+            "VALUES ('personal_daily_signals', 'orphan', 'missing', ?, 'incremental')",
+            [date(2026, 1, 1)],
+        )
+        with pytest.raises(ValueError, match="missing predecessor"):
+            load_personal_daily_signals(conn, refresh_id="orphan")
+
+
+def test_title_overlay_writes_changes_and_reuses_unchanged_input(tmp_path: Path) -> None:
+    import json
+
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.personal import _resolved_rows, promote_title_classifications_from_path
+
+    def payload(title_hash: str, activity: str) -> dict[str, object]:
+        return {
+            "title_hash": title_hash, "app": "app", "raw_title": title_hash,
+            "normalized_title": title_hash, "activity": activity, "subject": "subject",
+            "content_type": "content", "attention_level": "focused", "topic_category": "topic",
+            "platform": "platform", "mode": "mode", "app_kind": "kind", "tool": "tool",
+            "domain": "domain", "domain_category": "category", "is_ai_tool": False,
+            "is_ai_active": False, "productivity_score": 0.5, "focus_score": 0.5,
+            "confidence": 0.9, "classification_source": "test", "model_version": "v1",
+        }
+
+    old_path = tmp_path / "old.ndjson"
+    new_path = tmp_path / "new.ndjson"
+    old_path.write_text("\n".join(json.dumps(payload(k, "old")) for k in ("a", "b")) + "\n")
+    new_path.write_text("\n".join([json.dumps(payload("a", "new")), json.dumps(payload("c", "new"))]) + "\n")
+    with connect(tmp_path / "sub.duckdb") as conn:
+        apply_schema(conn)
+        promote_title_classifications_from_path(conn, refresh_id="old", path=str(old_path), input_fingerprint="f1")
+        assert promote_title_classifications_from_path(
+            conn, refresh_id="new", path=str(new_path), previous_refresh_id="old", input_fingerprint="f2"
+        ) == 2
+        assert conn.execute("SELECT COUNT(*) FROM title_classification WHERE refresh_id='new'").fetchone()[0] == 2
+        assert _resolved_rows(conn, product="title_metadata", refresh_id="new", table="title_classification",
+                              columns=("title_hash",), key=lambda row: row[0]) == [("a",), ("c",)]
+        assert promote_title_classifications_from_path(
+            conn, refresh_id="same", path=str(new_path), previous_refresh_id="new", input_fingerprint="f2"
+        ) == 0
+        assert conn.execute("SELECT COUNT(*) FROM title_classification WHERE refresh_id='same'").fetchone()[0] == 0
 
 
 def test_substrate_path_uses_local_root(

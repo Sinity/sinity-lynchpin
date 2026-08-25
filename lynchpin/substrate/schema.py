@@ -59,6 +59,8 @@ DROP_STATEMENTS: tuple[str, ...] = (
     "DROP TABLE IF EXISTS title_classification",
     "DROP TABLE IF EXISTS operator_day",
     "DROP TABLE IF EXISTS personal_daily_signal",
+    "DROP TABLE IF EXISTS substrate_product_tombstone",
+    "DROP TABLE IF EXISTS substrate_product_lineage",
     "DROP TABLE IF EXISTS spotify_daily",
     "DROP TABLE IF EXISTS substrate_source_status",
     "DROP TABLE IF EXISTS evidence_edge",
@@ -496,6 +498,31 @@ DDL_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX personal_daily_signal_source_date ON personal_daily_signal(source, date)",
     "CREATE INDEX personal_daily_signal_refresh_id ON personal_daily_signal(refresh_id)",
+    # Per-product overlay metadata.  Domain rows remain append-only by refresh;
+    # readers resolve these partitions newest-first.
+    """
+    CREATE TABLE substrate_product_lineage (
+        product                 VARCHAR NOT NULL,
+        refresh_id              VARCHAR NOT NULL,
+        predecessor_refresh_id  VARCHAR,
+        replacement_start      DATE,
+        input_fingerprint       VARCHAR,
+        mode                    VARCHAR NOT NULL,
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (product, refresh_id)
+    )
+    """,
+    "CREATE INDEX substrate_product_lineage_predecessor ON substrate_product_lineage(predecessor_refresh_id)",
+    """
+    CREATE TABLE substrate_product_tombstone (
+        product                 VARCHAR NOT NULL,
+        refresh_id              VARCHAR NOT NULL,
+        natural_key             VARCHAR NOT NULL,
+        materialized_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (product, refresh_id, natural_key)
+    )
+    """,
+    "CREATE INDEX substrate_product_tombstone_key ON substrate_product_tombstone(product, natural_key)",
     # ────────────────────────────────────────────────────────────────────
     # operator_day — wide cross-source daily matrix (materialized
     # operator_daily_matrix) for fast correlation queries. Nullable signal
