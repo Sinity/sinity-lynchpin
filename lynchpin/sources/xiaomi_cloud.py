@@ -148,6 +148,29 @@ def readiness(root: Optional[Path] = None) -> SourceReadiness:
         return SourceReadiness(
             status="empty", reason="day files present but no envelopes yet", path=base, row_count=0,
         )
+    latest: XiaomiEnvelope | None = None
+    for envelope in xiaomi_envelopes(root=base):
+        if envelope.fetched_at is not None and (
+            latest is None or latest.fetched_at is None or envelope.fetched_at > latest.fetched_at
+        ):
+            latest = envelope
+    if latest is not None and latest.kind == "vendor_sync_pass":
+        failures = latest.payload.get("failures")
+        if isinstance(failures, int) and failures > 0:
+            return SourceReadiness(
+                status="error",
+                reason=f"latest Xiaomi sync pass recorded {failures} failed lanes",
+                path=base,
+                row_count=total,
+            )
+    elif latest is not None and latest.kind == "vendor_fetch_failed":
+        reason = str(latest.payload.get("reason") or "unknown fetch failure")
+        return SourceReadiness(
+            status="error",
+            reason=f"latest Xiaomi capture envelope is a fetch failure: {reason}",
+            path=base,
+            row_count=total,
+        )
     return SourceReadiness(status="ok", reason="", path=base, row_count=total)
 
 
