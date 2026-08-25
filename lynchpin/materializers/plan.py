@@ -39,6 +39,7 @@ class ConvergencePlanner:
 
     def plan(self, request: ConvergenceRequest) -> ConvergencePlan:
         closure: set[str] = set()
+        ordered: list[str] = []
 
         def include(name: str) -> None:
             if name not in self._specs:
@@ -46,13 +47,17 @@ class ConvergencePlanner:
             if name in closure:
                 return
             closure.add(name)
-            for dependency in self._specs[name].dependencies:
+            for dependency in sorted(
+                self._specs[name].dependencies,
+                key=lambda item: item.product,
+            ):
                 include(dependency.product)
+            ordered.append(name)
 
-        for product in request.products:
+        for product in sorted(request.products):
             include(product)
         steps: list[PlanStep] = []
-        for product in sorted(closure):
+        for product in ordered:
             spec = self._specs[product]
             generation = request.input_generations.get(product, spec.input_generation)
             steps.append(PlanStep(product, spec, tuple(sorted(d.product for d in spec.dependencies if d.product in closure)), request.requested_window, request.requested_window, generation, spec.raw_read_permission, spec.output))

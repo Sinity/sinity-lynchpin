@@ -48,6 +48,12 @@ def test_cycle_rejected_and_dependency_closure_is_explicit() -> None:
     assert [step.product for step in plan.steps] == ["base", "middle", "target"]
     assert plan.steps[-1].dependencies == ("middle",)
 
+    non_alphabetic = planned(
+        spec("z-base"),
+        spec("a-target", dependencies=("z-base",)),
+    )
+    assert [step.product for step in non_alphabetic.steps] == ["z-base", "a-target"]
+
 
 def test_independent_steps_run_in_parallel() -> None:
     entered: list[str] = []
