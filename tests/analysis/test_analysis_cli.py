@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -9,12 +10,21 @@ from lynchpin.analysis.cli import _run_dag, build_app
 from lynchpin.analysis.core.dag import DAG, Step
 
 
+class _TestHandlers:
+    def __init__(self, handlers=None):
+        self.handlers = handlers or {}
+
+    def resolve(self, identity):
+        return self.handlers.get(identity, lambda *args, **kwargs: None)
+
+
+
 def test_run_dag_reports_selected_step_count_for_up_to(capsys, monkeypatch, tmp_path):
     ran: list[str] = []
-    dag = DAG("tiny")
-    dag.add(Step("first", fn=lambda: ran.append("first")))
-    dag.add(Step("second", fn=lambda: ran.append("second"), depends_on=["first"]))
-    dag.add(Step("third", fn=lambda: ran.append("third"), depends_on=["second"]))
+    dag = DAG("tiny", handlers=_TestHandlers({"test:first": lambda: ran.append("first"), "test:second": lambda: ran.append("second"), "test:third": lambda: ran.append("third")}))
+    dag.add(Step('first', 'test:first'))
+    dag.add(Step('second', 'test:second', depends_on=['first']))
+    dag.add(Step('third', 'test:third', depends_on=['second']))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -32,8 +42,8 @@ def test_run_dag_reports_selected_step_count_for_up_to(capsys, monkeypatch, tmp_
 
 
 def test_run_dag_does_not_duplicate_materialization_suffix(capsys, monkeypatch, tmp_path):
-    dag = DAG("machine-analysis-materialization")
-    dag.add(Step("only", fn=lambda: {"row_count": 1}))
+    dag = DAG("machine-analysis-materialization", handlers=_TestHandlers())
+    dag.add(Step('only', 'test:noop'))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -46,8 +56,8 @@ def test_run_dag_does_not_duplicate_materialization_suffix(capsys, monkeypatch, 
 
 
 def test_run_dag_can_explain_materialization_dry_run(capsys, monkeypatch, tmp_path):
-    dag = DAG("machine-analysis-materialization")
-    dag.add(Step("machine_analysis_substrate_promote", fn=lambda: None))
+    dag = DAG("machine-analysis-materialization", handlers=_TestHandlers())
+    dag.add(Step('machine_analysis_substrate_promote', 'test:noop'))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -66,8 +76,8 @@ def test_run_dag_can_explain_materialization_dry_run(capsys, monkeypatch, tmp_pa
 
 
 def test_run_dag_explanation_uses_generic_policy_for_non_machine_dags(capsys, monkeypatch, tmp_path):
-    dag = DAG("analysis-materialization")
-    dag.add(Step("machine_telemetry_analysis", fn=lambda: None))
+    dag = DAG("analysis-materialization", handlers=_TestHandlers())
+    dag.add(Step('machine_telemetry_analysis', 'test:noop'))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -86,8 +96,8 @@ def test_run_dag_explanation_uses_generic_policy_for_non_machine_dags(capsys, mo
 
 
 def test_run_dag_explanation_uses_analysis_artifact_policy(capsys, monkeypatch, tmp_path):
-    dag = DAG("analysis-materialization")
-    dag.add(Step("active_git_facts", fn=lambda: None))
+    dag = DAG("analysis-materialization", handlers=_TestHandlers())
+    dag.add(Step('active_git_facts', 'test:noop'))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -109,8 +119,8 @@ def test_run_dag_explanation_names_default_artifact(capsys, monkeypatch, tmp_pat
     artifact = tmp_path / "analysis" / "active_project_snapshot.json"
     artifact.parent.mkdir()
     artifact.write_text("{}", encoding="utf-8")
-    dag = DAG("current-state-materialization")
-    dag.add(Step("active_project_snapshot", fn=lambda: None))
+    dag = DAG("current-state-materialization", handlers=_TestHandlers())
+    dag.add(Step('active_project_snapshot', 'test:noop'))
     config = type("Config", (), {"analysis_output_dir": tmp_path / "analysis"})()
     monkeypatch.setattr("lynchpin.core.io.get_config", lambda: config)
     monkeypatch.setattr("lynchpin.analysis.cli.resolve_analysis_path", lambda name: str(config.analysis_output_dir / name))
@@ -129,8 +139,8 @@ def test_run_dag_explanation_names_default_artifact(capsys, monkeypatch, tmp_pat
 
 def test_run_dag_incremental_skips_current_steps(capsys, monkeypatch, tmp_path):
     ran: list[str] = []
-    dag = DAG("machine-analysis-materialization")
-    dag.add(Step("machine_telemetry_analysis", fn=lambda: ran.append("telemetry")))
+    dag = DAG("machine-analysis-materialization", handlers=_TestHandlers())
+    dag.add(Step('machine_telemetry_analysis', 'test:noop'))
     artifact = tmp_path / "analysis" / "machine_telemetry_analysis.json"
     artifact.parent.mkdir()
     artifact.write_text("{}", encoding="utf-8")
@@ -159,9 +169,9 @@ def test_run_dag_incremental_skips_current_steps(capsys, monkeypatch, tmp_path):
 
 def test_run_dag_explain_execution_skips_inspect_only_steps(capsys, monkeypatch, tmp_path):
     ran: list[str] = []
-    dag = DAG("analysis-materialization")
-    dag.add(Step("active_project_snapshot", fn=lambda: ran.append("snapshot")))
-    dag.add(Step("active_git_facts", fn=lambda: ran.append("git"), depends_on=["active_project_snapshot"]))
+    dag = DAG("analysis-materialization", handlers=_TestHandlers({"test:snapshot": lambda: ran.append("snapshot"), "test:git": lambda: ran.append("git")}))
+    dag.add(Step('active_project_snapshot', 'test:snapshot'))
+    dag.add(Step('active_git_facts', 'test:git', depends_on=['active_project_snapshot']))
     artifact = tmp_path / "analysis" / "active_project_snapshot.json"
     artifact.parent.mkdir()
     artifact.write_text("{}", encoding="utf-8")
@@ -403,8 +413,8 @@ def test_run_dag_memoizes_unchanged_fingerprinted_step(monkeypatch, tmp_path):
     def _work():
         runs["n"] += 1
 
-    dag = DAG("analysis-materialization")
-    dag.add(Step("memoized", fn=_work, fingerprint=lambda: "stable-key"))
+    dag = DAG("analysis-materialization", handlers=_TestHandlers({"test:memo": _work}))
+    dag.add(Step('memoized', 'test:memo', fingerprint="stable-key"))
 
     assert _run_dag(dag, dry_run=False, up_to=None) == 0
     assert runs["n"] == 1  # ran the first time (no recorded fingerprint)
@@ -414,7 +424,6 @@ def test_run_dag_memoizes_unchanged_fingerprinted_step(monkeypatch, tmp_path):
     # --no-memo forces a full rebuild.
     assert _run_dag(dag, dry_run=False, up_to=None, memoize=False) == 0
     assert runs["n"] == 2
-
 
 def test_run_dag_reruns_when_fingerprint_changes(monkeypatch, tmp_path):
     from lynchpin.analysis.cli import _run_dag
@@ -434,11 +443,12 @@ def test_run_dag_reruns_when_fingerprint_changes(monkeypatch, tmp_path):
     def _work():
         runs["n"] += 1
 
-    dag = DAG("analysis-materialization")
-    dag.add(Step("memoized", fn=_work, fingerprint=lambda: key["v"]))
+    dag = DAG("analysis-materialization", handlers=_TestHandlers({"test:memo": _work}))
+    dag.add(Step('memoized', 'test:memo', fingerprint=key["v"]))
 
     assert _run_dag(dag, dry_run=False, up_to=None) == 0
     assert runs["n"] == 1
     key["v"] = "k2"  # input changed → must re-run
+    dag._steps["memoized"] = replace(dag._steps["memoized"], fingerprint=key["v"])
     assert _run_dag(dag, dry_run=False, up_to=None) == 0
     assert runs["n"] == 2

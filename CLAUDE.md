@@ -154,9 +154,10 @@ agentctl job start lynchpin promote_full
 agentctl job start lynchpin chisel
 ```
 
-These operations currently wrap the procedural materializer. The planned
-typed materialization DAG and per-node AgentCTL execution are not current
-architecture. Do not document or code against them as if they already exist.
+These operations execute the checked-in typed materializer catalog through its
+serializable plans and closed handler registry. Per-node AgentCTL execution is
+not part of the current architecture; do not document or code against it as if
+it already exists.
 
 When changing a contract:
 

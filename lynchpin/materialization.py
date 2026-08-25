@@ -14,21 +14,16 @@ available while still not being fully materialized for near-instant analysis.
 from __future__ import annotations
 
 import csv
-import inspect
 import json
 import logging
 import os
 import sqlite3
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextvars import copy_context
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal
 from threading import Lock
-from time import monotonic
 
 from .core.cache import files_signature
 from .core.config import LynchpinConfig, get_config
@@ -42,21 +37,10 @@ from .core.source_contracts import (
     dataset_status_to_substrate_status,
     source_contract,
 )
-from .materializers import (
-    ArtifactRef as TypedArtifactRef,
-    ConvergencePlanner,
-    ConvergenceRequest,
-    HandlerRegistry,
-    LocalExecutor,
-    ProductSpec,
-    StepResult,
-    canonical_json,
-)
 from .ingest.webhistory import (
     WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
     full_history_manifest_path,
 )
-from .ingest.webhistory import run as run_webhistory_pipeline
 from .ingest.exports_materialize import (
     MESSENGER_CANONICAL_SCHEMA_VERSION,
     RAINDROP_BOOKMARKS_SCHEMA_VERSION,
@@ -65,78 +49,52 @@ from .ingest.exports_materialize import (
     _export_roots,
     _messenger_thread_files,
     _spotify_roots,
-    materialize_messenger,
-    materialize_raindrop,
-    materialize_reddit,
-    materialize_spotify,
     messenger_canonical_dir,
     raindrop_bookmarks_path,
     reddit_canonical_dir,
     spotify_streams_path,
 )
-from .ingest.activitywatch_materialize import activitywatch_input_files, materialize_activitywatch_events
+from .ingest.activitywatch_materialize import activitywatch_input_files
 from .ingest.activitywatch_event_index_materialize import (
     activitywatch_event_index_input_files,
-    materialize_activitywatch_event_index,
 )
 from .ingest.activity_content_materialize import (
     ACTIVITY_CONTENT_SCHEMA_VERSION,
     activity_content_input_files,
-    materialize_activity_content,
 )
 from .ingest.activitywatch_derived_materialize import (
     ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
     activitywatch_derived_input_files,
-    materialize_activitywatch_derived,
 )
-from .ingest.health_coverage_materialize import health_coverage_path, materialize_health_coverage
-from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files, materialize_atuin_history
-from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION, materialize_title_metadata
-from .ingest.machine_materialize import MACHINE_TABLES, machine_input_files, materialize_machine_telemetry
-from .ingest.polylogue_verify_materialize import materialize_polylogue_verify_runs
-from .ingest.substack_materialize import SUBSTACK_SCHEMA_VERSION, materialize_substack
+from .ingest.health_coverage_materialize import health_coverage_path
+from .ingest.terminal_materialize import ATUIN_HISTORY_SCHEMA_VERSION, atuin_input_files
+from .ingest.title_metadata_materialize import TITLE_METADATA_SCHEMA_VERSION
+from .ingest.machine_materialize import MACHINE_TABLES, machine_input_files
+from .ingest.substack_materialize import SUBSTACK_SCHEMA_VERSION
 from .ingest.personal_signals_materialize import (
     PERSONAL_DAILY_SIGNALS_SCHEMA_VERSION,
     SPOTIFY_DAILY_SCHEMA_VERSION,
-    materialize_personal_daily_signals,
-    materialize_spotify_daily,
     spotify_daily_input_files,
 )
-from .ingest.temporal_signals_materialize import (
-    TEMPORAL_SIGNALS_SCHEMA_VERSION,
-    materialize_temporal_signals,
-)
-from .ingest.sleep_productivity_materialize import (
-    SLEEP_PRODUCTIVITY_SCHEMA_VERSION,
-    materialize_sleep_productivity,
-)
+from .ingest.temporal_signals_materialize import TEMPORAL_SIGNALS_SCHEMA_VERSION
+from .ingest.sleep_productivity_materialize import SLEEP_PRODUCTIVITY_SCHEMA_VERSION
 from .ingest.google_takeout_materialize import (
     GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION,
     google_takeout_inventory_dir,
-    materialize_google_takeout_inventory,
 )
-from .ingest.google_takeout_products import (
-    GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION,
-    google_takeout_products_dir,
-    materialize_google_takeout_products,
-)
-from .ingest.gmail_takeout_materialize import GMAIL_EVENTS_SCHEMA_VERSION, materialize_gmail_events
-from .ingest.github_context_materialize import materialize_github_context
-from .ingest.code_snapshots_materialize import materialize_code_snapshots
-from .analysis.keylog import write_keylog_analysis
+from .ingest.google_takeout_products import GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION, google_takeout_products_dir
+from .ingest.gmail_takeout_materialize import GMAIL_EVENTS_SCHEMA_VERSION
 from .ingest.bookmarks_materialize import (
     BOOKMARK_EVENTS_SCHEMA_VERSION,
     _bookmark_roots,
     _discover_bookmark_files,
-    materialize_bookmarks,
 )
 from .ingest.communications_materialize import (
     COMMUNICATION_EVENTS_SCHEMA_VERSION,
     communication_input_files,
-    materialize_communication_events,
 )
-from .ingest.arbtt_materialize import ARBTT_EVENTS_SCHEMA_VERSION, _capture_logs, materialize_arbtt_events
-from .ingest.irc_materialize import IRC_EVENTS_SCHEMA_VERSION, irc_input_files, materialize_irc_events
+from .ingest.arbtt_materialize import ARBTT_EVENTS_SCHEMA_VERSION, _capture_logs
+from .ingest.irc_materialize import IRC_EVENTS_SCHEMA_VERSION, irc_input_files
 from .sources.activitywatch_raw import canonical_activitywatch_events_path
 from .sources.activitywatch_event_index import (
     ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
@@ -162,6 +120,23 @@ from .sources.communications import communication_events_path, communication_man
 from .sources.arbtt import arbtt_events_path, arbtt_manifest_path
 from .sources.irc_raw import irc_events_path, irc_manifest_path, irc_raw_root
 from .sources.substack import substack_input_files, substack_manifest_path, substack_path
+from .materializers.production import (
+    ensure_materialized,  # noqa: F401
+    materializer_dependency_model,
+    materializer_execution_waves,
+    plan_materializations,
+    run_materialization_plan,
+    run_materializer_by_name,
+)
+
+__all__ = [
+    "ensure_materialized",
+    "materializer_dependency_model",
+    "materializer_execution_waves",
+    "plan_materializations",
+    "run_materialization_plan",
+    "run_materializer_by_name",
+]
 from .sources.personal_signals import (
     personal_daily_signals_manifest_path,
     personal_daily_signals_path,
@@ -178,7 +153,6 @@ Status = DatasetStatus
 MaterializationStatus = Literal[
     "ready",
     "updated",
-    "pinned",
     "blocked",
     "degraded",
     "failed",
@@ -186,13 +160,6 @@ MaterializationStatus = Literal[
     "manual",
 ]
 MaterializationBudget = Literal["inline", "background", "manual"]
-
-# Read convergence is deliberately bounded. The first read after a freshness
-# interval performs the durable coverage/fingerprint check; identical reads in
-# the interval reuse that result instead of repeatedly walking source manifests.
-READ_CONVERGENCE_FRESHNESS_SECONDS = 30.0
-READ_CONVERGENCE_MAX_DAYS = 31
-READ_CONVERGENCE_OVERLAP_DAYS = 7
 
 #: Dataset names whose tail has already been force-refreshed once THIS
 #: process. A read path that touches "today" (repair_afk_events over many
@@ -212,9 +179,6 @@ _TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
 # allow an explicit ``force`` call to opt into another rebuild.
 _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = False
 _MATERIALIZATION_RECEIPT_LOCK = Lock()
-_READ_CONVERGENCE_LOCK = Lock()
-_READ_CONVERGENCE_FLIGHTS: dict[str, Future["MaterializationResult"]] = {}
-_READ_CONVERGENCE_CACHE: dict[str, tuple[float, "MaterializationResult"]] = {}
 
 
 @dataclass(frozen=True)
@@ -273,116 +237,6 @@ class MaterializedDataset:
 
 
 @dataclass(frozen=True)
-class MaterializationPlanStep:
-    name: str
-    before: MaterializedDataset
-    action: str
-    materialization_hint: str
-    reason: str
-    window: tuple[date, date] | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "status": self.before.status,
-            "action": self.action,
-            "window": (
-                {
-                    "start": self.window[0].isoformat(),
-                    "end": self.window[1].isoformat(),
-                }
-                if self.window is not None
-                else None
-            ),
-            "materialization_hint": self.materialization_hint,
-            "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True)
-class MaterializerDependency:
-    """Declared read and write resources for one materializer invocation."""
-
-    name: str
-    reads: frozenset[str]
-    writes: frozenset[str]
-
-
-def materializer_dependency_model(
-    plan: Iterable[MaterializationPlanStep],
-) -> tuple[MaterializerDependency, ...]:
-    """Return the actual read/write model used to schedule a materialization plan."""
-    dependencies: list[MaterializerDependency] = []
-    canonical_reads: dict[str, frozenset[str]] = {
-        "activitywatch_event_index": frozenset({"canonical-product:activitywatch"}),
-        "activitywatch_derived": frozenset({"canonical-product:activitywatch_event_index", "canonical-product:activitywatch"}),
-        "activity_content": frozenset({"canonical-product:activitywatch_derived", "canonical-product:title_metadata"}),
-        "personal_daily_signals": frozenset(
-            {
-                "canonical-product:activity_content",
-                "canonical-product:activitywatch_derived",
-                "canonical-product:title_metadata",
-            }
-        ),
-        "temporal_signals": frozenset({"canonical-product:activitywatch_derived"}),
-    }
-    for step in plan:
-        if step.action != "materialize":
-            continue
-        dependencies.append(
-            MaterializerDependency(
-                name=step.name,
-                reads=frozenset({f"owner-native:{step.name}", *canonical_reads.get(step.name, frozenset())}),
-                writes=frozenset({f"canonical-product:{step.name}"}),
-            )
-        )
-    return tuple(dependencies)
-
-
-def materializer_execution_waves(
-    dependencies: Iterable[MaterializerDependency],
-) -> tuple[tuple[MaterializerDependency, ...], ...]:
-    """Build dependency-ordered waves whose members are mutually non-conflicting."""
-    pending = list(dependencies)
-    names = [dependency.name for dependency in pending]
-    if len(set(names)) != len(names):
-        raise ValueError("materializer dependency names must be unique")
-    producers: dict[str, set[str]] = {}
-    for dependency in pending:
-        for resource in dependency.writes:
-            producers.setdefault(resource, set()).add(dependency.name)
-
-    waves: list[list[MaterializerDependency]] = []
-    completed: set[str] = set()
-    while pending:
-        ready = [
-            dependency
-            for dependency in pending
-            if all(producers.get(resource, set()) <= completed for resource in dependency.reads)
-        ]
-        if not ready:
-            blocked = ", ".join(dependency.name for dependency in pending)
-            raise ValueError(f"materializer dependency cycle or unresolved producer: {blocked}")
-
-        wave: list[MaterializerDependency] = []
-        for dependency in ready:
-            occupied_writes = frozenset().union(*(item.writes for item in wave))
-            occupied_reads = frozenset().union(*(item.reads for item in wave))
-            if (
-                occupied_writes.isdisjoint(dependency.writes)
-                and occupied_reads.isdisjoint(dependency.writes)
-                and occupied_writes.isdisjoint(dependency.reads)
-            ):
-                wave.append(dependency)
-        if not wave:
-            raise RuntimeError("ready materializers could not form an execution wave")
-        waves.append(wave)
-        completed.update(dependency.name for dependency in wave)
-        pending = [dependency for dependency in pending if dependency.name not in completed]
-    return tuple(tuple(wave) for wave in waves)
-
-
-@dataclass(frozen=True)
 class MaterializationResult:
     """Result of ensuring one product/source is ready for a read path.
 
@@ -412,34 +266,6 @@ class MaterializationResult:
             "source_high_water": dict(self.source_high_water),
             "coverage": self.coverage,
             "diagnostics": list(self.diagnostics),
-        }
-
-
-@dataclass(frozen=True)
-class ReadConvergencePlan:
-    """Serializable decision made before a normal read may converge."""
-
-    product: str
-    requested_window: tuple[date, date] | None
-    effective_window: tuple[date, date] | None
-    action: str
-    reason: str
-    source_fingerprint: str
-    typed_plan: Any | None = None
-    predecessor_refresh_id: str | None = None
-    tail_start: date | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "product": self.product,
-            "requested_window": _window_payload(self.requested_window),
-            "effective_window": _window_payload(self.effective_window),
-            "action": self.action,
-            "reason": self.reason,
-            "source_fingerprint": self.source_fingerprint,
-            "typed_plan": self.typed_plan.to_dict() if self.typed_plan is not None else None,
-            "predecessor_refresh_id": self.predecessor_refresh_id,
-            "tail_start": self.tail_start.isoformat() if self.tail_start else None,
         }
 
 
@@ -517,1095 +343,6 @@ def _dataset_builders() -> dict[str, Any]:
         "code_snapshots": _code_snapshots_dataset,
         "ambient_intelligence": _ambient_intelligence_dataset,
     }
-
-
-def _materializers() -> dict[str, Callable[..., Any]]:
-    return {
-        "webhistory": _materialize_webhistory,
-        "google_takeout": _materialize_google_takeout,
-        "activitywatch": materialize_activitywatch_events,
-        "activitywatch_event_index": materialize_activitywatch_event_index,
-        "activitywatch_derived": materialize_activitywatch_derived,
-        "title_metadata": materialize_title_metadata,
-        "activity_content": materialize_activity_content,
-        "atuin": materialize_atuin_history,
-        "spotify": materialize_spotify,
-        "reddit": materialize_reddit,
-        "facebook_messenger": materialize_messenger,
-        "communications": materialize_communication_events,
-        "raindrop": materialize_raindrop,
-        "browser_bookmarks": materialize_bookmarks,
-        "arbtt": materialize_arbtt_events,
-        "machine": materialize_machine_telemetry,
-        "github_context": materialize_github_context,
-        "keylog_analysis": _materialize_keylog_analysis,
-        "spotify_daily": materialize_spotify_daily,
-        "personal_daily_signals": materialize_personal_daily_signals,
-        "temporal_signals": materialize_temporal_signals,
-        "sleep_productivity": materialize_sleep_productivity,
-        "health_coverage": materialize_health_coverage,
-        "irc": materialize_irc_events,
-        "code_snapshots": materialize_code_snapshots,
-        "substack": materialize_substack,
-        "polylogue_verify_runs": materialize_polylogue_verify_runs,
-        "ambient_intelligence": _materialize_ambient_intelligence,
-    }
-
-
-def describe_existing_materializers() -> tuple[Any, ...]:
-    """Describe the procedural registry without executing nested convergence."""
-    from .materializers.legacy import describe_existing_materializers as describe
-
-    return describe()
-
-
-def _materialize_webhistory(*, start: date | None = None, end: date | None = None) -> None:
-    """Capture live browser history, then merge it into the canonical NDJSON.
-
-    This runs the WHOLE pipeline (extract -> dedup -> merge), not just the
-    merge. Splitting "capture" from "materialize" here was a distinction
-    without a difference for everyone downstream, and it cost real data: only
-    the merge half was ever scheduled, so the extraction never ran outside a
-    manual invocation. Chrome keeps roughly 90 days of visits and then drops
-    them -- measured 2026-08-16, a fresh snapshot of the live profile covered
-    exactly 2026-05-18 to that day -- so an unscheduled extraction quietly
-    becomes permanent history loss, and merging a raw directory nobody is
-    refilling produces a canonical product that silently stops advancing.
-    """
-    cfg = get_config()
-    if cfg.webhistory_ndjson is None:
-        raise MaterializationError(
-            "webhistory",
-            reason="canonical webhistory output path is not configured",
-        )
-    run_webhistory_pipeline(
-        data_dir=cfg.webhistory_dir,
-        output=cfg.webhistory_ndjson,
-        start=start,
-        end=end,
-    )
-
-
-def _materialize_google_takeout() -> None:
-    materialize_google_takeout_inventory()
-    materialize_google_takeout_products()
-    materialize_gmail_events()
-
-
-def _materialize_keylog_analysis(
-    *,
-    start: date | None = None,
-    end: date | None = None,
-) -> dict[str, Any]:
-    from .analysis.keylog import DEFAULT_HYPRLAND_BINDINGS
-    from .core.io import resolve_analysis_path
-
-    if start is None or end is None:
-        end = date.today()
-        start = end - timedelta(days=13)
-    inclusive_end = end - timedelta(days=1)
-    if inclusive_end < start:
-        inclusive_end = start
-    analysis = write_keylog_analysis(
-        Path(resolve_analysis_path("keylog_analysis.json")),
-        start=start,
-        end=inclusive_end,
-        bindings_path=DEFAULT_HYPRLAND_BINDINGS,
-    )
-    return {"row_count": analysis.source_event_count}
-
-
-_INCREMENTAL_MAX_CATCHUP_DAYS = 31
-
-_INCREMENTAL_OVERLAP_DAYS: dict[str, int] = {
-    # These products merge logical-day partitions. Reprocess recent days so
-    # delayed events, sessions that cross midnight, and a partially-written
-    # current day converge without replaying their entire lifetime history.
-    "activitywatch": 2,
-    "activitywatch_event_index": 2,
-    "activity_content": 2,
-    "activitywatch_derived": 2,
-    "atuin": 2,
-    "machine": 2,
-    "keylog_analysis": 2,
-    "personal_daily_signals": 2,
-    "spotify_daily": 2,
-    "temporal_signals": 7,
-    "sleep_productivity": 7,
-    "github_context": 2,
-    "webhistory": 7,
-    "irc": 7,
-}
-
-
-def _supports_windowed_materialization(materializer: Callable[..., Any]) -> bool:
-    signature = inspect.signature(materializer)
-    return "start" in signature.parameters and "end" in signature.parameters
-
-
-def _incremental_window(
-    row: MaterializedDataset,
-    *,
-    end: date,
-) -> tuple[date, date] | None:
-    """Return the bounded tail that can safely refresh ``row``.
-
-    A missing product has no proven historical base to merge into. Scheduled
-    maintenance must not turn that condition into an implicit all-history
-    backfill, because that is exactly the outage-shaped work this planner is
-    meant to avoid. Repair and explicit full-history modes remain available for
-    that case.
-    """
-    if row.first_date is None or row.last_date is None or end <= row.first_date:
-        return None
-    if end - row.last_date > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
-        return None
-    overlap = _INCREMENTAL_OVERLAP_DAYS.get(row.name, 7)
-    start = max(row.first_date, min(row.last_date, end - timedelta(days=overlap)))
-    return start, end
-
-
-def plan_materializations(
-    *,
-    cfg: LynchpinConfig | None = None,
-    force: bool = False,
-    window: tuple[date, date] | None = None,
-    maintenance: bool = False,
-    maintenance_end: date | None = None,
-) -> list[MaterializationPlanStep]:
-    """Return the deterministic transparent materialization plan.
-
-    ``window`` delegates the staleness decision to
-    :func:`_materialized_enough_for_window`, the same check
-    :func:`ensure_materialized` uses. ``maintenance`` instead derives a
-    materializer-specific bounded tail from each product's proven coverage.
-    It never schedules an unscoped materializer call: missing historical bases
-    and materializers without ``start``/``end`` remain explicit repair work.
-    ``window=None`` without maintenance preserves the explicit full-catalog
-    behavior for repair/backfill callers.
-    """
-    if maintenance and window is not None:
-        raise ValueError("maintenance planning and an explicit window are mutually exclusive")
-    cfg = cfg or get_config()
-    materializers = _materializers()
-    end = maintenance_end or (date.today() + timedelta(days=1))
-    steps: list[MaterializationPlanStep] = []
-    for row in audit_materialization(cfg=cfg):
-        contract = source_contract(row.name)
-        step_window: tuple[date, date] | None = None
-        if row.name not in materializers:
-            action = "check-only"
-            reason = "no transparent materializer is defined for this contract"
-        elif force:
-            action = "materialize"
-            reason = row.reason
-        elif maintenance:
-            materializer = materializers[row.name]
-            if row.repair_required:
-                action = "check-only"
-                reason = "incremental maintenance requires an explicit full repair before this product is historically verified"
-            elif row.status == "ready" and not row.tail_stale:
-                action = "skip"
-                reason = "canonical product is ready"
-            elif not _supports_windowed_materialization(materializer):
-                action = "check-only"
-                reason = "incremental maintenance requires an explicit repair for this unwindowed materializer"
-            else:
-                step_window = _incremental_window(row, end=end)
-                if step_window is None:
-                    action = "check-only"
-                    if row.last_date is not None and end - row.last_date > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
-                        reason = (
-                            "incremental maintenance refuses a "
-                            f"{(end - row.last_date).days}-day catch-up; run explicit repair/backfill"
-                        )
-                    else:
-                        reason = "incremental maintenance requires a proven historical product; run explicit repair/backfill"
-                else:
-                    action = "materialize"
-                    reason = (
-                        f"incremental tail {step_window[0].isoformat()}..{step_window[1].isoformat()}: "
-                        f"{row.reason}"
-                    )
-        elif window is not None:
-            if _materialized_enough_for_window(row, window):
-                action = "skip"
-                reason = "canonical product covers requested window"
-            else:
-                action = "materialize"
-                step_window = window
-                reason = row.reason
-        elif row.status != "ready":
-            action = "materialize"
-            reason = row.reason
-        else:
-            action = "skip"
-            reason = "canonical product is ready"
-        if action != "skip":
-            steps.append(
-                MaterializationPlanStep(
-                    name=row.name,
-                    before=row,
-                    action=action,
-                    materialization_hint=contract.materialization_hint,
-                    reason=reason,
-                    window=step_window,
-                )
-            )
-    if maintenance:
-        materialized_windows = [
-            step.window
-            for step in steps
-            if step.action == "materialize" and step.window is not None
-        ]
-        if materialized_windows:
-            graph_tail_start = min(window[0] for window in materialized_windows)
-            steps = [
-                replace(
-                    step,
-                    window=(graph_tail_start, step.window[1]),
-                    reason=(
-                        f"{step.reason}; widened to the shared graph tail so downstream "
-                        "keybind attribution reuses this artifact instead of rescanning raw keylog"
-                    ),
-                )
-                if step.name == "keylog_analysis"
-                and step.action == "materialize"
-                and step.window is not None
-                and step.window[0] > graph_tail_start
-                else step
-                for step in steps
-            ]
-    return steps
-
-
-def run_materialization_plan(
-    steps: Iterable[MaterializationPlanStep],
-    *,
-    refresh_id: str | None = None,
-    window: tuple[date, date] | None = None,
-    continue_on_error: bool = False,
-) -> list[MaterializationPlanStep]:
-    """Execute materialization steps and return the steps that actually ran.
-
-    ``window``, when given, is threaded into each materializer the same way
-    :func:`ensure_materialized` already does via :func:`_run_materializer` —
-    a materializer whose signature accepts ``start``/``end`` reprocesses only
-    that window instead of its full source history. Materializers without
-    those parameters are called as before (unaffected by ``window``).
-
-    A coherent substrate promotion may continue after one source fails. The
-    failure remains durably recorded by ``_record_materialization_step`` and
-    downstream source status, while still-valid authoritative products can
-    produce a degraded but queryable generation. Other callers retain the
-    historical fail-fast behavior by default.
-    """
-    global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
-
-    materializers = _materializers()
-    step_list = tuple(step for step in steps if step.action == "materialize")
-    by_name = {step.name: step for step in step_list}
-    dependencies = materializer_dependency_model(step_list)
-    waves = materializer_execution_waves(dependencies)
-    ran: list[MaterializationPlanStep] = []
-    refresh_id = refresh_id or f"materialize:{datetime.now(timezone.utc).isoformat()}"
-    ran_lock = Lock()
-
-    def run_one(step: MaterializationPlanStep) -> None:
-        global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
-
-        started = datetime.now(timezone.utc)
-        from .substrate.run_steps import measure_phase
-
-        measurement = measure_phase(f"materialize:{step.name}")
-        _record_materialization_step(
-            refresh_id,
-            step.name,
-            "started",
-            step.reason,
-            started_at=started,
-        )
-        try:
-            with measurement:
-                report = _run_materializer(
-                    materializers[step.name],
-                    window=step.window if step.window is not None else window,
-                    refresh_id=refresh_id,
-                )
-        except Exception as exc:
-            effective_window = step.window if step.window is not None else window
-            _record_materialization_step(
-                refresh_id,
-                step.name,
-                "error",
-                json.dumps(
-                    {
-                        "error": str(exc),
-                        "measurement": measurement.payload(),
-                        "effective_window": _window_payload(effective_window),
-                    },
-                    sort_keys=True,
-                ),
-                started_at=started,
-                finished_at=datetime.now(timezone.utc),
-            )
-            from .substrate.connection import CandidateGenerationRejected
-
-            if isinstance(exc, CandidateGenerationRejected):
-                raise
-            if continue_on_error:
-                return
-            raise
-        row_count = report.get("row_count") if isinstance(report, dict) else None
-        reported_row_count = _int_or_none(row_count)
-        effective_window = step.window if step.window is not None else window
-        _record_materialization_step(
-            refresh_id,
-            step.name,
-            "ok",
-            json.dumps(
-                {
-                    "status": "materialized",
-                    "measurement": measurement.payload(
-                        metrics=(
-                            (
-                                {
-                                    "name": "row_count",
-                                    "unit": "rows",
-                                    "value": reported_row_count,
-                                },
-                            )
-                            if reported_row_count is not None
-                            else ()
-                        )
-                    ),
-                    "effective_window": _window_payload(effective_window),
-                },
-                sort_keys=True,
-            ),
-            row_count=reported_row_count,
-            started_at=started,
-            finished_at=datetime.now(timezone.utc),
-        )
-        if step.name == "activity_content":
-            _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
-        with ran_lock:
-            ran.append(step)
-
-    for wave in waves:
-        if len(wave) == 1:
-            run_one(by_name[wave[0].name])
-            continue
-        with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="lynchpin-materialize") as executor:
-            # Context variables carry candidate-generation bindings.  Worker
-            # threads do not inherit them, and one Context cannot be entered
-            # concurrently, so capture a distinct copy for every submission.
-            futures = [
-                executor.submit(copy_context().run, run_one, by_name[item.name])
-                for item in wave
-            ]
-            for future in futures:
-                future.result()
-    return ran
-
-
-def run_materializer_by_name(name: str) -> dict[str, Any]:
-    """Run one registered transparent materializer by source/product name."""
-
-    materializers = _materializers()
-    if name not in materializers:
-        raise MaterializationError(
-            name,
-            reason="no transparent materializer is defined for this contract",
-        )
-    report = _run_materializer(materializers[name], window=None)
-    return report if isinstance(report, dict) else {"result": report}
-
-
-def _run_materializer(
-    materializer: Callable[..., Any],
-    *,
-    window: tuple[date, date] | None,
-    refresh_id: str | None = None,
-) -> Any:
-    signature = inspect.signature(materializer)
-    kwargs: dict[str, Any] = {}
-    if window is not None and "start" in signature.parameters and "end" in signature.parameters:
-        kwargs.update(start=window[0], end=window[1])
-    if refresh_id is not None and "refresh_id" in signature.parameters:
-        kwargs["refresh_id"] = refresh_id
-    return materializer(**kwargs)
-
-
-def ensure_materialized(
-    name: str,
-    *,
-    window: tuple[date, date] | None = None,
-    budget: MaterializationBudget = "inline",
-    force: bool = False,
-    cfg: LynchpinConfig | None = None,
-) -> MaterializationResult:
-    """Ensure a product is ready, with bounded single-flight read convergence."""
-    cfg = cfg or get_config()
-    if budget == "manual" or force:
-        return _ensure_materialized_uncached(
-            name, window=window, budget=budget, force=force, cfg=cfg
-        )
-    key = _read_convergence_key(name, window=window, cfg=cfg)
-    return _singleflight_read_convergence(
-        key,
-        lambda: _ensure_materialized_uncached(
-            name, window=window, budget=budget, force=force, cfg=cfg
-        ),
-    )
-
-
-def _ensure_materialized_uncached(
-    name: str,
-    *,
-    window: tuple[date, date] | None = None,
-    budget: MaterializationBudget = "inline",
-    force: bool = False,
-    cfg: LynchpinConfig | None = None,
-) -> MaterializationResult:
-    """Ensure one source/product is materialized enough for a read path.
-
-    This function is intentionally not a queueing API. It either proves the
-    current product is usable, runs a transparent materializer directly when the
-    source contract says that is valid, or reports why Lynchpin cannot advance
-    the product locally.
-    """
-
-    global _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
-
-    started = datetime.now(timezone.utc)
-    cfg = cfg or get_config()
-    if name == "evidence_graph_substrate" and budget != "manual":
-        return _ensure_substrate_materialized_for_read(window=window, cfg=cfg)
-    contract = source_contract(name)
-    materializers = _materializers()
-    before = _audit_one(name, cfg=cfg)
-
-    if (
-        name == "activity_content"
-        and _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
-        and not force
-    ):
-        status = "ready" if before.status == "ready" else "failed"
-        return _materialization_result(
-            before,
-            status=status,
-            changed=False,
-            reason=(
-                "activity-content materialization already ran in this process; "
-                f"retaining current {before.status} product: {before.reason}"
-            ),
-            started=started,
-            window=window,
-        )
-
-    if (
-        not force
-        and (before.status == "ready" or before.tail_stale)
-        and _materialized_enough_for_window(
-            before, window, already_refreshed_this_process=name in _TAIL_REFRESHED_THIS_PROCESS
-        )
-    ):
-        return _materialization_result(
-            before,
-            status="ready",
-            changed=False,
-            reason=before.reason,
-            started=started,
-            window=window,
-        )
-
-    if contract.materialization_mode == "coverage_bound":
-        return _materialization_result(
-            before,
-            status="coverage_bound",
-            changed=False,
-            reason="source coverage is bounded by external exports; Lynchpin cannot extend it locally",
-            started=started,
-            window=window,
-        )
-
-    if contract.materialization_mode == "external":
-        return _materialization_result(
-            before,
-            status="manual",
-            changed=False,
-            reason=contract.materialization_hint,
-            started=started,
-            window=window,
-        )
-
-    if contract.materialization_mode == "live" and name not in materializers:
-        status: MaterializationStatus = "ready" if before.status == "ready" else "blocked"
-        return _materialization_result(
-            before,
-            status=status,
-            changed=False,
-            reason=before.reason,
-            started=started,
-            window=window,
-        )
-
-    if name not in materializers:
-        return _materialization_result(
-            before,
-            status="blocked",
-            changed=False,
-            reason="no transparent materializer is defined for this contract",
-            started=started,
-            window=window,
-        )
-
-    if budget == "manual":
-        return _materialization_result(
-            before,
-            status="blocked",
-            changed=False,
-            reason="materialization requires local work but budget is manual",
-            started=started,
-            window=window,
-        )
-
-    try:
-        effective_window = _missing_materialization_window(before, window)
-        typed_plan = _typed_materialization_plan(before, window=effective_window)
-        typed_result = _execute_typed_materializer(
-            name,
-            window=effective_window,
-            plan=typed_plan,
-        )
-        if typed_result.status != "succeeded":
-            raise MaterializationError(name, reason=typed_result.reason or typed_result.status)
-    except Exception as exc:
-        if _can_read_stale_github_context(before, window):
-            return _materialization_result(
-                before,
-                status="blocked",
-                changed=False,
-                reason=f"GitHub network refresh failed; existing canonical context product is stale: {exc}",
-                started=started,
-                window=window,
-                diagnostics=(type(exc).__name__, "stale_github_context"),
-            )
-        return _materialization_result(
-            before,
-            status="failed",
-            changed=False,
-            reason=str(exc),
-            started=started,
-            window=window,
-            diagnostics=(type(exc).__name__,),
-        )
-
-    after = _audit_one(name, cfg=cfg)
-    if name == "activity_content":
-        _ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
-    if after.tail_stale:
-        # A live-tail rebuild was attempted for this dataset; whatever the
-        # outcome, later same-process reads should not pay for another one.
-        _TAIL_REFRESHED_THIS_PROCESS.add(name)
-    # just_refreshed: the live source may gain rows DURING the rebuild we just
-    # ran, flipping the audit straight back to tail-stale; that is success,
-    # not failure — the product is as fresh as a rebuild can make it.
-    enough_for_window = _materialized_enough_for_window(after, window, just_refreshed=True)
-    after_usable = after.status == "ready" or after.tail_stale
-    status = "updated" if after_usable and enough_for_window else "failed"
-    if not after_usable:
-        reason = f"materializer ran but product is still {after.status}: {after.reason}"
-    elif not enough_for_window:
-        reason = "materializer ran but continuous product still does not cover the requested window"
-    else:
-        reason = after.reason
-    return _materialization_result(
-        after,
-        status=status,
-        changed=status == "updated",
-        reason=reason,
-        started=started,
-        window=window,
-    )
-
-
-def _read_convergence_key(
-    name: str,
-    *,
-    window: tuple[date, date] | None,
-    cfg: LynchpinConfig,
-) -> str:
-    derived_root = getattr(cfg, "derived_root", getattr(cfg, "local_root", ""))
-    return canonical_json(
-        {
-            "product": name,
-            "window": _window_payload(window),
-            "derived_root": str(derived_root),
-        }
-    )
-
-
-def _singleflight_read_convergence(
-    key: str,
-    operation: Callable[[], MaterializationResult],
-) -> MaterializationResult:
-    now = monotonic()
-    with _READ_CONVERGENCE_LOCK:
-        cached = _READ_CONVERGENCE_CACHE.get(key)
-        if cached is not None and now - cached[0] < READ_CONVERGENCE_FRESHNESS_SECONDS:
-            return replace(cached[1], reason=f"bounded freshness reuse: {cached[1].reason}")
-        flight = _READ_CONVERGENCE_FLIGHTS.get(key)
-        leader = flight is None
-        if leader:
-            flight = Future()
-            _READ_CONVERGENCE_FLIGHTS[key] = flight
-    if not leader:
-        return flight.result()
-    try:
-        result = operation()
-    except BaseException as exc:
-        flight.set_exception(exc)
-        with _READ_CONVERGENCE_LOCK:
-            _READ_CONVERGENCE_FLIGHTS.pop(key, None)
-        raise
-    with _READ_CONVERGENCE_LOCK:
-        _READ_CONVERGENCE_CACHE[key] = (monotonic(), result)
-        _READ_CONVERGENCE_FLIGHTS.pop(key, None)
-    flight.set_result(result)
-    return result
-
-
-def _typed_product_spec(name: str, *, input_generation: str) -> ProductSpec:
-    """Adapt the current procedural registry to the typed core."""
-    described = {item.product: item for item in describe_existing_materializers()}
-    try:
-        legacy = described[name]
-    except KeyError as exc:
-        raise MaterializationError(name, reason="no typed materializer is registered") from exc
-    return replace(legacy, input_generation=input_generation)
-
-
-def _dataset_fingerprint(row: MaterializedDataset) -> str:
-    import hashlib
-
-    payload = {
-        "name": row.name,
-        "status": row.status,
-        "coverage": materialized_dataset_coverage(row),
-        "source_high_water": _source_high_water(row),
-    }
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
-
-
-def _typed_materialization_plan(
-    row: MaterializedDataset,
-    *,
-    window: tuple[date, date] | None,
-) -> Any:
-    fingerprint = _dataset_fingerprint(row)
-    spec = _typed_product_spec(row.name, input_generation=fingerprint)
-    return ConvergencePlanner((spec,)).plan(
-        ConvergenceRequest(
-            (row.name,),
-            requested_window=window,
-            input_generations={row.name: fingerprint},
-        )
-    )
-
-
-def _execute_typed_materializer(
-    name: str,
-    *,
-    window: tuple[date, date] | None,
-    plan: Any,
-) -> StepResult:
-    materializers = _materializers()
-    registry = HandlerRegistry()
-
-    def run(_context: Any) -> StepResult:
-        _run_materializer(materializers[name], window=window)
-        return StepResult(
-            name,
-            "succeeded",
-            reason="typed materializer completed",
-            artifact=plan.steps[0].output,
-        )
-
-    registry.register(plan.steps[0].spec.handler, run)
-    return LocalExecutor(registry, max_workers=1).execute(plan)[name]
-
-
-def _missing_materialization_window(
-    row: MaterializedDataset,
-    requested: tuple[date, date] | None,
-) -> tuple[date, date] | None:
-    if requested is None:
-        return None
-    if row.last_date is None:
-        return requested
-    if requested[1] > row.last_date + timedelta(days=1):
-        overlap = _INCREMENTAL_OVERLAP_DAYS.get(row.name, READ_CONVERGENCE_OVERLAP_DAYS)
-        start = max(requested[0], min(row.last_date, requested[1] - timedelta(days=overlap)))
-        return start, requested[1]
-    return requested
-
-
-def _substrate_fingerprint(conn: Any) -> tuple[str, list[dict[str, Any]]]:
-    import hashlib
-
-    try:
-        rows = conn.execute(
-            """
-            SELECT source, status, reason, row_count, window_start, window_end, recorded_at
-            FROM substrate_source_status
-            ORDER BY source, recorded_at, refresh_id
-            """
-        ).fetchall()
-    except Exception:
-        return "unavailable", []
-    payload = [
-        {
-            "source": str(row[0]),
-            "status": str(row[1]),
-            "reason": row[2],
-            "row_count": row[3],
-            "window_start": str(row[4]) if row[4] is not None else None,
-            "window_end": str(row[5]) if row[5] is not None else None,
-            "recorded_at": str(row[6]) if row[6] is not None else None,
-        }
-        for row in rows
-    ]
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest(), payload
-
-
-def _substrate_build_for_window(conn: Any, window: tuple[date, date]) -> dict[str, Any] | None:
-    row = conn.execute(
-        """
-        SELECT refresh_id, start_date, end_date, materialized_at, projects
-        FROM evidence_graph_build
-        WHERE start_date <= ? AND end_date >= ? AND len(projects) = 0
-        ORDER BY end_date DESC, materialized_at DESC
-        LIMIT 1
-        """,
-        [window[0], window[1]],
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "refresh_id": str(row[0]),
-        "start": row[1],
-        "end": row[2],
-        "materialized_at": row[3],
-        "projects": tuple(row[4] or ()),
-    }
-
-
-def _substrate_predecessor(conn: Any, window: tuple[date, date]) -> dict[str, Any] | None:
-    row = conn.execute(
-        """
-        SELECT refresh_id, start_date, end_date, materialized_at, projects
-        FROM evidence_graph_build
-        WHERE start_date = ? AND end_date > ? AND end_date < ? AND len(projects) = 0
-        ORDER BY end_date DESC, materialized_at DESC
-        LIMIT 1
-        """,
-        [window[0], window[0], window[1]],
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "refresh_id": str(row[0]),
-        "start": row[1],
-        "end": row[2],
-        "materialized_at": row[3],
-        "projects": tuple(row[4] or ()),
-    }
-
-
-def _substrate_read_plan(
-    *,
-    window: tuple[date, date] | None,
-) -> ReadConvergencePlan:
-    from .substrate.connection import generation_refresh_id, serving_generation
-
-    if window is None:
-        try:
-            with serving_generation() as generation:
-                refresh_id = generation_refresh_id(generation.database_path)
-        except Exception as exc:
-            return ReadConvergencePlan(
-                "evidence_graph_substrate", None, None, "blocked", str(exc), "unavailable"
-            )
-        return ReadConvergencePlan(
-            "evidence_graph_substrate", None, None, "inspect",
-            "no read window was supplied; serving generation is already the bounded read",
-            refresh_id or "unavailable",
-        )
-
-    try:
-        with serving_generation() as generation:
-            conn = generation.connection
-            fingerprint, source_rows = _substrate_fingerprint(conn)
-            build = _substrate_build_for_window(conn, window)
-            stale = False
-            if build is not None:
-                stale = bool(
-                    conn.execute(
-                        """
-                        SELECT 1
-                        FROM substrate_source_status
-                        WHERE recorded_at > ? AND refresh_id <> ?
-                        LIMIT 1
-                        """,
-                        [build["materialized_at"], build["refresh_id"]],
-                    ).fetchone()
-                )
-            if build is not None and not stale:
-                return ReadConvergencePlan(
-                    "evidence_graph_substrate", window, None, "skip",
-                    "durable graph coverage and source fingerprint are current", fingerprint,
-                )
-            predecessor = _substrate_predecessor(conn, window)
-    except Exception as exc:
-        return ReadConvergencePlan(
-            "evidence_graph_substrate", window, None, "blocked",
-            f"substrate coverage inspection failed: {exc}", "unavailable",
-        )
-
-    if predecessor is None:
-        return ReadConvergencePlan(
-            "evidence_graph_substrate", window, None, "blocked",
-            "normal reads only converge an existing compatible graph tail; run explicit promotion for a missing historical base",
-            fingerprint,
-        )
-    if window[1] - predecessor["end"] > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
-        return ReadConvergencePlan(
-            "evidence_graph_substrate", window, None, "blocked",
-            f"requested tail exceeds the {READ_CONVERGENCE_MAX_DAYS}-day bounded read budget",
-            fingerprint, predecessor_refresh_id=predecessor["refresh_id"],
-        )
-    tail_start = max(
-        window[0],
-        predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS),
-    )
-    typed_spec = ProductSpec(
-        product="evidence_graph_substrate",
-        version="substrate-v1",
-        handler="lynchpin.materialization:evidence_graph_substrate",
-        input_generation=fingerprint,
-        output=TypedArtifactRef(
-            "evidence_graph_substrate", "substrate-generation", "current-state", fingerprint
-        ),
-        payload={"source_fingerprint": fingerprint, "source_count": len(source_rows)},
-    )
-    typed_plan = ConvergencePlanner((typed_spec,)).plan(
-        ConvergenceRequest(
-            (typed_spec.product,), requested_window=window,
-            input_generations={typed_spec.product: fingerprint},
-        )
-    )
-    return ReadConvergencePlan(
-        "evidence_graph_substrate", window, window, "converge",
-        "compatible graph predecessor has a bounded missing or stale tail", fingerprint,
-        typed_plan=typed_plan, predecessor_refresh_id=predecessor["refresh_id"],
-        tail_start=tail_start,
-    )
-
-
-def _execute_substrate_convergence(plan: ReadConvergencePlan) -> StepResult:
-    from .cli.substrate_snapshot import _snapshot_refresh_id
-    from .substrate.connection import (
-        bind_candidate_publication,
-        candidate_generation,
-    )
-
-    if plan.typed_plan is None or plan.tail_start is None or plan.requested_window is None:
-        raise ValueError("substrate convergence plan is incomplete")
-    start, end = plan.requested_window
-    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
-
-    def run(_context: Any) -> StepResult:
-        from .cli.substrate_snapshot import main as snapshot_main
-
-        with candidate_generation(receipt_refresh_id=refresh_id) as generation:
-            args = [
-                "--start", start.isoformat(), "--end", end.isoformat(),
-                "--incremental-tail-start", plan.tail_start.isoformat(),
-                "--existing-products", "--graph-only", "--progress", "quiet",
-            ]
-            code = snapshot_main(args)
-            if code:
-                raise RuntimeError(f"bounded substrate convergence exited with code {code}")
-            bind_candidate_publication(generation, refresh_id)
-        return StepResult(
-            "evidence_graph_substrate", "succeeded",
-            reason="bounded substrate tail converged and one serving generation was published",
-            artifact=plan.typed_plan.steps[0].output,
-        )
-
-    registry = HandlerRegistry()
-    registry.register(plan.typed_plan.steps[0].spec.handler, run)
-    return LocalExecutor(registry, max_workers=1).execute(plan.typed_plan)["evidence_graph_substrate"]
-
-
-def _ensure_substrate_materialized_for_read(
-    *,
-    window: tuple[date, date] | None,
-    cfg: LynchpinConfig,
-) -> MaterializationResult:
-    del cfg
-    started = datetime.now(timezone.utc)
-    plan = _substrate_read_plan(window=window)
-    from .substrate.connection import substrate_path
-
-    if plan.action != "converge":
-        status: MaterializationStatus = "ready" if plan.action in {"skip", "inspect"} else "blocked"
-        return MaterializationResult(
-            name="evidence_graph_substrate", status=status, changed=False,
-            reason=plan.reason, elapsed_ms=_elapsed_ms(started),
-            product_paths=(substrate_path(),),
-            source_high_water={"source_fingerprint": plan.source_fingerprint},
-            coverage={"requested_window": _window_payload(window), "action": plan.action},
-        )
-    try:
-        result = _execute_substrate_convergence(plan)
-    except Exception as exc:
-        return MaterializationResult(
-            name="evidence_graph_substrate", status="failed", changed=False,
-            reason=str(exc), elapsed_ms=_elapsed_ms(started),
-            product_paths=(substrate_path(),),
-            source_high_water={"source_fingerprint": plan.source_fingerprint},
-            coverage={"requested_window": _window_payload(window), "action": plan.action},
-            diagnostics=(type(exc).__name__,),
-        )
-    if result.status != "succeeded":
-        return MaterializationResult(
-            name="evidence_graph_substrate", status="failed", changed=False,
-            reason=result.reason, elapsed_ms=_elapsed_ms(started),
-            product_paths=(substrate_path(),),
-            source_high_water={"source_fingerprint": plan.source_fingerprint},
-            coverage={"requested_window": _window_payload(window), "action": plan.action},
-        )
-    return MaterializationResult(
-        name="evidence_graph_substrate", status="updated", changed=True,
-        reason=result.reason, elapsed_ms=_elapsed_ms(started),
-        product_paths=(substrate_path(),),
-        source_high_water={
-            "source_fingerprint": plan.source_fingerprint,
-            "refresh_id": _snapshot_refresh_id_for_window(window),
-        },
-        coverage={"requested_window": _window_payload(window), "action": plan.action},
-    )
-
-
-def _snapshot_refresh_id_for_window(window: tuple[date, date] | None) -> str | None:
-    if window is None:
-        return None
-    from .cli.substrate_snapshot import _snapshot_refresh_id
-
-    return _snapshot_refresh_id(start=window[0], end=window[1], projects=())
-
-
-def plan_read_convergence(
-    *,
-    product: str = "evidence_graph_substrate",
-    window: tuple[date, date] | None = None,
-    cfg: LynchpinConfig | None = None,
-) -> ReadConvergencePlan:
-    """Create the serializable plan used by reads and scheduled convergence."""
-    cfg = cfg or get_config()
-    if product == "evidence_graph_substrate":
-        return _substrate_read_plan(window=window)
-    row = _audit_one(product, cfg=cfg)
-    if row.status in {"ready"} and _materialized_enough_for_window(row, window):
-        return ReadConvergencePlan(
-            product, window, None, "skip", "durable coverage and source fingerprint are current",
-            _dataset_fingerprint(row),
-        )
-    materializers = _materializers()
-    if product not in materializers:
-        return ReadConvergencePlan(
-            product, window, None, "blocked", "no transparent materializer is registered",
-            _dataset_fingerprint(row),
-        )
-    effective = _missing_materialization_window(row, window)
-    typed_plan = _typed_materialization_plan(row, window=effective)
-    return ReadConvergencePlan(
-        product, window, effective, "converge", row.reason,
-        _dataset_fingerprint(row), typed_plan=typed_plan,
-    )
-
-
-def run_read_convergence(
-    plan: ReadConvergencePlan,
-    *,
-    cfg: LynchpinConfig | None = None,
-    caller: str = "scheduled_convergence",
-) -> dict[str, Any]:
-    """Execute one planned convergence and persist its existing ledger receipt."""
-    cfg = cfg or get_config()
-    started = datetime.now(timezone.utc)
-    result: MaterializationResult
-    if plan.action == "skip":
-        result = MaterializationResult(
-            name=plan.product, status="ready", changed=False, reason=plan.reason,
-            elapsed_ms=0, product_paths=(),
-            source_high_water={"source_fingerprint": plan.source_fingerprint},
-            coverage={"requested_window": _window_payload(plan.requested_window)},
-        )
-    elif plan.action == "blocked":
-        result = MaterializationResult(
-            name=plan.product, status="blocked", changed=False, reason=plan.reason,
-            elapsed_ms=0, product_paths=(),
-            source_high_water={"source_fingerprint": plan.source_fingerprint},
-            coverage={"requested_window": _window_payload(plan.requested_window)},
-        )
-    elif plan.product == "evidence_graph_substrate":
-        result = _ensure_substrate_materialized_for_read(window=plan.requested_window, cfg=cfg)
-    else:
-        if plan.typed_plan is None or plan.effective_window is None and plan.requested_window is not None:
-            raise ValueError("source convergence plan is incomplete")
-        typed_result = _execute_typed_materializer(
-            plan.product, window=plan.effective_window, plan=plan.typed_plan
-        )
-        after = _audit_one(plan.product, cfg=cfg)
-        usable = after.status == "ready" or after.tail_stale
-        result = _materialization_result(
-            after,
-            status="updated" if typed_result.status == "succeeded" and usable else "failed",
-            changed=typed_result.status == "succeeded" and usable,
-            reason=typed_result.reason if typed_result.status != "succeeded" else after.reason,
-            started=started,
-            window=plan.requested_window,
-            diagnostics=(typed_result.error,) if typed_result.error else (),
-        )
-    from .core.freshness import FreshnessReceipt, record_receipt
-
-    decision = "fresh" if result.status == "ready" else "refresh_sync" if result.changed else result.status
-    receipt_id = f"convergence:{plan.product}:{datetime.now(timezone.utc).isoformat()}"
-    record_receipt(
-        FreshnessReceipt(
-            receipt_id=receipt_id,
-            target=f"materialization:{plan.product}",
-            decision=decision, caller=caller, reason=result.reason,
-            requested_start=plan.requested_window[0].isoformat() if plan.requested_window else None,
-            requested_end=plan.requested_window[1].isoformat() if plan.requested_window else None,
-            snapshot_refresh_id=result.source_high_water.get("refresh_id") if isinstance(result.source_high_water.get("refresh_id"), str) else None,
-            artifact_paths=tuple(str(path) for path in result.product_paths),
-            artifact_statuses=(
-                {"status": result.status, "changed": result.changed,
-                 "source_fingerprint": plan.source_fingerprint},
-            ),
-            created_at_utc=datetime.now(timezone.utc).isoformat(),
-            elapsed_ms=result.elapsed_ms,
-            caveats=result.diagnostics,
-        )
-    )
-    return {"plan": plan.to_json(), "result": result.to_json(), "receipt_id": receipt_id}
-
-
 def substrate_materialization_snapshot(
     path: Path,
     *,

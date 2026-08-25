@@ -60,5 +60,20 @@ class ConvergencePlanner:
         for product in ordered:
             spec = self._specs[product]
             generation = request.input_generations.get(product, spec.input_generation)
-            steps.append(PlanStep(product, spec, tuple(sorted(d.product for d in spec.dependencies if d.product in closure)), request.requested_window, request.requested_window, generation, spec.raw_read_permission, spec.output))
+            dependencies = tuple(sorted(d.product for d in spec.dependencies if d.product in closure))
+            steps.append(
+                PlanStep(
+                    product=product,
+                    spec=spec,
+                    dependencies=dependencies,
+                    requested_window=request.requested_window,
+                    effective_window=request.requested_window,
+                    input_generation=generation,
+                    raw_read_permission=spec.raw_read_permission,
+                    output=spec.output,
+                    phase=spec.phase,
+                    resources=spec.resources,
+                    window_policy=spec.window_policy,
+                )
+            )
         return ConvergencePlan(tuple(steps), request)

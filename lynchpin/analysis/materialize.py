@@ -7,6 +7,10 @@ land there as well, rather than in tracked docs.
 
 from __future__ import annotations
 
+# Handler identities are resolved from this module's code-owned implementation
+# table; these imports intentionally remain available to that table.
+# ruff: noqa: F401
+
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Sequence
@@ -108,6 +112,41 @@ def _out(name: str) -> str:
     return resolve_analysis_path(name)
 
 
+def _step(
+    _dag: DAG,
+    name: str,
+    handler: str,
+    *,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+    depends_on: Sequence[str] = (),
+) -> Step:
+    """Build a serializable analysis step from a closed handler identity."""
+
+    payload_kwargs = kwargs or {}
+    step_window = (
+        (payload_kwargs["start"], payload_kwargs["end"])
+        if isinstance(payload_kwargs.get("start"), date) and isinstance(payload_kwargs.get("end"), date)
+        else None
+    )
+    output_artifact = (
+        args[0]
+        if args and isinstance(args[0], str) and (args[0].endswith(".json") or args[0].endswith(".md"))
+        else None
+    )
+    return Step(
+        name=name,
+        handler=f"analysis:{handler}",
+        payload={"args": args, "kwargs": payload_kwargs},
+        depends_on=tuple(depends_on),
+        requested_window=step_window,
+        effective_window=step_window,
+        output_artifact=output_artifact,
+        resources=tuple(depends_on),
+        exclusive=(output_artifact,) if output_artifact is not None else (),
+    )
+
+
 def _current_state_refresh_id(
     *,
     start: date,
@@ -197,262 +236,46 @@ def _add_machine_analysis_steps(
 ) -> list[str]:
     substrate_deps = [substrate_step] if substrate_step is not None else []
     command_start, command_end = _rolling_window(start=start, end=end, days=90)
-    dag.add(Step(
-        "machine_telemetry_analysis",
-        fn=lambda: write_machine_telemetry_analysis(Path(_out("machine_telemetry_analysis.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_episode_analysis",
-        fn=lambda: write_machine_episode_analysis(Path(_out("machine_episode_analysis.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_pressure_incidents",
-        fn=lambda: write_machine_pressure_incidents(Path(_out("machine_pressure_incidents.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_stall_attribution",
-        fn=lambda: write_stall_attribution(Path(_out("machine_stall_attribution.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_below_analysis",
-        fn=lambda: write_below_analysis(Path(_out("machine_below_analysis.json"))),
-    ))
-    dag.add(Step(
-        "machine_below_attribution",
-        fn=lambda: write_below_attribution_analysis(Path(_out("machine_below_attribution.json")), start=start, end=end),
-        depends_on=["machine_episode_analysis", "machine_below_analysis", "machine_work_observations"],
-    ))
-    dag.add(Step(
-        "machine_below_export_handoff",
-        fn=lambda: write_below_export_handoff(Path(_out("machine_below_export_handoff.json")), start=start, end=end),
-        depends_on=["machine_below_attribution"],
-    ))
-    dag.add(Step(
-        "machine_context_windows",
-        fn=lambda: write_machine_context_analysis(Path(_out("machine_context_windows.json")), start=start, end=end),
-        depends_on=["machine_episode_analysis"],
-    ))
-    dag.add(Step(
-        "machine_work_observations",
-        fn=lambda: write_work_observation_analysis(Path(_out("machine_work_observations.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "workflow_mechanics",
-        fn=lambda: write_workflow_mechanics_report(Path(_out("workflow_mechanics.json")), start=start, end=end),
-        depends_on=["machine_work_observations"],
-    ))
-    dag.add(Step(
-        "keylog_analysis",
-        fn=lambda: write_keylog_analysis(
-            Path(_out("keylog_analysis.json")),
-            start=command_start,
-            end=command_end,
-        ),
-    ))
-    dag.add(Step(
-        "machine_analysis_feature_frames",
-        fn=lambda: write_machine_feature_frames(Path(_out("machine_analysis_feature_frames.json")), start=start, end=end),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_mining",
-        fn=lambda: write_machine_mining(Path(_out("machine_mining.json")), start=start, end=end),
-        depends_on=["machine_analysis_feature_frames"],
-    ))
-    dag.add(Step(
-        "machine_dataset_diagnostics",
-        fn=lambda: write_machine_dataset_diagnostics(
-            Path(_out("machine_dataset_diagnostics.json")),
-            start=start,
-            end=end,
-        ),
-        depends_on=["machine_analysis_feature_frames", "machine_mining"],
-    ))
-    dag.add(Step(
-        "machine_validation_design",
-        fn=lambda: write_machine_validation_design(Path(_out("machine_validation_design.json")), start=start, end=end),
-        depends_on=["machine_analysis_feature_frames"],
-    ))
-    dag.add(Step(
-        "machine_matched_designs",
-        fn=lambda: write_machine_matched_designs(Path(_out("machine_matched_designs.json")), start=start, end=end),
-        depends_on=["machine_analysis_feature_frames", "machine_validation_design"],
-    ))
-    dag.add(Step(
-        "machine_negative_controls",
-        fn=lambda: write_machine_negative_controls(Path(_out("machine_negative_controls.json")), start=start, end=end),
-        depends_on=["machine_matched_designs"],
-    ))
-    dag.add(Step(
-        "machine_comparisons",
-        fn=lambda: write_machine_comparisons(Path(_out("machine_comparisons.json")), start=start, end=end),
-        depends_on=[
-            "machine_mining",
-            "machine_dataset_diagnostics",
-            "machine_validation_design",
-            "machine_matched_designs",
-            "machine_negative_controls",
-        ],
-    ))
-    dag.add(Step(
-        "machine_work_state_windows",
-        fn=lambda: write_machine_work_state_analysis(Path(_out("machine_work_state_windows.json")), start=start, end=end),
-        depends_on=["machine_context_windows"],
-    ))
-    dag.add(Step(
-        "command_performance_windows",
-        fn=lambda: write_command_performance_analysis(
-            Path(_out("command_performance_windows.json")),
-            start=command_start,
-            end=command_end,
-        ),
-        depends_on=["machine_work_state_windows"],
-    ))
-    dag.add(Step(
-        "machine_observational_deltas",
-        fn=lambda: write_observational_command_deltas(Path(_out("machine_observational_deltas.json")), start=start, end=end),
-        depends_on=["command_performance_windows"],
-    ))
-    dag.add(Step(
-        "machine_attribution_candidates",
-        fn=lambda: write_machine_attribution_candidates(Path(_out("machine_attribution_candidates.json")), start=start, end=end),
-        depends_on=["machine_observational_deltas", "machine_work_observations", "machine_comparisons", "machine_matched_designs"],
-    ))
-    dag.add(Step(
-        "machine_derivation_inventory",
-        fn=lambda: write_machine_derivation_inventory(Path(_out("machine_derivation_inventory.json")), start=start, end=end),
-    ))
-    dag.add(Step(
-        "machine_benchmark_plans",
-        fn=lambda: write_machine_benchmark_plans(Path(_out("machine_benchmark_plans.json")), start=start, end=end),
-        depends_on=["machine_attribution_candidates", "machine_derivation_inventory"],
-    ))
-    dag.add(Step(
-        "machine_benchmark_manifest_bundle",
-        fn=lambda: write_machine_benchmark_manifest_bundle(Path(_out("machine_benchmark_manifest_bundle.json")), start=start, end=end),
-        depends_on=["machine_benchmark_plans"],
-    ))
-    dag.add(Step(
-        "machine_benchmark_preflight",
-        fn=lambda: write_machine_benchmark_preflight(Path(_out("machine_benchmark_preflight.json")), start=start, end=end),
-        depends_on=["machine_benchmark_manifest_bundle"],
-    ))
-    dag.add(Step(
-        "machine_support_assessment",
-        fn=lambda: write_machine_support_assessment(Path(_out("machine_support_assessment.json")), start=start, end=end),
-        depends_on=["machine_benchmark_preflight", "machine_experiment_claims"],
-    ))
-    dag.add(Step(
-        "machine_benchmark_execution_handoff",
-        fn=lambda: write_machine_benchmark_execution_handoff(Path(_out("machine_benchmark_execution_handoff.json")), start=start, end=end),
-        depends_on=["machine_benchmark_manifest_bundle", "machine_benchmark_preflight", "machine_support_assessment"],
-    ))
-    dag.add(Step(
-        "machine_mechanism_hypotheses",
-        fn=lambda: write_machine_mechanisms(Path(_out("machine_mechanism_hypotheses.json")), start=start, end=end),
-        depends_on=["machine_support_assessment"],
-    ))
-    dag.add(Step(
-        "machine_instrumentation_gaps",
-        fn=lambda: write_machine_instrumentation_gaps(Path(_out("machine_instrumentation_gaps.json")), start=start, end=end),
-        depends_on=["machine_support_assessment"],
-    ))
-    dag.add(Step(
-        "machine_calibration_fixtures",
-        fn=lambda: write_machine_calibration(Path(_out("machine_calibration_fixtures.json")), start=start, end=end),
-    ))
-    dag.add(Step(
-        "machine_measurement_system",
-        fn=lambda: write_machine_measurement_system(Path(_out("machine_measurement_system.json")), start=start, end=end),
-        depends_on=["machine_analysis_feature_frames", "machine_experiment_claims", "machine_work_observations"],
-    ))
-    dag.add(Step(
-        "machine_attribution_claims",
-        fn=lambda: write_machine_attribution_claims(Path(_out("machine_attribution_claims.json")), start=start, end=end),
-        depends_on=["machine_support_assessment", "machine_experiment_claims"],
-    ))
-    dag.add(Step(
-        "machine_assumption_checks",
-        fn=lambda: write_machine_assumption_checks(Path(_out("machine_assumption_checks.json")), start=start, end=end),
-        depends_on=["machine_attribution_claims"],
-    ))
-    dag.add(Step(
-        "devshell_performance",
-        fn=lambda: write_devshell_performance_analysis(
-            Path(_out("devshell_performance.json")),
-            start=command_start,
-            end=command_end,
-        ),
-        depends_on=["command_performance_windows"],
-    ))
-    dag.add(Step(
-        "machine_observational_baselines",
-        fn=lambda: write_machine_observational_baselines(Path(_out("machine_observational_baselines.json")), start=start, end=end),
-        depends_on=["machine_telemetry_analysis", "machine_context_windows", "machine_work_state_windows"],
-    ))
-    dag.add(Step(
-        "machine_experiment_claims",
-        fn=lambda: write_machine_experiment_claims(Path(_out("machine_experiment_claims.json")), start=start, end=end),
-        depends_on=[*substrate_deps, "machine_episode_analysis"],
-    ))
-    dag.add(Step(
-        "machine_experiment_manifest_diagnostics",
-        fn=lambda: write_machine_experiment_manifest_diagnostics(
-            Path(_out("machine_experiment_manifest_diagnostics.json")),
-            start=start,
-            end=end,
-        ),
-    ))
-    dag.add(Step(
-        "machine_gap_summary",
-        fn=lambda: write_gap_summary_analysis(Path(_out("machine_gap_summary.json"))),
-        depends_on=substrate_deps,
-    ))
-    dag.add(Step(
-        "machine_analysis_readiness",
-        fn=lambda: write_machine_analysis_readiness(Path(_out("machine_analysis_readiness.json")), start=start, end=end),
-        depends_on=[
-            "machine_telemetry_analysis",
-            "machine_below_attribution",
-            "machine_below_export_handoff",
-            "machine_work_state_windows",
-            "command_performance_windows",
-            "machine_observational_deltas",
-            "machine_attribution_candidates",
-            "machine_derivation_inventory",
-            "machine_benchmark_plans",
-            "machine_benchmark_manifest_bundle",
-            "machine_benchmark_preflight",
-            "machine_experiment_manifest_diagnostics",
-            "machine_support_assessment",
-            "machine_benchmark_execution_handoff",
-            "machine_mechanism_hypotheses",
-            "machine_instrumentation_gaps",
-            "machine_calibration_fixtures",
-            "machine_measurement_system",
-            "machine_attribution_claims",
-            "machine_assumption_checks",
-            "devshell_performance",
-            "machine_observational_baselines",
-            "machine_experiment_claims",
-            "machine_gap_summary",
-            "machine_work_observations",
-            "workflow_mechanics",
-            "keylog_analysis",
-            "machine_analysis_feature_frames",
-            "machine_mining",
-            "machine_dataset_diagnostics",
-            "machine_validation_design",
-            "machine_matched_designs",
-            "machine_negative_controls",
-            "machine_comparisons",
-        ],
-    ))
+    dag.add(_step(dag, 'machine_telemetry_analysis', 'write_machine_telemetry_analysis', args=(_out('machine_telemetry_analysis.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_episode_analysis', 'write_machine_episode_analysis', args=(_out('machine_episode_analysis.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_pressure_incidents', 'write_machine_pressure_incidents', args=(_out('machine_pressure_incidents.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_stall_attribution', 'write_stall_attribution', args=(_out('machine_stall_attribution.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_below_analysis', 'write_below_analysis', args=(_out('machine_below_analysis.json'),), kwargs={}, depends_on=[]))
+    dag.add(_step(dag, 'machine_below_attribution', 'write_below_attribution_analysis', args=(_out('machine_below_attribution.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_episode_analysis', 'machine_below_analysis', 'machine_work_observations']))
+    dag.add(_step(dag, 'machine_below_export_handoff', 'write_below_export_handoff', args=(_out('machine_below_export_handoff.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_below_attribution']))
+    dag.add(_step(dag, 'machine_context_windows', 'write_machine_context_analysis', args=(_out('machine_context_windows.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_episode_analysis']))
+    dag.add(_step(dag, 'machine_work_observations', 'write_work_observation_analysis', args=(_out('machine_work_observations.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'workflow_mechanics', 'write_workflow_mechanics_report', args=(_out('workflow_mechanics.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_work_observations']))
+    dag.add(_step(dag, 'keylog_analysis', 'write_keylog_analysis', args=(_out('keylog_analysis.json'),), kwargs={'start': command_start, 'end': command_end}, depends_on=[]))
+    dag.add(_step(dag, 'machine_analysis_feature_frames', 'write_machine_feature_frames', args=(_out('machine_analysis_feature_frames.json'),), kwargs={'start': start, 'end': end}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_mining', 'write_machine_mining', args=(_out('machine_mining.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_analysis_feature_frames']))
+    dag.add(_step(dag, 'machine_dataset_diagnostics', 'write_machine_dataset_diagnostics', args=(_out('machine_dataset_diagnostics.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_analysis_feature_frames', 'machine_mining']))
+    dag.add(_step(dag, 'machine_validation_design', 'write_machine_validation_design', args=(_out('machine_validation_design.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_analysis_feature_frames']))
+    dag.add(_step(dag, 'machine_matched_designs', 'write_machine_matched_designs', args=(_out('machine_matched_designs.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_analysis_feature_frames', 'machine_validation_design']))
+    dag.add(_step(dag, 'machine_negative_controls', 'write_machine_negative_controls', args=(_out('machine_negative_controls.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_matched_designs']))
+    dag.add(_step(dag, 'machine_comparisons', 'write_machine_comparisons', args=(_out('machine_comparisons.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_mining', 'machine_dataset_diagnostics', 'machine_validation_design', 'machine_matched_designs', 'machine_negative_controls']))
+    dag.add(_step(dag, 'machine_work_state_windows', 'write_machine_work_state_analysis', args=(_out('machine_work_state_windows.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_context_windows']))
+    dag.add(_step(dag, 'command_performance_windows', 'write_command_performance_analysis', args=(_out('command_performance_windows.json'),), kwargs={'start': command_start, 'end': command_end}, depends_on=['machine_work_state_windows']))
+    dag.add(_step(dag, 'machine_observational_deltas', 'write_observational_command_deltas', args=(_out('machine_observational_deltas.json'),), kwargs={'start': start, 'end': end}, depends_on=['command_performance_windows']))
+    dag.add(_step(dag, 'machine_attribution_candidates', 'write_machine_attribution_candidates', args=(_out('machine_attribution_candidates.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_observational_deltas', 'machine_work_observations', 'machine_comparisons', 'machine_matched_designs']))
+    dag.add(_step(dag, 'machine_derivation_inventory', 'write_machine_derivation_inventory', args=(_out('machine_derivation_inventory.json'),), kwargs={'start': start, 'end': end}, depends_on=[]))
+    dag.add(_step(dag, 'machine_benchmark_plans', 'write_machine_benchmark_plans', args=(_out('machine_benchmark_plans.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_attribution_candidates', 'machine_derivation_inventory']))
+    dag.add(_step(dag, 'machine_benchmark_manifest_bundle', 'write_machine_benchmark_manifest_bundle', args=(_out('machine_benchmark_manifest_bundle.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_benchmark_plans']))
+    dag.add(_step(dag, 'machine_benchmark_preflight', 'write_machine_benchmark_preflight', args=(_out('machine_benchmark_preflight.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_benchmark_manifest_bundle']))
+    dag.add(_step(dag, 'machine_support_assessment', 'write_machine_support_assessment', args=(_out('machine_support_assessment.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_benchmark_preflight', 'machine_experiment_claims']))
+    dag.add(_step(dag, 'machine_benchmark_execution_handoff', 'write_machine_benchmark_execution_handoff', args=(_out('machine_benchmark_execution_handoff.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_benchmark_manifest_bundle', 'machine_benchmark_preflight', 'machine_support_assessment']))
+    dag.add(_step(dag, 'machine_mechanism_hypotheses', 'write_machine_mechanisms', args=(_out('machine_mechanism_hypotheses.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_support_assessment']))
+    dag.add(_step(dag, 'machine_instrumentation_gaps', 'write_machine_instrumentation_gaps', args=(_out('machine_instrumentation_gaps.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_support_assessment']))
+    dag.add(_step(dag, 'machine_calibration_fixtures', 'write_machine_calibration', args=(_out('machine_calibration_fixtures.json'),), kwargs={'start': start, 'end': end}, depends_on=[]))
+    dag.add(_step(dag, 'machine_measurement_system', 'write_machine_measurement_system', args=(_out('machine_measurement_system.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_analysis_feature_frames', 'machine_experiment_claims', 'machine_work_observations']))
+    dag.add(_step(dag, 'machine_attribution_claims', 'write_machine_attribution_claims', args=(_out('machine_attribution_claims.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_support_assessment', 'machine_experiment_claims']))
+    dag.add(_step(dag, 'machine_assumption_checks', 'write_machine_assumption_checks', args=(_out('machine_assumption_checks.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_attribution_claims']))
+    dag.add(_step(dag, 'devshell_performance', 'write_devshell_performance_analysis', args=(_out('devshell_performance.json'),), kwargs={'start': command_start, 'end': command_end}, depends_on=['command_performance_windows']))
+    dag.add(_step(dag, 'machine_observational_baselines', 'write_machine_observational_baselines', args=(_out('machine_observational_baselines.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_telemetry_analysis', 'machine_context_windows', 'machine_work_state_windows']))
+    dag.add(_step(dag, 'machine_experiment_claims', 'write_machine_experiment_claims', args=(_out('machine_experiment_claims.json'),), kwargs={'start': start, 'end': end}, depends_on=[*substrate_deps, 'machine_episode_analysis']))
+    dag.add(_step(dag, 'machine_experiment_manifest_diagnostics', 'write_machine_experiment_manifest_diagnostics', args=(_out('machine_experiment_manifest_diagnostics.json'),), kwargs={'start': start, 'end': end}, depends_on=[]))
+    dag.add(_step(dag, 'machine_gap_summary', 'write_gap_summary_analysis', args=(_out('machine_gap_summary.json'),), kwargs={}, depends_on=substrate_deps))
+    dag.add(_step(dag, 'machine_analysis_readiness', 'write_machine_analysis_readiness', args=(_out('machine_analysis_readiness.json'),), kwargs={'start': start, 'end': end}, depends_on=['machine_telemetry_analysis', 'machine_below_attribution', 'machine_below_export_handoff', 'machine_work_state_windows', 'command_performance_windows', 'machine_observational_deltas', 'machine_attribution_candidates', 'machine_derivation_inventory', 'machine_benchmark_plans', 'machine_benchmark_manifest_bundle', 'machine_benchmark_preflight', 'machine_experiment_manifest_diagnostics', 'machine_support_assessment', 'machine_benchmark_execution_handoff', 'machine_mechanism_hypotheses', 'machine_instrumentation_gaps', 'machine_calibration_fixtures', 'machine_measurement_system', 'machine_attribution_claims', 'machine_assumption_checks', 'devshell_performance', 'machine_observational_baselines', 'machine_experiment_claims', 'machine_gap_summary', 'machine_work_observations', 'workflow_mechanics', 'keylog_analysis', 'machine_analysis_feature_frames', 'machine_mining', 'machine_dataset_diagnostics', 'machine_validation_design', 'machine_matched_designs', 'machine_negative_controls', 'machine_comparisons']))
     return [
         "machine_telemetry_analysis",
         "machine_episode_analysis",
@@ -502,42 +325,15 @@ def _add_personal_analysis_steps(
     end: date | None = None,
 ) -> list[str]:
     personal_start, personal_end = _rolling_window(start=start, end=end, days=90)
-    dag.add(Step(
-        "personal_anomaly_crossref",
-        fn=lambda: write_anomaly_crossref_report(Path(_out("anomaly_crossref.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_life_phase",
-        fn=lambda: write_life_phase_report(Path(_out("life_phase_report.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_productivity_predictors",
-        fn=lambda: write_productivity_predictors_report(Path(_out("productivity_predictors.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_substance_health",
-        fn=lambda: write_substance_health_report(Path(_out("substance_health_report.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_burnout_warning",
-        fn=lambda: write_burnout_warning_report(Path(_out("burnout_warning.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_ai_session_efficiency",
-        fn=lambda: write_ai_session_efficiency_report(Path(_out("ai_session_efficiency.json")), start=personal_start, end=personal_end),
-    ))
-    dag.add(Step(
-        "personal_quota_advisory",
-        fn=lambda: write_quota_advisory(Path(_out("quota_advisory.json"))),
-    ))
-    dag.add(Step(
-        "personal_operator_day",
-        fn=lambda: _promote_operator_day(start=start, end=end),
-    ))
-    dag.add(Step(
-        "personal_ambient_intelligence",
-        fn=lambda: write_ambient_intelligence(Path(_out("ambient_intelligence.json"))),
-    ))
+    dag.add(_step(dag, 'personal_anomaly_crossref', 'write_anomaly_crossref_report', args=(_out('anomaly_crossref.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_life_phase', 'write_life_phase_report', args=(_out('life_phase_report.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_productivity_predictors', 'write_productivity_predictors_report', args=(_out('productivity_predictors.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_substance_health', 'write_substance_health_report', args=(_out('substance_health_report.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_burnout_warning', 'write_burnout_warning_report', args=(_out('burnout_warning.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_ai_session_efficiency', 'write_ai_session_efficiency_report', args=(_out('ai_session_efficiency.json'),), kwargs={'start': personal_start, 'end': personal_end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_quota_advisory', 'write_quota_advisory', args=(_out('quota_advisory.json'),), kwargs={}, depends_on=[]))
+    dag.add(_step(dag, 'personal_operator_day', '_promote_operator_day', args=(), kwargs={'start': start, 'end': end}, depends_on=[]))
+    dag.add(_step(dag, 'personal_ambient_intelligence', 'write_ambient_intelligence', args=(_out('ambient_intelligence.json'),), kwargs={}, depends_on=[]))
     return [
         "personal_anomaly_crossref",
         "personal_life_phase",
@@ -576,266 +372,35 @@ def current_state_dag(
 ) -> DAG:
     """Build the active-project current-state materialization DAG without external-repo prerequisites."""
     dag = DAG("current-state-materialization")
-    dag.add(Step(
-        "active_project_snapshot",
-        fn=lambda: run_active_project_snapshot(
-            _out("active_project_snapshot.json"),
-            start=start,
-            end=end,
-            projects=projects,
-        ),
-    ))
-    dag.add(Step(
-        "active_code_inventory",
-        fn=lambda: run_active_code_inventory(
-            _out("active_code_inventory.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_python_complexity",
-        fn=lambda: run_active_python_complexity(
-            _out("active_python_complexity.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_python_import_graph",
-        fn=lambda: run_active_python_import_graph(
-            _out("active_python_import_graph.json"),
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_rust_workspace_graph",
-        fn=lambda: run_active_rust_graph(
-            _out("active_rust_workspace_graph.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-        ),
-        depends_on=["active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_git_facts",
-        fn=lambda: run_active_git_facts(
-            _out("active_commit_facts.json"),
-            _out("active_file_change_facts.json"),
-            start=start,
-            end=end,
-            projects=projects,
-        ),
-    ))
-    dag.add(Step(
-        "code_history_claims",
-        fn=lambda: write_code_history_claims(
-            Path(_out("code_history_claims.json")),
-            start=start,
-            end=end,
-        ),
-        depends_on=["active_git_facts"],
-    ))
-    dag.add(Step(
-        "active_work_packages",
-        fn=lambda: run_active_work_packages(
-            _out("active_work_packages.json"),
-            start=start,
-            end=end,
-            projects=projects,
-        ),
-        depends_on=["active_git_facts"],
-    ))
-    dag.add(Step(
-        "project_velocity_windows",
-        fn=lambda: run_project_velocity_windows(
-            _out("project_velocity_windows.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            commit_facts_file=_out("active_commit_facts.json"),
-            work_packages_file=_out("active_work_packages.json"),
-        ),
-        depends_on=["active_git_facts", "active_work_packages"],
-    ))
-    dag.add(Step(
-        "active_code_hotspots",
-        fn=lambda: run_active_hotspots(
-            _out("active_code_hotspots.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            file_changes_file=_out("active_file_change_facts.json"),
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_quality_guardrails",
-        fn=lambda: run_active_guardrails(
-            _out("active_quality_guardrails.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            file_changes_file=_out("active_file_change_facts.json"),
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_structural_findings",
-        fn=lambda: run_active_structural_findings(
-            _out("active_structural_findings.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-        ),
-        depends_on=["active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_semantic_static_findings",
-        fn=lambda: run_active_semantic_static_findings(
-            _out("active_semantic_static_findings.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-        ),
-        depends_on=["active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_rust_dependency_hygiene",
-        fn=lambda: run_active_rust_dependency_hygiene(
-            _out("active_rust_dependency_hygiene.json"),
-            start=start,
-            end=end,
-            projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_python_dependency_hygiene",
-        fn=lambda: run_active_python_dependency_hygiene(
-            _out("active_python_dependency_hygiene.json"),
-            start=start, end=end, projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-            import_graph_file=_out("active_python_import_graph.json"),
-        ),
-        depends_on=["active_project_snapshot", "active_python_import_graph"],
-    ))
-    dag.add(Step(
-        "active_symbol_index",
-        fn=lambda: run_active_symbol_index(
-            _out("active_symbol_index.json"),
-            projects=projects,
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_symbol_changes",
-        fn=lambda: run_active_symbol_diffs(
-            _out("active_symbol_changes.json"),
-            start=start, end=end, projects=projects,
-            symbol_index_file=_out("active_symbol_index.json"),
-            commit_facts_file=_out("active_commit_facts.json"),
-            snapshot_file=_out("active_project_snapshot.json"),
-        ),
-        depends_on=["active_symbol_index", "active_git_facts", "active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_ci_health",
-        fn=lambda: run_active_ci_health(
-            _out("active_ci_health.json"),
-            start=start, end=end, projects=projects,
-            snapshot_file=_out("active_project_snapshot.json"),
-            include_runs=include_github_frontier,
-        ),
-        depends_on=["active_project_snapshot"],
-    ))
-    dag.add(Step(
-        "active_commit_semantics",
-        fn=lambda: run_active_commit_semantics(
-            _out("active_commit_semantics.json"),
-            start=start,
-            end=end,
-            projects=projects,
-        ),
-        depends_on=["active_git_facts"],
-    ))
-    dag.add(Step(
-        "active_ai_attribution",
-        fn=lambda: run_active_ai_attribution(
-            _out("active_ai_attribution.json"),
-            start=start, end=end, projects=projects,
-        ),
-        depends_on=["active_git_facts"],
-    ))
-    dag.add(Step(
-        "current_state_substrate_promote",
-        fn=lambda: run_substrate_promote(
-            commit_facts_file=_out("active_commit_facts.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-            symbol_changes_file=_out("active_symbol_changes.json"),
-            ai_attribution_file=_out("active_ai_attribution.json"),
-            pr_review_file=_out("active_pr_review_topology.json"),
-            refresh_id=_current_state_refresh_id(
-                start=start,
-                end=end,
-                projects=projects,
-            ),
-            window_start=start,
-            window_end=end,
-            sources=CURRENT_STATE_SUBSTRATE_SOURCES,
-            write_evidence_graph=True,
-        ),
-        # active_ai_attribution intentionally NOT a hard dep — same rationale
-        # as the main substrate_promote step. Polylogue insight failures
-        # should degrade only the AI substrate, not block git/symbol.
-        depends_on=[
-            "active_git_facts",
-            "active_symbol_changes",
-            "code_history_claims",
-        ],
-    ))
-    dag.add(Step(
-        "machine_analysis_substrate_promote",
-        fn=lambda: run_substrate_promote(
-            commit_facts_file=_out("active_commit_facts.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-            symbol_changes_file=_out("active_symbol_changes.json"),
-            pr_review_file=_out("active_pr_review_topology.json"),
-            refresh_id=_machine_analysis_refresh_id(start=start, end=end),
-            window_start=start,
-            window_end=end,
-            sources=MACHINE_ANALYSIS_SUBSTRATE_SOURCES,
-            write_evidence_graph=False,
-        ),
-    ))
+    dag.add(_step(dag, 'active_project_snapshot', 'run_active_project_snapshot', args=(_out('active_project_snapshot.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=[]))
+    dag.add(_step(dag, 'active_code_inventory', 'run_active_code_inventory', args=(_out('active_code_inventory.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_python_complexity', 'run_active_python_complexity', args=(_out('active_python_complexity.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_python_import_graph', 'run_active_python_import_graph', args=(_out('active_python_import_graph.json'),), kwargs={'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_rust_workspace_graph', 'run_active_rust_graph', args=(_out('active_rust_workspace_graph.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_git_facts', 'run_active_git_facts', args=(_out('active_commit_facts.json'), _out('active_file_change_facts.json')), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=[]))
+    dag.add(_step(dag, 'code_history_claims', 'write_code_history_claims', args=(_out('code_history_claims.json'),), kwargs={'start': start, 'end': end}, depends_on=['active_git_facts']))
+    dag.add(_step(dag, 'active_work_packages', 'run_active_work_packages', args=(_out('active_work_packages.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
+    dag.add(_step(dag, 'project_velocity_windows', 'run_project_velocity_windows', args=(_out('project_velocity_windows.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'commit_facts_file': _out('active_commit_facts.json'), 'work_packages_file': _out('active_work_packages.json')}, depends_on=['active_git_facts', 'active_work_packages']))
+    dag.add(_step(dag, 'active_code_hotspots', 'run_active_hotspots', args=(_out('active_code_hotspots.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'file_changes_file': _out('active_file_change_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_quality_guardrails', 'run_active_guardrails', args=(_out('active_quality_guardrails.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'file_changes_file': _out('active_file_change_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_structural_findings', 'run_active_structural_findings', args=(_out('active_structural_findings.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_semantic_static_findings', 'run_active_semantic_static_findings', args=(_out('active_semantic_static_findings.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'file_changes_file': _out('active_file_change_facts.json')}, depends_on=['active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_rust_dependency_hygiene', 'run_active_rust_dependency_hygiene', args=(_out('active_rust_dependency_hygiene.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_python_dependency_hygiene', 'run_active_python_dependency_hygiene', args=(_out('active_python_dependency_hygiene.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'import_graph_file': _out('active_python_import_graph.json')}, depends_on=['active_project_snapshot', 'active_python_import_graph']))
+    dag.add(_step(dag, 'active_symbol_index', 'run_active_symbol_index', args=(_out('active_symbol_index.json'),), kwargs={'projects': projects}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_symbol_changes', 'run_active_symbol_diffs', args=(_out('active_symbol_changes.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'symbol_index_file': _out('active_symbol_index.json'), 'commit_facts_file': _out('active_commit_facts.json'), 'snapshot_file': _out('active_project_snapshot.json')}, depends_on=['active_symbol_index', 'active_git_facts', 'active_project_snapshot']))
+    dag.add(_step(dag, 'active_ci_health', 'run_active_ci_health', args=(_out('active_ci_health.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'include_runs': include_github_frontier}, depends_on=['active_project_snapshot']))
+    dag.add(_step(dag, 'active_commit_semantics', 'run_active_commit_semantics', args=(_out('active_commit_semantics.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
+    dag.add(_step(dag, 'active_ai_attribution', 'run_active_ai_attribution', args=(_out('active_ai_attribution.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
+    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'ai_attribution_file': _out('active_ai_attribution.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
+    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': start, 'window_end': end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False}, depends_on=[]))
     machine_steps = _add_machine_analysis_steps(
         dag,
         start=start,
         end=end,
         substrate_step="machine_analysis_substrate_promote",
     )
-    dag.add(Step(
-        "current_state_operator_day",
-        fn=lambda: _promote_operator_day(start=start, end=end),
-    ))
+    dag.add(_step(dag, 'current_state_operator_day', '_promote_operator_day', args=(), kwargs={'start': start, 'end': end}, depends_on=[]))
     current_state_deps = [
         "active_project_snapshot",
         "active_code_inventory",
@@ -861,40 +426,10 @@ def current_state_dag(
         "current_state_operator_day",
     ]
     if include_github_frontier:
-        dag.add(Step(
-            "active_github_frontier",
-            fn=lambda: run_active_github_frontier(
-                _out("active_github_frontier.json"),
-                start=start,
-                end=end,
-                projects=projects,
-                snapshot_file=_out("active_project_snapshot.json"),
-                work_packages_file=_out("active_work_packages.json"),
-            ),
-            depends_on=["active_project_snapshot", "active_work_packages"],
-        ))
+        dag.add(_step(dag, 'active_github_frontier', 'run_active_github_frontier', args=(_out('active_github_frontier.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'work_packages_file': _out('active_work_packages.json')}, depends_on=['active_project_snapshot', 'active_work_packages']))
         current_state_deps.append("active_github_frontier")
-    dag.add(Step(
-        "current_state_context",
-        fn=lambda: run_current_state_analysis(
-            start=start,
-            end=end,
-            out_file=_out("current_state_context_pack.json"),
-            markdown_out=_out("current_state_context_pack.md"),
-            projects=projects,
-            include_github_frontier=include_github_frontier,
-            weak_tags=weak_tags,
-            persist_weak_tags=persist_weak_tags,
-        ),
-        depends_on=current_state_deps,
-    ))
-    dag.add(Step(
-        "current_state_narrative",
-        fn=lambda: _run_narrative(
-            start=start, end=end, projects=projects,
-        ),
-        depends_on=["current_state_context"],
-    ))
+    dag.add(_step(dag, 'current_state_context', 'run_current_state_analysis', args=(), kwargs={'start': start, 'end': end, 'out_file': _out('current_state_context_pack.json'), 'markdown_out': _out('current_state_context_pack.md'), 'projects': projects, 'include_github_frontier': include_github_frontier, 'weak_tags': weak_tags, 'persist_weak_tags': persist_weak_tags}, depends_on=current_state_deps))
+    dag.add(_step(dag, 'current_state_narrative', '_run_narrative', args=(), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['current_state_context']))
     return dag
 
 
@@ -913,21 +448,7 @@ def machine_analysis_dag(
     """
     dag = DAG("machine-analysis-materialization")
     machine_start, machine_end = _rolling_window(start=start, end=end, days=90)
-    dag.add(Step(
-        "machine_analysis_substrate_promote",
-        fn=lambda: run_substrate_promote(
-            commit_facts_file=_out("active_commit_facts.json"),
-            file_changes_file=_out("active_file_change_facts.json"),
-            symbol_changes_file=_out("active_symbol_changes.json"),
-            pr_review_file=_out("active_pr_review_topology.json"),
-            refresh_id=_machine_analysis_refresh_id(start=start, end=end),
-            window_start=machine_start,
-            window_end=machine_end,
-            sources=MACHINE_ANALYSIS_SUBSTRATE_SOURCES,
-            write_evidence_graph=False,
-            full_repromote=full_repromote,
-        ),
-    ))
+    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': machine_start, 'window_end': machine_end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False, 'full_repromote': full_repromote}, depends_on=[]))
     _add_machine_analysis_steps(
         dag,
         start=start,

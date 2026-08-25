@@ -256,11 +256,12 @@ def test_witness_cross_check_unions_duplicate_sessions(monkeypatch, tmp_path) ->
 
 def test_registered_in_dag() -> None:
     from lynchpin.core.source_contracts import source_contract
-    from lynchpin.materialization import _dataset_builders, _materializers
+    from lynchpin.materialization import _dataset_builders
+    from lynchpin.materializers.catalog import PRODUCT_CATALOG
 
     contract = source_contract("health_coverage")
     assert contract.materialization_executor.ref == "health_coverage"
-    assert "health_coverage" in _materializers()
+    assert "health_coverage" in PRODUCT_CATALOG
     assert "health_coverage" in _dataset_builders()
 
 
