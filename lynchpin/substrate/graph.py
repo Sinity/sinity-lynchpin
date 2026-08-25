@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Sequence
 from datetime import date
 from typing import TYPE_CHECKING, Any, cast
@@ -795,6 +796,34 @@ def promote_incremental_evidence_graph(
         raise ValueError(
             f"incremental graph predecessor is missing: {previous_refresh_id}"
         )
+
+    if replacing_existing_refresh:
+        # A logical retry must not mutate its already-published physical
+        # partition. Besides preserving evidence, this avoids a DuckDB 1.1
+        # internal abort when deleting indexed rows from a large partition.
+        # Rekey the immutable partition inside this candidate, then publish
+        # the retry as the usual bounded overlay under the logical id.
+        archived_refresh_id = f"{refresh_id}:partition:{uuid.uuid4().hex}"
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            conn.execute(
+                "UPDATE evidence_edge SET refresh_id = ? WHERE refresh_id = ?",
+                [archived_refresh_id, refresh_id],
+            )
+            conn.execute(
+                "UPDATE evidence_node SET refresh_id = ? WHERE refresh_id = ?",
+                [archived_refresh_id, refresh_id],
+            )
+            conn.execute(
+                "UPDATE evidence_graph_build SET refresh_id = ? WHERE refresh_id = ?",
+                [archived_refresh_id, refresh_id],
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        previous_refresh_id = archived_refresh_id
+        replacing_existing_refresh = False
 
     conn.execute(
         "CREATE OR REPLACE TEMPORARY TABLE incremental_node_ids (id VARCHAR PRIMARY KEY)"

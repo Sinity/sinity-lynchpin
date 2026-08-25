@@ -246,6 +246,11 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
             "SELECT predecessor_refresh_id, predecessor_tail_start "
             "FROM evidence_graph_build WHERE refresh_id = 'new'"
         ).fetchone()
+        archived_overlay = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [overlay[0]],
+        ).fetchone()
         full = EvidenceGraph(
             start=predecessor.start,
             end=tail.end,
@@ -260,7 +265,9 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
 
     assert counts == {"build": 1, "nodes": 4, "edges": 3}
     assert current_partition == (1, date(2026, 5, 6), date(2026, 5, 6))
-    assert overlay == ("old", date(2026, 5, 5))
+    assert overlay[0].startswith("new:partition:")
+    assert overlay[1] == date(2026, 5, 5)
+    assert archived_overlay == ("old", date(2026, 5, 5))
     assert same_refresh_counts == counts
     assert loaded is not None
     assert loaded.start == predecessor.start
