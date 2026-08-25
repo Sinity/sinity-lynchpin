@@ -310,15 +310,12 @@ def load_evidence_graph(
         predecessor_rid, predecessor_tail_start,
     ) = build_rows[0]
 
-    lineage: list[tuple[str, date | None]] = [(str(rid), None)]
-    while predecessor_rid is not None and predecessor_tail_start is not None:
-        lineage.append((str(predecessor_rid), predecessor_tail_start))
-        parent = conn.execute(
-            "SELECT predecessor_refresh_id, predecessor_tail_start "
-            "FROM evidence_graph_build WHERE refresh_id = ?",
-            [predecessor_rid],
-        ).fetchone()
-        predecessor_rid, predecessor_tail_start = parent if parent is not None else (None, None)
+    lineage = _graph_lineage(
+        conn,
+        refresh_id=str(rid),
+        predecessor_refresh_id=predecessor_rid,
+        predecessor_tail_start=predecessor_tail_start,
+    )
 
     # ------------------------------------------------------------------
     # 2. Hydrate nodes
@@ -425,6 +422,30 @@ def load_evidence_graph(
         edges=tuple(edges),
         caveats=_hydrate_caveats(build_caveats),
     )
+
+
+def _graph_lineage(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    predecessor_refresh_id: str | None = None,
+    predecessor_tail_start: date | None = None,
+) -> list[tuple[str, date | None]]:
+    """Return newest-to-oldest physical graph partitions and their cutoffs."""
+    lineage: list[tuple[str, date | None]] = [(refresh_id, None)]
+    current_refresh_id = predecessor_refresh_id
+    current_tail_start = predecessor_tail_start
+    while current_refresh_id is not None and current_tail_start is not None:
+        lineage.append((str(current_refresh_id), current_tail_start))
+        parent = conn.execute(
+            "SELECT predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [current_refresh_id],
+        ).fetchone()
+        current_refresh_id, current_tail_start = (
+            parent if parent is not None else (None, None)
+        )
+    return lineage
 
 
 # ── evidence_graph ────────────────────────────────────────────────────────────
@@ -678,26 +699,47 @@ def promote_incremental_evidence_graph(
             "CREATE OR REPLACE TEMPORARY TABLE predecessor_removed_node_ids (id VARCHAR PRIMARY KEY)"
         )
         conn.execute(
-            """
-            INSERT INTO predecessor_removed_node_ids
-            SELECT id FROM evidence_node
-            WHERE refresh_id = ? AND (date >= ? OR id IN (SELECT id FROM incremental_node_ids))
-            """,
-            [previous_refresh_id, tail_start],
+            "CREATE OR REPLACE TEMPORARY TABLE predecessor_removed_edge_ids "
+            "(source_id VARCHAR, target_id VARCHAR, relation VARCHAR, "
+            "PRIMARY KEY (source_id, target_id, relation))"
         )
+        predecessor_lineage = _graph_lineage(conn, refresh_id=previous_refresh_id)
+        for partition_id, cutoff in predecessor_lineage:
+            node_sql = (
+                "INSERT INTO predecessor_removed_node_ids "
+                "SELECT id FROM evidence_node WHERE refresh_id = ? "
+                "AND (date >= ? OR id IN (SELECT id FROM incremental_node_ids))"
+            )
+            node_params: list[Any] = [partition_id, tail_start]
+            if cutoff is not None:
+                node_sql += " AND date < ?"
+                node_params.append(cutoff)
+            node_sql += " ON CONFLICT (id) DO NOTHING"
+            conn.execute(node_sql, node_params)
+
+            edge_sql = (
+                "INSERT INTO predecessor_removed_edge_ids "
+                "SELECT source_id, target_id, relation FROM evidence_edge "
+                "WHERE refresh_id = ? "
+                "AND (source_id IN (SELECT id FROM predecessor_removed_node_ids) "
+                "OR target_id IN (SELECT id FROM predecessor_removed_node_ids))"
+            )
+            edge_params: list[Any] = [partition_id]
+            if cutoff is not None:
+                edge_sql += (
+                    " AND source_id NOT IN (SELECT id FROM evidence_node "
+                    "WHERE refresh_id = ? AND date >= ?)"
+                    " AND target_id NOT IN (SELECT id FROM evidence_node "
+                    "WHERE refresh_id = ? AND date >= ?)"
+                )
+                edge_params.extend([partition_id, cutoff, partition_id, cutoff])
+            edge_sql += " ON CONFLICT (source_id, target_id, relation) DO NOTHING"
+            conn.execute(edge_sql, edge_params)
         removed_node_count = int(
             conn.execute("SELECT COUNT(*) FROM predecessor_removed_node_ids").fetchone()[0]
         )
         removed_edge_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) FROM evidence_edge
-                WHERE refresh_id = ?
-                  AND (source_id IN (SELECT id FROM predecessor_removed_node_ids)
-                       OR target_id IN (SELECT id FROM predecessor_removed_node_ids))
-                """,
-                [previous_refresh_id],
-            ).fetchone()[0]
+            conn.execute("SELECT COUNT(*) FROM predecessor_removed_edge_ids").fetchone()[0]
         )
     if not replacing_existing_refresh:
         conn.execute("DELETE FROM evidence_edge WHERE refresh_id = ?", [refresh_id])

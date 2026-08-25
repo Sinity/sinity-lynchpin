@@ -285,6 +285,105 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
     assert {node.id for node in loaded.nodes} == {node.id for node in loaded_full.nodes}
 
 
+def test_incremental_graph_three_generation_counts_shadow_grandparent_replacement(
+    tmp_path: Path,
+) -> None:
+    from lynchpin.core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
+    from lynchpin.substrate import graph as graph_mod
+    from lynchpin.substrate.connection import apply_schema, connect
+
+    def graph(*, generation: str, node_date: date, edge_evidence: str) -> EvidenceGraph:
+        return EvidenceGraph(
+            start=date(2026, 5, 1),
+            end=date(2026, 5, 10),
+            generated_at=datetime(2026, 5, 1, 12, tzinfo=UTC),
+            mode="materialized",
+            nodes=(
+                EvidenceNode(
+                    id="anchor",
+                    kind="commit",
+                    source="git",
+                    date=date(2026, 5, 1),
+                    project="lynchpin",
+                    summary="anchor",
+                ),
+                EvidenceNode(
+                    id="stable",
+                    kind="commit",
+                    source="git",
+                    date=node_date,
+                    project="lynchpin",
+                    summary=generation,
+                ),
+            ),
+            edges=(
+                EvidenceEdge(
+                    source_id="anchor",
+                    target_id="stable",
+                    relation="replacement",
+                    evidence=edge_evidence,
+                    weight=1.0,
+                ),
+            ),
+            caveats=(),
+        )
+
+    db = tmp_path / "three-generation.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        graph_mod.promote_evidence_graph(
+            conn,
+            refresh_id="grandparent",
+            graph=graph(generation="grandparent", node_date=date(2026, 5, 1), edge_evidence="g0"),
+        )
+        for refresh_id in ("grandparent",):
+            conn.execute(
+                "INSERT INTO substrate_promotion_run "
+                "(refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at) "
+                "VALUES (?, 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())",
+                [refresh_id],
+            )
+            conn.execute(
+                "INSERT INTO substrate_source_status "
+                "(refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at) "
+                "VALUES (?, 'evidence_graph', 'graph', 'ok', NULL, 2, NULL, NULL, now())",
+                [refresh_id],
+            )
+        graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="grandparent",
+            refresh_id="parent",
+            graph=graph(generation="parent", node_date=date(2026, 5, 5), edge_evidence="g1"),
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 5),
+        )
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, reason, window_start, window_end, mode, counts, started_at, finished_at) "
+            "VALUES ('parent', 'ok', NULL, NULL, NULL, 'test', '{}', now(), now())"
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, reason, row_count, window_start, window_end, recorded_at) "
+            "VALUES ('parent', 'evidence_graph', 'graph', 'ok', NULL, 2, NULL, NULL, now())"
+        )
+        counts = graph_mod.promote_incremental_evidence_graph(
+            conn,
+            previous_refresh_id="parent",
+            refresh_id="current",
+            graph=graph(generation="current", node_date=date(2026, 5, 6), edge_evidence="g2"),
+            full_start=date(2026, 5, 1),
+            tail_start=date(2026, 5, 6),
+        )
+        loaded = graph_mod.load_evidence_graph(conn, refresh_id="current")
+
+    assert counts == {"build": 1, "nodes": 2, "edges": 1}
+    assert loaded is not None
+    assert {node.id for node in loaded.nodes} == {"anchor", "stable"}
+    assert next(node for node in loaded.nodes if node.id == "stable").summary == "current"
+    assert [(edge.relation, edge.evidence) for edge in loaded.edges] == [("replacement", "g2")]
+
+
 def test_incremental_context_graph_reuses_candidate_predecessor(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
