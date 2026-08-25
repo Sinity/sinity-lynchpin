@@ -158,6 +158,22 @@ def materialize_activitywatch_event_index(
 
 
 def _iter_canonical_rows(path: Path) -> Iterable[dict[str, Any]]:
+    from ..materializers.partition_store import ArtifactStore
+
+    store = ArtifactStore(path.with_name(f".{path.stem}.partitions"))
+    selected = store.logical_partitions()
+    if selected:
+        for ref in sorted(selected.values(), key=lambda item: item.key.value):
+            for line in store.read(ref).decode().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    yield payload
+        return
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():

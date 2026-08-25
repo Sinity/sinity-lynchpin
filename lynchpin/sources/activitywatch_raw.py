@@ -284,6 +284,34 @@ def _events_from_ndjson(
     history; callers should use the owner-native bounded source or rebuild the
     carrier first.
     """
+    from ..materializers.partition_store import ArtifactStore, ProductPartitionKey
+
+    store = ArtifactStore(path.with_name(f".{path.stem}.partitions"))
+    selected = store.logical_partitions()
+    if selected:
+        first = logical_date(start) - timedelta(days=1)
+        last = logical_date(end - timedelta(microseconds=1)) if end > start else logical_date(start)
+        cursor = first
+        while cursor <= last:
+            ref = selected.get(ProductPartitionKey.day("activitywatch.events", cursor))
+            if ref is not None:
+                for raw_line in store.read(ref).decode().splitlines():
+                    if not raw_line.strip():
+                        continue
+                    payload = json.loads(raw_line)
+                    if not isinstance(payload, dict):
+                        continue
+                    bucket = str(payload.get("bucket") or "")
+                    if not bucket.startswith(bucket_prefix):
+                        continue
+                    event_start = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
+                    event_end = datetime.fromisoformat(str(payload["end"]).replace("Z", "+00:00"))
+                    zero_in_window = event_end == event_start and start <= event_start < end
+                    if event_start < end and (event_end > start or zero_in_window):
+                        data = payload.get("data")
+                        yield AWEvent(bucket, event_start, event_end, data if isinstance(data, dict) else {})
+            cursor += timedelta(days=1)
+        return
     manifest = path.with_suffix(".manifest.json")
     indexed = _indexed_ndjson_window(path, manifest, bucket_prefix=bucket_prefix, start=start, end=end)
     if indexed is not None:

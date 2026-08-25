@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable
 from itertools import chain
+import hashlib
 import json
 import sys
 from datetime import date, datetime, timedelta
@@ -28,9 +29,15 @@ from ._manifest import (
     replace_indexed_ndjson_tail,
     write_manifest,
 )
+from ..materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 
 BUCKET_PREFIXES = ("aw-watcher-window_", "aw-watcher-afk_", "aw-watcher-web-")
 ACTIVITYWATCH_EVENTS_SCHEMA_VERSION = 1
+
+
+def activitywatch_events_partition_store(output: Path) -> ArtifactStore:
+    """Return the durable logical-day store beside the compatibility carrier."""
+    return ArtifactStore(output.with_name(f".{output.stem}.partitions"))
 
 
 def materialize_activitywatch_events(
@@ -56,6 +63,14 @@ def materialize_activitywatch_events(
     cfg = get_config()
     input_files = activitywatch_input_files(cfg)
     output.parent.mkdir(parents=True, exist_ok=True)
+    store = activitywatch_events_partition_store(output)
+    input_signature = _input_signature(input_files)
+    if start is None and end is None and store.manifest_path.exists():
+        metadata = store.metadata
+        if metadata.get("input_signature") == input_signature:
+            return _read_manifest(output.with_suffix(".manifest.json"))
+    had_partition_store = bool(store.logical_partitions())
+    _migrate_event_store(store, output)
 
     window = _exclusive_window(start, end)
 
@@ -73,12 +88,13 @@ def materialize_activitywatch_events(
     cleaned = dedup_and_merge(raw) if dedupe else raw
     manifest_path = output.with_suffix(".manifest.json")
     previous_manifest = _read_manifest(manifest_path)
+    partitioned_window = start is not None and end is not None and had_partition_store
     bounded_tail = (
         start is not None
         and end is not None
         and _can_replace_tail(output, previous_manifest, end=end)
     )
-    if start is not None and end is not None and output.exists() and not bounded_tail:
+    if start is not None and end is not None and output.exists() and not bounded_tail and not partitioned_window:
         raise MaterializationError(
             "activitywatch.events",
             reason=(
@@ -98,6 +114,8 @@ def materialize_activitywatch_events(
             stop=start,
         )
         ordered = chain(boundary_rows, (_event_row(event) for event in cleaned))
+    elif partitioned_window:
+        ordered = (_event_row(event) for event in cleaned)
     else:
         ordered = (_event_row(event) for event in cleaned)
     ordered = list(sorted(ordered, key=lambda item: (_row_logical_date(item) or date.min, _row_key(item))))
@@ -123,13 +141,15 @@ def materialize_activitywatch_events(
         combined_count = _combined_row_count(
             previous_manifest, row_count, bounded_tail=bounded_tail, start=carrier_start
         )
-        if start is not None and end is not None:
+        if start is not None and end is not None and not partitioned_window:
             guard_incremental_shrinkage(
                 manifest_path,
                 combined_count,
                 dataset="activitywatch.events",
             )
-        if bounded_tail:
+        if partitioned_window and not bounded_tail:
+            row_offsets = previous_manifest.get("row_offsets", {})
+        elif bounded_tail:
             assert carrier_start is not None
             row_offsets = replace_indexed_ndjson_tail(
                 output,
@@ -191,9 +211,117 @@ def materialize_activitywatch_events(
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
         "refresh_id": refresh_id,
+        "partition_store": str(store.root),
+        "partition_scheme": "logical_day(event.start)",
+        "input_signature": input_signature,
     }
+    _publish_event_partitions(
+        store,
+        valid_rows=valid_rows,
+        start=start,
+        end=end,
+        input_digest=input_signature,
+    )
+    selected_partitions = store.logical_partitions()
+    if partitioned_window:
+        covered = tuple(sorted(date.fromisoformat(key.value) for key in selected_partitions))
+        manifest["row_count"] = sum(ref.row_count or 0 for ref in selected_partitions.values())
+        manifest["covered_dates"] = [day.isoformat() for day in covered]
+        manifest["covered_date_count"] = len(covered)
+        manifest["first_date"] = covered[0].isoformat() if covered else None
+        manifest["last_date"] = covered[-1].isoformat() if covered else None
+        manifest["row_counts"] = {
+            key.value: ref.row_count or 0 for key, ref in sorted(selected_partitions.items(), key=lambda item: item[0].value)
+        }
     write_manifest(manifest_path, manifest)
     return manifest
+
+
+def _input_signature(input_files: Iterable[Path]) -> str:
+    values: list[tuple[str, int, int]] = []
+    for path in input_files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        values.append((str(path), stat.st_size, stat.st_mtime_ns))
+    return deterministic_input_digest(values)
+
+
+def _migrate_event_store(store: ArtifactStore, output: Path) -> None:
+    """Copy a legacy monolith into partitions once, retaining its carrier."""
+    if store.manifest_path.exists() or not output.exists():
+        return
+    legacy_manifest = output.with_suffix(".manifest.json")
+    if not legacy_manifest.exists() or _read_manifest(legacy_manifest).get("row_order") != "logical_date":
+        return
+    by_day: dict[date, list[dict[str, Any]]] = {}
+    for row in _iter_canonical_rows(output):
+        try:
+            day = _row_logical_date(row)
+        except (TypeError, ValueError):
+            continue
+        if day is None:
+            continue
+        by_day.setdefault(day, []).append(row)
+    selected: dict[ProductPartitionKey, Any] = {}
+    for day, rows in by_day.items():
+        data = _encode_rows(rows)
+        selected[ProductPartitionKey.day("activitywatch.events", day)] = store.put(
+            ProductPartitionKey.day("activitywatch.events", day), data, format="ndjson",
+            row_count=len(rows), first_date=day, last_date=day, publish=False,
+        )
+    if selected:
+        store.publish(selected, metadata={"migration": "legacy-monolith", "validated": True})
+
+
+def _publish_event_partitions(
+    store: ArtifactStore,
+    *,
+    valid_rows: list[tuple[dict[str, Any], datetime]],
+    start: date | None,
+    end: date | None,
+    input_digest: str,
+) -> None:
+    selected = store.logical_partitions()
+    by_day: dict[date, list[dict[str, Any]]] = {}
+    for row, started in valid_rows:
+        by_day.setdefault(logical_date(started), []).append(row)
+    if start is None or end is None:
+        selected = {}
+    else:
+        affected = {start + timedelta(days=offset) for offset in range((end - start).days)}
+        selected = {key: ref for key, ref in selected.items() if key.value not in {day.isoformat() for day in affected}}
+    for day, rows in sorted(by_day.items()):
+        if start is not None and end is not None and not (start <= day < end):
+            continue
+        key = ProductPartitionKey.day("activitywatch.events", day)
+        data = _encode_rows(rows)
+        existing = selected.get(key)
+        if existing is not None and existing.digest == hashlib.sha256(data).hexdigest():
+            continue
+        selected[key] = store.put(
+            key, data, format="ndjson", input_digest=input_digest, row_count=len(rows),
+            first_date=day, last_date=day, publish=False,
+        )
+    store.publish(selected, metadata={"dataset": "activitywatch.events", "input_signature": input_digest})
+
+
+def _encode_rows(rows: Iterable[dict[str, Any]]) -> bytes:
+    return "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows).encode()
+
+
+def _iter_canonical_rows(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                yield value
 
 
 def _event_row(event: AWEvent | dict[str, Any]) -> dict[str, Any]:

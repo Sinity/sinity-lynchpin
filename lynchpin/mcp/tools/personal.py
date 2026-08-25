@@ -483,7 +483,17 @@ def _load_keylog_analysis_artifact(
 ) -> dict[str, Any] | None:
     from datetime import date
 
+    from lynchpin.analysis.keylog import load_keylog_analysis_payload
     from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
+
+    partitioned = load_keylog_analysis_payload(start=start, end=end)
+    if isinstance(partitioned, dict):
+        artifact_start = str(partitioned.get("start") or "")
+        artifact_end = str(partitioned.get("end") or "")
+        if require_exact:
+            return partitioned if artifact_start == start.isoformat() and artifact_end == end.isoformat() else None
+        if artifact_start <= start.isoformat() and end.isoformat() <= artifact_end:
+            return partitioned
 
     payload = load_json_if_exists(resolve_analysis_path("keylog_analysis.json"))
     if not isinstance(payload, dict):

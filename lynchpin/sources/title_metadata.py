@@ -184,6 +184,20 @@ def iter_title_classifications(
 
         ensure_materialized("title_metadata")
     target = path or title_metadata_path()
+    if path is None:
+        from ..materializers.partition_store import ArtifactStore
+
+        store = ArtifactStore(target.with_name(f".{target.stem}.partitions"))
+        selected = store.logical_partitions()
+        if selected:
+            for _key, ref in sorted(selected.items(), key=lambda item: item[0].value):
+                for line in store.read(ref).decode().splitlines():
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        yield _classification_from_payload(payload)
+            return
     if not target.exists():
         raise FileNotFoundError(
             f"canonical title metadata materialization is missing: {target}. "
@@ -277,7 +291,7 @@ def _float_or_none(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        return float(str(value))
     except (TypeError, ValueError):
         return None
 

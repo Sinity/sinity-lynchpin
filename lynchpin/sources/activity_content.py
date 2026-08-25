@@ -84,6 +84,11 @@ def iter_activity_content_days(
 
         ensure_materialized("activity_content", window=_window(start, end))
     target = path or activity_content_daily_path()
+    selected_paths = _partition_paths(target, product="activity_content.daily") if path is None else ()
+    if selected_paths:
+        for selected in selected_paths:
+            yield from _iter_daily_path(selected, start=start, end=end)
+        return
     if not target.exists():
         raise FileNotFoundError(
             f"canonical ActivityWatch content materialization is missing: {target}. "
@@ -134,38 +139,82 @@ def iter_activity_title_usage(
             f"canonical ActivityWatch title-usage materialization is missing: {target}. "
             "Run python -m lynchpin.cli.materialize --all."
         )
-    with target.open(encoding="utf-8") as handle:
+    selected_paths = _partition_paths(target, product="activity_content.title_usage") if path is None else ()
+    targets = selected_paths or (target,)
+    for selected_target in targets:
+        with selected_target.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    continue
+                first = payload.get("first_date")
+                last = payload.get("last_date")
+                first_date = date.fromisoformat(str(first)) if first else None
+                last_date = date.fromisoformat(str(last)) if last else None
+                if start is not None and (last_date is None or last_date < start):
+                    continue
+                if end is not None and (first_date is None or first_date >= end):
+                    continue
+                yield ActivityTitleUsage(
+                    title_hash=str(payload.get("title_hash") or ""),
+                    app=str(payload.get("app") or ""),
+                    normalized_title=str(payload.get("normalized_title") or ""),
+                    example_title=str(payload.get("example_title") or ""),
+                    focused_seconds=float(payload.get("focused_seconds") or 0.0),
+                    span_count=int(payload.get("span_count") or 0),
+                    first_date=first_date,
+                    last_date=last_date,
+                    matched=bool(payload.get("matched")),
+                    classification_source=_str_or_none(payload.get("classification_source")),
+                    confidence=_float_or_none(payload.get("confidence")),
+                    activity=_str_or_none(payload.get("activity")),
+                    content_type=_str_or_none(payload.get("content_type")),
+                    attention_level=_str_or_none(payload.get("attention_level")),
+                    topic_category=_str_or_none(payload.get("topic_category")),
+                    platform=_str_or_none(payload.get("platform")),
+                )
+
+
+def _partition_paths(target: Path, *, product: str) -> tuple[Path, ...]:
+    from ..materializers.partition_store import ArtifactStore
+
+    store = ArtifactStore(target.with_name(f".{target.stem}.partitions"))
+    return tuple(
+        store.root / ref.path
+        for key, ref in sorted(store.logical_partitions().items(), key=lambda item: item[0].value)
+        if key.product == product
+    )
+
+
+def _iter_daily_path(path: Path, *, start: date | None, end: date | None) -> Iterator[ActivityContentDay]:
+    with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 continue
-            first = payload.get("first_date")
-            last = payload.get("last_date")
-            first_date = date.fromisoformat(str(first)) if first else None
-            last_date = date.fromisoformat(str(last)) if last else None
-            if start is not None and (last_date is None or last_date < start):
+            row_date = date.fromisoformat(str(payload["date"]))
+            if start is not None and row_date < start:
                 continue
-            if end is not None and (first_date is None or first_date >= end):
+            if end is not None and row_date >= end:
                 continue
-            yield ActivityTitleUsage(
-                title_hash=str(payload.get("title_hash") or ""),
-                app=str(payload.get("app") or ""),
-                normalized_title=str(payload.get("normalized_title") or ""),
-                example_title=str(payload.get("example_title") or ""),
+            yield ActivityContentDay(
+                date=row_date,
                 focused_seconds=float(payload.get("focused_seconds") or 0.0),
-                span_count=int(payload.get("span_count") or 0),
-                first_date=first_date,
-                last_date=last_date,
-                matched=bool(payload.get("matched")),
-                classification_source=_str_or_none(payload.get("classification_source")),
-                confidence=_float_or_none(payload.get("confidence")),
-                activity=_str_or_none(payload.get("activity")),
-                content_type=_str_or_none(payload.get("content_type")),
-                attention_level=_str_or_none(payload.get("attention_level")),
-                topic_category=_str_or_none(payload.get("topic_category")),
-                platform=_str_or_none(payload.get("platform")),
+                matched_seconds=float(payload.get("matched_seconds") or 0.0),
+                gpt_matched_seconds=float(payload.get("gpt_matched_seconds") or 0.0),
+                unmatched_seconds=float(payload.get("unmatched_seconds") or 0.0),
+                matched_ratio=float(payload.get("matched_ratio") or 0.0),
+                gpt_matched_ratio=float(payload.get("gpt_matched_ratio") or 0.0),
+                activity_seconds=_float_map(payload.get("activity_seconds")),
+                content_type_seconds=_float_map(payload.get("content_type_seconds")),
+                attention_seconds=_float_map(payload.get("attention_seconds")),
+                topic_seconds=_float_map(payload.get("topic_seconds")),
+                platform_seconds=_float_map(payload.get("platform_seconds")),
+                source_counts=_int_map(payload.get("source_counts")),
             )
 
 
@@ -190,7 +239,7 @@ def _float_or_none(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        return float(str(value))
     except (TypeError, ValueError):
         return None
 

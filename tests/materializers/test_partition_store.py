@@ -57,6 +57,25 @@ def test_interrupted_write_exposes_no_partial_artifact_or_manifest(tmp_path: Pat
     assert not list((tmp_path / "store").glob("artifacts/**/*.ndjson"))
 
 
+def test_interrupted_manifest_publish_keeps_previous_selection_readable(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.materializers import partition_store
+
+    store = ArtifactStore(tmp_path / "store")
+    key = ProductPartitionKey.day("events", "2026-08-25")
+    old = store.put(key, b"old", format="ndjson")
+
+    def fail_publish(*_args: object, **_kwargs: object) -> None:
+        raise OSError("manifest fsync failed")
+
+    monkeypatch.setattr(partition_store, "_atomic_json", fail_publish)
+    with pytest.raises(OSError, match="manifest fsync failed"):
+        store.put(key, b"new", format="ndjson")
+
+    selected = store.logical_partitions()[key]
+    assert selected.path == old.path
+    assert store.read(selected) == b"old"
+
+
 def test_manifest_serialization_is_deterministic(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path / "store")
     created = datetime(2026, 8, 25, tzinfo=timezone.utc)

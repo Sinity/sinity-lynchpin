@@ -153,8 +153,15 @@ class ArtifactStore:
         self, key: ProductPartitionKey, data: bytes | bytearray | str | Path | Iterable[bytes] | Callable[[BinaryIO], None] | Any,
         *, format: str | None = None, input_digest: str | None = None, row_count: int | None = None,
         first_date: date | None = None, last_date: date | None = None, generations: Iterable[str] = (),
+        publish: bool = True,
     ) -> ArtifactRef:
-        """Stage, fsync, and publish bytes; reuse an existing digest exactly."""
+        """Stage immutable bytes and optionally select them immediately.
+
+        ``publish=False`` is the transaction primitive used by multi-partition
+        products. Callers stage every changed partition first, then call
+        :meth:`publish` once. The default remains immediate publication for the
+        small standalone callers that predate logical manifests.
+        """
         chosen_format = format or ("parquet" if hasattr(data, "write_parquet") else "bin")
         _safe(chosen_format, "format")
         staging_dir = self.root / ".staging"
@@ -191,7 +198,8 @@ class ArtifactStore:
                 _fsync_dir(target.parent)
             ref = ArtifactRef(key, digest, str(target.relative_to(self.root)), chosen_format, target.stat().st_size,
                              row_count, first_date, last_date, input_digest, tuple(sorted(set(generations))))
-            self.update_manifest(ref)
+            if publish:
+                self.publish({key: ref})
             return ref
         except BaseException:
             temp_path.unlink(missing_ok=True)
@@ -203,12 +211,73 @@ class ArtifactStore:
         raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         return tuple(ArtifactRef.from_dict(item) for item in raw.get("artifacts", []))
 
-    def update_manifest(self, ref: ArtifactRef) -> None:
-        refs = {item.path: item for item in self.load_manifest()}
-        refs[ref.path] = ref
-        payload = {"schema_version": 1, "artifacts": [item.to_dict() for item in sorted(refs.values(), key=lambda item: item.path)]}
+    def logical_partitions(self) -> dict[ProductPartitionKey, ArtifactRef]:
+        """Return the manifest's currently selected logical partitions.
+
+        Older store manifests only had an append-only ``artifacts`` list. They
+        remain readable, with the newest artifact for each logical key selected
+        as a migration fallback.
+        """
+        if not self.manifest_path.exists():
+            return {}
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        selected = raw.get("partitions")
+        if isinstance(selected, list):
+            return {
+                ref.key: ref
+                for item in selected
+                if isinstance(item, dict)
+                for ref in (ArtifactRef.from_dict(item),)
+            }
+        refs = self.load_manifest()
+        result: dict[ProductPartitionKey, ArtifactRef] = {}
+        for ref in refs:
+            result[ref.key] = ref
+        return result
+
+    def read(self, ref: ArtifactRef) -> bytes:
+        """Read one selected artifact without consulting any raw input."""
+        path = self.root / ref.path
+        if not path.exists():
+            raise FileNotFoundError(f"selected partition is missing: {path}")
+        return path.read_bytes()
+
+    def publish(
+        self,
+        partitions: Mapping[ProductPartitionKey, ArtifactRef],
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Atomically replace the logical selection after all bytes are safe.
+
+        Historical artifacts remain in the append-only inventory for GC and
+        recovery. Readers use only ``partitions``. A failed write therefore
+        leaves the previous complete selection readable.
+        """
+        existing = {item.path: item for item in self.load_manifest()}
+        existing.update({ref.path: ref for ref in partitions.values()})
+        payload: dict[str, Any] = {
+            "schema_version": 2,
+            "artifacts": [item.to_dict() for item in sorted(existing.values(), key=lambda item: item.path)],
+            "partitions": [item.to_dict() for item in sorted(partitions.values(), key=lambda item: (item.key.product, item.key.scheme, item.key.value))],
+        }
+        if metadata:
+            payload["metadata"] = dict(metadata)
         self.root.mkdir(parents=True, exist_ok=True)
         _atomic_json(self.manifest_path, payload)
+
+    def update_manifest(self, ref: ArtifactRef) -> None:
+        selected = self.logical_partitions()
+        selected[ref.key] = ref
+        self.publish(selected)
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        if not self.manifest_path.exists():
+            return {}
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        value = raw.get("metadata")
+        return dict(value) if isinstance(value, dict) else {}
 
     def plan_gc(self, referenced_generations: Iterable[str], *, now: datetime | None = None, grace_period: timedelta = timedelta(days=7)) -> tuple[ArtifactRef, ...]:
         """Return only old artifacts absent from the explicitly referenced generations."""
