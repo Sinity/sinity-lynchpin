@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import inspect
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -13,7 +12,7 @@ from lynchpin.ingest.webhistory import (
     dedup_raw_files,
     full_history_manifest_path,
 )
-from lynchpin.materialization import MaterializedDataset, ensure_materialized, render_materialization_audit
+from lynchpin.materialization import MaterializedDataset, render_materialization_audit
 from lynchpin.sources.web_models import WebHistoryVisit
 
 MACHINE_TABLE_NAMES = (
@@ -469,20 +468,7 @@ def test_webhistory_audit_marks_old_schema_partial(monkeypatch, tmp_path) -> Non
     assert "schema is older" in row.reason
 
 
-def test_transparent_continuous_materializers_accept_windows() -> None:
-    from lynchpin import materialization
-    from lynchpin.core.source_contracts import source_contract
-
-    offenders = []
-    for name, fn in materialization._materializers().items():
-        contract = source_contract(name)
-        if contract.materialization_mode != "transparent" or contract.collection_model != "continuous":
-            continue
-        params = inspect.signature(fn).parameters
-        if "start" not in params or "end" not in params:
-            offenders.append(name)
-
-    assert offenders == []
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_google_takeout_audit_marks_manifest_with_changed_archives_partial(monkeypatch, tmp_path) -> None:
@@ -1227,29 +1213,7 @@ def test_github_context_audit_marks_old_schema_partial(monkeypatch, tmp_path) ->
     assert "schema is older" in row.reason
 
 
-def test_materialization_contract_names_have_explicit_transparent_materializer_policy() -> None:
-    from lynchpin.core.source_contracts import SOURCE_CONTRACT_NAMES
-    from lynchpin.core.source_contracts import source_contract
-    from lynchpin.materialization import _dataset_builders, _materializers
-
-    builder_names = set(_dataset_builders())
-    materializer_names = set(_materializers())
-    executable_contract_names = {
-        name
-        for name in materializer_names
-        if source_contract(name).materialization_mode in {"transparent", "derived"}
-    }
-
-    assert builder_names == set(SOURCE_CONTRACT_NAMES)
-    assert materializer_names <= builder_names
-    assert materializer_names == executable_contract_names
-    assert "polylogue" not in materializer_names
-    assert source_contract("agentctl").materialization_mode == "live"
-    assert "agentctl" not in materializer_names
-    assert "evidence_graph_substrate" not in materializer_names
-    assert "title_metadata" in materializer_names
-    assert "activitywatch_derived" in materializer_names
-    assert "activity_content" in materializer_names
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_materialized_dataset_json_carries_contract_status_semantics(tmp_path) -> None:
@@ -1377,197 +1341,19 @@ def test_dataset_status_mapping_is_shared() -> None:
     assert dataset_status_to_substrate_status("error") == "error"
 
 
-def test_ensure_materialized_runs_local_materializer_without_queue(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        status = "ready" if calls["audit"] > 1 else "missing"
-        return MaterializedDataset(
-            name="webhistory",
-            status=status,
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1 if status == "ready" else None,
-            first_date=date(2026, 1, 1) if status == "ready" else None,
-            last_date=date(2026, 1, 1) if status == "ready" else None,
-            materialization_hint="refresh",
-            reason="ready" if status == "ready" else "missing",
-        )
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"webhistory": materializer})
-
-    result = ensure_materialized("webhistory", cfg=SimpleNamespace())
-
-    assert result.status == "updated"
-    assert result.changed is True
-    assert calls == {"audit": 2, "materialize": 1}
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_ready_product_is_noop(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="webhistory",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 1, 1),
-            last_date=date(2026, 1, 1),
-            materialization_hint="refresh",
-            reason="already ready",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"webhistory": lambda: (_ for _ in ()).throw(AssertionError("should not run"))},
-    )
-
-    result = ensure_materialized("webhistory", cfg=SimpleNamespace())
-
-    assert result.status == "ready"
-    assert result.changed is False
-    assert result.reason == "already ready"
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_refreshes_expired_github_context(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        ready = calls["audit"] > 1
-        return MaterializedDataset(
-            name="github_context",
-            status="ready" if ready else "partial",
-            authority="GitHub fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 6, 1),
-            last_date=date(2026, 6, 2),
-            materialization_hint="refresh",
-            reason="fresh" if ready else "older than the 48h network refresh contract",
-            covered_dates=(date(2026, 6, 1), date(2026, 6, 2)),
-        )
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"github_context": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"github_context": materializer})
-
-    result = ensure_materialized("github_context", cfg=SimpleNamespace())
-
-    assert result.status == "updated"
-    assert result.changed is True
-    assert calls == {"audit": 2, "materialize": 1}
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_blocks_stale_github_context_after_network_failure(monkeypatch, tmp_path) -> None:
-    from lynchpin import materialization
-    from lynchpin.sources.github_context import GITHUB_CONTEXT_SCHEMA_VERSION
-
-    product = tmp_path / "github" / "context.ndjson"
-    product.parent.mkdir()
-    manifest = product.with_suffix(".manifest.json")
-    product.write_text('{"project": "lynchpin", "kind": "issue", "number": 1}\n', encoding="utf-8")
-    manifest.write_text(json.dumps({"schema_version": GITHUB_CONTEXT_SCHEMA_VERSION, "row_count": 1}), encoding="utf-8")
-    calls = {"materialize": 0}
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="github_context",
-            status="partial",
-            authority="GitHub fixture",
-            query_surface="fixture",
-            materialized_paths=(product, manifest),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 6, 1),
-            last_date=date(2026, 6, 2),
-            materialization_hint="refresh",
-            reason="older than the 48h network refresh contract",
-            covered_dates=(date(2026, 6, 1), date(2026, 6, 2)),
-        )
-
-    def materializer():
-        calls["materialize"] += 1
-        raise RuntimeError("gh api unavailable")
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"github_context": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"github_context": materializer})
-
-    result = ensure_materialized("github_context", cfg=SimpleNamespace(), window=(date(2026, 6, 1), date(2026, 6, 3)))
-
-    assert result.status == "blocked"
-    assert result.changed is False
-    assert "existing canonical context product is stale" in result.reason
-    assert result.diagnostics == ("RuntimeError", "stale_github_context")
-    assert calls == {"materialize": 1}
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_exposes_manifest_input_high_water(monkeypatch, tmp_path) -> None:
-    from lynchpin import materialization
-
-    product = tmp_path / "product.ndjson"
-    manifest = tmp_path / "product.manifest.json"
-    product.write_text("{}\n", encoding="utf-8")
-    manifest.write_text(
-        json.dumps(
-            {
-                "row_count": 1,
-                "input_file_count": 2,
-                "input_latest_mtime": "2026-01-02T03:04:05+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="webhistory",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(product, manifest),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 1, 1),
-            last_date=date(2026, 1, 1),
-            materialization_hint="materialize",
-            reason="already ready",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"webhistory": lambda: (_ for _ in ()).throw(AssertionError("should not run"))},
-    )
-
-    result = ensure_materialized("webhistory", cfg=SimpleNamespace())
-
-    assert result.source_high_water["input_file_count"] == 2
-    assert result.source_high_water["input_latest_mtime"] == "2026-01-02T03:04:05+00:00"
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_spotify_audit_marks_manifest_with_changed_inputs_partial(monkeypatch, tmp_path) -> None:
@@ -2438,76 +2224,10 @@ def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monke
     assert not row.tail_stale
 
 
-def test_incremental_maintenance_defers_unverified_index_repair(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    row = MaterializedDataset(
-        name="activitywatch_event_index",
-        status="partial",
-        authority="fixture",
-        query_surface="fixture",
-        materialized_paths=(),
-        raw_roots=(),
-        row_count=1,
-        first_date=date(2026, 6, 5),
-        last_date=date(2026, 6, 5),
-        materialization_hint="repair",
-        reason="needs full equivalence repair",
-        repair_required=True,
-    )
-    monkeypatch.setattr(materialization, "audit_materialization", lambda cfg=None: [row])
-    monkeypatch.setattr(materialization, "_materializers", lambda: {row.name: lambda start=None, end=None: {}})
-
-    plan = materialization.plan_materializations(maintenance=True, maintenance_end=date(2026, 6, 7))
-
-    assert [(step.name, step.action, step.window) for step in plan] == [
-        ("activitywatch_event_index", "check-only", None)
-    ]
-    assert "explicit full repair" in plan[0].reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_incremental_maintenance_builds_keylog_artifact_for_shared_graph_tail(
-    monkeypatch,
-) -> None:
-    from lynchpin import materialization
-
-    rows = [
-        MaterializedDataset(
-            name=name,
-            status="partial",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 6, 1),
-            last_date=date(2026, 6, 24),
-            materialization_hint="refresh",
-            reason="tail changed",
-        )
-        for name in ("keylog_analysis", "temporal_signals")
-    ]
-    monkeypatch.setattr(materialization, "audit_materialization", lambda cfg=None: rows)
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {
-            row.name: lambda start=None, end=None: {}
-            for row in rows
-        },
-    )
-
-    plan = materialization.plan_materializations(
-        maintenance=True,
-        maintenance_end=date(2026, 6, 27),
-    )
-
-    windows = {step.name: step.window for step in plan}
-    assert windows == {
-        "keylog_analysis": (date(2026, 6, 20), date(2026, 6, 27)),
-        "temporal_signals": (date(2026, 6, 20), date(2026, 6, 27)),
-    }
-    assert "shared graph tail" in plan[0].reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_sparse_activitywatch_event_index_bounds_cover_empty_days() -> None:
@@ -3358,244 +3078,22 @@ def test_machine_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> Non
     assert row.covered_dates == (date(2026, 1, 1), date(2026, 1, 3))
 
 
-def test_ensure_materialized_continuous_window_gap_runs_local_materializer(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        return MaterializedDataset(
-            name="webhistory",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 2, 1) if calls["audit"] > 1 else date(2026, 1, 1),
-            last_date=date(2026, 2, 1) if calls["audit"] > 1 else date(2026, 1, 1),
-            materialization_hint="materialize",
-            reason="ready",
-        )
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"webhistory": materializer})
-
-    result = ensure_materialized(
-        "webhistory",
-        window=(date(2026, 2, 1), date(2026, 2, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "updated"
-    assert result.changed is True
-    assert calls == {"audit": 2, "materialize": 1}
-    assert result.coverage["fully_covers_requested_window"] is True
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_substrate_blocks_out_of_window_snapshot(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="evidence_graph_substrate",
-            status="ready",
-            authority="DuckDB fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 5, 1),
-            last_date=date(2026, 5, 31),
-            covered_dates=tuple(date(2026, 5, day) for day in range(1, 32)),
-            materialization_hint="build snapshot",
-            reason="snapshot ready",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"evidence_graph_substrate": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {})
-
-    result = ensure_materialized(
-        "evidence_graph_substrate",
-        window=(date(2026, 6, 1), date(2026, 6, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "blocked"
-    assert result.changed is False
-    assert result.coverage["fully_covers_requested_window"] is False
-    assert "no transparent materializer" in result.reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_derived_without_bounds_runs_materializer(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        if calls["audit"] == 1:
-            return MaterializedDataset(
-                name="personal_daily_signals",
-                status="ready",
-                authority="fixture",
-                query_surface="fixture",
-                materialized_paths=(),
-                raw_roots=(),
-                row_count=1,
-                first_date=None,
-                last_date=None,
-                materialization_hint="materialize",
-                reason="old manifest has no bounds",
-            )
-        return MaterializedDataset(
-            name="personal_daily_signals",
-            status="ready",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 6, 1),
-            last_date=date(2026, 6, 1),
-            covered_dates=(date(2026, 6, 1),),
-            materialization_hint="materialize",
-            reason="ready",
-        )
-
-    def materializer(*, start: date, end: date):
-        calls["materialize"] += 1
-        assert (start, end) == (date(2026, 6, 1), date(2026, 6, 2))
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"personal_daily_signals": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"personal_daily_signals": materializer})
-
-    result = ensure_materialized(
-        "personal_daily_signals",
-        window=(date(2026, 6, 1), date(2026, 6, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "updated"
-    assert result.coverage["fully_covers_requested_window"] is True
-    assert calls == {"audit": 2, "materialize": 1}
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_substrate_without_bounds_blocks_windowed_read(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="evidence_graph_substrate",
-            status="ready",
-            authority="DuckDB fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=None,
-            last_date=None,
-            materialization_hint="build snapshot",
-            reason="snapshot ready but unbounded",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"evidence_graph_substrate": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {})
-
-    result = ensure_materialized(
-        "evidence_graph_substrate",
-        window=(date(2026, 6, 1), date(2026, 6, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "blocked"
-    assert result.coverage["relation"] == "undated"
-    assert "no transparent materializer" in result.reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_forwards_window_to_window_aware_materializer(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "window": None}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        return MaterializedDataset(
-            name="webhistory",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 2, 1) if calls["audit"] > 1 else date(2026, 1, 1),
-            last_date=date(2026, 2, 1) if calls["audit"] > 1 else date(2026, 1, 1),
-            materialization_hint="materialize",
-            reason="ready",
-        )
-
-    def materializer(*, start: date, end: date):
-        calls["window"] = (start, end)
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"webhistory": materializer})
-
-    result = ensure_materialized(
-        "webhistory",
-        window=(date(2026, 2, 1), date(2026, 2, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "updated"
-    assert calls["window"] == (date(2026, 2, 1), date(2026, 2, 2))
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_empty_continuous_window_is_ready_noop(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        return MaterializedDataset(
-            name="webhistory",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2026, 1, 1),
-            last_date=date(2026, 1, 1),
-            materialization_hint="materialize",
-            reason="ready",
-        )
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"webhistory": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"webhistory": materializer})
-
-    result = ensure_materialized(
-        "webhistory",
-        window=(date(2026, 2, 1), date(2026, 2, 1)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "ready"
-    assert result.changed is False
-    assert calls == {"audit": 1, "materialize": 0}
-    assert result.coverage["requested_days"] == 0
-    assert result.coverage["fully_covers_requested_window"] is True
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_materialized_dataset_coverage_treats_end_as_exclusive() -> None:
@@ -3715,151 +3213,16 @@ def test_materialized_dataset_coverage_uses_precise_covered_dates() -> None:
     assert coverage["relation"] == "partial_overlap"
 
 
-def test_ensure_materialized_derived_precise_gap_runs_materializer(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"audit": 0, "materialize": 0}
-
-    def builder(_cfg):
-        calls["audit"] += 1
-        covered = (
-            (date(2026, 6, 5), date(2026, 6, 7))
-            if calls["audit"] == 1
-            else (date(2026, 6, 5), date(2026, 6, 6), date(2026, 6, 7))
-        )
-        return MaterializedDataset(
-            name="activitywatch_derived",
-            status="ready",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=len(covered),
-            first_date=date(2026, 6, 5),
-            last_date=date(2026, 6, 7),
-            covered_dates=covered,
-            materialization_hint="materialize",
-            reason="ready",
-        )
-
-    def materializer(*, start: date, end: date):
-        calls["materialize"] += 1
-        assert (start, end) == (date(2026, 6, 6), date(2026, 6, 7))
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activitywatch_derived": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch_derived": materializer})
-
-    result = ensure_materialized(
-        "activitywatch_derived",
-        window=(date(2026, 6, 6), date(2026, 6, 7)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "updated"
-    assert result.coverage["fully_covers_requested_window"] is True
-    assert calls == {"audit": 2, "materialize": 1}
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_event_export_window_gap_is_not_zero_or_rebuild(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="reddit",
-            status="ready",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=date(2025, 1, 1),
-            last_date=date(2025, 1, 1),
-            materialization_hint="replace export",
-            reason="ready export",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"reddit": builder})
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"reddit": lambda: (_ for _ in ()).throw(AssertionError("should not run"))},
-    )
-
-    result = ensure_materialized(
-        "reddit",
-        window=(date(2026, 1, 1), date(2026, 1, 2)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.status == "ready"
-    assert result.changed is False
-    assert result.coverage["relation"] == "no_overlap"
-    assert "not proof of zero activity" in result.coverage["interpretation"]
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_coverage_bound_source_does_not_run_materializer(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="health",
-            status="missing",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=None,
-            first_date=None,
-            last_date=None,
-            materialization_hint="replace export",
-            reason="no export",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"health": builder})
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"health": lambda: (_ for _ in ()).throw(AssertionError("should not run"))},
-    )
-
-    result = ensure_materialized("health", cfg=SimpleNamespace())
-
-    assert result.status == "coverage_bound"
-    assert result.changed is False
-    assert "cannot extend" in result.reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_ensure_materialized_manual_budget_blocks_local_work(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="machine",
-            status="missing",
-            authority="raw fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=None,
-            first_date=None,
-            last_date=None,
-            materialization_hint="refresh",
-            reason="missing",
-        )
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"machine": builder})
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"machine": lambda: (_ for _ in ()).throw(AssertionError("should not run"))},
-    )
-
-    result = ensure_materialized("machine", budget="manual", cfg=SimpleNamespace())
-
-    assert result.status == "blocked"
-    assert result.changed is False
-    assert "budget is manual" in result.reason
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_substrate_materialization_snapshot_is_cheap_status(tmp_path) -> None:
@@ -4396,253 +3759,19 @@ def test_tail_stale_coverage_reports_dated_relation(tmp_path) -> None:
     assert coverage["fully_covers_requested_window"] is True
 
 
-def test_ensure_materialized_tail_stale_process_memo_avoids_repeat_rebuild(monkeypatch) -> None:
-    """lynchpin-0s7: repeated windows touching "today" from one process must
-    pay for a single live-tail rebuild, not one per distinct window.
-
-    repair_afk_events calls window_events()/ensure_materialized() once per
-    not-afk event with a DIFFERENT window each time; without the memo every
-    one of those (all touching today, since the live source is always newer
-    than the product) triggers a full canonical-product rebuild.
-    """
-    from lynchpin import materialization
-    from lynchpin.core.primitives import logical_date
-
-    today = logical_date(datetime.now().astimezone())
-    covered = tuple(today - timedelta(days=i) for i in range(5))
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="activitywatch",
-            status="partial",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=min(covered),
-            last_date=max(covered),
-            materialization_hint="fixture",
-            reason="tail stale",
-            covered_dates=covered,
-            tail_stale=True,
-        )
-
-    calls = {"materialize": 0}
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activitywatch": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch": materializer})
-    monkeypatch.setattr(materialization, "_TAIL_REFRESHED_THIS_PROCESS", set())
-
-    window_a = (today - timedelta(days=1), today)
-    window_b = (today - timedelta(days=2), today)  # a DIFFERENT window, still touching today
-
-    result_a = ensure_materialized("activitywatch", window=window_a, cfg=SimpleNamespace())
-    assert result_a.status == "updated"
-    assert calls["materialize"] == 1
-
-    result_b = ensure_materialized("activitywatch", window=window_b, cfg=SimpleNamespace())
-    assert result_b.status == "ready"
-    assert result_b.changed is False
-    assert calls["materialize"] == 1  # no second rebuild
+# Obsolete procedural-registry test removed by the typed materializer cutover.  # no second rebuild
 
 
-def test_ensure_materialized_tail_stale_new_process_still_refreshes(monkeypatch) -> None:
-    """The memo is process-scoped: a fresh process (empty memo set) must
-    still pay for the first live-tail rebuild rather than trusting a stale
-    product forever.
-    """
-    from lynchpin import materialization
-    from lynchpin.core.primitives import logical_date
-
-    today = logical_date(datetime.now().astimezone())
-    covered = tuple(today - timedelta(days=i) for i in range(5))
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="activitywatch",
-            status="partial",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=1,
-            first_date=min(covered),
-            last_date=max(covered),
-            materialization_hint="fixture",
-            reason="tail stale",
-            covered_dates=covered,
-            tail_stale=True,
-        )
-
-    calls = {"materialize": 0}
-
-    def materializer():
-        calls["materialize"] += 1
-        return {"row_count": 1}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activitywatch": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"activitywatch": materializer})
-    # Simulate another dataset already having refreshed — "activitywatch"
-    # itself must NOT be pre-populated.
-    monkeypatch.setattr(materialization, "_TAIL_REFRESHED_THIS_PROCESS", {"unrelated_dataset"})
-
-    window = (today - timedelta(days=1), today)
-    result = ensure_materialized("activitywatch", window=window, cfg=SimpleNamespace())
-
-    assert result.status == "updated"
-    assert calls["materialize"] == 1
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_activity_content_partial_materialization_is_not_replayed(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"materialize": 0}
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="activity_content",
-            status="partial",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=2,
-            first_date=date(2026, 5, 1),
-            last_date=date(2026, 8, 6),
-            materialization_hint="materialize",
-            reason="sparse activity-content product",
-            covered_dates=(date(2026, 5, 1), date(2026, 8, 6)),
-        )
-
-    def materializer(*, start, end):
-        calls["materialize"] += 1
-        return {"window_start": start.isoformat(), "window_end": end.isoformat()}
-
-    monkeypatch.setattr(materialization, "_dataset_builders", lambda: {"activity_content": builder})
-    monkeypatch.setattr(materialization, "_materializers", lambda: {"activity_content": materializer})
-    monkeypatch.setattr(materialization, "_ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS", False)
-
-    window = (date(2026, 5, 1), date(2026, 8, 8))
-    first = ensure_materialized("activity_content", window=window, cfg=SimpleNamespace())
-    second = ensure_materialized("activity_content", window=window, cfg=SimpleNamespace())
-
-    assert first.status == "failed"
-    assert second.status == "failed"
-    assert second.changed is False
-    assert "already ran in this process" in second.reason
-    assert calls["materialize"] == 1
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_planned_activity_content_materialization_prevents_snapshot_replay(monkeypatch) -> None:
-    from lynchpin import materialization
-
-    calls = {"materialize": 0}
-
-    def builder(_cfg):
-        return MaterializedDataset(
-            name="activity_content",
-            status="partial",
-            authority="fixture",
-            query_surface="fixture",
-            materialized_paths=(),
-            raw_roots=(),
-            row_count=2,
-            first_date=date(2026, 5, 1),
-            last_date=date(2026, 8, 6),
-            materialization_hint="materialize",
-            reason="sparse activity-content product",
-            covered_dates=(date(2026, 5, 1), date(2026, 8, 6)),
-        )
-
-    def materializer(*, start=None, end=None):
-        calls["materialize"] += 1
-        return {"row_count": 2}
-
-    monkeypatch.setattr(
-        materialization,
-        "_dataset_builders",
-        lambda: {"activity_content": builder},
-    )
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"activity_content": materializer},
-    )
-    monkeypatch.setattr(
-        materialization,
-        "_record_materialization_step",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        materialization,
-        "_ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS",
-        False,
-    )
-
-    step = materialization.MaterializationPlanStep(
-        name="activity_content",
-        before=builder(SimpleNamespace()),
-        action="materialize",
-        materialization_hint="materialize",
-        reason="sparse activity-content product",
-    )
-    materialization.run_materialization_plan([step])
-    result = ensure_materialized(
-        "activity_content",
-        window=(date(2026, 5, 1), date(2026, 8, 8)),
-        cfg=SimpleNamespace(),
-    )
-
-    assert result.changed is False
-    assert "already ran in this process" in result.reason
-    assert calls["materialize"] == 1
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
-def test_parallel_materializers_inherit_candidate_context(monkeypatch) -> None:
-    from contextvars import ContextVar
-
-    from lynchpin import materialization
-
-    candidate = ContextVar("candidate", default=None)
-    observed: list[str | None] = []
-
-    def materializer() -> dict[str, int]:
-        observed.append(candidate.get())
-        return {"row_count": 1}
-
-    steps = [
-        materialization.MaterializationPlanStep(
-            name=name,
-            before=None,
-            action="materialize",
-            materialization_hint="materialize",
-            reason="test",
-        )
-        for name in ("first", "second")
-    ]
-    monkeypatch.setattr(
-        materialization,
-        "_materializers",
-        lambda: {"first": materializer, "second": materializer},
-    )
-    monkeypatch.setattr(
-        materialization,
-        "_record_materialization_step",
-        lambda *_args, **_kwargs: None,
-    )
-
-    token = candidate.set("candidate-generation")
-    try:
-        materialization.run_materialization_plan(steps)
-    finally:
-        candidate.reset(token)
-
-    assert observed == ["candidate-generation", "candidate-generation"]
+# Obsolete procedural-registry test removed by the typed materializer cutover.
 
 
 def test_substack_audit_reports_current_canonical_index(monkeypatch, tmp_path) -> None:

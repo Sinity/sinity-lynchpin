@@ -65,21 +65,15 @@ def record_fingerprints(updates: dict[str, str], path: Path | None = None) -> No
 def compute_fingerprints(steps: dict[str, Any]) -> dict[str, str]:
     """Compute current fingerprints for the steps that declare one.
 
-    Steps without a ``fingerprint`` callable, or whose callable raises or returns
-    a falsy value, are omitted — they will run unconditionally.
+    Steps without a declared fingerprint are omitted — they run unconditionally.
     """
 
     current: dict[str, str] = {}
     for name, step in steps.items():
         fingerprint = getattr(step, "fingerprint", None)
-        if fingerprint is None:
+        if not isinstance(fingerprint, str) or not fingerprint:
             continue
-        try:
-            value = fingerprint()
-        except Exception:
-            continue  # cannot fingerprint → leave out so the step runs
-        if value:
-            current[name] = str(value)
+        current[name] = fingerprint
     return current
 
 

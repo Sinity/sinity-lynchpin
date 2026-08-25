@@ -19,8 +19,8 @@ def test_materialization_plan_runs_missing_artifacts_and_dependents(tmp_path, mo
         lambda name: str(tmp_path / name),
     )
     dag = DAG("tiny")
-    dag.add(Step("source", fn=lambda: None))
-    dag.add(Step("derived", fn=lambda: None, depends_on=["source"]))
+    dag.add(Step('source', 'test:noop'))
+    dag.add(Step('derived', 'test:noop', depends_on=['source']))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -49,8 +49,8 @@ def test_materialization_plan_skips_current_artifacts_and_runs_expired(tmp_path,
     utime(expired, (1_779_999_000, 1_779_999_000))
     now = datetime.fromtimestamp(1_780_000_030, tz=timezone.utc)
     dag = DAG("tiny")
-    dag.add(Step("current", fn=lambda: None))
-    dag.add(Step("expired", fn=lambda: None))
+    dag.add(Step('current', 'test:noop'))
+    dag.add(Step('expired', 'test:noop'))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -83,7 +83,7 @@ def test_materialization_plan_skips_expired_artifact_when_declared_window_covers
     utime(artifact, (1_779_999_000, 1_779_999_000))
     now = datetime.fromtimestamp(1_780_000_030, tz=timezone.utc)
     dag = DAG("tiny")
-    dag.add(Step("keylog_analysis", fn=lambda: None))
+    dag.add(Step('keylog_analysis', 'test:noop'))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -121,7 +121,7 @@ def test_materialization_plan_runs_expired_artifact_when_declared_window_misses_
     utime(artifact, (1_779_999_000, 1_779_999_000))
     now = datetime.fromtimestamp(1_780_000_030, tz=timezone.utc)
     dag = DAG("tiny")
-    dag.add(Step("keylog_analysis", fn=lambda: None))
+    dag.add(Step('keylog_analysis', 'test:noop'))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -150,7 +150,7 @@ def test_materialization_plan_names_artifacts_without_age_horizon(tmp_path, monk
     current = tmp_path / "current.json"
     current.write_text("{}", encoding="utf-8")
     dag = DAG("tiny")
-    dag.add(Step("current", fn=lambda: None))
+    dag.add(Step('current', 'test:noop'))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -174,7 +174,7 @@ def test_default_materialization_policy_names_same_step_artifact(tmp_path, monke
     artifact = tmp_path / "same_name.json"
     artifact.write_text("{}", encoding="utf-8")
     dag = DAG("tiny")
-    dag.add(Step("same_name", fn=lambda: None))
+    dag.add(Step('same_name', 'test:noop'))
 
     rows = materialization_plan_for_dag(dag)
 
@@ -191,7 +191,7 @@ def test_materialization_plan_renders_cost_and_mode(tmp_path, monkeypatch) -> No
         lambda name: str(tmp_path / name),
     )
     dag = DAG("tiny")
-    dag.add(Step("telemetry", fn=lambda: None))
+    dag.add(Step('telemetry', 'test:noop'))
 
     rows = materialization_plan_for_dag(
         dag,
@@ -213,7 +213,7 @@ def test_materialization_plan_renders_cost_and_mode(tmp_path, monkeypatch) -> No
 
 def test_materialization_plan_uses_substrate_source_status(monkeypatch) -> None:
     dag = DAG("tiny")
-    dag.add(Step("promote", fn=lambda: None))
+    dag.add(Step('promote', 'test:noop'))
     monkeypatch.setattr(
         "lynchpin.analysis.core.materialization_intelligence._substrate_source_status",
         lambda source, *, now: {
@@ -269,7 +269,7 @@ def test_analysis_materialization_policy_declares_current_state_substrate_source
 
 def test_current_state_substrate_policy_uses_coverage_skip(monkeypatch) -> None:
     dag = DAG("current")
-    dag.add(Step("current_state_substrate_promote", fn=lambda: None))
+    dag.add(Step('current_state_substrate_promote', 'test:noop'))
     sources = analysis_materialization_policies(
         ("current_state_substrate_promote",)
     )["current_state_substrate_promote"].substrate_sources
@@ -298,7 +298,7 @@ def test_current_state_substrate_policy_uses_coverage_skip(monkeypatch) -> None:
 
 def test_materialization_plan_runs_expired_substrate_source_status(monkeypatch) -> None:
     dag = DAG("tiny")
-    dag.add(Step("promote", fn=lambda: None))
+    dag.add(Step('promote', 'test:noop'))
     monkeypatch.setattr(
         "lynchpin.analysis.core.materialization_intelligence._substrate_source_status",
         lambda source, *, now: {
@@ -326,7 +326,7 @@ def test_materialization_plan_runs_expired_substrate_source_status(monkeypatch) 
 
 def test_materialization_plan_skips_expired_substrate_status_when_window_is_covered(monkeypatch) -> None:
     dag = DAG("tiny")
-    dag.add(Step("promote", fn=lambda: None))
+    dag.add(Step('promote', 'test:noop'))
     monkeypatch.setattr(
         "lynchpin.analysis.core.materialization_intelligence._substrate_source_status",
         lambda source, *, now: {
@@ -358,7 +358,7 @@ def test_materialization_plan_skips_expired_substrate_status_when_window_is_cove
 
 def test_materialization_plan_runs_expired_substrate_status_when_window_is_not_covered(monkeypatch) -> None:
     dag = DAG("tiny")
-    dag.add(Step("promote", fn=lambda: None))
+    dag.add(Step('promote', 'test:noop'))
     monkeypatch.setattr(
         "lynchpin.analysis.core.materialization_intelligence._substrate_source_status",
         lambda source, *, now: {

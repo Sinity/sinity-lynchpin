@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
-
 from lynchpin.analysis.core import memo
 
 
 @dataclass
 class _FakeStep:
     name: str
-    fingerprint: Callable[[], str | None] | None = None
+    fingerprint: str | None = None
 
 
 def test_memoized_skips_only_unchanged_fingerprints():
@@ -20,12 +18,12 @@ def test_memoized_skips_only_unchanged_fingerprints():
     assert memo.memoized_skips(current, stored) == {"a"}
 
 
-def test_compute_fingerprints_skips_uncomputable_and_falsy():
+def test_compute_fingerprints_uses_only_declared_serializable_keys():
     steps = {
-        "fixed": _FakeStep("fixed", fingerprint=lambda: "sha-1"),
+        "fixed": _FakeStep("fixed", fingerprint="sha-1"),
         "none_fn": _FakeStep("none_fn", fingerprint=None),
-        "raises": _FakeStep("raises", fingerprint=lambda: (_ for _ in ()).throw(RuntimeError())),
-        "empty": _FakeStep("empty", fingerprint=lambda: ""),
+        "empty": _FakeStep("empty", fingerprint=""),
+        "callable": _FakeStep("callable", fingerprint=lambda: "not serializable"),
     }
     assert memo.compute_fingerprints(steps) == {"fixed": "sha-1"}
 

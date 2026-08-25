@@ -7,10 +7,11 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 JSON = None | bool | int | float | str | list["JSON"] | dict[str, "JSON"]
 Window = tuple[date, date]
+WindowPolicy = Literal["exact", "bounded", "unbounded"]
 
 
 def _jsonable(value: Any) -> JSON:
@@ -80,6 +81,41 @@ class Dependency:
 
 
 @dataclass(frozen=True)
+class ResourceHints:
+    """Declared resources used by a product handler.
+
+    These are scheduling and audit declarations, not import paths.  A handler
+    may only read raw resources named by its product specification and may not
+    widen a requested window unless its declaration explicitly permits it.
+    """
+
+    reads: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
+    exclusive: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reads", tuple(sorted(set(self.reads))))
+        object.__setattr__(self, "writes", tuple(sorted(set(self.writes))))
+        object.__setattr__(self, "exclusive", tuple(sorted(set(self.exclusive))))
+
+    def to_dict(self) -> dict[str, JSON]:
+        return {
+            "reads": list(self.reads),
+            "writes": list(self.writes),
+            "exclusive": list(self.exclusive),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any] | None) -> "ResourceHints":
+        value = value or {}
+        return cls(
+            tuple(str(item) for item in value.get("reads", ())),
+            tuple(str(item) for item in value.get("writes", ())),
+            tuple(str(item) for item in value.get("exclusive", ())),
+        )
+
+
+@dataclass(frozen=True)
 class ProductSpec:
     product: str
     version: str
@@ -89,21 +125,32 @@ class ProductSpec:
     dependencies: tuple[Dependency, ...] = ()
     payload: Mapping[str, JSON] = field(default_factory=dict)
     raw_read_permission: str = "none"
+    phase: str = "materialize"
+    resources: ResourceHints = field(default_factory=ResourceHints)
+    window_policy: WindowPolicy = "exact"
 
     def __post_init__(self) -> None:
-        if not self.product or not self.handler or not self.input_generation:
-            raise ValueError("product, handler, and input_generation are required")
-        if callable(self.payload) or any(callable(value) for value in self.payload.values()):
-            raise TypeError("product payload cannot contain callables")
+        if not self.product or not self.handler or not self.input_generation or not self.phase:
+            raise ValueError("product, handler, input_generation, and phase are required")
+        try:
+            canonical_json(self.payload)
+        except TypeError as exc:
+            if "callable" in str(exc):
+                raise TypeError("product payload cannot contain callables") from exc
+            raise
         object.__setattr__(self, "dependencies", tuple(self.dependencies))
         object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        if not isinstance(self.resources, ResourceHints):
+            object.__setattr__(self, "resources", ResourceHints.from_dict(self.resources))
+        if self.window_policy not in {"exact", "bounded", "unbounded"}:
+            raise ValueError(f"unknown window policy: {self.window_policy}")
 
     def to_dict(self) -> dict[str, JSON]:
-        return {"product": self.product, "version": self.version, "handler": self.handler, "input_generation": self.input_generation, "output": self.output.to_dict(), "dependencies": [d.to_dict() for d in self.dependencies], "payload": dict(self.payload), "raw_read_permission": self.raw_read_permission}
+        return {"product": self.product, "version": self.version, "handler": self.handler, "input_generation": self.input_generation, "output": self.output.to_dict(), "dependencies": [d.to_dict() for d in self.dependencies], "payload": dict(self.payload), "raw_read_permission": self.raw_read_permission, "phase": self.phase, "resources": self.resources.to_dict(), "window_policy": self.window_policy}
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProductSpec":
-        return cls(value["product"], value["version"], value["handler"], value["input_generation"], ArtifactRef.from_dict(value["output"]), tuple(Dependency.from_dict(item) for item in value.get("dependencies", [])), value.get("payload", {}), value.get("raw_read_permission", "none"))
+        return cls(value["product"], value["version"], value["handler"], value["input_generation"], ArtifactRef.from_dict(value["output"]), tuple(Dependency.from_dict(item) for item in value.get("dependencies", [])), value.get("payload", {}), value.get("raw_read_permission", "none"), value.get("phase", "materialize"), ResourceHints.from_dict(value.get("resources")), value.get("window_policy", "exact"))
 
 
 @dataclass(frozen=True)
@@ -134,13 +181,44 @@ class PlanStep:
     input_generation: str
     raw_read_permission: str
     output: ArtifactRef
+    phase: str
+    resources: ResourceHints
+    window_policy: WindowPolicy
+    action: str = "materialize"
+    reason: str = ""
+    materialization_hint: str = ""
+    status: str = "pending"
+
+    @property
+    def name(self) -> str:
+        """Human-facing alias used by CLI/report consumers."""
+
+        return self.product
+
+    @property
+    def window(self) -> Window | None:
+        """Compatibility spelling for the effective typed window."""
+
+        return self.effective_window
 
     def to_dict(self) -> dict[str, JSON]:
-        return {"product": self.product, "spec": self.spec.to_dict(), "dependencies": list(self.dependencies), "requested_window": _window(self.requested_window), "effective_window": _window(self.effective_window), "input_generation": self.input_generation, "raw_read_permission": self.raw_read_permission, "output": self.output.to_dict()}
+        return {"product": self.product, "spec": self.spec.to_dict(), "dependencies": list(self.dependencies), "requested_window": _window(self.requested_window), "effective_window": _window(self.effective_window), "input_generation": self.input_generation, "raw_read_permission": self.raw_read_permission, "output": self.output.to_dict(), "phase": self.phase, "resources": self.resources.to_dict(), "window_policy": self.window_policy, "action": self.action, "reason": self.reason, "materialization_hint": self.materialization_hint, "status": self.status}
+
+    def to_json(self) -> dict[str, JSON]:
+        """Return the typed wire payload used by CLI and MCP receipts."""
+
+        payload = self.to_dict()
+        payload.update({
+            "name": self.product,
+            "status": self.status,
+            "window": _window(self.effective_window),
+        })
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "PlanStep":
-        return cls(value["product"], ProductSpec.from_dict(value["spec"]), tuple(value["dependencies"]), _parse_window(value.get("requested_window")), _parse_window(value.get("effective_window")), value["input_generation"], value["raw_read_permission"], ArtifactRef.from_dict(value["output"]))
+        spec = ProductSpec.from_dict(value["spec"])
+        return cls(value["product"], spec, tuple(value["dependencies"]), _parse_window(value.get("requested_window")), _parse_window(value.get("effective_window")), value["input_generation"], value["raw_read_permission"], ArtifactRef.from_dict(value["output"]), value.get("phase", spec.phase), ResourceHints.from_dict(value.get("resources")) if value.get("resources") is not None else spec.resources, value.get("window_policy", spec.window_policy), value.get("action", "materialize"), value.get("reason", ""), value.get("materialization_hint", ""), value.get("status", "pending"))
 
 
 @dataclass(frozen=True)

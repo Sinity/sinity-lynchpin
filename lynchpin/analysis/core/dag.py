@@ -1,4 +1,4 @@
-"""Dependency-aware DAG execution for the codebase-analysis subsystem."""
+"""Dependency-aware execution for serializable analysis DAG declarations."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ import time
 import traceback
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from types import MappingProxyType
+from datetime import date
+from typing import Any, Callable, Mapping, Protocol
+
+from lynchpin.materializers.specs import canonical_json
 
 
 class StepStatus(enum.Enum):
@@ -27,19 +31,35 @@ class StepResult:
     error: str | None = None
 
 
-@dataclass
+class HandlerResolver(Protocol):
+    def resolve(self, identity: str) -> Callable[..., Any]: ...
+
+
+@dataclass(frozen=True)
 class Step:
-    """A named unit of work in an analysis DAG."""
+    """A serializable unit of work in an analysis DAG."""
 
     name: str
-    fn: Callable[..., Any]
-    depends_on: list[str] = field(default_factory=list)
-    # Optional content-key: a callable returning a stable identity of this
-    # step's inputs (e.g. a git HEAD sha + code version). When present and
-    # unchanged since the last successful run, the step may be memoized
-    # (skipped) because its output would be byte-identical. See
-    # ``lynchpin.analysis.core.memo``.
-    fingerprint: Callable[[], str | None] | None = None
+    handler: str
+    payload: Mapping[str, Any] = field(default_factory=dict)
+    depends_on: tuple[str, ...] = ()
+    # Stable content key supplied by the planner, not a runtime callable.
+    fingerprint: str | None = None
+    phase: str = "analysis"
+    input_generation: str = "analysis-code-v1"
+    requested_window: tuple[date, date] | None = None
+    effective_window: tuple[date, date] | None = None
+    raw_read_permission: str = "declared"
+    output_artifact: str | None = None
+    resources: tuple[str, ...] = ()
+    exclusive: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.handler:
+            raise ValueError("analysis step name and handler are required")
+        canonical_json(self.payload)
+        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(self, "depends_on", tuple(self.depends_on))
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -49,13 +69,34 @@ class Step:
             return self.name == other.name
         return NotImplemented
 
+    def to_dict(self) -> dict[str, Any]:
+        def window(value: tuple[date, date] | None) -> dict[str, str] | None:
+            return None if value is None else {"start": value[0].isoformat(), "end": value[1].isoformat()}
+
+        return {
+            "name": self.name,
+            "handler": self.handler,
+            "payload": dict(self.payload),
+            "depends_on": list(self.depends_on),
+            "fingerprint": self.fingerprint,
+            "phase": self.phase,
+            "input_generation": self.input_generation,
+            "requested_window": window(self.requested_window),
+            "effective_window": window(self.effective_window),
+            "raw_read_permission": self.raw_read_permission,
+            "output_artifact": self.output_artifact,
+            "resources": list(self.resources),
+            "exclusive": list(self.exclusive),
+        }
+
 
 class DAG:
-    """Dependency-aware pipeline runner for analysis materialization flows."""
+    """Dependency-aware pipeline runner with a closed handler resolver."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, handlers: HandlerResolver | None = None) -> None:
         self.name = name
         self._steps: dict[str, Step] = {}
+        self._handlers = handlers
 
     def add(self, step: Step) -> "DAG":
         if step.name in self._steps:
@@ -74,12 +115,15 @@ class DAG:
                 dependents[dep].append(step.name)
                 in_degree[step.name] += 1
 
+        # Dict insertion order is the catalog's explicit phase order; sorting
+        # dependents below removes set/hash nondeterminism without moving an
+        # intentionally first barrier behind an unrelated lexical name.
         queue: deque[str] = deque(name for name, degree in in_degree.items() if degree == 0)
         order: list[str] = []
         while queue:
             current = queue.popleft()
             order.append(current)
-            for child in dependents[current]:
+            for child in sorted(dependents[current]):
                 in_degree[child] -= 1
                 if in_degree[child] == 0:
                     queue.append(child)
@@ -113,133 +157,69 @@ class DAG:
         selected = self._dependency_closure(up_to)
         return [name for name in order if name in selected]
 
+    def _resolve(self, identity: str) -> Callable[..., Any]:
+        handlers = self._handlers
+        if handlers is None:
+            from ..handlers import handler_registry
+
+            handlers = handler_registry()
+        return handlers.resolve(identity)
+
+    def _execute_step(self, step: Step) -> Any:
+        payload = step.payload
+        args = payload.get("args", ())
+        kwargs = payload.get("kwargs", {})
+        if not isinstance(args, (tuple, list)) or not isinstance(kwargs, Mapping):
+            raise ValueError(f"analysis step {step.name} payload must contain args and kwargs")
+        return self._resolve(step.handler)(*args, **dict(kwargs))
+
+    def _run_one(self, step: Step) -> StepResult:
+        t0 = time.monotonic()
+        try:
+            value = self._execute_step(step)
+            return StepResult(step.name, StepStatus.SUCCESS, round(time.monotonic() - t0, 3), value)
+        except Exception as exc:
+            return StepResult(step.name, StepStatus.FAILED, round(time.monotonic() - t0, 3), error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+
     def run(
         self,
         *,
         dry_run: bool = False,
         up_to: str | None = None,
-        on_step: Optional[Callable[[StepResult], None]] = None,
+        on_step: Callable[[StepResult], None] | None = None,
     ) -> list[StepResult]:
-        order = self._selected_order(up_to)
-        results: list[StepResult] = []
-        failed: set[str] = set()
-
-        for name in order:
-            step = self._steps[name]
-            blocked_by = [dep for dep in step.depends_on if dep in failed]
-            if blocked_by:
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.SKIPPED,
-                    error=f"Skipped due to failed dependency: {', '.join(blocked_by)}",
-                )
-                failed.add(name)
-                results.append(result)
-                if on_step:
-                    on_step(result)
-                continue
-
-            if dry_run:
-                result = StepResult(name=name, status=StepStatus.PENDING)
-                results.append(result)
-                if on_step:
-                    on_step(result)
-                continue
-
-            t0 = time.monotonic()
-            try:
-                value = step.fn()
-                elapsed = time.monotonic() - t0
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.SUCCESS,
-                    elapsed_seconds=round(elapsed, 3),
-                    result=value,
-                )
-            except Exception as exc:
-                elapsed = time.monotonic() - t0
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.FAILED,
-                    elapsed_seconds=round(elapsed, 3),
-                    error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
-                )
-                failed.add(name)
-
-            results.append(result)
-            if on_step:
-                on_step(result)
-
-        return results
+        return self.run_selected(set(self._selected_order(up_to)), dry_run=dry_run, on_step=on_step, up_to=up_to)
 
     def run_selected(
         self,
         selected: set[str],
         *,
+        dry_run: bool = False,
         up_to: str | None = None,
-        on_step: Optional[Callable[[StepResult], None]] = None,
+        on_step: Callable[[StepResult], None] | None = None,
     ) -> list[StepResult]:
         """Run only selected steps while preserving dependency failure semantics."""
 
-        order = self._selected_order(up_to)
         results: list[StepResult] = []
         failed: set[str] = set()
-
-        for name in order:
+        for name in self._selected_order(up_to):
             step = self._steps[name]
             if name not in selected:
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.SKIPPED,
-                    result={
-                        "materialization": {
-                            "status": "ready",
-                            "reason": "materialization plan skipped step",
-                        }
-                    },
-                )
-                results.append(result)
-                if on_step:
-                    on_step(result)
-                continue
-
-            blocked_by = [dep for dep in step.depends_on if dep in failed]
-            if blocked_by:
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.SKIPPED,
-                    error=f"Skipped due to failed dependency: {', '.join(blocked_by)}",
-                )
-                failed.add(name)
-                results.append(result)
-                if on_step:
-                    on_step(result)
-                continue
-
-            t0 = time.monotonic()
-            try:
-                value = step.fn()
-                elapsed = time.monotonic() - t0
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.SUCCESS,
-                    elapsed_seconds=round(elapsed, 3),
-                    result=value,
-                )
-            except Exception as exc:
-                elapsed = time.monotonic() - t0
-                result = StepResult(
-                    name=name,
-                    status=StepStatus.FAILED,
-                    elapsed_seconds=round(elapsed, 3),
-                    error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
-                )
-                failed.add(name)
-
+                result = StepResult(name=name, status=StepStatus.SKIPPED, result={"materialization": {"status": "ready", "reason": "materialization plan skipped step"}})
+            elif dry_run:
+                result = StepResult(name=name, status=StepStatus.PENDING)
+            else:
+                blocked_by = [dep for dep in step.depends_on if dep in failed]
+                if blocked_by:
+                    result = StepResult(name=name, status=StepStatus.SKIPPED, error=f"Skipped due to failed dependency: {', '.join(blocked_by)}")
+                    failed.add(name)
+                else:
+                    result = self._run_one(step)
+                    if result.status == StepStatus.FAILED:
+                        failed.add(name)
             results.append(result)
             if on_step:
                 on_step(result)
-
         return results
 
     def describe(self) -> str:
@@ -247,5 +227,5 @@ class DAG:
         for name in self._topo_order():
             step = self._steps[name]
             deps = f" (after: {', '.join(step.depends_on)})" if step.depends_on else ""
-            lines.append(f"  - {name}{deps}")
+            lines.append(f"  - {name} [{step.handler}]{deps}")
         return "\n".join(lines)

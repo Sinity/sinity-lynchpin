@@ -1,7 +1,6 @@
 """Typed, serializable convergence planning and local execution."""
 
-from .executor import HandlerRegistry, LocalExecutor, StepContext
-from .legacy import describe_existing_materializers
+from .executor import ClosedHandlerRegistry, HandlerDefinition, LocalExecutor, StepContext, validate_step_contract
 from .plan import ConvergencePlanner, validate_acyclic
 from .specs import (
     ArtifactRef,
@@ -11,6 +10,7 @@ from .specs import (
     PartitionRef,
     PlanStep,
     ProductSpec,
+    ResourceHints,
     StepResult,
     canonical_json,
     plan_digest,
@@ -22,15 +22,17 @@ __all__ = [
     "ConvergencePlanner",
     "ConvergenceRequest",
     "Dependency",
-    "HandlerRegistry",
+    "ClosedHandlerRegistry",
+    "HandlerDefinition",
     "LocalExecutor",
     "PartitionRef",
     "PlanStep",
     "ProductSpec",
+    "ResourceHints",
     "StepContext",
     "StepResult",
     "canonical_json",
-    "describe_existing_materializers",
     "plan_digest",
+    "validate_step_contract",
     "validate_acyclic",
 ]
