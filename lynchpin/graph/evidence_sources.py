@@ -27,7 +27,7 @@ from . import evidence_arbtt
 from . import evidence_svn
 from . import evidence_gmail
 from . import evidence_substance
-from .performance import log_performance, sample_performance
+from .performance import GraphStageRecorder, log_performance, sample_performance
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ def add_base_source_nodes(
     selected: set[str],
     mode: CostClass,
     include_spotify: bool,
+    recorder: GraphStageRecorder | None = None,
 ) -> tuple[EvidenceCaveat, ...]:
     caveats: list[EvidenceCaveat] = []
 
@@ -51,6 +52,7 @@ def add_base_source_nodes(
             nodes, edges, start=start, end=end, selected=selected, mode=mode
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "polylogue sessions",
@@ -60,6 +62,7 @@ def add_base_source_nodes(
         ),
         caveat_source="polylogue",
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "polylogue work events",
@@ -69,6 +72,7 @@ def add_base_source_nodes(
         ),
         caveat_source="polylogue",
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "raw log",
@@ -77,6 +81,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end, selected=selected
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "clipboard",
@@ -85,12 +90,14 @@ def add_base_source_nodes(
             nodes, start=start, end=end, selected=selected
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "irc",
         caveats,
         lambda: evidence_irc.add_irc(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "activitywatch",
@@ -99,6 +106,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end, selected=selected
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "terminal",
@@ -107,6 +115,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end, selected=selected
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "web",
@@ -115,6 +124,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end, selected=selected
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "personal daily signals",
@@ -123,6 +133,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "personal products",
@@ -131,6 +142,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     if include_spotify:
         _run_source(
@@ -140,6 +152,7 @@ def add_base_source_nodes(
                 nodes, start=start, end=end, selected=selected
             ),
             node_count=lambda: len(nodes),
+            recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
         )
     _run_source(
         "health",
@@ -148,6 +161,7 @@ def add_base_source_nodes(
             nodes, start=start, end=end
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "temporal signals",
@@ -156,60 +170,70 @@ def add_base_source_nodes(
             nodes, start=start, end=end
         ),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "reddit",
         caveats,
         lambda: evidence_reddit.add_reddit(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "sms",
         caveats,
         lambda: evidence_sms.add_sms(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "outlook",
         caveats,
         lambda: evidence_outlook.add_outlook(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "svn",
         caveats,
         lambda: evidence_svn.add_svn(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "gmail",
         caveats,
         lambda: evidence_gmail.add_gmail(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "substance",
         caveats,
         lambda: evidence_substance.add_substance(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "sleep",
         caveats,
         lambda: evidence_sleep.add_sleep(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "arbtt",
         caveats,
         lambda: evidence_arbtt.add_arbtt(nodes, start=start, end=end, selected=selected),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     _run_source(
         "readiness",
         caveats,
         lambda: evidence_system_signals.add_readiness(nodes, end=end),
         node_count=lambda: len(nodes),
+        recorder=recorder, window_start=start, window_end=end, edge_count=lambda: len(edges),
     )
     return tuple(caveats)
 
@@ -221,14 +245,24 @@ def _run_source(
     *,
     caveat_source: str | None = None,
     node_count: Callable[[], int],
+    recorder: GraphStageRecorder | None,
+    window_start: date,
+    window_end: date,
+    edge_count: Callable[[], int],
 ) -> None:
     """Add one source without letting it abort the whole evidence graph."""
     before = node_count()
     started = sample_performance()
+    token = None
+    if recorder is not None:
+        token, started = recorder.start(
+            f"source:{label}", window_start=window_start, window_end=window_end,
+            node_count=before, edge_count=edge_count(),
+        )
     log.info("evidence_sources: %s", label)
     try:
         build()
-    except Exception as exc:  # noqa: BLE001 - graph integration is source-fault isolated
+    except BaseException as exc:  # noqa: BLE001 - graph integration is source-fault isolated
         log.warning("evidence_sources: %s blocked: %s", label, exc, exc_info=True)
         caveats.append(
             EvidenceCaveat(
@@ -245,6 +279,15 @@ def _run_source(
             status="blocked",
             node_delta=node_count() - before,
         )
+        if recorder is not None and token is not None:
+            recorder.finish(
+                token, started,
+                status="cancelled" if type(exc).__name__ == "CancelledError" or isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed",
+                node_count=node_count(), edge_count=edge_count(),
+                caveat="source blocked", error=exc,
+            )
+        if type(exc).__name__ == "CancelledError" or isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
         return
     node_delta = node_count() - before
     log.info(
@@ -261,6 +304,8 @@ def _run_source(
         status="ok",
         node_delta=node_delta,
     )
+    if recorder is not None and token is not None:
+        recorder.finish(token, started, status="completed", node_count=node_count(), edge_count=edge_count())
 
 
 __all__ = [

@@ -25,7 +25,7 @@ from ..core.evidence_graph import (
 from . import evidence_analysis, evidence_edges, evidence_sources
 from .evidence_projects import selected_projects
 from .machine_analysis import add_machine_analysis_nodes
-from .performance import log_performance, sample_performance
+from .performance import GraphStageRecorder, log_performance, recorded_stage, sample_performance
 from .source_readiness import source_readiness
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class EvidenceGraphBuildContext:
         end: date,
         projects: Sequence[str] | None = None,
         include_github_frontier: bool = False,
+        recorder: GraphStageRecorder | None = None,
     ) -> "EvidenceGraph":
         key = (
             start,
@@ -66,12 +67,15 @@ class EvidenceGraphBuildContext:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        graph = build_base_evidence_graph(
-            start=start,
-            end=end,
-            projects=projects,
-            include_github_frontier=include_github_frontier,
-        )
+        kwargs: dict[str, Any] = {
+            "start": start,
+            "end": end,
+            "projects": projects,
+            "include_github_frontier": include_github_frontier,
+        }
+        if recorder is not None:
+            kwargs["recorder"] = recorder
+        graph = build_base_evidence_graph(**kwargs)
         self._cache[key] = graph
         return graph
 
@@ -85,6 +89,7 @@ def build_base_evidence_graph(
     promote: bool = False,
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
+    recorder: GraphStageRecorder | None = None,
 ) -> EvidenceGraph:
     """Build the base evidence graph: every source except generated analysis
     artifacts and claims.
@@ -93,6 +98,9 @@ def build_base_evidence_graph(
     that must not see the analysis overlay they are about to write.
     """
     selected = selected_projects(projects)
+    recorder = recorder or GraphStageRecorder.for_window(
+        start=start, end=end, refresh_id=promote_refresh_id or f"graph:{start.isoformat()}:{end.isoformat()}:all"
+    )
     nodes: list[EvidenceNode] = []
     edges: list[EvidenceEdge] = []
     now = datetime.now().astimezone()
@@ -112,6 +120,7 @@ def build_base_evidence_graph(
         selected=selected,
         mode=mode,
         include_spotify=True,
+        recorder=recorder,
     )
     log.info(
         "evidence_graph: loaded base sources nodes=%d edges=%d", len(nodes), len(edges)
@@ -128,6 +137,7 @@ def build_base_evidence_graph(
         promote=promote,
         promote_refresh_id=promote_refresh_id,
         promote_projects=promote_projects,
+        recorder=recorder,
     )
 
 
@@ -143,6 +153,7 @@ def build_evidence_graph(
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
     include_source_readiness: bool = True,
+    recorder: GraphStageRecorder | None = None,
 ) -> EvidenceGraph:
     """Build a local evidence graph for a date range.
 
@@ -150,6 +161,9 @@ def build_evidence_graph(
     context's cache; otherwise the base is built fresh.
     """
     selected = selected_projects(projects)
+    recorder = recorder or GraphStageRecorder.for_window(
+        start=start, end=end, refresh_id=promote_refresh_id or f"graph:{start.isoformat()}:{end.isoformat()}:all"
+    )
     mode: CostClass
     if build_context is not None:
         log.info(
@@ -163,6 +177,7 @@ def build_evidence_graph(
             end=end,
             projects=projects,
             include_github_frontier=include_github_frontier,
+            recorder=recorder,
         )
         nodes = list(base.nodes)
         edges = list(base.edges)
@@ -186,36 +201,29 @@ def build_evidence_graph(
             selected=selected,
             mode=mode,
             include_spotify=False,
+            recorder=recorder,
         )
     log.info("evidence_graph: base graph nodes=%d edges=%d", len(nodes), len(edges))
 
     now = datetime.now().astimezone()
     log.info("evidence_graph: adding analysis artifacts")
-    analysis_artifacts = evidence_analysis.add_analysis_artifacts(
-        nodes,
-        edges,
-        end=end,
-        selected=selected,
-        exclude_names=frozenset(exclude_analysis_artifacts),
-    )
+    with recorded_stage(recorder, "analysis_overlay:artifacts", window_start=start, window_end=end, node_count=lambda: len(nodes), edge_count=lambda: len(edges)):
+        analysis_artifacts = evidence_analysis.add_analysis_artifacts(
+            nodes, edges, end=end, selected=selected,
+            exclude_names=frozenset(exclude_analysis_artifacts),
+        )
     log.info("evidence_graph: adding analysis claims")
-    evidence_analysis.add_analysis_claims(
-        nodes,
-        edges,
-        end=end,
-        selected=selected,
-        exclude_names=frozenset(exclude_analysis_artifacts),
-        artifacts=analysis_artifacts,
-    )
+    with recorded_stage(recorder, "analysis_overlay:claims", window_start=start, window_end=end, node_count=lambda: len(nodes), edge_count=lambda: len(edges)):
+        evidence_analysis.add_analysis_claims(
+            nodes, edges, end=end, selected=selected,
+            exclude_names=frozenset(exclude_analysis_artifacts), artifacts=analysis_artifacts,
+        )
     log.info("evidence_graph: adding machine analysis nodes")
-    add_machine_analysis_nodes(
-        nodes,
-        edges,
-        start=start,
-        end=end,
-        selected=selected,
-        exclude_names=frozenset(exclude_analysis_artifacts),
-    )
+    with recorded_stage(recorder, "machine_analysis", window_start=start, window_end=end, node_count=lambda: len(nodes), edge_count=lambda: len(edges)):
+        add_machine_analysis_nodes(
+            nodes, edges, start=start, end=end, selected=selected,
+            exclude_names=frozenset(exclude_analysis_artifacts),
+        )
     log.info(
         "evidence_graph: after machine analysis nodes=%d edges=%d",
         len(nodes),
@@ -234,21 +242,23 @@ def build_evidence_graph(
         promote_refresh_id=promote_refresh_id,
         promote_projects=promote_projects,
         include_source_readiness=include_source_readiness,
+        recorder=recorder,
     )
 
 
-def _measure_edges(stage: str, build: Any) -> tuple[EvidenceEdge, ...]:
+def _measure_edges(stage: str, build: Any, *, recorder: GraphStageRecorder | None, start: date, end: date, nodes: Sequence[EvidenceNode], edges: Sequence[EvidenceEdge]) -> tuple[EvidenceEdge, ...]:
     """Materialize and record one independent edge-family derivation."""
     started = sample_performance()
-    edges = tuple(build())
+    with recorded_stage(recorder, f"edge_family:{stage}", window_start=start, window_end=end, node_count=lambda: len(nodes), edge_count=lambda: len(edges)):
+        built_edges = tuple(build())
     log_performance(
         log,
         component="edge_derivation",
         stage=stage,
         started=started,
-        edge_count=len(edges),
+        edge_count=len(built_edges),
     )
-    return edges
+    return built_edges
 
 
 def _finalize_graph(
@@ -264,6 +274,7 @@ def _finalize_graph(
     promote_refresh_id: str | None = None,
     promote_projects: Sequence[str] = (),
     include_source_readiness: bool = True,
+    recorder: GraphStageRecorder | None = None,
 ) -> EvidenceGraph:
     node_ids = {node.id for node in nodes}
     if len(nodes) > 100_000:
@@ -271,8 +282,11 @@ def _finalize_graph(
             "evidence_graph: large graph build nodes=%d; relation builders run in bounded source groups",
             len(nodes),
         )
+    def measure(stage: str, build: Any) -> tuple[EvidenceEdge, ...]:
+        return _measure_edges(stage, build, recorder=recorder, start=start, end=end, nodes=nodes, edges=edges)
+
     log.info("evidence_graph: deriving same-project/day edges for %d nodes", len(nodes))
-    same_project_edges = _measure_edges(
+    same_project_edges = measure(
         "same_project_day",
         lambda: (
             edge
@@ -283,7 +297,7 @@ def _finalize_graph(
     edges.extend(same_project_edges)
     log.info("evidence_graph: added %d same-project/day edges", len(same_project_edges))
     log.info("evidence_graph: deriving temporal-overlap edges")
-    overlap_edges = _measure_edges(
+    overlap_edges = measure(
         "temporal_overlap",
         lambda: (
             edge
@@ -294,7 +308,7 @@ def _finalize_graph(
     edges.extend(overlap_edges)
     log.info("evidence_graph: added %d temporal-overlap edges", len(overlap_edges))
     log.info("evidence_graph: deriving temporal-proximity edges")
-    proximity_edges = _measure_edges(
+    proximity_edges = measure(
         "temporal_proximity",
         lambda: (
             edge
@@ -306,7 +320,7 @@ def _finalize_graph(
     log.info("evidence_graph: added %d temporal-proximity edges", len(proximity_edges))
     log.info("evidence_graph: deriving file/symbol overlap edges")
     overlap_refresh_id = f"overlap:{generated_at.isoformat()}"
-    sql_edges = _measure_edges(
+    sql_edges = measure(
         "file_symbol_overlap",
         lambda: evidence_edges.overlap_edges_via_substrate(
             nodes, refresh_id=overlap_refresh_id
@@ -319,7 +333,7 @@ def _finalize_graph(
     )
     log.info("evidence_graph: added %d file/symbol overlap edges", len(sql_edges))
     log.info("evidence_graph: deriving tool-overlap edges")
-    tool_overlap_edges = _measure_edges(
+    tool_overlap_edges = measure(
         "tool_overlap",
         lambda: (
             edge
@@ -329,7 +343,7 @@ def _finalize_graph(
     )
     edges.extend(tool_overlap_edges)
     log.info("evidence_graph: deriving mentions-project edges")
-    mentions_edges = _measure_edges(
+    mentions_edges = measure(
         "mentions_project",
         lambda: (
             edge
@@ -386,6 +400,7 @@ def _finalize_graph(
             graph,
             refresh_id=refresh_id,
             projects=promote_projects,
+            recorder=recorder,
         )
 
     return graph
@@ -400,6 +415,7 @@ def promote_graph_to_substrate(
     *,
     refresh_id: str,
     projects: Sequence[str] = (),
+    recorder: GraphStageRecorder | None = None,
 ) -> None:
     """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
     try:
@@ -412,12 +428,10 @@ def promote_graph_to_substrate(
     try:
         with connect() as conn:
             apply_schema(conn)
-            counts = promote_evidence_graph(
-                conn,
-                refresh_id=refresh_id,
-                graph=graph,
-                projects=projects,
-            )
+            with recorded_stage(recorder, "graph_write", window_start=graph.start, window_end=graph.end, node_count=lambda: len(graph.nodes), edge_count=lambda: len(graph.edges)):
+                counts = promote_evidence_graph(
+                    conn, refresh_id=refresh_id, graph=graph, projects=projects,
+                )
             counts["analysis_claims"] = promote_analysis_claims(
                 conn,
                 refresh_id=refresh_id,

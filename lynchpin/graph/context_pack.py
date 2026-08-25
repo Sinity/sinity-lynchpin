@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
 from ..core.evidence import EvidenceCaveat, dedupe_caveats
-from ..core.evidence_graph import EvidenceGraph, EvidenceNode
+from ..core.evidence_graph import EvidenceEdge, EvidenceGraph, EvidenceNode
 from ..core.projects import canonical_project_name
 from .causal_chains import CausalChain, detect_chains
 from .current_state import CurrentStateEvidencePack, current_state_evidence_pack, evidence_pack_markdown
 from .evidence_graph import build_evidence_graph
 from .evidence_views import render_evidence_relations, render_evidence_timeline
-from .performance import log_performance, sample_performance
+from .performance import GraphStageRecorder, log_performance, recorded_stage, sample_performance
 from .weak_tags import WeakTagEnrichment, build_weak_tags, render_weak_tag_summary
 from .work_correlation import CorrelatedWorkDay, DatasetCorrelation, WorkEvidenceClaim, render_work_day_correlations, strongest_work_correlations
 from .work_correlation import dataset_correlations, render_dataset_correlations, render_supported_work_claims, supported_work_claims
@@ -276,6 +276,7 @@ def materialize_incremental_evidence_graph(
     projects: Sequence[str] | None = None,
     include_github_frontier: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
+    recorder: GraphStageRecorder | None = None,
 ) -> EvidenceGraph:
     """Replace a bounded graph tail while publishing a coherent full graph.
 
@@ -299,8 +300,15 @@ def materialize_incremental_evidence_graph(
     )
 
     refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects)
+    recorder = recorder or GraphStageRecorder.for_window(
+        start=tail_start, end=end, refresh_id=refresh_id
+    )
 
     predecessor_started = sample_performance()
+    predecessor_token = recorder.start(
+        "incremental:predecessor_boundary", window_start=tail_start, window_end=end,
+        node_count=0, edge_count=0,
+    )
     with connect() as conn:
         apply_schema(conn)
         previous_refresh_id = compatible_graph_predecessor(
@@ -325,6 +333,7 @@ def materialize_incremental_evidence_graph(
         started=predecessor_started,
         boundary_node_count=len(boundary_nodes),
     )
+    recorder.finish(predecessor_token[0], predecessor_token[1], status="completed", node_count=len(boundary_nodes), edge_count=0)
 
     tail_build_started = sample_performance()
     tail_graph = build_evidence_graph(
@@ -337,6 +346,7 @@ def materialize_incremental_evidence_graph(
         # graph write. Re-running the full catalog audit here walks historical
         # carriers and defeats bounded incremental maintenance.
         include_source_readiness=False,
+        recorder=recorder,
     )
     log_performance(
         log,
@@ -349,13 +359,20 @@ def materialize_incremental_evidence_graph(
     tail_ids = {node.id for node in tail_graph.nodes}
     relation_nodes = [node for node in boundary_nodes if node.id not in tail_ids and node.date < tail_start]
     relation_nodes.extend(tail_graph.nodes)
-    crossing_started = sample_performance()
-    crossing_edges = list(
-        evidence_edges.cross_boundary_edges(
-            tuple(node for node in relation_nodes if node.id not in tail_ids),
-            tail_graph.nodes,
-        )
+    _validate_incremental_relation_inputs(
+        relation_nodes=relation_nodes,
+        boundary_nodes=boundary_nodes,
+        tail_nodes=tail_graph.nodes,
     )
+    crossing_edges: list[EvidenceEdge] = []
+    with recorded_stage(recorder, "boundary_edge_family:crossing", window_start=tail_start, window_end=end, node_count=lambda: len(relation_nodes), edge_count=lambda: len(crossing_edges)) as _:
+        crossing_started = sample_performance()
+        crossing_edges.extend(
+            evidence_edges.cross_boundary_edges(
+                tuple(node for node in relation_nodes if node.id not in tail_ids),
+                tail_graph.nodes,
+            )
+        )
     log_performance(
         log,
         component="incremental_graph",
@@ -379,15 +396,12 @@ def materialize_incremental_evidence_graph(
         # bounded tail; graph, claims, readiness, and publication then agree
         # on one generation even when the requested end advances.
         graph_write_started = sample_performance()
-        promote_incremental_evidence_graph(
-            conn,
-            previous_refresh_id=previous_refresh_id,
-            refresh_id=refresh_id,
-            graph=incremental_graph,
-            full_start=start,
-            tail_start=tail_start,
-            projects=tuple(projects or ()),
-        )
+        with recorded_stage(recorder, "graph_write:incremental", window_start=tail_start, window_end=end, node_count=lambda: len(incremental_graph.nodes), edge_count=lambda: len(incremental_graph.edges)):
+            promote_incremental_evidence_graph(
+                conn, previous_refresh_id=previous_refresh_id, refresh_id=refresh_id,
+                graph=incremental_graph, full_start=start, tail_start=tail_start,
+                projects=tuple(projects or ()),
+            )
         log_performance(
             log,
             component="incremental_graph",
@@ -400,7 +414,8 @@ def materialize_incremental_evidence_graph(
         from lynchpin.substrate.claims import promote_incremental_analysis_claims
 
         claim_build_started = sample_performance()
-        claims = analysis_claim_rows(incremental_graph)
+        with recorded_stage(recorder, "claim_build", window_start=tail_start, window_end=end, node_count=lambda: len(incremental_graph.nodes), edge_count=lambda: len(incremental_graph.edges)):
+            claims = analysis_claim_rows(incremental_graph)
         log_performance(
             log,
             component="incremental_graph",
@@ -424,6 +439,19 @@ def materialize_incremental_evidence_graph(
             claim_count=len(claims),
         )
     return incremental_graph
+
+
+def _validate_incremental_relation_inputs(
+    *,
+    relation_nodes: Sequence[EvidenceNode],
+    boundary_nodes: Sequence[EvidenceNode],
+    tail_nodes: Sequence[EvidenceNode],
+) -> None:
+    """Reject accidental reintroduction of the full predecessor graph."""
+    allowed = {node.id for node in boundary_nodes} | {node.id for node in tail_nodes}
+    supplied = {node.id for node in relation_nodes}
+    if not supplied <= allowed:
+        raise ValueError("incremental relation input contains nodes outside tail/boundary partition")
 
 
 def _materialize_context_graph(
