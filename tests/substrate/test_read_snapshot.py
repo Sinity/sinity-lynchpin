@@ -479,7 +479,9 @@ def test_logical_index_rebuild_seed_preserves_verified_rows(
         assert conn.execute(
             "SELECT count(*) FROM activity_content_day WHERE refresh_id = 'prior'"
         ).fetchone() == (1,)
-    assert list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
+    # The fixture has no serving manifest, so publication cannot retain a
+    # complete rollback triple.
+    assert not list(isolated_substrate.parent.glob("substrate.duckdb.previous-*"))
 
 
 def test_candidate_generation_recovers_from_archived_verified_source(
@@ -488,8 +490,16 @@ def test_candidate_generation_recovers_from_archived_verified_source(
     """An unreadable serving path can be recovered from verified retained rows."""
     _record_verified_generation(isolated_substrate, "prior")
     update_read_snapshot()
-    archived = isolated_substrate.with_name("substrate.candidate-recovery.duckdb.retained")
+    assert write_substrate_status_manifest(isolated_substrate) is not None
+    archived = isolated_substrate.with_name(
+        "substrate.duckdb.previous-20260101T000000+0000-" + "a" * 32
+    )
     isolated_substrate.replace(archived)
+    snapshot = substrate_read_snapshot_path()
+    snapshot.replace(archived.with_name("substrate.read-snapshot.duckdb.previous-20260101T000000+0000-" + "a" * 32))
+    manifest = substrate_status_manifest_path(isolated_substrate)
+    assert manifest.exists()
+    manifest.replace(archived.with_name("substrate.manifest.json.previous-20260101T000000+0000-" + "a" * 32))
 
     with candidate_generation(rebuild_indexes=True) as generation:
         assert generation.seed_source == archived
@@ -587,7 +597,7 @@ def test_logical_index_rebuild_schema_mismatch_retains_serving_triple(
     assert all(path.read_bytes() == serving_contents[path] for path in serving_paths)
     assert generation_refresh_id(isolated_substrate) == "prior"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
-    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+    assert list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
 
 
 def test_ordinary_candidate_reflinks_verified_predecessor_without_logical_reseed(
@@ -705,7 +715,7 @@ def test_candidate_failure_retains_verified_serving_generation(
 
     assert generation_refresh_id(isolated_substrate) == "prior"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
-    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+    assert list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
 
 
 def test_candidate_generation_rejects_explicit_serving_writer(
@@ -724,7 +734,7 @@ def test_candidate_generation_rejects_explicit_serving_writer(
     assert isolated_substrate.read_bytes() == serving_contents
     assert generation_refresh_id(isolated_substrate) == "prior"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
-    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+    assert list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
 
 
 @pytest.mark.parametrize("signal_number", (signal.SIGINT, signal.SIGTERM))
@@ -774,12 +784,8 @@ def test_candidate_signal_archives_every_sidecar_and_retains_serving_triple(
         ),
     ):
         assert not artifact.exists()
-        assert list(artifact.parent.glob(f"{artifact.name}.cancelled-*"))
-    assert any(
-        "cancelled candidate generation artifacts; canonical generation was not modified"
-        in message
-        for message in caplog.messages
-    )
+        assert not list(artifact.parent.glob(f"{artifact.name}.cancelled-*"))
+    assert list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
 
 
 def test_candidate_manifest_failure_retains_verified_serving_generation(
@@ -799,7 +805,7 @@ def test_candidate_manifest_failure_retains_verified_serving_generation(
 
     assert generation_refresh_id(isolated_substrate) == "prior"
     assert generation_refresh_id(substrate_read_snapshot_path()) == "prior"
-    assert list(isolated_substrate.parent.glob("substrate.candidate-*.failed-*"))
+    assert list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
 
 
 def test_candidate_generation_archives_interrupted_candidate_sidecars(
@@ -807,7 +813,9 @@ def test_candidate_generation_archives_interrupted_candidate_sidecars(
 ) -> None:
     _record_verified_generation(isolated_substrate, "prior")
     update_read_snapshot()
-    interrupted = isolated_substrate.with_name("substrate.candidate-interrupted.duckdb")
+    interrupted = isolated_substrate.with_name(
+        "substrate.candidate-" + "b" * 32 + ".duckdb"
+    )
     interrupted.write_bytes(b"interrupted candidate")
     interrupted.with_name(f"{interrupted.name}.wal").write_bytes(b"candidate wal")
     interrupted.with_suffix(".read-snapshot.duckdb").write_bytes(b"candidate snapshot")
@@ -822,18 +830,7 @@ def test_candidate_generation_archives_interrupted_candidate_sidecars(
     assert not interrupted.with_name(f"{interrupted.name}.wal").exists()
     assert not interrupted.with_suffix(".read-snapshot.duckdb").exists()
     assert not interrupted.with_suffix(".manifest.json").exists()
-    assert list(interrupted.parent.glob(f"{interrupted.name}.interrupted-*"))
-    assert list(interrupted.parent.glob(f"{interrupted.name}.wal.interrupted-*"))
-    assert list(
-        interrupted.parent.glob(
-            f"{interrupted.with_suffix('.read-snapshot.duckdb').name}.interrupted-*"
-        )
-    )
-    assert list(
-        interrupted.parent.glob(
-            f"{interrupted.with_suffix('.manifest.json').name}.interrupted-*"
-        )
-    )
+    assert list(interrupted.parent.glob("candidate-receipt-*.json"))
 
 
 def test_candidate_publication_replaces_only_verified_generation(
