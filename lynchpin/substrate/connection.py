@@ -44,6 +44,7 @@ SUBSTRATE_VERSION = 44
 log = logging.getLogger(__name__)
 _CANCELLATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 _CANDIDATE_RECEIPT_PREFIX = "candidate-receipt-"
+_CANDIDATE_RECEIPT_LIMIT = 16
 _CANDIDATE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _PREVIOUS_TOKEN_RE = re.compile(
     r"^previous-[0-9]{8}T[0-9]{6}[+-][0-9]{4}-[0-9a-f]{32}$"
@@ -280,7 +281,28 @@ def _write_candidate_receipt(
     _fsync_file(temporary)
     _replace(temporary, receipt)
     _fsync_directory(receipt.parent)
+    _prune_candidate_receipts(canonical)
     return receipt
+
+
+def _prune_candidate_receipts(canonical: Path) -> tuple[Path, ...]:
+    """Keep only the newest bounded set of validated diagnostic receipts."""
+    receipts: list[Path] = []
+    for path in canonical.parent.glob(f"{_CANDIDATE_RECEIPT_PREFIX}*.json"):
+        attempt_id = path.name.removeprefix(_CANDIDATE_RECEIPT_PREFIX).removesuffix(".json")
+        if (
+            path.parent == canonical.parent
+            and not path.is_symlink()
+            and _CANDIDATE_ID_RE.fullmatch(attempt_id)
+        ):
+            receipts.append(path)
+    receipts.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    removed = tuple(receipts[_CANDIDATE_RECEIPT_LIMIT:])
+    for path in removed:
+        path.unlink()
+    if removed:
+        _fsync_directory(canonical.parent)
+    return removed
 
 
 def _remove_candidate(candidate: Path, canonical: Path) -> tuple[Path, ...]:

@@ -136,3 +136,18 @@ def test_startup_cleanup_is_bounded_and_rejects_path_escape(
     )
     with pytest.raises(CandidateGenerationRejected, match="outside"):
         connection._remove_candidate(outside, isolated_substrate)
+
+
+def test_candidate_receipts_are_count_bounded(isolated_substrate: Path) -> None:
+    for index in range(connection._CANDIDATE_RECEIPT_LIMIT + 4):
+        connection._write_candidate_receipt(
+            isolated_substrate,
+            attempt_id=f"{index:032x}",
+            logical_refresh_id=f"logical-{index}",
+            status="failed",
+            error=RuntimeError("fixture"),
+        )
+
+    receipts = list(isolated_substrate.parent.glob("candidate-receipt-*.json"))
+    assert len(receipts) == connection._CANDIDATE_RECEIPT_LIMIT
+    assert not (isolated_substrate.parent / "candidate-receipt-00000000000000000000000000000000.json").exists()
