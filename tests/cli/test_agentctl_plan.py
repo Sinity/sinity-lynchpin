@@ -50,7 +50,11 @@ def test_agentctl_plan_preserves_dependencies_and_exact_node_generations(
     plan = agentctl_plan.build_agentctl_plan(maintenance_end=end)
     nodes = {node["id"]: node for node in plan["nodes"]}
 
-    assert nodes["product:activitywatch"]["input_generation"] == "aw-gen"
+    assert nodes["product:activitywatch"]["parameters"]["source_generation"] == "aw-gen"
+    assert (
+        nodes["product:activitywatch_event_index"]["input_generation"]
+        != nodes["product:activitywatch_event_index"]["parameters"]["source_generation"]
+    )
     assert nodes["product:activitywatch_event_index"]["depends_on"] == [
         "product:activitywatch"
     ]
@@ -122,6 +126,8 @@ def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:
     result = agentctl_plan.run_product_node(
         product="activitywatch",
         input_generation=observed_generation,
+        source_generation=observed_generation,
+        planned_dependencies=False,
         window=(date(2026, 8, 24), date(2026, 8, 26)),
     )
 
@@ -155,5 +161,7 @@ def test_product_node_rejects_a_stale_scheduled_generation(monkeypatch) -> None:
         agentctl_plan.run_product_node(
             product="activitywatch",
             input_generation="stale-generation",
+            source_generation="stale-generation",
+            planned_dependencies=False,
             window=(date(2026, 8, 24), date(2026, 8, 26)),
         )

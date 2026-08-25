@@ -42,11 +42,38 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
         maintenance=True, maintenance_end=maintenance_end
     )
     runnable = {step.product: step for step in typed if step.action == "materialize"}
+    scheduled_generations: dict[str, str] = {}
+
+    def scheduled_generation(product: str, visiting: frozenset[str] = frozenset()) -> str:
+        if product in scheduled_generations:
+            return scheduled_generations[product]
+        if product in visiting:
+            raise RuntimeError(f"materialization dependency cycle at {product}")
+        step = runnable[product]
+        dependencies = {
+            dependency: scheduled_generation(dependency, visiting | {product})
+            for dependency in sorted(step.dependencies)
+            if dependency in runnable
+        }
+        generation = hashlib.sha256(
+            canonical_json(
+                {"source_generation": step.input_generation, "dependencies": dependencies}
+            ).encode()
+        ).hexdigest()
+        scheduled_generations[product] = generation
+        return generation
+
     nodes: list[dict[str, Any]] = []
     for product, step in sorted(runnable.items()):
+        dependency_nodes = [
+            dependency for dependency in step.dependencies if dependency in runnable
+        ]
+        generation = scheduled_generation(product)
         payload: dict[str, Any] = {
             "product": product,
-            "input_generation": step.input_generation,
+            "input_generation": generation,
+            "source_generation": step.input_generation,
+            "planned_dependencies": bool(dependency_nodes),
         }
         if step.effective_window is not None:
             payload.update(
@@ -59,10 +86,9 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
                 "operation": "materialize_node",
                 "depends_on": [
                     f"product:{dependency}"
-                    for dependency in step.dependencies
-                    if dependency in runnable
+                    for dependency in dependency_nodes
                 ],
-                "input_generation": step.input_generation,
+                "input_generation": generation,
                 "parameters": payload,
             }
         )
@@ -78,7 +104,7 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
     ]
     tail_start = min(tail_starts, default=max(history_start, history_end - timedelta(days=7)))
     product_generations = {
-        product: step.input_generation for product, step in sorted(runnable.items())
+        product: scheduled_generation(product) for product in sorted(runnable)
     }
     promotion_tail_start = tail_start
     if not runnable:
@@ -130,6 +156,8 @@ def run_product_node(
     *,
     product: str,
     input_generation: str,
+    source_generation: str,
+    planned_dependencies: bool,
     window: tuple[date, date] | None,
 ) -> dict[str, Any]:
     """Execute exactly one descriptor-validated typed product node."""
@@ -147,10 +175,10 @@ def run_product_node(
         reason="AgentCTL typed product node",
         window=window,
     )
-    if step.input_generation != input_generation:
+    if not planned_dependencies and step.input_generation != source_generation:
         raise RuntimeError(
             f"scheduled generation for {product} is stale: "
-            f"expected {input_generation}, observed {step.input_generation}"
+            f"expected {source_generation}, observed {step.input_generation}"
         )
     step = replace(
         step,
@@ -247,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     node_parser = subparsers.add_parser("node")
     node_parser.add_argument("--product", required=True)
     node_parser.add_argument("--input-generation", required=True)
+    node_parser.add_argument("--source-generation", required=True)
+    node_parser.add_argument("--planned-dependencies", action="store_true")
     node_parser.add_argument("--start")
     node_parser.add_argument("--end")
     promote_parser = subparsers.add_parser("promote")
@@ -264,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = run_product_node(
             product=args.product,
             input_generation=args.input_generation,
+            source_generation=args.source_generation,
+            planned_dependencies=args.planned_dependencies,
             window=_window(args.start, args.end),
         )
     else:

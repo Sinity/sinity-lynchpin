@@ -84,6 +84,17 @@ required = true
 max_length = 128
 grammar = "safe-token"
 
+[operations.materialize_node.parameters.source_generation]
+type = "string"
+flag = "--source-generation"
+required = true
+max_length = 128
+grammar = "safe-token"
+
+[operations.materialize_node.parameters.planned_dependencies]
+type = "bool"
+flag = "--planned-dependencies"
+
 [operations.materialize_node.parameters.start]
 type = "string"
 flag = "--start"
