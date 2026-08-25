@@ -154,3 +154,20 @@ result = "exit"
 cache = "none"
 scratch = "nvme"
 timeout_seconds = 900
+
+[operations.cleanup_machine_staging]
+description = "Preview or remove abandoned machine-carrier staging files through the owning materializer"
+exec = ["python", "-m", "lynchpin.ingest.machine_materialize", "--cleanup-staging"]
+timeout_seconds = 900
+pool = "normal"
+scratch = "nvme"
+cache = "none"
+exclusive_keys = ["lynchpin:machine-carrier-staging"]
+
+[operations.cleanup_machine_staging.parameters.apply]
+type = "bool"
+flag = "--apply"
+
+[operations.cleanup_machine_staging.parameters.grace_period_s]
+type = "int"
+flag = "--grace-period-s"
