@@ -901,41 +901,37 @@ def promote_incremental_evidence_graph(
             "DELETE FROM evidence_graph_build WHERE refresh_id = ?", [refresh_id]
         )
     else:
-        # DuckDB 1.1 cannot reinsert a primary-key value in the same explicit
-        # transaction that deleted it. Clear the replacement tail in its own
-        # transaction, then bulk-insert the new tail below.
+        # Freeze the complete replacement identity set before mutating either
+        # carrier. DuckDB can abort internally when a large DELETE queries the
+        # same node table that the operation subsequently mutates.
         conn.execute(
             """
-            DELETE FROM evidence_edge
-            WHERE refresh_id = ?
-              AND (
-                  source_id IN (
-                      SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?
-                  )
-                  OR target_id IN (
-                      SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?
-                  )
-              )
+            CREATE OR REPLACE TEMPORARY TABLE replacement_node_ids AS
+            SELECT id FROM evidence_node WHERE refresh_id = ? AND date >= ?
             """,
-            [refresh_id, refresh_id, tail_start, refresh_id, tail_start],
-        )
-        conn.execute(
-            "DELETE FROM evidence_node WHERE refresh_id = ? AND date >= ?",
             [refresh_id, tail_start],
         )
         conn.execute(
+            "CREATE UNIQUE INDEX replacement_node_ids_id ON replacement_node_ids(id)"
+        )
+        conn.execute(
+            "INSERT INTO replacement_node_ids SELECT id FROM incremental_node_ids "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        conn.execute(
             """
             DELETE FROM evidence_edge
             WHERE refresh_id = ?
               AND (
-                  source_id IN (SELECT id FROM incremental_node_ids)
-                  OR target_id IN (SELECT id FROM incremental_node_ids)
+                  source_id IN (SELECT id FROM replacement_node_ids)
+                  OR target_id IN (SELECT id FROM replacement_node_ids)
               )
             """,
             [refresh_id],
         )
         conn.execute(
-            "DELETE FROM evidence_node WHERE refresh_id = ? AND id IN (SELECT id FROM incremental_node_ids)",
+            "DELETE FROM evidence_node WHERE refresh_id = ? "
+            "AND id IN (SELECT id FROM replacement_node_ids)",
             [refresh_id],
         )
         conn.execute(
