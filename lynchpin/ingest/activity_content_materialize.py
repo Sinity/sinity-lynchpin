@@ -20,6 +20,7 @@ from ..sources.activitywatch_raw import canonical_activitywatch_events_path
 from ..sources.title_metadata import hash_title, load_title_classification_map, normalize_title, title_metadata_path
 from ..sources.title_metadata_rules import classify_title_via_rules
 from ._manifest import atomic_write_ndjson, write_manifest
+from ..materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 
 
 ACTIVITY_CONTENT_SCHEMA_VERSION = 1
@@ -260,6 +261,7 @@ def materialize_activity_content(
     end: date | None = None,
     output: Path | None = None,
 ) -> dict[str, Any]:
+    bounded_request = start is not None and end is not None
     start, end = _default_window(start, end)
     default_output = activity_content_daily_path()
     output = output or default_output
@@ -267,11 +269,30 @@ def materialize_activity_content(
     input_files = activity_content_input_files()
     output.parent.mkdir(parents=True, exist_ok=True)
     usage_output.parent.mkdir(parents=True, exist_ok=True)
+    partition_store = ArtifactStore(output.with_name(f".{output.stem}.partitions"))
+    usage_partition_store = ArtifactStore(usage_output.with_name(f".{usage_output.stem}.partitions"))
+    input_signature = _input_signature(input_files)
+    if not bounded_request and partition_store.manifest_path.exists():
+        metadata = partition_store.metadata
+        if metadata.get("input_signature") == input_signature and output.exists():
+            return _read_manifest(output.with_suffix(".manifest.json"))
     classifications = load_title_classification_map()
 
-    existing_by_day = _read_existing_daily(output)
+    existing_by_day = _read_partitioned_daily(partition_store)
+    if not existing_by_day:
+        existing_by_day = _read_existing_daily(output)
+        if existing_by_day:
+            migrated_selected: dict[ProductPartitionKey, Any] = {}
+            for day, row in existing_by_day.items():
+                migrated_selected[ProductPartitionKey.day("activity_content.daily", day)] = partition_store.put(
+                    ProductPartitionKey.day("activity_content.daily", day),
+                    _encode_row(row), format="ndjson", row_count=1,
+                    first_date=day, last_date=day, publish=False,
+                )
+            partition_store.publish(migrated_selected, metadata={"migration": "legacy-monolith", "validated": True})
 
     facts_path = usage_output.with_name(f"{usage_output.stem}.facts.sqlite3")
+    _migrate_usage_store(usage_partition_store, usage_output)
     if not facts_path.exists() and existing_by_day:
         # One-time migration (lynchpin-d36): the persistent per-day title-usage
         # store is new. If it doesn't exist yet but daily.ndjson already has
@@ -365,7 +386,48 @@ def materialize_activity_content(
             row["focused_seconds"] = round(float(row["focused_seconds"]), 3)
             yield row
 
-    atomic_write_ndjson(usage_output, usage_rows())
+    usage_payloads = list(usage_rows())
+    atomic_write_ndjson(usage_output, usage_payloads)
+
+    usage_selected: dict[ProductPartitionKey, list[dict[str, Any]]] = {}
+    for row in usage_payloads:
+        first_date = str(row.get("first_date") or "0000-01")
+        month = first_date[:7] if len(first_date) >= 7 else "unknown"
+        partition_key = ProductPartitionKey.month("activity_content.title_usage", month)
+        usage_selected.setdefault(partition_key, [])
+        usage_selected[partition_key].append(row)
+    usage_refs: dict[ProductPartitionKey, Any] = {}
+    for partition_key, rows in usage_selected.items():
+        usage_refs[partition_key] = usage_partition_store.put(
+            partition_key, _encode_rows(rows), format="ndjson", input_digest=input_signature,
+            row_count=len(rows), publish=False,
+        )
+    usage_partition_store.publish(
+        usage_refs,
+        metadata={"dataset": "lynchpin.activity_content.title_usage", "input_signature": input_signature},
+    )
+
+    selected: dict[ProductPartitionKey, Any] = partition_store.logical_partitions()
+    if not bounded_request:
+        selected = {}
+        publish_days = merged_by_day
+    else:
+        affected = {start + timedelta(days=offset) for offset in range((end - start).days)}
+        selected = {
+            key: ref for key, ref in selected.items()
+            if key.value not in {day.isoformat() for day in affected}
+        }
+        publish_days = by_day
+    for day, row in publish_days.items():
+        partition_key = ProductPartitionKey.day("activity_content.daily", day)
+        selected[partition_key] = partition_store.put(
+            partition_key, _encode_row(row), format="ndjson", input_digest=input_signature,
+            row_count=1, first_date=day, last_date=day, publish=False,
+        )
+    partition_store.publish(
+        selected,
+        metadata={"dataset": "lynchpin.activity_content_daily", "input_signature": input_signature},
+    )
 
     title_usage_count = title_usage.count()
     unmatched_title_count = title_usage.unmatched_count()
@@ -401,9 +463,79 @@ def materialize_activity_content(
         "input_files": [str(path) for path in input_files],
         "input_file_count": len(input_files),
         "input_latest_mtime": latest_mtime_iso(input_files),
+        "partition_store": str(partition_store.root),
+        "partition_scheme": "logical_day",
+        "product_paths": {
+            key.value: str(partition_store.root / ref.path)
+            for key, ref in sorted(selected.items(), key=lambda item: item[0].value)
+        },
+        "title_usage_partition_store": str(usage_partition_store.root),
     }
     write_manifest(output.with_suffix(".manifest.json"), manifest)
     return manifest
+
+
+def _input_signature(input_files: tuple[Path, ...]) -> str:
+    values: list[tuple[str, int, int]] = []
+    for path in input_files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        values.append((str(path), stat.st_size, stat.st_mtime_ns))
+    return deterministic_input_digest(values)
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _encode_row(row: dict[str, Any]) -> bytes:
+    return (json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode()
+
+
+def _encode_rows(rows: Iterator[dict[str, Any]] | list[dict[str, Any]]) -> bytes:
+    return b"".join(_encode_row(row) for row in rows)
+
+
+def _read_partitioned_daily(store: ArtifactStore) -> dict[date, dict[str, Any]]:
+    rows: dict[date, dict[str, Any]] = {}
+    for key, ref in store.logical_partitions().items():
+        if key.product != "activity_content.daily":
+            continue
+        for line in store.read(ref).decode().splitlines():
+            if line.strip():
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    rows[date.fromisoformat(str(payload["date"]))] = payload
+    return rows
+
+
+def _migrate_usage_store(store: ArtifactStore, output: Path) -> None:
+    if store.manifest_path.exists() or not output.exists():
+        return
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines() if line.strip()]
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        first = str(row.get("first_date") or "0000-01")
+        by_month.setdefault(first[:7] if len(first) >= 7 else "unknown", []).append(row)
+    selected: dict[ProductPartitionKey, Any] = {}
+    for month, month_rows in by_month.items():
+        partition_key = ProductPartitionKey.month("activity_content.title_usage", month)
+        selected[partition_key] = store.put(
+            partition_key, _encode_rows(month_rows), format="ndjson",
+            row_count=len(month_rows), publish=False,
+        )
+    if selected:
+        store.publish(selected, metadata={"migration": "legacy-monolith", "validated": True})
 
 
 def activity_content_input_files() -> tuple[Path, ...]:

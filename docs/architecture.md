@@ -102,6 +102,10 @@ bounded rebuilding. They do not launch an uncontrolled scan of every raw source
 for every query. Status surfaces report whether a result is ready, degraded,
 missing, or stale and preserve the reason.
 
+High-amplification canonical products use immutable logical partitions selected by an atomic manifest. ActivityWatch events and activity-content daily rows use logical days, keylog analysis uses logical days, and title metadata uses source months. A maintenance tail may replace only affected selections. Artifact bytes are content-addressed, so an unchanged partition keeps its path and inode on a warm rerun. The previous manifest remains the serving manifest until every new artifact has been staged, validated, and the replacement manifest has been fsynced.
+
+The monolithic NDJSON and JSON carriers remain bounded migration adapters. They are retained until a full partition migration has passed row-count and coverage validation, all default readers have consumed the logical manifest for one release cycle, and the compatibility-read test has been retired. A future retirement change must remove the adapter and carrier together after those conditions are recorded in the release notes.
+
 The normal lifecycle is:
 
 1. Discover source readiness and coverage.

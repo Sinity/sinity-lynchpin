@@ -6,6 +6,7 @@ products so callers can choose the level of detail they need.
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
@@ -13,9 +14,10 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
-from lynchpin.core.io import latest_mtime_iso, resolve_analysis_path, save_json
+from lynchpin.core.io import latest_mtime_iso, load_json, resolve_analysis_path, save_json
 from lynchpin.core.primitives import date_to_dt_range
 from lynchpin.core.primitives import logical_date
+from lynchpin.materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
 from lynchpin.sources import keylog
 
 DEFAULT_HYPRLAND_BINDINGS = Path(
@@ -415,7 +417,7 @@ def _analyze_keylog_bundle(
     keybind_summaries = _keybind_summaries(usage, by_chord)
     keybind_family_summaries = _keybind_family_summaries(usage)
     keybind_temporal_buckets = _keybind_temporal_buckets(temporal_counter, by_chord)
-    text_days = tuple(
+    shape_days = tuple(
         KeylogTextShapeDay(
             date=day,
             keypress_count=counts["keypress"],
@@ -439,14 +441,14 @@ def _analyze_keylog_bundle(
         keybind_summaries=keybind_summaries,
         keybind_family_summaries=keybind_family_summaries,
         keybind_temporal_buckets=keybind_temporal_buckets,
-        text_shape_days=text_days,
+        text_shape_days=shape_days,
         caveats=(
             "keybind and text-shape metadata are separate from text-content analysis",
             "keybind usage prefers persisted modifier state when present",
             "keybind usage falls back to adjacent modifier keypresses within the chord window",
         ),
     )
-    text_days = tuple(
+    text_content_days = tuple(
         KeylogTextContentDay(
             date=day,
             snapshot_count=counts["snapshots"],
@@ -459,11 +461,11 @@ def _analyze_keylog_bundle(
     text_content = KeylogTextContentAnalysis(
         start=start,
         end=end,
-        snapshot_count=sum(row.snapshot_count for row in text_days),
-        char_count=sum(row.char_count for row in text_days),
-        word_count=sum(row.word_count for row in text_days),
-        line_count=sum(row.line_count for row in text_days),
-        days=text_days,
+        snapshot_count=sum(row.snapshot_count for row in text_content_days),
+        char_count=sum(row.char_count for row in text_content_days),
+        word_count=sum(row.word_count for row in text_content_days),
+        line_count=sum(row.line_count for row in text_content_days),
+        days=text_content_days,
         top_terms=tuple(
             KeylogTextTerm(term=term, count=count)
             for term, count in text_terms.most_common(max(0, text_top_n))
@@ -553,6 +555,26 @@ def write_keylog_analysis(
     bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
 ) -> KeylogAnalysis:
     target = out or Path(resolve_analysis_path("keylog_analysis.json"))
+    input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
+    input_signature = _input_signature(input_files)
+    store = ArtifactStore(target.with_name(f".{target.stem}.partitions"))
+    if not store.manifest_path.exists() and target.exists():
+        legacy = load_json(target)
+        if isinstance(legacy, dict) and legacy.get("start") and legacy.get("end"):
+            migrated: dict[ProductPartitionKey, Any] = {}
+            for day in _date_range(date.fromisoformat(str(legacy["start"])), date.fromisoformat(str(legacy["end"]))):
+                day_payload = _daily_payload(legacy, day)
+                key = ProductPartitionKey.day("keylog.analysis", day)
+                migrated[key] = store.put(
+                    key, (json.dumps(day_payload, ensure_ascii=False, sort_keys=True) + "\n").encode(),
+                    format="ndjson", row_count=1, first_date=day, last_date=day, publish=False,
+                )
+            if migrated:
+                store.publish(migrated, metadata={"migration": "legacy-monolith", "validated": True})
+    if store.manifest_path.exists() and store.metadata.get("input_signature") == input_signature and target.exists():
+        payload = load_json(target)
+        if isinstance(payload, dict):
+            return _analysis_from_payload(payload)
     analysis, text_content = _analyze_keylog_bundle(
         start=start,
         end=end,
@@ -560,7 +582,6 @@ def write_keylog_analysis(
         text_top_n=1000,
     )
     payload = analysis.to_json()
-    input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
     payload.update(
         {
             "dataset": "lynchpin.keylog_analysis",
@@ -572,7 +593,130 @@ def write_keylog_analysis(
     )
     payload["text_content"] = text_content.to_json()
     save_json(target, payload, sort_keys=True)
+    selected = store.logical_partitions()
+    for day in _date_range(start, end):
+        key = ProductPartitionKey.day("keylog.analysis", day)
+        selected.pop(key, None)
+    for day in _date_range(start, end):
+        day_payload = _daily_payload(payload, day)
+        key = ProductPartitionKey.day("keylog.analysis", day)
+        selected[key] = store.put(
+            key,
+            (json.dumps(day_payload, ensure_ascii=False, sort_keys=True) + "\n").encode(),
+            format="ndjson", input_digest=input_signature, row_count=1,
+            first_date=day, last_date=day, publish=False,
+        )
+    store.publish(selected, metadata={"dataset": "lynchpin.keylog_analysis", "input_signature": input_signature})
     return analysis
+
+
+def _input_signature(input_files: tuple[Path, ...]) -> str:
+    values: list[tuple[str, int, int]] = []
+    for path in input_files:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        values.append((str(path), stat.st_size, stat.st_mtime_ns))
+    return deterministic_input_digest(values)
+
+
+def _date_range(start: date, end: date) -> tuple[date, ...]:
+    return tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
+
+
+def _daily_payload(payload: dict[str, Any], day: date) -> dict[str, Any]:
+    raw_day = day.isoformat()
+    usage = [row for row in payload.get("keybind_usage", []) if row.get("date") == raw_day]
+    shape = [row for row in payload.get("text_shape_days", []) if row.get("date") == raw_day]
+    text = dict(payload.get("text_content") or {})
+    text["start"] = raw_day
+    text["end"] = raw_day
+    text["days"] = [row for row in text.get("days", []) if row.get("date") == raw_day]
+    text["snapshot_count"] = sum(int(row.get("snapshot_count") or 0) for row in text["days"])
+    text["char_count"] = sum(int(row.get("char_count") or 0) for row in text["days"])
+    text["word_count"] = sum(int(row.get("word_count") or 0) for row in text["days"])
+    text["line_count"] = sum(int(row.get("line_count") or 0) for row in text["days"])
+    return {
+        **payload,
+        "start": raw_day,
+        "end": raw_day,
+        "source_event_count": sum(int(row.get("keypress_count") or 0) for row in shape) or sum(int(row.get("count") or 0) for row in usage),
+        "keypress_count": sum(int(row.get("keypress_count") or 0) for row in shape),
+        "matched_keybind_count": sum(int(row.get("count") or 0) for row in usage),
+        "keybind_usage": usage,
+        "text_shape_days": shape,
+        "text_content": text,
+    }
+
+
+def _analysis_from_payload(payload: dict[str, Any]) -> KeylogAnalysis:
+    """Rehydrate the compatibility return value without reading raw logs."""
+    def _date_value(value: object) -> date:
+        return date.fromisoformat(str(value))
+
+    return KeylogAnalysis(
+        start=_date_value(payload["start"]), end=_date_value(payload["end"]),
+        source_event_count=int(payload.get("source_event_count") or 0),
+        keypress_count=int(payload.get("keypress_count") or 0),
+        matched_keybind_count=int(payload.get("matched_keybind_count") or 0),
+        keybinds=tuple(HyprlandKeybind(**row) for row in payload.get("keybinds", [])),
+        keybind_usage=tuple(KeybindUse(**{**row, "date": _date_value(row["date"])}) for row in payload.get("keybind_usage", [])),
+        keybind_summaries=tuple(KeybindSummary(**{**row, "first_date": _date_value(row["first_date"]), "last_date": _date_value(row["last_date"])}) for row in payload.get("keybind_summaries", [])),
+        keybind_family_summaries=tuple(KeybindFamilySummary(**{**row, "first_date": _date_value(row["first_date"]), "last_date": _date_value(row["last_date"])}) for row in payload.get("keybind_family_summaries", [])),
+        keybind_temporal_buckets=tuple(KeybindTemporalBucket(**row) for row in payload.get("keybind_temporal_buckets", [])),
+        text_shape_days=tuple(KeylogTextShapeDay(**{**row, "date": _date_value(row["date"])}) for row in payload.get("text_shape_days", [])),
+        caveats=tuple(str(value) for value in payload.get("caveats", [])),
+    )
+
+
+def load_keylog_analysis_payload(*, start: date, end: date) -> dict[str, Any] | None:
+    """Read the requested logical day selection without consulting raw logs."""
+    target = Path(resolve_analysis_path("keylog_analysis.json"))
+    store = ArtifactStore(target.with_name(f".{target.stem}.partitions"))
+    selected = store.logical_partitions()
+    if not selected:
+        payload = load_json(target) if target.exists() else None
+        return payload if isinstance(payload, dict) else None
+    rows: list[dict[str, Any]] = []
+    cursor = start
+    while cursor <= end:
+        ref = selected.get(ProductPartitionKey.day("keylog.analysis", cursor))
+        if ref is None:
+            return None
+        for line in store.read(ref).decode().splitlines():
+            if line.strip():
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    rows.append(value)
+        cursor += timedelta(days=1)
+    return _merge_daily_payloads(rows, start=start, end=end)
+
+
+def _merge_daily_payloads(rows: list[dict[str, Any]], *, start: date, end: date) -> dict[str, Any]:
+    if not rows:
+        return {"start": start.isoformat(), "end": end.isoformat()}
+    first = rows[0]
+    usage = [item for row in rows for item in row.get("keybind_usage", [])]
+    shapes = [item for row in rows for item in row.get("text_shape_days", [])]
+    text_rows = [item for row in rows for item in (row.get("text_content") or {}).get("days", [])]
+    text = dict(first.get("text_content") or {})
+    text.update({"start": start.isoformat(), "end": end.isoformat(), "days": text_rows})
+    text["snapshot_count"] = sum(int(item.get("snapshot_count") or 0) for item in text_rows)
+    text["char_count"] = sum(int(item.get("char_count") or 0) for item in text_rows)
+    text["word_count"] = sum(int(item.get("word_count") or 0) for item in text_rows)
+    text["line_count"] = sum(int(item.get("line_count") or 0) for item in text_rows)
+    return {
+        **first,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "source_event_count": sum(int(row.get("source_event_count") or 0) for row in rows),
+        "keypress_count": sum(int(row.get("keypress_count") or 0) for row in rows),
+        "matched_keybind_count": sum(int(row.get("matched_keybind_count") or 0) for row in rows),
+        "keybind_usage": usage,
+        "text_shape_days": shapes,
+        "text_content": text,
+    }
 
 
 def _analysis_input_files(*, start: date, end: date, bindings_path: Path) -> tuple[Path, ...]:
@@ -733,6 +877,7 @@ __all__ = [
     "KeylogTextShapeDay",
     "analyze_keylog",
     "analyze_keylog_text_content",
+    "load_keylog_analysis_payload",
     "parse_hyprland_keybinds",
     "write_keylog_analysis",
 ]

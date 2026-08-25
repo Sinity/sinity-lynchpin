@@ -765,9 +765,12 @@ def _keylog_keybind_usage_rows(start: date, end: date) -> list[dict[str, Any]] |
 
 
 def _keylog_artifact_keybind_usage_rows(start: date, end: date) -> list[dict[str, Any]] | None:
+    from .keylog import load_keylog_analysis_payload
     from lynchpin.core.io import load_json_if_exists, resolve_analysis_path
 
-    payload = load_json_if_exists(resolve_analysis_path("keylog_analysis.json"))
+    payload = load_keylog_analysis_payload(start=start, end=end)
+    if payload is None:
+        payload = load_json_if_exists(resolve_analysis_path("keylog_analysis.json"))
     if not isinstance(payload, dict):
         return None
     try:
