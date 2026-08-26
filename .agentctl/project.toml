@@ -169,5 +169,7 @@ type = "bool"
 flag = "--apply"
 
 [operations.cleanup_machine_staging.parameters.grace_period_s]
-type = "int"
+type = "integer"
 flag = "--grace-period-s"
+min = 0
+max = 2592000
