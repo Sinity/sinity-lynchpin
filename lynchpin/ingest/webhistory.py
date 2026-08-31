@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +37,7 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, guard_incremental_shrinkage, write_manifest
+from ._manifest import atomic_write_ndjson, atomic_write_text, guard_incremental_shrinkage, write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # page view multiple times (initial typed URL + redirect chain entries).
 DEFAULT_DEDUP_TOLERANCE_S = 30
 WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION = 1
+WEBHISTORY_CHROME_RETENTION_DAYS = 90
+WEBHISTORY_SCHEDULE_MAX_AGE_HOURS = 48
+WEBHISTORY_RUN_REPORT_NAME = "last_run.json"
 WebHistoryRow = tuple[datetime, str, str, str]
 _DATE_RANGE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})")
 
@@ -635,44 +638,138 @@ def run(
     dry_run: bool = False,
     start: date | None = None,
     end: date | None = None,
+    report_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Full pipeline: extract → dedup → merge.
 
     Returns a summary dict suitable for JSON serialization.
     """
-    # 1. Extract new browser data → raw NDJSON
-    extract_reports = extract_browser_data(raw_dir=raw_dir, dry_run=dry_run)
-    total_extracted = sum(r["visits"] for r in extract_reports)
+    started_at = datetime.now(timezone.utc)
+    try:
+        # 1. Extract new browser data → raw NDJSON
+        extract_reports = extract_browser_data(raw_dir=raw_dir, dry_run=dry_run)
+        total_extracted = sum(r["visits"] for r in extract_reports)
 
-    # 2. Dedup → canonical segments
-    dedup_reports = dedup_raw_files(
-        raw_dir=raw_dir, data_dir=data_dir,
-        tolerance_seconds=tolerance_seconds, dry_run=dry_run,
+        # 2. Dedup → canonical segments
+        dedup_reports = dedup_raw_files(
+            raw_dir=raw_dir, data_dir=data_dir,
+            tolerance_seconds=tolerance_seconds, dry_run=dry_run,
+        )
+        total_unique = sum(r["unique"] for r in dedup_reports)
+
+        # 3. Regenerate merged full_history.ndjson
+        merge_report = build_full_history(
+            data_dir=data_dir, output=output,
+            tolerance_seconds=tolerance_seconds, dry_run=dry_run,
+            start=start,
+            end=end,
+        )
+
+        report = {
+            "status": "dry_run" if dry_run else "ok",
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "chrome_retention_days": WEBHISTORY_CHROME_RETENTION_DAYS,
+            "recoverable_window_start": (
+                started_at - timedelta(days=WEBHISTORY_CHROME_RETENTION_DAYS)
+            ).isoformat(),
+            "recoverable_window_end": started_at.isoformat(),
+            "extract": {
+                "sources": len(extract_reports),
+                "total_visits": total_extracted,
+                "details": extract_reports,
+            },
+            "dedup": {
+                "files_processed": len(dedup_reports),
+                "total_unique": total_unique,
+                "details": dedup_reports,
+            },
+            "merge": merge_report,
+            "dry_run": dry_run,
+        }
+    except Exception as exc:
+        _write_run_report(
+            report_dir or get_config().webhistory_report_dir,
+            {
+                "status": "failed",
+                "started_at": started_at.isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "chrome_retention_days": WEBHISTORY_CHROME_RETENTION_DAYS,
+                "recoverable_window_start": (
+                    started_at - timedelta(days=WEBHISTORY_CHROME_RETENTION_DAYS)
+                ).isoformat(),
+                "recoverable_window_end": started_at.isoformat(),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+        raise
+
+    if not dry_run:
+        _write_run_report(report_dir or get_config().webhistory_report_dir, report)
+    return report
+
+
+def webhistory_run_report_path(report_dir: Path | None = None) -> Path:
+    """Return the receipt path used by the scheduled extraction."""
+    return (report_dir or get_config().webhistory_report_dir) / WEBHISTORY_RUN_REPORT_NAME
+
+
+def _write_run_report(report_dir: Path, report: dict[str, Any]) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        webhistory_run_report_path(report_dir),
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
     )
-    total_unique = sum(r["unique"] for r in dedup_reports)
 
-    # 3. Regenerate merged full_history.ndjson
-    merge_report = build_full_history(
-        data_dir=data_dir, output=output,
-        tolerance_seconds=tolerance_seconds, dry_run=dry_run,
-        start=start,
-        end=end,
-    )
 
-    return {
-        "extract": {
-            "sources": len(extract_reports),
-            "total_visits": total_extracted,
-            "details": extract_reports,
-        },
-        "dedup": {
-            "files_processed": len(dedup_reports),
-            "total_unique": total_unique,
-            "details": dedup_reports,
-        },
-        "merge": merge_report,
-        "dry_run": dry_run,
+def webhistory_schedule_status(
+    *,
+    report_dir: Path | None = None,
+    now: datetime | None = None,
+    max_age_hours: float = WEBHISTORY_SCHEDULE_MAX_AGE_HOURS,
+) -> dict[str, Any]:
+    """Describe whether the scheduled extraction has run recently."""
+    path = webhistory_run_report_path(report_dir)
+    current = now or datetime.now(timezone.utc)
+    status: dict[str, Any] = {
+        "status": "missing",
+        "report_path": str(path),
+        "max_age_hours": max_age_hours,
+        "chrome_retention_days": WEBHISTORY_CHROME_RETENTION_DAYS,
+        "recoverable_window_start": (
+            current - timedelta(days=WEBHISTORY_CHROME_RETENTION_DAYS)
+        ).isoformat(),
+        "recoverable_window_end": current.isoformat(),
     }
+    if not path.exists():
+        status["reason"] = "no extraction run receipt exists"
+        return status
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        finished_at = datetime.fromisoformat(str(payload["finished_at"]))
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        status.update({"status": "invalid", "reason": f"invalid extraction run receipt: {exc}"})
+        return status
+    age_hours = (current - finished_at.astimezone(timezone.utc)).total_seconds() / 3600
+    status.update(
+        {
+            "last_run_status": payload.get("status"),
+            "last_finished_at": finished_at.isoformat(),
+            "age_hours": age_hours,
+            "recoverable_window_start": payload.get("recoverable_window_start", status["recoverable_window_start"]),
+            "recoverable_window_end": payload.get("recoverable_window_end", status["recoverable_window_end"]),
+        }
+    )
+    if payload.get("status") != "ok":
+        status["status"] = "failed"
+        status["reason"] = payload.get("error", "last extraction did not complete successfully")
+    elif age_hours > max_age_hours:
+        status["status"] = "missed"
+        status["reason"] = f"last successful extraction is {age_hours:.1f} hours old"
+    else:
+        status["status"] = "ok"
+    return status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -684,7 +781,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tolerance-seconds", type=int, default=DEFAULT_DEDUP_TOLERANCE_S)
     parser.add_argument("--start", type=date.fromisoformat)
     parser.add_argument("--end", type=date.fromisoformat)
+    parser.add_argument(
+        "--check-freshness",
+        action="store_true",
+        help="report and validate the scheduled extraction receipt without extracting",
+    )
+    parser.add_argument("--max-age-hours", type=float, default=WEBHISTORY_SCHEDULE_MAX_AGE_HOURS)
+    parser.add_argument("--report-dir", type=Path, default=None)
     args = parser.parse_args(argv)
+    if args.check_freshness:
+        status = webhistory_schedule_status(
+            report_dir=args.report_dir,
+            max_age_hours=args.max_age_hours,
+        )
+        sys.stdout.write(json.dumps(status, indent=2, sort_keys=True) + "\n")
+        return 0 if status["status"] == "ok" else 1
     report = run(
         raw_dir=args.raw_dir,
         data_dir=args.data_dir,
@@ -693,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         start=args.start,
         end=args.end,
+        report_dir=args.report_dir,
     )
     sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 0
