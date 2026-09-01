@@ -108,6 +108,9 @@ def test_write_workflow_mechanics_report_persists_artifact(tmp_path) -> None:
 
     assert payload["invocation_count"] == 2
     assert payload["retry_chain_count"] == 1
+    generated_at = datetime.fromisoformat(payload["generated_at_utc"])
+    assert generated_at.tzinfo is not None
+    assert generated_at.utcoffset() == timedelta(0)
 
 
 def _invocation(

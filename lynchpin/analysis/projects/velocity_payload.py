@@ -267,7 +267,7 @@ def build_velocity_dashboard_payload(
         "projectSummaries": project_summaries,
         "aggregateProject": AGGREGATE_PROJECT,
         "generatedAt": generated_at
-        or dt.datetime.now().replace(microsecond=0).isoformat(),
+        or dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
     }
 
     return dashboard_payload

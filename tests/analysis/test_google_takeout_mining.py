@@ -74,6 +74,9 @@ def test_write_google_takeout_retrospective_persists_artifact(tmp_path) -> None:
     assert payload["event_count"] == 2
     assert payload["active_days"] == 1
     assert payload["caveats"]
+    generated_at = datetime.fromisoformat(payload["generated_at_utc"])
+    assert generated_at.tzinfo is not None
+    assert generated_at.utcoffset() == timezone.utc.utcoffset(generated_at)
 
 
 def test_google_takeout_retrospective_bounds_event_reader(

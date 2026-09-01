@@ -7,7 +7,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -156,7 +156,7 @@ def write_google_takeout_retrospective(
         source_events=source_events,
     )
     payload = {
-        "generated_at_utc": datetime.now().astimezone().isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         **report.to_json(),
         "caveats": [
             "retrospective is parser-only over canonical Google Takeout product events",

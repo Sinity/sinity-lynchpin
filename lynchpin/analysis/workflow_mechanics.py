@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -117,7 +117,7 @@ def write_workflow_mechanics_report(
         limit=limit,
     )
     payload = {
-        "generated_at_utc": datetime.now().astimezone().isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         **report.to_json(),
     }
     save_json(out, payload, sort_keys=True)

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lynchpin.analysis.projects.velocity_analysis import (
@@ -80,3 +81,25 @@ def test_velocity_payload_author_counts_are_project_local() -> None:
 
 def test_velocity_payload_returns_none_without_dates() -> None:
     assert build_velocity_dashboard_payload({}, {}, generated_at="fixed") is None
+
+
+def test_velocity_payload_default_generated_at_is_aware_utc() -> None:
+    stats = ProjectStats(
+        name="first",
+        daily={
+            "2026-05-01": DailyStats(
+                date="2026-05-01",
+                by_category={"code": CategoryStats(added=1, removed=0)},
+                commits=[],
+            )
+        },
+    )
+
+    payload = build_velocity_dashboard_payload(
+        {"first": stats}, {"first": _profile("first")}
+    )
+
+    assert payload is not None
+    generated_at = datetime.fromisoformat(payload["generatedAt"])
+    assert generated_at.tzinfo is not None
+    assert generated_at.utcoffset() == timezone.utc.utcoffset(generated_at)
