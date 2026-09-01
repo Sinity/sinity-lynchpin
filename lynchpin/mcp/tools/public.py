@@ -561,7 +561,7 @@ def lynchpin_project(
     end: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Project router. action: repos, files, commits, velocity, hotspots, change_kinds, github, reviews, snapshots."""
+    """Project router. action: repos, files, commits, velocity, hotspots, change_kinds, github, snapshots."""
     if invalid := _mark_route("lynchpin_project", action):
         return invalid
     target = repo or project
@@ -609,8 +609,6 @@ def lynchpin_project(
             limit=limit,
             _meta={"source_mode": "github_materialized"},
         )
-    if action == "reviews":
-        return _internal_call("lynchpin.mcp.tools.review", "review", view=view or "rows", projects=[target] if target else None)
     if action == "snapshots":
         return _internal_call("lynchpin.mcp.tools.code_snapshots", "code_snapshots", view=view or "status", project=target)
     return _invalid_action("lynchpin_project", action)

@@ -70,7 +70,7 @@ Narrative output remains downstream of the evidence rather than replacing it.
 
 - ActivityWatch application and focus events;
 - Atuin commands and asciinema recordings;
-- Git repositories, GitHub activity, code snapshots, and reviews;
+- Git repositories, GitHub activity, code snapshots, and PR review details;
 - Polylogue session profiles and work events;
 - browser history, bookmarks, clipboard, and communication exports;
 - wearable health, sleep, media, and other provider exports;
@@ -147,7 +147,7 @@ instead of exposing every internal Python function.
 | `lynchpin_catalog` | actions, source contracts, schemas, and examples |
 | `lynchpin_query` | structured read queries and SELECT-only SQL |
 | `lynchpin_evidence` | graphs, claims, coverage, confidence, and cross-references |
-| `lynchpin_project` | repositories, velocity, hotspots, GitHub, reviews, and snapshots |
+| `lynchpin_project` | repositories, velocity, hotspots, GitHub, and snapshots |
 | `lynchpin_personal` | activity, health, communication, web, media, and reports |
 | `lynchpin_machine` | telemetry, pressure, services, workloads, benchmarks, and diagnostics |
 | `lynchpin_ops` | auditable materialization and cleanup operations, dry-run by default |

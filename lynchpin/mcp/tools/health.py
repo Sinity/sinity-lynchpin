@@ -88,7 +88,12 @@ def substrate_gap_draft() -> dict[str, Any]:
             ]
         )
         for g in gap_list:
-            if g["source"] == "symbols":
+            if g["source"] == "pr_review":
+                lines.append(
+                    "- `pr_review`: use `lynchpin_project(action=\"github\")` "
+                    "for current PR and review data."
+                )
+            elif g["source"] == "symbols":
                 lines.append(
                     "- `symbols`: install tree-sitter grammars in the nix "
                     "environment, then re-run `active_symbol_changes`."
