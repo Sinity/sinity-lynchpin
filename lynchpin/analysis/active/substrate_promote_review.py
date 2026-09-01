@@ -87,7 +87,7 @@ def promote_review_source(
             refresh_id=refresh_id,
             source=SOURCE_PR_REVIEW,
             status="unavailable",
-            reason="active_pr_review_topology.json missing — run pr_review_topology",
+            reason="PR review topology payload unavailable; use GitHub context for current PR and review data",
             row_count=0,
         )
     else:

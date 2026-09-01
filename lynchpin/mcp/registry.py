@@ -122,7 +122,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
     PublicToolSpec(
         name="lynchpin_project",
         group="project",
-        description="Repository, code velocity, hotspots, GitHub, reviews, and code snapshots.",
+        description="Repository, code velocity, hotspots, GitHub, and code snapshots.",
         effect_mode="converge",
         actions=(
             ActionSpec("repos", "Known repo names and roots.", response_kind="repo_list"),
@@ -132,7 +132,6 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("hotspots", "File/symbol hotspots and refactor candidates.", "converge", parameters=("repo", "project", "view", "limit"), views=("files", "symbols", "refactors"), response_kind="hotspots"),
             ActionSpec("change_kinds", "Commit conventional/breaking/AI attribution views.", "converge", parameters=("repo", "project", "view"), views=("conventional", "breaking", "ai"), response_kind="change_analysis"),
             ActionSpec("github", "GitHub issue/PR list and detail.", "read", parameters=("repo", "project", "view", "number", "state"), views=("prs", "issues", "issue"), response_kind="github_items"),
-            ActionSpec("reviews", "PR review rows and bottlenecks.", "converge", parameters=("repo", "project", "view"), response_kind="reviews"),
             ActionSpec("snapshots", "Chisel/code snapshot status, slices, and audit.", "read", parameters=("repo", "project", "view"), views=("status", "runs", "slices", "audit"), response_kind="code_snapshots"),
         ),
     ),
