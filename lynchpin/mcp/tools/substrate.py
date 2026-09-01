@@ -8,6 +8,7 @@ cause ``issubclass('str', Context)`` → TypeError.
 
 from typing import Any
 
+from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY, EVIDENCE_GRAPH_ORPHAN_CAVEAT
 from lynchpin.mcp.tools._utils import (
     ensure_substrate_materialized_for_read,
     half_open_date_window,
@@ -249,6 +250,7 @@ def substrate_readiness_report() -> dict[str, Any]:
     "sources": [], "summary": {...all-zero}} when the substrate has no promote
     history yet.
     """
+    from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY
     from lynchpin.materialization import substrate_materialization_snapshot
     from lynchpin.substrate.connection import (
         generation_refresh_id,
@@ -369,6 +371,7 @@ def substrate_readiness_report() -> dict[str, Any]:
                 "node_count": eg_row[1],
                 "edge_count": eg_row[2],
                 "caveats": caveats,
+                "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
                 "generated_at": _json_safe(eg_row[4]),
             }
         else:
@@ -716,8 +719,16 @@ def claim_evidence(
     with connect(substrate_path(), read_only=True) as conn:
         row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
     if row is None:
-        return {"summary": {"status": "missing"}, "claim_id": claim_id}
-    return _json_safe(row)
+        return {
+            "summary": {"status": "missing"},
+            "claim_id": claim_id,
+            "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
+            "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
+        }
+    result = _json_safe(row)
+    result["graph_integrity"] = dict(EVIDENCE_GRAPH_INTEGRITY)
+    result["caveats"] = [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message]
+    return result
 
 
 def analysis_claim_calibration(
@@ -777,7 +788,10 @@ def list_evidence_graph_builds(
     with connect(path, read_only=True) as conn:
         rows = _list_builds(conn, start=start_d, end=end_d)
 
-    return [_json_safe(row) for row in rows]
+    return [
+        {**_json_safe(row), "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY)}
+        for row in rows
+    ]
 
 
 def load_evidence_graph_summary(
@@ -832,6 +846,8 @@ def load_evidence_graph_summary(
         return {
             "error": "no matching build",
             "materialization": materialization,
+            "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
+            "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
         }
 
     node_kind_counts: dict[str, int] = {}
@@ -878,6 +894,8 @@ def load_evidence_graph_summary(
         "node_kind_counts": node_kind_counts,
         "edge_relation_counts": edge_relation_counts,
         "project_day_summary": project_day_summary,
+        "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
+        "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
     }
 
 

@@ -8,6 +8,7 @@ cause ``issubclass('str', Context)`` → TypeError.
 
 from typing import Any
 
+from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY, EVIDENCE_GRAPH_ORPHAN_CAVEAT
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     dataclass_to_json_dict,
@@ -16,6 +17,19 @@ from lynchpin.mcp.tools._utils import (
     json_safe as _json_safe,
     pinned_materialization_for_read,
 )
+
+
+def _graph_integrity() -> dict[str, Any]:
+    """Return the known evidence-edge integrity caveat for graph responses."""
+    return dict(EVIDENCE_GRAPH_INTEGRITY)
+
+
+def _graph_caveat() -> dict[str, Any]:
+    return {
+        "source": EVIDENCE_GRAPH_ORPHAN_CAVEAT.source,
+        "status": EVIDENCE_GRAPH_ORPHAN_CAVEAT.status,
+        "message": EVIDENCE_GRAPH_ORPHAN_CAVEAT.message,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +95,10 @@ def project_day_correlations(
             min_source_count=min_source_count,
         )
 
-    return [dataclass_to_json_dict(row) for row in rows]
+    return [
+        {**dataclass_to_json_dict(row), "graph_integrity": _graph_integrity()}
+        for row in rows
+    ]
 
 
 def closure_chain_walks(
@@ -99,7 +116,9 @@ def closure_chain_walks(
         min_chain_depth: only return chains with depth >= N.
 
     Returns list of dicts with keys: refresh_id, root_id, project,
-    issue_number, reachable_node_ids, chain_depth, reachable_count.
+    issue_number, reachable_node_ids, chain_depth, reachable_count, and
+    graph_integrity. The returned chains are derived from the resolving subset
+    of the evidence-edge table.
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.derived import load_issue_closure_chain_walks
@@ -121,14 +140,21 @@ def closure_chain_walks(
             min_chain_depth=min_chain_depth,
         )
 
-    return [dataclass_to_json_dict(row) for row in rows]
+    return [
+        {**dataclass_to_json_dict(row), "graph_integrity": _graph_integrity()}
+        for row in rows
+    ]
 
 
 def file_overlap_edges(
     we_refresh_id: str | None = None,
     commit_refresh_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Query the work_event_file_overlap view and return edge dicts."""
+    """Query the work_event_file_overlap view and return edge dicts.
+
+    ``graph_integrity`` records the known defect in the persisted evidence-edge
+    model. These overlap rows are a separate derived view.
+    """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_file_overlap_edges
 
@@ -143,7 +169,8 @@ def file_overlap_edges(
         )
     return [
         {"source_id": e.source_id, "target_id": e.target_id,
-         "relation": e.relation, "evidence": e.evidence, "weight": e.weight}
+         "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
+         "graph_integrity": _graph_integrity()}
         for e in edges
     ]
 
@@ -167,7 +194,8 @@ def symbol_overlap_edges(
         )
     return [
         {"source_id": e.source_id, "target_id": e.target_id,
-         "relation": e.relation, "evidence": e.evidence, "weight": e.weight}
+         "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
+         "graph_integrity": _graph_integrity()}
         for e in edges
     ]
 
@@ -226,6 +254,7 @@ def context_pack_diff(
         refresh_a = refresh_ids[-2] if len(refresh_ids) >= 2 else refresh_ids[-1]
 
     diffs: dict[str, Any] = {"refresh_a": refresh_a, "refresh_b": refresh_b}
+    diffs["graph_integrity"] = _graph_integrity()
 
     with connect(substrate_path(), read_only=True) as conn:
         tables = (
@@ -538,6 +567,7 @@ def project_pair_signals(
             "edge_count": sum(rel.signal_counts.values()),
             "signals": dict(rel.signal_counts),
             "sample_evidence_node_ids": list(rel.sample_evidence_node_ids),
+            "graph_integrity": _graph_integrity(),
         })
     return out
 
@@ -594,7 +624,8 @@ def walk_evidence(
                     "max_nodes": max_nodes, "truncated": False,
                     "materialization": materialization,
                     "reason": "no evidence_graph build available",
-                    "nodes": [], "edges": [],
+                    "nodes": [], "edges": [], "graph_integrity": _graph_integrity(),
+                    "caveats": [_graph_caveat()],
                 }
         graph = load_evidence_graph(conn, refresh_id=refresh_id)
 
@@ -605,7 +636,8 @@ def walk_evidence(
             "max_nodes": max_nodes, "truncated": False,
             "materialization": materialization,
             "reason": f"evidence_graph build {refresh_id!r} not found",
-            "nodes": [], "edges": [],
+            "nodes": [], "edges": [], "graph_integrity": _graph_integrity(),
+            "caveats": [_graph_caveat()],
         }
 
     result = _walk(
@@ -624,6 +656,8 @@ def walk_evidence(
         "truncated": result.truncated,
         "materialization": materialization,
         "reason": result.reason,
+        "graph_integrity": _graph_integrity(),
+        "caveats": [_graph_caveat()],
         "nodes": [
             {
                 "id": step.node.id, "kind": step.node.kind,

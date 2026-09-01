@@ -118,6 +118,12 @@ def test_graph_readers_use_complete_overlay_and_shadow_replacements(tmp_path) ->
         assert {"a-2026-05-01", "issue", "target", "shared"} <= boundary_ids
         assert next(node for node in boundary if node.id == "shared").source == "new"
 
+        from lynchpin.substrate.graph import load_evidence_graph
+
+        graph = load_evidence_graph(conn, refresh_id="r1")
+        assert graph is not None
+        assert any("929,084 of 937,615" in caveat.message for caveat in graph.caveats)
+
         correlations = load_project_day_correlations(conn, refresh_id="r1")
         correlation_days = {(row.date, row.commit_count) for row in correlations}
         assert date(2026, 5, 1) in {day for day, _ in correlation_days}

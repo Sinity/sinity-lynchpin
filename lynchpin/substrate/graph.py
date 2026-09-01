@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from lynchpin.substrate._filters import build_where
 from lynchpin.substrate._helpers import promote_rows
+from lynchpin.core.evidence import EVIDENCE_GRAPH_ORPHAN_CAVEAT, dedupe_caveats
 
 if TYPE_CHECKING:
     import duckdb
@@ -434,7 +435,9 @@ def load_evidence_graph(
         mode=build_mode,
         nodes=tuple(nodes),
         edges=tuple(edges),
-        caveats=_hydrate_caveats(build_caveats),
+        caveats=dedupe_caveats(
+            _hydrate_caveats(build_caveats) + (EVIDENCE_GRAPH_ORPHAN_CAVEAT,)
+        ),
     )
 
 
