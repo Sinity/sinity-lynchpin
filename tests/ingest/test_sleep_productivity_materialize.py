@@ -33,9 +33,10 @@ def test_materialize_sleep_productivity_merges_window_and_tracks_coverage(monkey
         json.dumps({"covered_dates": ["2026-05-01"]}),
         encoding="utf-8",
     )
+    ensure_calls = []
     monkeypatch.setattr(
         "lynchpin.ingest.sleep_productivity_materialize.sleep_productivity",
-        lambda *, start, end: [
+        lambda *, start, end, ensure=True: (ensure_calls.append(ensure) or [
             SimpleNamespace(
                 sleep_date=date(2026, 5, 2),
                 sleep_hours=6.5,
@@ -45,7 +46,7 @@ def test_materialize_sleep_productivity_merges_window_and_tracks_coverage(monkey
                 workday_deep_work_min=45.0,
                 productivity_vs_baseline=0.8,
             )
-        ],
+        ]),
     )
     monkeypatch.setattr(
         "lynchpin.ingest.sleep_productivity_materialize._sleep_productivity_input_files",
@@ -66,6 +67,7 @@ def test_materialize_sleep_productivity_merges_window_and_tracks_coverage(monkey
     assert manifest["covered_dates"] == ["2026-05-01", "2026-05-02", "2026-05-03"]
     assert manifest["schema_version"] == SLEEP_PRODUCTIVITY_SCHEMA_VERSION
     assert manifest["window_semantics"] == "start inclusive, end exclusive"
+    assert ensure_calls == [False]
 
 
 def test_iter_sleep_productivity_converges_default_materialization(monkeypatch, tmp_path) -> None:

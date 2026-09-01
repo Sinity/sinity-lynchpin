@@ -136,15 +136,15 @@ def _materialize_window(
     window_rows = {
         "focus_spans": [
             _focus_span_row(span)
-            for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=True)
+            for span in focus_spans(start=start_dt, end=end_dt, min_duration_s=60.0, enrich_polylogue=True, ensure=False)
         ],
-        "project_focus_days": [_project_focus_day_row(row) for row in project_focus_days(start=start_dt, end=end_dt)],
-        "daily_activity": [_daily_activity_row(row) for row in daily_activity(start=start, end=end_inclusive)],
-        "deep_work": [_deep_work_row(row) for row in deep_work(start=start_dt, end=end_dt)],
-        "circadian": [_circadian_row(row) for row in circadian(start=start, end=end_inclusive)],
-        "loops": [_loop_row(row) for row in loops(start=start_dt, end=end_dt)],
-        "fragmentation": [_fragmentation_row(row) for row in fragmentation(start=start, end=end_inclusive)],
-        "attention": [_attention_row(row) for row in attention(start=start, end=end_inclusive)],
+        "project_focus_days": [_project_focus_day_row(row) for row in project_focus_days(start=start_dt, end=end_dt, ensure=False)],
+        "daily_activity": [_daily_activity_row(row) for row in daily_activity(start=start, end=end_inclusive, ensure=False)],
+        "deep_work": [_deep_work_row(row) for row in deep_work(start=start_dt, end=end_dt, ensure=False)],
+        "circadian": [_circadian_row(row) for row in circadian(start=start, end=end_inclusive, ensure=False)],
+        "loops": [_loop_row(row) for row in loops(start=start_dt, end=end_dt, ensure=False)],
+        "fragmentation": [_fragmentation_row(row) for row in fragmentation(start=start, end=end_inclusive, ensure=False)],
+        "attention": [_attention_row(row) for row in attention(start=start, end=end_inclusive, ensure=False)],
     }
 
     previous = _load_json(activitywatch_derived_manifest_path(root))

@@ -60,10 +60,11 @@ def events(
     start: datetime,
     end: datetime,
     db_path: Optional[Path] = None,
+    ensure: bool = True,
 ) -> Iterator[AWEvent]:
     start = as_local(start)
     end = as_local(end)
-    if db_path is None:
+    if db_path is None and ensure:
         from ..materialization import ensure_materialized
 
         window = _datetime_window(start, end)
