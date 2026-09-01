@@ -1,3 +1,4 @@
+import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,3 +167,39 @@ def test_reddit_style_utc_dates_contribute_to_bounds() -> None:
             {"date": "2014-02-13 15:06:36 UTC"},
         )
     ) == ("2013-10-19", "2014-02-13")
+
+
+def test_reddit_materializer_merges_arctic_shift_content(tmp_path: Path, monkeypatch) -> None:
+    from lynchpin.ingest import exports_materialize
+
+    processed = tmp_path / "reddit" / "processed"
+    dated = processed / "2026-01-01"
+    dated.mkdir(parents=True)
+    (dated / "comments.csv").write_text(
+        "id,permalink,date,subreddit,body\nc1,/r/x/c1,2020-01-01 00:00:00 UTC,x,old\n",
+        encoding="utf-8",
+    )
+    canonical = processed / "canonical"
+    canonical.mkdir()
+    (canonical / "comments.csv").write_text(
+        "id,permalink,date,subreddit,body\nstale,/r/old,2010-01-01 UTC,old,stale\n",
+        encoding="utf-8",
+    )
+    arctic = tmp_path / "reddit" / "arctic-shift" / "2026-08-11"
+    arctic.mkdir(parents=True)
+    (arctic / "comments.jsonl").write_text(
+        '{"id":"c1","permalink":"/r/x/c1","created_utc":1577836800,"subreddit":"x","body":"old"}\n'
+        '{"id":"c2","permalink":"/r/y/c2","created_utc":1577923200,"subreddit":"y","body":"new"}\n',
+        encoding="utf-8",
+    )
+    cfg = type("Cfg", (), {"accounts_root": tmp_path})()
+    monkeypatch.setattr(exports_materialize, "get_config", lambda: cfg)
+
+    report = exports_materialize.materialize_reddit()
+    with (processed / "canonical" / "comments.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert [row["id"] for row in rows] == ["c1", "c2"]
+    assert rows[0]["permalink"] == "https://www.reddit.com/r/x/c1"
+    assert report["files"]["comments.csv"]["row_count"] == 2
+    assert str(arctic / "comments.jsonl") in (processed / "canonical" / "manifest.json").read_text()

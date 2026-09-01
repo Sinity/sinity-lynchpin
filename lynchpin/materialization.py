@@ -1006,12 +1006,18 @@ def _spotify_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
 
 def _reddit_input_files(cfg: LynchpinConfig) -> tuple[Path, ...]:
     root = cfg.accounts_root / "reddit/processed"
-    return tuple(
+    dated = tuple(
         path
         for export_root in _export_roots(root)
         for path in sorted(export_root.rglob("*.csv"))
         if path.is_file()
     )
+    arctic = tuple(
+        path
+        for path in sorted((root.parent / "arctic-shift").glob("*/*.jsonl"))
+        if path.is_file()
+    )
+    return dated + arctic
 
 
 def _raindrop_input_files() -> tuple[Path, ...]:

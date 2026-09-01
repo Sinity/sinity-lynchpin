@@ -20,7 +20,7 @@ from ._manifest import atomic_write_ndjson, atomic_write_text, write_manifest
 
 
 SPOTIFY_STREAMS_SCHEMA_VERSION = 1
-REDDIT_CANONICAL_SCHEMA_VERSION = 1
+REDDIT_CANONICAL_SCHEMA_VERSION = 2
 RAINDROP_BOOKMARKS_SCHEMA_VERSION = 1
 MESSENGER_CANONICAL_SCHEMA_VERSION = 1
 
@@ -97,6 +97,7 @@ def materialize_reddit() -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     reports: dict[str, Any] = {}
+    rows_by_filename: dict[str, list[dict[str, str]]] = {}
     input_roots = _export_roots(source_root)
     filenames = sorted(
         {path.name for root in input_roots for path in root.rglob("*.csv")}
@@ -109,6 +110,7 @@ def materialize_reddit() -> dict[str, Any]:
             if path.is_file()
         )
         rows = _coalesce_csv_rows(inputs)
+        rows_by_filename[filename] = rows
         first_date, last_date = _row_date_bounds(rows)
         output = out_dir / filename
         _write_csv(output, rows)
@@ -120,11 +122,17 @@ def materialize_reddit() -> dict[str, Any]:
             "row_count": len(rows),
             "path": str(output),
         }
+    _merge_reddit_arctic_shift(
+        reports,
+        source_root=source_root,
+        output_dir=out_dir,
+        rows_by_filename=rows_by_filename,
+    )
     _write_reddit_manifest(
         out_dir / "manifest.json",
         reports,
         product_path=out_dir,
-        source_files=[path for root in input_roots for path in root.rglob("*.csv") if path.is_file()],
+        source_files=_reddit_input_files(source_root),
     )
     return {"path": str(out_dir), "files": reports}
 
@@ -232,6 +240,131 @@ def _export_roots(root: Path) -> list[Path]:
         for path in sorted(root.iterdir())
         if path.is_dir() and _is_dated_export_dir(path)
     ]
+
+
+def _reddit_input_files(root: Path) -> tuple[Path, ...]:
+    dated = tuple(
+        path
+        for export_root in _export_roots(root)
+        for path in sorted(export_root.rglob("*.csv"))
+        if path.is_file()
+    )
+    arctic = tuple(
+        path
+        for path in sorted(root.parent.glob("arctic-shift/*/*.jsonl"))
+        if path.is_file()
+    )
+    return dated + arctic
+
+
+def _merge_reddit_arctic_shift(
+    reports: dict[str, Any],
+    *,
+    source_root: Path,
+    output_dir: Path,
+    rows_by_filename: dict[str, list[dict[str, str]]],
+) -> None:
+    arctic_root = source_root.parent / "arctic-shift"
+    comment_paths = sorted(arctic_root.glob("*/comments.jsonl"))
+    submission_paths = sorted(arctic_root.glob("*/submissions.jsonl"))
+    for filename, paths, normalize in (
+        ("comments.csv", comment_paths, _normalize_arctic_comment),
+        ("posts.csv", submission_paths, _normalize_arctic_submission),
+    ):
+        if not paths:
+            continue
+        rows = _coalesce_reddit_rows(
+            (
+                *rows_by_filename.get(filename, ()),
+                *(normalize(row, path) for path in paths for row in _read_jsonl(path)),
+            )
+        )
+        first_date, last_date = _row_date_bounds(rows)
+        output = output_dir / filename
+        _write_csv(output, rows)
+        reports[filename] = {
+            **reports.get(filename, {}),
+            "first_date": first_date,
+            "input_files": len(
+                [path for path in _reddit_input_files(source_root) if path.name == filename]
+                + paths
+            ),
+            "input_latest_mtime": latest_mtime_iso(
+                [path for path in _reddit_input_files(source_root) if path.name == filename]
+                + paths
+            ),
+            "last_date": last_date,
+            "row_count": len(rows),
+            "path": str(output),
+        }
+
+
+def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
+
+
+def _coalesce_reddit_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Merge Reddit records by stable item id, preferring later sources.
+
+    Arctic-Shift is appended after the GDPR exports so its recovered text wins
+    when Reddit returned ``[removed]`` or the export is otherwise stale.
+    """
+    by_key: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in rows:
+        cleaned = {str(key): str(value or "") for key, value in row.items() if key is not None}
+        identifier = cleaned.get("id", "")
+        key = (identifier, "", "") if identifier else (
+            "", cleaned.get("permalink", ""), cleaned.get("date", "")
+        )
+        if not any(key):
+            key = ("", cleaned.get("source_file", ""), str(len(by_key)))
+        by_key[key] = cleaned
+    return [by_key[key] for key in sorted(by_key)]
+
+
+def _normalize_arctic_comment(row: dict[str, Any], path: Path) -> dict[str, Any]:
+    return {
+        "id": row.get("id", ""),
+        "permalink": _reddit_url(row.get("permalink", "")),
+        "date": _utc_timestamp(row.get("created_utc")),
+        "ip": "",
+        "subreddit": row.get("subreddit", ""),
+        "gildings": row.get("gilded", ""),
+        "link": _reddit_url(row.get("permalink", "")),
+        "parent": row.get("parent_id", ""),
+        "body": row.get("body", ""),
+        "media": "",
+        "source_file": str(path),
+    }
+
+
+def _normalize_arctic_submission(row: dict[str, Any], path: Path) -> dict[str, Any]:
+    return {
+        "id": row.get("id", ""),
+        "permalink": _reddit_url(row.get("permalink", "")),
+        "date": _utc_timestamp(row.get("created_utc", row.get("created"))),
+        "ip": "",
+        "subreddit": row.get("subreddit", ""),
+        "gildings": row.get("gilded", ""),
+        "title": row.get("title", ""),
+        "url": row.get("url", "") or _reddit_url(row.get("permalink", "")),
+        "body": row.get("selftext", ""),
+        "source_file": str(path),
+    }
+
+
+def _reddit_url(value: Any) -> str:
+    text = str(value or "")
+    return f"https://www.reddit.com{text}" if text.startswith("/") else text
+
+
+def _utc_timestamp(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return datetime.fromtimestamp(float(value), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _is_dated_export_dir(path: Path) -> bool:
