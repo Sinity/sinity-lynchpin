@@ -14,7 +14,7 @@ from .evidence_projects import include_project
 
 
 def conversations_in_range(*args: Any, **kwargs: Any) -> Any:
-    from ..sources.irc_raw import extract_conversations as impl
+    from ..sources.irc_raw import extract_operator_conversations as impl
 
     return impl(*args, **kwargs)
 
@@ -32,7 +32,7 @@ def add_irc(
 
     ensure_materialized(
         "irc",
-        window=(start, end + timedelta(days=1)),
+        window=(start - timedelta(days=1), end + timedelta(days=1)),
         budget="manual",
     )
     for conv in conversations_in_range(start=start, end=end, ensure=False):
@@ -82,6 +82,8 @@ def add_irc(
                         "channel": conv.channel,
                         "total_lines": message_count,
                         "message_count": message_count,
+                        "operator_lines": getattr(conv, "operator_lines", None),
+                        "mention_lines": getattr(conv, "mention_lines", None),
                         "unique_speakers": getattr(conv, "unique_speakers", None),
                         "speakers": list(getattr(conv, "speakers", ())),
                         "source_files": source_files,
