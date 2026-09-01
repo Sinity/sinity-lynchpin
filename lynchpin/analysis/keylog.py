@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+from lynchpin.core.errors import MaterializationError
 from lynchpin.core.io import latest_mtime_iso, load_json, resolve_analysis_path, save_json
 from lynchpin.core.primitives import date_to_dt_range
 from lynchpin.core.primitives import logical_date
@@ -69,6 +70,8 @@ TEXT_SHAPE_KEYS = {
     "KEY_TAB": "tab",
     "KEY_SPACE": "space",
 }
+
+_MAX_INPUT_STABILITY_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -555,8 +558,6 @@ def write_keylog_analysis(
     bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
 ) -> KeylogAnalysis:
     target = out or Path(resolve_analysis_path("keylog_analysis.json"))
-    input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
-    input_signature = _input_signature(input_files)
     store = ArtifactStore(target.with_name(f".{target.stem}.partitions"))
     if not store.manifest_path.exists() and target.exists():
         legacy = load_json(target)
@@ -571,16 +572,31 @@ def write_keylog_analysis(
                 )
             if migrated:
                 store.publish(migrated, metadata={"migration": "legacy-monolith", "validated": True})
-    if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and target.exists():
-        payload = load_json(target)
-        if isinstance(payload, dict):
-            return _analysis_from_payload(payload)
-    analysis, text_content = _analyze_keylog_bundle(
-        start=start,
-        end=end,
-        bindings_path=bindings_path,
-        text_top_n=1000,
-    )
+
+    analysis: KeylogAnalysis
+    text_content: KeylogTextContentAnalysis
+    for _attempt in range(_MAX_INPUT_STABILITY_ATTEMPTS):
+        input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
+        input_signature = _input_signature(input_files)
+        if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and target.exists():
+            payload = load_json(target)
+            if isinstance(payload, dict):
+                return _analysis_from_payload(payload)
+        analysis, text_content = _analyze_keylog_bundle(
+            start=start,
+            end=end,
+            bindings_path=bindings_path,
+            text_top_n=1000,
+        )
+        current_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
+        if _input_signature(current_files) == input_signature:
+            break
+    else:
+        raise MaterializationError(
+            "keylog_analysis",
+            reason="keylog or binding inputs changed throughout the bounded refresh stability window",
+        )
+
     payload = analysis.to_json()
     payload.update(
         {

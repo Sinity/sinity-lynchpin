@@ -253,6 +253,41 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
     assert saved["caveats"]
 
 
+def test_write_keylog_analysis_retries_when_inputs_change_during_scan(tmp_path, monkeypatch) -> None:
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    original = keylog_analysis._analyze_keylog_bundle
+    scans = 0
+
+    def drifting_scan(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        result = original(*args, **kwargs)
+        if scans == 1:
+            bindings.write_text(
+                '{ bind = [ "SUPER, Return, exec, kitty" ]; }\n',
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(keylog_analysis, "_analyze_keylog_bundle", drifting_scan)
+    out = tmp_path / "analysis.json"
+
+    keylog_analysis.write_keylog_analysis(
+        out,
+        start=date(2026, 6, 5),
+        end=date(2026, 6, 5),
+        bindings_path=bindings,
+    )
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert scans == 2
+    assert saved["input_latest_mtime"] == keylog_analysis.latest_mtime_iso(
+        (bindings,)
+    )
+
+
 def test_keylog_text_content_analysis_uses_snapshot_text(tmp_path, monkeypatch) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
