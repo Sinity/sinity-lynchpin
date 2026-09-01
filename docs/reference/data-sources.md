@@ -33,6 +33,15 @@ The exact filesystem roots come from `LynchpinConfig`. Tests use temporary
 roots and neutral fixtures; the public source tree does not depend on one
 operator's data layout.
 
+IRC uses `lynchpin.sources.irc_raw` over the canonical materialized event
+product, with raw WeeChat logs as its explicit fallback. It exposes
+operator-centered conversation units with a bounded preceding context window,
+gap-based boundaries, operator/mention/total counts, and source-file
+provenance. The units remain untrimmed structured input: selecting the minimum
+context needed for interpretation is a model step. Channel counts are already
+part of the IRC materialization manifest; no separate channel-summary product
+is maintained.
+
 ## sinnix-capture-v1 desktop event lanes
 
 Sinnix writes five small, continuous JSON-lines lanes under

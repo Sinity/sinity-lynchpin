@@ -10,7 +10,7 @@ Graduated API layers:
   L0: raw messages with date/channel filtering
   L1: session extraction (gap-based, configurable idle threshold)
   L2: speaker stats + identity (nick normalization, bot detection, classification)
-  L3: conversation extraction (dense interaction clusters)
+  L3: conversation extraction (dense interaction clusters and operator context)
   Daily: daily_irc_activity(start, end) → IRCDayActivity
 """
 
@@ -50,6 +50,7 @@ __all__ = [
     "speaker_identities",
     "speaker_stats",
     "extract_conversations",
+    "extract_operator_conversations",
     "daily_irc_activity",
 ]
 
@@ -71,7 +72,7 @@ class IRCRawMessage:
     @property
     def is_meta(self) -> bool:
         """True for server lines, join/part/quit notifications, and /me actions."""
-        return self.speaker in ("--", "-->", "<--", "=!=", "*")
+        return self.speaker in ("--", "-->", "<--", "***", "=!=", "*")
 
     @property
     def word_count(self) -> int:
@@ -128,11 +129,37 @@ class IRCConversation:
 
     @property
     def date(self) -> date:
-        return self.start.date()
+        return logical_date(self.start)
 
     @property
     def duration_minutes(self) -> float:
         return (self.end - self.start).total_seconds() / 60.0
+
+    @property
+    def operator_lines(self) -> int:
+        """Number of lines authored by the operator in this unit."""
+        return sum(1 for message in self.messages if _is_operator(message))
+
+    @property
+    def mention_lines(self) -> int:
+        """Number of non-operator lines mentioning the operator."""
+        return sum(
+            1
+            for message in self.messages
+            if not message.is_meta
+            and not _is_operator(message)
+            and _mentions_operator(message.text)
+        )
+
+    @property
+    def total_lines(self) -> int:
+        """Total raw lines retained for model-facing context selection."""
+        return len(self.messages)
+
+    @property
+    def source_files(self) -> tuple[str, ...]:
+        """Distinct raw/product files contributing messages to this unit."""
+        return tuple(sorted({message.source_file for message in self.messages}))
 
 
 @dataclass(frozen=True)
@@ -276,6 +303,27 @@ _OPERATOR_NICKS: set[str] = {
     "sinity", "sinity2",
     "ezodev", "ilukbas",
 }
+
+
+def _is_operator(message: IRCRawMessage) -> bool:
+    return normalize_nick(message.speaker).lower() in _OPERATOR_NICKS
+
+
+def _mentions_operator(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?<![A-Za-z0-9_])sinity(?![A-Za-z0-9_])",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_operator_anchor(message: IRCRawMessage) -> bool:
+    """Return whether a raw line starts an operator-centered context unit."""
+    return not message.is_meta and (
+        _is_operator(message) or _mentions_operator(message.text)
+    )
 
 
 def classify_speaker(
@@ -774,6 +822,125 @@ def extract_conversations(
             speakers=session.speakers,
             messages=session.messages,
         )
+
+
+def extract_operator_conversations(
+    *,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    channel: Optional[str] = None,
+    root: Optional[Path] = None,
+    buffer_minutes: int = 30,
+    buffer_max_lines: int = 150,
+    max_gap_hours: int = 4,
+    operator_gap_hours: int = 2,
+    ensure: bool = True,
+) -> Iterator[IRCConversation]:
+    """Extract raw context units around the operator's IRC messages.
+
+    Each operator message starts a unit, with up to ``buffer_minutes`` of
+    preceding channel context. A unit ends before a message separated from
+    the previous message by ``max_gap_hours`` or from the last operator
+    message by ``operator_gap_hours``. System lines do not start units, but
+    remain available as context when they fall inside one.
+
+    The returned messages are deliberately untrimmed. Selecting the minimum
+    context needed to understand a unit is a model-judged operation and must
+    consume these structured units rather than interpret prose in this source.
+    """
+    if buffer_minutes < 0:
+        raise ValueError("buffer_minutes must be non-negative")
+    if buffer_max_lines < 1:
+        raise ValueError("buffer_max_lines must be positive")
+    if max_gap_hours < 0:
+        raise ValueError("max_gap_hours must be non-negative")
+    if operator_gap_hours < 0:
+        raise ValueError("operator_gap_hours must be non-negative")
+
+    if start is not None and end is not None:
+        # Read one preceding logical day so a 30-minute context window can
+        # cross the requested range boundary. Anchors outside the requested
+        # range are excluded below, while their lines remain eligible buffer.
+        messages = iter_messages_in_range(
+            start=start - timedelta(days=1),
+            end=end,
+            channel=channel,
+            root=root,
+            ensure=ensure,
+        )
+    else:
+        messages = iter_messages(channel=channel, root=root, ensure=ensure)
+
+    by_channel: dict[str, list[IRCRawMessage]] = defaultdict(list)
+    for message in messages:
+        by_channel[message.channel].append(message)
+
+    buffer_window = timedelta(minutes=buffer_minutes)
+    max_gap = timedelta(hours=max_gap_hours)
+    operator_gap = timedelta(hours=operator_gap_hours)
+    counter = 0
+
+    for channel_name in sorted(by_channel):
+        pending: list[IRCRawMessage] = []
+        current: list[IRCRawMessage] | None = None
+        last_operator: datetime | None = None
+
+        def emit() -> Iterator[IRCConversation]:
+            nonlocal current, last_operator, counter
+            if current and any(_is_operator(item) for item in current):
+                counter += 1
+                yield _build_operator_conversation(current, counter)
+            current = None
+            last_operator = None
+
+        for message in sorted(
+            by_channel[channel_name], key=lambda item: (item.timestamp, item.line_no)
+        ):
+            if current and last_operator is not None and (
+                message.timestamp - current[-1].timestamp > max_gap
+                or message.timestamp - last_operator > operator_gap
+            ):
+                yield from emit()
+                pending = []
+
+            anchor = _is_operator_anchor(message) and (
+                start is None or message.date >= start
+            ) and (end is None or message.date <= end)
+            if current is None:
+                pending.append(message)
+                cutoff = message.timestamp - buffer_window
+                pending = [item for item in pending if item.timestamp >= cutoff]
+                pending = pending[-buffer_max_lines:]
+                if not anchor:
+                    continue
+                current = pending
+                pending = []
+            else:
+                current.append(message)
+
+            if _is_operator(message):
+                last_operator = message.timestamp
+
+        yield from emit()
+
+
+def _build_operator_conversation(
+    messages: list[IRCRawMessage], sequence: int
+) -> IRCConversation:
+    speakers = sorted({message.speaker for message in messages if not message.is_meta})
+    return IRCConversation(
+        conversation_id=(
+            f"irc-{messages[0].channel}-{messages[0].timestamp.strftime('%Y%m%dT%H%M%S')}"
+            f"-{sequence:04d}"
+        ),
+        channel=messages[0].channel,
+        start=messages[0].timestamp,
+        end=messages[-1].timestamp,
+        message_count=len(messages),
+        unique_speakers=len(speakers),
+        speakers=tuple(speakers),
+        messages=tuple(messages),
+    )
 
 
 # ── Daily rollup ───────────────────────────────────────────────────────────────

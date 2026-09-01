@@ -383,6 +383,135 @@ def test_extract_conversations_can_skip_ensure(monkeypatch, tmp_path):
     assert conversations
 
 
+def test_extract_operator_conversations_uses_buffer_and_counts(tmp_path):
+    content = (
+        "2026-04-21 09:40:00\talice\tsetup context\n"
+        "2026-04-21 10:00:00\tsinity\tstarting work\n"
+        "2026-04-21 10:01:00\tbob\they sinity, good luck\n"
+        "2026-04-21 10:02:00\t--\tjoined channel\n"
+        "2026-04-21 10:03:00\tsinity2\tthanks\n"
+        "2026-04-21 12:04:00\tbob\tunrelated after operator gap\n"
+        "2026-04-21 12:05:00\tsinity\tnew unit\n"
+    )
+    _write_weechat_log(tmp_path, "#test", "2026-04-21.log", content)
+
+    conversations = list(irc_raw.extract_operator_conversations(root=tmp_path))
+
+    assert len(conversations) == 2
+    first = conversations[0]
+    assert [message.speaker for message in first.messages] == [
+        "alice", "sinity", "bob", "--", "sinity2"
+    ]
+    assert first.operator_lines == 2
+    assert first.mention_lines == 1
+    assert first.total_lines == 5
+
+
+def test_extract_operator_conversations_starts_on_operator_mentions(tmp_path):
+    content = (
+        "2026-04-21 10:00:00\talice\twhere is sinity?\n"
+        "2026-04-21 10:01:00\tbob\tI do not know\n"
+        "2026-04-21 10:02:00\tcarol\tstill unrelated\n"
+    )
+    _write_weechat_log(tmp_path, "#test", "2026-04-21.log", content)
+
+    conversations = list(irc_raw.extract_operator_conversations(root=tmp_path))
+
+    # Mentions provide context anchors, but a published unit requires
+    # operator participation, matching the old pipeline's output contract.
+    assert conversations == []
+
+
+def test_extract_operator_conversations_anchor_mentions_do_not_extend_operator_gap(tmp_path):
+    content = (
+        "2026-04-21 10:00:00\tsinity\tstarting work\n"
+        "2026-04-21 11:30:00\talice\they sinity, are you there?\n"
+        "2026-04-21 12:01:00\tbob\tlate reply\n"
+        "2026-04-21 12:02:00\tsinity\tnew unit\n"
+    )
+    _write_weechat_log(tmp_path, "#test", "2026-04-21.log", content)
+
+    conversations = list(irc_raw.extract_operator_conversations(root=tmp_path))
+
+    assert len(conversations) == 2
+    assert [message.text for message in conversations[0].messages] == [
+        "starting work", "hey sinity, are you there?"
+    ]
+
+
+def test_extract_operator_conversations_keeps_channels_separate(tmp_path):
+    _write_weechat_log(
+        tmp_path, "#a", "2026-04-21.log",
+        "2026-04-21 10:00:00\tsinity\ta\n"
+        "2026-04-21 10:01:00\talice\treply\n",
+    )
+    _write_weechat_log(
+        tmp_path, "#b", "2026-04-21.log",
+        "2026-04-21 10:00:30\tsinity\tb\n"
+        "2026-04-21 10:02:00\tbob\treply\n",
+    )
+
+    conversations = list(irc_raw.extract_operator_conversations(root=tmp_path))
+
+    assert [conversation.channel for conversation in conversations] == ["#a", "#b"]
+
+
+def test_extract_operator_conversations_ignores_system_actors_and_exposes_sources(tmp_path):
+    _write_weechat_log(
+        tmp_path, "#test", "2026-04-21.log",
+        "2026-04-21 09:59:00\t***\tsinity joined\n"
+        "2026-04-21 10:00:00\tsinity\tfirst\n"
+        "2026-04-21 10:01:00\t-->	server noise\n"
+        "2026-04-21 10:02:00\talice\treply\n",
+    )
+
+    conversation = next(irc_raw.extract_operator_conversations(root=tmp_path))
+
+    assert conversation.operator_lines == 1
+    assert conversation.mention_lines == 0
+    assert conversation.source_files == (str(tmp_path / "#test" / "2026-04-21.log"),)
+
+
+def test_extract_operator_conversations_keeps_buffer_across_range_start(tmp_path):
+    _write_weechat_log(
+        tmp_path, "#test", "2026-04-20.log",
+        "2026-04-21 05:50:00\talice\tsetup before range\n",
+    )
+    _write_weechat_log(
+        tmp_path, "#test", "2026-04-21.log",
+        "2026-04-21 06:05:00\tsinity\tinside range\n",
+    )
+
+    conversations = list(irc_raw.extract_operator_conversations(
+        start=date(2026, 4, 21), end=date(2026, 4, 21), root=tmp_path,
+    ))
+
+    assert len(conversations) == 1
+    assert [message.text for message in conversations[0].messages] == [
+        "setup before range", "inside range"
+    ]
+
+
+def test_extract_operator_conversations_rejects_invalid_limits(tmp_path):
+    _write_weechat_log(
+        tmp_path, "#test", "2026-04-21.log",
+        "2026-04-21 10:00:00\tsinity\thi\n",
+    )
+
+    for kwargs in (
+        {"buffer_minutes": -1},
+        {"buffer_max_lines": 0},
+        {"max_gap_hours": -1},
+        {"operator_gap_hours": -1},
+    ):
+        try:
+            list(irc_raw.extract_operator_conversations(root=tmp_path, **kwargs))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {kwargs}")
+
+
 def test_daily_irc_activity_counts_operator_messages(tmp_path):
     content = (
         "2026-04-21 10:00:00\tsinity\thi everyone\n"
