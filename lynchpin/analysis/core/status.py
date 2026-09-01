@@ -162,13 +162,6 @@ def build_analysis_status(*, spec_path: str | Path | None = None) -> dict[str, o
             else "Work-package scope artifact missing.",
             [art("work_package_scope.json")],
         ),
-        "dashboard": _row(
-            "stable" if has_all(("ecosystem_dashboard.json", "ecosystem_dashboard.html")) else "provisional",
-            "Comprehensive dashboard JSON/HTML is available."
-            if has_all(("ecosystem_dashboard.json", "ecosystem_dashboard.html"))
-            else "Dashboard surface partially materialized.",
-            [art("ecosystem_dashboard.json"), art("ecosystem_dashboard.html")],
-        ),
         "commit_transport": _row(
             "stable" if has_all(("commit_facts.json", "commit_shards.json")) else "provisional",
             "Commit transport and shard manifests are available."

@@ -1,6 +1,6 @@
 """Read-only substrate readers for cross-source signal MCP tools.
 
-Extracted from lynchpin.mcp.tools.signals to keep tool functions thin and
+Extracted from the former signal tool implementation to keep tool functions thin and
 the SQL in the typed reader layer. All functions are SELECT-only.
 """
 

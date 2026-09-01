@@ -400,8 +400,7 @@ def machine_work_observation_daily(
     from lynchpin.analysis.machine.work_observations import daily_work_observation_series
     from lynchpin.substrate.connection import connect, substrate_path
 
-    # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -414,7 +413,9 @@ def machine_work_observation_daily(
 
     with connect(substrate_path(), read_only=True) as conn:
         if refresh_id is None:
-            refresh_id = machine_module._best_refresh_or_none(conn, "work_observation")
+            refresh_id = machine_module.best_materialized_refresh_id(
+                conn, "work_observation", caller="machine_work_observation_daily"
+            )
             if refresh_id is None:
                 return {"summary": {"status": "missing"}, "rows": []}
         rows = daily_work_observation_series(

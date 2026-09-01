@@ -28,13 +28,13 @@ from .substrate_promote_graph import promote_graph_source
 from .substrate_promote_machine import promote_machine_tables
 from .substrate_promote_personal import promote_personal_sources
 from .substrate_promote_polylogue_timeline import promote_polylogue_timeline_source
-from .substrate_promote_review import promote_review_source
 from .substrate_promote_work import promote_work_sources
 from .substrate_promote_status import (
     MACHINE_SOURCE_IDS,
     SOURCE_AI_WORK_EVENTS,
     SOURCE_COMMITS,
     SOURCE_EVIDENCE_GRAPH,
+    SOURCE_PR_REVIEW,
     SOURCE_FILE_CHANGES,
     SOURCE_MACHINE,
     SOURCE_MACHINE_EXPERIMENTS,
@@ -48,7 +48,6 @@ from .substrate_promote_status import (
     SOURCE_SINNIX_GENERATION,
     SOURCE_BORG_DRILL,
     SOURCE_WORK_OBSERVATIONS,
-    SOURCE_PR_REVIEW,
     SOURCE_PERSONAL_DAILY_SIGNAL,
     SOURCE_POLYLOGUE_TIMELINE,
     SOURCE_SPOTIFY_DAILY,
@@ -94,7 +93,6 @@ def run_substrate_promote(
     commit_facts_file: str,
     file_changes_file: str,
     symbol_changes_file: str,
-    pr_review_file: str | None = None,
     ai_attribution_file: str | None = None,
     sources: Collection[str] | None = None,
     refresh_id: str | None = None,
@@ -134,7 +132,6 @@ def run_substrate_promote(
                     commit_facts_file=commit_facts_file,
                     file_changes_file=file_changes_file,
                     symbol_changes_file=symbol_changes_file,
-                    pr_review_file=pr_review_file,
                     ai_attribution_file=ai_attribution_file,
                     refresh_id=refresh_id,
                     selection=selection,
@@ -161,7 +158,6 @@ def run_substrate_promote(
             commit_facts_file=commit_facts_file,
             file_changes_file=file_changes_file,
             symbol_changes_file=symbol_changes_file,
-            pr_review_file=pr_review_file,
             ai_attribution_file=ai_attribution_file,
             refresh_id=refresh_id,
             selection=selection,
@@ -191,7 +187,6 @@ def _do_promote(
     commit_facts_file: str,
     file_changes_file: str,
     symbol_changes_file: str,
-    pr_review_file: str | None,
     ai_attribution_file: str | None,
     refresh_id: str | None,
     selection: SourceSelection,
@@ -287,20 +282,6 @@ def _do_promote(
                 counts=counts,
                 selection=selection,
                 write_evidence_graph=write_evidence_graph,
-            ),
-        )
-
-        _run_stage(
-            conn,
-            refresh_id=refresh_id or "",
-            step="promote_pr_review",
-            counts=counts,
-            fn=lambda: promote_review_source(
-                conn,
-                refresh_id=refresh_id,
-                pr_review_file=pr_review_file,
-                counts=counts,
-                selection=selection,
             ),
         )
 

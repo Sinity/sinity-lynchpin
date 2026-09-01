@@ -155,15 +155,3 @@ def _load_symbol_change_rows(path: str) -> Iterator[dict[str, Any]]:
     for entry in data.get("events", []):
         if isinstance(entry, dict):
             yield entry
-
-
-def _load_pr_review_rows(path: str) -> Iterator[dict[str, Any]]:
-    """Yield active_pr_review_topology.json prs as dict rows."""
-    p = Path(path)
-    if not p.exists():
-        return
-    with p.open() as f:
-        data = json.load(f)
-    for entry in data.get("prs", []):
-        if isinstance(entry, dict):
-            yield entry

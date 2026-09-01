@@ -170,7 +170,7 @@ def promote_pr_review_rows(
     refresh_id: str,
     rows: Iterable[Mapping[str, Any]],
 ) -> int:
-    """INSERT pr_review_row rows from build_active_pr_review_topology prs[].
+    """INSERT pr_review_row rows from a normalized review payload.
 
     ISO-8601 timestamp strings are parsed to timezone-aware datetimes.
     Missing keys default gracefully.

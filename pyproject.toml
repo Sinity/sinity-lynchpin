@@ -134,7 +134,6 @@ files = [
     "lynchpin/analysis/active/substrate_promote_artifacts.py",
     "lynchpin/analysis/active/substrate_promote_graph.py",
     "lynchpin/analysis/active/substrate_promote_personal.py",
-    "lynchpin/analysis/active/substrate_promote_review.py",
     "lynchpin/analysis/change/work_packages.py",
     "lynchpin/analysis/interpretation/velocity_windows.py",
     "lynchpin/analysis/machine/episodes.py",

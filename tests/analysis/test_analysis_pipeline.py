@@ -21,9 +21,6 @@ def test_analysis_spec_artifact_catalog_covers_materialization_json_outputs():
             materialize_source,
         )
     }
-    # Best-effort input read by substrate promotion; no DAG step writes it.
-    outputs.discard("active_pr_review_topology.json")
-
     assert outputs <= set(spec["artifacts"].values())
 
 

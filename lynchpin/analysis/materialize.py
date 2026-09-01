@@ -35,7 +35,6 @@ from .active.substrate_promote import (
     SOURCE_MACHINE_PROCESS_IO_DELTA,
     SOURCE_MACHINE_PROCESS_MEMORY,
     SOURCE_MACHINE_SERVICE_STATE,
-    SOURCE_PR_REVIEW,
     SOURCE_SYMBOLS,
     SOURCE_WORK_OBSERVATIONS,
     run_substrate_promote,
@@ -209,7 +208,6 @@ CURRENT_STATE_SUBSTRATE_SOURCES = (
     SOURCE_SYMBOLS,
     SOURCE_AI_WORK_EVENTS,
     SOURCE_EVIDENCE_GRAPH,
-    SOURCE_PR_REVIEW,
     SOURCE_WORK_OBSERVATIONS,
 )
 
@@ -392,8 +390,8 @@ def current_state_dag(
     dag.add(_step(dag, 'active_ci_health', 'run_active_ci_health', args=(_out('active_ci_health.json'),), kwargs={'start': start, 'end': end, 'projects': projects, 'snapshot_file': _out('active_project_snapshot.json'), 'include_runs': include_github_frontier}, depends_on=['active_project_snapshot']))
     dag.add(_step(dag, 'active_commit_semantics', 'run_active_commit_semantics', args=(_out('active_commit_semantics.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
     dag.add(_step(dag, 'active_ai_attribution', 'run_active_ai_attribution', args=(_out('active_ai_attribution.json'),), kwargs={'start': start, 'end': end, 'projects': projects}, depends_on=['active_git_facts']))
-    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'ai_attribution_file': _out('active_ai_attribution.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
-    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': start, 'window_end': end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False}, depends_on=[]))
+    dag.add(_step(dag, 'current_state_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'ai_attribution_file': _out('active_ai_attribution.json'), 'refresh_id': _current_state_refresh_id(start=start, end=end, projects=projects), 'window_start': start, 'window_end': end, 'sources': CURRENT_STATE_SUBSTRATE_SOURCES, 'write_evidence_graph': True}, depends_on=['active_git_facts', 'active_symbol_changes', 'code_history_claims']))
+    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': start, 'window_end': end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False}, depends_on=[]))
     machine_steps = _add_machine_analysis_steps(
         dag,
         start=start,
@@ -448,7 +446,7 @@ def machine_analysis_dag(
     """
     dag = DAG("machine-analysis-materialization")
     machine_start, machine_end = _rolling_window(start=start, end=end, days=90)
-    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'pr_review_file': _out('active_pr_review_topology.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': machine_start, 'window_end': machine_end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False, 'full_repromote': full_repromote}, depends_on=[]))
+    dag.add(_step(dag, 'machine_analysis_substrate_promote', 'run_substrate_promote', args=(), kwargs={'commit_facts_file': _out('active_commit_facts.json'), 'file_changes_file': _out('active_file_change_facts.json'), 'symbol_changes_file': _out('active_symbol_changes.json'), 'refresh_id': _machine_analysis_refresh_id(start=start, end=end), 'window_start': machine_start, 'window_end': machine_end, 'sources': MACHINE_ANALYSIS_SUBSTRATE_SOURCES, 'write_evidence_graph': False, 'full_repromote': full_repromote}, depends_on=[]))
     _add_machine_analysis_steps(
         dag,
         start=start,

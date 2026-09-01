@@ -59,8 +59,7 @@ def _ensure_work_observation_substrate_for_read(
     start: Any = None,
     end: Any = None,
 ) -> dict[str, Any]:
-    # Use late import to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     window = (start, end) if start is not None and end is not None else None
     return machine_module.ensure_substrate_materialized_for_read(caller=caller, window=window)
