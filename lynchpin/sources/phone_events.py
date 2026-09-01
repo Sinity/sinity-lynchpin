@@ -26,31 +26,37 @@ This module exposes two levels of typed access:
   correlation analysis. ``daily_instrument_metrics`` derives one row per
   (date, instrument) with a run count and a "primary metric" value.
 
-Primary-metric caveat: the persisted ``instrument_run`` payload does NOT
-carry a canonical "this is the headline number" field — that framing
-(``Outcome.primaryLabel`` in the Kotlin source, ``ui/instrument/*Engine.kt``)
-exists only in the on-screen result and is never written to the event.
-``_primary_metric`` reconstructs a reader-side approximation. This is a
-FALLBACK, not the mechanism of record: if the app is ever changed to persist
-``primary_metric``/``primary_value`` directly on the event, this function
-should defer to that field first and keep the table below only for old
-records. As of this writing (2026-08-14), traced against
-``ui/instrument/*Engine.kt`` and ``instruments/Catalogue.kt``:
+Primary metric: an ``instrument_run`` record carries ``primary_metric`` and
+``primary_value``, written by the app from the same ``Outcome`` its result
+screen renders. ``_primary_metric`` returns that pair; nothing here re-derives
+a headline for a record that has one.
+
+``_fallback_primary_metric`` reconstructs the pair for records written before
+the app persisted it. Its table is traced against ``ui/instrument/*Engine.kt``
+and ``instruments/Catalogue.kt``, and the two rows where it disagrees with the
+app's own headline describe those old records only:
 
 ======================  ========  ==================  ============================  ===============================
-engine (canon)          instrument  Kotlin primaryLabel  field this reader picks       agreement
+engine (canon)          instrument  Kotlin primaryLabel  field the fallback picks      agreement
 ======================  ========  ==================  ============================  ===============================
 reaction                pvt         median_rt_ms          median_rt_ms                  exact match
 reaction                go_no_go    median_rt_ms          median_rt_ms                  exact match (same code path as pvt)
 reaction                tapping     interval_sd_ms         interval_sd_ms                exact match (falls through to 2nd priority)
 staircase               pitch_jnd   threshold              threshold                     exact match
 staircase               gap_detection threshold            threshold                     exact match
-staircase               (torch-feasibility preflight, not a catalogued instrument) achievable_hz  NOT PICKED — no "achievable_hz" in the priority list; falls through to None
-forced_choice           stroop      median_correct_rt_ms OR interference_ms (dynamic)  accuracy   DELIBERATE DIVERGENCE — this reader reports accuracy (0-1), not the app's reaction-time-shaped headline, because the correlation this feeds wants an accuracy-style outcome; the app's actual primary is a different, also-persisted field
-counting                breath_counting  cycles_correct (label only; value = 100 * cycles_correct/(cycles_correct+unaware_miscounts))  accuracy, derived as cycles_correct/(cycles_correct+unaware_miscounts)  DELIBERATE DIVERGENCE — same ratio, this reader keeps it on a 0-1 scale and calls it "accuracy" rather than the app's 0-100 "cycles_correct"-labelled percentage
+staircase               (torch-feasibility preflight, not a catalogued instrument) achievable_hz  none  the preflight's headline is carried by the persisted pair; the fallback never had a rule for it
+forced_choice           stroop      median_correct_rt_ms OR interference_ms (dynamic)  accuracy   DIVERGES — the fallback reports accuracy (0-1), the app's headline is reaction-time shaped
+counting                breath_counting  cycles_correct (label only; value = 100 * cycles_correct/(cycles_correct+unaware_miscounts))  accuracy, derived as cycles_correct/(cycles_correct+unaware_miscounts)  DIVERGES — same ratio, the fallback keeps it on a 0-1 scale where the app shows a 0-100 percentage
 counting                (prime-scored breath variant, "scored_by":"prime")  none (empty)  none (falls through to None; no accuracy fields on-device)  exact match (both absent)
 hold_still              ppg, tremor  none (empty; scored via prime trace_file)  none    exact match (both absent)
 ======================  ========  ==================  ============================  ===============================
+
+Because of those two rows, a stroop or breath-counting series that spans the
+migration changes both name and scale at the boundary. Neither aggregation
+here blends the two: ``daily_instrument_metrics`` reports one metric name per
+(date, instrument) and averages only the runs carrying it, and
+``analysis.psychometric_correlations`` correlates only the days that agree on
+the instrument's dominant name.
 
 A run whose engine/fields don't match any of the above falls through with
 ``primary_metric_value=None``; the run still counts towards ``run_count``
@@ -60,7 +66,7 @@ A run whose engine/fields don't match any of the above falls through with
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -318,7 +324,7 @@ def instrument_runs(
         )
 
 
-def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
+def _fallback_primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
     canon = _ENGINE_ALIASES.get(engine, engine)
     for field in _METRIC_PRIORITY.get(canon, ()):
         value = safe_float(metrics.get(field))
@@ -330,6 +336,21 @@ def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str,
         if correct is not None and miss is not None and (correct + miss) > 0:
             return "accuracy", correct / (correct + miss)
     return None
+
+
+def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
+    """Return the record's own primary pair, falling back for old records.
+
+    A present ``primary_metric`` field is authoritative and is never
+    second-guessed: an empty name, or a name with a null ``primary_value``, is
+    the app saying this run has no on-device headline (a trace prime scores
+    later, or an attempt that failed), not an invitation to derive one.
+    """
+    if "primary_metric" in metrics:
+        name = str(metrics["primary_metric"] or "")
+        value = safe_float(metrics.get("primary_value"))
+        return (name, value) if name and value is not None else None
+    return _fallback_primary_metric(engine, metrics)
 
 
 def daily_instrument_metrics(
@@ -344,6 +365,13 @@ def daily_instrument_metrics(
     synthesized as a zero row. When some of a day's runs carry a primary
     metric and others don't (e.g. a feasibility-check run mixed with real
     runs), the mean is taken over the runs that DO carry one.
+
+    A day whose runs disagree on WHICH metric is primary reports the most
+    common name and averages only the runs carrying it. Two names in one
+    bucket mean two quantities -- the stroop headline is interference_ms or
+    median_correct_rt_ms depending on the trials, and a migration boundary
+    puts fallback and persisted names in the same day -- and their mean would
+    be a number with no unit.
     """
     buckets: dict[tuple[date, str], list[InstrumentRun]] = defaultdict(list)
     for run in instrument_runs(start=start, end=end, root=root):
@@ -352,14 +380,14 @@ def daily_instrument_metrics(
     out: list[InstrumentDay] = []
     for (day, instrument), runs in sorted(buckets.items()):
         engine = runs[0].engine
+        found = [_primary_metric(run.engine, run.metrics) for run in runs]
+        named = [pair for pair in found if pair is not None]
         metric_name: Optional[str] = None
-        values: list[float] = []
-        for run in runs:
-            found = _primary_metric(run.engine, run.metrics)
-            if found is not None:
-                metric_name, value = found
-                values.append(value)
-        primary_value = round(sum(values) / len(values), 4) if values else None
+        primary_value: Optional[float] = None
+        if named:
+            metric_name = Counter(name for name, _ in named).most_common(1)[0][0]
+            values = [value for name, value in named if name == metric_name]
+            primary_value = round(sum(values) / len(values), 4)
         out.append(InstrumentDay(
             date=day, instrument=instrument, engine=engine, run_count=len(runs),
             primary_metric_name=metric_name, primary_metric_value=primary_value,

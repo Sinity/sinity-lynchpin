@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Optional
@@ -246,16 +246,41 @@ def psychometric_correlation(
     Returns:
         ``PsychometricReport`` with FDR-corrected correlations + caveats.
     """
-    from ..sources.phone_events import daily_instrument_metrics
+    from ..sources.phone_events import InstrumentDay, daily_instrument_metrics
     from .operator_daily import operator_daily_matrix
 
     instrument_days = daily_instrument_metrics(start=start, end=end)
     by_instrument: dict[str, dict[date, float]] = defaultdict(dict)
     counts_by_instrument: dict[str, int] = defaultdict(int)
+    # One instrument's series has to be ONE quantity. The app's persisted
+    # headline can change name within a window -- the stroop reports
+    # interference_ms or median_correct_rt_ms depending on the trials, and
+    # records predating the persisted pair fall back to a differently scaled
+    # reconstruction -- so the days that disagree with the window's dominant
+    # name are excluded and declared rather than correlated as one series.
+    rows_by_instrument: dict[str, list[InstrumentDay]] = defaultdict(list)
     for row in instrument_days:
         counts_by_instrument[row.instrument] += 1
-        if row.primary_metric_value is not None:
-            by_instrument[row.instrument][row.date] = row.primary_metric_value
+        rows_by_instrument[row.instrument].append(row)
+
+    excluded_by_instrument: dict[str, tuple[str, int]] = {}
+    for instrument, rows in rows_by_instrument.items():
+        named: list[tuple[date, str, float]] = []
+        for row in rows:
+            name, value = row.primary_metric_name, row.primary_metric_value
+            if name and value is not None:
+                named.append((row.date, name, value))
+        if not named:
+            continue
+        dominant = Counter(name for _, name, _ in named).most_common(1)[0][0]
+        excluded = 0
+        for day, name, value in named:
+            if name == dominant:
+                by_instrument[instrument][day] = value
+            else:
+                excluded += 1
+        if excluded:
+            excluded_by_instrument[instrument] = (dominant, excluded)
 
     op_rows = operator_daily_matrix(start, end)
     rows_by_date = {r.date: r for r in op_rows}
@@ -347,7 +372,7 @@ def psychometric_correlation(
                 )
             )
 
-    report.caveats = _build_caveats(start, end, counts_by_instrument)
+    report.caveats = _build_caveats(start, end, counts_by_instrument, excluded_by_instrument)
     report.summary = _build_summary(report)
     return report
 
@@ -357,11 +382,17 @@ def psychometric_correlation(
 
 def _build_caveats(
     start: date, end: date, counts_by_instrument: dict[str, int],
+    excluded_by_instrument: Optional[dict[str, tuple[str, int]]] = None,
 ) -> list[str]:
     instruments_desc = (
         ", ".join(f"{name} ({n}d)" for name, n in sorted(counts_by_instrument.items()))
         if counts_by_instrument else "none"
     )
+    mixed = [
+        f"{instrument}: {n} day(s) excluded, headline metric other than "
+        f"{dominant}"
+        for instrument, (dominant, n) in sorted((excluded_by_instrument or {}).items())
+    ]
     return [
         "Same-day (lag 0) associations only; performance-test scores are "
         "influenced by unmeasured factors (caffeine, time pressure, "
@@ -370,12 +401,16 @@ def _build_caveats(
         "A day with no run of a given instrument contributes NO row for that "
         "instrument (missing != zero); a day where a health/sleep signal was "
         "not observed is excluded from that pairing, not coerced to 0.",
-        "The 'primary metric' per instrument is a same-module heuristic "
-        "(median_rt_ms for reaction runs, threshold for staircases, accuracy "
-        "for forced-choice runs, a derived cycles_correct/unaware_miscounts "
-        "ratio for counting runs) reconstructed from the persisted event "
-        "fields — the app itself does not persist a canonical headline "
-        "metric per run.",
+        "The 'primary metric' per instrument is the headline the phone app "
+        "persisted on the run itself, the same number its result screen "
+        "showed. Runs written before the app carried that field fall back to "
+        "a reader-side reconstruction (see "
+        "``sources.phone_events._fallback_primary_metric``), which for the "
+        "stroop and breath-counting instruments names and scales the "
+        "headline differently; a day whose metric name differs from the "
+        "instrument's dominant one in this window is excluded from that "
+        "instrument's series rather than averaged into it."
+        + (" Excluded: " + "; ".join(mixed) + "." if mixed else ""),
         "wake_time_regularity_sd_min is a TRAILING signal: it summarizes the "
         f"{WAKE_REGULARITY_WINDOW_DAYS} tracked nights strictly BEFORE the "
         "paired date, never that date's own night, and requires at least "

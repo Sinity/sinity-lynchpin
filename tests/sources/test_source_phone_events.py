@@ -112,6 +112,85 @@ def test_daily_instrument_metrics_reaction_uses_median_rt(tmp_path):
     assert row.primary_metric_value == 280.0
 
 
+def test_daily_instrument_metrics_uses_persisted_primary_pair(tmp_path):
+    _write_day(tmp_path, "20260814", [
+        {
+            "kind": "instrument_run", "instrument": "stroop", "engine": "forced_choice",
+            "started_at": "2026-08-14T09:00:00Z", "seconds": 120,
+            "primary_metric": "interference_ms", "primary_value": 42.5,
+            "accuracy": 0.9, "median_correct_rt_ms": 700.0,
+            "ts": "2026-08-14T09:02:00Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].primary_metric_name == "interference_ms"
+    assert days[0].primary_metric_value == 42.5
+
+
+def test_daily_instrument_metrics_covers_torch_preflight_primary(tmp_path):
+    _write_day(tmp_path, "20260814", [
+        {
+            "kind": "instrument_run", "instrument": "torch_cff", "engine": "staircase",
+            "started_at": "2026-08-14T09:00:00Z", "seconds": 1,
+            "primary_metric": "achievable_hz", "primary_value": 83.25,
+            "achievable_hz": 83.25, "ts": "2026-08-14T09:00:01Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].primary_metric_name == "achievable_hz"
+    assert days[0].primary_metric_value == 83.25
+
+
+def test_daily_instrument_metrics_mixed_primary_names_do_not_blend(tmp_path):
+    # A day straddling the migration: one record predates the persisted pair
+    # and falls back to a 0-1 accuracy, two carry the app's own 0-100
+    # headline. Averaging all three would report a number in neither unit.
+    _write_day(tmp_path, "20260901", [
+        {
+            "kind": "instrument_run", "instrument": "breath_counting", "engine": "counting",
+            "started_at": "2026-09-01T08:00:00Z", "seconds": 120,
+            "cycles_correct": 8, "unaware_miscounts": 2,
+            "ts": "2026-09-01T08:02:00Z",
+        },
+        {
+            "kind": "instrument_run", "instrument": "breath_counting", "engine": "counting",
+            "started_at": "2026-09-01T12:00:00Z", "seconds": 120,
+            "primary_metric": "cycles_correct", "primary_value": 80.0,
+            "cycles_correct": 8, "unaware_miscounts": 2,
+            "ts": "2026-09-01T12:02:00Z",
+        },
+        {
+            "kind": "instrument_run", "instrument": "breath_counting", "engine": "counting",
+            "started_at": "2026-09-01T18:00:00Z", "seconds": 120,
+            "primary_metric": "cycles_correct", "primary_value": 90.0,
+            "cycles_correct": 9, "unaware_miscounts": 1,
+            "ts": "2026-09-01T18:02:00Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    row = days[0]
+    assert row.run_count == 3
+    assert row.primary_metric_name == "cycles_correct"
+    assert row.primary_metric_value == 85.0
+
+
+def test_daily_instrument_metrics_null_primary_value_is_not_re_derived(tmp_path):
+    # The app names a headline it could not compute; the reader must not go
+    # looking for a substitute in the raw fields.
+    _write_day(tmp_path, "20260901", [
+        {
+            "kind": "instrument_run", "instrument": "pvt", "engine": "reaction",
+            "started_at": "2026-09-01T08:00:00Z", "seconds": 150,
+            "primary_metric": "median_rt_ms", "primary_value": None,
+            "interval_sd_ms": 42.0, "ts": "2026-09-01T08:02:30Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].run_count == 1
+    assert days[0].primary_metric_name is None
+    assert days[0].primary_metric_value is None
+
+
 def test_daily_instrument_metrics_staircase_uses_threshold(tmp_path):
     _write_day(tmp_path, "20260814", [
         {

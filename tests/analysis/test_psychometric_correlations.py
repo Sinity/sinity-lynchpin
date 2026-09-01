@@ -74,6 +74,53 @@ def test_psychometric_correlation_sleep_vs_pvt_family(monkeypatch):
     assert sleep_vs_rt and any(c.r < -0.9 and c.significant for c in sleep_vs_rt)
 
 
+def test_psychometric_correlation_excludes_days_on_a_different_headline(monkeypatch):
+    """A window whose headline metric changes mid-series is not one series.
+
+    The stroop's persisted headline is reaction-time shaped; records predating
+    it fall back to a 0-1 accuracy. Correlating both as one predictor would
+    read a unit change as signal.
+    """
+    import lynchpin.sources.phone_events as pe
+    from lynchpin.analysis.operator_daily import OperatorDay
+
+    base = date(2026, 4, 1)
+    days = [base + timedelta(days=i) for i in range(30)]
+
+    instrument_days = [
+        pe.InstrumentDay(
+            date=d, instrument="stroop", engine="forced_choice", run_count=1,
+            primary_metric_name="interference_ms" if i < 25 else "accuracy",
+            primary_metric_value=round(60 + 2 * i, 2) if i < 25 else 0.9,
+        )
+        for i, d in enumerate(days)
+    ]
+    monkeypatch.setattr(pe, "daily_instrument_metrics", lambda **kw: instrument_days)
+    monkeypatch.setattr(pe, "instrument_runs", lambda **kw: iter(()))
+    monkeypatch.setattr(pc, "_wake_regularity_series", lambda start, end: {})
+
+    rows = [
+        OperatorDay(date=d, hrv_rmssd=float(100 - 2 * i), sources_present=frozenset({"health"}))
+        for i, d in enumerate(days)
+    ]
+    monkeypatch.setattr(
+        "lynchpin.analysis.operator_daily.operator_daily_matrix", lambda start, end: rows
+    )
+
+    rep = pc.psychometric_correlation(base, base + timedelta(days=29), min_pairs=10)
+    hrv = [
+        c for c in rep.correlations
+        if c.predictor == "stroop.primary_metric" and c.outcome == "hrv_rmssd"
+    ]
+    # The 25 interference_ms days are a perfect negative line against hrv; the
+    # five accuracy days would flatten it if they were folded in.
+    assert hrv and all(c.n == 25 for c in hrv)
+    assert any(c.r < -0.99 for c in hrv)
+    caveat_text = " ".join(rep.caveats)
+    assert "stroop: 5 day(s) excluded" in caveat_text
+    assert "interference_ms" in caveat_text
+
+
 def test_psychometric_correlation_missing_instrument_day_not_synthesized(monkeypatch):
     import lynchpin.sources.phone_events as pe
 
