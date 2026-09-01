@@ -112,6 +112,35 @@ def test_daily_instrument_metrics_reaction_uses_median_rt(tmp_path):
     assert row.primary_metric_value == 280.0
 
 
+def test_daily_instrument_metrics_uses_persisted_primary_pair(tmp_path):
+    _write_day(tmp_path, "20260814", [
+        {
+            "kind": "instrument_run", "instrument": "stroop", "engine": "forced_choice",
+            "started_at": "2026-08-14T09:00:00Z", "seconds": 120,
+            "primary_metric": "interference_ms", "primary_value": 42.5,
+            "accuracy": 0.9, "median_correct_rt_ms": 700.0,
+            "ts": "2026-08-14T09:02:00Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].primary_metric_name == "interference_ms"
+    assert days[0].primary_metric_value == 42.5
+
+
+def test_daily_instrument_metrics_covers_torch_preflight_primary(tmp_path):
+    _write_day(tmp_path, "20260814", [
+        {
+            "kind": "instrument_run", "instrument": "torch_cff", "engine": "staircase",
+            "started_at": "2026-08-14T09:00:00Z", "seconds": 1,
+            "primary_metric": "achievable_hz", "primary_value": 83.25,
+            "achievable_hz": 83.25, "ts": "2026-08-14T09:00:01Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].primary_metric_name == "achievable_hz"
+    assert days[0].primary_metric_value == 83.25
+
+
 def test_daily_instrument_metrics_staircase_uses_threshold(tmp_path):
     _write_day(tmp_path, "20260814", [
         {

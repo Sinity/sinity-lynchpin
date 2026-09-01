@@ -26,15 +26,11 @@ This module exposes two levels of typed access:
   correlation analysis. ``daily_instrument_metrics`` derives one row per
   (date, instrument) with a run count and a "primary metric" value.
 
-Primary-metric caveat: the persisted ``instrument_run`` payload does NOT
-carry a canonical "this is the headline number" field — that framing
-(``Outcome.primaryLabel`` in the Kotlin source, ``ui/instrument/*Engine.kt``)
-exists only in the on-screen result and is never written to the event.
-``_primary_metric`` reconstructs a reader-side approximation. This is a
-FALLBACK, not the mechanism of record: if the app is ever changed to persist
-``primary_metric``/``primary_value`` directly on the event, this function
-should defer to that field first and keep the table below only for old
-records. As of this writing (2026-08-14), traced against
+Primary-metric note: current ``instrument_run`` records carry
+``primary_metric``/``primary_value`` copied from the same ``Outcome`` shown by
+the result screen. ``_primary_metric`` first returns that persisted pair.
+Its reader-side reconstruction is a FALLBACK for pre-migration records only.
+As of this writing (2026-08-14), the fallback table is traced against
 ``ui/instrument/*Engine.kt`` and ``instruments/Catalogue.kt``:
 
 ======================  ========  ==================  ============================  ===============================
@@ -45,7 +41,7 @@ reaction                go_no_go    median_rt_ms          median_rt_ms          
 reaction                tapping     interval_sd_ms         interval_sd_ms                exact match (falls through to 2nd priority)
 staircase               pitch_jnd   threshold              threshold                     exact match
 staircase               gap_detection threshold            threshold                     exact match
-staircase               (torch-feasibility preflight, not a catalogued instrument) achievable_hz  NOT PICKED — no "achievable_hz" in the priority list; falls through to None
+staircase               (torch-feasibility preflight, not a catalogued instrument) achievable_hz  achievable_hz                  exact match (persisted pair is used for migrated records)
 forced_choice           stroop      median_correct_rt_ms OR interference_ms (dynamic)  accuracy   DELIBERATE DIVERGENCE — this reader reports accuracy (0-1), not the app's reaction-time-shaped headline, because the correlation this feeds wants an accuracy-style outcome; the app's actual primary is a different, also-persisted field
 counting                breath_counting  cycles_correct (label only; value = 100 * cycles_correct/(cycles_correct+unaware_miscounts))  accuracy, derived as cycles_correct/(cycles_correct+unaware_miscounts)  DELIBERATE DIVERGENCE — same ratio, this reader keeps it on a 0-1 scale and calls it "accuracy" rather than the app's 0-100 "cycles_correct"-labelled percentage
 counting                (prime-scored breath variant, "scored_by":"prime")  none (empty)  none (falls through to None; no accuracy fields on-device)  exact match (both absent)
@@ -318,7 +314,7 @@ def instrument_runs(
         )
 
 
-def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
+def _fallback_primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
     canon = _ENGINE_ALIASES.get(engine, engine)
     for field in _METRIC_PRIORITY.get(canon, ()):
         value = safe_float(metrics.get(field))
@@ -330,6 +326,20 @@ def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str,
         if correct is not None and miss is not None and (correct + miss) > 0:
             return "accuracy", correct / (correct + miss)
     return None
+
+
+def _primary_metric(engine: str, metrics: dict[str, Any]) -> Optional[tuple[str, float]]:
+    """Return the persisted primary pair, falling back for old records.
+
+    The fallback exists only for records written before the app persisted the
+    ``Outcome`` primary pair. A present ``primary_metric`` field is authoritative,
+    including an empty name for outcomes scored outside the device.
+    """
+    if "primary_metric" in metrics:
+        name = str(metrics["primary_metric"] or "")
+        value = safe_float(metrics.get("primary_value"))
+        return (name, value) if name and value is not None else None
+    return _fallback_primary_metric(engine, metrics)
 
 
 def daily_instrument_metrics(
