@@ -58,7 +58,7 @@ def _work_observation_command_windows(
     pressure_only: bool,
     refresh_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    if tool not in (None, "xtask", "polylogue"):
+    if tool not in (None, "xtask"):
         return [], []
 
     from lynchpin.substrate.connection import connect, substrate_path
@@ -89,8 +89,6 @@ def _work_observation_command_windows(
         source_predicates = []
         if tool in (None, "xtask"):
             source_predicates.append("(source = 'xtask_history' OR work_kind = 'xtask_invocation')")
-        if tool in (None, "polylogue"):
-            source_predicates.append("(source = 'polylogue_devtools' OR work_kind IN ('polylogue_devtools_invocation', 'polylogue_log_run'))")
         clauses.append("(" + " OR ".join(source_predicates) + ")")
         if project is not None:
             clauses.append("project = ?")
@@ -179,14 +177,10 @@ def _work_observation_command_windows(
         caveats.append(
             "xtask stage/test ledgers are present but xtask invocation rows are missing from work_observation; rerun the work-observation promotion"
         )
-    if any(row.get("tool") == "polylogue" for row in result):
-        caveats.append("polylogue devtools rows come from promoted work_observation ledgers")
     return result, caveats
 
 
 def _work_observation_tool(source: Any, work_kind: Any) -> str:
-    if source == "polylogue_devtools" or work_kind in {"polylogue_devtools_invocation", "polylogue_log_run"}:
-        return "polylogue"
     if source == "xtask_history" or work_kind == "xtask_invocation":
         return "xtask"
     return "work_observation"

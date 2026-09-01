@@ -19,7 +19,7 @@ from lynchpin.materialization import (
 )
 
 CORE_BEHAVIORAL_SOURCES = ("activitywatch", "atuin", "machine", "xtask_history")
-CONTEXT_SOURCES = ("webhistory", "irc", "polylogue_devtools", "substance")
+CONTEXT_SOURCES = ("webhistory", "irc", "substance")
 POLYLOGUE_SOURCE = "polylogue"
 
 

@@ -179,11 +179,6 @@ def _configured_path(source: str) -> Path | None:
         "machine": cfg.machine_telemetry_db,
         "xtask_history": cfg.xtask_history_db,
         "polylogue": cfg.polylogue_db,
-        "polylogue_devtools": (
-            cfg.polylogue_devtools_xtask_jsonl
-            if cfg.polylogue_devtools_xtask_jsonl.exists()
-            else cfg.polylogue_devtools_logs_dir
-        ),
         "agentctl": None,
         "raw_log": cfg.raw_log_file,
         "samsung_gdpr_cloud": cfg.samsung_gdpr_cloud_dir,

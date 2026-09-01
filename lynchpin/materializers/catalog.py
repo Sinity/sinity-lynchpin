@@ -17,7 +17,7 @@ _CANONICAL_ONLY = frozenset(
     {"activitywatch_event_index", "activitywatch_derived", "activity_content", "personal_daily_signals", "temporal_signals", "sleep_productivity"}
 )
 _WINDOWLESS = frozenset(
-    {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "polylogue_verify_runs", "ambient_intelligence"}
+    {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence"}
 )
 
 

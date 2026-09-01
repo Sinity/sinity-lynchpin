@@ -1068,21 +1068,6 @@ def test_machine_work_observation_tools_read_promoted_rows(
         )
         conn.execute(
             """
-            INSERT INTO work_observation (
-                source, source_id, work_kind, project, command, started_at,
-                ended_at, duration_s, status, exit_code, host, refresh_id
-            )
-            VALUES (
-                'polylogue_devtools', 'polylogue:xtask:1',
-                'polylogue_devtools_invocation', 'polylogue',
-                ['verify', '--quick'], TIMESTAMPTZ '2026-05-31 12:03:00+00',
-                TIMESTAMPTZ '2026-05-31 12:04:00+00', 60.0, 'failed',
-                1, 'sinnix-prime', 'r1'
-            )
-            """
-        )
-        conn.execute(
-            """
             INSERT INTO work_observation_stage (
                 source, source_id, invocation_source_id, stage_name,
                 started_at, duration_s, success, refresh_id
@@ -1160,16 +1145,6 @@ def test_machine_work_observation_tools_read_promoted_rows(
     assert command_perf["windows"][0]["source"] == "work_observation"
     assert command_perf["windows"][0]["machine_pressure_state"] == "io_pressure"
     assert command_perf["windows"][0]["host_io_pressure_some_avg10_max"] == 72.5
-
-    polylogue_perf = machine_command_performance(
-        tool="polylogue",
-        project="polylogue",
-        refresh_id="r1",
-    )
-    assert polylogue_perf["summary"]["filtered_count"] == 1
-    assert polylogue_perf["summary"]["tool_summaries"][0]["tool"] == "polylogue"
-    assert polylogue_perf["windows"][0]["source_id"] == "polylogue:xtask:1"
-    assert polylogue_perf["windows"][0]["machine_work_state"] == "devtools_workload"
 
     stages = machine_work_stage_summary(stage_name="clippy", refresh_id="r1")
     assert stages["rows"][0]["stage_name"] == "clippy"

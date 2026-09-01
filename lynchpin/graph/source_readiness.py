@@ -188,7 +188,6 @@ def source_readiness(
         ),
         _machine_source(),
         _xtask_history_source(),
-        _polylogue_devtools_source(),
         _sinnix_runtime_inventory_source(),
         _analysis_source(include_inventory=include_analysis_inventory),
         _github_source(
@@ -621,35 +620,6 @@ def _xtask_history_source() -> SourceReadiness:
         first_date=first_seen,
         last_date=last_seen,
         caveats=tuple(caveats),
-    )
-
-
-def _polylogue_devtools_source() -> SourceReadiness:
-    from ..sources.polylogue_devtools import source_readiness
-
-    ready = source_readiness()
-    present = ready.xtask_path.exists() or ready.logs_dir.exists()
-    count = ready.xtask_rows + ready.meta_files
-    if not present:
-        return SourceReadiness(
-            source="polylogue_devtools",
-            status="missing",
-            reason="Polylogue devtool JSONL/log ledgers are missing",
-            cost="materialized",
-        )
-    return SourceReadiness(
-        source="polylogue_devtools",
-        status="available" if count else "partial",
-        reason=f"{ready.xtask_rows} xtask rows, {ready.meta_files} log meta files",
-        cost="materialized",
-        path=f"{ready.xtask_path}:{ready.logs_dir}",
-        count=count,
-        first_date=ready.first_seen.date() if ready.first_seen else None,
-        last_date=ready.last_seen.date() if ready.last_seen else None,
-        caveats=(
-            "repo-local Polylogue development tooling history, not chat archive content",
-            ".local/logs metrics can contribute resource windows for machine attribution",
-        ),
     )
 
 

@@ -103,30 +103,11 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         materialization_hint="polylogue doctor --repair --target session_insights",
     ),
     SourceContract(
-        name="polylogue_verify_runs",
-        authority="Polylogue append-only verification history promoted into the substrate",
-        query_surface="lynchpin.substrate.polylogue_verify",
-        materialization_hint="python -m lynchpin.ingest.polylogue_verify_materialize",
-        materialization_executor=MaterializationExecutor.materializer("polylogue_verify_runs"),
-        required=False,
-        empty="valid",
-        query_mode="substrate",
-        collection_model="derived",
-        materialization_mode="derived",
-        substrate_tables=("polylogue_verify_run",),
-    ),
-    SourceContract(
         name="codex",
         authority="Codex session JSONL archive",
         query_surface="lynchpin.sources.polylogue once Polylogue has archived Codex sessions",
         materialization_hint="polylogued tails Codex session logs into the Polylogue archive",
         required=False,
-    ),
-    SourceContract(
-        name="polylogue_devtools",
-        authority="Polylogue repo-local devtools JSONL and .local/logs artifacts",
-        query_surface="lynchpin.sources.polylogue_devtools",
-        materialization_hint="Polylogue devtools records this live; Lynchpin reads repo-local ledgers",
     ),
     SourceContract(
         name="agentctl",
@@ -804,15 +785,6 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         ),
         "caveats": (
             "Sinex xtask invocation ledger; observational runtime/resource windows, not controlled experiments",
-        ),
-    },
-    "polylogue_devtools": {
-        "collection_model": "continuous",
-        "substrate_tables": ("work_observation",),
-        "mcp_tools": ("lynchpin_machine",),
-        "caveats": (
-            "Polylogue repo-local development tooling history; distinct from the Polylogue chat archive DB",
-            ".agent/task-history rows are invocation events; .local/logs metrics can provide resource windows for machine attribution",
         ),
     },
     "agentctl": {
