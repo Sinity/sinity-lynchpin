@@ -156,7 +156,7 @@ def machine_metrics_daily(
     from lynchpin.substrate.machine import load_machine_metric_daily
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -221,7 +221,7 @@ def machine_metrics_by_context(
     from lynchpin.substrate.machine import load_machine_metric_series_by_context
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -463,7 +463,7 @@ def machine_memory_breakdown(
     from lynchpin.substrate.machine import load_machine_memory_breakdown
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_bound = _parse_temporal_bound(start)
     end_bound = _parse_temporal_bound(end)
@@ -573,7 +573,7 @@ def machine_pressure_explain(
     from lynchpin.substrate.machine import load_machine_pressure_explainer
 
     # Import here to allow test patching in the machine module.
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_bound = _parse_temporal_bound(start)
     end_bound = _parse_temporal_bound(end)
@@ -749,7 +749,7 @@ def machine_pressure_report(
         load_machine_process_memory_samples,
     )
 
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_bound = _parse_temporal_bound(start)
     end_bound = _parse_temporal_bound(end)
@@ -996,7 +996,7 @@ def machine_service_state_summary(
     from lynchpin.substrate.machine import load_machine_service_state_summary
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None
@@ -1111,7 +1111,7 @@ def sinnix_generation_history(
     from lynchpin.substrate.machine import load_sinnix_generation_rows
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     machine_module.ensure_substrate_materialized_for_read(caller="sinnix_generation_history")
 
@@ -1157,7 +1157,7 @@ def machine_bufferbloat_summary(
     from lynchpin.substrate.machine import load_bufferbloat_daily
 
     # Import here to allow test patching in the machine module
-    from lynchpin.mcp.tools import machine as machine_module
+    from lynchpin.mcp.tools import _utils as machine_module
 
     start_d = _date.fromisoformat(start) if start else None
     end_d = _date.fromisoformat(end) if end else None

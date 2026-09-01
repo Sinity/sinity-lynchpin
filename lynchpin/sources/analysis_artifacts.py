@@ -62,7 +62,6 @@ _PROJECTS_BY_NAME = {
     "active_rust_workspace_graph": ("sinex",),
     "dependency_map": ("sinex",),
     "ecosystem_comparison": ("sinex", "polylogue"),
-    "ecosystem_dashboard": ("sinex", "polylogue"),
     "hotspot_map": ("sinex",),
     "module_map": ("sinex",),
     "project-maps": ("sinex",),
@@ -499,16 +498,6 @@ def _brief(stem: str, payload: dict[str, Any]) -> str | None:
                 return "families " + ", ".join(
                     f"{key}={value}" for key, value in sorted(counts.items())
                 )
-    if stem == "ecosystem_dashboard":
-        narratives = payload.get("narratives")
-        if isinstance(narratives, list):
-            titles = [
-                str(row.get("title"))
-                for row in narratives
-                if isinstance(row, dict) and row.get("title")
-            ]
-            if titles:
-                return "narratives: " + "; ".join(titles[:3])
     if stem == "ecosystem_comparison":
         headline = payload.get("headline")
         if isinstance(headline, dict):

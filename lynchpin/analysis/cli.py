@@ -688,7 +688,6 @@ def _register_machine(app: typer.Typer) -> None:
             commit_facts_file=resolve_analysis_path("active_commit_facts.json"),
             file_changes_file=resolve_analysis_path("active_file_change_facts.json"),
             symbol_changes_file=resolve_analysis_path("active_symbol_changes.json"),
-            pr_review_file=resolve_analysis_path("active_pr_review_topology.json"),
             refresh_id=f"machine-experiments:{start_date.isoformat()}:{end_date.isoformat()}",
             window_start=start_date,
             window_end=end_date,

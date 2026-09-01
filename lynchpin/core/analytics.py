@@ -118,7 +118,7 @@ def detect_trend(values: Sequence[float], *, min_samples: int = 10) -> TrendResu
     - Samples are **evenly spaced** (one value per day). Sen's slope below is
       computed per *sample index distance* ``j - i``, so a gappy series yields a
       per-sample slope, not a per-calendar-day slope. Callers must pass a dense,
-      contiguous daily series (today's callers in ``graph.temporal_signals`` and
+      contiguous daily series (today's callers in the temporal signal analysis and
       ``analysis.machine`` do).
     - Observations are treated as **independent**. Positive autocorrelation
       (common in daily behavioural data) inflates the S-statistic variance and
@@ -319,7 +319,7 @@ def detect_periodicity(values: Sequence[float], *, min_period: float = 2, max_pe
     **dense, gapless, evenly-spaced series** (one sample per day for daily data).
     Missing days shift later samples and alias energy across the spectrum,
     producing spurious periods. Callers MUST pass a contiguous daily series
-    (today's caller in ``graph.temporal_signals`` does). For genuinely irregular
+    (today's temporal signal analysis does). For genuinely irregular
     timestamps use ``scipy.signal.lombscargle`` instead — this function is the
     wrong tool there.
 

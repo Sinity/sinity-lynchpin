@@ -18,7 +18,7 @@ batch of texts through a selectable backend:
 Design mirrors ``sources/spotify_genres.py`` (mockable HTTP + typed unavailable
 error) and ``core/claude_sdk.py`` (subscription/external-call style with lazy
 optional imports). No embedding vectors are persisted here — that is the
-responsibility of ``graph/semantic_index.py``.
+responsibility of the graph analysis layer.
 """
 
 from __future__ import annotations

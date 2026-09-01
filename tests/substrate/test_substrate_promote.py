@@ -187,12 +187,6 @@ def _record_failed_current_source(
     )
 
 
-def _json_pr_sources() -> set[str]:
-    from lynchpin.analysis.active.substrate_promote import SOURCE_PR_REVIEW
-
-    return _json_sources() | {SOURCE_PR_REVIEW}
-
-
 def _make_commit_facts_payload(commits: list[dict]) -> dict:
     return {
         "generated_at_utc": "2026-05-08T00:00:00+00:00",
@@ -1430,111 +1424,6 @@ def test_work_source_promotion_streams_source_iterables(
     assert counts["work_observation_test_results"] == 1
     assert statuses[0]["status"] == "ok"
     assert statuses[0]["row_count"] == 4
-
-
-def test_pr_review_promotion_when_payload_present(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When pr_review_file points to a populated payload, rows land in pr_review_row."""
-    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
-    _reload_config(monkeypatch)
-
-    cf_file = tmp_path / "commit_facts.json"
-    cf_file.write_text(json.dumps(_make_commit_facts_payload([])))
-    fc_file = tmp_path / "fc.json"
-    fc_file.write_text(json.dumps(_make_file_change_payload([])))
-    sym_file = tmp_path / "sym.json"
-    sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
-
-    pr_file = tmp_path / "pr_review.json"
-    pr_payload = {
-        "prs": [
-            {
-                "project": "lynchpin",
-                "number": 7,
-                "title": "feat: test",
-                "state": "merged",
-                "url": "https://github.com/sinity/lynchpin/pull/7",
-                "author": "Sinity",
-                "created_at": "2026-05-01T10:00:00+00:00",
-                "merged_at": "2026-05-01T12:00:00+00:00",
-                "review_count": 1,
-                "review_decisions": ["approved"],
-                "reviewer_count": 1,
-                "reviewers": ["alice"],
-            },
-        ]
-    }
-    pr_file.write_text(json.dumps(pr_payload))
-
-    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import connect, substrate_path
-
-    counts = run_substrate_promote(
-        commit_facts_file=str(cf_file),
-        file_changes_file=str(fc_file),
-        symbol_changes_file=str(sym_file),
-        pr_review_file=str(pr_file),
-        refresh_id="dag:test-pr-review",
-        sources=_json_pr_sources(),
-        write_evidence_graph=False,
-    )
-
-    assert counts.get("pr_review_rows") == 1
-
-    with connect(substrate_path(), read_only=True) as conn:
-        row = conn.execute(
-            "SELECT project, number, state, refresh_id FROM pr_review_row"
-        ).fetchone()
-        status_row = conn.execute(
-            "SELECT status, row_count FROM substrate_source_status "
-            "WHERE refresh_id = ? AND source = 'pr_review'",
-            ["dag:test-pr-review"],
-        ).fetchone()
-
-    assert row == ("lynchpin", 7, "merged", "dag:test-pr-review")
-    assert status_row == ("ok", 1)
-
-
-def test_pr_review_marked_unavailable_when_file_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Missing pr_review_file → substrate_source_status records unavailable.
-
-    Distinguishes 'M.7 hasn't been run yet' from 'M.7 ran and produced empty
-    output'. Without this signal, agents can't tell whether to expect data.
-    """
-    monkeypatch.setenv("LYNCHPIN_LOCAL_ROOT", str(tmp_path))
-    _reload_config(monkeypatch)
-
-    cf_file = tmp_path / "cf.json"
-    cf_file.write_text(json.dumps(_make_commit_facts_payload([])))
-    fc_file = tmp_path / "fc.json"
-    fc_file.write_text(json.dumps(_make_file_change_payload([])))
-    sym_file = tmp_path / "sym.json"
-    sym_file.write_text(json.dumps(_make_symbol_changes_payload([])))
-
-    from lynchpin.analysis.active.substrate_promote import run_substrate_promote
-    from lynchpin.substrate.connection import connect, substrate_path
-
-    run_substrate_promote(
-        commit_facts_file=str(cf_file),
-        file_changes_file=str(fc_file),
-        symbol_changes_file=str(sym_file),
-        pr_review_file=str(tmp_path / "missing_pr.json"),
-        refresh_id="dag:test-pr-missing",
-        sources=_json_pr_sources(),
-        write_evidence_graph=False,
-    )
-
-    with connect(substrate_path(), read_only=True) as conn:
-        row = conn.execute(
-            "SELECT status FROM substrate_source_status "
-            "WHERE refresh_id = ? AND source = 'pr_review'",
-            ["dag:test-pr-missing"],
-        ).fetchone()
-
-    assert row == ("unavailable",)
 
 
 def test_path_roots_dict_keys_extracted(

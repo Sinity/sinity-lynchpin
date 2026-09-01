@@ -260,7 +260,6 @@ def test_analysis_materialization_policy_declares_current_state_substrate_source
         "symbols",
         "ai_work_events",
         "evidence_graph",
-        "pr_review",
         "work_observations",
     )
     assert policy.max_age_seconds == 5 * 60

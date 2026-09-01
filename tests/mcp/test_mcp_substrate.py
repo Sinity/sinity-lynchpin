@@ -1130,7 +1130,7 @@ def test_machine_work_observation_tools_read_promoted_rows(
             """
         )
 
-    from lynchpin.mcp.tools.machine import (
+    from lynchpin.mcp.tools.machine_observations import (
         machine_work_observation_daily,
         machine_work_slow_tests,
         machine_work_stage_daily,

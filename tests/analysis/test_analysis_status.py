@@ -14,8 +14,6 @@ def test_analysis_status_uses_artifact_inventory(monkeypatch, tmp_path):
         "polylogue_metrics.json",
         "ecosystem_comparison.json",
         "work_package_scope.json",
-        "ecosystem_dashboard.json",
-        "ecosystem_dashboard.html",
         "commit_facts.json",
         "commit_shards.json",
         "active_project_snapshot.json",
@@ -94,7 +92,7 @@ def test_analysis_status_uses_artifact_inventory(monkeypatch, tmp_path):
 
     payload = build_analysis_status(spec_path=spec_path)
 
-    assert payload["artifact_inventory"]["available_count"] == 65
+    assert payload["artifact_inventory"]["available_count"] == 63
     assert payload["families"]["active_project_snapshot"]["status"] == "stable"
     assert payload["families"]["active_git_facts"]["status"] == "stable"
     assert payload["families"]["active_work_packages"]["status"] == "stable"
