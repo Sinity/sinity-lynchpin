@@ -80,6 +80,17 @@ The graph represents facts and qualified relationships such as:
 Edges carry provenance and confidence. Weak keyword or temporal proximity
 signals are optional and remain distinguishable from deterministic links.
 
+The current `evidence_edge` table has a known integrity defect: 929,084 of
+937,615 edges (99.09%) are orphaned because one or both endpoint nodes are
+absent. Graph readers filter those rows out, so edge counts and traversals are
+the resolving subset unless a response includes the `graph_integrity` caveat.
+The defect is recorded on graph-serving responses and is not repaired in this
+maintenance-only implementation.
+
+The planned absorption drops this `evidence_edge` implementation rather than
+migrating it. The replacement uses typed parent references with foreign-key
+enforcement, which does not represent this defect class.
+
 ### 6. Products and interfaces
 
 The graph, substrate readers, and analysis modules feed:

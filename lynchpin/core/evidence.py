@@ -41,6 +41,27 @@ class EvidenceCaveat:
     message: str
 
 
+EVIDENCE_GRAPH_ORPHANED_EDGES = 929_084
+EVIDENCE_GRAPH_TOTAL_EDGES = 937_615
+EVIDENCE_GRAPH_ORPHAN_RATIO = EVIDENCE_GRAPH_ORPHANED_EDGES / EVIDENCE_GRAPH_TOTAL_EDGES
+EVIDENCE_GRAPH_INTEGRITY = {
+    "status": "partial",
+    "orphaned_edges": EVIDENCE_GRAPH_ORPHANED_EDGES,
+    "total_edges": EVIDENCE_GRAPH_TOTAL_EDGES,
+    "orphan_ratio": EVIDENCE_GRAPH_ORPHAN_RATIO,
+    "message": (
+        "929,084 of 937,615 evidence-graph edges (99.09%) are orphaned; "
+        "edge readers return only the subset whose endpoints resolve"
+    ),
+}
+
+EVIDENCE_GRAPH_ORPHAN_CAVEAT = EvidenceCaveat(
+    source="evidence_graph",
+    status="partial",
+    message=EVIDENCE_GRAPH_INTEGRITY["message"],
+)
+
+
 def dedupe_caveats(caveats: tuple[EvidenceCaveat, ...]) -> tuple[EvidenceCaveat, ...]:
     """Preserve first-seen caveats while removing exact duplicates."""
     result: list[EvidenceCaveat] = []
@@ -140,6 +161,11 @@ class SourceReadinessReport:
 
 __all__ = [
     "CostClass",
+    "EVIDENCE_GRAPH_INTEGRITY",
+    "EVIDENCE_GRAPH_ORPHAN_CAVEAT",
+    "EVIDENCE_GRAPH_ORPHANED_EDGES",
+    "EVIDENCE_GRAPH_ORPHAN_RATIO",
+    "EVIDENCE_GRAPH_TOTAL_EDGES",
     "SourceReadiness",
     "EvidenceCaveat",
     "EvidenceProvenance",
