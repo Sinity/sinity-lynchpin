@@ -34,7 +34,7 @@ def materialize_sleep_productivity(
     inclusive_end = end - timedelta(days=1)
     window_rows = [
         _productivity_row(row)
-        for row in sleep_productivity(start=start, end=inclusive_end)
+        for row in sleep_productivity(start=start, end=inclusive_end, ensure=False)
     ]
     rows = _merge_existing_rows(output=output, start=start, end=end, window_rows=window_rows)
     rows.sort(key=lambda row: row["sleep_date"])

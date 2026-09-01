@@ -132,6 +132,7 @@ def detect_data_outages(
     start: datetime,
     end: datetime,
     threshold_s: float = OUTAGE_THRESHOLD_S,
+    ensure: bool = True,
 ) -> list[DataOutage]:
     """Yield AW data outages over [start, end).
 
@@ -144,12 +145,12 @@ def detect_data_outages(
          window+web both have events → pattern C (afk-only down)
       4. Skip gaps shorter than threshold (operator AFK).
     """
-    afk = list(afk_events(start=start, end=end))
+    afk = list(afk_events(start=start, end=end, ensure=ensure))
     if not afk:
         # No AFK data at all → the entire window is an outage of some kind.
         # Determine which other buckets have data to classify.
-        win = list(window_events(start=start, end=end))
-        web = list(web_events(start=start, end=end))
+        win = list(window_events(start=start, end=end, ensure=ensure))
+        web = list(web_events(start=start, end=end, ensure=ensure))
         pattern = "A" if not win and not web else "B" if not win else "C"
         return [DataOutage(
             start=start, end=end, pattern=pattern,
@@ -162,8 +163,8 @@ def detect_data_outages(
     if not afk_gaps:
         return []
 
-    win_all = list(window_events(start=start, end=end))
-    web_all = list(web_events(start=start, end=end))
+    win_all = list(window_events(start=start, end=end, ensure=ensure))
+    web_all = list(web_events(start=start, end=end, ensure=ensure))
 
     outages: list[DataOutage] = []
     for gap_start, gap_end in afk_gaps:

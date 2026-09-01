@@ -600,7 +600,8 @@ SLEEP_PRODUCTIVITY_CHUNK_DAYS = 30
 
 
 def sleep_productivity(
-    *, start: date, end: date, chunk_days: int = SLEEP_PRODUCTIVITY_CHUNK_DAYS
+    *, start: date, end: date, chunk_days: int = SLEEP_PRODUCTIVITY_CHUNK_DAYS,
+    ensure: bool = True,
 ) -> list[SleepProductivity]:
     """Join sleep data with next-day ActivityWatch activity and deep work.
 
@@ -673,10 +674,17 @@ def sleep_productivity(
     cursor = max(aw_start, derived_last + timedelta(days=1)) if derived_last is not None else aw_start
     while cursor < aw_end:
         chunk_end = min(cursor + timedelta(days=chunk_days), aw_end)
-        dw_blocks = deep_work(
-            start=datetime.combine(cursor, time_cls.min),
-            end=datetime.combine(chunk_end, time_cls.min),
-        )
+        if ensure:
+            dw_blocks = deep_work(
+                start=datetime.combine(cursor, time_cls.min),
+                end=datetime.combine(chunk_end, time_cls.min),
+            )
+        else:
+            dw_blocks = deep_work(
+                start=datetime.combine(cursor, time_cls.min),
+                end=datetime.combine(chunk_end, time_cls.min),
+                ensure=False,
+            )
         for b in dw_blocks:
             day = logical_date(b.start)
             dw_by_day[day] = dw_by_day.get(day, 0) + b.duration_min

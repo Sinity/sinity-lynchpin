@@ -17,10 +17,11 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
     canonical.write_text("{}\n", encoding="utf-8")
 
     monkeypatch.setattr(mod, "activitywatch_derived_input_files", lambda: (canonical,))
+    ensure_calls = []
     monkeypatch.setattr(
         mod,
         "focus_spans",
-        lambda **kwargs: (
+        lambda **kwargs: (ensure_calls.append(("focus_spans", kwargs["ensure"])) or (
             SimpleNamespace(
                 start=start,
                 end=end,
@@ -33,19 +34,19 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
                 keypress_count=3,
                 keylog_state="available",
             ),
-        ),
+        )),
     )
     monkeypatch.setattr(
         mod,
         "project_focus_days",
-        lambda **kwargs: (
+        lambda **kwargs: (ensure_calls.append(("project_focus_days", kwargs["ensure"])) or (
             SimpleNamespace(date=date(2026, 6, 6), project="lynchpin", duration_s=3600.0),
-        ),
+        )),
     )
     monkeypatch.setattr(
         mod,
         "daily_activity",
-        lambda **kwargs: (
+        lambda **kwargs: (ensure_calls.append(("daily_activity", kwargs["ensure"])) or (
             SimpleNamespace(
                 date=date(2026, 6, 6),
                 active_hours=1.0,
@@ -60,13 +61,10 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
                 presence_typing_hours=0.5,
                 presence_data_gap_hours=0.0,
             ),
-        ),
+        )),
     )
-    monkeypatch.setattr(mod, "deep_work", lambda **kwargs: ())
-    monkeypatch.setattr(mod, "circadian", lambda **kwargs: ())
-    monkeypatch.setattr(mod, "loops", lambda **kwargs: ())
-    monkeypatch.setattr(mod, "fragmentation", lambda **kwargs: ())
-    monkeypatch.setattr(mod, "attention", lambda **kwargs: ())
+    for name in ("deep_work", "circadian", "loops", "fragmentation", "attention"):
+        monkeypatch.setattr(mod, name, lambda _name=name, **kwargs: (ensure_calls.append((_name, kwargs["ensure"])) or ()))
 
     manifest = mod.materialize_activitywatch_derived(
         start=date(2026, 6, 6),
@@ -89,6 +87,16 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
         for path in paths.values()
     )
     assert (tmp_path / "activitywatch/graph/manifest.json").exists()
+    assert ensure_calls == [
+        ("focus_spans", False),
+        ("project_focus_days", False),
+        ("daily_activity", False),
+        ("deep_work", False),
+        ("circadian", False),
+        ("loops", False),
+        ("fragmentation", False),
+        ("attention", False),
+    ]
 
 
 def test_materialize_activitywatch_derived_replaces_only_requested_window(monkeypatch, tmp_path):
@@ -193,7 +201,7 @@ def test_materialize_activitywatch_derived_chunked_matches_single_pass(monkeypat
 
     seen_windows: list[tuple[date, date]] = []
 
-    def fake_daily_activity(*, start, end):
+    def fake_daily_activity(*, start, end, ensure=True):
         seen_windows.append((start, end))
         day = start
         while day <= end:
@@ -261,7 +269,7 @@ def test_materialize_activitywatch_derived_default_chunk_bounds_generators(monke
 
     seen_windows: list[tuple[date, date]] = []
 
-    def fake_daily_activity(*, start, end):
+    def fake_daily_activity(*, start, end, ensure=True):
         seen_windows.append((start, end))
         return ()
 
