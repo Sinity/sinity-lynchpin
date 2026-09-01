@@ -32,7 +32,6 @@ DROP_STATEMENTS: tuple[str, ...] = (
     "DROP TABLE IF EXISTS github_pr",
     "DROP TABLE IF EXISTS github_issue_comment",
     "DROP TABLE IF EXISTS github_issue",
-    "DROP TABLE IF EXISTS polylogue_verify_run",
     "DROP TABLE IF EXISTS code_snapshot_slice",
     "DROP TABLE IF EXISTS code_snapshot_run",
     "DROP TABLE IF EXISTS analysis_claim",
@@ -1441,63 +1440,6 @@ DDL_STATEMENTS = (
         PRIMARY KEY (project, refresh_id)
     )
     """,
-        # ────────────────────────────────────────────────────────────────────
-        # polylogue_verify_run — one row per `devtools verify` invocation
-        # ────────────────────────────────────────────────────────────────────
-        # Promoted from Polylogue's durable cross-worktree history. The
-        # detailed per-run artifacts under a checkout's .cache/verify/runs/ are
-        # pruned, so without this table a question like "did the suite get
-        # slower this week?" is unanswerable a few days later. checkout_root
-        # and checkout_name distinguish worktree lanes from the main checkout.
-        """
-    CREATE TABLE IF NOT EXISTS polylogue_verify_run (
-        run_id                   VARCHAR NOT NULL,
-        run_at                   TIMESTAMPTZ,
-        tier                     VARCHAR,
-        git_head                 VARCHAR,
-        checkout_root            VARCHAR,
-        checkout_name            VARCHAR,
-        worktree_fingerprint     VARCHAR,
-        exit_code                INTEGER,
-        status                   VARCHAR,
-        diagnosis                VARCHAR,
-        duration_s               DOUBLE,
-        verification_scope       VARCHAR,
-        release_baseline_allowed BOOLEAN,
-        artifact_dir             VARCHAR,
-        step_count               INTEGER,
-        failed_step_count        INTEGER,
-        slowest_step             VARCHAR,
-        slowest_step_s           DOUBLE,
-        tests_passed             INTEGER,
-        tests_failed             INTEGER,
-        selected_count           INTEGER,
-        terminal_count           INTEGER,
-        terminal_green           BOOLEAN,
-        complete_corpus_covered  BOOLEAN,
-        pytest_wall_s            DOUBLE,
-        collection_wall_s        DOUBLE,
-        write_bytes              DOUBLE,
-        read_bytes               DOUBLE,
-        peak_storage_bytes       DOUBLE,
-        peak_rss_kb              DOUBLE,
-        -- Why a run selected what it did. selection_state carries the
-        -- bootstrap-cause split (absent = env digest changed, incomplete =
-        -- graph missing changed modules, valid = warm affected) that the
-        -- 2026-08-17 suite-cost analysis had to dig out of per-run receipt
-        -- JSON because no promoted column held it.
-        selection_mode           VARCHAR,
-        selection_state          VARCHAR,
-        selection_reason         VARCHAR,
-        refresh_id               VARCHAR NOT NULL,
-        materialized_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (run_id, refresh_id)
-    )
-    """,
-        "CREATE INDEX IF NOT EXISTS polylogue_verify_run_run_at ON polylogue_verify_run(run_at)",
-        "CREATE INDEX IF NOT EXISTS polylogue_verify_run_tier ON polylogue_verify_run(tier)",
-        "CREATE INDEX IF NOT EXISTS polylogue_verify_run_checkout ON polylogue_verify_run(checkout_name)",
-        "CREATE INDEX IF NOT EXISTS polylogue_verify_run_refresh_id ON polylogue_verify_run(refresh_id)",
         "CREATE INDEX code_snapshot_run_run_at ON code_snapshot_run(run_at)",
         "CREATE INDEX code_snapshot_run_project ON code_snapshot_run(project)",
         "CREATE INDEX code_snapshot_run_refresh_id ON code_snapshot_run(refresh_id)",
@@ -1563,14 +1505,3 @@ DOMAIN_TABLES: tuple[str, ...] = (
     "github_pr_review",
     "github_pr_review_comment",
 )
-
-
-def polylogue_verify_ddl() -> tuple[str, ...]:
-    """DDL for polylogue_verify_run, usable outside a full substrate rebuild.
-
-    The table is additive, so it can be created in place rather than forcing a
-    SUBSTRATE_VERSION bump, which would drop and rebuild every other product.
-    Every statement is IF NOT EXISTS, so applying it twice is a no-op and the
-    full-rebuild path in DDL_STATEMENTS stays the same definition.
-    """
-    return tuple(stmt for stmt in DDL_STATEMENTS if "polylogue_verify_run" in stmt)

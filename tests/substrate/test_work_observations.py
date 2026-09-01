@@ -131,71 +131,6 @@ def test_promote_work_observation_stage_and_test_children(tmp_path):
     assert tests == [("xtask:live:test:2", "xtask:live:9", "pkg", "nextest")]
 
 
-def test_promote_polylogue_devtools_observations_round_trip(tmp_path):
-    from lynchpin.sources.polylogue_devtools import PolylogueDevtoolsInvocation
-    from lynchpin.substrate.connection import apply_schema, connect
-    from lynchpin.substrate.work_observations import (
-        load_work_observations,
-        promote_polylogue_devtools_observations,
-    )
-
-    row = PolylogueDevtoolsInvocation(
-        source="polylogue_devtools",
-        source_id="polylogue:log:run",
-        work_kind="polylogue_log_run",
-        command=("run-all",),
-        cwd="/realm/project/polylogue",
-        started_at=datetime(2026, 4, 12, 0, 42, tzinfo=timezone.utc),
-        ended_at=datetime(2026, 4, 12, 0, 45, tzinfo=timezone.utc),
-        duration_s=180.0,
-        status="unknown",
-        exit_code=None,
-        host="sinnix-prime",
-        project="polylogue",
-        git_commit="abc123",
-        git_dirty=False,
-        live_stage="run-all",
-        args_json="{}",
-        cpu_usage_avg=None,
-        memory_usage_max_mb=None,
-        process_cpu_usage_avg=20.0,
-        process_memory_usage_max_mb=4.0,
-        root_process_cpu_usage_avg=None,
-        root_process_memory_usage_max_mb=None,
-        shared_nix_daemon_cpu_usage_avg=None,
-        shared_nix_daemon_memory_usage_max_mb=None,
-        shared_nix_build_slice_cpu_usage_avg=None,
-        shared_nix_build_slice_memory_usage_max_mb=None,
-        shared_background_slice_cpu_usage_avg=None,
-        shared_background_slice_memory_usage_max_mb=None,
-        host_cpu_pressure_some_avg10_max=None,
-        host_io_pressure_some_avg10_max=None,
-        host_io_pressure_full_avg10_max=None,
-        host_memory_pressure_some_avg10_max=None,
-        host_memory_pressure_full_avg10_max=None,
-        shm_free_min_mb=None,
-        shm_used_max_mb=None,
-        process_count_max=4,
-        resource_sample_count=2,
-    )
-    db = tmp_path / "sub.duckdb"
-    with connect(db) as conn:
-        apply_schema(conn)
-        assert (
-            promote_polylogue_devtools_observations(conn, refresh_id="r1", rows=[row])
-            == 1
-        )
-        loaded = load_work_observations(conn, refresh_id="r1")
-        resource = conn.execute(
-            "SELECT process_cpu_usage_avg, process_memory_usage_max_mb FROM work_observation"
-        ).fetchone()
-
-    assert loaded[0]["source"] == "polylogue_devtools"
-    assert loaded[0]["work_kind"] == "polylogue_log_run"
-    assert loaded[0]["project"] == "polylogue"
-    assert resource == (20.0, 4.0)
-
-
 def test_promote_agentctl_observations_is_idempotent_and_keeps_explicit_refs(tmp_path):
     from lynchpin.sources.agentctl import read_observation_snapshot
     from lynchpin.substrate.connection import apply_schema, connect
@@ -234,17 +169,12 @@ def test_promote_agentctl_observations_is_idempotent_and_keeps_explicit_refs(tmp
     assert refs == [("polylogue", "polylogue://receipts/222")]
 
 
-def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
-    """Regression: xtask + polylogue devtools share the work_observation table
-    under one refresh_id. promote_rows deletes by refresh_id alone, so the
-    second writer must NOT delete the first's rows. The materialization deletes
-    once and appends both sources with delete_existing=False."""
-    from lynchpin.sources.polylogue_devtools import PolylogueDevtoolsInvocation
+def test_work_observation_promotion_can_append_under_one_refresh_id(tmp_path):
+    """Promotion can append rows after a single refresh-scoped delete."""
     from lynchpin.sources.xtask_history import XtaskInvocation
     from lynchpin.substrate.connection import apply_schema, connect
     from lynchpin.substrate.work_observations import (
         load_work_observations,
-        promote_polylogue_devtools_observations,
         promote_work_observations,
     )
 
@@ -293,33 +223,10 @@ def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
         resource_sample_count=6,
         **_none_resource(),
     )
-    polylogue = PolylogueDevtoolsInvocation(
-        source="polylogue_devtools",
-        source_id="polylogue:log:run",
-        work_kind="polylogue_log_run",
-        command=("run-all",),
-        cwd="/realm/project/polylogue",
-        started_at=datetime(2026, 4, 12, 0, 42, tzinfo=timezone.utc),
-        ended_at=datetime(2026, 4, 12, 0, 45, tzinfo=timezone.utc),
-        duration_s=180.0,
-        status="unknown",
-        exit_code=None,
-        host="sinnix-prime",
-        project="polylogue",
-        git_commit="abc123",
-        git_dirty=False,
-        live_stage="run-all",
-        args_json="{}",
-        process_cpu_usage_avg=20.0,
-        process_count_max=4,
-        resource_sample_count=2,
-        **_none_resource(),
-    )
-
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        # Mirror the materialization: one delete, then both sources append.
+        # Mirror the materialization: one delete, then source rows append.
         conn.execute("DELETE FROM work_observation WHERE refresh_id = ?", ["r1"])
         assert (
             promote_work_observations(
@@ -327,18 +234,12 @@ def test_two_sources_coexist_in_work_observation_under_one_refresh_id(tmp_path):
             )
             == 1
         )
-        assert (
-            promote_polylogue_devtools_observations(
-                conn, refresh_id="r1", rows=[polylogue], delete_existing=False
-            )
-            == 1
-        )
         loaded = load_work_observations(conn, refresh_id="r1")
-        # The xtask telemetry survived the second writer — the bug was that it did not.
+        # The xtask telemetry is retained after appending rows.
         telemetry = conn.execute(
             "SELECT process_cpu_usage_avg FROM work_observation WHERE source = 'xtask_history'"
         ).fetchall()
 
     sources = {row["source"] for row in loaded}
-    assert sources == {"xtask_history", "polylogue_devtools"}
+    assert sources == {"xtask_history"}
     assert telemetry == [(3.5,)]

@@ -412,9 +412,7 @@ def _dataset_builders() -> dict[str, Any]:
         "webhistory": _webhistory_dataset,
         "google_takeout": _google_takeout_dataset,
         "polylogue": _polylogue_dataset,
-        "polylogue_verify_runs": _polylogue_verify_runs_dataset,
         "codex": _codex_dataset,
-        "polylogue_devtools": _polylogue_devtools_dataset,
         "agentctl": _agentctl_dataset,
         "activitywatch": _activitywatch_dataset,
         "activitywatch_event_index": _activitywatch_event_index_dataset,
@@ -1497,58 +1495,6 @@ def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=last,
         materialization_hint="polylogue doctor --repair --target session_insights",
         reason=readiness.reason,
-    )
-
-
-def _polylogue_verify_runs_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    from .ingest.polylogue_verify_materialize import POLYLOGUE_VERIFY_SCHEMA_VERSION
-    from .sources.polylogue_verify import verify_history_path
-    from .substrate.connection import connect
-
-    contract = source_contract("polylogue_verify_runs")
-    history = verify_history_path()
-    manifest = cfg.derived_root / "polylogue_verify/polylogue_verify_runs.manifest.json"
-    meta = _load_json(manifest)
-    row_count: int | None = None
-    table_exists = False
-    try:
-        with connect(read_only=True) as conn:
-            table_exists = bool(
-                conn.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'polylogue_verify_run'"
-                ).fetchone()[0]
-            )
-            if table_exists:
-                row_count = int(conn.execute("SELECT COUNT(*) FROM polylogue_verify_run").fetchone()[0])
-    except Exception:
-        table_exists = False
-
-    product_ready = table_exists and _manifest_valid(manifest)
-    schema_current = meta.get("schema_version") == POLYLOGUE_VERIFY_SCHEMA_VERSION
-    if product_ready and not schema_current:
-        status: Status = "partial"
-        reason = "Polylogue verification product manifest schema is older than the current reader contract"
-    elif product_ready:
-        status = "ready"
-        reason = "Polylogue verification history is promoted into the substrate"
-    elif history.is_file():
-        status = "partial"
-        reason = "Polylogue verification history exists but has not been promoted into the substrate"
-    else:
-        status = "missing"
-        reason = "Polylogue verification history is missing"
-    return MaterializedDataset(
-        name=contract.name,
-        status=status,
-        authority=contract.authority,
-        query_surface=contract.query_surface,
-        materialized_paths=(manifest,) if manifest.exists() else (),
-        raw_roots=(history,),
-        row_count=row_count,
-        first_date=None,
-        last_date=None,
-        materialization_hint=contract.materialization_hint,
-        reason=reason,
     )
 
 
@@ -2982,35 +2928,6 @@ def _xtask_history_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         last_date=last,
         materialization_hint=contract.materialization_hint,
         reason="live xtask history SQLite is readable" if ready else f"xtask history SQLite is missing or unreadable at {path}",
-    )
-
-
-def _polylogue_devtools_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
-    from .sources.polylogue_devtools import source_readiness
-
-    contract = source_contract("polylogue_devtools")
-    ready = source_readiness(
-        xtask_path=cfg.polylogue_devtools_xtask_jsonl,
-        logs_dir=cfg.polylogue_devtools_logs_dir,
-    )
-    row_count = ready.xtask_rows + ready.meta_files
-    present = ready.xtask_path.exists() or ready.logs_dir.exists()
-    return MaterializedDataset(
-        name="polylogue_devtools",
-        status="ready" if present and row_count else "partial" if present else "missing",
-        authority=contract.authority,
-        query_surface=contract.query_surface,
-        materialized_paths=(ready.xtask_path, ready.logs_dir),
-        raw_roots=(cfg.polylogue_project_root,),
-        row_count=row_count if present else None,
-        first_date=ready.first_seen.date() if ready.first_seen else None,
-        last_date=ready.last_seen.date() if ready.last_seen else None,
-        materialization_hint=contract.materialization_hint,
-        reason=(
-            f"Polylogue devtools ledgers readable: {ready.xtask_rows} xtask rows, {ready.meta_files} meta files"
-            if present
-            else f"Polylogue devtools ledgers missing under {cfg.polylogue_project_root}"
-        ),
     )
 
 

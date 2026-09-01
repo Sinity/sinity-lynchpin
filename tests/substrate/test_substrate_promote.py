@@ -27,8 +27,6 @@ UTC = timezone.utc
 def _isolate_live_polylogue(monkeypatch: pytest.MonkeyPatch) -> None:
     """Substrate-promotion unit tests must not ingest live personal archives."""
     monkeypatch.setattr("lynchpin.sources.polylogue.work_events", lambda *args, **kwargs: [])
-    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda *args, **kwargs: False)
-    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.iter_invocations", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.spotify.iter_streams", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.gpu_samples", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr("lynchpin.sources.machine.metric_samples", lambda *args, **kwargs: iter(()))
@@ -1353,7 +1351,6 @@ def test_work_source_promotion_streams_source_iterables(
         "lynchpin.sources.xtask_history.xtask_history_path",
         lambda *a, **k: tmp_path / "xtask.db",
     )
-    monkeypatch.setattr("lynchpin.sources.polylogue_devtools.available", lambda: True)
     class AgentctlSnapshot:
         observations = ()
 
@@ -1366,10 +1363,6 @@ def test_work_source_promotion_streams_source_iterables(
         lambda **kwargs: source_rows("xtask"),
     )
     monkeypatch.setattr(
-        "lynchpin.sources.polylogue_devtools.iter_invocations",
-        lambda **kwargs: source_rows("polylogue"),
-    )
-    monkeypatch.setattr(
         "lynchpin.sources.xtask_history.iter_all_stage_timings",
         lambda **kwargs: source_rows("stage"),
     )
@@ -1380,10 +1373,6 @@ def test_work_source_promotion_streams_source_iterables(
     monkeypatch.setattr(
         "lynchpin.substrate.work_observations.promote_work_observations",
         lambda conn, refresh_id, rows, delete_existing=True: consume("xtask", rows),
-    )
-    monkeypatch.setattr(
-        "lynchpin.substrate.work_observations.promote_polylogue_devtools_observations",
-        lambda conn, refresh_id, rows, delete_existing=True: consume("polylogue", rows),
     )
     monkeypatch.setattr(
         "lynchpin.substrate.work_observations.promote_agentctl_observations",
@@ -1422,14 +1411,13 @@ def test_work_source_promotion_streams_source_iterables(
     assert conn.deletes == 1
     assert seen == {
         "xtask": "xtask",
-        "polylogue": "polylogue",
         "stage": "stage",
         "test": "test",
     }
-    assert counts["work_observations"] == 2
+    assert counts["work_observations"] == 1
     assert counts["work_observation_test_results"] == 1
     assert statuses[0]["status"] == "ok"
-    assert statuses[0]["row_count"] == 4
+    assert statuses[0]["row_count"] == 3
 
 
 def test_pr_review_promotion_when_payload_present(

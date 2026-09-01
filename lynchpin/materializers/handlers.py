@@ -38,7 +38,6 @@ from ..ingest.health_coverage_materialize import materialize_health_coverage
 from ..ingest.irc_materialize import materialize_irc_events
 from ..ingest.machine_materialize import materialize_machine_telemetry
 from ..ingest.personal_signals_materialize import materialize_personal_daily_signals, materialize_spotify_daily
-from ..ingest.polylogue_verify_materialize import materialize_polylogue_verify_runs
 from ..ingest.sleep_productivity_materialize import materialize_sleep_productivity
 from ..ingest.substack_materialize import materialize_substack
 from ..ingest.temporal_signals_materialize import materialize_temporal_signals
@@ -111,14 +110,13 @@ _SOURCE_HANDLERS: dict[str, Materializer] = {
     "irc": materialize_irc_events,
     "code_snapshots": materialize_code_snapshots,
     "substack": materialize_substack,
-    "polylogue_verify_runs": materialize_polylogue_verify_runs,
     "ambient_intelligence": _materialize_ambient_intelligence,
 }
 
 _WINDOWED = frozenset(
     name
     for name, handler in _SOURCE_HANDLERS.items()
-    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "polylogue_verify_runs", "ambient_intelligence"}
+    if name not in {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence"}
 )
 _REFRESH_ID = frozenset({"activitywatch", "personal_daily_signals", "temporal_signals"})
 
