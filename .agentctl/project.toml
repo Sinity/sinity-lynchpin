@@ -51,14 +51,33 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
-[operations.schedule_convergence]
-description = "Plan and submit bounded typed materialization nodes through AgentCTL"
-exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "submit"]
+[operations.converge]
+description = "Materialize, verify, and publish the complete Lynchpin maintenance snapshot"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "converge"]
+pool = "bulk"
+result = "json"
+cache = "none"
+scratch = "nvme"
+timeout_seconds = 14400
+estimate_memory_bytes = 6442450944
+exclusive_keys = ["lynchpin:convergence", "lynchpin:substrate-generation"]
+
+[operations.converge.parameters.end]
+type = "string"
+flag = "--end"
+max_length = 10
+grammar = "safe-token"
+
+[operations.refresh_keylog]
+description = "Refresh and verify the low-latency keylog analysis product"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "refresh", "--product", "keylog_analysis"]
 pool = "normal"
 result = "json"
 cache = "none"
-timeout_seconds = 300
-exclusive_keys = ["lynchpin:convergence-scheduling"]
+scratch = "none"
+timeout_seconds = 600
+estimate_memory_bytes = 536870912
+exclusive_keys = ["lynchpin:keylog-analysis"]
 
 [operations.materialize_node]
 description = "Execute one typed canonical-product materialization node"
@@ -108,7 +127,7 @@ max_length = 10
 grammar = "safe-token"
 
 [operations.promote_node]
-description = "Atomically publish one bounded substrate graph tail"
+description = "Atomically publish one complete substrate generation"
 exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
 pool = "bulk"
 result = "json"

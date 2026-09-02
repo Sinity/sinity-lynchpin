@@ -29,13 +29,15 @@ def latest_materialized_snapshot(
     caller: str,
     ledger_path: Path | None = None,
 ) -> tuple[str, Any] | None:
-    """Return the latest successful substrate snapshot id and timestamp.
+    """Return the latest published substrate snapshot id and timestamp.
 
     ``substrate_promotion_run`` is the snapshot boundary. Individual
     ``substrate_source_status`` rows are component observations, so a later
     narrow source status should not replace the latest successful promotion run
-    in broad readiness/runtime reports. The status-table fallback keeps older
-    minimal substrates and tests readable.
+    in broad readiness/runtime reports. A degraded publication is still a
+    serving generation: its source caveats are recorded separately and it is
+    preferable to silently serving an older generation. The status-table
+    fallback keeps older minimal substrates and tests readable.
     """
 
     _ = caller, ledger_path
@@ -50,7 +52,7 @@ def latest_materialized_snapshot(
     if has_promotion_run and promotion_run_count > 0:
         row = conn.execute(
             "SELECT refresh_id, finished_at FROM substrate_promotion_run "
-            "WHERE status = 'ok' "
+            "WHERE status IN ('ok', 'degraded') "
             "ORDER BY finished_at DESC LIMIT 1"
         ).fetchone()
         return (str(row[0]), row[1]) if row else None
@@ -129,7 +131,7 @@ def ordered_materialized_refresh_ids(
     if has_promotion_run and promotion_run_count > 0:
         rows = conn.execute(
             "SELECT refresh_id FROM substrate_promotion_run "
-            "WHERE status = 'ok' "
+            "WHERE status IN ('ok', 'degraded') "
             "ORDER BY finished_at"
         ).fetchall()
         return [str(row[0]) for row in rows]

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from contextlib import contextmanager
 
 
 def _step(
@@ -67,7 +68,7 @@ def test_agentctl_plan_preserves_dependencies_and_exact_node_generations(
     assert plan["input_generation"]
 
 
-def test_agentctl_plan_is_empty_when_products_and_graph_are_reusable(
+def test_agentctl_plan_still_promotes_machine_and_live_sources_when_products_are_reusable(
     monkeypatch,
 ) -> None:
     from lynchpin import materialization
@@ -89,7 +90,8 @@ def test_agentctl_plan_is_empty_when_products_and_graph_are_reusable(
 
     plan = agentctl_plan.build_agentctl_plan(maintenance_end=end)
 
-    assert plan["nodes"] == []
+    assert [node["id"] for node in plan["nodes"]] == ["substrate:promotion"]
+    assert plan["nodes"][0]["depends_on"] == []
 
 
 def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:
@@ -109,7 +111,24 @@ def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:
         materialization_hint="fixture",
         reason="fixture",
     )
-    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: row)
+    after = replace(
+        row,
+        status="ready",
+        first_date=date(2026, 8, 1),
+        last_date=date(2026, 8, 25),
+        covered_dates=tuple(
+            date.fromordinal(day)
+            for day in range(
+                date(2026, 8, 1).toordinal(), date(2026, 8, 26).toordinal()
+            )
+        ),
+    )
+    audit_rows = iter((row, after))
+    monkeypatch.setattr(
+        materialization,
+        "_audit_one",
+        lambda *_args, **_kwargs: next(audit_rows),
+    )
     completed = []
     monkeypatch.setattr(
         agentctl_plan,
@@ -201,6 +220,10 @@ def test_promotion_uses_an_immutable_generation_refresh_id(monkeypatch) -> None:
             )
         )
         or 0,
+    )
+    monkeypatch.setattr(
+        "lynchpin.analysis.active.substrate_promote.run_substrate_promote",
+        lambda **_kwargs: SimpleNamespace(status="ok", counts={}),
     )
 
     result = agentctl_plan.run_promotion_node(

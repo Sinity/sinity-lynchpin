@@ -812,7 +812,7 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "mcp_tools": ("lynchpin_machine",),
         "caveats": (
             "Polylogue repo-local development tooling history; distinct from the Polylogue chat archive DB",
-            ".agent/xtask rows are invocation events; .local/logs metrics can provide resource windows for machine attribution",
+            ".agent/task-history rows are invocation events; .local/logs metrics can provide resource windows for machine attribution",
         ),
     },
     "agentctl": {

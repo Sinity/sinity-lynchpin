@@ -276,7 +276,12 @@ def plan_materializations(
             action, reason = "materialize", row.reason
         elif maintenance:
             if row.repair_required:
-                action, reason = "check-only", "incremental maintenance requires an explicit full repair before this product is historically verified"
+                step_window = _incremental_window(row, end=end)
+                if step_window is None:
+                    action, reason = "check-only", "incremental maintenance requires a proven historical product; run explicit repair/backfill"
+                else:
+                    action = "materialize"
+                    reason = f"incremental tail {step_window[0].isoformat()}..{step_window[1].isoformat()}: {row.reason}; historical repair remains explicitly bounded"
             elif row.status == "ready" and not row.tail_stale:
                 action, reason = "skip", "canonical product is ready"
             elif _recently_materialized(row):
@@ -285,7 +290,7 @@ def plan_materializations(
                     "canonical product was refreshed within the maintenance debounce window",
                 )
             elif spec.window_policy == "unbounded":
-                action, reason = "check-only", "incremental maintenance requires an explicit repair for this unwindowed materializer"
+                action, reason = "materialize", f"refresh unbounded product: {row.reason}"
             else:
                 step_window = _incremental_window(row, end=end)
                 if step_window is None:

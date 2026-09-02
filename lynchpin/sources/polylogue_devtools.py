@@ -3,7 +3,7 @@
 This intentionally reads Polylogue's primitive development tooling records, not
 the Polylogue chat archive DB. It covers two repo-local ledgers:
 
-- ``.agent/xtask/tasks.jsonl``: one row per devtools invocation.
+- ``.agent/task-history/tasks.jsonl``: one row per devtools invocation.
 - ``.local/logs/*.meta`` plus metrics companions: older long-run artifacts with
   process/resource samples.
 """

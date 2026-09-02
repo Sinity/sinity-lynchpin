@@ -185,6 +185,39 @@ def test_ordered_materialized_refresh_ids_prefers_promotion_runs(tmp_path) -> No
         test_conn.close()
 
 
+def test_snapshot_helpers_serve_latest_degraded_publication(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE substrate_promotion_run (
+            refresh_id VARCHAR,
+            status VARCHAR,
+            finished_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO substrate_promotion_run VALUES (?, ?, ?), (?, ?, ?)",
+        [
+            "r-ok", "ok", datetime(2026, 5, 24, 10, tzinfo=timezone.utc),
+            "r-degraded", "degraded", datetime(2026, 5, 25, 10, tzinfo=timezone.utc),
+        ],
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert latest_materialized_refresh_id(test_conn, caller="test.degraded") == "r-degraded"
+        assert ordered_materialized_refresh_ids(test_conn, caller="test.degraded") == [
+            "r-ok", "r-degraded"
+        ]
+    finally:
+        test_conn.close()
+
+
 def test_snapshot_helpers_do_not_fallback_when_promotion_runs_are_failed_only(
     tmp_path,
 ) -> None:

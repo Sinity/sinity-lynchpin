@@ -258,7 +258,7 @@ class LynchpinConfig:
         )).expanduser()
         polylogue_devtools_xtask_jsonl = Path(os.environ.get(
             "LYNCHPIN_POLYLOGUE_DEVTOOLS_XTASK_JSONL",
-            polylogue_project_root / ".agent/xtask/tasks.jsonl",
+            polylogue_project_root / ".agent/task-history/tasks.jsonl",
         )).expanduser()
         polylogue_devtools_logs_dir = Path(os.environ.get(
             "LYNCHPIN_POLYLOGUE_DEVTOOLS_LOGS_DIR",
