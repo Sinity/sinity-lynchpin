@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 from lynchpin.analysis import keylog as keylog_analysis
@@ -397,3 +397,48 @@ def test_keylog_day_counter_cache_ignores_a_different_chord_window(tmp_path) -> 
 
     assert keylog_analysis._load_day_counter_cache(cache, 1500)[date(2026, 6, 5)][1] == entry
     assert keylog_analysis._load_day_counter_cache(cache, 900) == {}
+
+
+def test_analysis_input_files_exclude_the_still_open_capture_day(tmp_path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    today = keylog_analysis._open_log_date()
+    closed = today - timedelta(days=1)
+    for day in (closed, today):
+        _write_day(logs, day.isoformat(), "KEY_A", 1)
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+
+    files = keylog_analysis._analysis_input_files(
+        start=today - timedelta(days=3), end=today + timedelta(days=1), bindings_path=bindings
+    )
+
+    # The capture appends to today's file continuously. Judging freshness
+    # against it makes every artifact stale the instant it is written, so the
+    # signature covers only append-complete days.
+    assert logs / f"{closed.isoformat()}.jsonl" in files
+    assert logs / f"{today.isoformat()}.jsonl" not in files
+
+
+def test_analysis_input_signature_is_stable_while_the_open_day_grows(tmp_path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    today = keylog_analysis._open_log_date()
+    _write_day(logs, (today - timedelta(days=1)).isoformat(), "KEY_A", 1)
+    _write_day(logs, today.isoformat(), "KEY_A", 1)
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    window = {"start": today - timedelta(days=3), "end": today + timedelta(days=1)}
+
+    before = keylog_analysis._input_signature(
+        keylog_analysis._analysis_input_files(bindings_path=bindings, **window)
+    )
+    _write_day(logs, today.isoformat(), "KEY_A", 50)
+    keylog._indexed_log_files.cache_clear()
+    after = keylog_analysis._input_signature(
+        keylog_analysis._analysis_input_files(bindings_path=bindings, **window)
+    )
+
+    assert before == after

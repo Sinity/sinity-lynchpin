@@ -11,7 +11,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -961,10 +961,25 @@ def _merge_daily_payloads(rows: list[dict[str, Any]], *, start: date, end: date)
     }
 
 
+def _open_log_date(now: datetime | None = None) -> date:
+    """The UTC-named day file the capture is still appending to.
+
+    Log files are named by UTC date, so every file older than this one is
+    append-complete. This one is not, and never will be while capture runs.
+    """
+    return (now or datetime.now(UTC)).astimezone(UTC).date()
+
+
 def _analysis_input_files(*, start: date, end: date, bindings_path: Path) -> tuple[Path, ...]:
+    """The closed inputs an artifact's freshness may be judged against.
+
+    The current day's file is excluded even though it is analyzed: it grows
+    with every keypress, so including it would make the stability retry and
+    the manifest freshness check unsatisfiable rather than merely strict.
+    """
     log_start = start - timedelta(days=1)
-    log_end = end + timedelta(days=1)
-    inputs = list(keylog.log_files(start=log_start, end=log_end))
+    log_end = min(end + timedelta(days=1), _open_log_date() - timedelta(days=1))
+    inputs = list(keylog.log_files(start=log_start, end=log_end)) if log_end >= log_start else []
     if bindings_path.exists():
         inputs.append(bindings_path)
     return tuple(sorted(dict.fromkeys(inputs)))
