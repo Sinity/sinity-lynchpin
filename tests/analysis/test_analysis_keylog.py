@@ -247,7 +247,12 @@ def test_write_keylog_analysis_saves_metadata_only(tmp_path, monkeypatch) -> Non
     assert saved["keybinds"][0]["chord"] == "SUPER+KEY_ENTER"
     assert saved["text_content"]["snapshot_count"] == 1
     assert saved["text_content"]["word_count"] == 3
-    assert saved["text_content"]["top_terms"][0] == {"term": "secret", "count": 1}
+    # Equal counts are broken alphabetically so the artifact is reproducible.
+    assert saved["text_content"]["top_terms"] == [
+        {"term": "lynchpin", "count": 1},
+        {"term": "secret", "count": 1},
+        {"term": "words", "count": 1},
+    ]
     assert scans == 1
     assert "Secret Lynchpin words" not in out.read_text(encoding="utf-8")
     assert saved["caveats"]
@@ -257,7 +262,7 @@ def test_write_keylog_analysis_retries_when_inputs_change_during_scan(tmp_path, 
     bindings = tmp_path / "bindings.nix"
     bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
     monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
-    original = keylog_analysis._analyze_keylog_bundle
+    original = keylog_analysis._windowed_day_counters
     scans = 0
 
     def drifting_scan(*args, **kwargs):
@@ -271,7 +276,7 @@ def test_write_keylog_analysis_retries_when_inputs_change_during_scan(tmp_path, 
             )
         return result
 
-    monkeypatch.setattr(keylog_analysis, "_analyze_keylog_bundle", drifting_scan)
+    monkeypatch.setattr(keylog_analysis, "_windowed_day_counters", drifting_scan)
     out = tmp_path / "analysis.json"
 
     keylog_analysis.write_keylog_analysis(
@@ -329,3 +334,66 @@ def test_keylog_text_content_analysis_uses_snapshot_text(tmp_path, monkeypatch) 
     assert analysis.line_count == 3
     assert analysis.days[0].snapshot_count == 2
     assert [row.term for row in analysis.top_terms] == ["hello", "lynchpin"]
+
+
+def _write_day(logs, day: str, keycode: str, count: int) -> None:
+    (logs / f"{day}.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "ts": f"{day}T10:{index:02d}:00Z",
+                    "event": "press",
+                    "keycode": keycode,
+                    "changed": True,
+                }
+            )
+            for index in range(count)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_write_keylog_analysis_rescans_only_days_whose_inputs_changed(
+    tmp_path, monkeypatch
+) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for day in ("2026-06-05", "2026-06-06", "2026-06-07"):
+        _write_day(logs, day, "KEY_A", 2)
+    bindings = tmp_path / "bindings.nix"
+    bindings.write_text('{ bind = [ "SUPER, Return, exec, kitty" ]; }', encoding="utf-8")
+    monkeypatch.setattr(keylog, "get_config", lambda: SimpleNamespace(keylog_root=tmp_path))
+    out = tmp_path / "analysis.json"
+    window = {"start": date(2026, 6, 5), "end": date(2026, 6, 7)}
+
+    first = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
+    assert first.keypress_count == 6
+
+    # Only the last day gains events. Without per-day counter caching the whole
+    # window is reparsed, so this test goes red on a rescan of the early days.
+    _write_day(logs, "2026-06-07", "KEY_A", 5)
+    keylog._indexed_log_files.cache_clear()
+    scanned: list[tuple[date, date]] = []
+    original = keylog_analysis._scan_day_counters
+
+    def recording_scan(**kwargs):
+        scanned.append((kwargs["start"], kwargs["end"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(keylog_analysis, "_scan_day_counters", recording_scan)
+
+    second = keylog_analysis.write_keylog_analysis(out, bindings_path=bindings, **window)
+
+    assert scanned == [(date(2026, 6, 6), date(2026, 6, 7))]
+    assert second.keypress_count == 9
+    assert [row.keypress_count for row in second.text_shape_days] == [2, 2, 5]
+
+
+def test_keylog_day_counter_cache_ignores_a_different_chord_window(tmp_path) -> None:
+    cache = tmp_path / "counters.json"
+    entry = keylog_analysis._DayCounters(source_event_count=3)
+    keylog_analysis._save_day_counter_cache(cache, 1500, {date(2026, 6, 5): ("digest", entry)})
+
+    assert keylog_analysis._load_day_counter_cache(cache, 1500)[date(2026, 6, 5)][1] == entry
+    assert keylog_analysis._load_day_counter_cache(cache, 900) == {}

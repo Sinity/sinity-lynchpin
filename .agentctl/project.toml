@@ -75,8 +75,11 @@ pool = "normal"
 result = "json"
 cache = "none"
 scratch = "none"
-timeout_seconds = 600
-estimate_memory_bytes = 536870912
+# A routine refresh rescans only the days whose raw keylog files changed and
+# finishes in seconds. The budget covers a cold cache, which reparses the whole
+# 14-day window at roughly 11 MB/s.
+timeout_seconds = 1800
+estimate_memory_bytes = 3221225472
 exclusive_keys = ["lynchpin:keylog-analysis"]
 
 [operations.materialize_node]

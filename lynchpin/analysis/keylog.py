@@ -7,18 +7,27 @@ products so callers can choose the level of detail they need.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-import re
-from typing import Any, Iterable
+from typing import Any
 
 from lynchpin.core.errors import MaterializationError
-from lynchpin.core.io import latest_mtime_iso, load_json, resolve_analysis_path, save_json
-from lynchpin.core.primitives import date_to_dt_range
-from lynchpin.core.primitives import logical_date
-from lynchpin.materializers.partition_store import ArtifactStore, ProductPartitionKey, deterministic_input_digest
+from lynchpin.core.io import (
+    latest_mtime_iso,
+    load_json,
+    resolve_analysis_path,
+    save_json,
+)
+from lynchpin.core.primitives import date_to_dt_range, logical_date
+from lynchpin.materializers.partition_store import (
+    ArtifactStore,
+    ProductPartitionKey,
+    deterministic_input_digest,
+)
 from lynchpin.sources import keylog
 
 DEFAULT_HYPRLAND_BINDINGS = Path(
@@ -327,25 +336,60 @@ def _quoted_bind_lines(text: str) -> tuple[str, ...]:
     return tuple(rows)
 
 
-def _analyze_keylog_bundle(
+@dataclass(frozen=True)
+class _DayCounters:
+    """Per-logical-day accumulation of every keylog analysis measure.
+
+    Each measure is additive across days, so a window's analysis is the sum of
+    its days. That is what lets an incremental refresh rescan only the days
+    whose raw inputs changed.
+    """
+
+    source_event_count: int = 0
+    usage: Counter[tuple[str, str]] = field(default_factory=Counter)
+    temporal: Counter[tuple[str, int, int]] = field(default_factory=Counter)
+    shape: Counter[str] = field(default_factory=Counter)
+    text: Counter[str] = field(default_factory=Counter)
+    text_terms: Counter[str] = field(default_factory=Counter)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "source_event_count": self.source_event_count,
+            "usage": [[chord, confidence, count] for (chord, confidence), count in sorted(self.usage.items())],
+            "temporal": [[chord, weekday, hour, count] for (chord, weekday, hour), count in sorted(self.temporal.items())],
+            "shape": dict(sorted(self.shape.items())),
+            "text": dict(sorted(self.text.items())),
+            "text_terms": dict(sorted(self.text_terms.items())),
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> _DayCounters:
+        return cls(
+            source_event_count=int(payload.get("source_event_count") or 0),
+            usage=Counter({(str(row[0]), str(row[1])): int(row[2]) for row in payload.get("usage", [])}),
+            temporal=Counter({(str(row[0]), int(row[1]), int(row[2])): int(row[3]) for row in payload.get("temporal", [])}),
+            shape=Counter({str(k): int(v) for k, v in (payload.get("shape") or {}).items()}),
+            text=Counter({str(k): int(v) for k, v in (payload.get("text") or {}).items()}),
+            text_terms=Counter({str(k): int(v) for k, v in (payload.get("text_terms") or {}).items()}),
+        )
+
+
+def _scan_day_counters(
     *,
     start: date,
     end: date,
-    bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
-    chord_window_ms: int = 1500,
-    text_top_n: int = 1000,
-) -> tuple[KeylogAnalysis, KeylogTextContentAnalysis]:
-    """Analyze metadata and optional text in one pass over the raw day files."""
+    by_chord: dict[str, HyprlandKeybind],
+    chord_window_ms: int,
+) -> dict[date, _DayCounters]:
+    """Stream the raw day files once, accumulating measures per logical day."""
 
     start_dt, end_dt = date_to_dt_range(start, end)
-    bind_rows = parse_hyprland_keybinds(bindings_path)
-    by_chord = {row.chord: row for row in bind_rows}
-    usage_counter: Counter[tuple[date, str, str]] = Counter()
-    temporal_counter: Counter[tuple[str, int, int]] = Counter()
+    usage_by_day: dict[date, Counter[tuple[str, str]]] = defaultdict(Counter)
+    temporal_by_day: dict[date, Counter[tuple[str, int, int]]] = defaultdict(Counter)
     shape_by_day: dict[date, Counter[str]] = defaultdict(Counter)
     text_by_day: dict[date, Counter[str]] = defaultdict(Counter)
-    text_terms: Counter[str] = Counter()
-    source_event_count = 0
+    terms_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    events_by_day: Counter[date] = Counter()
 
     recent_modifiers: dict[str, datetime] = {}
     chord_window = timedelta(milliseconds=chord_window_ms)
@@ -360,10 +404,10 @@ def _analyze_keylog_bundle(
             words = _content_terms(event.text)
             text_by_day[day]["words"] += len(words)
             text_by_day[day]["lines"] += event.text.count("\n") + 1
-            text_terms.update(words)
+            terms_by_day[day].update(words)
         if event.event != "press":
             continue
-        source_event_count += 1
+        events_by_day[day] += 1
         key = _normalize_event_key(event.keycode)
         if key is None:
             continue
@@ -384,8 +428,8 @@ def _analyze_keylog_bundle(
         if exact_modifiers:
             chord = _chord(exact_modifiers, key)
             if chord in by_chord:
-                usage_counter[(day, chord, "exact_modifier_state")] += 1
-                temporal_counter[(chord, event.ts.weekday(), event.ts.hour)] += 1
+                usage_by_day[day][(chord, "exact_modifier_state")] += 1
+                temporal_by_day[day][(chord, event.ts.weekday(), event.ts.hour)] += 1
                 continue
 
         active_modifiers = tuple(
@@ -399,8 +443,52 @@ def _analyze_keylog_bundle(
             continue
         chord = _chord(active_modifiers, key)
         if chord in by_chord:
-            usage_counter[(day, chord, "inferred_adjacent_modifier_press")] += 1
-            temporal_counter[(chord, event.ts.weekday(), event.ts.hour)] += 1
+            usage_by_day[day][(chord, "inferred_adjacent_modifier_press")] += 1
+            temporal_by_day[day][(chord, event.ts.weekday(), event.ts.hour)] += 1
+
+    days = set(usage_by_day) | set(temporal_by_day) | set(shape_by_day)
+    days |= set(text_by_day) | set(terms_by_day) | set(events_by_day)
+    return {
+        day: _DayCounters(
+            source_event_count=events_by_day[day],
+            usage=usage_by_day[day],
+            temporal=temporal_by_day[day],
+            shape=shape_by_day[day],
+            text=text_by_day[day],
+            text_terms=terms_by_day[day],
+        )
+        for day in days
+    }
+
+
+def _compose_analysis(
+    *,
+    start: date,
+    end: date,
+    bind_rows: tuple[HyprlandKeybind, ...],
+    by_chord: dict[str, HyprlandKeybind],
+    day_counters: dict[date, _DayCounters],
+    text_top_n: int,
+) -> tuple[KeylogAnalysis, KeylogTextContentAnalysis]:
+    """Aggregate per-day counters into the window's two analysis products."""
+
+    usage_counter: Counter[tuple[date, str, str]] = Counter()
+    temporal_counter: Counter[tuple[str, int, int]] = Counter()
+    shape_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    text_by_day: dict[date, Counter[str]] = defaultdict(Counter)
+    text_terms: Counter[str] = Counter()
+    source_event_count = 0
+
+    for day, counters in day_counters.items():
+        source_event_count += counters.source_event_count
+        for (chord, confidence), count in counters.usage.items():
+            usage_counter[(day, chord, confidence)] += count
+        temporal_counter.update(counters.temporal)
+        if counters.shape:
+            shape_by_day[day].update(counters.shape)
+        if counters.text:
+            text_by_day[day].update(counters.text)
+        text_terms.update(counters.text_terms)
 
     usage = tuple(
         KeybindUse(
@@ -449,6 +537,7 @@ def _analyze_keylog_bundle(
             "keybind and text-shape metadata are separate from text-content analysis",
             "keybind usage prefers persisted modifier state when present",
             "keybind usage falls back to adjacent modifier keypresses within the chord window",
+            "adjacent-modifier inference does not carry across the logical day boundary",
         ),
     )
     text_content_days = tuple(
@@ -471,7 +560,9 @@ def _analyze_keylog_bundle(
         days=text_content_days,
         top_terms=tuple(
             KeylogTextTerm(term=term, count=count)
-            for term, count in text_terms.most_common(max(0, text_top_n))
+            for term, count in sorted(text_terms.items(), key=lambda item: (-item[1], item[0]))[
+                : max(0, text_top_n)
+            ]
         ),
         caveats=(
             "text-content analysis only uses explicit snapshot text fields",
@@ -479,6 +570,31 @@ def _analyze_keylog_bundle(
         ),
     )
     return analysis, text_content
+
+
+def _analyze_keylog_bundle(
+    *,
+    start: date,
+    end: date,
+    bindings_path: Path = DEFAULT_HYPRLAND_BINDINGS,
+    chord_window_ms: int = 1500,
+    text_top_n: int = 1000,
+) -> tuple[KeylogAnalysis, KeylogTextContentAnalysis]:
+    """Analyze metadata and optional text in one pass over the raw day files."""
+
+    bind_rows = parse_hyprland_keybinds(bindings_path)
+    by_chord = {row.chord: row for row in bind_rows}
+    day_counters = _scan_day_counters(
+        start=start, end=end, by_chord=by_chord, chord_window_ms=chord_window_ms
+    )
+    return _compose_analysis(
+        start=start,
+        end=end,
+        bind_rows=bind_rows,
+        by_chord=by_chord,
+        day_counters=day_counters,
+        text_top_n=text_top_n,
+    )
 
 
 def analyze_keylog(
@@ -573,6 +689,7 @@ def write_keylog_analysis(
             if migrated:
                 store.publish(migrated, metadata={"migration": "legacy-monolith", "validated": True})
 
+    cache_path = target.with_name(f".{target.stem}.day-counters.json")
     analysis: KeylogAnalysis
     text_content: KeylogTextContentAnalysis
     for _attempt in range(_MAX_INPUT_STABILITY_ATTEMPTS):
@@ -582,10 +699,21 @@ def write_keylog_analysis(
             payload = load_json(target)
             if isinstance(payload, dict):
                 return _analysis_from_payload(payload)
-        analysis, text_content = _analyze_keylog_bundle(
+        bind_rows = parse_hyprland_keybinds(bindings_path)
+        by_chord = {row.chord: row for row in bind_rows}
+        analysis, text_content = _compose_analysis(
             start=start,
             end=end,
-            bindings_path=bindings_path,
+            bind_rows=bind_rows,
+            by_chord=by_chord,
+            day_counters=_windowed_day_counters(
+                start=start,
+                end=end,
+                bindings_path=bindings_path,
+                by_chord=by_chord,
+                chord_window_ms=1500,
+                cache_path=cache_path,
+            ),
             text_top_n=1000,
         )
         current_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
@@ -624,6 +752,104 @@ def write_keylog_analysis(
         )
     store.publish(selected, metadata={"dataset": "lynchpin.keylog_analysis", "input_signature": input_signature})
     return analysis
+
+
+_DAY_COUNTER_CACHE_SCHEMA = "lynchpin.keylog-day-counters.v1"
+
+
+def _day_input_signature(day: date, bindings_path: Path) -> str:
+    """Signature of every raw file a single logical day's counters depend on.
+
+    ``keylog._candidate_files`` pads by one day on each side because files are
+    named by UTC date while the logical day is local, so a day's counters can
+    change when any of those three files changes.
+    """
+    inputs = list(
+        keylog.log_files(start=day - timedelta(days=1), end=day + timedelta(days=1), ensure=False)
+    )
+    if bindings_path.exists():
+        inputs.append(bindings_path)
+    return _input_signature(tuple(sorted(dict.fromkeys(inputs))))
+
+
+def _load_day_counter_cache(path: Path, chord_window_ms: int) -> dict[date, tuple[str, _DayCounters]]:
+    if not path.exists():
+        return {}
+    try:
+        payload = load_json(path)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("schema") != _DAY_COUNTER_CACHE_SCHEMA:
+        return {}
+    if int(payload.get("chord_window_ms") or -1) != chord_window_ms:
+        return {}
+    cached: dict[date, tuple[str, _DayCounters]] = {}
+    for raw_day, entry in (payload.get("days") or {}).items():
+        try:
+            day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or not entry.get("digest"):
+            continue
+        cached[day] = (str(entry["digest"]), _DayCounters.from_json(entry.get("counters") or {}))
+    return cached
+
+
+def _save_day_counter_cache(
+    path: Path, chord_window_ms: int, entries: dict[date, tuple[str, _DayCounters]]
+) -> None:
+    save_json(
+        path,
+        {
+            "schema": _DAY_COUNTER_CACHE_SCHEMA,
+            "chord_window_ms": chord_window_ms,
+            "days": {
+                day.isoformat(): {"digest": digest, "counters": counters.to_json()}
+                for day, (digest, counters) in sorted(entries.items())
+            },
+        },
+        sort_keys=True,
+    )
+
+
+def _windowed_day_counters(
+    *,
+    start: date,
+    end: date,
+    bindings_path: Path,
+    by_chord: dict[str, HyprlandKeybind],
+    chord_window_ms: int,
+    cache_path: Path,
+) -> dict[date, _DayCounters]:
+    """Return the window's per-day counters, rescanning only stale days.
+
+    Raw day files are append-only, so on a routine refresh only the current day
+    (and whatever the capture appended to its neighbour) is stale; the rest are
+    served from the counter cache instead of reparsing gigabytes of JSONL.
+    """
+    days = _date_range(start, end)
+    digests = {day: _day_input_signature(day, bindings_path) for day in days}
+    cached = _load_day_counter_cache(cache_path, chord_window_ms)
+    stale = [day for day in days if cached.get(day, (None,))[0] != digests[day]]
+
+    counters = {day: cached[day][1] for day in days if day not in stale}
+    if stale:
+        # One streaming pass over the contiguous stale span: the reader pays per
+        # file, so scanning a range once beats scanning each day separately.
+        scanned = _scan_day_counters(
+            start=min(stale), end=max(stale), by_chord=by_chord, chord_window_ms=chord_window_ms
+        )
+        for day in days:
+            if min(stale) <= day <= max(stale):
+                counters[day] = scanned.get(day, _DayCounters())
+        _save_day_counter_cache(
+            cache_path,
+            chord_window_ms,
+            {day: (digests[day], counters[day]) for day in days},
+        )
+    return counters
 
 
 def _input_signature(input_files: tuple[Path, ...]) -> str:
