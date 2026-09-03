@@ -58,12 +58,6 @@ result = "json"
 cache = "none"
 timeout_seconds = 14400
 
-[operations.converge.parameters.end]
-type = "string"
-flag = "--end"
-max_length = 10
-grammar = "safe-token"
-
 [operations.refresh_keylog]
 description = "Refresh and verify the low-latency keylog analysis product"
 exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "refresh", "--product", "keylog_analysis"]
@@ -82,44 +76,6 @@ pool = "normal"
 result = "json"
 cache = "none"
 timeout_seconds = 3600
-plan_node = true
-
-[operations.materialize_node.parameters.product]
-type = "string"
-flag = "--product"
-required = true
-max_length = 128
-grammar = "safe-token"
-
-[operations.materialize_node.parameters.input_generation]
-type = "string"
-flag = "--input-generation"
-required = true
-max_length = 128
-grammar = "safe-token"
-
-[operations.materialize_node.parameters.source_generation]
-type = "string"
-flag = "--source-generation"
-required = true
-max_length = 128
-grammar = "safe-token"
-
-[operations.materialize_node.parameters.planned_dependencies]
-type = "bool"
-flag = "--planned-dependencies"
-
-[operations.materialize_node.parameters.start]
-type = "string"
-flag = "--start"
-max_length = 10
-grammar = "safe-token"
-
-[operations.materialize_node.parameters.end]
-type = "string"
-flag = "--end"
-max_length = 10
-grammar = "safe-token"
 
 [operations.promote_node]
 description = "Atomically publish one complete substrate generation"
@@ -128,35 +84,6 @@ pool = "bulk"
 result = "json"
 cache = "none"
 timeout_seconds = 7200
-plan_node = true
-
-[operations.promote_node.parameters.start]
-type = "string"
-flag = "--start"
-required = true
-max_length = 10
-grammar = "safe-token"
-
-[operations.promote_node.parameters.end]
-type = "string"
-flag = "--end"
-required = true
-max_length = 10
-grammar = "safe-token"
-
-[operations.promote_node.parameters.tail_start]
-type = "string"
-flag = "--tail-start"
-required = true
-max_length = 10
-grammar = "safe-token"
-
-[operations.promote_node.parameters.input_generation]
-type = "string"
-flag = "--input-generation"
-required = true
-max_length = 128
-grammar = "safe-token"
 
 [operations.chisel]
 description = "Build the complete configured cross-project Chisel report portfolio"
@@ -172,13 +99,3 @@ exec = ["python", "-m", "lynchpin.ingest.machine_materialize", "--cleanup-stagin
 timeout_seconds = 900
 pool = "normal"
 cache = "none"
-
-[operations.cleanup_machine_staging.parameters.apply]
-type = "bool"
-flag = "--apply"
-
-[operations.cleanup_machine_staging.parameters.grace_period_s]
-type = "integer"
-flag = "--grace-period-s"
-min = 0
-max = 2592000
