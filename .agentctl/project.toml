@@ -35,7 +35,6 @@ exec = ["just", "check"]
 pool = "bulk"
 result = "exit"
 cache = "tree+environment"
-scratch = "nvme"
 
 [operations.lint]
 description = "Run Lynchpin Ruff checks"
@@ -57,10 +56,7 @@ exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "converge"]
 pool = "bulk"
 result = "json"
 cache = "none"
-scratch = "nvme"
 timeout_seconds = 14400
-estimate_memory_bytes = 6442450944
-exclusive_keys = ["lynchpin:convergence", "lynchpin:substrate-generation"]
 
 [operations.converge.parameters.end]
 type = "string"
@@ -74,13 +70,10 @@ exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "refresh", "--product", "k
 pool = "normal"
 result = "json"
 cache = "none"
-scratch = "none"
 # A routine refresh rescans only the days whose raw keylog files changed and
 # finishes in seconds. The budget covers a cold cache, which reparses the whole
 # 14-day window at roughly 11 MB/s.
 timeout_seconds = 1800
-estimate_memory_bytes = 3221225472
-exclusive_keys = ["lynchpin:keylog-analysis"]
 
 [operations.materialize_node]
 description = "Execute one typed canonical-product materialization node"
@@ -88,7 +81,6 @@ exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "node"]
 pool = "normal"
 result = "json"
 cache = "none"
-scratch = "nvme"
 timeout_seconds = 3600
 plan_node = true
 
@@ -135,9 +127,7 @@ exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "promote"]
 pool = "bulk"
 result = "json"
 cache = "none"
-scratch = "nvme"
 timeout_seconds = 7200
-exclusive_keys = ["lynchpin:substrate-generation"]
 plan_node = true
 
 [operations.promote_node.parameters.start]
@@ -174,7 +164,6 @@ exec = ["just", "chisel"]
 pool = "bulk"
 result = "exit"
 cache = "none"
-scratch = "nvme"
 timeout_seconds = 900
 
 [operations.cleanup_machine_staging]
@@ -182,9 +171,7 @@ description = "Preview or remove abandoned machine-carrier staging files through
 exec = ["python", "-m", "lynchpin.ingest.machine_materialize", "--cleanup-staging"]
 timeout_seconds = 900
 pool = "normal"
-scratch = "nvme"
 cache = "none"
-exclusive_keys = ["lynchpin:machine-carrier-staging"]
 
 [operations.cleanup_machine_staging.parameters.apply]
 type = "bool"
