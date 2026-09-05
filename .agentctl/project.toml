@@ -8,28 +8,14 @@ root_markers = ["pyproject.toml", "lynchpin"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--command"]
-preflight = ["just", "--list"]
 inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LYNCHPIN_REPO_ROOT", "POLYLOGUE_ROOT", "SINEX_ROOT", "KNOWLEDGEBASE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
 [workspace]
-provider = "git-worktree"
 root = "/realm/worktrees"
 default_base = "origin/master"
-identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "flake.nix"]
-checkpoint_untracked = true
-verification_operations = ["check"]
 verify = { focused = "check", candidate = "check" }
 publish = "master"
-
-[conflicts]
-exact_files = ["pyproject.toml", "flake.nix"]
-generated_surfaces = ["docs/reference/schema-support-matrix.md"]
-
-[conflicts.semantic_slots]
-materialization-registry = ["lynchpin/materialization.py", "lynchpin/ingest/**/*.py"]
-substrate-schema = ["lynchpin/substrate/**/*.py"]
-public-mcp-contract = ["lynchpin/mcp/**/*.py", "tests/test_mcp*.py"]
 
 [operations.check]
 description = "Run Lynchpin lint, maintained type checks, and default tests"
