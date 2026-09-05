@@ -141,6 +141,25 @@ def test_daily_instrument_metrics_covers_torch_preflight_primary(tmp_path):
     assert days[0].primary_metric_value == 83.25
 
 
+def test_daily_instrument_metrics_empty_primary_name_is_not_re_derived(tmp_path):
+    # The prime-scored counting variant writes an empty headline name: the run
+    # has no on-device number, even though the fields a fallback would use are
+    # sitting right there.
+    _write_day(tmp_path, "20260901", [
+        {
+            "kind": "instrument_run", "instrument": "breath_counting", "engine": "counting",
+            "started_at": "2026-09-01T08:00:00Z", "seconds": 120,
+            "primary_metric": "", "primary_value": None,
+            "cycles_correct": 8, "unaware_miscounts": 2, "scored_by": "prime",
+            "ts": "2026-09-01T08:02:00Z",
+        },
+    ])
+    days = pe.daily_instrument_metrics(root=tmp_path)
+    assert days[0].run_count == 1
+    assert days[0].primary_metric_name is None
+    assert days[0].primary_metric_value is None
+
+
 def test_daily_instrument_metrics_mixed_primary_names_do_not_blend(tmp_path):
     # A day straddling the migration: one record predates the persisted pair
     # and falls back to a 0-1 accuracy, two carry the app's own 0-100
