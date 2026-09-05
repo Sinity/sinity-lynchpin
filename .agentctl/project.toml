@@ -19,6 +19,8 @@ default_base = "origin/master"
 identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "flake.nix"]
 checkpoint_untracked = true
 verification_operations = ["check"]
+verify = { focused = "check", candidate = "check" }
+publish = "master"
 
 [conflicts]
 exact_files = ["pyproject.toml", "flake.nix"]
