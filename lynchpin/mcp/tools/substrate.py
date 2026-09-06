@@ -6,9 +6,14 @@ time with issubclass(param.annotation, Context); PEP 563 string annotations
 cause ``issubclass('str', Context)`` → TypeError.
 """
 
+from dataclasses import asdict
 from typing import Any
 
-from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY, EVIDENCE_GRAPH_ORPHAN_CAVEAT
+from lynchpin.substrate.integrity import (
+    integrity_caveats,
+    measure_graph_integrity,
+    unavailable_graph_integrity,
+)
 from lynchpin.mcp.tools._utils import (
     ensure_substrate_materialized_for_read,
     half_open_date_window,
@@ -250,7 +255,6 @@ def substrate_readiness_report() -> dict[str, Any]:
     "sources": [], "summary": {...all-zero}} when the substrate has no promote
     history yet.
     """
-    from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY
     from lynchpin.materialization import substrate_materialization_snapshot
     from lynchpin.substrate.connection import (
         generation_refresh_id,
@@ -371,7 +375,7 @@ def substrate_readiness_report() -> dict[str, Any]:
                 "node_count": eg_row[1],
                 "edge_count": eg_row[2],
                 "caveats": caveats,
-                "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
+                "graph_integrity": measure_graph_integrity(conn, str(eg_row[0])),
                 "generated_at": _json_safe(eg_row[4]),
             }
         else:
@@ -709,7 +713,7 @@ def claim_evidence(
     claim_id: str,
     refresh_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return one claim plus any persisted backing evidence rows."""
+    """Return one claim and integrity of its selected logical generation."""
     from lynchpin.substrate.claims import load_claim_evidence
     from lynchpin.substrate.connection import connect, substrate_path
 
@@ -717,17 +721,17 @@ def claim_evidence(
         ensure_substrate_materialized_for_read(caller="claim_evidence")
 
     with connect(substrate_path(), read_only=True) as conn:
+        if refresh_id is None:
+            refresh_id = latest_materialized_refresh_id(conn, caller="claim_evidence")
         row = load_claim_evidence(conn, claim_id=claim_id, refresh_id=refresh_id)
-    if row is None:
-        return {
-            "summary": {"status": "missing"},
-            "claim_id": claim_id,
-            "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
-            "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
-        }
-    result = _json_safe(row)
-    result["graph_integrity"] = dict(EVIDENCE_GRAPH_INTEGRITY)
-    result["caveats"] = [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message]
+        integrity = measure_graph_integrity(conn, refresh_id)
+    result = _json_safe(row) if row is not None else {
+        "summary": {"status": "missing"}, "claim_id": claim_id,
+    }
+    result["graph_integrity"] = integrity
+    result["caveats"] = list(result.get("caveats") or []) + [
+        asdict(caveat) for caveat in integrity_caveats(integrity)
+    ]
     return result
 
 
@@ -787,11 +791,10 @@ def list_evidence_graph_builds(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         rows = _list_builds(conn, start=start_d, end=end_d)
-
-    return [
-        {**_json_safe(row), "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY)}
-        for row in rows
-    ]
+        return [
+            {**_json_safe(row), "graph_integrity": measure_graph_integrity(conn, row["refresh_id"])}
+            for row in rows
+        ]
 
 
 def load_evidence_graph_summary(
@@ -841,13 +844,17 @@ def load_evidence_graph_summary(
     path = substrate_path()
     with connect(path, read_only=True) as conn:
         graph = _load_graph(conn, refresh_id=refresh_id, start=start_d, end=end_d)
+    integrity = (
+        graph.graph_integrity if graph is not None and graph.graph_integrity is not None
+        else unavailable_graph_integrity(refresh_id)
+    )
 
     if graph is None:
         return {
             "error": "no matching build",
             "materialization": materialization,
-            "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
-            "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
+            "graph_integrity": integrity,
+            "caveats": [asdict(c) for c in integrity_caveats(integrity)],
         }
 
     node_kind_counts: dict[str, int] = {}
@@ -894,8 +901,8 @@ def load_evidence_graph_summary(
         "node_kind_counts": node_kind_counts,
         "edge_relation_counts": edge_relation_counts,
         "project_day_summary": project_day_summary,
-        "graph_integrity": dict(EVIDENCE_GRAPH_INTEGRITY),
-        "caveats": [EVIDENCE_GRAPH_ORPHAN_CAVEAT.message],
+        "graph_integrity": integrity,
+        "caveats": [asdict(c) for c in graph.caveats],
     }
 
 

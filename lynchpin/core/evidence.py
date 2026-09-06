@@ -41,23 +41,23 @@ class EvidenceCaveat:
     message: str
 
 
-EVIDENCE_GRAPH_ORPHANED_EDGES = 929_084
-EVIDENCE_GRAPH_TOTAL_EDGES = 937_615
-EVIDENCE_GRAPH_ORPHAN_RATIO = EVIDENCE_GRAPH_ORPHANED_EDGES / EVIDENCE_GRAPH_TOTAL_EDGES
+# Compatibility sentinels for callers without a selected graph measurement.
+# Real diagnostics live in substrate.integrity and are scoped to a generation.
+EVIDENCE_GRAPH_ORPHANED_EDGES = None
+EVIDENCE_GRAPH_TOTAL_EDGES = None
+EVIDENCE_GRAPH_ORPHAN_RATIO = None
 EVIDENCE_GRAPH_INTEGRITY = {
-    "status": "partial",
+    "status": "missing",
+    "measured": False,
     "orphaned_edges": EVIDENCE_GRAPH_ORPHANED_EDGES,
     "total_edges": EVIDENCE_GRAPH_TOTAL_EDGES,
     "orphan_ratio": EVIDENCE_GRAPH_ORPHAN_RATIO,
-    "message": (
-        "929,084 of 937,615 evidence-graph edges (99.09%) are orphaned; "
-        "edge readers return only the subset whose endpoints resolve"
-    ),
+    "message": "Endpoint integrity has not been measured for this response.",
 }
 
 EVIDENCE_GRAPH_ORPHAN_CAVEAT = EvidenceCaveat(
     source="evidence_graph",
-    status="partial",
+    status="missing",
     message=EVIDENCE_GRAPH_INTEGRITY["message"],
 )
 

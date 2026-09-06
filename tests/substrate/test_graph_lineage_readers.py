@@ -122,7 +122,10 @@ def test_graph_readers_use_complete_overlay_and_shadow_replacements(tmp_path) ->
 
         graph = load_evidence_graph(conn, refresh_id="r1")
         assert graph is not None
-        assert any("929,084 of 937,615" in caveat.message for caveat in graph.caveats)
+        assert graph.graph_integrity["measured"] is True
+        assert graph.graph_integrity["refresh_id"] == "r1"
+        assert graph.graph_integrity["orphaned_edges"] == 0
+        assert not graph.caveats
 
         correlations = load_project_day_correlations(conn, refresh_id="r1")
         correlation_days = {(row.date, row.commit_count) for row in correlations}

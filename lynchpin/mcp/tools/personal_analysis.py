@@ -7,28 +7,46 @@ string annotations for tool parameters.
 
 from typing import Any
 
-from lynchpin.mcp.tools._machine_helpers import _analysis_artifact
-
-_MISSING = {"summary": {"status": "missing"}}
+from lynchpin.core.io import load_materialized_analysis_artifact
 
 
-def anomaly_crossref_report(signal: str | None = None) -> dict[str, Any]:
-    """Read the cross-source anomaly correlation report.
+def _read_report(name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Keep artifact availability distinct from its analysis and provenance.
 
-    When one source is anomalous, the report shows what other sources reveal
-    around the same date. Optionally filter to a specific signal name.
+    A readable historical report is not necessarily a current or successful
+    analysis. Preserve its declared status and the materializer's evidence;
+    never infer freshness or absence of limitations from a file's existence.
     """
-    payload = _analysis_artifact("anomaly_crossref.json")
-    if payload is None:
-        return _MISSING
+    payload, materialization = load_materialized_analysis_artifact(name)
+    if not isinstance(payload, dict):
+        return {"summary": {"status": "missing"}, "materialization": materialization}, None
+    declared_status = payload.get("status")
+    if not isinstance(declared_status, str):
+        declared_summary = payload.get("summary")
+        declared_status = (
+            declared_summary.get("status") if isinstance(declared_summary, dict) else None
+        )
     result: dict[str, Any] = {
         "summary": {
             "generated_at_utc": payload.get("generated_at_utc"),
             "window_start": payload.get("window_start"),
             "window_end": payload.get("window_end"),
-            "status": "available",
+            "status": declared_status if isinstance(declared_status, str) else "available",
+            "artifact_available": True,
         },
+        "materialization": materialization,
     }
+    for key in ("caveats", "source_coverage", "signal_coverage", "methodology"):
+        if key in payload:
+            result[key] = payload[key]
+    return result, payload
+
+
+def anomaly_crossref_report(signal: str | None = None) -> dict[str, Any]:
+    """Read the cross-source anomaly report, optionally filtering a signal."""
+    result, payload = _read_report("anomaly_crossref.json")
+    if payload is None:
+        return result
     anomalies = payload.get("anomaly_days")
     if isinstance(anomalies, list):
         if signal:
@@ -40,29 +58,18 @@ def anomaly_crossref_report(signal: str | None = None) -> dict[str, Any]:
         if signal:
             cross_refs = [c for c in cross_refs if isinstance(c, dict) and c.get("signal") == signal]
         result["cross_references"] = cross_refs
-    for key in ("caveats", "source_coverage", "methodology"):
-        if key in payload:
-            result[key] = payload[key]
     return result
 
 
 def life_phase_report(phase: str | None = None) -> dict[str, Any]:
-    """Read the multi-signal life-phase boundary detection report.
+    """Read phase boundaries, coverage, and event annotations from a report.
 
-    Returns detected phase boundaries, characterizations, and alignment with
-    known events. Optionally filter to a specific phase label.
+    Known-event annotations are not themselves independently detected changes.
+    Optionally filter characterizations to a specific phase label.
     """
-    payload = _analysis_artifact("life_phase_report.json")
+    result, payload = _read_report("life_phase_report.json")
     if payload is None:
-        return _MISSING
-    result: dict[str, Any] = {
-        "summary": {
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "status": "available",
-        },
-    }
+        return result
     phases = payload.get("phases")
     if isinstance(phases, list):
         if phase:
@@ -72,53 +79,33 @@ def life_phase_report(phase: str | None = None) -> dict[str, Any]:
     boundaries = payload.get("boundaries")
     if isinstance(boundaries, list):
         result["boundaries"] = boundaries
-    for key in ("known_event_alignment", "methodology", "caveats"):
+    # Preserve both the current writer's contract and historical artifacts.
+    for key in ("event_annotations", "known_event_alignment"):
         if key in payload:
             result[key] = payload[key]
     return result
 
 
 def productivity_predictors_report() -> dict[str, Any]:
-    """Read the productivity predictors report.
-
-    Returns a RandomForest model predicting tomorrow's deep-work hours from
-    today's signals, with feature importances and diagnostics.
-    """
-    payload = _analysis_artifact("productivity_predictors.json")
+    """Read recorded productivity predictions, diagnostics, and limitations."""
+    result, payload = _read_report("productivity_predictors.json")
     if payload is None:
-        return _MISSING
-    result: dict[str, Any] = {
-        "summary": {
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "status": "available",
-        },
-    }
-    for key in ("feature_importances", "model_diagnostics", "predictions", "caveats", "methodology"):
+        return result
+    for key in ("feature_importances", "model_diagnostics", "predictions"):
         if key in payload:
             result[key] = payload[key]
     return result
 
 
 def substance_health_report(substance: str | None = None, signal: str | None = None) -> dict[str, Any]:
-    """Read the substance × health lag-correlation report.
+    """Read recorded dose/health associations and their coverage caveats.
 
-    Returns 0–7-day lag correlations between substance doses and health signals,
-    dose-response curves, and abstinence period analysis.
-    Optionally filter to a specific substance name or health signal.
+    Missing dose entries do not by themselves establish abstinence.
+    Optionally filter a substance name or health signal.
     """
-    payload = _analysis_artifact("substance_health_report.json")
+    result, payload = _read_report("substance_health_report.json")
     if payload is None:
-        return _MISSING
-    result: dict[str, Any] = {
-        "summary": {
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "status": "available",
-        },
-    }
+        return result
     correlations = payload.get("lag_correlations")
     if isinstance(correlations, list):
         if substance:
@@ -127,60 +114,35 @@ def substance_health_report(substance: str | None = None, signal: str | None = N
             correlations = [c for c in correlations if isinstance(c, dict) and c.get("signal") == signal]
         result["lag_correlations"] = correlations
         result["summary"]["correlation_count"] = len(correlations)
-    for key in ("dose_response", "abstinence_periods", "caveats", "methodology"):
+    for key in ("dose_response", "abstinence_periods"):
         if key in payload:
             result[key] = payload[key]
     return result
 
 
 def burnout_warning_report() -> dict[str, Any]:
-    """Read the burnout-warning analysis report.
-
-    Returns multi-signal burnout risk indicators, trend signals, and
-    recovery recommendations based on HRV, stress, git activity, and sleep.
-    """
-    payload = _analysis_artifact("burnout_warning.json")
+    """Read the recorded burnout indicators, not a fresh clinical assessment."""
+    result, payload = _read_report("burnout_warning.json")
     if payload is None:
-        return _MISSING
-    result: dict[str, Any] = {
-        "summary": {
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "status": "available",
-        },
-    }
-    for key in ("risk_level", "indicators", "trends", "recommendations", "caveats", "methodology"):
+        return result
+    for key in ("risk_level", "indicators", "trends", "recommendations"):
         if key in payload:
             result[key] = payload[key]
     return result
 
 
 def ai_session_efficiency_report(project: str | None = None) -> dict[str, Any]:
-    """Read the AI session efficiency analysis report.
-
-    Returns per-session and aggregate efficiency metrics for AI-assisted work:
-    session duration, tool usage patterns, output quality proxies.
-    Optionally filter to a specific project.
-    """
-    payload = _analysis_artifact("ai_session_efficiency.json")
+    """Read session output proxies and their recorded provenance/limitations."""
+    result, payload = _read_report("ai_session_efficiency.json")
     if payload is None:
-        return _MISSING
-    result: dict[str, Any] = {
-        "summary": {
-            "generated_at_utc": payload.get("generated_at_utc"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "status": "available",
-        },
-    }
+        return result
     sessions = payload.get("sessions")
     if isinstance(sessions, list):
         if project:
             sessions = [s for s in sessions if isinstance(s, dict) and s.get("project") == project]
         result["sessions"] = sessions
         result["summary"]["session_count"] = len(sessions)
-    for key in ("aggregate_metrics", "efficiency_by_project", "caveats", "methodology"):
+    for key in ("aggregate_metrics", "efficiency_by_project"):
         if key in payload:
             result[key] = payload[key]
     return result

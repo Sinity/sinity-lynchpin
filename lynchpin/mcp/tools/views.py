@@ -6,9 +6,15 @@ time with issubclass(param.annotation, Context); PEP 563 string annotations
 cause ``issubclass('str', Context)`` → TypeError.
 """
 
+from dataclasses import asdict
 from typing import Any
 
-from lynchpin.core.evidence import EVIDENCE_GRAPH_INTEGRITY, EVIDENCE_GRAPH_ORPHAN_CAVEAT
+from lynchpin.substrate.integrity import (
+    integrity_caveats,
+    measure_graph_integrity,
+    non_graph_integrity,
+    unavailable_graph_integrity,
+)
 from lynchpin.mcp.tools._utils import (
     best_materialized_refresh_id,
     dataclass_to_json_dict,
@@ -19,17 +25,17 @@ from lynchpin.mcp.tools._utils import (
 )
 
 
-def _graph_integrity() -> dict[str, Any]:
-    """Return the known evidence-edge integrity caveat for graph responses."""
-    return dict(EVIDENCE_GRAPH_INTEGRITY)
+def _graph_integrity(graph: Any = None, refresh_id: str | None = None) -> dict[str, Any]:
+    if graph is not None and graph.graph_integrity is not None:
+        return graph.graph_integrity
+    return unavailable_graph_integrity(refresh_id)
 
 
-def _graph_caveat() -> dict[str, Any]:
-    return {
-        "source": EVIDENCE_GRAPH_ORPHAN_CAVEAT.source,
-        "status": EVIDENCE_GRAPH_ORPHAN_CAVEAT.status,
-        "message": EVIDENCE_GRAPH_ORPHAN_CAVEAT.message,
-    }
+def _graph_caveats(graph: Any = None, refresh_id: str | None = None) -> list[dict[str, Any]]:
+    caveats = graph.caveats if graph is not None else integrity_caveats(
+        unavailable_graph_integrity(refresh_id)
+    )
+    return [asdict(caveat) for caveat in caveats]
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +100,12 @@ def project_day_correlations(
             projects=projs,
             min_source_count=min_source_count,
         )
+        if not rows:
+            return []
+        integrity = measure_graph_integrity(conn, refresh_id)
 
     return [
-        {**dataclass_to_json_dict(row), "graph_integrity": _graph_integrity()}
+        {**dataclass_to_json_dict(row), "graph_integrity": integrity}
         for row in rows
     ]
 
@@ -139,9 +148,12 @@ def closure_chain_walks(
             project=project,
             min_chain_depth=min_chain_depth,
         )
+        if not rows:
+            return []
+        integrity = measure_graph_integrity(conn, refresh_id)
 
     return [
-        {**dataclass_to_json_dict(row), "graph_integrity": _graph_integrity()}
+        {**dataclass_to_json_dict(row), "graph_integrity": integrity}
         for row in rows
     ]
 
@@ -152,8 +164,8 @@ def file_overlap_edges(
 ) -> list[dict[str, Any]]:
     """Query the work_event_file_overlap view and return edge dicts.
 
-    ``graph_integrity`` records the known defect in the persisted evidence-edge
-    model. These overlap rows are a separate derived view.
+    These overlap rows are a separate derived view, not the persisted graph;
+    endpoint integrity of that graph is explicitly not applicable here.
     """
     from lynchpin.substrate.connection import connect, substrate_path
     from lynchpin.substrate.graph import compute_file_overlap_edges
@@ -170,7 +182,7 @@ def file_overlap_edges(
     return [
         {"source_id": e.source_id, "target_id": e.target_id,
          "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
-         "graph_integrity": _graph_integrity()}
+         "graph_integrity": non_graph_integrity()}
         for e in edges
     ]
 
@@ -195,7 +207,7 @@ def symbol_overlap_edges(
     return [
         {"source_id": e.source_id, "target_id": e.target_id,
          "relation": e.relation, "evidence": e.evidence, "weight": e.weight,
-         "graph_integrity": _graph_integrity()}
+         "graph_integrity": non_graph_integrity()}
         for e in edges
     ]
 
@@ -254,9 +266,12 @@ def context_pack_diff(
         refresh_a = refresh_ids[-2] if len(refresh_ids) >= 2 else refresh_ids[-1]
 
     diffs: dict[str, Any] = {"refresh_a": refresh_a, "refresh_b": refresh_b}
-    diffs["graph_integrity"] = _graph_integrity()
 
     with connect(substrate_path(), read_only=True) as conn:
+        diffs["graph_integrity"] = {
+            "a": measure_graph_integrity(conn, refresh_a),
+            "b": measure_graph_integrity(conn, refresh_b),
+        }
         tables = (
             "commit_fact",
             "file_change_fact",
@@ -567,7 +582,7 @@ def project_pair_signals(
             "edge_count": sum(rel.signal_counts.values()),
             "signals": dict(rel.signal_counts),
             "sample_evidence_node_ids": list(rel.sample_evidence_node_ids),
-            "graph_integrity": _graph_integrity(),
+            "graph_integrity": _graph_integrity(graph, refresh_id),
         })
     return out
 
@@ -624,8 +639,9 @@ def walk_evidence(
                     "max_nodes": max_nodes, "truncated": False,
                     "materialization": materialization,
                     "reason": "no evidence_graph build available",
-                    "nodes": [], "edges": [], "graph_integrity": _graph_integrity(),
-                    "caveats": [_graph_caveat()],
+                    "nodes": [], "edges": [],
+                    "graph_integrity": _graph_integrity(refresh_id=refresh_id),
+                    "caveats": _graph_caveats(refresh_id=refresh_id),
                 }
         graph = load_evidence_graph(conn, refresh_id=refresh_id)
 
@@ -636,8 +652,9 @@ def walk_evidence(
             "max_nodes": max_nodes, "truncated": False,
             "materialization": materialization,
             "reason": f"evidence_graph build {refresh_id!r} not found",
-            "nodes": [], "edges": [], "graph_integrity": _graph_integrity(),
-            "caveats": [_graph_caveat()],
+            "nodes": [], "edges": [],
+            "graph_integrity": _graph_integrity(refresh_id=refresh_id),
+            "caveats": _graph_caveats(refresh_id=refresh_id),
         }
 
     result = _walk(
@@ -656,8 +673,8 @@ def walk_evidence(
         "truncated": result.truncated,
         "materialization": materialization,
         "reason": result.reason,
-        "graph_integrity": _graph_integrity(),
-        "caveats": [_graph_caveat()],
+        "graph_integrity": _graph_integrity(graph, refresh_id),
+        "caveats": _graph_caveats(graph, refresh_id),
         "nodes": [
             {
                 "id": step.node.id, "kind": step.node.kind,

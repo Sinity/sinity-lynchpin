@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from lynchpin.substrate._filters import build_where
 from lynchpin.substrate._helpers import promote_rows
-from lynchpin.core.evidence import EVIDENCE_GRAPH_ORPHAN_CAVEAT, dedupe_caveats
+from lynchpin.core.evidence import dedupe_caveats
 
 if TYPE_CHECKING:
     import duckdb
@@ -426,8 +426,19 @@ def load_evidence_graph(
         )
 
     # ------------------------------------------------------------------
-    # 4. Build EvidenceGraph
+    # 4. Measure candidates before any consumer drops dangling endpoints.
     # ------------------------------------------------------------------
+    from lynchpin.substrate.integrity import integrity_caveats, integrity_from_counts
+
+    node_ids = {node.id for node in nodes}
+    missing_source = sum(edge.source_id not in node_ids for edge in edges)
+    missing_target = sum(edge.target_id not in node_ids for edge in edges)
+    orphaned = sum(
+        edge.source_id not in node_ids or edge.target_id not in node_ids for edge in edges
+    )
+    integrity = integrity_from_counts(
+        str(rid), len(node_ids), len(edges), missing_source, missing_target, orphaned
+    )
     return EvidenceGraph(
         start=start_date,
         end=end_date,
@@ -436,8 +447,10 @@ def load_evidence_graph(
         nodes=tuple(nodes),
         edges=tuple(edges),
         caveats=dedupe_caveats(
-            _hydrate_caveats(build_caveats) + (EVIDENCE_GRAPH_ORPHAN_CAVEAT,)
+            _hydrate_caveats(build_caveats) + integrity_caveats(integrity)
         ),
+        refresh_id=str(rid),
+        graph_integrity=integrity,
     )
 
 

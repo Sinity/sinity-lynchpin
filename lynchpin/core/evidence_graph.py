@@ -203,6 +203,8 @@ class EvidenceGraph:
     nodes: tuple[EvidenceNode, ...] = ()
     edges: tuple[EvidenceEdge, ...] = ()
     caveats: tuple[EvidenceCaveat, ...] = ()
+    refresh_id: str | None = None
+    graph_integrity: dict[str, Any] | None = None
 
     def nodes_by_project_day(self) -> dict[tuple[date, str], tuple[EvidenceNode, ...]]:
         grouped: dict[tuple[date, str], list[EvidenceNode]] = defaultdict(list)

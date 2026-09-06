@@ -194,8 +194,10 @@ def test_list_evidence_graph_builds_with_one(tmp_path: Path, monkeypatch: pytest
     assert result[0]["node_count"] == 42
     assert result[0]["edge_count"] == 7
     assert result[0]["start_date"] == "2026-05-01"
-    assert result[0]["graph_integrity"]["orphaned_edges"] == 929084
-    assert result[0]["graph_integrity"]["total_edges"] == 937615
+    # Header estimates do not substitute for measuring actual fixture rows.
+    assert result[0]["graph_integrity"]["orphaned_edges"] == 0
+    assert result[0]["graph_integrity"]["total_edges"] == 0
+    assert result[0]["graph_integrity"]["measured"] is True
 
 
 def test_load_evidence_graph_summary_reports_materialization_on_missing_build(
@@ -211,7 +213,8 @@ def test_load_evidence_graph_summary_reports_materialization_on_missing_build(
     assert result["error"] == "no matching build"
     assert result["materialization"]["name"] == "evidence_graph_substrate"
     assert result["materialization"]["caller"] == "load_evidence_graph_summary"
-    assert result["graph_integrity"]["orphan_ratio"] > 0.99
+    assert result["graph_integrity"]["orphan_ratio"] is None
+    assert result["graph_integrity"]["measured"] is False
     assert result["caveats"]
 
 
@@ -585,7 +588,8 @@ def test_claim_evidence_materializes_for_default_snapshot(
     result = claim_evidence("claim:missing")
     assert result["summary"] == {"status": "missing"}
     assert result["claim_id"] == "claim:missing"
-    assert result["graph_integrity"]["orphaned_edges"] == 929084
+    assert result["graph_integrity"]["orphaned_edges"] is None
+    assert result["graph_integrity"]["measured"] is False
     assert result["caveats"]
     assert calls == [("claim_evidence", None)]
 

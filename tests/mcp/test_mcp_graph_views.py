@@ -182,9 +182,10 @@ def test_walk_evidence_reports_materialization_when_no_snapshot(monkeypatch: pyt
     assert calls == ["walk_evidence"]
     assert result["reason"] == "no evidence_graph build available"
     assert result["materialization"]["caller"] == "walk_evidence"
-    assert result["graph_integrity"]["orphaned_edges"] == 929084
-    assert result["graph_integrity"]["total_edges"] == 937615
-    assert result["caveats"][0]["status"] == "partial"
+    assert result["graph_integrity"]["orphaned_edges"] is None
+    assert result["graph_integrity"]["total_edges"] is None
+    assert result["graph_integrity"]["measured"] is False
+    assert result["caveats"][0]["status"] == "missing"
 
 
 def test_walk_evidence_pinned_refresh_id_does_not_materialize(monkeypatch: pytest.MonkeyPatch) -> None:
