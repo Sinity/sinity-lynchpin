@@ -90,7 +90,8 @@ def test_coverage_report_uses_materialized_datasets(monkeypatch, tmp_path) -> No
     assert by_source["spotify"].basis == "canonical-ndjson"
     assert by_source["messenger"].row_count == 10
     assert ("webhistory", (date(2026, 5, 20), date(2026, 5, 24)), "inline") in ensure_calls
-    assert ("activitywatch", (date(2026, 5, 20), date(2026, 5, 24)), "inline") in ensure_calls
+    assert by_source["activitywatch"].status == "available"
+    assert all(name != "activitywatch" for name, _, _ in ensure_calls)
     assert ("spotify", (date(2026, 5, 20), date(2026, 5, 24)), "inline") in ensure_calls
     assert ("reddit", (date(2026, 5, 20), date(2026, 5, 24)), "inline") in ensure_calls
 

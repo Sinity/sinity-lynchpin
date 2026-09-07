@@ -551,11 +551,11 @@ def test_snapshot_uses_existing_products_when_requested(monkeypatch) -> None:
     )
 
     assert code == 0
-    assert materialized == {
-        "start": date(2026, 5, 1),
-        "end": date(2026, 5, 2),
-        "projects": (),
-    }
+    assert materialized["start"] == date(2026, 5, 1)
+    assert materialized["end"] == date(2026, 5, 2)
+    assert materialized["projects"] == ()
+    assert materialized["generation"] is None
+    assert len(materialized["input_fingerprint"]) == 64
     assert promoted == {}
 
 

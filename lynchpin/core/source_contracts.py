@@ -132,7 +132,6 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         authority="ActivityWatch live SQLite plus exported backup DBs",
         query_surface="lynchpin.sources.activitywatch",
         materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
-        materialization_executor=MaterializationExecutor.materializer("activitywatch"),
         collection_model="continuous",
         materialization_mode="live",
         materialization_target="source:activitywatch",

@@ -43,7 +43,8 @@ def test_source_contracts_carry_capability_and_coverage_policy() -> None:
     assert contracts["atuin"].collection_model == "continuous"
     assert contracts["atuin"].mcp_tools == ("lynchpin_personal",)
     assert contracts["activitywatch"].collection_model == "continuous"
-    assert contracts["activitywatch"].materialization_executor.ref == "activitywatch"
+    assert contracts["activitywatch"].materialization_mode == "live"
+    assert contracts["activitywatch"].materialization_executor.kind == "none"
     assert contracts["analysis_artifacts"].collection_model == "derived"
     assert contracts["analysis_artifacts"].materialization_mode == "derived"
     assert contracts["analysis_artifacts"].materialization_target == "artifact:analysis_artifacts"

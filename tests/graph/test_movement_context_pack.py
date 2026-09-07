@@ -666,6 +666,8 @@ def test_materialize_evidence_graph_skips_context_pack_rendering(monkeypatch):
         lambda graph, **kwargs: materialized.update(graph=graph, **kwargs),
     )
 
+    monkeypatch.setattr("lynchpin.materialization.graph_input_fingerprint", lambda: "input-revision")
+
     result = materialize_evidence_graph(start=start, end=end)
 
     assert result is graph
@@ -673,6 +675,7 @@ def test_materialize_evidence_graph_skips_context_pack_rendering(monkeypatch):
         "graph": graph,
         "refresh_id": "current-state:2026-05-01:2026-05-02:all",
         "projects": None,
+        "input_fingerprint": "input-revision",
     }
 
 

@@ -815,6 +815,10 @@ def test_personal_signal_tool_fails_when_backing_stage_missing(
 
     from lynchpin.mcp.tools.personal import personal_daily_signals
 
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.personal._ensure_source_materialized_for_read",
+        lambda *_args, **_kwargs: {"status": "ready"},
+    )
     with pytest.raises(RuntimeError, match="personal_daily_signals requires substrate table"):
         personal_daily_signals()
 
