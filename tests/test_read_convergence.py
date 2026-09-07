@@ -95,6 +95,158 @@ def _patch_serving_generation(monkeypatch, conn):
     monkeypatch.setattr("lynchpin.substrate.connection.serving_generation", serving)
 
 
+def _incremental_graph_fixture():
+    import duckdb
+
+    conn = duckdb.connect()
+    conn.execute(
+        """
+        CREATE TABLE evidence_graph_build (
+            refresh_id VARCHAR, start_date DATE, end_date DATE,
+            projects VARCHAR[], materialized_at TIMESTAMP,
+            generated_at TIMESTAMP, input_fingerprint VARCHAR,
+            predecessor_refresh_id VARCHAR, predecessor_tail_start DATE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE TABLE substrate_promotion_run (refresh_id VARCHAR, status VARCHAR)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR, source VARCHAR, status VARCHAR, recorded_at TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO evidence_graph_build VALUES
+        ('base', DATE '2011-01-30', DATE '2026-09-08', [],
+         TIMESTAMP '2026-09-07', TIMESTAMP '2026-09-07', 'old', NULL, NULL),
+        ('tail', DATE '2011-01-30', DATE '2026-09-08', [],
+         TIMESTAMP '2026-09-08', TIMESTAMP '2026-09-08', 'new', 'base', DATE '2026-09-01')
+        """
+    )
+    conn.execute("INSERT INTO substrate_promotion_run VALUES ('base', 'ok'), ('tail', 'degraded')")
+    conn.execute(
+        "INSERT INTO substrate_source_status VALUES "
+        "('base', 'evidence_graph', 'ok', TIMESTAMP '2026-09-07'), "
+        "('tail', 'evidence_graph', 'ok', TIMESTAMP '2026-09-08')"
+    )
+    return conn
+
+
+def test_incremental_graph_fingerprint_checks_visible_historical_predecessor(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 24), date(2026, 8, 25))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
+def test_incremental_graph_fingerprint_checks_both_sides_of_tail_boundary(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 31), date(2026, 9, 2))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
+def test_incremental_graph_fingerprint_skips_current_tail(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 9, 2), date(2026, 9, 3))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "skip"
+
+
+def test_incremental_graph_fingerprint_rejects_missing_visible_predecessor(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    conn.execute(
+        "UPDATE evidence_graph_build SET predecessor_refresh_id = 'missing' WHERE refresh_id = 'tail'"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 24), date(2026, 8, 25))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
+def test_incremental_graph_fingerprint_rejects_visible_predecessor_cycle(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    conn.execute(
+        "UPDATE evidence_graph_build "
+        "SET predecessor_refresh_id = 'tail', predecessor_tail_start = DATE '2026-09-01' "
+        "WHERE refresh_id = 'base'"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 24), date(2026, 8, 25))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
+def test_incremental_graph_fingerprint_rejects_tail_without_predecessor(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    conn.execute(
+        "UPDATE evidence_graph_build "
+        "SET predecessor_refresh_id = NULL, predecessor_tail_start = DATE '2026-09-01' "
+        "WHERE refresh_id = 'tail'"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 24), date(2026, 8, 25))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
+def test_incremental_graph_fingerprint_rejects_malformed_ancestor_tail(monkeypatch) -> None:
+    conn = _incremental_graph_fixture()
+    conn.execute(
+        "UPDATE evidence_graph_build "
+        "SET predecessor_refresh_id = NULL, predecessor_tail_start = DATE '2026-08-20', "
+        "input_fingerprint = 'new' "
+        "WHERE refresh_id = 'base'"
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(
+            window=(date(2026, 8, 24), date(2026, 8, 25))
+        )
+    finally:
+        conn.close()
+    assert plan.action == "converge"
+
+
 def _result(name: str, *, changed: bool = False) -> materialization.MaterializationResult:
     return materialization.MaterializationResult(
         name=name,

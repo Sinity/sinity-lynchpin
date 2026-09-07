@@ -17,6 +17,17 @@ def test_velocity_tools_use_graph_refresh_when_status_refresh_differs(tmp_path: 
 
     with connect(substrate_path()) as conn:
         conn.execute(
+            "INSERT INTO evidence_graph_build "
+            "(refresh_id, start_date, end_date, mode, generated_at) "
+            "VALUES (?, ?, ?, 'materialized', ?)",
+            ["graph-refresh", date(2026, 5, 1), date(2026, 5, 3), dt(2026, 5, 2)],
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, status, recorded_at) VALUES (?, ?, ?, ?)",
+            ["graph-refresh", "evidence_graph", "ok", dt(2026, 5, 2)],
+        )
+        conn.execute(
             """
             INSERT INTO substrate_source_status (
                 refresh_id, source, status, reason, row_count,

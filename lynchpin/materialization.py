@@ -694,10 +694,22 @@ def _substrate_build_for_window(
         "WHERE table_schema = 'main' AND table_name = 'evidence_graph_build' "
         "AND column_name = 'input_fingerprint' LIMIT 1"
     ).fetchone() is not None
+    has_predecessor = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = 'evidence_graph_build' "
+        "AND column_name = 'predecessor_refresh_id' LIMIT 1"
+    ).fetchone() is not None
+    has_tail_start = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = 'evidence_graph_build' "
+        "AND column_name = 'predecessor_tail_start' LIMIT 1"
+    ).fetchone() is not None
     input_fingerprint = "input_fingerprint" if has_input_fingerprint else "NULL AS input_fingerprint"
+    predecessor = "predecessor_refresh_id" if has_predecessor else "NULL AS predecessor_refresh_id"
+    tail_start = "predecessor_tail_start" if has_tail_start else "NULL AS predecessor_tail_start"
     row = conn.execute(
         "SELECT refresh_id, start_date, end_date, materialized_at, "
-        f"{input_fingerprint} "
+        f"{input_fingerprint}, {predecessor}, {tail_start} "
         "FROM evidence_graph_build "
         "WHERE start_date <= ? AND end_date >= ? AND len(projects) = 0 "
         "ORDER BY end_date ASC, start_date DESC, materialized_at DESC LIMIT 1",
@@ -711,7 +723,64 @@ def _substrate_build_for_window(
         "end": row[2],
         "materialized_at": row[3],
         "input_fingerprint": row[4] if len(row) > 4 else None,
+        "predecessor_refresh_id": row[5] if len(row) > 5 else None,
+        "predecessor_tail_start": row[6] if len(row) > 6 else None,
+        "has_predecessor_metadata": has_predecessor and has_tail_start,
     }
+
+
+def _substrate_lineage_fingerprint_current(
+    conn: Any,
+    build: dict[str, Any],
+    window: tuple[date, date],
+    fingerprint: str,
+) -> bool:
+    """Check fingerprints for graph partitions visible to a bounded read."""
+
+    if build.get("input_fingerprint") != fingerprint:
+        return False
+    predecessor_id = build.get("predecessor_refresh_id")
+    predecessor_tail_start = build.get("predecessor_tail_start")
+    if not predecessor_id:
+        return predecessor_tail_start is None
+    if predecessor_tail_start is None:
+        return False
+    if window[0] >= predecessor_tail_start:
+        return True
+    if not build.get("has_predecessor_metadata"):
+        return False
+
+    seen: set[str] = {str(build["refresh_id"])}
+    current = build
+    while current["predecessor_tail_start"] is not None and window[0] < current["predecessor_tail_start"]:
+        predecessor_id = current.get("predecessor_refresh_id")
+        if not predecessor_id or str(predecessor_id) in seen:
+            return False
+        predecessor_id = str(predecessor_id)
+        seen.add(predecessor_id)
+        row = conn.execute(
+            "SELECT refresh_id, start_date, end_date, materialized_at, "
+            "input_fingerprint, predecessor_refresh_id, predecessor_tail_start "
+            "FROM evidence_graph_build WHERE refresh_id = ?",
+            [predecessor_id],
+        ).fetchone()
+        if row is None:
+            return False
+        current = {
+            "refresh_id": str(row[0]),
+            "start": row[1],
+            "end": row[2],
+            "materialized_at": row[3],
+            "input_fingerprint": row[4],
+            "predecessor_refresh_id": row[5],
+            "predecessor_tail_start": row[6],
+            "has_predecessor_metadata": True,
+        }
+        if current["input_fingerprint"] != fingerprint:
+            return False
+        if bool(current["predecessor_refresh_id"]) != (current["predecessor_tail_start"] is not None):
+            return False
+    return True
 
 
 def _substrate_predecessor(
@@ -815,7 +884,9 @@ def plan_read_convergence(
                     [build["materialized_at"], build["refresh_id"]],
                 ).fetchone()
             )
-            stale_inputs = build is not None and build.get("input_fingerprint") != fingerprint
+            stale_inputs = build is not None and not _substrate_lineage_fingerprint_current(
+                conn, build, window, fingerprint
+            )
             stale = bool(stale_status or stale_inputs)
             if build is not None and not stale:
                 return ReadConvergencePlan(
