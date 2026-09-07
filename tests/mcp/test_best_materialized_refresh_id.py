@@ -345,6 +345,38 @@ def test_best_materialized_refresh_id_maps_work_observation_tables_to_source_sta
         test_conn.close()
 
 
+def test_best_materialized_refresh_id_maps_project_day_view_to_graph_status(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE project_day_correlation (refresh_id VARCHAR, date DATE)"
+    )
+    conn.execute(
+        "CREATE TABLE substrate_source_status "
+        "(refresh_id VARCHAR, source VARCHAR, status VARCHAR, recorded_at TIMESTAMPTZ)"
+    )
+    conn.execute(
+        "INSERT INTO project_day_correlation VALUES "
+        "('old', DATE '2026-08-27'), ('new', DATE '2026-09-07'), ('new', DATE '2026-09-08')"
+    )
+    conn.execute(
+        "INSERT INTO substrate_source_status VALUES "
+        "('old', 'project_day_correlation', 'ok', TIMESTAMPTZ '2026-09-08 11:00:00+00'), "
+        "('new', 'evidence_graph', 'ok', TIMESTAMPTZ '2026-09-08 12:00:00+00')"
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert best_materialized_refresh_id(
+            test_conn, "project_day_correlation", caller="test.project_day"
+        ) == "new"
+    finally:
+        test_conn.close()
+
+
 def test_best_materialized_refresh_id_maps_machine_experiment_table_to_source_status(tmp_path) -> None:
     import duckdb
 
