@@ -112,7 +112,7 @@ def ensure_materialized(
 
     if (
         name == "activity_content"
-        and audit._ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS
+        and audit._product_recently_refreshed(name)
         and not force
     ):
         status = "ready" if before.status == "ready" else "failed"
@@ -121,7 +121,7 @@ def ensure_materialized(
             status=status,
             changed=False,
             reason=(
-                "activity-content materialization already ran in this process; "
+                "activity-content materialization is within the freshness interval; "
                 f"retaining current {before.status} product: {before.reason}"
             ),
             started=started,
@@ -134,7 +134,7 @@ def ensure_materialized(
         and audit._materialized_enough_for_window(
             before,
             window,
-            already_refreshed_this_process=name in audit._TAIL_REFRESHED_THIS_PROCESS,
+            recently_refreshed=audit._product_recently_refreshed(name),
         )
     ):
         return audit._materialization_result(
@@ -166,7 +166,7 @@ def ensure_materialized(
             window=window,
         )
 
-    if contract.materialization_mode == "live" and name not in PRODUCT_CATALOG:
+    if contract.materialization_mode == "live" and not force:
         status = "ready" if before.status == "ready" else "blocked"
         return audit._materialization_result(
             before,
@@ -198,6 +198,19 @@ def ensure_materialized(
         )
 
     try:
+        for dependency in PRODUCT_CATALOG[name].dependencies:
+            dependency_result = audit.ensure_materialized(
+                dependency.product, window=window, budget=budget, cfg=cfg
+            )
+            if dependency_result.status not in {"ready", "updated", "coverage_bound"}:
+                return audit._materialization_result(
+                    before,
+                    status="failed",
+                    changed=False,
+                    reason=f"dependency {dependency.product}: {dependency_result.reason}",
+                    started=started,
+                    window=window,
+                )
         definition = handler_registry().resolve(PRODUCT_CATALOG[name].handler)
         definition.handler(
             StepContext(
@@ -228,10 +241,7 @@ def ensure_materialized(
         )
 
     after = audit._audit_one(name, cfg=cfg)
-    if name == "activity_content":
-        audit._ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
-    if after.tail_stale:
-        audit._TAIL_REFRESHED_THIS_PROCESS.add(name)
+    audit._PRODUCT_REFRESHED_AT[name] = audit.monotonic()
     enough_for_window = audit._materialized_enough_for_window(after, window, just_refreshed=True)
     after_usable = after.status == "ready" or after.tail_stale
     status = "updated" if after_usable and enough_for_window else "failed"
@@ -416,8 +426,7 @@ def run_materialization_plan(
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )
-        if step.product == "activity_content":
-            audit._ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = True
+        audit._PRODUCT_REFRESHED_AT[step.product] = audit.monotonic()
         with ran_lock:
             ran.append(step)
 

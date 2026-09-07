@@ -78,6 +78,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from ..core.cache import file_signature
+from ..core.config import get_config
 from .activitywatch_models import AWEvent
 from .activitywatch_raw import window_events
 from .keylog import _candidate_files, _press_timestamps, log_files
@@ -149,14 +151,40 @@ def keylog_coverage() -> KeylogCoverage:
     return KeylogCoverage(first_date=min(dates), last_date=max(dates))
 
 
-@lru_cache(maxsize=1)
-def _sleep_intervals() -> tuple[tuple[datetime, datetime], ...]:
-    """All sleep segments across the operator's archive, sorted by start.
+def repair_input_revision() -> tuple[object, ...]:
+    """Return signatures for the external signals used by AFK repair."""
+    cfg = get_config()
+    keylog_root = cfg.keylog_root / "logs"
+    keylog_files = sorted(keylog_root.glob("*.jsonl")) if keylog_root.exists() else []
+    atuin_path = cfg.data_root / "activity/shell/atuin/history.ndjson"
+    atuin_db = getattr(cfg, "atuin_db", Path())
+    paths = [
+        cfg.sleep_jsonl,
+        atuin_path,
+        atuin_db,
+        *keylog_files,
+    ]
+    return tuple(file_signature(path) for path in paths)
 
-    Pulled once per process — sleep records change rarely (only on new
-    Samsung Health export). Result is a flat sorted list of (start, end)
-    intervals suitable for binary-search overlap tests.
-    """
+
+def _sleep_source_signature() -> object:
+    return file_signature(get_config().sleep_jsonl)
+
+
+def _atuin_source_signature() -> tuple[object, ...]:
+    cfg = get_config()
+    atuin_db = getattr(cfg, "atuin_db", Path())
+    return (
+        file_signature(cfg.data_root / "activity/shell/atuin/history.ndjson"),
+        file_signature(atuin_db),
+    )
+
+
+@lru_cache(maxsize=4)
+def _sleep_intervals_cached(
+    signature: object,
+) -> tuple[tuple[datetime, datetime], ...]:
+    del signature
     from .sleep import entries
 
     intervals: list[tuple[datetime, datetime]] = []
@@ -167,26 +195,38 @@ def _sleep_intervals() -> tuple[tuple[datetime, datetime], ...]:
     return tuple(intervals)
 
 
-@lru_cache(maxsize=1)
+def _sleep_intervals() -> tuple[tuple[datetime, datetime], ...]:
+    """All sleep segments across the operator's archive, sorted by start.
+
+    Cached by the sleep source signature. The result is a flat sorted list of
+    (start, end) intervals suitable for binary-search overlap tests.
+    """
+    return _sleep_intervals_cached(_sleep_source_signature())
+
+
+@lru_cache(maxsize=4)
+def _atuin_timestamps_cached(signature: object) -> tuple[datetime, ...]:
+    del signature
+    try:
+        from .terminal import commands
+        from datetime import timezone
+
+        cmds = list(commands(
+            start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            end=datetime.now(timezone.utc) + timedelta(days=1),
+        ))
+        return tuple(sorted(c.timestamp for c in cmds if c.timestamp is not None))
+    except Exception:
+        return ()
+
+
 def _atuin_timestamps() -> tuple[datetime, ...]:
     """All atuin command timestamps across the archive.
 
     Sorted list for binary-search overlap tests. Atuin coverage starts
     ~2025-04. Pre-2025-04 returns empty (no atuin signal).
     """
-    try:
-        from .terminal import commands
-        # Pull all commands; the source iterates atuin DB once.
-        # Filter to those with valid timestamps.
-        from datetime import timezone
-        cmds = list(commands(
-            start=datetime(2020, 1, 1, tzinfo=timezone.utc),
-            end=datetime.now(timezone.utc) + timedelta(days=1),
-        ))
-        ts = sorted(c.timestamp for c in cmds if c.timestamp is not None)
-        return tuple(ts)
-    except Exception:
-        return ()
+    return _atuin_timestamps_cached(_atuin_source_signature())
 
 
 def _overlapping_sleep(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:

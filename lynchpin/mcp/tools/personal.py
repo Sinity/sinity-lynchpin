@@ -23,12 +23,16 @@ def _ensure_source_materialized_for_read(
     start: _date | None = None,
     end: _date | None = None,
 ) -> dict[str, Any]:
-    """Inspect one canonical source product before an explicit read."""
+    """Refresh the required canonical product before reading its rows."""
 
     from lynchpin.materialization import ensure_materialized
+    from lynchpin.core.errors import MaterializationError
 
     window = (start, end) if start is not None and end is not None else None
-    return ensure_materialized(name, window=window, budget="manual").to_json()
+    result = ensure_materialized(name, window=window, budget="inline").to_json()
+    if result["status"] in {"failed", "blocked"}:
+        raise MaterializationError(name, reason=str(result.get("reason", "materialization failed")))
+    return result
 
 
 def _exclusive_end(end: _date | None) -> _date | None:

@@ -74,7 +74,7 @@ def test_operator_rhythm_returns_rendered_summary(monkeypatch: pytest.MonkeyPatc
     assert "project sinex" in result["summary"]
     assert result["peak_focus_hour"] == [0, 14]
     assert source_calls == [
-        ("activitywatch", (date(2026, 5, 25), date(2026, 5, 26)), "manual")
+        ("activitywatch", (date(2026, 5, 25), date(2026, 5, 26)), "inline")
     ]
     assert substrate_calls == [("operator_rhythm", (date(2026, 5, 25), date(2026, 5, 26)))]
 

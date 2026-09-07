@@ -54,6 +54,49 @@ def canonical_activitywatch_events_path() -> Path:
     return get_config().data_root / "activity/activitywatch/activitywatch/events.ndjson"
 
 
+def _database_signature(path: Path) -> tuple[object, ...]:
+    """Return the SQLite files that can contain the current database state.
+
+    SQLite keeps a write-ahead log beside the main database while a writer is
+    active.  The main file's mtime and size can therefore remain unchanged
+    while a bounded read would see new rows in ``-wal``.
+    """
+    return (
+        file_signature(path),
+        file_signature(Path(f"{path}-wal")),
+        file_signature(Path(f"{path}-shm")),
+    )
+
+
+def activitywatch_source_revision() -> tuple[object, ...]:
+    """Return signatures for mutable ActivityWatch inputs and indexes.
+
+    Consumers use this as an in-process cache key.  Include publication
+    manifests because a materialized index may change while the owner SQLite
+    database does not.
+    """
+    paths: list[Path] = []
+    for db in _candidate_dbs():
+        paths.extend((db, Path(f"{db}-wal"), Path(f"{db}-shm")))
+    canonical = canonical_activitywatch_events_path()
+    index_manifest = activitywatch_event_index_manifest_path()
+    paths.extend(
+        (
+            canonical,
+            canonical.with_suffix(".manifest.json"),
+            index_manifest,
+        )
+    )
+    seen: set[Path] = set()
+    revisions: list[object] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        revisions.append(file_signature(path))
+    return tuple(revisions)
+
+
 def events(
     bucket_prefix: str,
     *,
@@ -221,7 +264,7 @@ def _candidate_may_overlap(
 ) -> bool:
     if start is None and end is None:
         return True
-    bounds = _db_event_bounds(path, file_signature(path), prefixes)
+    bounds = _db_event_bounds(path, _database_signature(path), prefixes)
     if bounds is False:
         return False
     if bounds is None:

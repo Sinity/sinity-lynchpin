@@ -240,10 +240,11 @@ def _current_state_refresh_id(
     start: date,
     end: date,
     projects: Sequence[str] | None,
+    generation: str | None = None,
 ) -> str:
     project_key = ",".join(sorted(projects or ())) if projects else "all"
     logical_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
-    generation = os.environ.get("LYNCHPIN_GRAPH_GENERATION")
+    generation = generation if generation is not None else os.environ.get("LYNCHPIN_GRAPH_GENERATION")
     return f"{logical_id}:generation:{generation}" if generation else logical_id
 
 
@@ -254,8 +255,14 @@ def materialize_evidence_graph(
     projects: Sequence[str] | None = None,
     include_github_frontier: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
+    input_fingerprint: str | None = None,
+    generation: str | None = None,
 ) -> EvidenceGraph:
     """Build and persist a graph without rendering a context pack."""
+    if input_fingerprint is None:
+        from ..materialization import graph_input_fingerprint
+
+        input_fingerprint = graph_input_fingerprint()
     graph = build_evidence_graph(
         start=start,
         end=end,
@@ -265,8 +272,9 @@ def materialize_evidence_graph(
     )
     _materialize_context_graph(
         graph,
-        refresh_id=_current_state_refresh_id(start=start, end=end, projects=projects),
+        refresh_id=_current_state_refresh_id(start=start, end=end, projects=projects, generation=generation),
         projects=projects,
+        input_fingerprint=input_fingerprint,
     )
     return graph
 
@@ -280,6 +288,8 @@ def materialize_incremental_evidence_graph(
     include_github_frontier: bool = False,
     exclude_analysis_artifacts: Sequence[str] = (),
     recorder: GraphStageRecorder | None = None,
+    input_fingerprint: str | None = None,
+    generation: str | None = None,
 ) -> EvidenceGraph:
     """Replace a bounded graph tail while publishing a coherent full graph.
 
@@ -292,6 +302,10 @@ def materialize_incremental_evidence_graph(
     """
     if not start <= tail_start < end:
         raise ValueError("incremental graph tail must fall within the promoted range")
+    if input_fingerprint is None:
+        from ..materialization import graph_input_fingerprint
+
+        input_fingerprint = graph_input_fingerprint()
 
     from . import evidence_edges
     from .evidence_graph import _dedupe_edges
@@ -303,7 +317,7 @@ def materialize_incremental_evidence_graph(
         promote_incremental_evidence_graph,
     )
 
-    refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects)
+    refresh_id = _current_state_refresh_id(start=start, end=end, projects=projects, generation=generation)
     recorder = recorder or GraphStageRecorder.for_window(
         start=tail_start, end=end, refresh_id=refresh_id
     )
@@ -409,6 +423,7 @@ def materialize_incremental_evidence_graph(
                 conn, previous_refresh_id=previous_refresh_id, refresh_id=refresh_id,
                 graph=incremental_graph, full_start=start, tail_start=tail_start,
                 projects=tuple(projects or ()),
+                input_fingerprint=input_fingerprint,
             )
         log_performance(
             log,
@@ -467,6 +482,7 @@ def _materialize_context_graph(
     *,
     refresh_id: str,
     projects: Sequence[str] | None,
+    input_fingerprint: str | None = None,
 ) -> None:
     from .evidence_graph import promote_graph_to_substrate
 
@@ -474,6 +490,7 @@ def _materialize_context_graph(
         graph,
         refresh_id=refresh_id,
         projects=tuple(projects or ()),
+        input_fingerprint=input_fingerprint,
     )
 
 

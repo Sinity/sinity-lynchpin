@@ -27,6 +27,7 @@ __all__ = [
     "events",
     "text_snapshots",
     "keypresses",
+    "keypress_timestamps",
     "keypress_count",
     "has_coverage",
     "daily_activity",
@@ -302,9 +303,16 @@ def _text_payload(rec: dict[str, Any]) -> str | None:
 
 
 def keypress_count(*, start: datetime, end: datetime, ensure: bool = True) -> int:
+    return len(keypress_timestamps(start=start, end=end, ensure=ensure))
+
+
+def keypress_timestamps(
+    *, start: datetime, end: datetime, ensure: bool = True
+) -> tuple[datetime, ...]:
+    """Read bounded press times through the revision-keyed per-file cache."""
     start_local = as_local(start)
     end_local = as_local(end)
-    total = 0
+    timestamps = []
     for path in _candidate_files(start_local, end_local, ensure=ensure):
         try:
             stat = path.stat()
@@ -312,8 +320,8 @@ def keypress_count(*, start: datetime, end: datetime, ensure: bool = True) -> in
             continue
         for ts in _press_timestamps(str(path), stat.st_mtime_ns, stat.st_size):
             if start_local <= ts < end_local:
-                total += 1
-    return total
+                timestamps.append(ts)
+    return tuple(sorted(timestamps))
 
 
 @lru_cache(maxsize=512)

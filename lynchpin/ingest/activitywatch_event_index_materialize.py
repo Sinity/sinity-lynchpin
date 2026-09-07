@@ -31,7 +31,13 @@ from ._manifest import write_manifest
 
 def activitywatch_event_index_input_files() -> tuple[Path, ...]:
     """Return the bounded raw inputs used to build logical-day partitions."""
-    return activitywatch_input_files(get_config())
+    databases = activitywatch_input_files(get_config())
+    return tuple(
+        path
+        for db in databases
+        for path in (db, Path(f"{db}-wal"))
+        if path.exists()
+    )
 
 
 def materialize_activitywatch_event_index(

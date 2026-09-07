@@ -1219,7 +1219,8 @@ DDL_STATEMENTS = (
         generated_at    TIMESTAMPTZ NOT NULL,
         materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         predecessor_refresh_id VARCHAR,
-        predecessor_tail_start DATE
+        predecessor_tail_start DATE,
+        input_fingerprint VARCHAR
     )
     """,
         "CREATE INDEX evidence_graph_build_window ON evidence_graph_build(start_date, end_date, mode)",

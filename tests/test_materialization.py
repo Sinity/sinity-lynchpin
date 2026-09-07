@@ -2040,7 +2040,7 @@ def test_activitywatch_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
     )
 
     monkeypatch.setattr(materialization, "canonical_activitywatch_events_path", lambda: product)
-    monkeypatch.setattr(materialization, "activitywatch_input_files", lambda _cfg: (db,))
+    monkeypatch.setattr(materialization, "activitywatch_input_files", lambda _cfg: ())
 
     row = materialization._activitywatch_dataset(cfg)
 

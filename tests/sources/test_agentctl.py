@@ -7,71 +7,57 @@ from types import SimpleNamespace
 import pytest
 
 
-def _envelope(*, phase: str = "succeeded", terminal: bool = True) -> dict:
-    return {
-        "schema": 1,
-        "ok": True,
-        "payload": {
-            "kind": "inline",
-            "value": {
-                "jobs": [
-                    {
-                        "job_id": "11111111-1111-1111-1111-111111111111",
-                        "kind": "attested-agent",
-                        "project_id": "lynchpin",
-                        "operation": None,
-                        "created_at": "2026-08-24T00:00:00+00:00",
-                        "timeout_seconds": 3600,
-                        "contract": {"prompt": {"bytes": 999, "sha256": "private-digest"}},
-                        "checkout": {"path": "/private/worktree", "head": "abc"},
-                        "artifacts": {
-                            "log": {"ref": "sinnix://jobs/111/log", "max_bytes": 64000},
-                            "result": {"ref": "sinnix://jobs/111/result", "max_bytes": 64000},
-                        },
-                        "state": {
-                            "phase": phase,
-                            "terminal": terminal,
-                            "observed_at": "2026-08-24T00:01:00+00:00",
-                            "systemd": {"ExecMainStatus": "0", "MemoryPeak": "104857600"},
-                        },
-                    }
-                ],
-                "truncated": False,
-                "snapshot": {"ordering": "created_at_desc_job_id_desc", "ceiling": ["2026-08-24T00:00:00+00:00", "111"]},
-            },
-        },
-    }
+def _rows(*, phase: str = "succeeded", terminal: bool = True) -> list[dict]:
+    return [
+        {
+            "job_id": 111,
+            "label": "lynchpin:check",
+            "kind": "declared-operation",
+            "project": "lynchpin",
+            "operation": "check",
+            "group": "normal",
+            "phase": phase,
+            "terminal": terminal,
+            "result": "Success" if phase == "succeeded" else None,
+            "exit_code": 0 if phase == "succeeded" else None,
+            "path": "/private/worktree",
+            "reference": "private-reference",
+            "enqueued_at": "2026-08-24T00:00:00+00:00",
+            "started_at": "2026-08-24T00:00:01+00:00",
+            "ended_at": "2026-08-24T00:01:01+00:00" if terminal else None,
+        }
+    ]
 
 
-def test_agentctl_v1_adapter_projects_only_public_observation_fields() -> None:
+def test_agentctl_native_adapter_projects_only_public_observation_fields() -> None:
     from lynchpin.sources.agentctl import read_observation_snapshot
 
-    snapshot = read_observation_snapshot(loader=lambda: _envelope())
+    snapshot = read_observation_snapshot(loader=lambda: _rows())
     row = snapshot.observations[0]
 
-    assert row.source_id == "agentctl:11111111-1111-1111-1111-111111111111"
+    assert snapshot.contract_schema == 2
+    assert row.source_id == "agentctl:111"
+    assert row.project == "lynchpin"
     assert row.status == "succeeded"
     assert row.exit_code == 0
-    assert row.memory_usage_max_mb == 100.0
-    assert row.ended_at is None
-    assert row.duration_s is None
+    assert row.duration_s == 60.0
+    assert row.ended_at is not None
     assert row.host == "unknown"
     assert row.command == ()
     assert row.cwd is None
     assert row.args_json == "{}"
-    assert json.loads(row.artifact_refs_json) == ["sinnix://jobs/111/log", "sinnix://jobs/111/result"]
+    assert json.loads(row.artifact_refs_json) == []
     serialized = json.dumps(row.__dict__, default=str)
     assert "/private/worktree" not in serialized
-    assert "private-digest" not in serialized
-    assert "prompt" not in serialized
+    assert "private-reference" not in serialized
 
 
 @pytest.mark.parametrize(
     ("phase", "terminal", "expected_outcome", "expected_exit"),
     [
-        ("observation-unknown", False, None, None),
-        ("outcome-unknown", False, None, None),
-        ("cancelled", True, True, 0),
+        ("queued", False, None, None),
+        ("running", False, None, None),
+        ("cancelled", True, True, None),
         ("launch-failed", True, True, None),
     ],
 )
@@ -80,52 +66,45 @@ def test_agentctl_states_preserve_unknown_and_cancellation_truth(
 ) -> None:
     from lynchpin.sources.agentctl import read_observation_snapshot
 
-    row = read_observation_snapshot(loader=lambda: _envelope(phase=phase, terminal=terminal)).observations[0]
+    row = read_observation_snapshot(loader=lambda: _rows(phase=phase, terminal=terminal)).observations[0]
 
     assert row.status == phase
     assert row.outcome_known is expected_outcome
     assert row.exit_code == expected_exit
     assert row.recovery_state is None
-    assert "restart/recovery" in row.caveats_json
-    assert "reconciliation time" in row.caveats_json
+    assert "snapshot identity" in row.caveats_json
+    if phase == "cancelled":
+        assert "cancellation" in row.caveats_json
 
 
-def test_agentctl_receipt_refs_require_explicit_public_values() -> None:
+def test_agentctl_uses_enqueue_time_when_process_start_is_absent() -> None:
     from lynchpin.sources.agentctl import read_observation_snapshot
 
-    payload = _envelope()
-    job = payload["payload"]["value"]["jobs"][0]
-    job["semantic_receipts"] = [
-        {"owner": "polylogue", "ref": "polylogue://receipts/42", "private_payload": "ignore"},
-        {"owner": "sinex", "ref": "sinex://receipts/99"},
-        {"owner": "other", "ref": "other://not-joined"},
-    ]
-    row = read_observation_snapshot(loader=lambda: payload).observations[0]
-
-    assert {(ref.owner, ref.ref) for ref in row.receipt_refs} == {
-        ("polylogue", "polylogue://receipts/42"),
-        ("sinex", "sinex://receipts/99"),
-    }
-    assert "private_payload" not in json.dumps(row.__dict__, default=str)
-
-
-def test_agentctl_missing_result_artifact_stays_an_explicit_caveat() -> None:
-    from lynchpin.sources.agentctl import read_observation_snapshot
-
-    payload = _envelope()
-    payload["payload"]["value"]["jobs"][0]["artifacts"]["result"] = None
+    payload = _rows()
+    payload[0]["started_at"] = None
+    payload[0]["ended_at"] = "2026-08-24T00:01:01+00:00"
 
     row = read_observation_snapshot(loader=lambda: payload).observations[0]
-    assert json.loads(row.artifact_refs_json) == ["sinnix://jobs/111/log"]
-    assert "result artifact is absent" in row.caveats_json
+
+    assert row.started_at.isoformat() == "2026-08-24T00:00:00+00:00"
+    assert row.ended_at is not None
+    assert row.duration_s is None
+    assert "enqueued_at is used" in row.caveats_json
 
 
-def test_agentctl_rejects_unsupported_public_contract_schema() -> None:
+def test_agentctl_rejects_non_list_response() -> None:
     from lynchpin.sources.agentctl import AgentctlObservationContractError, read_observation_snapshot
 
-    payload = deepcopy(_envelope())
-    payload["schema"] = 2
-    with pytest.raises(AgentctlObservationContractError, match="schema 1"):
+    with pytest.raises(AgentctlObservationContractError, match="non-list"):
+        read_observation_snapshot(loader=lambda: {"jobs": _rows()})
+
+
+def test_agentctl_rejects_invalid_contract_record() -> None:
+    from lynchpin.sources.agentctl import AgentctlObservationContractError, read_observation_snapshot
+
+    payload = deepcopy(_rows())
+    payload[0]["enqueued_at"] = "not-a-timestamp"
+    with pytest.raises(AgentctlObservationContractError, match="enqueued_at"):
         read_observation_snapshot(loader=lambda: payload)
 
 
@@ -138,19 +117,9 @@ def test_agentctl_reader_has_no_execution_authority(monkeypatch: pytest.MonkeyPa
         calls.append(tuple(command))
         assert kwargs["check"] is True
         assert kwargs["timeout"] == 15
-        return SimpleNamespace(stdout=json.dumps(_envelope()))
+        return SimpleNamespace(stdout=json.dumps(_rows()))
 
     monkeypatch.setattr(agentctl.subprocess, "run", run)
 
     assert agentctl.read_observation_snapshot().observations
-    assert calls == [("agentctl", "job", "list")]
-
-
-def test_agentctl_explicit_recovery_state_is_preserved_without_inference() -> None:
-    from lynchpin.sources.agentctl import read_observation_snapshot
-
-    payload = _envelope()
-    payload["payload"]["value"]["jobs"][0]["state"]["recovery"] = "recovered"
-
-    row = read_observation_snapshot(loader=lambda: payload).observations[0]
-    assert row.recovery_state == "recovered"
+    assert calls == [("agentctl", "job", "list", "--json", "--all")]

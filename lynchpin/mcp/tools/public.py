@@ -306,8 +306,8 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
     caveats_token = _MATERIALIZATION_CAVEATS.set([])
     try:
         meta = {"route": route} if not tool_name or not action else _action_meta(str(tool_name), str(action), route=route)
-        meta.update(extra_meta)
         result = _call(fn, **kwargs)
+        meta.update(extra_meta(result) if callable(extra_meta) else extra_meta)
         caveats = _MATERIALIZATION_CAVEATS.get()
         if caveats:
             meta["materialization_caveats"] = caveats
@@ -389,7 +389,7 @@ def _query_dsl(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.tool(annotations=_tool_annotations("lynchpin_status"))
-def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | None = None) -> dict[str, Any]:
+def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | None = None, source: str | None = None, detail: bool = False) -> dict[str, Any]:
     """Runtime/readiness/status router. view: runtime, readiness, self_check, materialization, operations, chisel, github."""
     if invalid := _mark_route("lynchpin_status", view):
         return invalid
@@ -419,9 +419,13 @@ def lynchpin_status(view: str = "runtime", start: str | None = None, end: str | 
             **_action_meta("lynchpin_status", view, route="lynchpin.mcp.tools.public.lynchpin_status"),
         )
     if view == "materialization":
-        from lynchpin.materialization import audit_materialization
+        from lynchpin.mcp.tools.materialization import materialization_report
 
-        return _ok([row.to_json() for row in audit_materialization()], **_action_meta("lynchpin_status", view, route="lynchpin.materialization.audit_materialization"))
+        try:
+            rows = materialization_report(source=source, start=start, end=end, detail=detail)
+        except ValueError as exc:
+            return _error("invalid_request", str(exc))
+        return _ok(rows, **_action_meta("lynchpin_status", view, route="lynchpin.mcp.tools.materialization.materialization_report", detail=detail))
     if view == "operations":
         from lynchpin.core.freshness import latest_receipts
 
@@ -513,12 +517,6 @@ def lynchpin_evidence(
     if action == "graph":
         return _internal_call("lynchpin.mcp.tools.substrate", "evidence_graph", view="summary", refresh_id=refresh_id, start=start, end=end)
     if action == "timeline":
-        timeline_meta = _project_day_timeline_meta(
-            refresh_id=refresh_id,
-            start=start,
-            end=end,
-            project=project,
-        )
         return _internal_call(
             "lynchpin.mcp.tools.views",
             "project_day_correlations",
@@ -526,7 +524,12 @@ def lynchpin_evidence(
             start=start,
             end=end,
             projects=[project] if project else None,
-            _meta=timeline_meta,
+            _meta=lambda rows: _project_day_timeline_meta(
+                refresh_id=refresh_id or (rows[0]["refresh_id"] if rows else None),
+                start=start,
+                end=end,
+                project=project,
+            ),
         )
     if action == "walk":
         if not start_id:

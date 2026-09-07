@@ -111,9 +111,9 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
     ),
     SourceContract(
         name="agentctl",
-        authority="AgentCTL versioned public job-list observation route",
+        authority="AgentCTL native JSON job-list observation route",
         query_surface="lynchpin.sources.agentctl.read_observation_snapshot",
-        materialization_hint="AgentCTL records jobs live; Lynchpin reads only agentctl job list",
+        materialization_hint="AgentCTL records jobs live; Lynchpin reads only agentctl job list --json --all",
         required=False,
         empty="valid",
         query_mode="substrate",
@@ -134,6 +134,8 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         materialization_hint="python -m lynchpin.ingest.activitywatch_materialize",
         materialization_executor=MaterializationExecutor.materializer("activitywatch"),
         collection_model="continuous",
+        materialization_mode="live",
+        materialization_target="source:activitywatch",
     ),
     SourceContract(
         name="activitywatch_event_index",
@@ -792,8 +794,8 @@ _CONTRACT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "substrate_tables": ("work_observation", "work_observation_receipt_ref"),
         "mcp_tools": ("lynchpin_machine",),
         "caveats": (
-            "versioned public job-list snapshots are lifecycle observations, not a full event history",
-            "semantic joins require explicit Polylogue or Sinex receipt refs; raw logs and result artifacts remain external",
+            "native job-list responses are lifecycle observations, not a full event history or snapshot",
+            "the route does not publish artifact refs or semantic joins; raw logs and result artifacts remain external",
         ),
     },
     "spotify_daily": {

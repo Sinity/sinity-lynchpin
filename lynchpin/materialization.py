@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sqlite3
+import uuid
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -27,7 +28,7 @@ from typing import Any, Iterable, Literal
 from threading import Lock
 from time import monotonic
 
-from .core.cache import files_signature
+from .core.cache import file_signature, files_signature
 from .core.config import LynchpinConfig, get_config
 from .core.errors import MaterializationError
 from .core.parse import iter_dates
@@ -164,23 +165,9 @@ MaterializationStatus = Literal[
 ]
 MaterializationBudget = Literal["inline", "background", "manual"]
 
-#: Dataset names whose tail has already been force-refreshed once THIS
-#: process. A read path that touches "today" (repair_afk_events over many
-#: not-afk events, each a distinct window) would otherwise trigger a full
-#: product rebuild on every single call, because a continuously-writing
-#: live source (aw-server) makes the tail permanently stale by the time the
-#: rebuild finishes (lynchpin-0s7). One guaranteed refresh per process is
-#: enough: later calls with a different window still won't see the events
-#: written in the last few seconds, which is an acceptable trade for not
-#: rebuilding a hundreds-of-MB product dozens of times in one CLI run.
-_TAIL_REFRESHED_THIS_PROCESS: set[str] = set()
-
-# Activity-content is a sparse derived product: a day with no focused spans is
-# absent from the product, not missing coverage. A single process can ask for
-# it through several downstream materializers, and retrying a partial audit
-# would replay the full history each time. Keep the honest partial status, but
-# allow an explicit ``force`` call to opt into another rebuild.
-_ACTIVITY_CONTENT_MATERIALIZED_THIS_PROCESS = False
+# Nested readers may share one recent tail refresh; long-lived MCP processes
+# must observe later input after the same bounded freshness interval.
+_PRODUCT_REFRESHED_AT: dict[str, float] = {}
 _MATERIALIZATION_RECEIPT_LOCK = Lock()
 READ_CONVERGENCE_FRESHNESS_SECONDS = 30.0
 READ_CONVERGENCE_MAX_DAYS = 31
@@ -194,6 +181,11 @@ _READ_CONVERGENCE_OVERLAPS = {
 _READ_CONVERGENCE_LOCK = Lock()
 _READ_CONVERGENCE_FLIGHTS: dict[str, Future["MaterializationResult"]] = {}
 _READ_CONVERGENCE_CACHE: dict[str, tuple[float, "MaterializationResult"]] = {}
+
+
+def _product_recently_refreshed(name: str) -> bool:
+    refreshed = _PRODUCT_REFRESHED_AT.get(name)
+    return refreshed is not None and monotonic() - refreshed < READ_CONVERGENCE_FRESHNESS_SECONDS
 
 
 @dataclass(frozen=True)
@@ -481,24 +473,231 @@ def _dataset_fingerprint(row: MaterializedDataset) -> str:
     return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
 
 
-def _substrate_fingerprint(conn: Any) -> str:
+_GRAPH_INPUT_DATASETS = (
+    "activitywatch",
+    "activitywatch_event_index",
+    "activitywatch_derived",
+    "activity_content",
+    "google_takeout",
+    "title_metadata",
+    "atuin",
+    "polylogue",
+    "raw_log",
+    "clipboard",
+    "irc",
+    "webhistory",
+    "personal_daily_signals",
+    "health",
+    "sleep",
+    "spotify_daily",
+    "temporal_signals",
+    "reddit",
+    "sleep_productivity",
+    "arbtt",
+    "github_context",
+    "substance",
+    "browser_bookmarks",
+    "communications",
+)
+
+
+def _graph_file_revision(
+    name: str,
+    *,
+    roots: Iterable[Path] = (),
+    files: Iterable[Path] = (),
+) -> dict[str, Any]:
+    root_paths = tuple(sorted((Path(path) for path in roots), key=str))
+    file_paths = tuple(sorted((Path(path) for path in files), key=str))
+    return {
+        "name": name,
+        "roots": files_signature(root_paths),
+        "files": files_signature(file_paths),
+    }
+
+
+def _graph_source_revisions(cfg: LynchpinConfig) -> list[dict[str, Any]]:
+    """Return cheap revisions for graph sources without reading their rows."""
+    rows: list[dict[str, Any]] = []
+
+    try:
+        from .sources import git
+
+        rows.append(
+            {
+                "name": "git_live",
+                "repos": tuple(
+                    {
+                        "name": repo.name,
+                        "path": str(repo.path),
+                        "exists": repo.exists,
+                        "branch": repo.branch,
+                        "head": repo.head,
+                    }
+                    for repo in git.repos()
+                ),
+                "baseline": file_signature(cfg.baseline_dir / "git_numstat.jsonl"),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append(
+            {
+                "name": "git_live",
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "baseline": file_signature(cfg.baseline_dir / "git_numstat.jsonl"),
+            }
+        )
+
+    try:
+        from .sources.sms import SMS_ROOT
+
+        rows.append(
+            _graph_file_revision(
+                "sms",
+                roots=(SMS_ROOT,),
+                files=SMS_ROOT.glob("SMS_*.csv"),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "sms", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        from .sources.outlook import MBOX_CACHE, PST_ROOT
+
+        rows.append(
+            _graph_file_revision(
+                "outlook",
+                roots=(PST_ROOT, MBOX_CACHE),
+                files=(
+                    *(
+                        path
+                        for path in PST_ROOT.rglob("*")
+                        if path.is_file()
+                    ),
+                    *(
+                        path
+                        for path in MBOX_CACHE.rglob("*")
+                        if path.is_file()
+                    ),
+                ),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "outlook", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        from .sources.svn import SVN_DATA_ROOT
+
+        rows.append(
+            _graph_file_revision(
+                "svn",
+                roots=(SVN_DATA_ROOT,),
+                files=SVN_DATA_ROOT.rglob("svn.log"),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "svn", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        from .sources.gmail_takeout import gmail_events_path, gmail_manifest_path
+
+        rows.append(
+            _graph_file_revision(
+                "gmail",
+                files=(gmail_events_path(), gmail_manifest_path()),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "gmail", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        from .sources.google_takeout import discover_takeout_archives
+        from .sources.google_takeout_products import google_takeout_products_dir
+
+        raw_root = cfg.accounts_root / "google/raw/takeout"
+        products_root = google_takeout_products_dir()
+        rows.append(
+            _graph_file_revision(
+                "google_takeout_files",
+                roots=(raw_root, products_root),
+                files=(
+                    *discover_takeout_archives(raw_root),
+                    *(path for path in products_root.rglob("*") if path.is_file()),
+                    cfg.accounts_root / "google/processed/calendar.jsonl",
+                ),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "google_takeout_files", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        from .sources.analysis_artifacts import _artifact_signature
+
+        analysis_root = cfg.analysis_output_dir
+        rows.append(
+            {
+                "name": "analysis_artifacts_files",
+                "root": file_signature(analysis_root),
+                "files": _artifact_signature(analysis_root),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - fingerprint must remain total
+        rows.append({"name": "analysis_artifacts_files", "status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"})
+
+    return rows
+
+
+def graph_input_fingerprint(cfg: LynchpinConfig | None = None) -> str:
+    """Return a cheap revision of the products consumed by graph builders.
+
+    This intentionally audits only graph inputs.  The full materialization
+    audit walks historical carriers and is unsuitable for read-side freshness.
+    An unavailable input remains part of the fingerprint by name and exception
+    class, so a later recovery changes the revision and triggers convergence.
+    """
     import hashlib
 
     from .materializers import canonical_json
 
-    rows = conn.execute(
-        "SELECT source, status, reason, row_count, window_start, window_end, "
-        "recorded_at FROM substrate_source_status "
-        "ORDER BY source, recorded_at, refresh_id"
-    ).fetchall()
+    cfg = cfg or get_config()
+    rows: list[dict[str, Any]] = []
+    for name in _GRAPH_INPUT_DATASETS:
+        try:
+            row = _audit_one(name, cfg=cfg)
+        except Exception as exc:  # noqa: BLE001 - fingerprint must be total
+            rows.append(
+                {
+                    "name": name,
+                    "status": "unavailable",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        else:
+            rows.append({"name": name, "fingerprint": _dataset_fingerprint(row)})
+    rows.extend(_graph_source_revisions(cfg))
     return hashlib.sha256(canonical_json(rows).encode()).hexdigest()
+
+
+def _substrate_fingerprint(
+    conn: Any, cfg: LynchpinConfig | None = None
+) -> str:
+    del conn  # retained in the signature for planner/test compatibility
+    return graph_input_fingerprint(cfg)
 
 
 def _substrate_build_for_window(
     conn: Any, window: tuple[date, date]
 ) -> dict[str, Any] | None:
+    has_input_fingerprint = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = 'evidence_graph_build' "
+        "AND column_name = 'input_fingerprint' LIMIT 1"
+    ).fetchone() is not None
+    input_fingerprint = "input_fingerprint" if has_input_fingerprint else "NULL AS input_fingerprint"
     row = conn.execute(
-        "SELECT refresh_id, start_date, end_date, materialized_at "
+        "SELECT refresh_id, start_date, end_date, materialized_at, "
+        f"{input_fingerprint} "
         "FROM evidence_graph_build "
         "WHERE start_date <= ? AND end_date >= ? AND len(projects) = 0 "
         "ORDER BY end_date ASC, start_date DESC, materialized_at DESC LIMIT 1",
@@ -511,20 +710,33 @@ def _substrate_build_for_window(
         "start": row[1],
         "end": row[2],
         "materialized_at": row[3],
+        "input_fingerprint": row[4] if len(row) > 4 else None,
     }
 
 
 def _substrate_predecessor(
-    conn: Any, window: tuple[date, date]
+    conn: Any,
+    window: tuple[date, date],
 ) -> dict[str, Any] | None:
-    row = conn.execute(
-        "SELECT refresh_id, start_date, end_date, materialized_at "
-        "FROM evidence_graph_build "
-        "WHERE start_date = ? AND end_date > ? AND end_date < ? "
-        "AND len(projects) = 0 "
-        "ORDER BY end_date DESC, materialized_at DESC LIMIT 1",
-        [window[0], window[0], window[1]],
-    ).fetchone()
+    params: list[Any] = [window[0], window[0] - timedelta(days=READ_CONVERGENCE_MAX_DAYS)]
+    clauses = [
+        "graph.start_date <= ?",
+        "graph.end_date >= ?",
+        "len(graph.projects) = 0",
+        "promotion.status IN ('ok', 'degraded')",
+        "EXISTS (SELECT 1 FROM substrate_source_status AS readiness "
+        "WHERE readiness.refresh_id = graph.refresh_id "
+        "AND readiness.source = 'evidence_graph' AND readiness.status = 'ok')",
+    ]
+    sql = (
+        "SELECT graph.refresh_id, graph.start_date, graph.end_date, graph.materialized_at "
+        "FROM evidence_graph_build AS graph "
+        "JOIN substrate_promotion_run AS promotion ON promotion.refresh_id = graph.refresh_id "
+        "WHERE " + " AND ".join(clauses) +
+        " ORDER BY graph.end_date DESC, graph.start_date DESC, "
+        "graph.materialized_at DESC LIMIT 1"
+    )
+    row = conn.execute(sql, params).fetchone()
     if row is None:
         return None
     return {
@@ -594,15 +806,17 @@ def plan_read_convergence(
     try:
         with serving_generation() as generation:
             conn = generation.connection
-            fingerprint = _substrate_fingerprint(conn)
+            fingerprint = _substrate_fingerprint(conn, cfg)
             build = _substrate_build_for_window(conn, window)
-            stale = build is not None and bool(
+            stale_status = build is not None and bool(
                 conn.execute(
                     "SELECT 1 FROM substrate_source_status "
                     "WHERE recorded_at > ? AND refresh_id <> ? LIMIT 1",
                     [build["materialized_at"], build["refresh_id"]],
                 ).fetchone()
             )
+            stale_inputs = build is not None and build.get("input_fingerprint") != fingerprint
+            stale = bool(stale_status or stale_inputs)
             if build is not None and not stale:
                 return ReadConvergencePlan(
                     product,
@@ -622,6 +836,16 @@ def plan_read_convergence(
             f"substrate coverage inspection failed: {exc}",
             "unavailable",
         )
+    requested_start, requested_end = window
+    if requested_end - requested_start > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
+        return ReadConvergencePlan(
+            product,
+            window,
+            None,
+            "blocked",
+            f"requested window exceeds the {READ_CONVERGENCE_MAX_DAYS}-day read budget",
+            fingerprint,
+        )
     if predecessor is None:
         return ReadConvergencePlan(
             product,
@@ -631,23 +855,26 @@ def plan_read_convergence(
             "normal reads require an existing compatible historical base",
             fingerprint,
         )
-    if window[1] - predecessor["end"] > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
+    effective_end = max(requested_end, predecessor["end"])
+    tail_start = min(
+        requested_start,
+        predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS),
+    )
+    if effective_end - tail_start > timedelta(days=READ_CONVERGENCE_MAX_DAYS):
         return ReadConvergencePlan(
             product,
             window,
             None,
             "blocked",
-            f"requested tail exceeds the {READ_CONVERGENCE_MAX_DAYS}-day read budget",
+            f"compatible predecessor tail exceeds the {READ_CONVERGENCE_MAX_DAYS}-day read budget",
             fingerprint,
             predecessor_refresh_id=predecessor["refresh_id"],
         )
-    tail_start = max(
-        window[0], predecessor["end"] - timedelta(days=READ_CONVERGENCE_OVERLAP_DAYS)
-    )
+    effective = (predecessor["start"], effective_end)
     return ReadConvergencePlan(
         product,
         window,
-        window,
+        effective,
         "converge",
         "compatible graph predecessor has a bounded missing or stale tail",
         fingerprint,
@@ -661,28 +888,36 @@ def _execute_substrate_convergence(plan: ReadConvergencePlan) -> str:
     from .cli.substrate_snapshot import main as snapshot_main
     from .substrate.connection import bind_candidate_publication, candidate_generation
 
-    if plan.tail_start is None or plan.requested_window is None:
+    if plan.effective_window is None:
         raise ValueError("substrate convergence plan is incomplete")
-    start, end = plan.requested_window
-    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=())
-    with candidate_generation(receipt_refresh_id=refresh_id) as generation:
-        code = snapshot_main(
-            [
-                "--start",
-                start.isoformat(),
-                "--end",
-                end.isoformat(),
-                "--incremental-tail-start",
-                plan.tail_start.isoformat(),
-                "--existing-products",
-                "--graph-only",
-                "--progress",
-                "quiet",
-            ]
-        )
+    start, end = plan.effective_window
+    generation_id = f"{plan.source_fingerprint[:16]}-{uuid.uuid4().hex[:12]}"
+    refresh_id = _snapshot_refresh_id(
+        start=start, end=end, projects=(), generation=generation_id
+    )
+    with candidate_generation(receipt_refresh_id=refresh_id) as candidate:
+        args = [
+            "--start",
+            start.isoformat(),
+            "--end",
+            end.isoformat(),
+            "--existing-products",
+            "--graph-only",
+            "--input-fingerprint",
+            plan.source_fingerprint,
+            "--graph-generation",
+            generation_id,
+            "--progress",
+            "quiet",
+        ]
+        if plan.action == "converge":
+            if plan.tail_start is None:
+                raise ValueError("incremental substrate convergence plan lacks tail start")
+            args[4:4] = ["--incremental-tail-start", plan.tail_start.isoformat()]
+        code = snapshot_main(args)
         if code:
             raise RuntimeError(f"bounded substrate convergence exited with code {code}")
-        bind_candidate_publication(generation, refresh_id)
+        bind_candidate_publication(candidate, refresh_id)
     return refresh_id
 
 
@@ -901,7 +1136,7 @@ def _materialized_enough_for_window(
     window: tuple[date, date] | None,
     *,
     just_refreshed: bool = False,
-    already_refreshed_this_process: bool = False,
+    recently_refreshed: bool = False,
 ) -> bool:
     if window is None:
         return True
@@ -919,10 +1154,10 @@ def _materialized_enough_for_window(
         requested_last = window[1] - timedelta(days=1)
         if requested_last > row.last_date:
             if row.status != "ready" and row.tail_stale:
-                return just_refreshed or already_refreshed_this_process
+                return just_refreshed or recently_refreshed
             return False
         if row.status != "ready" and row.tail_stale and not just_refreshed:
-            return already_refreshed_this_process or window[1] < logical_date(datetime.now().astimezone())
+            return recently_refreshed or window[1] < logical_date(datetime.now().astimezone())
         return True
     if contract.collection_model in {"derived", "stage"} or contract.query_mode == "substrate":
         if not row.covered_dates and (row.first_date is None or row.last_date is None):
@@ -933,13 +1168,9 @@ def _materialized_enough_for_window(
     if coverage["fully_covers_requested_window"] is not True:
         return False
     if row.status != "ready" and row.tail_stale and not just_refreshed:
-        # A stale tail only affects the present: new live rows cannot change
-        # history, so a fully-covered window that ends before today's logical
-        # date needs no refresh. Windows touching today still re-materialize —
-        # unless this process already paid for one live-tail refresh of this
-        # dataset (lynchpin-0s7), in which case a few more seconds of live
-        # drift isn't worth another full rebuild.
-        return already_refreshed_this_process or window[1] < logical_date(datetime.now().astimezone())
+        # Historical windows can reuse the index; current windows require a
+        # refresh within the bounded freshness interval.
+        return recently_refreshed or window[1] < logical_date(datetime.now().astimezone())
     return True
 
 
@@ -1504,13 +1735,32 @@ def _polylogue_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     )
 
 
+@lru_cache(maxsize=32)
+def _activitywatch_raw_dates(path: Path, signature: object) -> tuple[date | None, date | None]:
+    del signature
+    try:
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as conn:
+            first = conn.execute("SELECT starttime FROM events ORDER BY starttime ASC LIMIT 1").fetchone()
+            last = conn.execute("SELECT starttime FROM events ORDER BY starttime DESC LIMIT 1").fetchone()
+        return (
+            logical_date(datetime.fromtimestamp(first[0] / 1_000_000_000, timezone.utc)) if first else None,
+            logical_date(datetime.fromtimestamp(last[0] / 1_000_000_000, timezone.utc)) if last else None,
+        )
+    except (OSError, sqlite3.Error, ValueError, OverflowError):
+        return None, None
+
+
 def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     path = canonical_activitywatch_events_path()
     manifest = path.with_suffix(".manifest.json")
     meta = _load_json(manifest)
     input_files = activitywatch_input_files(cfg)
-    archives = _count_files(cfg.activitywatch_archive_db_dir, suffixes=(".sqlite", ".db"))
     product_ready = _product_with_manifest_exists(path, manifest)
+    first_date = _date_from_iso(meta.get("first_date"))
+    last_date = _date_from_iso(meta.get("last_date"))
+    row_count = _int_or_none(meta.get("row_count"))
+    covered_dates = _manifest_covered_dates(meta)
+    materialized_paths = (path, manifest)
 
     # The live ActivityWatch SQLite databases are the authority. The monolithic
     # events NDJSON remains a historical recovery carrier, but it must not be
@@ -1519,6 +1769,15 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     if input_files:
         status: Status = "ready"
         reason = "live ActivityWatch SQLite is the active query source; logical-day partitions serve derived products"
+        bounds = [
+            _activitywatch_raw_dates(db, files_signature((db, Path(f"{db}-wal"))))
+            for db in input_files
+        ]
+        first_date = min((first for first, _ in bounds if first is not None), default=None)
+        last_date = max((last for _, last in bounds if last is not None), default=None)
+        row_count = None
+        covered_dates = ()
+        materialized_paths = input_files
     elif product_ready:
         status = "ready"
         reason = "canonical ActivityWatch event NDJSON recovery carrier is present"
@@ -1530,12 +1789,12 @@ def _activitywatch_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         status=status,
         authority="ActivityWatch live SQLite plus exported backup DBs",
         query_surface="lynchpin.sources.activitywatch",
-        materialized_paths=(path, manifest),
+        materialized_paths=materialized_paths,
         raw_roots=(cfg.activitywatch_db, cfg.activitywatch_raw_dir),
-        row_count=_int_or_none(meta.get("row_count")) or archives,
-        first_date=_date_from_iso(meta.get("first_date")),
-        last_date=_date_from_iso(meta.get("last_date")),
-        covered_dates=_manifest_covered_dates(meta),
+        row_count=row_count,
+        first_date=first_date,
+        last_date=last_date,
+        covered_dates=covered_dates,
         materialization_hint="live SQLite plus logical-day ActivityWatch event partitions",
         reason=reason,
     )
@@ -2941,7 +3200,7 @@ def _agentctl_dataset(_cfg: LynchpinConfig) -> MaterializedDataset:
     """Report the public AgentCTL observation route without materializing it.
 
     AgentCTL owns the durable job records. Lynchpin only reads the supported
-    public envelope, so this is a live status check rather than a materializer
+    native JSON list, so this is a live status check rather than a materializer
     or a filesystem-backed product.
     """
     from .sources.agentctl import (

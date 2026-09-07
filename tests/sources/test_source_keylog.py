@@ -202,3 +202,28 @@ def test_keylog_daily_activity_scans_multi_day_window_once(monkeypatch):
     assert rows[0].keypress_count == 1
     assert rows[1].event_count == 0
     assert rows[2].event_count == 1
+
+
+def test_keypress_timestamps_reuse_unchanged_files_and_refresh_appends(tmp_path, monkeypatch):
+    logs = tmp_path / 'logs'
+    logs.mkdir()
+    path = logs / '2026-03-15.jsonl'
+    path.write_text(json.dumps({'ts': '2026-03-15T10:00:00Z', 'event': 'press'}) + '\n')
+    monkeypatch.setattr(keylog, 'get_config', lambda: SimpleNamespace(keylog_root=tmp_path))
+    reads = []
+    reader = keylog.read_jsonl_with
+
+    def read(path, *args, **kwargs):
+        reads.append(path)
+        yield from reader(path, *args, **kwargs)
+
+    monkeypatch.setattr(keylog, 'read_jsonl_with', read)
+    start = datetime(2026, 3, 15, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 3, 15, 11, tzinfo=timezone.utc)
+    assert len(keylog.keypress_timestamps(start=start, end=end, ensure=False)) == 1
+    assert keylog.keypress_count(start=start, end=end, ensure=False) == 1
+    assert reads == [path]
+    with path.open('a') as handle:
+        handle.write(json.dumps({'ts': '2026-03-15T10:01:00Z', 'event': 'press'}) + '\n')
+    assert len(keylog.keypress_timestamps(start=start, end=end, ensure=False)) == 2
+    assert reads == [path, path]

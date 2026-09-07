@@ -38,6 +38,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="materialize the graph without rendering a context pack",
     )
+    parser.add_argument(
+        "--input-fingerprint",
+        help="revision of graph source products captured before the build",
+    )
+    parser.add_argument(
+        "--graph-generation",
+        help="unique graph generation suffix for retries of one date window",
+    )
     parser.add_argument("--progress", choices=("plain", "json", "quiet"), default="plain")
     args = parser.parse_args(argv)
     global _PROGRESS_FORMAT
@@ -51,11 +59,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--incremental-tail-start must fall within --start and --end")
     if tail_start is not None and not args.graph_only:
         parser.error("--incremental-tail-start requires --graph-only")
+    input_fingerprint = args.input_fingerprint
+    if input_fingerprint is None:
+        from lynchpin.materialization import graph_input_fingerprint
+
+        input_fingerprint = graph_input_fingerprint()
     _progress(f"building current-state graph: {args.start}..{args.end}")
     refresh_id = _snapshot_refresh_id(
         start=date.fromisoformat(args.start),
         end=date.fromisoformat(args.end),
         projects=tuple(args.projects or ()),
+        generation=args.graph_generation,
     )
     _record_run_step(refresh_id, "current_state_graph", "started", "building current-state graph")
 
@@ -83,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
                 start=start_date,
                 end=end_date,
                 projects=tuple(args.projects or ()),
+                input_fingerprint=input_fingerprint,
+                generation=args.graph_generation,
             )
         else:
             from lynchpin.graph.context_pack import materialize_incremental_evidence_graph
@@ -92,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
                 end=end_date,
                 tail_start=tail_start,
                 projects=tuple(args.projects or ()),
+                input_fingerprint=input_fingerprint,
+                generation=args.graph_generation,
             )
         code = 0
     else:
@@ -107,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         start=date.fromisoformat(args.start),
         end=date.fromisoformat(args.end),
         projects=tuple(args.projects or ()),
+        generation=args.graph_generation,
     )
     _record_run_step(refresh_id, "dataset_readiness", "ok", "dataset readiness statuses recorded")
     if not args.graph_only:
@@ -118,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             projects=tuple(args.projects or ()),
             ensure_products=not args.existing_products,
             incremental_tail_start=tail_start,
+            generation=args.graph_generation,
         )
         _record_run_step(refresh_id, "personal_daily_signal", "ok", "daily personal/content rows promoted")
     _progress("recording promotion run")
@@ -126,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         start=date.fromisoformat(args.start),
         end=date.fromisoformat(args.end),
         projects=tuple(args.projects or ()),
+        generation=args.graph_generation,
     )
     _record_run_step(refresh_id, "promotion_run", "ok", "promotion run recorded")
     _progress("snapshot promotion complete")
@@ -178,6 +199,7 @@ def _snapshot_refresh_id(
     start: date,
     end: date,
     projects: tuple[str, ...],
+    generation: str | None = None,
 ) -> str:
     from lynchpin.graph.context_pack import _current_state_refresh_id
 
@@ -185,6 +207,7 @@ def _snapshot_refresh_id(
         start=start,
         end=end,
         projects=projects,
+        generation=generation,
     )
 
 
@@ -229,6 +252,7 @@ def _record_snapshot_materialization_statuses(
     start: date,
     end: date,
     projects: tuple[str, ...],
+    generation: str | None = None,
 ) -> None:
     from lynchpin.analysis.active.substrate_promote_status import record_source_status
     from lynchpin.analysis.active.substrate_promote_status import SOURCE_EVIDENCE_GRAPH
@@ -236,11 +260,10 @@ def _record_snapshot_materialization_statuses(
     from lynchpin.materialization import audit_materialization
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
-    refresh_id = _snapshot_refresh_id(
-        start=start,
-        end=end,
-        projects=projects,
-    )
+    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    if generation is not None:
+        refresh_kwargs["generation"] = generation
+    refresh_id = _snapshot_refresh_id(**refresh_kwargs)
     audit_rows = audit_materialization()
     with connect(substrate_path()) as conn:
         apply_schema(conn)
@@ -288,6 +311,7 @@ def _promote_snapshot_daily_signals(
     projects: tuple[str, ...],
     ensure_products: bool = True,
     incremental_tail_start: date | None = None,
+    generation: str | None = None,
 ) -> None:
     from lynchpin.analysis.active.substrate_promote_status import (
         SOURCE_PERSONAL_DAILY_SIGNAL,
@@ -307,7 +331,10 @@ def _promote_snapshot_daily_signals(
         promote_title_classifications_from_path,
     )
 
-    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=projects)
+    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    if generation is not None:
+        refresh_kwargs["generation"] = generation
+    refresh_id = _snapshot_refresh_id(**refresh_kwargs)
     if ensure_products:
         for product in ("title_metadata", "activity_content", "personal_daily_signals"):
             ensure_materialized(product, window=(start, end))
@@ -422,10 +449,14 @@ def _record_snapshot_promotion_run(
     start: date,
     end: date,
     projects: tuple[str, ...],
+    generation: str | None = None,
 ) -> None:
     from lynchpin.substrate.connection import apply_schema, connect, substrate_path
 
-    refresh_id = _snapshot_refresh_id(start=start, end=end, projects=projects)
+    refresh_kwargs = {"start": start, "end": end, "projects": projects}
+    if generation is not None:
+        refresh_kwargs["generation"] = generation
+    refresh_id = _snapshot_refresh_id(**refresh_kwargs)
     with connect(substrate_path()) as conn:
         apply_schema(conn)
         status_rows = conn.execute(

@@ -263,7 +263,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 45
+    assert SUBSTRATE_VERSION == 46
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -298,7 +298,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("45",)
+        ).fetchone() == ("46",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -307,10 +307,43 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
                 "'substrate_product_tombstone')"
             ).fetchall()
         }
-        assert {
-            "substrate_product_lineage_predecessor",
-            "substrate_product_tombstone_key",
-        } <= migrated_indexes
+    assert {
+        "substrate_product_lineage_predecessor",
+        "substrate_product_tombstone_key",
+    } <= migrated_indexes
+
+
+def test_apply_schema_migrates_version_45_graph_fingerprint(tmp_path: Path) -> None:
+    from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        views = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+        ).fetchall()
+        for (view_name,) in views:
+            conn.execute(f'DROP VIEW "{view_name}"')
+        indexes = conn.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE table_name = 'evidence_graph_build'"
+        ).fetchall()
+        for (index_name,) in indexes:
+            conn.execute(f'DROP INDEX "{index_name}"')
+        conn.execute("ALTER TABLE evidence_graph_build DROP input_fingerprint")
+        conn.execute("UPDATE substrate_meta SET value = '45' WHERE key = 'version'")
+
+        apply_schema(conn)
+
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('evidence_graph_build')").fetchall()
+        }
+        assert "input_fingerprint" in columns
+        assert conn.execute(
+            "SELECT value FROM substrate_meta WHERE key = 'version'"
+        ).fetchone() == (str(SUBSTRATE_VERSION),)
 
 
 def test_signal_lineage_rejects_cycles_and_missing_predecessors(tmp_path: Path) -> None:

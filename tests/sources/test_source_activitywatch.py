@@ -6,7 +6,7 @@ These are unit tests using synthetic data, not live DB queries.
 import json
 import pytest
 import sqlite3
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -200,6 +200,49 @@ def test_activitywatch_raw_skips_non_overlapping_candidate_db(monkeypatch, tmp_p
     rows = list(events_from_activitywatch_dbs("aw-watcher-window_", start=dt(9), end=dt(11)))
 
     assert [row.data["app"] for row in rows] == ["kitty"]
+
+
+def test_activitywatch_raw_bounds_notice_sqlite_wal_rows(tmp_path: Path) -> None:
+    """A live WAL append must invalidate the candidate bounds cache."""
+    from lynchpin.sources.activitywatch_raw import _candidate_may_overlap
+
+    db = tmp_path / "live.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(
+        """
+        CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT);
+        INSERT INTO buckets VALUES (1, 'aw-watcher-window_host');
+        """
+    )
+    conn.commit()
+    old = dt(10)
+    conn.execute(
+        "INSERT INTO events VALUES (?, ?, ?, ?)",
+        (1, int(old.timestamp() * 1e9), int((old + timedelta(minutes=5)).timestamp() * 1e9), "{}"),
+    )
+    conn.commit()
+    assert not _candidate_may_overlap(
+        db,
+        prefixes=("aw-watcher-window_",),
+        start=dt(12),
+        end=dt(13),
+    )
+
+    new = dt(12)
+    conn.execute(
+        "INSERT INTO events VALUES (?, ?, ?, ?)",
+        (1, int(new.timestamp() * 1e9), int((new + timedelta(minutes=5)).timestamp() * 1e9), "{}"),
+    )
+    conn.commit()
+    assert _candidate_may_overlap(
+        db,
+        prefixes=("aw-watcher-window_",),
+        start=dt(12),
+        end=dt(13),
+    )
+    conn.close()
 
 
 def test_activitywatch_raw_skips_candidate_without_matching_buckets(monkeypatch, tmp_path: Path) -> None:

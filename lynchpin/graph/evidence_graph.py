@@ -416,6 +416,7 @@ def promote_graph_to_substrate(
     refresh_id: str,
     projects: Sequence[str] = (),
     recorder: GraphStageRecorder | None = None,
+    input_fingerprint: str | None = None,
 ) -> None:
     """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
     try:
@@ -430,8 +431,9 @@ def promote_graph_to_substrate(
             apply_schema(conn)
             with recorded_stage(recorder, "graph_write", window_start=graph.start, window_end=graph.end, node_count=lambda: len(graph.nodes), edge_count=lambda: len(graph.edges)):
                 counts = promote_evidence_graph(
-                    conn, refresh_id=refresh_id, graph=graph, projects=projects,
-                )
+                conn, refresh_id=refresh_id, graph=graph, projects=projects,
+                input_fingerprint=input_fingerprint,
+            )
             counts["analysis_claims"] = promote_analysis_claims(
                 conn,
                 refresh_id=refresh_id,

@@ -2,10 +2,97 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 from lynchpin import materialization
+
+
+def _graph_fixture_connection(
+    *,
+    start: date,
+    end: date,
+    input_fingerprint: str | None,
+    with_input_fingerprint: bool = True,
+):
+    import duckdb
+
+    conn = duckdb.connect()
+    input_fingerprint_column = ", input_fingerprint VARCHAR" if with_input_fingerprint else ""
+    conn.execute(
+        f"""
+        CREATE TABLE evidence_graph_build (
+            refresh_id VARCHAR,
+            start_date DATE,
+            end_date DATE,
+            projects VARCHAR[],
+            materialized_at TIMESTAMP,
+            generated_at TIMESTAMP
+            {input_fingerprint_column}
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_promotion_run (
+            refresh_id VARCHAR,
+            status VARCHAR
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR,
+            source VARCHAR,
+            status VARCHAR,
+            recorded_at TIMESTAMP
+        )
+        """
+    )
+    if with_input_fingerprint:
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build
+                (refresh_id, start_date, end_date, projects, materialized_at,
+                 generated_at, input_fingerprint)
+            VALUES ('base', ?, ?, [], TIMESTAMP '2026-09-01 00:00:00',
+                    TIMESTAMP '2026-09-01 00:00:00', ?)
+            """,
+            [start, end, input_fingerprint],
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO evidence_graph_build
+                (refresh_id, start_date, end_date, projects, materialized_at,
+                 generated_at)
+            VALUES ('base', ?, ?, [], TIMESTAMP '2026-09-01 00:00:00',
+                    TIMESTAMP '2026-09-01 00:00:00')
+            """,
+            [start, end],
+        )
+    conn.execute("INSERT INTO substrate_promotion_run VALUES ('base', 'ok')")
+    conn.execute(
+        """
+        INSERT INTO substrate_source_status VALUES
+            ('base', 'evidence_graph', 'ok', TIMESTAMP '2026-09-01 00:00:00')
+        """
+    )
+    return conn
+
+
+def _patch_serving_generation(monkeypatch, conn):
+    class Generation:
+        connection = conn
+        database_path = "fixture"
+
+    @contextmanager
+    def serving():
+        yield Generation()
+
+    monkeypatch.setattr("lynchpin.substrate.connection.serving_generation", serving)
 
 
 def _result(name: str, *, changed: bool = False) -> materialization.MaterializationResult:
@@ -68,6 +155,90 @@ def test_missing_tail_uses_only_the_bounded_tail(monkeypatch) -> None:
 
     assert plan.action == "converge"
     assert plan.effective_window == (date(2026, 8, 3), date(2026, 8, 6))
+
+
+def test_graph_read_uses_broad_predecessor_with_bounded_tail(monkeypatch) -> None:
+    predecessor_start = date(2011, 1, 30)
+    predecessor_end = date(2026, 9, 30)
+    requested = (date(2026, 9, 6), date(2026, 9, 8))
+    conn = _graph_fixture_connection(
+        start=predecessor_start,
+        end=predecessor_end,
+        input_fingerprint="old",
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "new")
+    try:
+        plan = materialization.plan_read_convergence(window=requested)
+    finally:
+        conn.close()
+
+    assert plan.action == "converge"
+    assert plan.predecessor_refresh_id == "base"
+    assert plan.effective_window == (predecessor_start, predecessor_end)
+    assert plan.tail_start == requested[0]
+    assert requested[1] - plan.tail_start <= timedelta(days=materialization.READ_CONVERGENCE_MAX_DAYS)
+
+
+def test_schema45_graph_read_treats_missing_fingerprint_as_stale(monkeypatch) -> None:
+    requested = (date(2026, 9, 6), date(2026, 9, 8))
+    conn = _graph_fixture_connection(
+        start=date(2011, 1, 30),
+        end=date(2026, 9, 30),
+        input_fingerprint=None,
+        with_input_fingerprint=False,
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "current")
+    try:
+        plan = materialization.plan_read_convergence(window=requested)
+    finally:
+        conn.close()
+
+    assert plan.action == "converge"
+    assert plan.predecessor_refresh_id == "base"
+    assert plan.effective_window == (date(2011, 1, 30), date(2026, 9, 30))
+
+
+def test_graph_fingerprint_tracks_direct_source_file_revisions(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.sources import sms
+
+    sms_root = tmp_path / "SMS"
+    sms_root.mkdir()
+    source_file = sms_root / "SMS_export.csv"
+    source_file.write_text("initial", encoding="utf-8")
+    monkeypatch.setattr(sms, "SMS_ROOT", sms_root)
+
+    cfg = materialization.get_config()
+    first = {
+        row["name"]: row
+        for row in materialization._graph_source_revisions(cfg)
+    }
+    source_file.write_text("changed", encoding="utf-8")
+    second = {
+        row["name"]: row
+        for row in materialization._graph_source_revisions(cfg)
+    }
+
+    assert {"git_live", "sms", "outlook", "svn", "gmail", "google_takeout_files", "analysis_artifacts_files"} <= first.keys()
+    assert first["sms"] != second["sms"]
+
+
+def test_graph_build_without_fingerprint_is_stale(monkeypatch) -> None:
+    requested = (date(2026, 9, 6), date(2026, 9, 8))
+    conn = _graph_fixture_connection(
+        start=requested[0], end=requested[1], input_fingerprint=None
+    )
+    _patch_serving_generation(monkeypatch, conn)
+    monkeypatch.setattr(materialization, "_substrate_fingerprint", lambda *_args: "current")
+    try:
+        plan = materialization.plan_read_convergence(window=requested)
+    finally:
+        conn.close()
+
+    assert plan.action == "converge"
+    assert plan.predecessor_refresh_id == "base"
+    assert plan.tail_start == requested[1] - timedelta(days=materialization.READ_CONVERGENCE_OVERLAP_DAYS)
 
 
 def test_identical_concurrent_reads_single_flight_the_materializer(monkeypatch) -> None:

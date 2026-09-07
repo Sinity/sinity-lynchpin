@@ -61,7 +61,7 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("snapshot", "Compact current-state orientation snapshot for small-context agents.", parameters=("start", "end"), response_kind="situation_snapshot"),
             ActionSpec("readiness", "Substrate and source readiness summary.", parameters=("start", "end"), response_kind="readiness"),
             ActionSpec("self_check", "Public registry and metadata consistency check.", response_kind="self_check"),
-            ActionSpec("materialization", "Canonical product materialization audit.", response_kind="materialization_audit"),
+            ActionSpec("materialization", "Compact product status and inclusive date-window coverage; detail requires one source.", parameters=("source", "start", "end", "detail"), response_kind="materialization_audit"),
             ActionSpec("operations", "Recent operation receipts and supported actions.", response_kind="operation_receipts"),
             ActionSpec("chisel", "Code snapshot/chisel materialization status.", response_kind="snapshot_status"),
             ActionSpec("github", "GitHub context materialization status.", response_kind="materialization_status"),

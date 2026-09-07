@@ -56,7 +56,7 @@ The substrate is a coherent analytical snapshot over a selected time window.
 Promoters load canonical rows into typed tables for work, projects, personal
 signals, machine state, GitHub/review context, claims, and graph products.
 
-AgentCTL job observations are promoted into the work substrate through its versioned public read route. They retain their source revision, public list-snapshot provenance, opaque artifact refs, lifecycle caveats, and optional explicit owner receipt refs. This does not make Lynchpin an AgentCTL client for execution: scheduling, cancellation, waiting, and supervision remain outside the source and substrate layers.
+AgentCTL job observations are promoted into the work substrate through the native `agentctl job list --json --all` read route. They retain their source revision, route provenance, and lifecycle caveats while fields absent from that route remain unavailable. This does not make Lynchpin an AgentCTL client for execution: scheduling, cancellation, waiting, and supervision remain outside the source and substrate layers.
 
 Every coherent build has a `refresh_id`. Readers select a materialized refresh
 rather than joining arbitrary generations of tables. Substrate schema changes
@@ -101,6 +101,12 @@ The graph, substrate readers, and analysis modules feed:
 - readiness, coverage, and confidence reports;
 - the eight-tool public MCP contract;
 - explicit materialization and maintenance operations with receipts.
+
+`lynchpin_status(view="materialization")` returns compact product status and
+partition counts. Supply `source` to inspect one product and `detail=true` for
+its paths and covered dates. Paired `start` and `end` dates report coverage of
+that inclusive window without refreshing products. `tail_stale` distinguishes
+new live input from historical repair requirements.
 
 Generated artifacts live under the ignored local root or configured derived
 root. Tracked documentation describes contracts, not generated personal

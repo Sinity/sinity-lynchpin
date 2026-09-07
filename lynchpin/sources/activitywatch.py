@@ -21,6 +21,8 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from typing import Iterable, Iterator, Sequence, TypeVar
 
+from ..core.cache import file_signature
+from ..core.config import get_config
 from ..core.classify import classify
 from ..core.coverage import CoverageBounds
 from ..core.title_features import extract_title_features
@@ -101,16 +103,38 @@ _ACTIVE_STATUSES = {"not-afk", "active", "present"}
 _AFK_STATUSES = {"afk", "away"}
 
 
+def _activitywatch_cache_revision() -> tuple[object, object]:
+    from .activitywatch_raw import activitywatch_source_revision
+    from .activitywatch_repair import repair_input_revision
+
+    return activitywatch_source_revision(), repair_input_revision()
+
+
+def _polylogue_attribution_revision() -> tuple[object, ...]:
+    cfg = get_config()
+    db = getattr(cfg, "polylogue_db", None)
+    if db is None:
+        return ()
+    path = db
+    return (
+        file_signature(path),
+        file_signature(path.with_name(path.name + "-wal")),
+        file_signature(path.with_name(path.name + "-shm")),
+    )
+
+
 def _repaired_afk_events(
     start: datetime, end: datetime, *, ensure: bool = True
 ) -> tuple[list[Interval], list[Interval]]:
-    active, afk = _repaired_afk_events_cached(start, end, ensure)
+    active, afk = _repaired_afk_events_cached(
+        start, end, ensure, _activitywatch_cache_revision()
+    )
     return list(active), list(afk)
 
 
 @functools.lru_cache(maxsize=16)
 def _repaired_afk_events_cached(
-    start: datetime, end: datetime, ensure: bool
+    start: datetime, end: datetime, ensure: bool, revision: object
 ) -> tuple[tuple[Interval, ...], tuple[Interval, ...]]:
     """Return (active_clipped, afk_clipped) interval lists for [start, end).
 
@@ -124,6 +148,7 @@ def _repaired_afk_events_cached(
     zero keystrokes) inflate downstream focused_seconds by an order of
     magnitude.
     """
+    del revision
     from .activitywatch_repair import repair_afk_events
 
     raw = list(
@@ -217,7 +242,11 @@ def focus_spans(
     from ..core.parse import end_of_day_local
     lower = as_local(start)
     upper = end_of_day_local(end)
-    spans = list(_focus_spans_cached(lower, upper, min_duration_s, ensure))
+    spans = list(
+        _focus_spans_cached(
+            lower, upper, min_duration_s, ensure, _activitywatch_cache_revision()
+        )
+    )
     if not enrich_polylogue:
         return spans
     return _enrich_with_polylogue(spans, lower, upper)
@@ -249,7 +278,9 @@ def _enrich_with_polylogue(
     if not needy:
         return spans
 
-    context = _polylogue_attribution_context(start.date(), end.date())
+    context = _polylogue_attribution_context(
+        start.date(), end.date(), _polylogue_attribution_revision()
+    )
     if context is not None:
         events, conv_projects = context
 
@@ -313,6 +344,7 @@ def _enrich_with_session_overlap(
 def _polylogue_attribution_context(
     start: date,
     end: date,
+    revision: object,
 ) -> tuple[tuple[object, ...], dict[str, tuple[str, ...]]] | None:
     """Return cached Polylogue attribution inputs for an AW date window.
 
@@ -320,9 +352,10 @@ def _polylogue_attribution_context(
     same window. When Polylogue insight products are incomplete, repeatedly
     probing ``work_events``/``session_profiles_for_date`` dominates the AW path
     and emits the same warning several times. Cache both successful context and
-    graceful unavailability for the process; source products are materialization
-    inputs, not per-call mutable state.
+    graceful unavailability for the process; the Polylogue database revision is
+    part of the cache key so newly published insight rows are visible.
     """
+    del revision
     try:
         from .polylogue import work_events, session_profiles_for_date
     except ImportError:
@@ -366,9 +399,11 @@ def project_focus_days(*, start: datetime, end: datetime, ensure: bool = True) -
 
 @functools.lru_cache(maxsize=16)
 def _focus_spans_cached(
-    start: datetime, end: datetime, min_dur: float, ensure: bool
+    start: datetime, end: datetime, min_dur: float, ensure: bool, revision: object
 ) -> tuple[FocusSpan, ...]:
-    active, afk = _repaired_afk_events(start, end, ensure=ensure)
+    active, afk = _repaired_afk_events_cached(
+        start, end, ensure, revision
+    )
     windows = _window_spans(start, end, active=active, min_duration_s=0.0, ensure=ensure)
 
     # Collect all boundary points
@@ -570,7 +605,7 @@ def _window_spans(
     start: datetime,
     end: datetime,
     *,
-    active: list[Interval] | None,
+    active: Sequence[Interval] | None,
     min_duration_s: float,
     ensure: bool = True,
 ) -> list[_WindowSpan]:
@@ -706,14 +741,14 @@ def _keypress_timestamps(
     start: datetime, end: datetime
 ) -> tuple[tuple[datetime, ...], str]:
     try:
-        from .keylog import has_coverage, keypresses
+        from .keylog import has_coverage, keypress_timestamps
     except Exception:
         return (), "error"
 
     if not has_coverage(start=start, end=end):
         return (), "missing"
     try:
-        return tuple(event.ts for event in keypresses(start=start, end=end)), "covered"
+        return keypress_timestamps(start=start, end=end), "covered"
     except Exception:
         return (), "error"
 
@@ -1459,16 +1494,14 @@ def _daily_presence_summary(
     return dict(by_day)
 
 
-@functools.lru_cache(maxsize=1)
-def _activitywatch_real_coverage_floor() -> date | None:
+@functools.lru_cache(maxsize=8)
+def _activitywatch_real_coverage_floor_cached(signature: object) -> date | None:
     """Earliest date the canonical AW events product actually covers.
 
-    Read fresh each process (cached only within it — this module has no
-    signature-based invalidation for the canonical manifest, and a CLI
-    invocation is short-lived enough that staleness within one run isn't a
-    concern). Returns None when the canonical product doesn't exist yet, in
-    which case callers should not filter on it.
+    The manifest signature is part of the cache key so a newly published
+    canonical product is visible to later reads in the same process.
     """
+    del signature
     from .activitywatch_raw import canonical_activitywatch_events_path
 
     manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
@@ -1482,6 +1515,13 @@ def _activitywatch_real_coverage_floor() -> date | None:
         return None
     first = payload.get("first_date")
     return date.fromisoformat(str(first)) if first else None
+
+
+def _activitywatch_real_coverage_floor() -> date | None:
+    from .activitywatch_raw import canonical_activitywatch_events_path
+
+    manifest = canonical_activitywatch_events_path().with_suffix(".manifest.json")
+    return _activitywatch_real_coverage_floor_cached(file_signature(manifest))
 
 
 def _daily_outage_hours(*, start: datetime, end: datetime, ensure: bool = True) -> dict[date, float]:

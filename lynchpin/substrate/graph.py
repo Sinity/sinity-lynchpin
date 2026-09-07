@@ -814,6 +814,7 @@ def promote_incremental_evidence_graph(
     full_start: date,
     tail_start: date,
     projects: Sequence[str] = (),
+    input_fingerprint: str | None = None,
 ) -> dict[str, int]:
     """Publish a new full graph by overlaying its predecessor and replacing a tail.
 
@@ -943,13 +944,14 @@ def promote_incremental_evidence_graph(
             INSERT INTO evidence_graph_build (
                 refresh_id, start_date, end_date, mode, projects,
                 node_count, edge_count, caveats, generated_at,
-                predecessor_refresh_id, predecessor_tail_start
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                predecessor_refresh_id, predecessor_tail_start, input_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             build_values
             + [
                 previous_refresh_id,
                 tail_start,
+                input_fingerprint,
             ],
         )
         node_count, edge_count = _logical_graph_counts(conn, refresh_id=refresh_id)
@@ -1007,6 +1009,7 @@ def promote_evidence_graph(
     refresh_id: str,
     graph: Any,  # EvidenceGraph — imported lazily to avoid circular imports
     projects: Sequence[str] = (),
+    input_fingerprint: str | None = None,
 ) -> dict[str, int]:
     """Idempotently promote an EvidenceGraph to substrate.
 
@@ -1041,8 +1044,8 @@ def promote_evidence_graph(
             """
             INSERT INTO evidence_graph_build (
                 refresh_id, start_date, end_date, mode, projects,
-                node_count, edge_count, caveats, generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                node_count, edge_count, caveats, generated_at, input_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 refresh_id,
@@ -1054,6 +1057,7 @@ def promote_evidence_graph(
                 len(graph.edges),
                 caveats_json,
                 graph.generated_at,
+                input_fingerprint,
             ],
         )
 

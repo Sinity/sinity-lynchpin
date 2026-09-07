@@ -114,8 +114,10 @@ Key ownership boundaries:
 6. Cross-source joins belong downstream of source-local normalization.
 7. Canonical claims identify artifact/refresh, timeframe, denominator, method,
    and degraded or missing coverage.
-8. MCP read actions remain read-only. Convergence or maintenance operations are
-   explicit, auditable, dry-run by default, and return receipts.
+8. Ordinary queries transparently refresh required derived products when local
+   inputs are newer. They never mutate owner-native inputs and report refresh
+   failures instead of serving stale results as current. Explicit maintenance
+   operations remain auditable, dry-run by default, and return receipts.
 9. Use typed boundary errors where callers need to distinguish unavailable
    sources, schema mismatch, coverage failure, and materialization failure.
 10. LLM synthesis may explain measured products; it may not redefine them.

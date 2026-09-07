@@ -130,11 +130,17 @@ def test_promote_evidence_graph_round_trip(tmp_path: Path) -> None:
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
-        counts = graph_mod.promote_evidence_graph(conn, refresh_id="r1", graph=graph)
+        counts = graph_mod.promote_evidence_graph(
+            conn, refresh_id="r1", graph=graph, input_fingerprint="graph-input-v1"
+        )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="r1")
+        fingerprint = conn.execute(
+            "SELECT input_fingerprint FROM evidence_graph_build WHERE refresh_id = 'r1'"
+        ).fetchone()[0]
 
     assert counts == {"build": 1, "nodes": 3, "edges": 2}
     assert loaded is not None
+    assert fingerprint == "graph-input-v1"
 
     # Window and metadata
     assert loaded.start == graph.start
@@ -229,6 +235,7 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
             graph=tail,
             full_start=predecessor.start,
             tail_start=date(2026, 5, 5),
+            input_fingerprint="graph-input-v2",
         )
         same_refresh_counts = graph_mod.promote_incremental_evidence_graph(
             conn,
@@ -237,6 +244,7 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
             graph=tail,
             full_start=predecessor.start,
             tail_start=date(2026, 5, 5),
+            input_fingerprint="graph-input-v2",
         )
         loaded = graph_mod.load_evidence_graph(conn, refresh_id="new")
         current_partition = conn.execute(
@@ -246,6 +254,9 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
             "SELECT predecessor_refresh_id, predecessor_tail_start "
             "FROM evidence_graph_build WHERE refresh_id = 'new'"
         ).fetchone()
+        incremental_fingerprint = conn.execute(
+            "SELECT input_fingerprint FROM evidence_graph_build WHERE refresh_id = 'new'"
+        ).fetchone()[0]
         archived_overlay = conn.execute(
             "SELECT predecessor_refresh_id, predecessor_tail_start "
             "FROM evidence_graph_build WHERE refresh_id = ?",
@@ -267,6 +278,7 @@ def test_promote_incremental_evidence_graph_overlays_predecessor_and_replaces_ta
     assert current_partition == (1, date(2026, 5, 6), date(2026, 5, 6))
     assert overlay[0].startswith("new:partition:")
     assert overlay[1] == date(2026, 5, 5)
+    assert incremental_fingerprint == "graph-input-v2"
     assert archived_overlay == ("old", date(2026, 5, 5))
     assert same_refresh_counts == counts
     assert loaded is not None

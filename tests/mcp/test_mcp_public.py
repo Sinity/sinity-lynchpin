@@ -252,6 +252,28 @@ def test_project_and_evidence_routes_label_source_modes(
     assert "freshness_warning" in timeline["meta"]
 
 
+def test_timeline_metadata_observes_the_generation_returned_after_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {"refresh_id": "old"}
+
+    def read_rows(**_kwargs):
+        state["refresh_id"] = "refreshed"
+        return [{"refresh_id": "refreshed", "date": "2026-09-07"}]
+
+    def read_meta(*, refresh_id, **_kwargs):
+        return {"refresh_id": refresh_id or state["refresh_id"]}
+
+    monkeypatch.setattr("lynchpin.mcp.tools.views.project_day_correlations", read_rows)
+    monkeypatch.setattr("lynchpin.mcp.tools.public._project_day_timeline_meta", read_meta)
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    result = lynchpin_evidence(action="timeline", start="2026-09-07", end="2026-09-07")
+    assert result["ok"] is True
+    assert result["meta"]["refresh_id"] == "refreshed"
+    assert result["data"][0]["refresh_id"] == result["meta"]["refresh_id"]
+
+
 def test_blocked_materialization_surfaces_as_response_caveat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

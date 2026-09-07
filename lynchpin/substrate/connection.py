@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 45
+SUBSTRATE_VERSION = 46
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1693,7 +1693,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current == 43 and SUBSTRATE_VERSION == 45:
+    if current == 43 and SUBSTRATE_VERSION == 46:
         conn.execute(
             "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
             "predecessor_refresh_id VARCHAR"
@@ -1701,6 +1701,10 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
         conn.execute(
             "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
             "predecessor_tail_start DATE"
+        )
+        conn.execute(
+            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+            "input_fingerprint VARCHAR"
         )
         conn.execute("""CREATE TABLE IF NOT EXISTS substrate_product_lineage (
             product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
@@ -1725,7 +1729,11 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],
         )
-    elif current == 44 and SUBSTRATE_VERSION == 45:
+    elif current == 44 and SUBSTRATE_VERSION == 46:
+        conn.execute(
+            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+            "input_fingerprint VARCHAR"
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS substrate_product_lineage (
                 product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
@@ -1745,6 +1753,15 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key ON substrate_product_tombstone(product, natural_key)")
+        conn.execute(
+            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
+            [str(SUBSTRATE_VERSION)],
+        )
+    elif current == 45 and SUBSTRATE_VERSION == 46:
+        conn.execute(
+            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
+            "input_fingerprint VARCHAR"
+        )
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
             [str(SUBSTRATE_VERSION)],
