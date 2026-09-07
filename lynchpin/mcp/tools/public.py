@@ -115,6 +115,7 @@ def _project_day_timeline_meta(
 ) -> dict[str, Any]:
     from lynchpin.mcp.tools._utils import best_materialized_refresh_id
     from lynchpin.substrate.connection import connect, substrate_path
+    from lynchpin.substrate.graph import _logical_graph_relation
 
     requested_end = _parse_date(end)
     requested_start = _parse_date(start)
@@ -127,10 +128,35 @@ def _project_day_timeline_meta(
                 conn,
                 "project_day_correlation",
                 caller="lynchpin_evidence.timeline",
+                start=requested_start,
+                end=requested_end,
+                projects=(project,) if project else None,
             )
+        if selected_refresh_id is None:
+            warning = (
+                "no promoted evidence-graph generation covers the requested timeline window"
+                if requested_start is not None or requested_end is not None
+                else "no promoted evidence-graph generation is available"
+            )
+            return {
+                "source_mode": "substrate",
+                "refresh_id": None,
+                "coverage_start": None,
+                "coverage_end": None,
+                "coverage_row_count": 0,
+                "matched_row_count": 0,
+                "freshness_warning": warning,
+            }
+        relation = "project_day_correlation"
+        relation_params: list[Any] = []
         if selected_refresh_id is not None:
-            coverage_clauses.append("refresh_id = ?")
-            coverage_params.append(selected_refresh_id)
+            relation, relation_params = _logical_graph_relation(
+                conn,
+                refresh_id=selected_refresh_id,
+                table="project_day_correlation",
+                columns=("project", "date", "refresh_id"),
+                key_columns=("project", "date"),
+            )
         if project is not None:
             coverage_clauses.append("project = ?")
             coverage_params.append(project)
@@ -140,11 +166,11 @@ def _project_day_timeline_meta(
             else ""
         )
         first_date, last_date, coverage_count = conn.execute(
-            f"SELECT MIN(date), MAX(date), COUNT(*) FROM project_day_correlation{coverage_where}",
-            coverage_params,
+            f"SELECT MIN(date), MAX(date), COUNT(*) FROM {relation}{coverage_where}",
+            [*relation_params, *coverage_params],
         ).fetchone()
 
-        match_params = list(coverage_params)
+        match_params = [*relation_params, *coverage_params]
         match_clauses = list(coverage_clauses)
         if requested_start is not None:
             match_clauses.append("date >= ?")
@@ -154,7 +180,7 @@ def _project_day_timeline_meta(
             match_params.append(requested_end)
         match_where = " WHERE " + " AND ".join(match_clauses) if match_clauses else ""
         (matched_count,) = conn.execute(
-            f"SELECT COUNT(*) FROM project_day_correlation{match_where}",
+            f"SELECT COUNT(*) FROM {relation}{match_where}",
             match_params,
         ).fetchone()
 

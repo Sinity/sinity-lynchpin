@@ -164,6 +164,9 @@ def best_materialized_refresh_id(
     *,
     caller: str,
     ledger_path: Path | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    projects: tuple[str, ...] | None = None,
 ) -> str | None:
     """Return the highest-coverage materialized refresh_id for a table."""
 
@@ -172,6 +175,9 @@ def best_materialized_refresh_id(
         table,
         caller=caller,
         ledger_path=ledger_path,
+        start=start,
+        end=end,
+        projects=projects,
     )
 
 

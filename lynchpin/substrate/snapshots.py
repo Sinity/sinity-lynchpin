@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -167,13 +168,17 @@ def best_materialized_refresh_id(
     *,
     caller: str,
     ledger_path: Path | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    projects: tuple[str, ...] | None = None,
 ) -> str | None:
     """Return the highest-coverage materialized refresh_id for a table.
 
     Multiple materialization scopes populate the same fact tables. A recent
     current-state materialization can be narrower than an older DAG
     materialization, so ordinary read defaults prefer table coverage first and
-    recency second.
+    recency second. When a window is supplied, select a candidate reaching its
+    end date and return no candidate when the requested end is uncovered.
     """
 
     _ = caller, ledger_path
@@ -183,6 +188,39 @@ def best_materialized_refresh_id(
     from lynchpin.core.substrate_sources import source_for_substrate_table
 
     source_name = source_for_substrate_table(table)
+
+    # Evidence-graph tables are logical overlays of incremental graph builds.
+    # Their physical row counts and event dates describe only the newest tail,
+    # while the build metadata describes the complete serving window (including
+    # sparse days with no events). Select the newest ready build whose declared
+    # window covers the request before considering any legacy table fallback.
+    if source_name == "evidence_graph" and _table_exists(conn, "evidence_graph_build"):
+        clauses = ["readiness.source = 'evidence_graph'", "readiness.status = 'ok'"]
+        params: list[Any] = []
+        if start is not None:
+            clauses.append("graph.start_date <= ?")
+            params.append(start)
+        if end is not None:
+            clauses.append("graph.end_date >= ?")
+            params.append(end)
+        if projects:
+            clauses.append("(len(graph.projects) = 0 OR list_has_all(graph.projects, ?))")
+            params.append(list(projects))
+        else:
+            clauses.append("len(graph.projects) = 0")
+        rows = conn.execute(
+            "SELECT graph.refresh_id, graph.start_date, graph.end_date, "
+            "graph.generated_at FROM evidence_graph_build AS graph "
+            "JOIN substrate_source_status AS readiness "
+            "ON readiness.refresh_id = graph.refresh_id "
+            "WHERE " + " AND ".join(clauses) + " "
+            "ORDER BY graph.generated_at DESC",
+            params,
+        ).fetchall()
+        if rows:
+            return str(rows[0][0])
+        return None
+
     order_expr = _fallback_order_expr(conn, table)
     source_status_known = False
 

@@ -8,7 +8,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from lynchpin.substrate.snapshots import (
     best_materialized_refresh_id,
@@ -373,6 +373,131 @@ def test_best_materialized_refresh_id_maps_project_day_view_to_graph_status(tmp_
         assert best_materialized_refresh_id(
             test_conn, "project_day_correlation", caller="test.project_day"
         ) == "new"
+        assert best_materialized_refresh_id(
+            test_conn,
+            "project_day_correlation",
+            caller="test.project_day.window",
+            start=date(2026, 9, 7),
+            end=date(2026, 9, 8),
+        ) == "new"
+    finally:
+        test_conn.close()
+
+
+def test_project_day_selection_uses_graph_window_metadata_for_sparse_end(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE project_day_correlation (refresh_id VARCHAR, date DATE)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE evidence_graph_build (
+            refresh_id VARCHAR, start_date DATE, end_date DATE,
+            generated_at TIMESTAMPTZ, projects VARCHAR[]
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR, source VARCHAR, status VARCHAR,
+            recorded_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO project_day_correlation VALUES ('new', DATE '2026-09-07')"
+    )
+    conn.execute(
+        """
+        INSERT INTO evidence_graph_build VALUES
+         ('old', DATE '2026-01-01', DATE '2026-09-06', TIMESTAMPTZ '2026-09-06 10:00:00+00', []),
+         ('new', DATE '2026-01-01', DATE '2026-09-08', TIMESTAMPTZ '2026-09-08 10:00:00+00', []),
+         ('scoped', DATE '2026-01-01', DATE '2026-09-09', TIMESTAMPTZ '2026-09-09 10:00:00+00', ['private'])
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO substrate_source_status VALUES
+         ('old', 'evidence_graph', 'ok', TIMESTAMPTZ '2026-09-06 10:01:00+00'),
+         ('new', 'evidence_graph', 'ok', TIMESTAMPTZ '2026-09-08 10:01:00+00'),
+         ('scoped', 'evidence_graph', 'ok', TIMESTAMPTZ '2026-09-09 10:01:00+00')
+        """
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert best_materialized_refresh_id(
+            test_conn,
+            "project_day_correlation",
+            caller="test.project_day.sparse_end",
+            start=date(2026, 9, 8),
+            end=date(2026, 9, 8),
+        ) == "new"
+        assert best_materialized_refresh_id(
+            test_conn,
+            "project_day_correlation",
+            caller="test.project_day.unscoped",
+            start=date(2026, 9, 7),
+            end=date(2026, 9, 8),
+        ) == "new"
+        assert best_materialized_refresh_id(
+            test_conn,
+            "project_day_correlation",
+            caller="test.project_day.scoped",
+            start=date(2026, 9, 7),
+            end=date(2026, 9, 9),
+            projects=("private",),
+        ) == "scoped"
+    finally:
+        test_conn.close()
+
+
+def test_project_day_selection_does_not_fall_back_past_graph_window(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE project_day_correlation (refresh_id VARCHAR, date DATE)"
+    )
+    conn.execute(
+        "CREATE TABLE evidence_graph_build "
+        "(refresh_id VARCHAR, start_date DATE, end_date DATE, generated_at TIMESTAMPTZ, projects VARCHAR[])"
+    )
+    conn.execute(
+        "CREATE TABLE substrate_source_status "
+        "(refresh_id VARCHAR, source VARCHAR, status VARCHAR, recorded_at TIMESTAMPTZ)"
+    )
+    conn.execute(
+        "INSERT INTO project_day_correlation VALUES "
+        "('old', DATE '2026-08-27'), ('old', DATE '2026-08-26')"
+    )
+    conn.execute(
+        "INSERT INTO evidence_graph_build VALUES "
+        "('old', DATE '2026-01-01', DATE '2026-08-27', TIMESTAMPTZ '2026-08-27 10:00:00+00', [])"
+    )
+    conn.execute(
+        "INSERT INTO substrate_source_status VALUES "
+        "('old', 'evidence_graph', 'ok', TIMESTAMPTZ '2026-08-27 10:01:00+00')"
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert best_materialized_refresh_id(
+            test_conn,
+            "project_day_correlation",
+            caller="test.project_day.uncovered",
+            start=date(2026, 9, 7),
+            end=date(2026, 9, 8),
+        ) is None
     finally:
         test_conn.close()
 

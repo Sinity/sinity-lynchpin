@@ -91,7 +91,12 @@ def project_day_correlations(
                 conn,
                 "project_day_correlation",
                 caller="project_day_correlations",
+                start=start_d,
+                end=end_d,
+                projects=projs,
             )
+            if refresh_id is None:
+                return []
         rows = load_project_day_correlations(
             conn,
             refresh_id=refresh_id,

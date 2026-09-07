@@ -54,6 +54,19 @@ def load_project_day_correlations(
     become empty tuples.
     """
     from lynchpin.substrate.graph import _logical_graph_relation
+    from lynchpin.substrate.snapshots import best_materialized_refresh_id
+
+    if refresh_id is None:
+        refresh_id = best_materialized_refresh_id(
+            conn,
+            "project_day_correlation",
+            caller="load_project_day_correlations",
+            start=start,
+            end=end,
+            projects=projects,
+        )
+        if refresh_id is None:
+            return []
 
     relation = "project_day_correlation"
     params: list[Any] = []
