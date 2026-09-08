@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from collections import Counter
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -32,6 +35,9 @@ __all__ = [
     "has_coverage",
     "daily_activity",
     "coverage_bounds",
+    "KeylogInputTrace",
+    "KeylogFileRead",
+    "read_input_trace",
 ]
 
 
@@ -44,6 +50,12 @@ class KeylogEvent:
     keycode: str | None
     changed: bool | None
     modifiers: tuple[str, ...] = ()
+    code: str | None = None
+    value: int | None = None
+    modifier_state_known: bool = False
+    has_clipboard: bool = False
+    source_path: str | None = None
+    source_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +183,10 @@ def events(
             keycode=rec.get("keycode"),
             changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
             modifiers=_modifier_state(rec),
+            code=rec.get("code"),
+            value=rec.get("value") if type(rec.get("value")) is int else None,
+            modifier_state_known=_modifier_state_known(rec),
+            has_clipboard=isinstance(rec.get("clipboard"), str),
         )
 
     for path in _candidate_files(start_local, end_local, ensure=ensure):
@@ -219,6 +235,13 @@ def _modifier_state(rec: dict[str, Any]) -> tuple[str, ...]:
         if values:
             return values
     return ()
+
+
+def _modifier_state_known(rec: dict[str, Any]) -> bool:
+    return any(
+        isinstance(rec.get(key), (str, list, tuple, dict))
+        for key in ("modifiers", "active_modifiers", "pressed_modifiers", "modifier_state", "mods")
+    )
 
 
 def _modifier_values(raw: Any) -> tuple[str, ...]:
@@ -395,3 +418,127 @@ def coverage_bounds() -> CoverageBounds | None:
     except ValueError:
         return None
     return CoverageBounds(source="keylog", first=first, last=last, kind="capture")
+
+
+@dataclass(frozen=True)
+class KeylogFileRead:
+    path: str
+    status: str
+    size_bytes: int
+    sha256: str | None
+    lines: int
+    invalid_lines: int
+    first_ts: datetime | None
+    last_ts: datetime | None
+    changed_during_read: bool = False
+
+
+@dataclass(frozen=True)
+class KeylogInputTrace:
+    start: datetime
+    end: datetime
+    events: tuple[KeylogEvent, ...]
+    files: tuple[KeylogFileRead, ...]
+    event_counts: dict[str, int]
+    continuity: str = "unknown"
+
+
+_WHEEL_CODES = {"REL_WHEEL", "REL_HWHEEL", "REL_WHEEL_HI_RES", "REL_HWHEEL_HI_RES"}
+_DISCRETE_EVENTS = {"press", "pointer_button_press", "pointer_axis", "pointer_scroll", "pointer_wheel"}
+
+
+def read_input_trace(
+    *, start: datetime, end: datetime, logs_root: Path | None = None,
+) -> KeylogInputTrace:
+    """Read bounded input and audit metadata without retaining snapshot text.
+
+    UTC-named day files are read once, hashing their initial byte extent. Missing
+    files, malformed records, and growth remain visible; a file does not prove
+    uninterrupted capture. Pointer motion is counted but not retained as input.
+    This explicit raw-source route never triggers materialization.
+    """
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("input trace bounds require a timezone")
+    start, end = start.astimezone(UTC), end.astimezone(UTC)
+    if end <= start:
+        raise ValueError("input trace end must follow start")
+    root = logs_root if logs_root is not None else _logs_root()
+    # Filename selection is UTC calendar storage, not analytical day bucketing.
+    cursor = start.date()
+    last_day = (end - timedelta(microseconds=1)).date()
+    files: list[KeylogFileRead] = []
+    retained: list[KeylogEvent] = []
+    counts: Counter[str] = Counter()
+    while cursor <= last_day:
+        path = root / f"{cursor.isoformat()}.jsonl"
+        cursor += timedelta(days=1)
+        if not path.exists():
+            files.append(KeylogFileRead(str(path), "missing", 0, None, 0, 0, None, None))
+            continue
+        stat = path.stat()
+        digest = hashlib.sha256()
+        lines = invalid = 0
+        first: datetime | None = None
+        last: datetime | None = None
+        with path.open("rb") as handle:
+            remaining = stat.st_size
+            while remaining:
+                raw = handle.readline(remaining)
+                if not raw:
+                    break
+                remaining -= len(raw)
+                digest.update(raw)
+                lines += 1
+                if not raw.strip():
+                    continue
+                try:
+                    rec = json.loads(raw)
+                    if not isinstance(rec, dict):
+                        raise ValueError("non-object record")
+                    stamp = rec.get("ts")
+                    if not isinstance(stamp, str):
+                        raise ValueError("missing timestamp")
+                    ts = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        raise ValueError("naive source timestamp")
+                    ts = ts.astimezone(UTC)
+                    event = rec.get("event")
+                    if not isinstance(event, str):
+                        raise ValueError("missing event kind")
+                except (ValueError, TypeError, UnicodeError):
+                    invalid += 1
+                    continue
+                first = min(first, ts) if first else ts
+                last = max(last, ts) if last else ts
+                if not start <= ts < end:
+                    continue
+                code = rec.get("code") if isinstance(rec.get("code"), str) else None
+                value = rec.get("value") if type(rec.get("value")) is int else None
+                counts[f"{event}:{code}" if code else event] += 1
+                if event not in _DISCRETE_EVENTS and not (
+                    event == "pointer_rel" and code in _WHEEL_CODES and value != 0
+                ):
+                    continue
+                retained.append(KeylogEvent(
+                    ts=ts,
+                    event=event,
+                    session=rec.get("session") if isinstance(rec.get("session"), str) else None,
+                    window=rec.get("window") if isinstance(rec.get("window"), str) else None,
+                    keycode=rec.get("keycode") if isinstance(rec.get("keycode"), str) else None,
+                    changed=rec.get("changed") if isinstance(rec.get("changed"), bool) else None,
+                    modifiers=_modifier_state(rec),
+                    code=code,
+                    value=value,
+                    modifier_state_known=_modifier_state_known(rec),
+                    has_clipboard=isinstance(rec.get("clipboard"), str),
+                    source_path=str(path),
+                    source_line=lines,
+                ))
+        after = path.stat()
+        changed = (stat.st_size, stat.st_mtime_ns, stat.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino)
+        files.append(KeylogFileRead(
+            str(path), "degraded" if invalid or changed or remaining else "read",
+            stat.st_size - remaining, digest.hexdigest(), lines, invalid, first, last, changed,
+        ))
+    retained.sort(key=lambda event: event.ts)
+    return KeylogInputTrace(start, end, tuple(retained), tuple(files), dict(counts))

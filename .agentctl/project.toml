@@ -31,6 +31,14 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
+[operations.input_activity]
+description = "Reconstruct private input evidence from explicit time bounds"
+exec = ["python", "-m", "lynchpin.analysis", "input-activity"]
+pool = "normal"
+result = "exit"
+cache = "none"
+timeout_seconds = 1800
+
 [operations.materialize_plan]
 description = "Render the current canonical materialization plan without writes"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--plan-json", "--progress", "quiet"]

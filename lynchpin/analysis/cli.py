@@ -95,6 +95,7 @@ def build_app() -> typer.Typer:
     app = typer.Typer(
         help="Codebase analysis suite CLI",
         no_args_is_help=True,
+        pretty_exceptions_show_locals=False,
         context_settings={"help_option_names": ["-h", "--help"]},
     )
 
@@ -103,6 +104,9 @@ def build_app() -> typer.Typer:
     projects_cli.register_commands(app)
     knowledge_cli.register_commands(app)
     maps_cli.register_commands(app, analysis_spec=ANALYSIS_SPEC)
+    from .input_activity_cli import register_commands as register_input_activity
+
+    register_input_activity(app)
 
     _register_canonical(app)
     _register_status(app)

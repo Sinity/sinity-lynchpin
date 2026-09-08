@@ -45,6 +45,10 @@ surface maps.
 Generated map summaries and personal results belong under the ignored local
 analysis root, not tracked documentation.
 
+For explicit raw-input investigations, the [input activity route](../../docs/reference/input-activity.md)
+separates input-supported bouts, bracketed gaps, optional text evidence and
+reported task dedication without invoking substrate materialization.
+
 ## Canonical code-analysis artifacts
 
 `lynchpin/analysis/analysis_spec.json` defines the required code-analysis
