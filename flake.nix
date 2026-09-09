@@ -195,6 +195,17 @@
               ];
             });
 
+            # Scope the fixture override to the failing test dependency so
+            # unrelated Python packages retain their cached derivations.
+            openai = prev.openai.overridePythonAttrs (old: {
+              nativeCheckInputs = map (replaceDependency "inline-snapshot" inline-snapshot) (
+                old.nativeCheckInputs or [ ]
+              );
+              nativeInstallCheckInputs = map (replaceDependency "inline-snapshot" inline-snapshot) (
+                old.nativeInstallCheckInputs or [ ]
+              );
+            });
+
             fastapi = prev.fastapi.overridePythonAttrs (_old: {
               # FastAPI's current snapshot tests fail against the updated
               # inline-snapshot release; this package is consumed for its
@@ -227,7 +238,7 @@
               scipy
               scikit-learn
               hmmlearn
-              inline-snapshot
+              openai
               fastapi
               rich-toolkit
               ;
