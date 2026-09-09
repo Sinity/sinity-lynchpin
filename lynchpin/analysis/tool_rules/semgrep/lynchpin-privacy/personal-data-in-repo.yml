@@ -5,7 +5,7 @@ rules:
     message: >
       Looks like personal data (email/phone/SSN-shaped string) is being
       embedded as a literal and written to a repo-tracked path. The lynchpin
-      privacy invariant is that raw personal data stays under /realm/data/...
+      privacy invariant is that raw personal data stays under /realm/...
       and only typed, redacted, or derived rows reach the repo. If this is
       a user fixture or a deliberate test, exclude with a comment naming
       the constraint that justifies it.

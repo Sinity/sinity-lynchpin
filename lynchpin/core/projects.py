@@ -129,7 +129,7 @@ ALL_PROJECTS: dict[str, ProjectEntry] = {
     "scribe-tap": ProjectEntry("scribe-tap", "/realm/project/scribe-tap", "ai", True, (".c", ".h", ".py"), classify_rust_simple),
     "knowledge-extract": ProjectEntry("knowledge-extract", "/realm/project/knowledge-extract", "ai", True, (".py",), classify_rust_simple),
     "pwrank": ProjectEntry("pwrank", "/realm/project/pwrank", "pre-ai", True, (".py", ".vue", ".js"), classify_rust_simple),
-    "knowledgebase": ProjectEntry("knowledgebase", "/realm/data/knowledgebase", "ai", True, (), classify_knowledgebase),
+    "knowledgebase": ProjectEntry("knowledgebase", "/realm/archive/knowledgebase", "ai", False, (), classify_knowledgebase),
     # Inactive
     "WSoC13-SpaceCombat-Game": ProjectEntry("WSoC13-SpaceCombat-Game", "_inactive/WSoC13-SpaceCombat-Game", "pre-ai", False, (".cpp", ".h"), None),
     "UselessOS": ProjectEntry("UselessOS", "_inactive/UselessOS", "pre-ai", False, (".cpp", ".h", ".s"), None),

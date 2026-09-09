@@ -117,7 +117,7 @@
   },
   "knowledgebase": {
     "branch": "HEAD",
-    "repo": "/realm/data/knowledgebase"
+    "repo": "/realm/archive/knowledgebase"
   },
   "product_validation": {
     "external_markdown_roots": [

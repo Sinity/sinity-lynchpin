@@ -4,7 +4,7 @@
 their default filesystem roots. The important boundaries are:
 
 - local app state under `~/.local/share/...` for ActivityWatch and Atuin,
-- canonical raw and processed exports under `/realm/data/...`,
+- canonical raw and processed exports under `/realm/...`,
 - local repos under `/realm/project/...`,
 - repo-local generated registries, datasets, and archives under `.lynchpin/`.
 
@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-_SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/db/polylogue/index.db")
+_SINNIX_POLYLOGUE_INDEX_DB = Path("/realm/state/polylogue/index.db")
 
 
 @dataclass(frozen=True)
@@ -157,13 +157,13 @@ class LynchpinConfig:
     @classmethod
     def from_env(cls) -> LynchpinConfig:
         repo_root = Path(os.environ.get("LYNCHPIN_REPO_ROOT", Path(__file__).resolve().parents[2]))
-        data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm/data"))
+        data_root = Path(os.environ.get("LYNCHPIN_DATA_ROOT", "/realm"))
         # Platform-account exports and bounded communication archives
         # (google, reddit, spotify, raindrop, facebook-messenger, teams,
         # outlook, ...). Health exports carry their own root below.
         accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "accounts"))
         health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
-        derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "derived/lynchpin"))
+        derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "state/lynchpin/products"))
         libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library/media"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
@@ -251,12 +251,11 @@ class LynchpinConfig:
             os.environ.get("POLYLOGUE_ROOT", "/realm/project/polylogue"),
         )).expanduser()
         fbmessenger_gdpr_root = Path(os.environ.get(
-            "LYNCHPIN_FBMESSENGER_GDPR", data_root / "comms/facebook-messenger/processed/gdpr"
+            "LYNCHPIN_FBMESSENGER_GDPR", accounts_root / "facebook-messenger/processed/gdpr"
         ))
         fbmessenger_db = Path(os.environ.get("LYNCHPIN_FBMESSENGER_DB", _resolve_fbmessenger_db(
-            data_root / "comms/facebook-messenger/processed/fbmessengerexport.sqlite",
-            data_root / "comms/facebook-messenger/fbmessengerexport.sqlite",
-            data_root / "comms/fbmessengerexport.sqlite",
+            accounts_root / "facebook-messenger/processed/fbmessengerexport.sqlite",
+            accounts_root / "facebook-messenger/fbmessengerexport.sqlite",
         )))
 
         asciinema_root = Path(os.environ.get("LYNCHPIN_ASCIINEMA_ROOT", data_root / "activity/asciinema"))
@@ -265,7 +264,7 @@ class LynchpinConfig:
         keylog_root = Path(os.environ.get("LYNCHPIN_KEYLOG_ROOT", data_root / "activity/keylog"))
 
         cache_dir = Path(os.environ.get("LYNCHPIN_CACHE_DIR", local_root / "cache/lynchpin"))
-        dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/data/knowledgebase"))
+        dendron_root = Path(os.environ.get("LYNCHPIN_DENDRON_ROOT", "/realm/archive/knowledgebase"))
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "accounts/raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
@@ -304,7 +303,7 @@ class LynchpinConfig:
         )
         irc_root = Path(os.environ.get("LYNCHPIN_IRC_ROOT", data_root / "activity/irc"))
         raw_log_file = Path(os.environ.get(
-            "LYNCHPIN_RAW_LOG_FILE", "/realm/data/knowledgebase/logs.raw-log.md"
+            "LYNCHPIN_RAW_LOG_FILE", os.environ.get("RAWLOG_FILE", data_root / "journal/raw-log.md")
         ))
         machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "machine"))
         machine_host = os.environ.get("LYNCHPIN_MACHINE_HOST", "sinnix-prime")
@@ -316,7 +315,7 @@ class LynchpinConfig:
         machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", default_machine_host_root))
         machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
         machine_telemetry_lake_root = Path(os.environ.get(
-            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "derived/machine-telemetry"
+            "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "machine/analysis"
         ))
         sinnix_generations_jsonl = Path(os.environ.get(
             "LYNCHPIN_SINNIX_GENERATIONS_JSONL",
@@ -347,7 +346,7 @@ class LynchpinConfig:
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",
-            data_root / "comms/teams",
+            accounts_root / "teams",
         ))
         # captures_root/phone moved to data_root/machine/phone on 2026-08-17
         # (estate charter subject recut: "captures/phone -- the app's own

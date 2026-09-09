@@ -52,7 +52,7 @@ class CommunicationDayActivity:
 
 
 def communication_events_path(root: Path | None = None) -> Path:
-    base = root or (get_config().data_root / "derived/comms")
+    base = root or (get_config().data_root / "state/lynchpin/communications")
     return base / "communication_events.ndjson"
 
 

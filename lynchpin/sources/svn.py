@@ -24,7 +24,7 @@ from ..core.coverage import CoverageBounds
 from ..core.errors import SourceUnavailableError
 from ..core.primitives import logical_date
 
-SVN_DATA_ROOT = Path("/realm/data/code/tortoisesvn/historical/jbr_tar")
+SVN_DATA_ROOT = Path("/realm/archive/code-history/tortoisesvn/historical/jbr_tar")
 
 @dataclass(frozen=True)
 class SVNPathChange:

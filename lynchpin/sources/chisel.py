@@ -5,7 +5,7 @@ issues, log) plus one compressed whole-repo XML per project.
 By default outputs are written to the stable derived-data root returned by
 ``code_snapshots_path()``:
 
-    /realm/data/derived/lynchpin/code-snapshots
+    /realm/code-snapshots
 
 Re-running chisel keeps the stable snapshot set current and moves previous
 combined ``*-all.tar.gz`` packages into ``archive/<timestamp>/`` before
@@ -1064,7 +1064,7 @@ _plan(
 
 _plan(
     "knowledgebase",
-    "/realm/data/knowledgebase",
+    "/realm/archive/knowledgebase",
     "Sinity/knowledgebase",
     Slice(
         "permanent",

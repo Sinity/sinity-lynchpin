@@ -145,7 +145,7 @@ def test_materialize_communications_reads_outlook_csv(monkeypatch, tmp_path):
     monkeypatch.setattr("lynchpin.sources.communications.get_config", lambda: cfg)
 
     manifest = materialize_communication_events()
-    rows = list(iter_communication_events(exports / "derived/comms/communication_events.ndjson"))
+    rows = list(iter_communication_events(exports / "state/lynchpin/communications/communication_events.ndjson"))
 
     assert manifest["row_count"] == 1
     assert manifest["schema_version"] == COMMUNICATION_EVENTS_SCHEMA_VERSION

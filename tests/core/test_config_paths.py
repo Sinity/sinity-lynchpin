@@ -148,3 +148,27 @@ def test_resolve_latest_dated_dir_does_not_pick_mtime_candidate(tmp_path: Path) 
     (tmp_path / "not-an-export").mkdir()
 
     assert resolve_latest_dated_dir(tmp_path) is None
+
+
+def test_journal_default_and_override_are_shared_with_sync(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.cli import substance_log_sync
+
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
+    monkeypatch.delenv("LYNCHPIN_RAW_LOG_FILE", raising=False)
+    monkeypatch.delenv("RAWLOG_FILE", raising=False)
+    cfg = LynchpinConfig.from_env()
+    assert cfg.raw_log_file == tmp_path / "journal/raw-log.md"
+    monkeypatch.setattr(substance_log_sync, "get_config", lambda: cfg)
+    assert substance_log_sync._rawlog_path() == cfg.raw_log_file
+
+    selected = tmp_path / "selected-journal.md"
+    monkeypatch.setenv("RAWLOG_FILE", str(selected))
+    cfg = LynchpinConfig.from_env()
+    assert cfg.raw_log_file == selected
+    assert substance_log_sync._rawlog_path() == selected
+
+    analysis_override = tmp_path / "analysis-journal.md"
+    monkeypatch.setenv("LYNCHPIN_RAW_LOG_FILE", str(analysis_override))
+    cfg = LynchpinConfig.from_env()
+    assert cfg.raw_log_file == analysis_override
+    assert substance_log_sync._rawlog_path() == analysis_override

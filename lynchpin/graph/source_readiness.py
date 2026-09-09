@@ -45,7 +45,7 @@ def source_readiness(
         end=materialization_end,
         repair_materializations=repair_materializations,
     ).by_source()
-    comms_product_root = cfg.data_root / "derived/comms"
+    comms_product_root = cfg.data_root / "state/lynchpin/communications"
     items: list[SourceReadiness] = [
         _path_source(
             "activitywatch",

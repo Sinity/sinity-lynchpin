@@ -14,8 +14,8 @@ from typing import Any, Sequence
 from lynchpin.core.io import save_json
 
 
-DEFAULT_STABILITY_ROOT = Path("/realm/data/machine/stability-lab")
-DEFAULT_LIVE_BELOW_STORE = Path("/realm/data/machine/below/store")
+DEFAULT_STABILITY_ROOT = Path("/realm/machine/stability-lab")
+DEFAULT_LIVE_BELOW_STORE = Path("/realm/machine/below/store")
 
 
 @dataclass(frozen=True)

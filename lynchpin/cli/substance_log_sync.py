@@ -20,7 +20,6 @@ Usage:
 from __future__ import annotations
 
 import csv
-import os
 import re
 import sys
 from pathlib import Path
@@ -39,8 +38,7 @@ _MAX_NOTE_LEN = 240
 
 
 def _rawlog_path() -> Path:
-    root = os.environ.get("KNOWLEDGEBASE_ROOT", "/realm/data/knowledgebase")
-    return Path(root) / "logs.raw-log.md"
+    return get_config().raw_log_file
 
 
 def _csv_path() -> Path:

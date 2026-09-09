@@ -77,7 +77,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="asciinema",
         authority="asciinema terminal recording captures",
         query_surface="lynchpin.sources.terminal.recordings",
-        materialization_hint="asciinema recording capture writes under /realm/data/activity/asciinema",
+        materialization_hint="asciinema recording capture writes under /realm/activity/asciinema",
         required=False,
     ),
     SourceContract(
@@ -268,7 +268,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="goodreads",
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        materialization_hint="replace /realm/data/accounts/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/accounts/goodreads/raw/library_export.csv",
         required=False,
     ),
     SourceContract(
@@ -380,7 +380,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="substance",
         authority="processed substance log CSV",
         query_surface="lynchpin.sources.substance",
-        materialization_hint="edit /realm/data/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/health/processed/substance_log_unified.csv",
         substrate_daily_signal=True,
     ),
     SourceContract(
@@ -403,7 +403,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="samsung_gdpr_cloud",
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/data/health/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/health/samsung",
         required=False,
     ),
     SourceContract(
@@ -510,7 +510,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="wykop",
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        materialization_hint="replace Wykop GDPR export under /realm/data/accounts/wykop/raw",
+        materialization_hint="replace Wykop GDPR export under /realm/accounts/wykop/raw",
         required=False,
         substrate_daily_signal=True,
     ),

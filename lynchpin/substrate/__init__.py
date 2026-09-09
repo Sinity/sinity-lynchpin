@@ -1,7 +1,7 @@
 """DuckDB substrate for Lynchpin's relational data.
 
 The substrate is a derived read store, not a warehouse: raw exports stay
-external under ``/realm/data`` and remain the canonical source, re-parseable on
+external under ``/realm`` and remain the canonical source, re-parseable on
 demand. The substrate is the materialized source of truth only for *promoted*
 relational rows — evidence-graph nodes/edges, commit facts, file changes, AI
 work events, symbol changes, and PR review rows. Source modules (Python +

@@ -13,10 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-HEALTH_RAW = Path("/realm/data/health/raw/samsung-health")
-SAA_RAW = Path("/realm/data/health/raw/sleep-as-android")
-GDPR_CLOUD_DIR = Path("/realm/data/health/raw/samsung-gdpr-cloud")
-PROCESSED = Path("/realm/data/health/processed")
+HEALTH_RAW = Path("/realm/health/raw/samsung-health")
+SAA_RAW = Path("/realm/health/raw/sleep-as-android")
+GDPR_CLOUD_DIR = Path("/realm/health/raw/samsung-gdpr-cloud")
+PROCESSED = Path("/realm/health/processed")
 
 # Bump CSV field size limit for exercise/ECG rows with large embedded JSON
 csv.field_size_limit(sys.maxsize)

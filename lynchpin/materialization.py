@@ -2140,7 +2140,7 @@ def _asciinema_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.asciinema_root,),
         authority="asciinema terminal recording captures",
         query_surface="lynchpin.sources.terminal.recordings",
-        materialization_hint="asciinema recording capture writes under /realm/data/activity/asciinema",
+        materialization_hint="asciinema recording capture writes under /realm/activity/asciinema",
         row_count=_count_files(cfg.asciinema_root, suffixes=(".cast",)),
     )
 
@@ -2227,7 +2227,7 @@ def _goodreads_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.goodreads_library,),
         authority="Goodreads library export CSV",
         query_surface="lynchpin.sources.exports_goodreads",
-        materialization_hint="replace /realm/data/accounts/goodreads/raw/library_export.csv",
+        materialization_hint="replace /realm/accounts/goodreads/raw/library_export.csv",
         row_count=_csv_count(cfg.goodreads_library),
     )
 
@@ -2451,7 +2451,7 @@ def _samsung_gdpr_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.samsung_gdpr_cloud_dir,),
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/data/health/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/health/samsung",
         row_count=_count_files(cfg.samsung_gdpr_cloud_dir),
     )
 
@@ -2476,7 +2476,7 @@ def _wykop_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(root,),
         authority="Wykop GDPR export",
         query_surface="lynchpin.sources.wykop",
-        materialization_hint="replace Wykop GDPR export under /realm/data/accounts/wykop/raw",
+        materialization_hint="replace Wykop GDPR export under /realm/accounts/wykop/raw",
         row_count=_count_files(root, suffixes=(".csv", ".json", ".jsonl")),
     )
     try:
@@ -2830,7 +2830,7 @@ def _substance_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         row_count=row_count,
         first_date=first,
         last_date=last,
-        materialization_hint="edit /realm/data/health/processed/substance_log_unified.csv",
+        materialization_hint="edit /realm/health/processed/substance_log_unified.csv",
         reason="processed substance CSV is present" if path.exists() else "processed substance CSV is missing",
     )
 
