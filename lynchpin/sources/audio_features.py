@@ -96,7 +96,7 @@ def _split_artists(raw: str) -> list[str]:
 def default_dataset_path() -> Path:
     from ..core.config import get_config
 
-    base = get_config().libraries_root / "music-audio-features"
+    base = get_config().libraries_root / "datasets/music-audio-features"
     # Prefer larger / better-coverage dumps when present (1.2M Kaggle > 114k HF).
     for name in ("tracks_features.csv", "spotify-12m-songs.csv", "spotify-tracks-114k.csv"):
         candidate = base / name

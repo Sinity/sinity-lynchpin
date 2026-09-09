@@ -140,9 +140,9 @@ stopped watching them.
 
 ## Substack archives
 
-The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/library/media/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
+The owner-native archive root is `LYNCHPIN_SUBSTACK_ROOT`, defaulting to `/realm/library/web/substack`. Each publication is a directory containing the original HTML, Markdown, or text files produced by `sbstck-dl`; the downloader checkout and binary may remain alongside that archive. Lynchpin writes the rebuildable canonical index to `LYNCHPIN_DERIVED_ROOT/substack/posts.ndjson` with a sibling manifest. The index keeps publication, slug, title, publication timestamp, original source path, format, content hash, and content, so analyses can read the normalized product without rewriting the archive.
 
-The downloader is configured through `LYNCHPIN_SUBSTACK_DOWNLOADER`, defaulting to `/realm/library/media/substack/sbstck-dl/sbstck-dl`. The integrated command derives the publication directory and then materializes the index:
+The downloader is configured through `LYNCHPIN_SUBSTACK_DOWNLOADER`, defaulting to `/realm/library/web/substack/sbstck-dl/sbstck-dl`. The integrated command derives the publication directory and then materializes the index:
 
 ```bash
 lynchpin-substack download --url https://www.astralcodexten.com/ --publication acx --format html --rate 2

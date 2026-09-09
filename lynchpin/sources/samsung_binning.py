@@ -2,7 +2,7 @@
 
 The processed JSONL files at /realm/health/processed/health_stress.jsonl
 and health_hrv.jsonl give 1-hour-window summaries. The raw GDPR export at
-/realm/health/samsung/processed/2026-03-30-gdpr-extracted/.../Stress Internal Data/
+/realm/accounts/samsung/extracted/2026-03-30/.../Stress Internal Data/
 and Health HRV/ contains finer-grained binning_data fields:
 
   - Stress Internal Data: per-MINUTE stress scores (60s bins), 2022-08 onwards
@@ -24,7 +24,7 @@ import json
 
 
 SAMSUNG_GDPR_ROOT_DEFAULT = Path(
-    "/realm/health/samsung/processed/2026-03-30-gdpr-extracted/"
+    "/realm/accounts/samsung/extracted/2026-03-30/"
     "samsungcloud_gk000066110879_20260329_access"
 )
 

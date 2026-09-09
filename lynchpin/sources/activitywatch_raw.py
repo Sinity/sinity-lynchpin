@@ -49,9 +49,7 @@ def _candidate_dbs(db_path: Optional[Path] = None) -> tuple[Path, ...]:
 
 
 def canonical_activitywatch_events_path() -> Path:
-    # activity/activitywatch/activitywatch since the 2026-08-17 subject
-    # recut merged captures/activitywatch into the nested export-wave tree.
-    return get_config().data_root / "activity/activitywatch/activitywatch/events.ndjson"
+    return get_config().data_root / "activity/activitywatch/events.ndjson"
 
 
 def _database_signature(path: Path) -> tuple[object, ...]:

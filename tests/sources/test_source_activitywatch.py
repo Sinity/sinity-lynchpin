@@ -264,7 +264,7 @@ def test_activitywatch_raw_skips_candidate_without_matching_buckets(monkeypatch,
 def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) -> None:
     """Canonical reads should use the day index instead of parsing full history."""
     calls = []
-    path = tmp_path / "activity/activitywatch/activitywatch/events.ndjson"
+    path = tmp_path / "activity/activitywatch/events.ndjson"
     path.parent.mkdir(parents=True)
     rows = [
         {
@@ -287,7 +287,7 @@ def test_activitywatch_ndjson_events_use_day_index(monkeypatch, tmp_path: Path) 
         },
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
-    index_path = tmp_path / "activity/activitywatch/activitywatch/events_by_day/2026-03-15.ndjson"
+    index_path = tmp_path / "activity/activitywatch/events_by_day/2026-03-15.ndjson"
     index_path.parent.mkdir(parents=True)
     index_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
@@ -376,7 +376,7 @@ def test_activitywatch_events_use_live_db_after_index_tail(monkeypatch) -> None:
 
 
 def test_activitywatch_ndjson_fallback_normalizes_naive_bounds(monkeypatch, tmp_path: Path) -> None:
-    path = tmp_path / "activity/activitywatch/activitywatch/events.ndjson"
+    path = tmp_path / "activity/activitywatch/events.ndjson"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps(

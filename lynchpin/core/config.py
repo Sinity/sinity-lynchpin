@@ -164,7 +164,7 @@ class LynchpinConfig:
         accounts_root = Path(os.environ.get("LYNCHPIN_ACCOUNTS_ROOT", data_root / "accounts"))
         health_root = Path(os.environ.get("LYNCHPIN_HEALTH_ROOT", data_root / "health"))
         derived_root = Path(os.environ.get("LYNCHPIN_DERIVED_ROOT", data_root / "state/lynchpin/products"))
-        libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library/media"))
+        libraries_root = Path(os.environ.get("LYNCHPIN_LIBRARIES_ROOT", "/realm/library"))
         sinnix_root = Path(os.environ.get("LYNCHPIN_SINNIX_ROOT", "/realm/project/sinnix"))
         local_root = _default_local_root(repo_root, os.environ.get("LYNCHPIN_LOCAL_ROOT"))
         generated_root = _non_legacy_generated_path(
@@ -215,7 +215,7 @@ class LynchpinConfig:
         ))
         aw_raw_dir = Path(os.environ.get(
             "LYNCHPIN_ACTIVITYWATCH_RAW_DIR",
-            data_root / "activity/activitywatch/activitywatch/raw",
+            data_root / "activity/activitywatch/raw",
         ))
         atuin_db = Path(os.environ.get("LYNCHPIN_ATUIN_DB", "~/.local/share/atuin/history.db")).expanduser()
         baseline_dir = _non_legacy_generated_path(
@@ -268,7 +268,7 @@ class LynchpinConfig:
 
         raindrop_dir = Path(os.environ.get("LYNCHPIN_RAINDROP_DIR", data_root / "accounts/raindrop/raw"))
         raindrop_csv = _resolve_raindrop_csv(os.environ.get("LYNCHPIN_RAINDROP_CSV"), raindrop_dir)
-        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/library/media/substack"))
+        substack_root = Path(os.environ.get("LYNCHPIN_SUBSTACK_ROOT", "/realm/library/web/substack"))
         substack_downloader = Path(os.environ.get(
             "LYNCHPIN_SUBSTACK_DOWNLOADER", substack_root / "sbstck-dl/sbstck-dl"
         ))
@@ -338,7 +338,7 @@ class LynchpinConfig:
         # more than a directory per collector.
         arbtt_root = Path(os.environ.get(
             "LYNCHPIN_ARBTT_ROOT",
-            data_root / "activity/activitywatch/activitywatch/historical/arbtt",
+            data_root / "activity/activitywatch/historical/arbtt",
         ))
         teams_root = Path(os.environ.get(
             "LYNCHPIN_TEAMS_ROOT",

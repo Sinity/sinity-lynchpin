@@ -403,7 +403,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         name="samsung_gdpr_cloud",
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/health/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/health/raw/samsung-gdpr-cloud",
         required=False,
     ),
     SourceContract(

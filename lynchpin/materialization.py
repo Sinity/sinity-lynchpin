@@ -1976,7 +1976,7 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(*paths, manifest),
-        raw_roots=(cfg.data_root / "activity/activitywatch/activitywatch",),
+        raw_roots=(cfg.data_root / "activity/activitywatch",),
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -2055,7 +2055,7 @@ def _activity_content_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         authority=contract.authority,
         query_surface=contract.query_surface,
         materialized_paths=(path, usage, manifest),
-        raw_roots=(cfg.derived_root / "title_metadata", cfg.data_root / "activity/activitywatch/activitywatch"),
+        raw_roots=(cfg.derived_root / "title_metadata", cfg.data_root / "activity/activitywatch"),
         row_count=_manifest_row_count(meta, path),
         first_date=_date_from_iso(meta.get("first_date")),
         last_date=_date_from_iso(meta.get("last_date")),
@@ -2451,7 +2451,7 @@ def _samsung_gdpr_cloud_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         raw_roots=(cfg.samsung_gdpr_cloud_dir,),
         authority="Samsung GDPR cloud export",
         query_surface="lynchpin.sources.samsung_gdpr_cloud",
-        materialization_hint="replace Samsung GDPR cloud export under /realm/health/samsung",
+        materialization_hint="replace Samsung GDPR cloud export under /realm/health/raw/samsung-gdpr-cloud",
         row_count=_count_files(cfg.samsung_gdpr_cloud_dir),
     )
 
