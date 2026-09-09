@@ -172,3 +172,22 @@ def test_journal_default_and_override_are_shared_with_sync(monkeypatch, tmp_path
     cfg = LynchpinConfig.from_env()
     assert cfg.raw_log_file == analysis_override
     assert substance_log_sync._rawlog_path() == analysis_override
+
+
+def test_machine_consumers_share_state_database_without_capture_alias(monkeypatch, tmp_path: Path) -> None:
+    from lynchpin.analysis.active import substrate_promote_machine
+
+    monkeypatch.setenv("LYNCHPIN_DATA_ROOT", str(tmp_path))
+    for key in ("LYNCHPIN_MACHINE_CAPTURE_ROOT", "LYNCHPIN_MACHINE_HOST_ROOT", "LYNCHPIN_MACHINE_TELEMETRY_DB"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = LynchpinConfig.from_env()
+    assert cfg.machine_host_root == tmp_path / "machine"
+    assert cfg.machine_telemetry_db == tmp_path / "state/machine-telemetry/telemetry.sqlite"
+    monkeypatch.setattr("lynchpin.core.config.get_config", lambda: cfg)
+    assert substrate_promote_machine._machine_sqlite_path() == cfg.machine_telemetry_db
+
+    selected = tmp_path / "external/selected.sqlite"
+    monkeypatch.setenv("LYNCHPIN_MACHINE_TELEMETRY_DB", str(selected))
+    cfg = LynchpinConfig.from_env()
+    assert cfg.machine_telemetry_db == selected
+    assert substrate_promote_machine._machine_sqlite_path() == selected

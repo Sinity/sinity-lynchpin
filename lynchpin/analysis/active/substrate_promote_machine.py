@@ -313,16 +313,9 @@ def promote_machine_tables(
 
 def _machine_sqlite_path() -> Path | None:
     """Return the canonical machine telemetry SQLite path, if configured."""
-    import os
-
     from lynchpin.core.config import get_config
 
-    cfg = get_config()
-    machine_root = cfg.machine_host_root
-    if machine_root is None:
-        return None
-    db_path = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", str(Path(machine_root) / "telemetry.sqlite")))
-    return db_path
+    return get_config().machine_telemetry_db
 
 
 def _machine_lake_root() -> Path | None:

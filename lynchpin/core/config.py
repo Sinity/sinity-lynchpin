@@ -306,14 +306,10 @@ class LynchpinConfig:
             "LYNCHPIN_RAW_LOG_FILE", os.environ.get("RAWLOG_FILE", data_root / "journal/raw-log.md")
         ))
         machine_capture_root = Path(os.environ.get("LYNCHPIN_MACHINE_CAPTURE_ROOT", data_root / "machine"))
-        machine_host = os.environ.get("LYNCHPIN_MACHINE_HOST", "sinnix-prime")
-        default_machine_host_root = (
-            machine_capture_root
-            if (machine_capture_root / "telemetry.sqlite").exists()
-            else machine_capture_root / machine_host
-        )
-        machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", default_machine_host_root))
-        machine_telemetry_db = Path(os.environ.get("LYNCHPIN_MACHINE_TELEMETRY_DB", machine_host_root / "telemetry.sqlite"))
+        machine_host_root = Path(os.environ.get("LYNCHPIN_MACHINE_HOST_ROOT", machine_capture_root))
+        machine_telemetry_db = Path(os.environ.get(
+            "LYNCHPIN_MACHINE_TELEMETRY_DB", data_root / "state/machine-telemetry/telemetry.sqlite"
+        ))
         machine_telemetry_lake_root = Path(os.environ.get(
             "LYNCHPIN_MACHINE_TELEMETRY_LAKE_ROOT", data_root / "machine/analysis"
         ))
