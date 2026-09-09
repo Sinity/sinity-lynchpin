@@ -184,6 +184,17 @@
               doCheck = false;
             });
 
+            inline-snapshot = prev.inline-snapshot.overridePythonAttrs (old: {
+              # These documentation snapshots encode Black's old multiline
+              # string layout. Keep the behavioral suite and other doc tests.
+              # Recheck when inline-snapshot refreshes its Black fixtures.
+              disabledTests = (old.disabledTests or [ ]) ++ [
+                "test_docs[categories.md]"
+                "test_docs[code_generation.md]"
+                "test_docs[testing.md]"
+              ];
+            });
+
             fastapi = prev.fastapi.overridePythonAttrs (_old: {
               # FastAPI's current snapshot tests fail against the updated
               # inline-snapshot release; this package is consumed for its
@@ -216,6 +227,7 @@
               scipy
               scikit-learn
               hmmlearn
+              inline-snapshot
               fastapi
               rich-toolkit
               ;
