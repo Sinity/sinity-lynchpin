@@ -387,9 +387,7 @@ def _pitch_rewrites(matrix: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def run_polylogue_metrics(out_file: str | Path) -> dict[str, Any]:
-    repo = Path(get_config().polylogue_root).resolve()
-    if repo.name != "polylogue":
-        repo = Path("/realm/project/polylogue")
+    repo = Path(get_config().polylogue_project_root).resolve()
     package_root = repo / "polylogue"
     tests_root = repo / "tests"
 

@@ -30,7 +30,7 @@ def code_snapshots_path(project: str | None = None) -> Path:
     """Return the stable output root (or per-project subdir) for code snapshots."""
     from lynchpin.core.config import get_config
 
-    base = get_config().data_root / "code-snapshots"
+    base = get_config().data_root / "library/code"
     return base / project if project else base
 
 

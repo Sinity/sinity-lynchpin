@@ -85,7 +85,7 @@ def _velocity(
 )
 def _chisel(
     projects: str = typer.Option("", "--projects", help="Whitespace-separated project names (default: all registered)."),
-    output_root: str = typer.Option("", "--output-root", help="Output directory (default: /realm/code-snapshots)."),
+    output_root: str = typer.Option("", "--output-root", help="Output directory (default: /realm/library/code)."),
     max_workers: int = typer.Option(4, "--max-workers", help="Max parallel repos (default: 4)."),
     list_only: bool = typer.Option(False, "--list/", help="List available project plans and exit."),
 ) -> None:

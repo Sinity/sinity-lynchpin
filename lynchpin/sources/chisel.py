@@ -5,7 +5,7 @@ issues, log) plus one compressed whole-repo XML per project.
 By default outputs are written to the stable derived-data root returned by
 ``code_snapshots_path()``:
 
-    /realm/code-snapshots
+    /realm/library/code
 
 Re-running chisel keeps the stable snapshot set current and moves previous
 combined ``*-all.tar.gz`` packages into ``archive/<timestamp>/`` before
@@ -6044,7 +6044,7 @@ def run_from_cli(argv: list[str] | None = None) -> int:
         "--output-root",
         type=_parse_optional_path,
         default=None,
-        help="Output directory (default: derived_root/code-snapshots — stable, overwrites on re-run).",
+        help="Output directory (default: data_root/library/code — stable, overwrites on re-run).",
     )
     ap.add_argument(
         "--max-workers",

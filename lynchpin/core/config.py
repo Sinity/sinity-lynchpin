@@ -242,8 +242,8 @@ class LynchpinConfig:
         spotify_root = _resolve_spotify_export(Path(os.environ.get(
             "LYNCHPIN_SPOTIFY_ROOT", data_root / "accounts/spotify/processed"
         )))
-        polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "ai/chatlog/processed/markdown"))
-        polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", data_root / "ai/chatlog/archive"))
+        polylogue_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ROOT", data_root / "state/polylogue/markdown"))
+        polylogue_archive_root = Path(os.environ.get("LYNCHPIN_POLYLOGUE_ARCHIVE_ROOT", data_root / "state/polylogue"))
         xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
         polylogue_db = _default_polylogue_db(xdg_data_home)
         polylogue_project_root = Path(os.environ.get(
@@ -296,7 +296,7 @@ class LynchpinConfig:
                 ":".join([
                     str(data_root / "activity/clipboard/clipse/raw/2026-02-01/clipboard_history.json"),
                     str(data_root / "activity/clipboard/clipse/raw/2026-01-12/clipboard_history.json"),
-                    str(data_root / "ai/chatlog/raw/legacy-raw/gemini_ai_studio_local_dump_20260115/clipboard_history_selections.md"),
+                    str(data_root / "activity/clipboard/exports/2026-01-15-selections.md"),
                 ]),
             ).split(":")
             if item
