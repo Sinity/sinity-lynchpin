@@ -5,7 +5,11 @@ from copy import deepcopy
 import pytest
 
 from lynchpin.analysis.projects.campaign import campaign_evidence, campaign_scope_delta
-from lynchpin.sources.campaign import read_batches, read_session_evidence
+from lynchpin.sources.campaign import (
+    read_batches,
+    read_native_evidence,
+    read_session_evidence,
+)
 
 
 REF = "sinnix://projects/demo/beads/demo-1"
@@ -119,6 +123,107 @@ def product(tasks=None, runs=None):
     )
 
 
+def native_evidence():
+    claim = deepcopy(runtime()["rows"][0]["workers"][0]["result"])
+    claim["verification"][0]["receipt"] = "agentctl://jobs/9/verify-1"
+    return {
+        "coverage": "retained_native_evidence",
+        "revision": "native-v1",
+        "gaps": [],
+        "rows": [
+            {
+                "schema_version": 1,
+                "kind": "native_evidence",
+                "evidence_id": "evidence-1",
+                "recorded_at": "2026-01-01T10:00:00Z",
+                "project": "demo",
+                "worker_result": claim,
+                "task_snapshot": [
+                    {
+                        "id": "demo-1",
+                        "acceptance_criteria": [
+                            {"id": "AC-1", "text": "Behavior holds"}
+                        ],
+                        "evidence_binding": {
+                            "v2_available": True,
+                            "bead_revision": "task-v2",
+                            "criteria": [
+                                {
+                                    "id": "AC-1",
+                                    "text": "Behavior holds",
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "candidate": {
+                    "candidate_sha": SHA,
+                    "resolved_commit": SHA,
+                    "current_head": SHA,
+                    "current_dirty": False,
+                    "checked": True,
+                    "gaps": [],
+                },
+                "verification": [
+                    {
+                        "claim": claim["verification"][0],
+                        "observation": {
+                            "job_id": 9,
+                            "reference": "verify-1",
+                            "phase": "succeeded",
+                            "exit_code": 0,
+                            "tree_receipt": {"head": "c" * 40, "dirty": True},
+                            "execution_receipt": {
+                                "schema_version": 1,
+                                "start": {
+                                    "status": "observed",
+                                    "head": SHA,
+                                    "dirty": False,
+                                },
+                                "end": {
+                                    "status": "observed",
+                                    "head": SHA,
+                                    "dirty": False,
+                                },
+                                "binding": "unchanged_endpoints",
+                                "reason": None,
+                            },
+                            "result_kind": "succeeded",
+                            "checked": True,
+                            "eligible": True,
+                            "gaps": [],
+                        },
+                    }
+                ],
+                "publication": {
+                    "policy": "master",
+                    "branch": "master",
+                    "remote_head": "b" * 40,
+                    "candidate_reachable": True,
+                    "checked": True,
+                    "state": "published",
+                    "gaps": [],
+                },
+                "session_claims": {},
+            }
+        ],
+    }
+
+
+def native_product(tasks=None, evidence=None, runs=None):
+    return campaign_evidence(
+        project="demo",
+        bead_refs=[REF],
+        task_snapshot=tasks or snapshot(),
+        runtime_snapshot=runs
+        if runs is not None
+        else {"rows": [], "coverage": "unavailable"},
+        native_evidence_snapshot=evidence
+        if evidence is not None
+        else native_evidence(),
+    )
+
+
 def test_closed_task_is_not_completion_without_acceptance_evidence():
     result = product(runs={"rows": [], "coverage": "unavailable"})
     item = result["items"][0]
@@ -182,7 +287,7 @@ def test_legacy_text_criteria_cannot_be_completed_by_title_or_closure():
     assert item["acceptance"] == []
 
 
-def test_absent_attempt_is_unknown_unless_owner_history_is_complete():
+def test_absent_attempt_is_unknown_even_when_batch_history_claims_complete():
     assert (
         product(runs={"rows": [], "coverage": "retained_records"})["items"][0][
             "evidence_state"
@@ -191,7 +296,7 @@ def test_absent_attempt_is_unknown_unless_owner_history_is_complete():
     )
     assert (
         product(runs={"rows": [], "coverage": "complete"})["items"][0]["evidence_state"]
-        == "unstarted"
+        == "unknown"
     )
 
 
@@ -290,6 +395,112 @@ def test_source_contract_failure_is_not_empty_complete_history():
     assert result["gaps"]
 
 
+def test_source_reads_native_evidence_route_without_opening_runtime_files():
+    calls = []
+
+    def load(command):
+        calls.append(command)
+        return {
+            "schema_version": 1,
+            "owner": "agentctl",
+            "interface": "agentctl.evidence.list",
+            "project": "demo",
+            "coverage": "retained_records",
+            "records": native_evidence()["rows"],
+            "gaps": [],
+        }
+
+    result = read_native_evidence("demo", loader=load)
+    assert calls == [["agentctl", "evidence", "list", "--project", "demo", "--json"]]
+    assert result["coverage"] == "retained_records"
+    assert result["revision"].startswith("sha256:")
+
+
+def test_native_evidence_can_prove_clean_published_verified_criterion():
+    item = native_product()["items"][0]
+    assert item["attempts"][0]["run_id"] is None
+    assert item["attempts"][0]["source_kind"] == "native_evidence"
+    assert item["evidence_state"] == "verified"
+    assert item["implementation_landed"] is True
+    assert item["publication"] == {"available": True, "state": "published"}
+    assert item["verification"] == {"available": True, "state": "verified"}
+
+
+def test_native_publication_is_independent_of_legacy_acceptance_text():
+    tasks = snapshot()
+    tasks["nodes"][0]["acceptance_criteria"] = "Behavior holds"
+    item = native_product(tasks)["items"][0]
+    assert item["acceptance"] == []
+    assert item["implementation_landed"] is True
+    assert item["publication"]["state"] == "published"
+    assert item["evidence_state"] == "implementation_landed_ac_incomplete"
+
+
+@pytest.mark.parametrize("change", ["wrong_sha", "missing_receipt", "mismatched_start"])
+def test_native_claims_need_exact_owner_receipts(change):
+    evidence = native_evidence()
+    claim = evidence["rows"][0]["verification"][0]["claim"]
+    if change == "wrong_sha":
+        claim["tested_sha"] = "c" * 40
+    elif change == "missing_receipt":
+        claim["receipt"] = ""
+    else:
+        evidence["rows"][0]["verification"][0]["observation"]["execution_receipt"][
+            "start"
+        ]["head"] = "c" * 40
+    item = native_product(evidence=evidence)["items"][0]
+    assert item["implementation_landed"] is True
+    assert item["acceptance"][0]["state"] == "unknown"
+    assert item["verification"]["state"] == "unknown"
+
+
+def test_native_failed_receipt_is_observed_without_verifying_acceptance():
+    evidence = native_evidence()
+    claim = evidence["rows"][0]["verification"][0]["claim"]
+    observation = evidence["rows"][0]["verification"][0]["observation"]
+    claim["status"] = "failed"
+    observation.update(phase="failed", exit_code=1, eligible=False)
+    item = native_product(evidence=evidence)["items"][0]
+    assert item["verification"] == {"available": True, "state": "failed"}
+    assert item["acceptance"][0]["state"] != "verified"
+
+
+def test_native_worker_model_is_a_claim_not_an_observation():
+    evidence = native_evidence()
+    evidence["rows"][0]["worker_result"]["actual_executor_model"] = "claimed-model"
+    attempt = native_product(evidence=evidence)["items"][0]["attempts"][0]
+    assert attempt["actual_executor_model"] is None
+    assert attempt["worker_claim"]["actual_executor_model"] == "claimed-model"
+
+
+def test_native_unrelated_project_is_rejected_not_silently_joined():
+    rows = native_evidence()["rows"]
+    rows[0]["project"] = "another"
+    result = read_native_evidence(
+        "demo",
+        loader=lambda command: {
+            "schema_version": 1,
+            "owner": "agentctl",
+            "interface": "agentctl.evidence.list",
+            "project": "demo",
+            "coverage": "retained_records",
+            "records": rows,
+            "gaps": [],
+        },
+    )
+    assert result["coverage"] == "unavailable"
+    assert result["rows"] == []
+
+
+def test_failed_native_source_does_not_erase_batch_evidence():
+    item = native_product(
+        evidence={"rows": [], "coverage": "unavailable", "gaps": ["unavailable"]},
+        runs=runtime(),
+    )["items"][0]
+    assert item["evidence_state"] == "verified"
+    assert item["implementation_landed"] is True
+
+
 def test_historical_scope_cannot_borrow_a_later_acceptance_result():
     tasks = snapshot()
     tasks["temporal"].update(
@@ -297,9 +508,11 @@ def test_historical_scope_cannot_borrow_a_later_acceptance_result():
     )
     item = product(tasks)["items"][0]
     assert item["evidence_state"] == "attempted"
-    assert item["implementation_landed"] is False
+    assert item["implementation_landed"] is None
     assert item["acceptance"][0]["state"] == "unknown"
     assert item["evidence_chain"][0]["temporally_eligible"] is False
+    assert item["verification"] == {"available": False, "state": "unknown"}
+    assert item["publication"] == {"available": False, "state": "unknown"}
 
 
 def test_historical_result_without_resolvable_clock_is_unknown():
@@ -307,7 +520,7 @@ def test_historical_result_without_resolvable_clock_is_unknown():
     tasks["temporal"]["requested"] = "old-revision"
     item = product(tasks)["items"][0]
     assert item["evidence_state"] == "unknown"
-    assert item["implementation_landed"] is False
+    assert item["implementation_landed"] is None
 
 
 def test_historical_cutoff_excludes_future_attempts():
@@ -421,7 +634,7 @@ def test_conflicting_github_observation_does_not_prove_publication():
     runs = runtime()
     runs["rows"][0]["landing"]["pr"] = {"state": "OPEN", "number": 5}
     item = product(runs=runs)["items"][0]
-    assert item["implementation_landed"] is False
+    assert item["implementation_landed"] is None
     assert item["evidence_state"] == "attempted"
 
 
@@ -529,9 +742,7 @@ def test_scope_consumes_owner_provenance_without_expanding_membership(
 
 def test_gateway_metadata_split_edge_preserves_original_obligation():
     baseline, target = snapshot(status="open"), snapshot(status="open")
-    target["nodes"].append(
-        {"id": "demo-1a", "ref": REF + "a", "status": "open"}
-    )
+    target["nodes"].append({"id": "demo-1a", "ref": REF + "a", "status": "open"})
     edge = {
         "from": "demo-1a",
         "to": "demo-1",

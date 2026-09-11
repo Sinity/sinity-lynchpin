@@ -7,7 +7,12 @@ from datetime import datetime
 import json
 from typing import Any
 
-from lynchpin.sources.campaign import read_batches, read_session_evidence, revision
+from lynchpin.sources.campaign import (
+    read_batches,
+    read_native_evidence,
+    read_session_evidence,
+    revision,
+)
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -219,31 +224,220 @@ def _attempts(bead_ref: str, batches: list[dict[str, Any]]) -> list[dict[str, An
     return attempts
 
 
-def _published(attempt: dict[str, Any]) -> bool:
+def _native_binding(
+    record: dict[str, Any], bead_ref: str
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Return the owner-published task binding for this explicit Beads ref."""
+    for task in _rows(record.get("task_snapshot")):
+        binding = _object(task.get("evidence_binding"))
+        if _matches(task.get("id", task.get("bead_ref")), bead_ref):
+            return task, binding
+    return None
+
+
+def _native_attempts(
+    bead_ref: str, records: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Join native evidence records as attempts without inventing batch ancestry."""
+    attempts = []
+    for record in records:
+        matched = _native_binding(record, bead_ref)
+        if matched is None:
+            continue
+        task, binding = matched
+        result = _object(record.get("worker_result"))
+        candidate = _object(record.get("candidate"))
+        publication = _object(record.get("publication"))
+        claims = [
+            entry
+            for entry in _rows(result.get("beads"))
+            if _matches(entry.get("id"), bead_ref)
+        ]
+        verification = []
+        for row in _rows(record.get("verification")):
+            claim = _object(row.get("claim"))
+            observation = _object(row.get("observation"))
+            if claim:
+                verification.append({**claim, "owner_observation": observation})
+        binding_revision = _owner_revision(binding.get("bead_revision"))
+        attempts.append(
+            {
+                "id": record.get("evidence_id"),
+                "run_id": None,
+                "worker_id": None,
+                "job_id": None,
+                "prior_job_ids": [],
+                "attempt": None,
+                "dispatch_bead_revision": binding_revision,
+                "bead_revision": next(
+                    (_owner_revision(entry.get("bead_revision")) for entry in claims),
+                    None,
+                ),
+                "binding_bead_revision": binding_revision,
+                "binding_criteria": _rows(binding.get("criteria")),
+                "binding_v2_available": binding.get("v2_available") is True,
+                "binding_reason": binding.get("reason"),
+                "event_time": record.get("recorded_at"),
+                "event_time_basis": "native_evidence_recorded_at",
+                "result_recorded_at": record.get("recorded_at"),
+                "runtime_revision": record.get("evidence_id"),
+                "stage": None,
+                "attempt_observed": True,
+                "criteria": [
+                    criterion
+                    for entry in claims
+                    for criterion in _rows(entry.get("criteria"))
+                ],
+                "worker_sha": result.get("candidate_sha"),
+                "integrated_sha": candidate.get("candidate_sha")
+                if candidate.get("checked") is True
+                else None,
+                "candidate": candidate,
+                "verification": verification,
+                "candidate_verification": {},
+                "publication": publication,
+                "pull_request": {},
+                "acceptance_recorded_at": record.get("recorded_at"),
+                "unresolved": result.get("unresolved"),
+                "usage": None,
+                "execution": "native_evidence",
+                "planned_model": None,
+                "actual_executor_model": None,
+                "actual_executor_observed_by": None,
+                "model_segments": None,
+                "worker_claim": result or None,
+                "provenance": {"worker_claim": result} if result else {},
+                "result_available": bool(result),
+                "legacy_attempt_history": False,
+                "current_attempt": True,
+                "parent_session_ref": _object(record.get("session_claims")).get(
+                    "parent_session_ref"
+                ),
+                "child_session_ref": _object(record.get("session_claims")).get(
+                    "child_session_ref"
+                ),
+                "source_kind": "native_evidence",
+                "source_ref": f"agentctl://evidence/{record.get('evidence_id')}",
+                "native_task_snapshot": task,
+            }
+        )
+    return attempts
+
+
+def _publication_state(attempt: dict[str, Any]) -> bool | None:
+    """True/false only when the owner has observed publication or its contrary."""
     if (
         attempt.get("temporally_eligible") is False
         or attempt.get("publication_temporally_eligible") is False
         or attempt.get("current_attempt") is False
     ):
-        return False
+        return None
     publication = attempt["publication"]
+    if attempt.get("source_kind") == "native_evidence":
+        state = publication.get("state")
+        if (
+            state == "published"
+            and publication.get("checked") is True
+            and publication.get("candidate_reachable") is True
+            and attempt.get("candidate", {}).get("checked") is True
+        ):
+            return True
+        if (
+            state in {"unpublished", "not_published", "rejected"}
+            and publication.get("checked") is True
+        ):
+            return False
+        return None
     integrated = attempt["integrated_sha"]
     if not integrated or publication.get("candidate_sha") != integrated:
-        return False
+        return None
     if publication.get("policy") == "master":
-        return bool(attempt["acceptance_recorded_at"])
+        return True if attempt["acceptance_recorded_at"] else None
     pull = attempt["pull_request"]
     if pull.get("state") in {"OPEN", "CLOSED", "open", "closed"}:
         return False
     merged = _object(pull.get("mergeCommit")).get("oid")
     if merged and merged != publication.get("merge_commit"):
         return False
-    return bool(publication.get("merge_commit") and attempt["acceptance_recorded_at"])
+    if publication.get("merge_commit") and attempt["acceptance_recorded_at"]:
+        return True
+    return None
+
+
+def _published(attempt: dict[str, Any]) -> bool:
+    return _publication_state(attempt) is True
 
 
 def _verification_proof(
     check: dict[str, Any], attempt: dict[str, Any]
 ) -> dict[str, Any]:
+    if attempt.get("source_kind") == "native_evidence":
+        observation = _object(check.get("owner_observation"))
+        execution_receipt = _object(observation.get("execution_receipt"))
+        endpoints = [
+            _object(execution_receipt.get("start")),
+            _object(execution_receipt.get("end")),
+        ]
+        candidate = _object(attempt.get("candidate"))
+        candidate_sha = attempt.get("integrated_sha")
+        refs = [observation.get("reference")]
+        if observation.get("job_id") is not None:
+            refs.append(f"agentctl://jobs/{observation['job_id']}")
+            if isinstance(observation.get("reference"), str):
+                refs.append(
+                    f"agentctl://jobs/{observation['job_id']}/{observation['reference']}"
+                )
+        linked = bool(check.get("receipt") and check["receipt"] in refs)
+        same_sha = bool(
+            candidate_sha
+            and candidate.get("checked") is True
+            and check.get("tested_sha") == candidate_sha
+            and all(
+                endpoint.get("status") == "observed"
+                and endpoint.get("head") == candidate_sha
+                for endpoint in endpoints
+            )
+        )
+        clean = all(endpoint.get("dirty") is False for endpoint in endpoints)
+        endpoint_bound = execution_receipt.get("binding") == "unchanged_endpoints"
+        passed = observation.get("phase") in {
+            "succeeded",
+            "passed",
+        } and observation.get("exit_code") in {None, 0}
+        failed = (
+            observation.get("phase") == "failed"
+            and isinstance(observation.get("exit_code"), int)
+            and observation["exit_code"] != 0
+        )
+        status_matches = (
+            passed
+            if check.get("status") == "passed"
+            else failed
+            if check.get("status") == "failed"
+            else observation.get("phase") == check.get("status")
+        )
+        outcome_eligible = (
+            observation.get("eligible") is True
+            if check.get("status") == "passed"
+            else failed
+            if check.get("status") == "failed"
+            else False
+        )
+        return {
+            "corroborated": linked
+            and same_sha
+            and clean
+            and status_matches
+            and observation.get("checked") is True
+            and outcome_eligible
+            and endpoint_bound,
+            "receipt_linked": linked,
+            "tested_sha_matches": same_sha,
+            "clean_checkout": clean,
+            "requested_sha_matches": True,
+            "owner": "agentctl",
+            "observation": observation,
+        }
     owner = attempt["candidate_verification"]
     owner_sha = owner.get("tested_sha", owner.get("candidate_sha"))
     refs = [owner.get("reference"), owner.get("receipt"), owner.get("result_path")]
@@ -319,6 +513,20 @@ def _criterion(
                 and bool(selected_text)
                 and selected_text == claimed_text
             )
+            binding_matches = (
+                any(
+                    binding.get("id", binding.get("ac_id")) == ac_id
+                    and binding.get("text") == selected_text
+                    for binding in attempt.get("binding_criteria", [])
+                )
+                if attempt.get("source_kind") == "native_evidence"
+                else True
+            )
+            binding_qualified = (
+                attempt.get("binding_v2_available") is True and binding_matches
+                if attempt.get("source_kind") == "native_evidence"
+                else True
+            )
             verification = [
                 v
                 for v in attempt["verification"]
@@ -340,6 +548,7 @@ def _criterion(
                 eligible
                 and same_revision
                 and same_content
+                and binding_qualified
                 and bool(proven)
                 and _published(attempt)
             )
@@ -369,6 +578,7 @@ def _criterion(
                     "claim": outcome,
                     "same_revision": same_revision,
                     "same_acceptance_content": same_content,
+                    "owner_task_binding": binding_qualified,
                     "selected_acceptance_text": selected_text,
                     "claimed_acceptance_text": claimed_text,
                     "verified": qualified,
@@ -394,6 +604,10 @@ def _criterion(
             if not same_content:
                 gaps.append(
                     "Acceptance content is missing or differs; row revision equality does not prove unchanged acceptance text"
+                )
+            if not binding_qualified:
+                gaps.append(
+                    "Native task binding does not confirm this criterion at the selected Beads revision"
                 )
             if not proven:
                 gaps.append("No passing AC-linked receipt tests the integrated SHA")
@@ -432,6 +646,7 @@ def campaign_evidence(
     bead_refs: list[str],
     task_snapshot: dict[str, Any] | None = None,
     runtime_snapshot: dict[str, Any] | None = None,
+    native_evidence_snapshot: dict[str, Any] | None = None,
     refresh_id: str | None = None,
     session_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -466,12 +681,27 @@ def campaign_evidence(
     runtime = (
         runtime_snapshot if runtime_snapshot is not None else read_batches(project)
     )
+    native = (
+        native_evidence_snapshot
+        if native_evidence_snapshot is not None
+        else read_native_evidence(project)
+        if runtime_snapshot is None
+        else {
+            "rows": [],
+            "coverage": "unavailable",
+            "gaps": [],
+        }
+    )
     sources = {
         "beads": _source(snapshot, "beads"),
         "agentctl": _source(runtime, "agentctl"),
+        "agentctl_native": _source(native, "agentctl"),
     }
     tasks = _task_rows(snapshot)
     batches = [r for r in _rows(runtime.get("rows")) if r.get("project") == project]
+    native_records = [
+        r for r in _rows(native.get("rows")) if r.get("project") == project
+    ]
     pulls = [
         _object(row.get("landing")).get("pr")
         for row in batches
@@ -502,7 +732,7 @@ def campaign_evidence(
             ),
         )
         bead_revision = _bead_revision(task)
-        attempts = _attempts(ref, batches)
+        attempts = [*_attempts(ref, batches), *_native_attempts(ref, native_records)]
         if historical:
             selected = []
             for attempt in attempts:
@@ -553,13 +783,58 @@ def campaign_evidence(
             gaps.append(
                 "Some recorded launches have no retained result; outcomes and usage remain unknown"
             )
-        landed = any(_published(attempt) for attempt in attempts)
+        publication_states = [_publication_state(attempt) for attempt in attempts]
+        landed = (
+            True
+            if True in publication_states
+            else False
+            if False in publication_states
+            and runtime.get("coverage") == "complete"
+            and native.get("coverage") == "complete"
+            else None
+        )
+        verification_records = [
+            (attempt, check, _verification_proof(check, attempt))
+            for attempt in attempts
+            if attempt.get("temporally_eligible") is not False
+            for check in attempt["verification"]
+        ]
+        verification_available = any(
+            _object(check.get("owner_observation")).get("checked") is True
+            if attempt.get("source_kind") == "native_evidence"
+            else bool(attempt["candidate_verification"])
+            for attempt, check, _proof in verification_records
+        )
+        verification_state = (
+            "verified"
+            if any(
+                proof["corroborated"]
+                for _attempt, check, proof in verification_records
+                if check.get("status", check.get("phase")) in {"passed", "succeeded"}
+            )
+            else "failed"
+            if any(
+                proof["corroborated"]
+                for _attempt, check, proof in verification_records
+                if check.get("status", check.get("phase")) == "failed"
+            )
+            else "unknown"
+        )
+        publication_available = any(
+            attempt.get("publication_temporally_eligible") is not False
+            and (
+                _object(attempt["publication"]).get("checked") is True
+                if attempt.get("source_kind") == "native_evidence"
+                else bool(attempt["publication"])
+            )
+            for attempt in attempts
+        )
         disposition = _metadata(fields).get("disposition")
         if disposition in {"superseded", "decomposed"}:
             evidence_state = disposition
         elif acceptance and all(ac["state"] == "verified" for ac in acceptance):
             evidence_state = "verified"
-        elif landed:
+        elif landed is True:
             evidence_state = "implementation_landed_ac_incomplete"
         elif any(
             a["attempt_observed"]
@@ -567,7 +842,11 @@ def campaign_evidence(
             for a in attempts
         ):
             evidence_state = "attempted"
-        elif runtime.get("coverage") == "complete" and task:
+        elif (
+            runtime.get("coverage") == "complete"
+            and native.get("coverage") == "complete"
+            and task
+        ):
             evidence_state = "unstarted"
         else:
             evidence_state = "unknown"
@@ -588,6 +867,18 @@ def campaign_evidence(
                 "acceptance": acceptance,
                 "attempts": attempts,
                 "implementation_landed": landed,
+                "publication": {
+                    "available": publication_available,
+                    "state": "published"
+                    if landed is True
+                    else "not_published"
+                    if landed is False
+                    else "unknown",
+                },
+                "verification": {
+                    "available": verification_available,
+                    "state": verification_state,
+                },
                 "evidence_chain": [ev for ac in acceptance for ev in ac["evidence"]],
                 "usage": None,
                 "gaps": gaps,
