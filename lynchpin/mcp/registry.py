@@ -148,7 +148,8 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
         actions=(
             ActionSpec("daily", "Normalized personal daily signals.", "converge", parameters=("start", "end", "source", "limit"), response_kind="personal_daily"),
             ActionSpec("activity", "ActivityWatch/activity-content/focus views.", "converge", parameters=("view", "start", "end", "limit"), views=("daily", "focus", "buckets", "titles"), response_kind="activity"),
-            ActionSpec("health", "Health trend and raw wearable detail views.", "read", parameters=("view", "start", "end"), views=("trend", "daily", "stress", "heart_rate", "hrv"), response_kind="health"),
+            ActionSpec("phone", "Phone event captures, including backfilled Health Connect records.", "read", parameters=("start", "end", "source", "limit"), response_kind="phone_events"),
+            ActionSpec("health", "Health trends, phone Health Connect, Xiaomi cloud, and materialized coverage.", "read", parameters=("view", "start", "end", "source", "limit"), views=("trend", "daily", "stress", "heart_rate", "hrv", "phone_health", "xiaomi", "coverage"), response_kind="health"),
             ActionSpec("communications", "Communication events and daily summaries.", "converge", parameters=("view", "start", "end", "limit"), response_kind="communications"),
             ActionSpec("web", "Web and Google Takeout activity.", "converge", parameters=("view", "start", "end", "query", "limit"), views=("daily", "domains", "takeout"), response_kind="web_activity"),
             ActionSpec("bookmarks", "Bookmark search and daily summaries.", "converge", parameters=("view", "query", "start", "end", "limit"), response_kind="bookmarks"),

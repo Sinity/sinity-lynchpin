@@ -686,7 +686,7 @@ def lynchpin_personal(
     query: str = "",
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Personal router. action: daily, activity, health, communications, web, bookmarks, media, operator, reports."""
+    """Personal router. action: daily, activity, phone, health, communications, web, bookmarks, media, operator, reports."""
     if invalid := _mark_route("lynchpin_personal", action):
         return invalid
     if action == "daily":
@@ -695,7 +695,11 @@ def lynchpin_personal(
         if view == "focus":
             return _internal_call("lynchpin.mcp.tools.personal", "focus_daily", start=start, end=end)
         return _internal_call("lynchpin.mcp.tools.personal", "activity_content", view=view or "daily", start=start, end=end, limit=limit)
+    if action == "phone":
+        return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view="phone", start=start, end=end, source=source, limit=limit)
     if action == "health":
+        if view in {"phone_health", "xiaomi", "coverage"}:
+            return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view=view, start=start, end=end, source=source, limit=limit)
         fn = {
             "daily": "health_daily_summary",
             "stress": "health_stress_detail",

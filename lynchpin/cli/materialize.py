@@ -51,6 +51,7 @@ class _CandidateRejected(RuntimeError):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Materialize canonical Lynchpin products")
     parser.add_argument("--all", action="store_true", help="materialize every locally rebuildable product")
+    parser.add_argument("--only", nargs="+", help="limit the plan to named products and their dependencies")
     parser.add_argument("--promote", action="store_true", help="also build/promote a coherent substrate snapshot")
     parser.add_argument(
         "--bootstrap",
@@ -87,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--all requires --promote so substrate writes use candidate publication")
     if args.bootstrap and not (args.all and args.promote):
         parser.error("--bootstrap requires --all --promote")
+    if args.only and not args.all:
+        parser.error("--only requires --all")
+    if args.only and args.bootstrap:
+        parser.error("--only cannot bootstrap an incomplete substrate")
     if args.force and not args.all:
         parser.error("--force requires --all")
     if args.rebuild_candidate_indexes and not (args.all and args.promote):
@@ -134,6 +139,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _progress("promoting from existing canonical products")
         plan = []
+    if args.only:
+        by_product = {step.product: step for step in plan}
+        selected = set(args.only)
+        unknown = selected - by_product.keys()
+        if unknown:
+            parser.error("unknown products: " + ", ".join(sorted(unknown)))
+        pending = list(selected)
+        while pending:
+            for dependency in by_product[pending.pop()].dependencies:
+                if dependency in by_product and dependency not in selected:
+                    selected.add(dependency)
+                    pending.append(dependency)
+        plan = [step for step in plan if step.product in selected]
     _progress(f"plan ready: {len(plan)} step(s)")
     dependency_model = materializer_dependency_model(plan)
     writer_waves = materializer_execution_waves(dependency_model)
@@ -231,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                     forwarded.extend(("--incremental-tail-start", incremental_tail_start.isoformat()))
                 if args.weak_tags:
                     forwarded.append("--weak-tags")
-                if not args.all or args.history == "incremental":
+                if not args.all or args.only or args.history == "incremental":
                     forwarded.extend(("--existing-products", "--graph-only"))
                 _progress(f"promoting substrate snapshot: {args.start}..{args.end}")
                 with _measure_incremental_phase("graph_compute") as graph_measurement:

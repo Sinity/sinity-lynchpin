@@ -171,3 +171,9 @@ AgentCTL is an owner-native, continuous work-observation source. Lynchpin reads 
 The adapter never reads private launch files, raw job records, prompts, shell argv, environment values, logs, or result payloads. The native route does not expose a restart/recovery marker or Polylogue/Sinex receipt refs, so those fields remain unavailable rather than inferred.
 
 This source is read-only. Materialization has no route to schedule, cancel, wait for, or supervise jobs. A job-list response is current durable lifecycle state, not a complete lifecycle event stream.
+
+### Phone and band queries
+
+`lynchpin_personal(action="phone", start=..., end=..., limit=...)` reads phone event captures. Health views `phone_health`, `xiaomi`, and `coverage` expose Health Connect records, the latest Xiaomi revision per measurement day, and the materialized coverage artifact respectively. These reads do not trigger materialization. Phone date filters select capture dates, including backfills; Xiaomi filters select measurement days. Coverage is a whole-history artifact with an explicit modification timestamp and does not accept date filters.
+
+For bounded recovery, `agentctl job start lynchpin promote_incremental -- --only activitywatch_derived activity_content health_coverage personal_daily_signals temporal_signals` selects those products and their dependencies. The planner retains each product's incremental date window; unrelated writers are excluded and existing substrate history is retained through candidate publication. Add `--plan-json` to inspect the selected scope before execution.

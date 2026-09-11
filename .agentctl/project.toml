@@ -95,3 +95,19 @@ exec = ["python", "-m", "lynchpin.ingest.machine_materialize", "--cleanup-stagin
 timeout_seconds = 900
 pool = "normal"
 cache = "none"
+
+[operations.promote_incremental]
+description = "Refresh stale source tails and atomically promote the affected substrate window"
+exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--promote", "--history", "incremental", "--progress", "plain"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 7200
+
+[operations.refresh_health]
+description = "Refresh and verify phone and band coverage without rebuilding the substrate"
+exec = ["python", "-m", "lynchpin.cli.agentctl_plan", "refresh", "--product", "health_coverage"]
+pool = "normal"
+result = "json"
+cache = "none"
+timeout_seconds = 1800

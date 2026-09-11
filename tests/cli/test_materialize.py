@@ -586,3 +586,28 @@ def test_snapshot_threads_incremental_tail_to_daily_signal_promotion(monkeypatch
     ) == 0
     assert incremental["tail_start"] == date(2026, 5, 8)
     assert promoted == {}
+
+
+def test_selected_plan_includes_dependencies_and_excludes_unrelated_writers(monkeypatch, capsys):
+    from lynchpin.cli import materialize
+
+    def step(name, dependencies=()):
+        return SimpleNamespace(product=name, dependencies=dependencies, to_json=lambda: {"product": name})
+
+    steps = [step("index"), step("activity", ("index",)), step("health"), step("code_snapshots")]
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: steps)
+    monkeypatch.setattr(materialize, "materializer_dependency_model", lambda plan: ())
+    monkeypatch.setattr(materialize, "materializer_execution_waves", lambda model: ())
+    monkeypatch.setattr(materialize, "run_materialization_plan", lambda *a, **k: pytest.fail("plan wrote data"))
+    assert materialize.main(["--all", "--plan-json", "--only", "activity", "health", "--progress", "quiet"]) == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {"product": "index"}, {"product": "activity"}, {"product": "health"},
+    ]
+
+
+def test_selected_plan_rejects_unknown_products(monkeypatch):
+    from lynchpin.cli import materialize
+
+    monkeypatch.setattr(materialize, "plan_materializations", lambda **kwargs: [])
+    with pytest.raises(SystemExit, match="2"):
+        materialize.main(["--all", "--plan-json", "--only", "misspelled"])
