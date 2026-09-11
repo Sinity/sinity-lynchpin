@@ -527,6 +527,38 @@ def test_scope_consumes_owner_provenance_without_expanding_membership(
         assert rows[REF]["kind"] == "superseded"
 
 
+def test_gateway_metadata_split_edge_preserves_original_obligation():
+    baseline, target = snapshot(status="open"), snapshot(status="open")
+    target["nodes"].append(
+        {"id": "demo-1a", "ref": REF + "a", "status": "open"}
+    )
+    edge = {
+        "from": "demo-1a",
+        "to": "demo-1",
+        "relation": "split_from",
+        "native_relation": None,
+        "metadata_key": "split_from",
+        "source": "issue_metadata",
+        "target_kind": "bead",
+    }
+    target["provenance_edges"] = [edge]
+    target["provenance_coverage"] = {"complete": True, "state": "complete"}
+
+    result = campaign_scope_delta(baseline, target)
+    rows = {row["bead_ref"]: row for row in result["changes"]}
+
+    assert set(rows) == {REF, REF + "a"}
+    assert rows[REF]["kind"] == "decomposed"
+    assert rows[REF]["baseline_obligation"] is True
+    assert rows[REF]["decomposition"] == [REF + "a"]
+    assert rows[REF]["decomposition_complete"] is None
+    assert rows[REF + "a"]["kind"] == "split"
+    assert rows[REF + "a"]["classification_source"] == "owner_relations"
+    assert result["provenance_edges"] == [
+        {**edge, "from_ref": REF + "a", "to_ref": REF}
+    ]
+
+
 def test_leaf_status_and_creation_counts_keep_baseline_and_target_denominators():
     baseline, target = snapshot(), snapshot()
     baseline["nodes"][0]["metadata"] = '{"closure_role":"leaf"}'
