@@ -830,7 +830,8 @@ def lynchpin_ops(
                 return _ok({"dry_run": True, "status": code_snapshot_status()}, **_current_meta(route="lynchpin.mcp.tools.code_snapshots.code_snapshot_status"))
             from lynchpin.sources.chisel import build_chisel_bundles
 
-            result = build_chisel_bundles(projects=source or "")
+            project_names = [source] if source else None
+            result = build_chisel_bundles(project_names=project_names)
             rid = _record_operation_receipt(action=action, execute=True, reason="chisel snapshots generated")
             return _ok({"dry_run": False, "receipt_id": rid, "result": result}, **_current_meta(route="lynchpin.sources.chisel.build_chisel_bundles"))
         if action == "ai_backfill":
