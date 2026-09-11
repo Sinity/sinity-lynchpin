@@ -30,6 +30,9 @@ def _source(snapshot: dict[str, Any], owner: str) -> dict[str, Any]:
             "revision", snapshot.get("task_revision", temporal.get("resolved_revision"))
         ),
         "revision_kind": snapshot.get("revision_kind", "owner_revision"),
+        "revision_domain": snapshot.get(
+            "revision_domain", "dolt_snapshot" if owner == "beads" else None
+        ),
         "observed_at": snapshot.get("observed_at", temporal.get("observed_at")),
         "watermark": snapshot.get("watermark", temporal.get("watermark")),
         "coverage": snapshot.get("coverage", "unknown"),
@@ -59,6 +62,23 @@ def _metadata(fields: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             return {}
     return _object(value)
+
+
+def _owner_revision(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _bead_revision(task: dict[str, Any]) -> str | None:
+    if (
+        task.get("bead_revision_domain") != "beads_row_revision"
+        or task.get("bead_revision_coverage") == "unavailable"
+    ):
+        return None
+    return _owner_revision(task.get("bead_revision"))
 
 
 def _matches(value: Any, bead_ref: str) -> bool:
@@ -137,12 +157,14 @@ def _attempts(bead_ref: str, batches: list[dict[str, Any]]) -> list[dict[str, An
                     "job_id": worker.get("task_id"),
                     "prior_job_ids": worker.get("task_ids", []),
                     "attempt": launch.get("number"),
-                    "dispatch_bead_revision": _object(worker.get("bead_revisions")).get(
-                        bead_ref.rsplit("/", 1)[-1]
+                    "dispatch_bead_revision": _owner_revision(
+                        _object(worker.get("bead_revisions")).get(
+                            bead_ref.rsplit("/", 1)[-1]
+                        )
                     ),
                     "bead_revision": next(
                         (
-                            entry.get("revision") or entry.get("bead_revision")
+                            _owner_revision(entry.get("bead_revision"))
                             for entry in entries
                         ),
                         None,
@@ -271,11 +293,11 @@ def _criteria(task: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _criterion(
     criterion: dict[str, Any],
-    task_revision: str | None,
+    bead_revision: str | None,
     attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     ac_id = criterion.get("id", criterion.get("ac_id"))
-    ac_revision = criterion.get("revision") or task_revision
+    ac_revision = bead_revision
     evidence = []
     gaps = []
     outcomes: set[str] = set()
@@ -283,13 +305,19 @@ def _criterion(
         for claim in attempt["criteria"]:
             if not ac_id or claim.get("id", claim.get("ac_id")) != ac_id:
                 continue
-            claim_revision = claim.get("revision") or attempt["bead_revision"]
+            claim_revision = attempt["bead_revision"]
             same_revision = bool(
-                task_revision
-                and ac_revision
+                ac_revision
                 and claim_revision == ac_revision
                 and attempt["bead_revision"] == ac_revision
                 and attempt["dispatch_bead_revision"] == ac_revision
+            )
+            selected_text = criterion.get("text")
+            claimed_text = claim.get("text")
+            same_content = (
+                isinstance(selected_text, str)
+                and bool(selected_text)
+                and selected_text == claimed_text
             )
             verification = [
                 v
@@ -309,10 +337,19 @@ def _criterion(
             ]
             eligible = attempt.get("temporally_eligible") is not False
             qualified = (
-                eligible and same_revision and bool(proven) and _published(attempt)
+                eligible
+                and same_revision
+                and same_content
+                and bool(proven)
+                and _published(attempt)
             )
             outcome = claim.get("status")
-            if eligible and same_revision and outcome in {"satisfied", "unsatisfied"}:
+            if (
+                eligible
+                and same_revision
+                and same_content
+                and outcome in {"satisfied", "unsatisfied"}
+            ):
                 outcomes.add(outcome)
                 if any(
                     integrated_sha
@@ -331,6 +368,9 @@ def _criterion(
                     "ac_revision": claim_revision,
                     "claim": outcome,
                     "same_revision": same_revision,
+                    "same_acceptance_content": same_content,
+                    "selected_acceptance_text": selected_text,
+                    "claimed_acceptance_text": claimed_text,
                     "verified": qualified,
                     "temporally_eligible": eligible,
                     "worker_sha": attempt["worker_sha"],
@@ -350,6 +390,10 @@ def _criterion(
             if not same_revision:
                 gaps.append(
                     "Acceptance revision is missing or differs from the selected obligation"
+                )
+            if not same_content:
+                gaps.append(
+                    "Acceptance content is missing or differs; row revision equality does not prove unchanged acceptance text"
                 )
             if not proven:
                 gaps.append("No passing AC-linked receipt tests the integrated SHA")
@@ -374,6 +418,8 @@ def _criterion(
     return {
         "id": ac_id,
         "revision": ac_revision,
+        "revision_domain": "beads_row_revision" if ac_revision is not None else None,
+        "acceptance_revision": criterion.get("revision"),
         "state": state,
         "evidence": evidence,
         "gaps": sorted(set(gaps)),
@@ -455,6 +501,7 @@ def campaign_evidence(
                 snapshot.get("revision", temporal.get("resolved_revision")),
             ),
         )
+        bead_revision = _bead_revision(task)
         attempts = _attempts(ref, batches)
         if historical:
             selected = []
@@ -477,7 +524,7 @@ def campaign_evidence(
                 )
                 selected.append(attempt)
             attempts = selected
-        acceptance = [_criterion(ac, task_revision, attempts) for ac in _criteria(task)]
+        acceptance = [_criterion(ac, bead_revision, attempts) for ac in _criteria(task)]
         gaps = []
         ids = [ac["id"] for ac in acceptance if ac["id"]]
         if len(ids) != len(set(ids)):
@@ -488,6 +535,10 @@ def campaign_evidence(
                 )
         if not task:
             gaps.append("Selected Beads record is unavailable")
+        if bead_revision is None:
+            gaps.append(
+                "Selected Beads row revision is unavailable or has an incomparable domain; the Dolt snapshot revision cannot replace it"
+            )
         if not acceptance:
             gaps.append(
                 "Acceptance criteria are legacy text or missing; completion is unknown"
@@ -524,6 +575,14 @@ def campaign_evidence(
             {
                 "bead_ref": ref,
                 "task_revision": task_revision,
+                "bead_revision": bead_revision,
+                "bead_revision_domain": "beads_row_revision"
+                if bead_revision is not None
+                else None,
+                "bead_revision_coverage": task.get("bead_revision_coverage", "unknown"),
+                "bead_revision_unavailable_reason": task.get(
+                    "bead_revision_unavailable_reason"
+                ),
                 "task_status": fields.get("status", task.get("status")),
                 "evidence_state": evidence_state,
                 "acceptance": acceptance,
@@ -722,10 +781,14 @@ def campaign_scope_delta(
                 "baseline_role": _role(old) if old else None,
             }
         )
-    executable_roles_known = all(
-        change["role"] != "unknown" and change["baseline_role"] != "unknown"
-        for change in changes
-    ) and not baseline.get("unknown_roles") and not target.get("unknown_roles")
+    executable_roles_known = (
+        all(
+            change["role"] != "unknown" and change["baseline_role"] != "unknown"
+            for change in changes
+        )
+        and not baseline.get("unknown_roles")
+        and not target.get("unknown_roles")
+    )
     baseline_executable = [
         change
         for change in changes
@@ -862,9 +925,11 @@ def _scope_provenance(
 
 def _leaf_refs(snapshot: dict[str, Any]) -> set[str] | None:
     tasks = _task_rows(snapshot)
-    if snapshot.get("complete") is not True or any(
-        _role(task) == "unknown" for task in tasks.values()
-    ) or snapshot.get("unknown_roles"):
+    if (
+        snapshot.get("complete") is not True
+        or any(_role(task) == "unknown" for task in tasks.values())
+        or snapshot.get("unknown_roles")
+    ):
         return None
     executable = {ref for ref, task in tasks.items() if _role(task) == "executable"}
     declared = {

@@ -14,11 +14,16 @@ SHA = "a" * 40
 
 def snapshot(*, status="closed", revision="task-v2"):
     return {
+        "project_id": "demo",
+        "task_revision": "dolt-snapshot-v3",
         "nodes": [
             {
                 "ref": REF,
                 "id": "demo-1",
                 "status": status,
+                "bead_revision": revision,
+                "bead_revision_domain": "beads_row_revision",
+                "bead_revision_coverage": "partial_update_coverage",
                 "acceptance_criteria": [
                     {"id": "AC-1", "revision": revision, "text": "Behavior holds"}
                 ],
@@ -28,7 +33,7 @@ def snapshot(*, status="closed", revision="task-v2"):
         "coverage": {"complete": True, "state": "complete"},
         "temporal": {
             "requested": "HEAD",
-            "resolved_revision": revision,
+            "resolved_revision": "dolt-snapshot-v3",
             "observed_at": "2026-01-02T00:00:00Z",
             "watermark": None,
         },
@@ -61,6 +66,7 @@ def runtime():
                                     "criteria": [
                                         {
                                             "ac_id": "AC-1",
+                                            "text": "Behavior holds",
                                             "status": "satisfied",
                                             "evidence": "receipt",
                                         }
@@ -128,7 +134,8 @@ def test_complete_chain_is_revision_and_integrated_sha_bound():
     assert item["evidence_state"] == "verified"
     assert item["evidence_chain"][0]["integrated_sha"] == SHA
     assert item["evidence_chain"][0]["merge_commit"] == "b" * 40
-    assert result["temporal"]["resolved_ref"] == "task-v2"
+    assert result["temporal"]["resolved_ref"] == "dolt-snapshot-v3"
+    assert item["bead_revision"] == "task-v2"
     assert result["sources"]["beads"]["watermark"] is None
 
 
@@ -571,3 +578,71 @@ def test_unknown_roles_cannot_supply_exact_leaf_counts():
     counts = campaign_scope_delta(baseline, target)["counts"]
     assert counts["baseline_closed_leaves"] is None
     assert counts["newly_created_leaves"] is None
+
+
+@pytest.mark.parametrize("row_revision", [7123456789012345678, "7123456789012345678"])
+def test_gateway_row_revision_joins_without_using_distinct_dolt_revision(row_revision):
+    tasks = snapshot(revision=row_revision)
+    node = tasks["nodes"][0]
+    node["acceptance_criteria"] = "Behavior holds"
+    node["metadata"] = {
+        "acceptance_criteria": [{"id": "AC-1", "text": "Behavior holds"}]
+    }
+    runs = runtime()
+    worker = runs["rows"][0]["workers"][0]
+    worker["bead_revisions"]["demo-1"] = str(row_revision)
+    worker["result"]["beads"][0]["bead_revision"] = str(row_revision)
+    result = product(tasks, runs)
+    item = result["items"][0]
+    assert item["evidence_state"] == "verified"
+    assert item["task_revision"] == "dolt-snapshot-v3"
+    assert item["bead_revision"] == "7123456789012345678"
+    assert item["acceptance"][0]["revision_domain"] == "beads_row_revision"
+    assert result["sources"]["beads"]["revision"] == "dolt-snapshot-v3"
+
+
+def test_absent_row_revision_never_falls_back_to_matching_snapshot_hash():
+    tasks = snapshot()
+    tasks["nodes"][0].pop("bead_revision")
+    tasks["task_revision"] = "task-v2"
+    tasks["temporal"]["resolved_revision"] = "task-v2"
+    item = product(tasks)["items"][0]
+    assert item["task_revision"] == "task-v2"
+    assert item["bead_revision"] is None
+    assert item["acceptance"][0]["state"] == "unknown"
+    assert item["evidence_state"] == "implementation_landed_ac_incomplete"
+
+
+def test_equal_revision_text_in_another_domain_cannot_verify_acceptance():
+    tasks = snapshot()
+    tasks["nodes"][0]["bead_revision_domain"] = "dolt_commit"
+    assert product(tasks)["items"][0]["acceptance"][0]["state"] == "unknown"
+
+
+def test_separate_acceptance_version_does_not_replace_owner_row_revision():
+    tasks = snapshot()
+    tasks["nodes"][0]["acceptance_criteria"][0]["revision"] = "acceptance-definition-v1"
+    item = product(tasks)["items"][0]
+    assert item["evidence_state"] == "verified"
+    assert item["acceptance"][0]["acceptance_revision"] == "acceptance-definition-v1"
+    assert item["acceptance"][0]["revision"] == "task-v2"
+
+
+@pytest.mark.parametrize("text", [None, "The changed obligation must hold"])
+def test_equal_row_revision_cannot_hide_missing_or_changed_acceptance_text(text):
+    tasks = snapshot()
+    tasks["nodes"][0]["acceptance_criteria"][0]["text"] = text
+    item = product(tasks)["items"][0]
+    assert item["bead_revision"] == "task-v2"
+    assert item["evidence_state"] == "implementation_landed_ac_incomplete"
+    evidence = item["acceptance"][0]["evidence"][0]
+    assert evidence["same_revision"] is True
+    assert evidence["same_acceptance_content"] is False
+    assert evidence["selected_acceptance_text"] == text
+    assert evidence["claimed_acceptance_text"] == "Behavior holds"
+
+
+def test_claim_without_acceptance_text_cannot_be_verified_by_row_token():
+    runs = runtime()
+    runs["rows"][0]["workers"][0]["result"]["beads"][0]["criteria"][0].pop("text")
+    assert product(runs=runs)["items"][0]["acceptance"][0]["state"] == "unknown"
