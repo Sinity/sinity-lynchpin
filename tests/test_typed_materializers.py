@@ -189,6 +189,16 @@ def test_resource_and_dependency_order_is_deterministic() -> None:
     assert [[step.product for step in wave] for wave in waves] == [["a", "b"], ["z"]]
 
 
+def test_substrate_promoters_are_not_scheduled_in_one_wave() -> None:
+    """The shared DuckDB candidate writer admits one promoter at a time."""
+    plan = ConvergencePlanner(
+        (PRODUCT_CATALOG["code_snapshots"], PRODUCT_CATALOG["github_context"])
+    ).plan(ConvergenceRequest(("code_snapshots", "github_context")))
+    steps = tuple(replace_step(step, action="materialize") for step in plan.steps)
+    waves = materializer_execution_waves(steps)
+    assert [[step.product for step in wave] for wave in waves] == [["code_snapshots"], ["github_context"]]
+
+
 def test_maintenance_debounce_uses_the_newest_product_output(tmp_path) -> None:
     from os import utime
     from time import time

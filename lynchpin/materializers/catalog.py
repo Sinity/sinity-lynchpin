@@ -19,6 +19,10 @@ _CANONICAL_ONLY = frozenset(
 _WINDOWLESS = frozenset(
     {"google_takeout", "title_metadata", "spotify", "reddit", "facebook_messenger", "communications", "raindrop", "browser_bookmarks", "arbtt", "health_coverage", "code_snapshots", "ambient_intelligence"}
 )
+# These handlers promote the shared DuckDB substrate as part of their normal
+# materialization.  A promotion has one writer lock, so letting both enter the
+# same execution wave turns an ordinary plan into a deterministic lock race.
+_SUBSTRATE_PROMOTION_PRODUCTS = frozenset({"code_snapshots", "github_context"})
 
 
 def _spec(name: str) -> ProductSpec:
@@ -27,6 +31,9 @@ def _spec(name: str) -> ProductSpec:
     reads = tuple(f"canonical-product:{dependency}" for dependency in _DEPENDENCIES.get(name, ()))
     if raw_permission != "none":
         reads = (*reads, f"owner-native:{name}")
+    exclusive = [f"canonical-product:{name}"]
+    if name in _SUBSTRATE_PROMOTION_PRODUCTS:
+        exclusive.append("substrate-promotion")
     return ProductSpec(
         product=name,
         version="typed-source-v1",
@@ -40,7 +47,7 @@ def _spec(name: str) -> ProductSpec:
         resources=ResourceHints(
             reads=reads,
             writes=(f"canonical-product:{name}",),
-            exclusive=(f"canonical-product:{name}",),
+            exclusive=tuple(exclusive),
         ),
         window_policy=window_policy,
     )
