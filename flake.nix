@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    # Repomix is not present in the stable package set. Keep that one tool
+    # pinned separately so an operation dependency cannot upgrade Lynchpin's
+    # entire development closure.
+    nixpkgsRepomix.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     polylogueSrc = {
       url = "github:Sinity/polylogue/master";
@@ -14,6 +18,7 @@
     {
       self,
       nixpkgs,
+      nixpkgsRepomix,
       flake-utils,
       polylogueSrc,
     }:
@@ -24,6 +29,7 @@
           inherit system;
           config.allowUnfree = true;
         };
+        repomixPkgs = import nixpkgsRepomix { inherit system; };
         # Package Python deps not in nixpkgs
         pythonPackagesBaseOverlay = final: prev: {
           cachew = prev.buildPythonPackage rec {
@@ -288,6 +294,7 @@
             gh
             jq
             yq
+            repomixPkgs.repomix
             ripgrep
             fd
             just
