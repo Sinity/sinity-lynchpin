@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from lynchpin.mcp.project_contracts import PROJECT_INPUTS, input_schema
+
 EffectMode = Literal["read", "converge", "write"]
 
 
@@ -29,6 +31,7 @@ class ActionSpec:
             "requires": list(self.requires),
             "response_kind": self.response_kind,
             "examples": [dict(example) for example in self.examples],
+            **({"input_schema": input_schema(self.name)} if self.name in PROJECT_INPUTS else {}),
         }
 
 
@@ -132,11 +135,12 @@ PUBLIC_TOOLS: tuple[PublicToolSpec, ...] = (
             ActionSpec("hotspots", "File/symbol hotspots and refactor candidates.", "converge", parameters=("repo", "project", "view", "limit"), views=("files", "symbols", "refactors"), response_kind="hotspots"),
             ActionSpec("change_kinds", "Commit conventional/breaking/AI attribution views.", "converge", parameters=("repo", "project", "view"), views=("conventional", "breaking", "ai"), response_kind="change_analysis"),
             ActionSpec("github", "GitHub issue/PR list and detail.", "read", parameters=("repo", "project", "view", "number", "state"), views=("prs", "issues", "issue"), response_kind="github_items"),
-            ActionSpec("campaign_evidence", "Revision-bound acceptance evidence for explicit Beads references.", "read", parameters=("project", "bead_refs", "task_snapshot", "refresh_id"), requires=("project", "bead_refs"), response_kind="campaign_evidence"),
-            ActionSpec("campaign_progress", "Task status and independently proven campaign progress.", "read", parameters=("project", "bead_refs", "task_snapshot", "refresh_id"), requires=("project", "bead_refs"), response_kind="campaign_evidence"),
-            ActionSpec("campaign_scope_delta", "Baseline obligations and explicit scope changes between Beads snapshots.", "read", parameters=("project", "baseline_snapshot", "task_snapshot"), requires=("project", "baseline_snapshot", "task_snapshot"), response_kind="campaign_scope_delta"),
-            ActionSpec("verification_regression", "Comparable command/AC outcome changes from retained owner records.", "read", parameters=("project", "bead_refs", "refresh_id"), requires=("project",), response_kind="verification_regression"),
-            ActionSpec("project_trajectory", "Bounded observed attempt and publication timeline.", "read", parameters=("project", "bead_refs", "refresh_id"), requires=("project",), response_kind="project_trajectory"),
+            ActionSpec("campaign_evidence", "Revision-bound acceptance evidence for owner-selected Beads closure.", "read", parameters=tuple(PROJECT_INPUTS["campaign_evidence"].model_fields), requires=tuple(input_schema("campaign_evidence").get("required", [])), response_kind="campaign_evidence"),
+            ActionSpec("campaign_progress", "Task closure and independently proven campaign progress.", "read", parameters=tuple(PROJECT_INPUTS["campaign_progress"].model_fields), requires=tuple(input_schema("campaign_progress").get("required", [])), response_kind="campaign_progress"),
+            ActionSpec("campaign_scope_delta", "Explicit scope changes between owner-selected Beads revisions.", "read", parameters=tuple(PROJECT_INPUTS["campaign_scope_delta"].model_fields), requires=tuple(input_schema("campaign_scope_delta").get("required", [])), response_kind="campaign_scope_delta"),
+            ActionSpec("verification_regression", "Comparable command and acceptance outcome changes.", "read", parameters=tuple(PROJECT_INPUTS["verification_regression"].model_fields), requires=tuple(input_schema("verification_regression").get("required", [])), response_kind="verification_regression"),
+            ActionSpec("project_trajectory", "Bounded retained attempt and publication timeline.", "read", parameters=tuple(PROJECT_INPUTS["project_trajectory"].model_fields), requires=tuple(input_schema("project_trajectory").get("required", [])), response_kind="project_trajectory"),
+            ActionSpec("project_context", "Bounded project context with independent owner coverage and one graph generation.", "read", parameters=tuple(PROJECT_INPUTS["project_context"].model_fields), requires=tuple(input_schema("project_context").get("required", [])), response_kind="project_context"),
             ActionSpec("snapshots", "Chisel/code snapshot status, slices, and audit.", "read", parameters=("repo", "project", "view"), views=("status", "runs", "slices", "audit"), response_kind="code_snapshots"),
         ),
     ),

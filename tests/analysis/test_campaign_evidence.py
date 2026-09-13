@@ -345,11 +345,12 @@ def test_public_campaign_route_consumes_structured_owner_records(monkeypatch):
     monkeypatch.setattr(
         "lynchpin.analysis.projects.campaign.read_batches", lambda project: runtime()
     )
+    monkeypatch.setattr("lynchpin.analysis.projects.owner_products.read_tasks", lambda *a, **kw: snapshot())
+    monkeypatch.setattr("lynchpin.analysis.projects.campaign.read_native_evidence", lambda project: {"rows": [], "coverage": "unavailable", "gaps": []})
     result = lynchpin_project(
         action="campaign_evidence",
         project="demo",
-        bead_refs=[REF],
-        task_snapshot=snapshot(),
+        roots=[REF],
     )
     assert result["ok"] is True
     assert result["meta"]["effect_mode"] == "read"
@@ -361,14 +362,15 @@ def test_public_campaign_route_consumes_structured_owner_records(monkeypatch):
     assert invalid["error_code"] == "invalid_argument"
 
 
-def test_public_scope_route_preserves_baseline():
+def test_public_scope_route_preserves_baseline(monkeypatch):
     from lynchpin.mcp.tools.public import lynchpin_project
 
+    monkeypatch.setattr("lynchpin.analysis.projects.owner_products.read_tasks", lambda *a, **kw: snapshot())
     result = lynchpin_project(
         action="campaign_scope_delta",
         project="demo",
-        baseline_snapshot=snapshot(),
-        task_snapshot=snapshot(),
+        roots=[REF],
+        baseline="baseline-revision",
     )
     assert result["ok"] is True
     assert result["data"]["changes"][0]["baseline_obligation"] is True

@@ -590,42 +590,42 @@ def lynchpin_project(
     end: str | None = None,
     limit: int = 100,
     bead_refs: list[str] | None = None,
-    task_snapshot: dict[str, Any] | None = None,
-    baseline_snapshot: dict[str, Any] | None = None,
+    roots: list[str] | None = None,
+    at: str | None = None,
+    baseline: str | None = None,
+    relation: str = "blocks",
+    direction: str = "prerequisites",
+    max_nodes: int = 500,
+    max_depth: int = 50,
+    intent: str = "project.orientation",
+    budget_bytes: int = 56000,
     refresh_id: str | None = None,
 ) -> dict[str, Any]:
-    """Project router: repository products, campaign_evidence, campaign_progress, campaign_scope_delta, verification_regression, project_trajectory."""
+    """Project router: repository products, campaign_evidence, campaign_progress, campaign_scope_delta, verification_regression, project_trajectory, project_context."""
     if invalid := _mark_route("lynchpin_project", action):
         return invalid
     target = repo or project
-    if action in {"verification_regression", "project_trajectory"}:
-        from lynchpin.analysis.projects.campaign_history import project_trajectory, verification_regression
+    from lynchpin.mcp.project_contracts import PROJECT_INPUTS
 
-        if not target:
-            return _error("missing_argument", "project is required")
-        function = verification_regression if action == "verification_regression" else project_trajectory
+    if action in PROJECT_INPUTS:
+        from lynchpin.analysis.projects.context import project_context
+        from lynchpin.analysis.projects.owner_products import campaign_product, history_product
+
+        values = locals()
+        values["project"] = target
+        values["roots"] = roots if roots is not None else bead_refs
+        model = PROJECT_INPUTS[action]
         try:
-            data = function(project=target, bead_refs=bead_refs, refresh_id=refresh_id)
+            arguments = model.model_validate({key: values[key] for key in model.model_fields}).model_dump()
+            if action == "project_context":
+                data = project_context(**arguments)
+            elif action.startswith("campaign_"):
+                data = campaign_product(action=action, **arguments)
+            else:
+                data = history_product(action=action, **arguments)
         except ValueError as error:
             return _error("invalid_argument", str(error))
-        return _ok(data, **_current_meta(route=f"lynchpin.analysis.projects.campaign_history.{action}", source_mode="owner_snapshots"))
-    if action in {"campaign_evidence", "campaign_progress", "campaign_scope_delta"}:
-        from lynchpin.analysis.projects.campaign import campaign_evidence, campaign_scope_delta
-
-        if not target:
-            return _error("missing_argument", "project is required for campaign products")
-        if action == "campaign_scope_delta":
-            if task_snapshot is None or baseline_snapshot is None:
-                return _error("missing_argument", "task_snapshot and baseline_snapshot are required")
-            data = campaign_scope_delta(baseline_snapshot, task_snapshot)
-        else:
-            if not bead_refs:
-                return _error("missing_argument", "explicit canonical bead_refs are required")
-            try:
-                data = campaign_evidence(project=target, bead_refs=bead_refs, task_snapshot=task_snapshot, refresh_id=refresh_id)
-            except ValueError as error:
-                return _error("invalid_argument", str(error))
-        return _ok(data, **_current_meta(route="lynchpin.analysis.projects.campaign", source_mode="owner_snapshots"))
+        return _ok(data, **_current_meta(route=f"lynchpin.analysis.projects.{action}", source_mode="owner_snapshots"))
     if action == "repos":
         return _internal_call("lynchpin.mcp.tools.git_analysis", "repo_names")
     if action == "files":

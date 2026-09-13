@@ -628,6 +628,34 @@ def graph_context_pack(
     )
 
 
+def project_graph_context(
+    graph: EvidenceGraph, *, project: str, start: date, end: date
+) -> dict[str, object]:
+    """Project-only context from one supplied graph, without live source reads."""
+    from .work_correlation import work_day_correlations
+    from ..core.serialization import jsonable
+
+    nodes = tuple(
+        node for node in graph.nodes
+        if node.project == project and start <= node.date <= end
+    )
+    ids = {node.id for node in nodes}
+    selected = replace(
+        graph, nodes=nodes,
+        edges=tuple(edge for edge in graph.edges if edge.source_id in ids and edge.target_id in ids),
+    )
+    rows = work_day_correlations(start=start, end=end, graph=selected)
+    return cast(dict[str, object], jsonable({
+        "refresh_id": graph.refresh_id, "start": start, "end": end,
+        "projects": _project_slices(rows, projects=[project]),
+        "claims": supported_work_claims(rows, graph=selected, limit=24),
+        "salient_chains": _select_top_chains(selected, limit=5),
+        "salient_anomalies": _select_top_anomalies(selected, limit=5),
+        "caveats": graph.caveats, "graph_integrity": graph.graph_integrity,
+        "source_refs": [node.id for node in nodes],
+    }))
+
+
 def _render_physiology(p: PhysiologySummary) -> str:
     def fmt(v: float | None, unit: str = "", prec: int = 1) -> str:
         return f"{v:.{prec}f}{unit}" if v is not None else "—"

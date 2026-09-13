@@ -31,6 +31,13 @@ pool = "normal"
 result = "exit"
 cache = "tree+environment"
 
+[operations.verify_owner_products]
+description = "Verify campaign owner snapshots, bounded project context, and public action contracts"
+exec = ["pytest", "-q", "tests/analysis/test_campaign_evidence.py", "tests/analysis/test_campaign_history.py", "tests/analysis/test_project_owner_products.py", "tests/mcp/test_mcp_public.py", "tests/mcp/test_mcp_registration.py"]
+pool = "pytest"
+result = "exit"
+cache = "tree+environment"
+
 [operations.input_activity]
 description = "Reconstruct private input evidence from explicit time bounds"
 exec = ["python", "-m", "lynchpin.analysis", "input-activity"]

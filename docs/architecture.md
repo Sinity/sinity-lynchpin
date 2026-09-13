@@ -112,6 +112,10 @@ Generated artifacts live under the ignored local root or configured derived
 root. Tracked documentation describes contracts, not generated personal
 results.
 
+`lynchpin_project` owns [campaign evidence and historical task products](reference/campaign-evidence.md). Its owner adapter acquires exact Beads revisions; callers do not construct task snapshots.
+
+The `project_context` action returns independently covered task, graph evidence, trajectory, and verification components. It reads one retained graph generation and reuses the graph context-pack projections without refreshing or reading raw sessions. Task and runtime revisions remain independent owner observations; they are never labeled as members of the graph generation. A missing graph or runtime owner leaves the other components available. The byte budget is a presentation target. Complete component data, owner references, source revisions, coverage, and payload digests survive even when that target is exceeded, so the gateway can retain the exact observation before budgeting its presentation. Exact graph/task replay selectors remain in `owner_ref`; runtime observations can change on replay. `lynchpin_catalog` publishes complete JSON input schemas for these project actions, generated from the same models that validate their public routes.
+
 ## Freshness and convergence
 
 Read paths may converge an owned materialized product when its contract permits

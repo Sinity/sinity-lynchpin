@@ -55,7 +55,8 @@ def test_public_tool_annotations_follow_registry_effects() -> None:
         assert annotations.destructiveHint is (spec.effect_mode == "write")
 
 
-def test_public_router_bodies_cover_registered_actions() -> None:
+def test_legacy_public_router_bodies_cover_registered_actions() -> None:
+    from lynchpin.mcp.project_contracts import PROJECT_INPUTS
     from lynchpin.mcp.registry import PUBLIC_TOOLS
     from lynchpin.mcp.tools import public
 
@@ -72,9 +73,11 @@ def test_public_router_bodies_cover_registered_actions() -> None:
 
     for tool in PUBLIC_TOOLS:
         source = inspect.getsource(router_functions[tool.name])
+        # Typed project actions are covered by executed owner dispatch tests.
         missing = [
             action.name
             for action in tool.actions
+            if not (tool.name == "lynchpin_project" and action.name in PROJECT_INPUTS)
             if repr(action.name) not in source and f'"{action.name}"' not in source
         ]
         assert missing == [], f"{tool.name} metadata actions missing from router body: {missing}"
