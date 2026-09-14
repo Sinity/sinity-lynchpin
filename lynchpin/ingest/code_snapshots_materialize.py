@@ -70,7 +70,12 @@ def materialize_code_snapshots() -> dict[str, Any]:
         promote_code_snapshot_runs,
         promote_code_snapshot_slices,
     )
-    from lynchpin.substrate.connection import connect
+    from lynchpin.substrate.connection import (
+        candidate_generation,
+        connect,
+        in_candidate_generation,
+        substrate_path,
+    )
 
     output_root = code_snapshots_path()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -91,9 +96,31 @@ def materialize_code_snapshots() -> dict[str, Any]:
         )
         raise MaterializationError("code_snapshots", reason=str(first_err))
 
-    with connect() as conn:
-        n_runs = promote_code_snapshot_runs(conn, rows=run_rows)
-        n_slices = promote_code_snapshot_slices(conn, rows=slice_rows)
+    def _promote() -> tuple[int, int]:
+        with connect() as conn:
+            return (
+                promote_code_snapshot_runs(conn, rows=run_rows),
+                promote_code_snapshot_slices(conn, rows=slice_rows),
+            )
+
+    # code_snapshot_run/code_snapshot_slice are part of the serving substrate,
+    # so these writes go through the normal candidate-generation publication
+    # boundary rather than mutating the canonical DuckDB file directly.
+    promotion_status = "ok"
+    promotion_reason: str | None = None
+    if in_candidate_generation():
+        n_runs, n_slices = _promote()
+    elif substrate_path().exists():
+        with candidate_generation():
+            n_runs, n_slices = _promote()
+    else:
+        # These two tables are one product inside a complete substrate
+        # generation. A partial bootstrap cannot satisfy the publication
+        # contract, so retain the bundles on disk and let a full convergence
+        # bootstrap promote them.
+        n_runs = n_slices = 0
+        promotion_status = "deferred"
+        promotion_reason = "serving substrate is absent; full convergence bootstrap required"
 
     manifest = {
         "dataset": "code_snapshots",
@@ -101,7 +128,10 @@ def materialize_code_snapshots() -> dict[str, Any]:
         "run_count": n_runs,
         "slice_count": n_slices,
         "materialized_path": str(output_root),
+        "substrate_promotion_status": promotion_status,
     }
+    if promotion_reason is not None:
+        manifest["substrate_promotion_reason"] = promotion_reason
     manifest_path = output_root / "code_snapshots.manifest.json"
     write_manifest(manifest_path, manifest)
     return manifest
