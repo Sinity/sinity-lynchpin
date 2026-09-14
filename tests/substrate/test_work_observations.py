@@ -158,7 +158,7 @@ def test_promote_agentctl_observations_is_idempotent(tmp_path):
 
     assert count == 1
     assert observation[0].startswith("sha256:")
-    assert '"contract_schema":2' in observation[1]
+    assert '"contract_schema":3' in observation[1]
     assert observation[2] == '[]'
     assert observation[3:] == (True, True, None)
     assert refs == []
@@ -238,3 +238,87 @@ def test_work_observation_promotion_can_append_under_one_refresh_id(tmp_path):
     sources = {row["source"] for row in loaded}
     assert sources == {"xtask_history"}
     assert telemetry == [(3.5,)]
+
+
+def test_agentctl_operation_survives_the_substrate_round_trip(tmp_path):
+    """work_observation persists and returns the AgentCTL operation name.
+
+    Anti-vacuity: dropping the ``operation`` column from the DDL, from
+    ``_WORK_OBSERVATION_COLUMNS``/the extractor, or from the
+    ``load_work_observations`` projection makes this red. Without it, per-
+    operation duration questions ("how long does verify_all take") are only
+    answerable by joining externally on the job id.
+    """
+    from lynchpin.sources.agentctl import read_observation_snapshot
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.work_observations import (
+        load_work_observations,
+        promote_agentctl_observations,
+    )
+
+    rows = read_observation_snapshot(loader=lambda: [{
+        "job_id": 333, "kind": "declared-operation", "project": "polylogue",
+        "operation": "verify_all", "group": "normal", "phase": "succeeded",
+        "terminal": True, "result": "Success", "exit_code": 0,
+        "enqueued_at": "2026-08-24T00:00:00+00:00",
+        "started_at": "2026-08-24T00:00:01+00:00",
+        "ended_at": "2026-08-24T00:05:01+00:00",
+    }]).observations
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        assert promote_agentctl_observations(conn, refresh_id="r1", rows=rows) == 1
+        stored = conn.execute(
+            "SELECT operation, duration_s FROM work_observation WHERE project = 'polylogue'"
+        ).fetchall()
+        loaded = load_work_observations(conn, refresh_id="r1")
+
+    assert stored == [("verify_all", 300.0)]
+    assert [row["operation"] for row in loaded] == ["verify_all"]
+
+
+def test_daily_work_observation_series_separates_operations(tmp_path):
+    """Daily rollups group by operation instead of collapsing agentctl work.
+
+    Anti-vacuity: agentctl rows all carry an empty ``command``, so without
+    ``operation`` in the SELECT/GROUP BY every operation for a project and day
+    collapses into one undifferentiated row and this test sees a single row
+    with the pooled count.
+    """
+    from lynchpin.analysis.machine.work_observations import daily_work_observation_series
+    from lynchpin.sources.agentctl import read_observation_snapshot
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.work_observations import promote_agentctl_observations
+
+    def _job(job_id: int, operation: str, end: str) -> dict:
+        return {
+            "job_id": job_id, "kind": "declared-operation", "project": "polylogue",
+            "operation": operation, "group": "normal", "phase": "succeeded",
+            "terminal": True, "result": "Success", "exit_code": 0,
+            "enqueued_at": "2026-08-24T00:00:00+00:00",
+            "started_at": "2026-08-24T00:00:00+00:00", "ended_at": end,
+        }
+
+    rows = read_observation_snapshot(loader=lambda: [
+        _job(1, "verify_all", "2026-08-24T00:10:00+00:00"),
+        _job(2, "pytest_focused", "2026-08-24T00:00:30+00:00"),
+        _job(3, "pytest_focused", "2026-08-24T00:00:10+00:00"),
+    ]).observations
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_agentctl_observations(conn, refresh_id="r1", rows=rows)
+        series = daily_work_observation_series(conn, refresh_id="r1")
+        focused = daily_work_observation_series(
+            conn, refresh_id="r1", operation="pytest_focused"
+        )
+
+    by_operation = {row.operation: row for row in series}
+    assert set(by_operation) == {"verify_all", "pytest_focused"}
+    assert by_operation["verify_all"].observation_count == 1
+    assert by_operation["verify_all"].max_duration_s == 600.0
+    assert by_operation["pytest_focused"].observation_count == 2
+    assert by_operation["pytest_focused"].max_duration_s == 30.0
+    assert [row.operation for row in focused] == ["pytest_focused"]

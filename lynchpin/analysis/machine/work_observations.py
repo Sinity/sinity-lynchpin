@@ -22,6 +22,7 @@ class WorkObservationDaily:
     date: date
     work_kind: str
     project: str | None
+    operation: str | None
     command: tuple[str, ...]
     observation_count: int
     success_count: int
@@ -158,6 +159,7 @@ def daily_work_observation_series(
     start: date | None = None,
     end: date | None = None,
     project: str | None = None,
+    operation: str | None = None,
     command_contains: str | None = None,
 ) -> list[WorkObservationDaily]:
     where, params = _where(
@@ -165,6 +167,7 @@ def daily_work_observation_series(
         start=start,
         end=end,
         project=project,
+        operation=operation,
         command_contains=command_contains,
         time_column="started_at",
     )
@@ -175,6 +178,7 @@ def daily_work_observation_series(
             CAST(started_at AS DATE) AS date,
             work_kind,
             project,
+            operation,
             command,
             COUNT(*) AS observation_count,
             SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
@@ -185,8 +189,8 @@ def daily_work_observation_series(
             MAX(duration_s) AS max_duration_s
         FROM ({source})
         {where}
-        GROUP BY 1, 2, 3, 4
-        ORDER BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5
+        ORDER BY 1, 2, 3, 4, 5
         """,
         params,
     ).fetchall()
@@ -195,14 +199,15 @@ def daily_work_observation_series(
             date=row[0],
             work_kind=str(row[1]),
             project=row[2],
-            command=tuple(row[3] or ()),
-            observation_count=int(row[4]),
-            success_count=int(row[5] or 0),
-            failed_count=int(row[6] or 0),
-            avg_duration_s=_float(row[7]),
-            median_duration_s=_float(row[8]),
-            p95_duration_s=_float(row[9]),
-            max_duration_s=_float(row[10]),
+            operation=row[3],
+            command=tuple(row[4] or ()),
+            observation_count=int(row[5]),
+            success_count=int(row[6] or 0),
+            failed_count=int(row[7] or 0),
+            avg_duration_s=_float(row[8]),
+            median_duration_s=_float(row[9]),
+            p95_duration_s=_float(row[10]),
+            max_duration_s=_float(row[11]),
         )
         for row in rows
     ]
@@ -508,6 +513,7 @@ def _where(
     project: str | None,
     command_contains: str | None,
     time_column: str,
+    operation: str | None = None,
 ) -> tuple[str, list[Any]]:
     clauses, params = _base_clauses(
         refresh_id=refresh_id,
@@ -518,6 +524,9 @@ def _where(
     if project is not None:
         clauses.append("project = ?")
         params.append(project)
+    if operation is not None:
+        clauses.append("operation = ?")
+        params.append(operation)
     if command_contains is not None:
         clauses.append("list_contains(command, ?)")
         params.append(command_contains)

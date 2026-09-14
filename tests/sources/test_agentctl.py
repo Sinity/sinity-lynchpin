@@ -35,9 +35,10 @@ def test_agentctl_native_adapter_projects_only_public_observation_fields() -> No
     snapshot = read_observation_snapshot(loader=lambda: _rows())
     row = snapshot.observations[0]
 
-    assert snapshot.contract_schema == 2
+    assert snapshot.contract_schema == 3
     assert row.source_id == "agentctl:111"
     assert row.project == "lynchpin"
+    assert row.operation == "check"
     assert row.status == "succeeded"
     assert row.exit_code == 0
     assert row.duration_s == 60.0
@@ -123,3 +124,26 @@ def test_agentctl_reader_has_no_execution_authority(monkeypatch: pytest.MonkeyPa
 
     assert agentctl.read_observation_snapshot().observations
     assert calls == [("agentctl", "job", "list", "--json", "--all")]
+
+
+def test_agentctl_observation_carries_operation_from_the_job_list_row() -> None:
+    """The declared operation name survives into the observation.
+
+    Anti-vacuity: reverting the adapter to drop ``operation`` (as it did before,
+    using it only to compute ``source_revision``) makes ``row.operation`` None
+    and this test red. A job row without an operation must stay None rather
+    than inventing one from ``label``.
+    """
+    from lynchpin.sources.agentctl import read_observation_snapshot
+
+    rows = _rows()
+    rows[0]["operation"] = "verify_all"
+    row = read_observation_snapshot(loader=lambda: rows).observations[0]
+    assert row.operation == "verify_all"
+
+    unlabelled = _rows()
+    del unlabelled[0]["operation"]
+    missing = read_observation_snapshot(loader=lambda: unlabelled).observations[0]
+    assert missing.operation is None
+    # ``label`` is project:operation and is deliberately not carried separately.
+    assert not hasattr(missing, "label")

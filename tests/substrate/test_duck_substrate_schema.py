@@ -263,7 +263,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 46
+    assert SUBSTRATE_VERSION == 47
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -298,7 +298,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("46",)
+        ).fetchone() == ("47",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -476,3 +476,58 @@ def test_concurrent_writers_documented_constraint(tmp_path: Path) -> None:
             "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
         ).fetchall()
     assert any("commit_fact" in r[0] for r in tables)
+
+
+def test_apply_schema_migrates_version_46_work_observation_operation(
+    tmp_path: Path,
+) -> None:
+    """A v46 substrate gains work_observation.operation without a full rebuild.
+
+    Anti-vacuity: removing the additive branch sends a v46 database down the
+    DROP-and-recreate path, losing the promoted row asserted below; omitting the
+    ALTER leaves the column missing and the SELECT fails outright.
+    """
+    from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
+    from lynchpin.substrate.schema import DDL_STATEMENTS
+
+    assert SUBSTRATE_VERSION == 47
+    # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
+    # drift away from the real column list.
+    create = next(
+        stmt
+        for stmt in DDL_STATEMENTS
+        if "CREATE TABLE work_observation (" in stmt
+    )
+    v46_create = "\n".join(
+        line for line in create.splitlines() if "operation" not in line
+    )
+    assert "operation" not in v46_create
+
+    db = tmp_path / "sub.duckdb"
+    with connect(db) as conn:
+        apply_schema(conn)
+        views = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_type = 'VIEW'"
+        ).fetchall()
+        for (view_name,) in views:
+            conn.execute(f'DROP VIEW "{view_name}"')
+        conn.execute("DROP TABLE work_observation")
+        conn.execute(v46_create)
+        conn.execute(
+            "INSERT INTO work_observation "
+            "(source, source_id, work_kind, project, started_at, status, host, "
+            "refresh_id) VALUES "
+            "('agentctl', 'agentctl:9', 'agentctl_job', 'polylogue', "
+            "TIMESTAMPTZ '2026-08-24 00:00:00+00', 'succeeded', 'unknown', 'r1')"
+        )
+        conn.execute("UPDATE substrate_meta SET value = '46' WHERE key = 'version'")
+
+        apply_schema(conn)
+
+        assert conn.execute(
+            "SELECT source_id, operation FROM work_observation"
+        ).fetchall() == [("agentctl:9", None)]
+        assert conn.execute(
+            "SELECT value FROM substrate_meta WHERE key = 'version'"
+        ).fetchone() == ("47",)

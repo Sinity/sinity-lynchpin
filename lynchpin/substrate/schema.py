@@ -1072,6 +1072,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         source_id               VARCHAR NOT NULL,
         work_kind               VARCHAR NOT NULL,
         project                 VARCHAR,
+        operation               VARCHAR,
         command                 VARCHAR[] NOT NULL DEFAULT [],
         cwd                     VARCHAR,
         started_at              TIMESTAMPTZ NOT NULL,
@@ -1128,6 +1129,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX work_observation_started_at ON work_observation(started_at)",
     "CREATE INDEX work_observation_project_time ON work_observation(project, started_at)",
+    "CREATE INDEX work_observation_project_operation ON work_observation(project, operation, started_at)",
     "CREATE INDEX work_observation_status ON work_observation(status)",
     "CREATE INDEX work_observation_refresh_id ON work_observation(refresh_id)",
     # ────────────────────────────────────────────────────────────────────

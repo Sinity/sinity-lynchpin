@@ -17,6 +17,7 @@ _WORK_OBSERVATION_COLUMNS = (
     "source_id",
     "work_kind",
     "project",
+    "operation",
     "command",
     "cwd",
     "started_at",
@@ -187,6 +188,7 @@ def _promote_work_observation_rows(
             r.source_id,
             work_kind or r.work_kind,
             r.project,
+            getattr(r, "operation", None),
             list(r.command),
             r.cwd,
             r.started_at,
@@ -328,7 +330,7 @@ def load_work_observations(
     params.append(min(max(int(limit), 1), 10_000))
     rows = conn.execute(
         f"""
-        SELECT source, source_id, work_kind, project, command, cwd,
+        SELECT source, source_id, work_kind, project, operation, command, cwd,
                started_at, ended_at, duration_s, status, exit_code, host,
                git_commit, git_dirty, live_stage, args, source_revision,
                source_generation, artifact_refs, caveats, outcome_known,

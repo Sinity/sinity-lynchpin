@@ -743,6 +743,7 @@ def lynchpin_machine(
     start: str | None = None,
     end: str | None = None,
     project: str | None = None,
+    operation: str | None = None,
     host: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
@@ -774,7 +775,7 @@ def lynchpin_machine(
         fn = mapping.get(view or "summary", "machine_workload_summary")
         return _internal_call("lynchpin.mcp.tools.machine_workloads", fn, start=start, end=end)
     if action == "observations":
-        return _internal_call("lynchpin.mcp.tools.machine_observations", "machine_work_observations", view=view or "daily", start=start, end=end, project=project, limit=limit)
+        return _internal_call("lynchpin.mcp.tools.machine_observations", "machine_work_observations", view=view or "daily", start=start, end=end, project=project, operation=operation, limit=limit)
     if action == "benchmarks":
         return _internal_call("lynchpin.mcp.tools.machine_benchmarks", "machine_benchmarks", view=view or "runs", limit=limit)
     if action == "diagnostics":

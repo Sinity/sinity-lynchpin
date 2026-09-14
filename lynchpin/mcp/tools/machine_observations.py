@@ -384,6 +384,7 @@ def machine_work_observation_daily(
     start: str | None = None,
     end: str | None = None,
     project: str | None = None,
+    operation: str | None = None,
     command_contains: str | None = None,
     refresh_id: str | None = None,
     limit: int = 500,
@@ -418,6 +419,7 @@ def machine_work_observation_daily(
             start=start_d,
             end=end_d,
             project=project,
+            operation=operation,
             command_contains=command_contains,
         )
 
@@ -429,6 +431,7 @@ def machine_work_observation_daily(
                 "start": start,
                 "end": end,
                 "project": project,
+                "operation": operation,
                 "command_contains": command_contains,
             },
         },
@@ -437,6 +440,7 @@ def machine_work_observation_daily(
                 "date": _json_safe(row.date),
                 "work_kind": row.work_kind,
                 "project": row.project,
+                "operation": row.operation,
                 "command": list(row.command),
                 "observation_count": row.observation_count,
                 "success_count": row.success_count,
@@ -1022,6 +1026,7 @@ def machine_work_observations(
     start: str | None = None,
     end: str | None = None,
     project: str | None = None,
+    operation: str | None = None,
     command_contains: str | None = None,
     stage_name: str | None = None,
     package: str | None = None,
@@ -1032,7 +1037,7 @@ def machine_work_observations(
 ) -> Any:
     """Work observation data. view: daily, mechanics, stage_summary, test_summary, artifact, slow_tests, stage_daily, failures."""
     if view == "daily":
-        return machine_work_observation_daily(start=start, end=end, project=project, command_contains=command_contains, refresh_id=refresh_id, limit=limit)
+        return machine_work_observation_daily(start=start, end=end, project=project, operation=operation, command_contains=command_contains, refresh_id=refresh_id, limit=limit)
     if view == "mechanics":
         return machine_workflow_mechanics(start=start, end=end, project=project, refresh_id=refresh_id, retry_gap_min=retry_gap_min, limit=limit)
     if view == "stage_summary":

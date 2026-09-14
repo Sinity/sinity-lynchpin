@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 46
+SUBSTRATE_VERSION = 47
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1693,7 +1693,10 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current == 43 and SUBSTRATE_VERSION == 46:
+    if current in (43, 44, 45, 46) and SUBSTRATE_VERSION == 47:
+        # Additive transitions are idempotent and cumulative: a database at any
+        # supported earlier version applies every delta it is missing, so a
+        # multi-step upgrade (43 -> 47) never skips a later column.
         conn.execute(
             "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
             "predecessor_refresh_id VARCHAR"
@@ -1725,42 +1728,15 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             "CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key "
             "ON substrate_product_tombstone(product, natural_key)"
         )
+        # 47: the declared AgentCTL operation name is carried as evidence rather
+        # than only folded into source_revision. Existing rows keep NULL until
+        # the live route re-promotes them.
         conn.execute(
-            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
-            [str(SUBSTRATE_VERSION)],
+            "ALTER TABLE work_observation ADD COLUMN IF NOT EXISTS operation VARCHAR"
         )
-    elif current == 44 and SUBSTRATE_VERSION == 46:
         conn.execute(
-            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
-            "input_fingerprint VARCHAR"
-        )
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS substrate_product_lineage (
-                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
-                predecessor_refresh_id VARCHAR, replacement_start DATE,
-                input_fingerprint VARCHAR, mode VARCHAR NOT NULL,
-                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (product, refresh_id)
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS substrate_product_lineage_predecessor ON substrate_product_lineage(predecessor_refresh_id)")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS substrate_product_tombstone (
-                product VARCHAR NOT NULL, refresh_id VARCHAR NOT NULL,
-                natural_key VARCHAR NOT NULL,
-                materialized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (product, refresh_id, natural_key)
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key ON substrate_product_tombstone(product, natural_key)")
-        conn.execute(
-            "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",
-            [str(SUBSTRATE_VERSION)],
-        )
-    elif current == 45 and SUBSTRATE_VERSION == 46:
-        conn.execute(
-            "ALTER TABLE evidence_graph_build ADD COLUMN IF NOT EXISTS "
-            "input_fingerprint VARCHAR"
+            "CREATE INDEX IF NOT EXISTS work_observation_project_operation "
+            "ON work_observation(project, operation, started_at)"
         )
         conn.execute(
             "INSERT OR REPLACE INTO substrate_meta VALUES ('version', ?)",

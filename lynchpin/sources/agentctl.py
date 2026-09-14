@@ -18,7 +18,7 @@ from typing import Any
 
 SOURCE = "agentctl"
 WORK_KIND = "agentctl_job"
-CONTRACT_SCHEMA = 2
+CONTRACT_SCHEMA = 3
 _COMMAND = ("agentctl", "job", "list", "--json", "--all")
 
 
@@ -55,6 +55,7 @@ class AgentctlJobObservation:
     receipt_refs: tuple[AgentctlReceiptRef, ...]
     work_kind: str
     project: str | None
+    operation: str | None
     command: tuple[str, ...]
     cwd: str | None
     started_at: datetime
@@ -225,6 +226,7 @@ def _job_observation(
         receipt_refs=(),
         work_kind=WORK_KIND,
         project=_optional_text(job.get("project")),
+        operation=_optional_text(job.get("operation")),
         command=(),
         cwd=None,
         started_at=started_at,

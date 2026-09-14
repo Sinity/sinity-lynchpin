@@ -124,6 +124,7 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         mcp_tools=("lynchpin_machine",),
         caveats=(
             "read-only public lifecycle/resource observations; Lynchpin has no AgentCTL execution authority",
+            "the declared operation name is carried from the job-list row; resource columns stay null on this route",
             "raw argv, prompts, private payloads, logs, and result content remain outside DuckDB",
         ),
     ),
