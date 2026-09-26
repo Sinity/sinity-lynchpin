@@ -29,10 +29,12 @@ import statistics
 import subprocess
 import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,7 @@ def _print(*args: Any, **kwargs: Any) -> None:
 
 
 _print_lock = threading.Lock()
+_stage_timing_local = threading.local()
 _process_lock = threading.Lock()
 _active_processes: set[subprocess.Popen[str]] = set()
 _abort_event = threading.Event()
@@ -728,6 +731,21 @@ _plan(
         "Scripts, dotfiles, agent control plane, CI",
         ("scripts/**", "dots/**", ".github/**", "README.md", "CLAUDE.md"),
     ),
+    Slice(
+        "packages-and-tooling",
+        "Local package implementations, device tooling, tests, and documentation",
+        (
+            "pkgs/**",
+            "devices/**",
+            "browser-extensions/**",
+            "tests/**",
+            "docs/**",
+            "assets/**",
+            "eval/**",
+            "justfile",
+            "pyproject.toml",
+        ),
+    ),
     stats_buckets=(
         StatsBucket(
             "tests",
@@ -777,14 +795,20 @@ _plan(
     "Sinity/polylogue",
     Slice(
         "core-and-storage",
-        "Core library, package roots, storage backends, schemas, sources",
+        "Core library, archive, daemon, pipeline, storage, and source implementations",
         (
-            "polylogue/*.py",
-            "polylogue/lib/**",
-            "polylogue/storage/**",
-            "polylogue/schemas/**",
-            "polylogue/sources/**",
+            "polylogue/**",
             "README.md",
+        ),
+        extra_ignore=(
+            "polylogue/cli/**",
+            "polylogue/mcp/**",
+            "polylogue/operations/**",
+            "polylogue/ui/**",
+            "polylogue/rendering/**",
+            "polylogue/site/**",
+            "polylogue/showcase/**",
+            "polylogue/templates/**",
         ),
     ),
     Slice(
@@ -831,6 +855,23 @@ _plan(
             "polylogue/showcase/**",
             "polylogue/templates/**",
             "demos/**",
+            "webui/**",
+            "browser-extension/**",
+        ),
+    ),
+    Slice(
+        "developer-tooling",
+        "Developer tools, packaging, service definitions, and build configuration",
+        (
+            "devtools/**",
+            "packaging/**",
+            "contrib/**",
+            "nix/**",
+            "systemd/**",
+            "pyproject.toml",
+            "flake.nix",
+            ".githooks/**",
+            "justfile",
         ),
     ),
     Slice("docs", "Documentation", ("docs/**", "CLAUDE.md", "CHANGELOG.md")),
@@ -998,6 +1039,8 @@ _plan(
         (
             "lynchpin/analysis/**",
             "lynchpin/core/**",
+            "lynchpin/*.py",
+            "lynchpin/personal_evidence/**",
             "config/**",
             "README.md",
             "CLAUDE.md",
@@ -1006,14 +1049,29 @@ _plan(
     ),
     Slice("sources", "Read-only data source adapters", ("lynchpin/sources/**",)),
     Slice(
+        "ingest-and-substrate",
+        "Materializers, ingestion, and coherent substrate readers and writers",
+        ("lynchpin/ingest/**", "lynchpin/materializers/**", "lynchpin/substrate/**"),
+    ),
+    Slice(
         "composite-graph-spine",
         "Evidence graph, context packs, semantic products",
         ("lynchpin/graph/**",),
     ),
     Slice(
         "cli-and-tooling",
-        "CLI entrypoints and tooling",
-        ("lynchpin/cli/**", "tool/**", "justfile"),
+        "CLI and MCP entrypoints, web surfaces, and tooling",
+        (
+            "lynchpin/cli/**",
+            "lynchpin/mcp/**",
+            "lynchpin/web/**",
+            "lynchpin/static/**",
+            "tool/**",
+            "scripts/**",
+            ".github/**",
+            "justfile",
+            "flake.nix",
+        ),
     ),
     Slice("tests", "Test suites", ("tests/**",)),
     Slice("docs", "Documentation", ("docs/**",)),
@@ -1163,8 +1221,20 @@ def _run_repomix(
     log: list[str] | None = None,
 ) -> tuple[str, int]:
     """Run repomix. Returns (key, size_bytes)."""
-    with _repomix_semaphore:
+    wait_started = time.perf_counter()
+    _repomix_semaphore.acquire()
+    wait_elapsed = time.perf_counter() - wait_started
+    timing = getattr(_stage_timing_local, "current", None)
+    if timing is not None:
+        timing["repomix_wait_s"] = round(wait_elapsed, 3)
+    run_started = time.perf_counter()
+    try:
         result = _run([repomix_bin, ".", *args], cwd=plan.path)
+    finally:
+        run_elapsed = time.perf_counter() - run_started
+        if timing is not None:
+            timing["repomix_run_s"] = round(run_elapsed, 3)
+        _repomix_semaphore.release()
     if result.returncode != 0:
         details = (result.stderr or result.stdout or "repomix failed").strip()
         raise MaterializationError(
@@ -1182,6 +1252,14 @@ def _run_repomix(
             log, f"  [dim]┄ {output_path.name}: {stripped:,} ctrl bytes stripped[/dim]"
         )
     return output_path.stem, output_path.stat().st_size
+
+
+def _record_substage_duration(name: str, started: float) -> None:
+    timing = getattr(_stage_timing_local, "current", None)
+    if timing is None:
+        return
+    timings = timing.setdefault("substage_timings_s", {})
+    timings[name] = round(time.perf_counter() - started, 3)
 
 
 def _run_slice(
@@ -1430,6 +1508,7 @@ def _normalize_rel_pattern(value: str) -> str:
     return value
 
 
+@lru_cache(maxsize=65_536)
 def _glob_matches(rel_path: str, pattern: str) -> bool:
     rel_path = _normalize_rel_pattern(rel_path)
     pattern = _normalize_rel_pattern(pattern)
@@ -1715,7 +1794,12 @@ def _rust_inline_test_stats(
     total_lines = 0
     total_files = 0
 
-    for path in sorted(plan.path.rglob("*.rs")):
+    paths = (
+        (plan.path / rel for rel in visible_paths if rel.endswith(".rs"))
+        if visible_paths is not None
+        else plan.path.rglob("*.rs")
+    )
+    for path in sorted(paths):
         try:
             rel_path = path.relative_to(plan.path).as_posix()
         except ValueError:
@@ -1776,7 +1860,12 @@ def _rust_split_test_file_stats(
     total_lines = 0
     total_files = 0
 
-    for path in sorted(plan.path.rglob("*.rs")):
+    paths = (
+        (plan.path / rel for rel in visible_paths if rel.endswith(".rs"))
+        if visible_paths is not None
+        else plan.path.rglob("*.rs")
+    )
+    for path in sorted(paths):
         try:
             rel_path = path.relative_to(plan.path).as_posix()
         except ValueError:
@@ -2528,6 +2617,8 @@ def _ensure_github_context_for_chisel(projects: set[str] | None = None) -> None:
             _github_context_manifest = materialize_github_context(
                 projects=projects, progress=_print_live
             )
+            if _github_context_manifest is not None:
+                _github_context_manifest.setdefault("refresh_status", "refreshed")
         except MaterializationError as exc:
             try:
                 _github_context_index = _build_github_context_index()
@@ -2541,6 +2632,10 @@ def _ensure_github_context_for_chisel(projects: set[str] | None = None) -> None:
                     ),
                 ) from exc
             _github_context_ready = True
+            _github_context_manifest = {
+                "refresh_status": "stale_fallback",
+                "refresh_error": str(exc),
+            }
             _print_live(
                 "[yellow]GitHub context: refresh failed; using existing context product "
                 f"for issue/PR snapshots ({exc})[/yellow]"
@@ -2563,6 +2658,8 @@ def _github_context_summary() -> str:
     manifest = _github_context_manifest or {}
     if not manifest:
         return "existing product"
+    if manifest.get("refresh_status") == "stale_fallback":
+        return "stale existing product; refresh failed"
     inventory = int(manifest.get("inventory_items_seen") or 0)
     refreshed = int(manifest.get("detail_refreshes") or 0)
     reused = int(manifest.get("detail_reuses") or 0)
@@ -3031,10 +3128,19 @@ def _parse_beads_timestamp(value: Any) -> dt.datetime | None:
 def _beads_history(
     issues: Sequence[dict[str, Any]], generated_at: str
 ) -> dict[str, Any]:
+    terminal_statuses = {"closed", "done", "resolved"}
+    try:
+        snapshot_day = dt.datetime.strptime(generated_at, "%Y-%m-%dT%H%M%SZ").date()
+    except ValueError:
+        try:
+            snapshot_day = dt.datetime.strptime(generated_at, "%Y%m%dT%H%M%SZ").date()
+        except ValueError:
+            snapshot_day = dt.datetime.now(dt.timezone.utc).date()
     created_dates = [
         parsed.date()
         for issue in issues
         if (parsed := _parse_beads_timestamp(issue.get("created_at"))) is not None
+        and parsed.date() <= snapshot_day
     ]
     closed_pairs = [
         (created, closed)
@@ -3042,11 +3148,24 @@ def _beads_history(
         if (created := _parse_beads_timestamp(issue.get("created_at"))) is not None
         and (closed := _parse_beads_timestamp(issue.get("closed_at"))) is not None
         and closed >= created
+        and created.date() <= snapshot_day
+        and closed.date() <= snapshot_day
     ]
-    try:
-        snapshot_day = dt.datetime.strptime(generated_at, "%Y%m%dT%H%M%SZ").date()
-    except ValueError:
-        snapshot_day = dt.datetime.now(dt.timezone.utc).date()
+    closed_current = [
+        issue
+        for issue in issues
+        if str(issue.get("status") or "").lower() in terminal_statuses
+    ]
+    open_current = len(issues) - len(closed_current)
+    unplaced_closed = sum(
+        1
+        for issue in closed_current
+        if (created := _parse_beads_timestamp(issue.get("created_at"))) is None
+        or (closed := _parse_beads_timestamp(issue.get("closed_at"))) is None
+        or closed < created
+        or created.date() > snapshot_day
+        or closed.date() > snapshot_day
+    )
     if not created_dates:
         return {
             "summary": {
@@ -3054,7 +3173,10 @@ def _beads_history(
                 "snapshot_day": snapshot_day.isoformat(),
                 "created": 0,
                 "closed": 0,
-                "open_snapshot": 0,
+                "estimated_open_from_timestamps": None,
+                "open_current_by_status": open_current,
+                "closed_current_without_valid_timestamps": unplaced_closed,
+                "issues_without_valid_created_at": len(issues),
                 "median_lead_days": None,
                 "p90_lead_days": None,
                 "closed_last_30_days": 0,
@@ -3086,7 +3208,7 @@ def _beads_history(
                 "created": created,
                 "closed": closed,
                 "net": created - closed,
-                "open_snapshot": open_count,
+                "estimated_open_from_timestamps": open_count,
             }
         )
         cursor += dt.timedelta(days=1)
@@ -3101,7 +3223,10 @@ def _beads_history(
             "snapshot_day": snapshot_day.isoformat(),
             "created": len(created_dates),
             "closed": len(closed_pairs),
-            "open_snapshot": open_count,
+            "estimated_open_from_timestamps": open_count,
+            "open_current_by_status": open_current,
+            "closed_current_without_valid_timestamps": unplaced_closed,
+            "issues_without_valid_created_at": len(issues) - len(created_dates),
             "median_lead_days": statistics.median(lead_days) if lead_days else None,
             "p90_lead_days": _percentile(
                 [round(value * 1000) for value in lead_days], 0.90
@@ -3117,7 +3242,12 @@ def _beads_history(
             ),
         },
         "daily": daily,
-        "caveat": "Created/closed timestamps reconstruct the current issue set; reopen cycles and compacted/deleted issues require Dolt history.",
+        "caveat": (
+            "The daily trajectory is an estimate from valid created_at and closed_at "
+            "timestamps. Closed issues without valid timestamps are left unplaced; "
+            "the report gives the current open count from issue statuses separately. "
+            "Reopen cycles and compacted/deleted issues require Dolt history."
+        ),
     }
 
 
@@ -3216,6 +3346,7 @@ def _beads_html(
 const payload = {data};
 const issues = payload.issues;
 const memories = payload.memories;
+const searchableIssues = issues.map(item => ({{item, text: JSON.stringify(item).toLowerCase()}}));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
 const present = value => value !== null && value !== undefined && value !== '' && (!Array.isArray(value) || value.length > 0) && (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 0);
 const detail = (label, value) => present(value) ? `<section class="detail"><h3>${{esc(label)}}</h3><pre>${{esc(typeof value === 'string' ? value : JSON.stringify(value, null, 2))}}</pre></section>` : '';
@@ -3230,7 +3361,7 @@ function render() {{
   const status = document.getElementById('status').value;
   const priority = document.getElementById('priority').value;
   const type = document.getElementById('type').value;
-  const visible = issues.filter(item => (!query || JSON.stringify(item).toLowerCase().includes(query)) && (!status || item.status === status) && (!priority || String(item.priority ?? '') === priority) && (!type || item.type === type));
+  const visible = searchableIssues.filter(({{item, text}}) => (!query || text.includes(query)) && (!status || item.status === status) && (!priority || String(item.priority ?? '') === priority) && (!type || item.type === type)).map(({{item}}) => item);
   document.getElementById('stats').innerHTML = `<span class="stat">${{visible.length}} shown</span><span class="stat">${{visible.filter(x => x.ready).length}} ready</span><span class="stat">${{visible.filter(x => x.blocked).length}} blocked</span><span class="stat">${{visible.filter(x => ['closed','done','resolved'].includes(x.status)).length}} closed</span>`;
   document.getElementById('rows').innerHTML = visible.map(item => {{
     const extra = Object.fromEntries(Object.entries(item).filter(([key]) => !primaryFields.has(key)));
@@ -3646,13 +3777,16 @@ def _generate_portable_sidecars(
     """Write portable GPT-Pro sidecars absent from Chisel's XML surfaces."""
     sidecars: list[str] = []
     total_bytes = 0
+    failures: list[str] = []
 
     bundle_path = out_dir / f"{plan.name}-all-refs.bundle"
     bundle_lock = Path(f"{bundle_path}.lock")
     if bundle_lock.exists():
         bundle_lock.unlink()
         _emit(log, f"  [dim]removed stale bundle lock: {bundle_lock.name}[/dim]")
+    started = time.perf_counter()
     bundle = _run(["git", "bundle", "create", str(bundle_path), "--all"], cwd=plan.path)
+    _record_substage_duration("git_bundle", started)
     if bundle.returncode == 0 and bundle_path.exists():
         _emit(
             log,
@@ -3663,6 +3797,7 @@ def _generate_portable_sidecars(
     else:
         details = (bundle.stderr or bundle.stdout or "git bundle failed").strip()
         _emit(log, f"  [yellow]⚠[/yellow] {plan.name}: {details}")
+        failures.append(f"git bundle: {details}")
 
     # Working-tree tar captures committed files AND uncommitted modifications.
     # This differs from `git archive HEAD` which would miss dirty working-tree changes.
@@ -3673,6 +3808,7 @@ def _generate_portable_sidecars(
         p = pat.strip("/").lstrip("**/").rstrip("/**").rstrip("/")
         if p:
             plan_excludes.append(f"--exclude={p}")
+    started = time.perf_counter()
     archive = _run(
         [
             "tar",
@@ -3685,6 +3821,7 @@ def _generate_portable_sidecars(
             plan.path.name,
         ],
     )
+    _record_substage_duration("working_tree_tar", started)
     if archive.returncode == 0 and archive_path.exists():
         _emit(
             log,
@@ -3695,9 +3832,12 @@ def _generate_portable_sidecars(
     else:
         details = (archive.stderr or archive.stdout or "tar failed").strip()
         _emit(log, f"  [yellow]⚠[/yellow] {plan.name}: {details}")
+        failures.append(f"working-tree tar: {details}")
 
     tree_path = out_dir / f"{plan.name}-repo-tree.txt"
+    started = time.perf_counter()
     tree_path.write_text(_repo_tree(plan.path, max_depth=3), encoding="utf-8")
+    _record_substage_duration("repo_tree", started)
     _emit(
         log,
         f"  [green]✓[/green] {tree_path.name} ([dim]{_fmt_bytes(tree_path.stat().st_size)}[/dim])",
@@ -3705,6 +3845,10 @@ def _generate_portable_sidecars(
     sidecars.append(tree_path.name)
     total_bytes += tree_path.stat().st_size
 
+    if failures:
+        raise MaterializationError(
+            plan.name, reason="portable sidecar failures: " + "; ".join(failures)
+        )
     return sidecars, total_bytes
 
 
@@ -3992,10 +4136,10 @@ def _agent_audit_rows(agent_dir: Path, repo_root: Path) -> list[dict[str, Any]]:
             {
                 "path": rel,
                 "kind": "dir" if path.is_dir() else "file",
-                "bytes": _path_size(path),
-                "files": sum(1 for child in path.rglob("*") if child.is_file())
-                if path.is_dir()
-                else 1,
+                "bytes": 0,
+                "files": 0,
+                "exclusive_bytes": 0,
+                "exclusive_files": 0,
                 "class": cls,
                 "recommendation": recommendation,
             }
@@ -4007,6 +4151,35 @@ def _agent_audit_rows(agent_dir: Path, repo_root: Path) -> list[dict[str, Any]]:
             for grandchild in sorted(child.iterdir(), key=lambda p: p.name):
                 if grandchild.is_dir():
                     add(grandchild)
+
+    # One walk fills recursive drill-down sizes and assigns every file to the
+    # deepest represented directory for disjoint class summaries.
+    rows_by_path = {row["path"]: row for row in rows}
+    for path in agent_dir.rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        if not path.is_file() and not path.is_symlink():
+            continue
+        rel = path.relative_to(repo_root).as_posix()
+        size = path.lstat().st_size if path.is_symlink() else path.stat().st_size
+        file_row = rows_by_path.get(rel)
+        if file_row is not None:
+            file_row["bytes"] = size
+            file_row["files"] = 1
+
+        exclusive_owner = file_row
+        parent = Path(rel).parent
+        while parent.as_posix() != ".":
+            ancestor = rows_by_path.get(parent.as_posix())
+            if ancestor is not None and ancestor["kind"] == "dir":
+                ancestor["bytes"] += size
+                ancestor["files"] += 1
+                if exclusive_owner is None:
+                    exclusive_owner = ancestor
+            parent = parent.parent
+        if exclusive_owner is not None:
+            exclusive_owner["exclusive_bytes"] += size
+            exclusive_owner["exclusive_files"] += 1
 
     return sorted(rows, key=lambda row: (-int(row["bytes"]), row["path"]))
 
@@ -4024,8 +4197,8 @@ def _generate_agent_audit(
         entry = by_class.setdefault(
             row["class"], {"bytes": 0, "files": 0, "entries": 0}
         )
-        entry["bytes"] += int(row["bytes"])
-        entry["files"] += int(row["files"])
+        entry["bytes"] += int(row["exclusive_bytes"])
+        entry["files"] += int(row["exclusive_files"])
         entry["entries"] += 1
 
     audit = {
@@ -4048,6 +4221,8 @@ def _generate_agent_audit(
         "This is a read-only audit. Chisel does not delete or move these files.",
         "",
         "## Summary",
+        "",
+        "Directory entries below retain recursive sizes; summary sizes count each file once by its deepest listed directory.",
         "",
         "| Class | Entries | Files | Size |",
         "| --- | ---: | ---: | ---: |",
@@ -4223,6 +4398,7 @@ def _generate_snapshot_overview(
     gitlog_commits: int,
     xml_errors: list[str],
     beads: dict[str, Any] | None = None,
+    pending_artifact_names: Sequence[str] = (),
     log: list[str] | None = None,
 ) -> tuple[list[str], int]:
     artifacts = _artifact_rows(out_dir, plan)
@@ -4251,7 +4427,10 @@ def _generate_snapshot_overview(
     branch_delta_size = (
         branch_delta_patch.stat().st_size if branch_delta_patch.exists() else 0
     )
-    xml_snapshot_count = len(plan.slices) + int(plan.compressed) + 3
+    xml_snapshot_count = sum(1 for path in out_dir.glob("*.xml") if path.is_file())
+    artifact_count = len(
+        {row["name"] for row in artifacts}.union(pending_artifact_names)
+    )
     beads = beads or {}
     beads_counts = beads.get("counts") if beads.get("available") else {}
     beads_counts = beads_counts if isinstance(beads_counts, dict) else {}
@@ -4282,7 +4461,7 @@ def _generate_snapshot_overview(
         "counts": {
             "configured_slices": len(plan.slices),
             "xml_snapshots": xml_snapshot_count,
-            "artifacts": len(artifacts) + 3,
+            "artifacts": artifact_count,
             "issues_open": issues_open,
             "issues_closed": issues_closed,
             "prs_open": prs_open,
@@ -4343,7 +4522,7 @@ def _generate_snapshot_overview(
         "| --- | ---: |",
         f"| Configured slices | {len(plan.slices)} |",
         f"| XML snapshots | {xml_snapshot_count} |",
-        f"| Artifacts | {len(artifacts) + 3} |",
+        f"| Artifacts | {artifact_count} |",
         f"| Open issues | {issues_open} |",
         f"| Open PRs | {prs_open} |",
         f"| Merged PRs | {prs_merged} |",
@@ -4437,6 +4616,7 @@ def _generate_snapshot_audit(
     generated_at: str,
     *,
     previous_manifest: dict[str, Any] | None = None,
+    pending_artifact_names: Sequence[str] = (),
     log: list[str] | None = None,
 ) -> tuple[list[str], int]:
     artifacts = _artifact_rows(out_dir, plan)
@@ -4472,10 +4652,16 @@ def _generate_snapshot_audit(
         "generated_at": generated_at,
         "status": "attention"
         if (overview.get("attention") or {}).get("large_artifacts")
+        or (overview.get("attention") or {}).get("xml_errors")
+        or (_github_context_manifest or {}).get("refresh_status") == "stale_fallback"
         else "ok",
         "counts": overview.get("counts") or {},
+        "attention": overview.get("attention") or {},
         "size": {
             "total_bytes": sum(int(row["bytes"]) for row in artifacts),
+            "artifact_count": len(
+                {row["name"] for row in artifacts}.union(pending_artifact_names)
+            ),
             "largest_artifacts": sorted(
                 artifacts, key=lambda item: int(item["bytes"]), reverse=True
             )[:12],
@@ -4513,6 +4699,8 @@ def _generate_snapshot_audit(
             "memories": int(beads.get("beads_memories") or 0),
         },
         "github_context": {
+            "refresh_status": github.get("refresh_status") or "unknown",
+            "refresh_error": github.get("refresh_error"),
             "inventory_items_seen": int(github.get("inventory_items_seen") or 0),
             "detail_refreshes": int(github.get("detail_refreshes") or 0),
             "detail_reuses": int(github.get("detail_reuses") or 0),
@@ -4541,8 +4729,24 @@ def _generate_snapshot_audit(
         "",
         *(f"- `{item}`" for item in audit["open_first"]),
         "",
+        "## Attention",
+        "",
+        *(
+            [
+                f"- XML validation errors: {len(audit['attention'].get('xml_errors') or [])}"
+            ]
+            if audit["attention"].get("xml_errors")
+            else ["- No XML validation errors."]
+        ),
+        "",
         "## GitHub Context",
         "",
+        f"- Refresh status: {audit['github_context']['refresh_status']}",
+        *(
+            [f"- Refresh error: {audit['github_context']['refresh_error']}"]
+            if audit["github_context"].get("refresh_error")
+            else []
+        ),
         f"- Inventory items: {audit['github_context']['inventory_items_seen']}",
         f"- Detail refreshes/reuses: {audit['github_context']['detail_refreshes']} / {audit['github_context']['detail_reuses']}",
         f"- Stale open rows removed: {sum(int(v or 0) for v in audit['github_context']['project_stale_open_removed'].values())}",
@@ -4594,7 +4798,7 @@ def _write_project_manifest(
     manifest_path = out_dir / f"{plan.name}-manifest.json"
     artifacts = []
     for path in sorted(out_dir.iterdir(), key=lambda p: p.name):
-        if not path.is_file():
+        if not path.is_file() or path == manifest_path:
             continue
         scope, purpose = _file_scope_and_purpose(plan, path.name)
         artifacts.append(
@@ -4626,14 +4830,19 @@ def _write_project_manifest(
         "xml_errors": xml_errors,
         "artifacts": artifacts,
     }
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    self_row = next(
+        row for row in manifest["artifacts"] if row["name"] == manifest_path.name
     )
-    # Update manifest entry size after writing; sha256 remains null by design.
-    manifest["artifacts"][-1]["bytes"] = manifest_path.stat().st_size
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    serialized = ""
+    for _ in range(16):
+        serialized = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        size = len(serialized.encode("utf-8"))
+        if self_row["bytes"] == size:
+            break
+        self_row["bytes"] = size
+    else:
+        raise RuntimeError("manifest self-size did not reach a stable value")
+    manifest_path.write_text(serialized, encoding="utf-8")
     size = manifest_path.stat().st_size
     _emit(log, f"  [green]✓[/green] {manifest_path.name} ({_fmt_bytes(size)})")
     return manifest_path.name, size
@@ -5063,13 +5272,19 @@ def _write_growth_portfolio(
             }
         ),
         "07-beads-backlog-trajectory.svg": _svg_line_chart(
-            "Beads backlog trajectory",
-            "Current issue-set reconstruction from created and closed timestamps; reopen cycles and deleted/compacted issues are not recovered.",
+            "Estimated Beads backlog trajectory",
+            "Estimated trajectory from valid created_at/closed_at timestamps. Closed issues without valid timestamps are unplaced; current open count comes from issue statuses. Reopen cycles and deleted/compacted issues are not recovered.",
             [
                 {
                     "name": project,
                     "points": [
-                        (row["day"], row["open_snapshot"])
+                        (
+                            row["day"],
+                            row.get(
+                                "estimated_open_from_timestamps",
+                                row.get("open_snapshot", 0),
+                            ),
+                        )
                         for row in payload["history"]["daily"]
                     ],
                 }
@@ -5140,8 +5355,8 @@ def _write_growth_portfolio(
                 "",
                 "## Beads delivery history",
                 "",
-                "| Project | Issues | Ready | Blocked | Closed | Median lead days | P90 lead days | Closed 30d | Closed 90d | Board |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Project | Issues | Open now | Ready | Blocked | Closed | Unplaced closed | Median lead days | P90 lead days | Closed 30d | Closed 90d | Board |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             )
         )
         for project, payload in beads_by_project.items():
@@ -5156,15 +5371,15 @@ def _write_growth_portfolio(
             p90_lead = history_summary.get("p90_lead_days")
             board = f"../{project}/{project}-beads.html"
             lines.append(
-                f"| `{project}` | {int(counts.get('issues') or 0):,} | {int(counts.get('ready') or 0):,} | "
-                f"{int(counts.get('blocked') or 0):,} | {closed:,} | "
+                f"| `{project}` | {int(counts.get('issues') or 0):,} | {history_summary.get('open_current_by_status', 0):,} | {int(counts.get('ready') or 0):,} | "
+                f"{int(counts.get('blocked') or 0):,} | {closed:,} | {history_summary.get('closed_current_without_valid_timestamps', 0):,} | "
                 f"{median_lead:.2f} | {p90_lead:.2f} | "
                 f"{history_summary['closed_last_30_days']:,} | {history_summary['closed_last_90_days']:,} | "
                 f"[browse]({board}) |"
                 if isinstance(median_lead, (int, float))
                 and isinstance(p90_lead, (int, float))
-                else f"| `{project}` | {int(counts.get('issues') or 0):,} | {int(counts.get('ready') or 0):,} | "
-                f"{int(counts.get('blocked') or 0):,} | {closed:,} | n/a | n/a | "
+                else f"| `{project}` | {int(counts.get('issues') or 0):,} | {history_summary.get('open_current_by_status', 0):,} | {int(counts.get('ready') or 0):,} | "
+                f"{int(counts.get('blocked') or 0):,} | {closed:,} | {history_summary.get('closed_current_without_valid_timestamps', 0):,} | n/a | n/a | "
                 f"{history_summary['closed_last_30_days']:,} | {history_summary['closed_last_90_days']:,} | "
                 f"[browse]({board}) |"
             )
@@ -5177,6 +5392,7 @@ def _write_growth_portfolio(
             "",
             "## Interpretation limits",
             "",
+            "- The Beads backlog chart estimates historical open counts from valid creation and closure timestamps. Closed issues without valid timestamps are left unplaced; the delivery table reports the current open count from statuses separately.",
             "- Net tracked-text growth is not a source-code line count.",
             "- High churn can reflect refactoring, replacement, generated-surface renewal, or history structure; it is not a quality judgment.",
             "- Current Tokei composition and historical Git growth answer different questions and should not be added together.",
@@ -5199,6 +5415,8 @@ def _write_root_index(
     generated_at: str,
     repomix_version: str,
     total_elapsed: float,
+    *,
+    preflight_elapsed: float | None = None,
 ) -> tuple[str, str]:
     projects: list[dict[str, Any]] = []
     for plan in plans:
@@ -5232,6 +5450,8 @@ def _write_root_index(
             {
                 "name": plan.name,
                 "status": results.get(plan.name, {}).get("status", "missing"),
+                "elapsed_s": results.get(plan.name, {}).get("elapsed_s"),
+                "stage_timings": results.get(plan.name, {}).get("stage_timings", []),
                 "source": str(plan.path),
                 "git": manifest.get("git", results.get(plan.name, {}).get("git")),
                 "total_bytes": sum(int(a.get("bytes") or 0) for a in artifacts),
@@ -5262,6 +5482,7 @@ def _write_root_index(
         "repomix_version": repomix_version,
         "output_root": str(output_root),
         "total_elapsed_s": total_elapsed,
+        "preflight_elapsed_s": preflight_elapsed,
         "growth_analysis": "growth/README.md"
         if (output_root / "growth" / "README.md").exists()
         else None,
@@ -5450,6 +5671,20 @@ def _archive_existing_combined_tars(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _print_project_summary(completed: int, total: int, result: dict[str, Any]) -> None:
+    name = str(result.get("project", "?"))
+    status = str(result.get("status", "?"))
+    elapsed = float(result.get("elapsed_s", 0) or 0)
+    state = "failed" if status == "failed" else "complete"
+    with _print_lock:
+        _print(
+            f"\n[bold][{completed}/{total}] {name} {state}[/bold]  "
+            f"{status}  [dim]{elapsed:.1f}s[/dim]"
+        )
+        for line in result.get("log_lines") or []:
+            _print(line)
+
+
 def _build_one(
     plan: RepoPlan,
     output_root: Path,
@@ -5498,16 +5733,46 @@ def _build_one(
 
     slices_done: list[tuple[str, int]] = []
     errors: list[str] = []
+    stage_timings: list[dict[str, Any]] = []
+    stage_timings_lock = threading.Lock()
 
     # ── Run everything in parallel within the repo ──
     with ThreadPoolExecutor(max_workers=slice_workers) as ex:
         futures: dict = {}
 
         def submit(kind: str, label: str, fn, *args):
+            queued_at = time.perf_counter()
+
             def run_logged():
-                started = dt.datetime.now()
+                started_at = dt.datetime.now(dt.timezone.utc)
+                started = time.perf_counter()
+                timing: dict[str, Any] = {
+                    "stage": kind,
+                    "label": label,
+                    "started_at": started_at.isoformat(),
+                    "queue_wait_s": round(started - queued_at, 3),
+                }
+                _stage_timing_local.current = timing
                 _print_live(f"  → {plan.name}: {kind} {label}")
-                return fn(*args), started
+                try:
+                    result = fn(*args)
+                    return result
+                except Exception as exc:
+                    timing["error"] = str(exc)
+                    raise
+                finally:
+                    finished_at = dt.datetime.now(dt.timezone.utc)
+                    timing["finished_at"] = finished_at.isoformat()
+                    timing["elapsed_s"] = round(time.perf_counter() - started, 3)
+                    _stage_timing_local.current = None
+                    with stage_timings_lock:
+                        stage_timings.append(dict(timing))
+                    marker = "✗" if timing.get("error") else "✓"
+                    suffix = f": {timing['error']}" if timing.get("error") else ""
+                    _print_live(
+                        f"  {marker} {plan.name}: {kind} {label} "
+                        f"({timing['elapsed_s']:.1f}s){suffix}"
+                    )
 
             f = ex.submit(run_logged)
             futures[f] = (kind, label)
@@ -5638,7 +5903,7 @@ def _build_one(
         for future in as_completed(futures):
             kind, label = futures[future]
             try:
-                result, started = future.result()
+                result = future.result()
                 if kind == "slice":
                     name, size = result
                     slices_done.append((name, size))
@@ -5687,13 +5952,10 @@ def _build_one(
                     names, size, beads_context = result
                     beads_files_done.extend(names)
                     beads_bytes += size
-                elapsed = (dt.datetime.now() - started).total_seconds()
-                _print_live(f"  ✓ {plan.name}: {kind} {label} ({elapsed:.1f}s)")
             except Exception as e:
                 msg = str(e)
                 errors.append(f"{kind}: {msg}")
                 _emit(log, f"  [red]✗[/red] {kind}: {msg}")
-                _print_live(f"  ✗ {plan.name}: {kind} {label}: {msg}")
 
     # ── Extra copies (after repomix finishes) ──
     _copy_extras(plan, out_dir, log)
@@ -5722,6 +5984,13 @@ def _build_one(
         gitlog_commits=gitlog_commits,
         xml_errors=xml_errors,
         beads=beads_context,
+        pending_artifact_names=(
+            f"{plan.name}-overview.json",
+            f"{plan.name}-overview.md",
+            f"{plan.name}-snapshot-audit.json",
+            f"{plan.name}-snapshot-audit.md",
+            f"{plan.name}-manifest.json",
+        ),
         log=log,
     )
     snapshot_audit_files_done, _snapshot_audit_bytes = _generate_snapshot_audit(
@@ -5729,6 +5998,11 @@ def _build_one(
         out_dir,
         generated_at,
         previous_manifest=previous_manifest,
+        pending_artifact_names=(
+            f"{plan.name}-snapshot-audit.json",
+            f"{plan.name}-snapshot-audit.md",
+            f"{plan.name}-manifest.json",
+        ),
         log=log,
     )
 
@@ -5739,6 +6013,8 @@ def _build_one(
 
     # ── Combined tar of everything chisel generated for this project ──
     combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
+    if combined_tar_result is None:
+        errors.append("combined tar: creation failed")
     combined_tar_name = (
         combined_tar_result[0] if combined_tar_result is not None else None
     )
@@ -5753,7 +6029,7 @@ def _build_one(
 
     return {
         "project": plan.name,
-        "status": "partial" if errors else "generated",
+        "status": "partial" if errors or xml_errors else "generated",
         "git": git,
         "slices": len(slices_done),
         "slice_names": [s[0] for s in slices_done],
@@ -5779,6 +6055,10 @@ def _build_one(
         "xml_valid": len(xml_errors) == 0,
         "xml_errors": xml_errors or None,
         "elapsed_s": round(elapsed, 1),
+        "stage_timings": sorted(
+            stage_timings,
+            key=lambda row: (row["started_at"], row["stage"], row["label"]),
+        ),
         "errors": errors or None,
         "log_lines": log,
     }
@@ -5797,6 +6077,7 @@ def build_chisel_bundles(
 ) -> dict[str, Any]:
     global _github_context_index, _github_context_manifest, _github_context_ready
     _abort_event.clear()
+    build_started = time.perf_counter()
     _github_context_index = None
     _github_context_manifest = None
     _github_context_ready = (
@@ -5831,13 +6112,13 @@ def build_chisel_bundles(
     )
     _print_scope(plans, output_root)
     _print()
+    preflight_started = time.perf_counter()
     _ensure_chisel_prerequisites(plans)
     _archive_existing_combined_tars(plans, output_root)
+    preflight_elapsed = round(time.perf_counter() - preflight_started, 1)
     _print()
 
     results: dict[str, Any] = {}
-    t0 = dt.datetime.now()
-
     ex = ThreadPoolExecutor(max_workers=repo_workers)
     futures = {
         ex.submit(
@@ -5852,14 +6133,6 @@ def build_chisel_bundles(
             completed += 1
             try:
                 results[name] = future.result()
-                r = results[name]
-                status = r.get("status", "?")
-                elapsed = r.get("elapsed_s", 0)
-                _print(
-                    f"\n[bold][{completed}/{len(plans)}] {name} complete[/bold]  {status}  [dim]{elapsed:.1f}s[/dim]"
-                )
-                for line in r.get("log_lines") or []:
-                    _print(line)
             except Exception as e:
                 results[name] = {
                     "project": name,
@@ -5867,8 +6140,7 @@ def build_chisel_bundles(
                     "error": str(e),
                     "log_lines": [f"  [red]✗[/red] {name}: {e}"],
                 }
-                _print(f"\n[bold][{completed}/{len(plans)}] {name} failed[/bold]")
-                _print(f"  [red]✗[/red] {name}: {e}")
+            _print_project_summary(completed, len(plans), results[name])
     except KeyboardInterrupt:
         _abort_event.set()
         _terminate_active_processes()
@@ -5884,8 +6156,8 @@ def build_chisel_bundles(
     else:
         ex.shutdown(wait=True)
 
-    total_elapsed = round((dt.datetime.now() - t0).total_seconds(), 1)
     growth_portfolio = _write_growth_portfolio(output_root, plans, generated_at)
+    total_elapsed = round(time.perf_counter() - build_started, 1)
     _print(
         f"[green]Wrote growth portfolio:[/green] growth/README.md "
         f"({len(growth_portfolio['files'])} artifacts)"
@@ -5997,7 +6269,13 @@ def build_chisel_bundles(
         _print("\n[green]All XML outputs well-formed.[/green]")
 
     index_json, index_md = _write_root_index(
-        output_root, plans, results, generated_at, repomix_ver, total_elapsed
+        output_root,
+        plans,
+        results,
+        generated_at,
+        repomix_ver,
+        total_elapsed,
+        preflight_elapsed=preflight_elapsed,
     )
     _print(f"[green]Wrote root index:[/green] {index_json}, {index_md}")
     _print(f"[dim]Done. {output_root}[/dim]")
@@ -6007,6 +6285,7 @@ def build_chisel_bundles(
         "output_root": str(output_root),
         "repomix_version": repomix_ver,
         "total_elapsed_s": total_elapsed,
+        "preflight_elapsed_s": preflight_elapsed,
         "total_bytes": total_bytes,
         "index": {"json": index_json, "markdown": index_md},
         "growth": growth_portfolio,
@@ -6072,9 +6351,14 @@ def run_from_cli(argv: list[str] | None = None) -> int:
             _print()
         return 0
 
-    build_chisel_bundles(
+    result = build_chisel_bundles(
         project_names=_split_names(args.projects),
         output_root=args.output_root,
         max_workers=args.max_workers,
     )
-    return 0
+    return int(
+        any(
+            project.get("status") != "generated"
+            for project in result.get("projects", {}).values()
+        )
+    )

@@ -106,11 +106,16 @@ def _chisel(
             print()
         return
     output_root_path = Path(output_root) if output_root.strip() else None
-    build_chisel_bundles(
+    result = build_chisel_bundles(
         project_names=_split_names(projects),
         output_root=output_root_path,
         max_workers=max_workers,
     )
+    if any(
+        project.get("status") != "generated"
+        for project in result.get("projects", {}).values()
+    ):
+        raise typer.Exit(code=1)
 
 
 @app.command("active-git-facts", help="Build active-project default-branch commit and file-change facts.")

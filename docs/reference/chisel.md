@@ -5,6 +5,19 @@ combines concern-specific Repomix slices with Git history, Tokei attribution,
 GitHub and Beads context, branch deltas, local-state audits, and a portfolio
 growth report.
 
+Project tasks run concurrently. Live stage messages include the project name;
+each completed project's detailed summary is printed as one uninterrupted
+block. The root `index.json` records each stage's elapsed time, executor queue
+wait, and, for Repomix, slot wait and subprocess time. Portable sidecars also
+record time spent building the Git bundle, compressing the working tree, and
+listing its tree. A small report file can require a large source scan.
+
+The CLI exits unsuccessfully when a project is missing, fails, or produces a
+partial snapshot, including malformed XML or failed archives. A GitHub refresh
+failure that falls back to an existing product is identified in the snapshot
+audit. Per-project manifests list artifact sizes and hashes; their own size is
+included, while their own hash is omitted.
+
 Run the complete configured portfolio:
 
 ```bash
@@ -37,9 +50,12 @@ ignored roots while excluding local archives, dependency trees, caches, private
 demo exports, and runtime state merely present in a checkout.
 
 Git `numstat` growth and Tokei composition are deliberately separate. History
-measures all tracked text at the time of each commit. Composition measures the
-current maintained tree after repository reporting policy. Neither is a labor,
-quality, or originality metric.
+measures tracked text after Chisel's reporting exclusions, including exclusion
+of agent coordination payloads. Commit counts still include commits whose
+changed paths are all excluded from text totals. Composition measures the
+current maintained tree after repository reporting policy. Rust attribution
+uses the approved file list without walking ignored checkout trees. Neither
+history nor composition is a labor, quality, or originality metric.
 
 ## Beads browser
 
@@ -75,7 +91,8 @@ private packages.
 ## Historical caveats
 
 The Beads trajectory uses the current exported issue set's `created_at` and
-`closed_at` timestamps. It does not reconstruct reopen cycles or issues removed
-by compaction. Exact tracker history requires querying the Beads Dolt history;
-the generated chart is a current-set delivery trajectory, not a forensic event
-ledger.
+`closed_at` timestamps and is explicitly an estimate. Closed issues without
+valid timestamps remain unplaced in that series. The report separately shows
+the current open count from statuses and the count of unplaced closed issues.
+It does not reconstruct reopen cycles or issues removed by compaction. Exact
+tracker history requires querying the Beads Dolt history.

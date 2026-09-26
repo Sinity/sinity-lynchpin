@@ -44,13 +44,13 @@ def _classify_slice_kind(filename: str, project: str) -> str:
         return "git_bundle"
     if filename.endswith("-repo-tree.txt"):
         return "repo_tree"
-    if filename.endswith("-git-log.xml"):
+    if filename.endswith(("-git-log.xml", "-git-log-all-refs.xml")):
         return "xml_git_log"
     if "-issues-" in filename and filename.endswith(".xml"):
         return "xml_issues"
     if "-prs-" in filename and filename.endswith(".xml"):
         return "xml_prs"
-    if filename.endswith(".xml.gz"):
+    if filename.endswith((".xml.gz", "-compressed.xml")):
         return "xml_compressed"
     if filename.endswith(".xml"):
         return "xml_slice"

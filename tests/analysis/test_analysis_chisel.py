@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1486,7 +1487,12 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
         "_git_state",
         lambda _path: {"branch": "main", "commit": "abcdef123456", "dirty": False},
     )
-    monkeypatch.setattr(chisel, "_run_slice", lambda *_args: ("alpha-core", 10))
+
+    def slow_slice(*_args):
+        time.sleep(0.02)
+        return "alpha-core", 10
+
+    monkeypatch.setattr(chisel, "_run_slice", slow_slice)
     monkeypatch.setattr(chisel, "_run_scratchpad", lambda *_args: None)
     monkeypatch.setattr(chisel, "_generate_git_log", lambda *_args: 2)
     monkeypatch.setattr(chisel, "_generate_issues", lambda *_args: (0, 0))
@@ -1523,7 +1529,9 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     )
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
-    monkeypatch.setattr(chisel, "_make_combined_tar", lambda *_args: None)
+    monkeypatch.setattr(
+        chisel, "_make_combined_tar", lambda *_args: ("alpha-all.tar.gz", 10)
+    )
 
     result = chisel._build_one(
         plan,
@@ -1539,6 +1547,13 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     assert "✓ alpha: slice core" in output
     assert "→ alpha: beads alpha" in output
     assert result["status"] == "generated"
+    slice_timing = next(
+        row
+        for row in result["stage_timings"]
+        if row["stage"] == "slice" and row["label"] == "core"
+    )
+    assert slice_timing["elapsed_s"] >= 0.02
+    assert slice_timing["finished_at"] >= slice_timing["started_at"]
     assert result["beads_files"] == ["alpha-beads.md"]
     assert result["snapshot_audit_files"] == [
         "alpha-snapshot-audit.json",
@@ -1584,7 +1599,9 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     )
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
-    monkeypatch.setattr(chisel, "_make_combined_tar", lambda *_args: None)
+    monkeypatch.setattr(
+        chisel, "_make_combined_tar", lambda *_args: ("alpha-all.tar.gz", 10)
+    )
 
     result = chisel._build_one(
         plan,
