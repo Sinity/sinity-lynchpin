@@ -54,6 +54,11 @@ and other context files retain their paths and hashes where they are captured.
 Their presence is provenance, not evidence that a note is current. Chisel does
 not add unrelated AI conversation archives to the package.
 
+The ignore audit lists top-level hidden and local-state paths. It measures
+regular files directly and reports directory sizes as unmeasured; calculating
+those sizes would recursively scan large runtime directories unrelated to the
+captured source or maintained LOC.
+
 ## Roles and source metrics
 
 Inventory roles are `implementation`, `tests`, `tooling`, `documentation`,

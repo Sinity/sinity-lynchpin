@@ -1341,6 +1341,24 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert audit["beads"]["issues"] == 8
     assert audit["beads"]["blocked"] == 1
 
+    (out_dir / "example-ignore-audit.json").write_text(chisel.json.dumps({
+        "ignored_local_state_bytes": None,
+        "tracked_hidden_bytes": None,
+        "unmeasured_directories": [".agent"],
+    }))
+    chisel._generate_snapshot_overview(
+        plan, out_dir, "2026-06-11T000000Z",
+        {"branch": "main", "commit": "abcdef123456", "dirty": False},
+        issues_open=3, issues_closed=4, prs_open=2, prs_merged=5,
+        gitlog_commits=6, xml_errors=[], beads=beads,
+    )
+    chisel._generate_snapshot_audit(plan, out_dir, "2026-06-11T000000Z")
+    revised_overview = chisel.json.loads((out_dir / "example-overview.json").read_text())
+    revised_audit = chisel.json.loads((out_dir / "example-snapshot-audit.json").read_text())
+    assert revised_overview["attention"]["ignored_local_state_bytes"] is None
+    assert revised_audit["local_state"]["tracked_hidden_bytes"] is None
+    assert revised_audit["local_state"]["unmeasured_directories"] == [".agent"]
+
 
 def test_portable_sidecars_name_all_refs_bundle(monkeypatch, tmp_path: Path) -> None:
     plan = chisel.RepoPlan(
@@ -1613,6 +1631,32 @@ def test_build_one_keeps_failed_stage_time_and_skips_package_finalization(
     assert "neutral fixture failure" in "\n".join(result["log_lines"])
     assert not (tmp_path / "out/alpha/alpha-manifest.json").exists()
     assert printed == []
+
+
+def test_ignore_audit_marks_directory_size_unmeasured_without_recursive_scan(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    hidden = repo / ".agent"
+    hidden.mkdir()
+    (hidden / "large-scratch.txt").write_text("neutral context\n")
+    (repo / ".notes").write_text("small file\n")
+    plan = chisel.RepoPlan("fixture", repo, ())
+    out = tmp_path / "out"
+    out.mkdir()
+
+    monkeypatch.setattr(chisel, "_run", lambda *_args, **_kwargs:
+                        pytest.fail("ignore audit invoked a recursive size command"))
+    chisel._generate_ignore_audit(plan, out)
+
+    audit = chisel.json.loads((out / "fixture-ignore-audit.json").read_text())
+    entries = {row["path"]: row for row in audit["entries"]}
+    assert entries[".agent"]["bytes"] is None
+    assert entries[".notes"]["bytes"] == len("small file\n")
+    assert audit["unmeasured_directories"] == [".agent"]
+    assert audit["tracked_hidden_bytes"] is None
+    assert "unmeasured" in (out / "fixture-ignore-audit.md").read_text()
 
 
 def test_build_one_replaces_stale_project_output(monkeypatch, tmp_path: Path) -> None:

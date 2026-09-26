@@ -4056,15 +4056,6 @@ def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
     return "sidecar", "Generated Chisel sidecar"
 
 
-def _path_size(path: Path) -> int:
-    if path.is_file():
-        return path.stat().st_size
-    result = _run(["du", "-sb", str(path)])
-    if result.returncode == 0 and result.stdout.strip():
-        return int(result.stdout.split()[0])
-    return 0
-
-
 def _generate_ignore_audit(
     plan: RepoPlan, out_dir: Path, log: list[str] | None = None
 ) -> tuple[list[str], int]:
@@ -4092,21 +4083,27 @@ def _generate_ignore_audit(
             {
                 "path": rel,
                 "kind": "dir" if child.is_dir() else "file",
-                "bytes": _path_size(child),
+                "bytes": None if child.is_dir() else child.stat().st_size,
                 "ignored": bool(matched_patterns),
                 "local_state": bool(local_state),
                 "matched_patterns": matched_patterns[:8],
             }
         )
 
+    ignored_local_state = [e for e in entries if e["ignored"] and e["local_state"]]
+    tracked_hidden = [e for e in entries if not e["ignored"]]
+
+    def measured_total(rows: list[dict[str, Any]]) -> int | None:
+        return None if any(e["bytes"] is None for e in rows) else sum(e["bytes"] for e in rows)
+
     audit = {
         "project": plan.name,
         "source": str(plan.path),
         "entries": entries,
-        "ignored_local_state_bytes": sum(
-            e["bytes"] for e in entries if e["ignored"] and e["local_state"]
-        ),
-        "tracked_hidden_bytes": sum(e["bytes"] for e in entries if not e["ignored"]),
+        "size_method": "top-level regular file sizes only; directories are unmeasured to avoid recursive scans",
+        "unmeasured_directories": [e["path"] for e in entries if e["bytes"] is None],
+        "ignored_local_state_bytes": measured_total(ignored_local_state),
+        "tracked_hidden_bytes": measured_total(tracked_hidden),
     }
     json_path = out_dir / f"{plan.name}-ignore-audit.json"
     md_path = out_dir / f"{plan.name}-ignore-audit.md"
@@ -4118,15 +4115,17 @@ def _generate_ignore_audit(
         f"# {plan.name} ignore audit",
         "",
         f"Source: `{plan.path}`",
+        "Directory sizes are unmeasured; no recursive scan is performed.",
         "",
         "| Path | Ignored | Local state | Size | Matched patterns |",
         "| --- | ---: | ---: | ---: | --- |",
     ]
-    for entry in sorted(entries, key=lambda e: (-e["bytes"], e["path"])):
+    for entry in sorted(entries, key=lambda e: (-(e["bytes"] or 0), e["path"])):
         patterns = ", ".join(f"`{p}`" for p in entry["matched_patterns"][:4]) or "-"
         lines.append(
             f"| `{entry['path']}` | {str(entry['ignored']).lower()} | "
-            f"{str(entry['local_state']).lower()} | {_fmt_bytes(entry['bytes'])} | {patterns} |"
+            f"{str(entry['local_state']).lower()} | "
+            f"{_fmt_bytes(entry['bytes']) if entry['bytes'] is not None else 'unmeasured'} | {patterns} |"
         )
     lines.append("")
     md_path.write_text("\n".join(lines), encoding="utf-8")
@@ -4469,8 +4468,8 @@ def _generate_snapshot_overview(
     archive_agent_bytes = int(
         (agent_summary.get("archive-or-generated") or {}).get("bytes") or 0
     )
-    ignored_local_state = int(ignore_audit.get("ignored_local_state_bytes") or 0)
-    tracked_hidden = int(ignore_audit.get("tracked_hidden_bytes") or 0)
+    ignored_local_state = ignore_audit.get("ignored_local_state_bytes")
+    tracked_hidden = ignore_audit.get("tracked_hidden_bytes")
     branch_delta_patch = out_dir / f"{plan.name}-branch-delta.patch"
     branch_delta_size = (
         branch_delta_patch.stat().st_size if branch_delta_patch.exists() else 0
@@ -4603,10 +4602,14 @@ def _generate_snapshot_overview(
         attention_lines.append(
             f"- Ignored local runtime state: {_fmt_bytes(ignored_local_state)}."
         )
+    elif ignored_local_state is None and ignore_audit:
+        attention_lines.append("- Ignored local runtime state size: unmeasured.")
     if tracked_hidden:
         attention_lines.append(
             f"- Tracked hidden files/directories: {_fmt_bytes(tracked_hidden)}."
         )
+    elif tracked_hidden is None and ignore_audit:
+        attention_lines.append("- Hidden path size: unmeasured.")
     if branch_delta_size:
         attention_lines.append(
             f"- Current branch delta patch: {_fmt_bytes(branch_delta_size)}."
@@ -4728,10 +4731,9 @@ def _generate_snapshot_audit(
             ),
         },
         "local_state": {
-            "ignored_local_state_bytes": int(
-                ignore_audit.get("ignored_local_state_bytes") or 0
-            ),
-            "tracked_hidden_bytes": int(ignore_audit.get("tracked_hidden_bytes") or 0),
+            "ignored_local_state_bytes": ignore_audit.get("ignored_local_state_bytes"),
+            "tracked_hidden_bytes": ignore_audit.get("tracked_hidden_bytes"),
+            "unmeasured_directories": ignore_audit.get("unmeasured_directories") or [],
         },
         "branch_delta": {
             "patch_bytes": int(
