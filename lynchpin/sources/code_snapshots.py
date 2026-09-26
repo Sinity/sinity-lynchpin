@@ -36,6 +36,18 @@ def code_snapshots_path(project: str | None = None) -> Path:
 
 def _classify_slice_kind(filename: str, project: str) -> str:
     """Classify a chisel output file into a named kind."""
+    for prefix, kind in (
+        ("source/", "captured_source"), ("structure/", "structure_evidence"),
+        ("history/", "history_evidence"), ("metrics/", "source_metrics"),
+        ("trackers/", "tracker_evidence"), ("verification/", "verification_evidence"),
+        ("representations/", "representation_manifest"),
+    ):
+        if filename.startswith(prefix):
+            return kind
+    if filename in {"capture.json", "inventory.jsonl"}:
+        return "source_inventory"
+    if filename in {"browse.py", "index.sqlite3", "START_HERE.md"}:
+        return "offline_navigation"
     if filename == f"{project}-all.tar.gz":
         return "combined_tar"
     if filename.endswith("-working-tree.tar.gz"):

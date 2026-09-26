@@ -82,6 +82,11 @@ def materialize_code_snapshots() -> dict[str, Any]:
 
     run_at = datetime.now(timezone.utc)
     bundle_result = build_chisel_bundles(output_root=output_root)
+    if bundle_result.get("published") is False:
+        raise MaterializationError(
+            "code_snapshots",
+            reason="Chisel did not publish a complete selected generation; prior artifacts retained",
+        )
 
     run_rows, slice_rows = _results_to_rows(bundle_result, run_at, output_root)
 
@@ -149,6 +154,8 @@ def _results_to_rows(
     slice_rows: list[dict[str, Any]] = []
 
     for project_name, r in bundle_result.get("projects", {}).items():
+        if r.get("published") is False:
+            continue
         status = r.get("status", "failed")
         git = r.get("git") or {}
         errors = r.get("errors")
@@ -182,14 +189,15 @@ def _results_to_rows(
         if status == "failed" or not out_dir.exists():
             continue
 
-        # Enumerate all files in the per-project dir
-        for f in sorted(out_dir.iterdir()):
-            if not f.is_file():
+        # Inventory nested generated products as well as the original flat set.
+        for f in sorted(out_dir.rglob("*")):
+            if not f.is_file() or f.is_symlink():
                 continue
+            relative_name = f.relative_to(out_dir).as_posix()
             slice_rows.append({
                 "project": project_name,
-                "filename": f.name,
-                "kind": _classify_slice_kind(f.name, project_name),
+                "filename": relative_name,
+                "kind": _classify_slice_kind(relative_name, project_name),
                 "size_bytes": f.stat().st_size,
                 "path": str(f),
             })

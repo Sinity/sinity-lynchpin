@@ -849,7 +849,7 @@ def test_numstat_rename_classification_uses_destination_path() -> None:
     )
 
 
-def test_growth_portfolio_writes_charts_data_and_beads_trajectory(
+def test_growth_portfolio_writes_role_metrics_and_all_vs_maintained_history(
     tmp_path: Path,
 ) -> None:
     output_root = tmp_path / "out"
@@ -857,79 +857,46 @@ def test_growth_portfolio_writes_charts_data_and_beads_trajectory(
     out_dir.mkdir(parents=True)
     growth = {
         "summary": {
-            "net_tracked_text_lines": 10,
-            "gross_line_churn": 14,
-            "gross_to_net_ratio": 1.4,
-            "default_branch_commits": 2,
-            "active_days": 2,
-            "last_30_days": {"net": 4},
-            "last_90_days": {"net": 10},
-            "date_reached_50pct_current_size": "2026-01-02",
+            "commit_count_all_refs": 2,
+            "all_repository_text_additions": 14,
+            "all_repository_text_deletions": 4,
+            "maintained_code_additions": 6,
+            "maintained_code_deletions": 0,
+            "net_tracked_text_lines": 6,
         },
         "daily": [
-            {
-                "day": "2026-01-01",
-                "cumulative_net": 6,
-                "rolling_28d_relative_to_final_net": 0.6,
-            },
-            {
-                "day": "2026-01-02",
-                "cumulative_net": 10,
-                "rolling_28d_relative_to_final_net": 1.4,
-            },
+            {"day": "2026-01-01", "commits": 1, "all_additions": 10,
+             "all_deletions": 0, "maintained_additions": 6, "maintained_deletions": 0,
+             "cumulative_net": 6},
+            {"day": "2026-01-02", "commits": 1, "all_additions": 4,
+             "all_deletions": 4, "maintained_additions": 0, "maintained_deletions": 0,
+             "cumulative_net": 6},
         ],
-        "weekly": [{"week": "2025-12-29", "commits": 2}],
-        "monthly": [{"month": "2026-01-01", "net": 10}],
+        "weekly": [{"week": "2025-12-29", "commits": 2,
+                    "all_additions": 14, "all_deletions": 4,
+                    "maintained_additions": 6, "maintained_deletions": 0}],
+        "monthly": [{"month": "2026-01-01", "commits": 2,
+                     "all_additions": 14, "all_deletions": 4,
+                     "maintained_additions": 6, "maintained_deletions": 0}],
     }
     (out_dir / "alpha-growth.json").write_text(
         chisel.json.dumps(growth), encoding="utf-8"
     )
-    (out_dir / "alpha-tokei-stats.json").write_text(
+    metrics_dir = out_dir / "metrics"
+    metrics_dir.mkdir()
+    (metrics_dir / "summary.json").write_text(
         chisel.json.dumps(
             {
-                "buckets": {
-                    "production": {"code": 80},
-                    "tests": {"code": 20},
-                    "docs": {"code": 5},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    (out_dir / "alpha-beads.json").write_text(
-        chisel.json.dumps(
-            {
-                "available": True,
-                "counts": {
-                    "issues": 2,
-                    "ready": 1,
-                    "blocked": 0,
-                    "by_status": {"closed": 1, "open": 1},
-                },
-                "history": {
-                    "summary": {
-                        "median_lead_days": 2.0,
-                        "p90_lead_days": 2.0,
-                        "closed_last_30_days": 1,
-                        "closed_last_90_days": 1,
-                    },
-                    "daily": [
-                        {
-                            "day": "2026-01-01",
-                            "created": 1,
-                            "closed": 0,
-                            "net": 1,
-                            "open_snapshot": 1,
-                        },
-                        {
-                            "day": "2026-01-02",
-                            "created": 1,
-                            "closed": 1,
-                            "net": 0,
-                            "open_snapshot": 1,
-                        },
-                    ],
-                },
+                    "roles": [
+                        {"role": "implementation", "files": 2, "bytes": 100,
+                         "code": 80, "loc_measured": True},
+                        {"role": "tests", "files": 1, "bytes": 25,
+                         "code": 20, "loc_measured": True},
+                        {"role": "documentation", "files": 3, "bytes": 500,
+                         "code": None, "loc_measured": False},
+                        {"role": "context", "files": 2, "bytes": 900,
+                         "code": None, "loc_measured": False},
+                    ]
             }
         ),
         encoding="utf-8",
@@ -938,13 +905,23 @@ def test_growth_portfolio_writes_charts_data_and_beads_trajectory(
 
     result = chisel._write_growth_portfolio(output_root, [plan], "2026-01-02T000000Z")
 
-    assert "README.md" in result["files"]
-    assert "07-beads-backlog-trajectory.svg" in result["files"]
-    assert "beads-history.csv" in result["files"]
+    assert "growth/README.md" in result["files"]
+    assert "growth/code-composition.csv" in result["files"]
+    assert "growth/daily-project-growth.csv" in result["files"]
+    assert "growth/maintained-text-net-change.svg" in result["files"]
+    assert "growth/weekly-activity.svg" in result["files"]
     readme = (output_root / "growth" / "README.md").read_text(encoding="utf-8")
-    assert "tracked-text history" in readme
-    assert "ignored local evidence exports" in readme
-    assert "Beads delivery history" in readme
+    assert "All repository activity and maintained implementation/tests/tooling" in readme
+    assert "Test source share is not executed test coverage" in readme
+    assert "| alpha | documentation | 3 | 500 | unavailable |" in readme
+    assert "weekly-activity.svg" in readme
+    summary = chisel.json.loads(
+        (output_root / "growth" / "project-growth-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["histories"]["alpha"]["daily"][1]["all_additions"] == 4
+    assert summary["histories"]["alpha"]["daily"][1]["maintained_additions"] == 0
 
 
 def test_tokei_path_normalization_preserves_dot_directories(tmp_path: Path) -> None:
@@ -1455,29 +1432,37 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     monkeypatch.setattr(chisel, "_utc_ts", lambda: "2026-06-11T000000Z")
     monkeypatch.setattr(chisel, "_build_one", fake_build_one)
 
-    result = chisel.build_chisel_bundles(output_root=tmp_path / "out", max_workers=8)
+    # Exercise grouped build logging here. Atomic publication and manifest
+    # validation are covered by the publication integration tests.
+    result = chisel._build_chisel_candidate(
+        project_names=["alpha", "beta"], output_root=tmp_path / "out", max_workers=8
+    )
 
     output = "\n".join(printed)
     assert "Repos:  2 selected — alpha, beta" in output
     assert "Pools:  2 across repos × 2 within each; 4 global repomix slots" in output
-    assert "[1/2] alpha: 1 configured slices, 5 XML snapshots, 21 sidecars" in output
-    assert "[2/2] beta: 2 configured slices, 5 XML snapshots, 22 sidecars" in output
+    assert "[1/2] alpha: 1 configured slices, compressed=True" in output
+    assert "[2/2] beta: 2 configured slices, compressed=False" in output
     assert "[1/2]" in output and "[2/2]" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output
     assert result["projects"]["alpha"]["status"] == "generated"
 
 
-def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None:
-    plan = chisel.RepoPlan(
-        name="alpha",
-        path=tmp_path / "alpha",
-        slices=(chisel.Slice("core", "Core", ("src/**",)),),
-        compressed=False,
-    )
-    plan.path.mkdir()
-    printed: list[str] = []
+def _mock_captured_build_seams(
+    monkeypatch, tmp_path: Path, plan: chisel.RepoPlan, *, slow_slice: bool = False
+) -> list[str]:
+    """Supply one deterministic captured inventory to the current builder seams."""
+    import hashlib
 
+    from lynchpin.sources import (
+        chisel_history,
+        chisel_inventory,
+        chisel_metrics,
+        chisel_package,
+    )
+
+    printed: list[str] = []
     monkeypatch.setattr(chisel, "_console", None)
     monkeypatch.setattr(
         chisel, "_print", lambda message="", **_kwargs: printed.append(str(message))
@@ -1488,50 +1473,91 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
         lambda _path: {"branch": "main", "commit": "abcdef123456", "dirty": False},
     )
 
-    def slow_slice(*_args):
-        time.sleep(0.02)
-        return "alpha-core", 10
+    def capture(_plan, destination, **_kwargs):
+        root = Path(destination) / "source"
+        root.mkdir(parents=True, exist_ok=True)
+        content = b"def core():\n    return 1\n"
+        path = "src/core.py"
+        (root / "src").mkdir(exist_ok=True)
+        (root / path).write_bytes(content)
+        record = chisel_inventory.InventoryFile(
+            path=path, sha256=hashlib.sha256(content).hexdigest(),
+            size_bytes=len(content), role="implementation", role_reason="test fixture",
+            included_by=("core",), excluded_by=(), source_kind="source", included=True,
+        )
+        snapshot_id = "a" * 64
+        captured = chisel_inventory.CapturedInventory(
+            root=root, files=(record,), memberships={"core": (path,)},
+            project=plan.name, generated_at="2026-06-11T000000Z",
+            revision="abcdef123456", dirty=False, policy_version="test-policy",
+            snapshot_id=snapshot_id,
+        )
+        (Path(destination) / "capture.json").write_text(
+            chisel.json.dumps(
+                {"snapshot_id": snapshot_id, "policy_version": "test-policy"}
+            ),
+            encoding="utf-8",
+        )
+        return captured
 
-    monkeypatch.setattr(chisel, "_run_slice", slow_slice)
-    monkeypatch.setattr(chisel, "_run_scratchpad", lambda *_args: None)
+    monkeypatch.setattr(chisel_inventory, "capture_inventory", capture)
+
+    def run_view(_repomix, out_dir, _plan, _inventory, name, *_args, **_kwargs):
+        if slow_slice and name == "core":
+            time.sleep(0.02)
+        output = Path(out_dir) / f"{plan.name}-{name}.xml"
+        output.write_text("<repomix />", encoding="utf-8")
+        return output.name, output.stat().st_size
+
+    monkeypatch.setattr(chisel_package, "run_view", run_view)
+
+    def sidecars(_plan, _inventory, _out_dir, _log):
+        return [], 0
+
+    monkeypatch.setattr(chisel_package, "captured_sidecars", sidecars)
+    monkeypatch.setattr(chisel_package, "evidence_outputs", lambda *_args: [])
+    monkeypatch.setattr(chisel_package, "verify_history_bundle", lambda *_args: None)
+    monkeypatch.setattr(chisel_inventory, "verify_capture", lambda *_args: None)
+
+    def metrics(_inventory, package_dir):
+        path = Path(package_dir) / f"{plan.name}-tokei-stats.json"
+        path.write_text("{}\n", encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(chisel_metrics, "build_metrics", metrics)
+    monkeypatch.setattr(chisel_history, "build_history", lambda *_args, **_kwargs: {})
+
     monkeypatch.setattr(chisel, "_generate_git_log", lambda *_args: 2)
     monkeypatch.setattr(chisel, "_generate_issues", lambda *_args: (0, 0))
     monkeypatch.setattr(chisel, "_generate_prs", lambda *_args: (0, 0))
-    monkeypatch.setattr(chisel, "_generate_portable_sidecars", lambda *_args: ([], 0))
-    monkeypatch.setattr(
-        chisel, "_generate_tokei_stats", lambda *_args: (["alpha-tokei-stats.md"], 8)
-    )
-    monkeypatch.setattr(
-        chisel, "_generate_growth_analysis", lambda *_args: (["alpha-growth.md"], 8)
-    )
-    monkeypatch.setattr(
-        chisel, "_generate_ignore_audit", lambda *_args: (["alpha-ignore-audit.md"], 4)
-    )
-    monkeypatch.setattr(
-        chisel, "_generate_agent_audit", lambda *_args: (["alpha-agent-audit.md"], 3)
-    )
-    monkeypatch.setattr(
-        chisel, "_generate_branch_delta", lambda *_args: (["alpha-branch-delta.md"], 5)
-    )
+    monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: ([], 0))
+    monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: ([], 0))
+    monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: ([], 0))
     monkeypatch.setattr(
         chisel,
         "_generate_beads",
-        lambda *_args: (
-            ["alpha-beads.md"],
-            7,
-            {"available": True, "counts": {"issues": 1}},
-        ),
+        lambda *_args: ([], 7, {"available": True, "counts": {"issues": 1}}),
     )
     monkeypatch.setattr(
-        chisel,
-        "_generate_snapshot_overview",
-        lambda *_args, **_kwargs: (["alpha-overview.md"], 6),
+        chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: ([], 0)
     )
     monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
     monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
     monkeypatch.setattr(
-        chisel, "_make_combined_tar", lambda *_args: ("alpha-all.tar.gz", 10)
+        chisel, "_make_combined_tar", lambda *_args: (f"{plan.name}-all.tar.gz", 10)
     )
+    return printed
+
+
+def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None:
+    plan = chisel.RepoPlan(
+        name="alpha",
+        path=tmp_path / "alpha",
+        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+        compressed=False,
+    )
+    plan.path.mkdir()
+    printed = _mock_captured_build_seams(monkeypatch, tmp_path, plan, slow_slice=True)
 
     result = chisel._build_one(
         plan,
@@ -1554,14 +1580,14 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
     )
     assert slice_timing["elapsed_s"] >= 0.02
     assert slice_timing["finished_at"] >= slice_timing["started_at"]
-    assert result["beads_files"] == ["alpha-beads.md"]
+    assert result["beads_files"] == []
     assert result["snapshot_audit_files"] == [
         "alpha-snapshot-audit.json",
         "alpha-snapshot-audit.md",
     ]
 
 
-def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> None:
+def test_build_one_replaces_stale_project_output(monkeypatch, tmp_path: Path) -> None:
     plan = chisel.RepoPlan(
         name="alpha",
         path=tmp_path / "alpha",
@@ -1574,34 +1600,7 @@ def test_build_one_prunes_stale_project_output(monkeypatch, tmp_path: Path) -> N
     stale = out_dir / "alpha-old-slice.xml"
     stale.write_text("<old />", encoding="utf-8")
 
-    monkeypatch.setattr(chisel, "_console", None)
-    monkeypatch.setattr(chisel, "_print", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        chisel,
-        "_git_state",
-        lambda _path: {"branch": "main", "commit": "abcdef123456", "dirty": False},
-    )
-    monkeypatch.setattr(chisel, "_run_scratchpad", lambda *_args: None)
-    monkeypatch.setattr(chisel, "_generate_git_log", lambda *_args: 0)
-    monkeypatch.setattr(chisel, "_generate_issues", lambda *_args: (0, 0))
-    monkeypatch.setattr(chisel, "_generate_prs", lambda *_args: (0, 0))
-    monkeypatch.setattr(chisel, "_generate_portable_sidecars", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_tokei_stats", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_growth_analysis", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: ([], 0))
-    monkeypatch.setattr(
-        chisel, "_generate_beads", lambda *_args: ([], 0, {"available": False})
-    )
-    monkeypatch.setattr(
-        chisel, "_generate_snapshot_overview", lambda *_args, **_kwargs: ([], 0)
-    )
-    monkeypatch.setattr(chisel, "_copy_extras", lambda *_args: 0)
-    monkeypatch.setattr(chisel, "_validate_xml", lambda _path: None)
-    monkeypatch.setattr(
-        chisel, "_make_combined_tar", lambda *_args: ("alpha-all.tar.gz", 10)
-    )
+    _mock_captured_build_seams(monkeypatch, tmp_path, plan)
 
     result = chisel._build_one(
         plan,

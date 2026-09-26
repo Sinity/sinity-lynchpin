@@ -33,7 +33,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -351,35 +351,13 @@ def _planned_output_count(plan: RepoPlan) -> int:
 
 
 def _print_scope(plans: Sequence[RepoPlan], output_root: Path) -> None:
-    if _console is not None:
-        table = Table(title="Planned outputs", title_style="bold")
-        table.add_column("#", justify="right")
-        table.add_column("Project", style="bold")
-        table.add_column("Configured slices", justify="right")
-        table.add_column("XML snapshots", justify="right")
-        table.add_column("Sidecars", justify="right")
-        table.add_column("Output")
-        for idx, plan in enumerate(plans, start=1):
-            xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
-            sidecars = _planned_output_count(plan) - xml_snapshots
-            table.add_row(
-                str(idx),
-                plan.name,
-                str(len(plan.slices)),
-                str(xml_snapshots),
-                str(sidecars),
-                str(output_root / plan.name),
-            )
-        _console.print(table)  # type: ignore[possibly-undefined]
-        return
-
-    _print("[dim]Scope:[/dim]")
+    _print(
+        "[dim]Scope: raw source, evidence tables, offline index and archives; artifact counts depend on captured coverage.[/dim]"
+    )
     for idx, plan in enumerate(plans, start=1):
-        xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
-        sidecars = _planned_output_count(plan) - xml_snapshots
         _print(
             f"  [{idx}/{len(plans)}] {plan.name}: {len(plan.slices)} configured slices, "
-            f"{xml_snapshots} XML snapshots, {sidecars} sidecars -> {output_root / plan.name}"
+            f"compressed={plan.compressed} -> {output_root / plan.name}"
         )
 
 
@@ -1032,7 +1010,7 @@ _plan(
 _plan(
     "sinity-lynchpin",
     "/realm/project/sinity-lynchpin",
-    None,
+    "Sinity/sinity-lynchpin",
     Slice(
         "analysis-and-core",
         "Analysis modules, core primitives, config, control plane",
@@ -1602,9 +1580,8 @@ def _add_report_stats(
     bucket["files"] += 1
     _add_stats(bucket, stats)
     _add_language_stats(bucket, language, stats, count_file=True)
-    for embedded_language, embedded_stats in (stats.get("blobs") or {}).items():
-        _add_stats(bucket, embedded_stats)
-        _add_language_stats(bucket, embedded_language, embedded_stats, count_file=False)
+    # Embedded-language blobs (notably fenced code in Markdown) belong to the
+    # host document, not maintained source. Do not fold them into LOC totals.
 
 
 def _tokei_exclude_args(plan: RepoPlan) -> list[str]:
@@ -2886,6 +2863,21 @@ def _github_pr_to_chisel_dict(item) -> dict:
             }
             for review in item.reviews
         ],
+        "reviewComments": [
+            {
+                "author": {"login": comment.author.login},
+                "body": comment.body,
+                "path": comment.path or "",
+                "line": comment.line,
+                "diffHunk": comment.diff_hunk or "",
+                "createdAt": comment.created_at.isoformat()
+                if comment.created_at
+                else "",
+                "url": comment.url or "",
+                "reviewId": comment.review_id,
+            }
+            for comment in item.review_comments
+        ],
     }
 
 
@@ -2895,6 +2887,7 @@ def _prs_from_context_product(
     if state == "all":
         items = [
             *_github_context_items(project, repo_slug, "pr", "open", limit),
+            *_github_context_items(project, repo_slug, "pr", "closed", limit),
             *_github_context_items(project, repo_slug, "pr", "merged", limit),
         ][:limit]
     else:
@@ -2907,6 +2900,7 @@ def _normalize_pr_data(prs: list[dict]) -> None:
     for pr in prs:
         pr["_comments"] = pr.pop("comments", [])
         pr["_reviews"] = pr.pop("reviews", [])
+        pr["_review_comments"] = pr.pop("reviewComments", [])
 
 
 def _build_prs_xml(
@@ -2965,6 +2959,23 @@ def _build_prs_xml(
             )
             rb = ET.SubElement(re_el, "body")
             rb.text = rv.get("body", "")
+        review_comments = ET.SubElement(el, "inline-review-comments")
+        for comment in pr.get("_review_comments", []):
+            attrs = {
+                "author": (comment.get("author") or {}).get("login", "?"),
+                "path": comment.get("path", ""),
+                "created-at": comment.get("createdAt", ""),
+                "url": comment.get("url", ""),
+            }
+            if comment.get("line") is not None:
+                attrs["line"] = str(comment["line"])
+            if comment.get("reviewId") is not None:
+                attrs["review-id"] = str(comment["reviewId"])
+            ce = ET.SubElement(review_comments, "comment", attrs)
+            diff = ET.SubElement(ce, "diff-hunk")
+            diff.text = comment.get("diffHunk", "")
+            body = ET.SubElement(ce, "body")
+            body.text = comment.get("body", "")
     ET.indent(root, space="  ")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
@@ -2972,7 +2983,11 @@ def _build_prs_xml(
 def _generate_prs(
     plan: RepoPlan, out_dir: Path, generated_at: str, log: list[str] | None = None
 ) -> tuple[int, int]:
-    """Fetch and write prs-open.xml + prs-merged.xml. Returns (open_count, merged_count)."""
+    """Write PR snapshots for open, closed-unmerged, and merged states.
+
+    The historical tuple return remains ``(open_count, merged_count)`` for
+    callers that consume the established stage result shape.
+    """
     if not plan.github_slug or not _has_github_remote(plan.path):
         return 0, 0
 
@@ -2985,12 +3000,23 @@ def _generate_prs(
         plan.name, plan.github_slug, "merged", DEFAULT_ISSUE_LIMIT
     )
     _normalize_pr_data(merged_prs)
+    closed_prs = _prs_from_context_product(
+        plan.name, plan.github_slug, "closed", DEFAULT_ISSUE_LIMIT
+    )
+    _normalize_pr_data(closed_prs)
 
-    for state, prs in [("open", open_prs), ("merged", merged_prs)]:
+    for state, prs in [
+        ("open", open_prs),
+        ("closed", closed_prs),
+        ("merged", merged_prs),
+    ]:
         xml = _build_prs_xml(prs, plan.github_slug, state, generated_at)
         (out_dir / f"{plan.name}-prs-{state}.xml").write_text(xml, encoding="utf-8")
 
-    _emit(log, f"  [dim]prs: {len(open_prs)} open / {len(merged_prs)} merged[/dim]")
+    _emit(
+        log,
+        f"  [dim]prs: {len(open_prs)} open / {len(closed_prs)} closed-unmerged / {len(merged_prs)} merged[/dim]",
+    )
     return len(open_prs), len(merged_prs)
 
 
@@ -3991,7 +4017,9 @@ def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
         )
     if name.endswith("-issues-open.xml") or name.endswith("-issues-closed.xml"):
         return "github-context", "Rendered GitHub issue context"
-    if name.endswith("-prs-open.xml") or name.endswith("-prs-merged.xml"):
+    if any(
+        name.endswith(f"-prs-{state}.xml") for state in ("open", "closed", "merged")
+    ):
         return "github-context", "Rendered GitHub pull request context"
     if name.endswith("-tokei-stats.json") or name.endswith("-tokei-stats.md"):
         return "current-working-tree", "Tokei attribution stats by Chisel bucket"
@@ -4297,12 +4325,16 @@ def _generate_branch_delta(
         return [md_path.name], md_path.stat().st_size
 
     base = merge_base.stdout.strip()
-    stat = _run(["git", "diff", "--stat", f"{base}...HEAD"], cwd=plan.path)
-    diff = _run(["git", "diff", "--binary", f"{base}...HEAD"], cwd=plan.path)
-    changed = _run(["git", "diff", "--name-status", f"{base}...HEAD"], cwd=plan.path)
+    diff_flags = ["--no-textconv", "--no-ext-diff", "--no-color"]
+    stat = _run(["git", "diff", *diff_flags, "--stat", f"{base}...HEAD"], cwd=plan.path)
+    diff = _run(["git", "diff", *diff_flags, "--binary", f"{base}...HEAD"], cwd=plan.path)
+    changed = _run(["git", "diff", *diff_flags, "--name-status", f"{base}...HEAD"], cwd=plan.path)
     commits = _run(
         ["git", "log", "--oneline", "--decorate", f"{base}..HEAD"], cwd=plan.path
     )
+    for result in (stat, diff, changed, commits):
+        if result.returncode:
+            raise RuntimeError(f"branch delta failed: {result.stderr or result.stdout}")
 
     outputs = {
         f"{plan.name}-branch-delta.patch": diff.stdout,
@@ -4370,13 +4402,13 @@ def _xml_declared_count(path: Path) -> int | None:
 
 def _artifact_rows(out_dir: Path, plan: RepoPlan) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for path in sorted(out_dir.iterdir(), key=lambda item: item.name):
+    for path in sorted(out_dir.rglob("*"), key=lambda item: item.as_posix()):
         if not path.is_file():
             continue
         scope, purpose = _file_scope_and_purpose(plan, path.name)
         rows.append(
             {
-                "name": path.name,
+                "name": path.relative_to(out_dir).as_posix(),
                 "bytes": path.stat().st_size,
                 "scope": scope,
                 "purpose": purpose,
@@ -4412,7 +4444,11 @@ def _generate_snapshot_overview(
         if int(row["bytes"]) >= LARGE_SLICE_BYTES
     ][:12]
     top_buckets = sorted(
-        (stats.get("buckets") or {}).items(),
+        (
+            (name, values)
+            for name, values in (stats.get("buckets") or {}).items()
+            if values.get("loc_measured", True) and values.get("lines") is not None
+        ),
         key=lambda item: int(item[1].get("lines") or 0),
         reverse=True,
     )[:8]
@@ -4797,13 +4833,13 @@ def _write_project_manifest(
 ) -> tuple[str, int]:
     manifest_path = out_dir / f"{plan.name}-manifest.json"
     artifacts = []
-    for path in sorted(out_dir.iterdir(), key=lambda p: p.name):
+    for path in sorted(out_dir.rglob("*"), key=lambda p: p.as_posix()):
         if not path.is_file() or path == manifest_path:
             continue
         scope, purpose = _file_scope_and_purpose(plan, path.name)
         artifacts.append(
             {
-                "name": path.name,
+                "name": path.relative_to(out_dir).as_posix(),
                 "bytes": path.stat().st_size,
                 "sha256": None if path == manifest_path else _sha256_file(path),
                 "scope": scope,
@@ -4830,6 +4866,10 @@ def _write_project_manifest(
         "xml_errors": xml_errors,
         "artifacts": artifacts,
     }
+    capture = _read_json_file(out_dir / "capture.json")
+    if capture:
+        manifest["snapshot_id"] = capture.get("snapshot_id")
+        manifest["role_policy_version"] = capture.get("policy_version")
     self_row = next(
         row for row in manifest["artifacts"] if row["name"] == manifest_path.name
     )
@@ -4981,6 +5021,17 @@ def _svg_heatmap(title: str, weekly_by_project: dict[str, list[dict[str, Any]]])
 
 
 def _stats_role(bucket: str) -> str:
+    explicit = {
+        "implementation": "Production/tooling",
+        "tooling": "Production/tooling",
+        "tests": "Tests",
+        "documentation": "Docs/context",
+        "context": "Docs/context",
+        "evidence": "Evidence/demo",
+        "unclassified": "Unclassified",
+    }
+    if bucket in explicit:
+        return explicit[bucket]
     lowered = bucket.lower()
     if "demo" in lowered or "artifact" in lowered:
         return "Evidence/demo"
@@ -4992,7 +5043,9 @@ def _stats_role(bucket: str) -> str:
         or lowered in {"agent-context", "agent-workspace"}
     ):
         return "Docs/context"
-    return "Production/tooling"
+    if lowered in {"code-proper", "production", "tooling", "implementation"}:
+        return "Production/tooling"
+    return "Unclassified"
 
 
 def _composition_rows(
@@ -5003,27 +5056,50 @@ def _composition_rows(
         stats = _read_json_file(
             output_root / plan.name / f"{plan.name}-tokei-stats.json"
         )
-        totals = {
-            role: 0
-            for role in ("Production/tooling", "Tests", "Docs/context", "Evidence/demo")
+        values_by_role: dict[str, list[int | None]] = {
+            role: []
+            for role in (
+                "Production/tooling",
+                "Tests",
+                "Docs/context",
+                "Evidence/demo",
+                "Unclassified",
+            )
         }
         for bucket, values in (stats.get("buckets") or {}).items():
-            totals[_stats_role(bucket)] += int(values.get("code") or 0)
-        maintained = (
-            totals["Production/tooling"] + totals["Tests"] + totals["Docs/context"]
+            role = _stats_role(bucket)
+            if values.get("loc_measured", True) and values.get("code") is not None:
+                values_by_role[role].append(int(values["code"]))
+            else:
+                values_by_role[role].append(None)
+        totals: dict[str, int | None] = {}
+        for role, values in values_by_role.items():
+            totals[role] = (
+                sum(values) if values and all(v is not None for v in values) else None
+            )
+        production_tooling = totals["Production/tooling"]
+        tests = totals["Tests"]
+        known_maintained = (
+            production_tooling + tests
+            if production_tooling is not None and tests is not None
+            else None
         )
-        denominator = totals["Production/tooling"] + totals["Tests"]
+        unclassified_bucket = (stats.get("buckets") or {}).get("unclassified") or {}
+        has_unclassified = int(unclassified_bucket.get("files") or 0) > 0
+        maintained = None if has_unclassified else known_maintained
+        denominator = maintained
         rows.append(
             {
                 "project": plan.name,
                 **totals,
+                "Known maintained code": known_maintained,
                 "Maintained code": maintained,
-                "Test share of production+tests": totals["Tests"] / denominator
-                if denominator
+                "Test share of production+tests": tests / denominator
+                if tests is not None and denominator
                 else None,
                 "Evidence payload / maintained code": totals["Evidence/demo"]
                 / maintained
-                if maintained
+                if totals["Evidence/demo"] is not None and maintained
                 else None,
             }
         )
@@ -5034,18 +5110,21 @@ def _svg_composition(rows: Sequence[dict[str, Any]]) -> str:
     width, height = 1200, 180 + len(rows) * 92
     left, right, top = 185, 55, 105
     plot_w = width - left - right
-    roles = ("Production/tooling", "Tests", "Docs/context", "Evidence/demo")
-    colors = ("#7c3aed", "#0891b2", "#94a3b8", "#ea580c")
+    roles = ("Production/tooling", "Tests")
+    colors = ("#7c3aed", "#0891b2")
+    complete_rows = [row for row in rows if row.get("Maintained code") is not None]
     maximum = max(
         1,
-        max((sum(int(row[role]) for role in roles) for row in rows), default=0),
+        max(
+            (sum(int(row[role]) for role in roles) for row in complete_rows), default=0
+        ),
     )
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img">',
-        "<title>Current repository composition</title>",
+        "<title>Maintained source composition</title>",
         '<rect width="100%" height="100%" fill="#ffffff"/>',
-        '<text x="42" y="38" font-family="system-ui,sans-serif" font-size="25" font-weight="700" fill="#111827">Current repository composition</text>',
-        '<text x="42" y="65" font-family="system-ui,sans-serif" font-size="14" fill="#475569">Tokei code lines from tracked and non-ignored working-tree files; ignored private/local corpora are excluded.</text>',
+        '<text x="42" y="38" font-family="system-ui,sans-serif" font-size="25" font-weight="700" fill="#111827">Maintained source composition</text>',
+        '<text x="42" y="65" font-family="system-ui,sans-serif" font-size="14" fill="#475569">Measured implementation, tooling, and test code lines from the captured inventory. Context and documentation are reported by bytes.</text>',
     ]
     for index, role in enumerate(roles):
         x = 42 + index * 210
@@ -5060,6 +5139,11 @@ def _svg_composition(rows: Sequence[dict[str, Any]]) -> str:
         svg.append(
             f'<text x="{left - 18}" y="{y + 23}" text-anchor="end" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="#334155">{html.escape(str(row["project"]))}</text>'
         )
+        if row.get("Maintained code") is None:
+            svg.append(
+                f'<text x="{left}" y="{y + 22}" font-family="system-ui,sans-serif" font-size="12" fill="#64748b">LOC unavailable; see coverage gaps</text>'
+            )
+            continue
         cursor = left
         for role, color in zip(roles, colors, strict=True):
             value = int(row[role])
@@ -5138,273 +5222,125 @@ def _write_growth_portfolio(
     plans: Sequence[RepoPlan],
     generated_at: str,
 ) -> dict[str, Any]:
+    """Compare explicit role measurements; no size-normalized quality proxies."""
     growth_dir = output_root / "growth"
     if growth_dir.exists():
         shutil.rmtree(growth_dir)
     growth_dir.mkdir(parents=True)
-    growth_by_project: dict[str, dict[str, Any]] = {}
+    histories = {}
+    composition = []
+    trackers = {}
     for plan in plans:
-        path = output_root / plan.name / f"{plan.name}-growth.json"
-        if path.exists():
-            growth_by_project[plan.name] = _read_json_file(path)
-    composition = _composition_rows(plans, output_root)
-    beads_by_project: dict[str, dict[str, Any]] = {}
-    for plan in plans:
-        path = output_root / plan.name / f"{plan.name}-beads.json"
-        payload = _read_json_file(path)
-        if payload.get("available") and (payload.get("history") or {}).get("daily"):
-            beads_by_project[plan.name] = payload
-
-    summary_rows = [
-        {"project": project, **growth["summary"]}
-        for project, growth in growth_by_project.items()
-    ]
-    daily_rows = [
-        {"project": project, **row}
-        for project, growth in growth_by_project.items()
-        for row in growth["daily"]
-    ]
-    weekly_rows = [
-        {"project": project, **row}
-        for project, growth in growth_by_project.items()
-        for row in growth["weekly"]
-    ]
-    monthly_rows = [
-        {"project": project, **row}
-        for project, growth in growth_by_project.items()
-        for row in growth["monthly"]
-    ]
-    beads_history_rows = [
-        {"project": project, **row}
-        for project, payload in beads_by_project.items()
-        for row in payload["history"]["daily"]
-    ]
+        project_dir = output_root / plan.name
+        growth = _read_json_file(project_dir / f"{plan.name}-growth.json")
+        if growth:
+            histories[plan.name] = growth
+        metrics = _read_json_file(project_dir / "metrics" / "summary.json")
+        for row in metrics.get("roles", []):
+            composition.append({"project": plan.name, **row})
+        beads = _read_json_file(project_dir / f"{plan.name}-beads.json")
+        if beads.get("available"):
+            trackers[plan.name] = {"counts": beads.get("counts"), "history": beads.get("history")}
     payload = {
         "generated_at": generated_at,
-        "projects": list(growth_by_project),
-        "summaries": summary_rows,
+        "histories": histories,
         "composition": composition,
-        "beads": {
-            project: {
-                "counts": payload.get("counts"),
-                "history_summary": payload["history"]["summary"],
-            }
-            for project, payload in beads_by_project.items()
-        },
-        "privacy_boundary": (
-            "LOC uses tracked plus Git-visible untracked files after .ignore/.tokeignore; "
-            "ignored local demo exports and runtime state are excluded."
-        ),
+        "beads": trackers,
+        "method": "Reachable commits across captured refs, counted once per commit. "
+        "Merge diffs are first-parent. Git numstat measures changed text, "
+        "not executable lines or effort. Historical paths use current role policy. "
+        "All repository activity and maintained implementation/tests/tooling "
+        "text changes are separate. Current LOC uses captured file roles. "
+        "Documentation/context/evidence are reported as files and bytes.",
     }
     (growth_dir / "project-growth-summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    _write_csv_rows(growth_dir / "project-growth-summary.csv", summary_rows)
-    _write_csv_rows(growth_dir / "daily-project-growth.csv", daily_rows)
-    _write_csv_rows(growth_dir / "weekly-project-growth.csv", weekly_rows)
-    _write_csv_rows(growth_dir / "monthly-project-growth.csv", monthly_rows)
     _write_csv_rows(growth_dir / "code-composition.csv", composition)
-    _write_csv_rows(growth_dir / "beads-history.csv", beads_history_rows)
-
-    cumulative_series = [
-        {
-            "name": project,
-            "points": [(row["day"], row["cumulative_net"]) for row in growth["daily"]],
-        }
-        for project, growth in growth_by_project.items()
+    _write_csv_rows(growth_dir / "beads-history.csv", [
+        {"project": project, **row} for project, data in trackers.items()
+        for row in (data.get("history") or {}).get("daily", [])
+    ])
+    for period in ("daily", "weekly", "monthly"):
+        rows = [
+            {"project": project, **row}
+            for project, data in histories.items()
+            for row in data.get(period, [])
+        ]
+        _write_csv_rows(growth_dir / f"{period}-project-growth.csv", rows)
+    summaries = [
+        {"project": project, **data.get("summary", {})}
+        for project, data in histories.items()
     ]
-    normalized_series = []
-    churn_series = []
-    for project, growth in growth_by_project.items():
-        final_net = float(growth["summary"]["net_tracked_text_lines"] or 0)
-        if final_net:
-            normalized_series.append(
-                {
-                    "name": project,
-                    "points": [
-                        (row["day"], float(row["cumulative_net"]) / final_net * 100)
-                        for row in growth["daily"]
-                    ],
-                }
-            )
-        churn_series.append(
-            {
-                "name": project,
-                "points": [
-                    (
-                        row["day"],
-                        float(row["rolling_28d_relative_to_final_net"] or 0) * 100,
-                    )
-                    for row in growth["daily"]
-                ],
-            }
-        )
+    _write_csv_rows(growth_dir / "project-growth-summary.csv", summaries)
     charts = {
-        "01-cumulative-net-tracked-text-growth.svg": _svg_line_chart(
-            "Cumulative net tracked-text growth",
-            "Additions minus deletions on each default branch; binary rows excluded.",
-            cumulative_series,
-        ),
-        "02-normalized-growth-trajectory.svg": _svg_line_chart(
-            "Normalized growth trajectory",
-            "Each repository's cumulative net tracked text as a percentage of its current final net.",
-            normalized_series,
-            percent=True,
-        ),
-        "03-rolling-28d-relative-churn.svg": _svg_line_chart(
-            "Rolling 28-day relative churn",
-            "Gross additions plus deletions over 28 days, divided by current final net tracked text.",
-            churn_series,
-            percent=True,
-        ),
-        "04-weekly-commit-activity-heatmap.svg": _svg_heatmap(
-            "Weekly commit activity",
-            {
-                project: growth["weekly"]
-                for project, growth in growth_by_project.items()
-            },
-        ),
-        "05-maintained-code-composition.svg": _svg_composition(composition),
-        "06-monthly-net-growth.svg": _svg_monthly_net(
-            {
-                project: growth["monthly"]
-                for project, growth in growth_by_project.items()
-            }
-        ),
-        "07-beads-backlog-trajectory.svg": _svg_line_chart(
-            "Estimated Beads backlog trajectory",
-            "Estimated trajectory from valid created_at/closed_at timestamps. Closed issues without valid timestamps are unplaced; current open count comes from issue statuses. Reopen cycles and deleted/compacted issues are not recovered.",
+        "maintained-text-net-change.svg": _svg_line_chart(
+            "Cumulative maintained-code text changes",
+            payload["method"],
             [
                 {
                     "name": project,
                     "points": [
-                        (
-                            row["day"],
-                            row.get(
-                                "estimated_open_from_timestamps",
-                                row.get("open_snapshot", 0),
-                            ),
-                        )
-                        for row in payload["history"]["daily"]
+                        (r["day"], r["cumulative_net"]) for r in data.get("daily", [])
                     ],
                 }
-                for project, payload in beads_by_project.items()
+                for project, data in histories.items()
             ],
         ),
+        "weekly-activity.svg": _svg_heatmap(
+            "All repository commit activity (including context-only commits)",
+            {project: data.get("weekly", []) for project, data in histories.items()},
+        ),
     }
+    if trackers:
+        charts["beads-backlog.svg"] = _svg_line_chart(
+            "Estimated Beads backlog from retained task dates",
+            "Incomplete dates, reopen cycles and deleted tasks limit reconstruction; current statuses are separate counts.",
+            [{"name": project, "points": [
+                (row["day"], row["estimated_open_from_timestamps"])
+                for row in (data.get("history") or {}).get("daily", [])
+                if row.get("estimated_open_from_timestamps") is not None
+            ]} for project, data in trackers.items()],
+        )
     for name, content in charts.items():
         (growth_dir / name).write_text(content, encoding="utf-8")
-
     lines = [
-        "# Project growth and change shape",
+        "# Portfolio measurements",
         "",
         f"Generated: {generated_at}",
         "",
-        "This report distinguishes default-branch tracked-text history from current maintained-code composition. Git growth includes implementation, tests, documentation, configuration, schemas, and other tracked text. Tokei composition uses tracked files plus non-ignored working-tree files, then applies `.ignore` and `.tokeignore`; ignored local evidence exports, dependency trees, caches, and private runtime state are not counted or packaged.",
+        payload["method"],
         "",
-        "![Cumulative tracked-text growth](01-cumulative-net-tracked-text-growth.svg)",
+        "Test source share is not executed test coverage. "
+        "Missing parsers and unclassified files are coverage gaps; see each project's metrics/summary.json.",
         "",
-        "![Normalized trajectory](02-normalized-growth-trajectory.svg)",
+        "![Maintained text changes](maintained-text-net-change.svg)",
         "",
-        "![Rolling churn](03-rolling-28d-relative-churn.svg)",
+        "![Repository activity](weekly-activity.svg)",
         "",
-        "![Weekly activity](04-weekly-commit-activity-heatmap.svg)",
+        "## Current file roles",
         "",
-        "![Code composition](05-maintained-code-composition.svg)",
-        "",
-        "![Monthly net growth](06-monthly-net-growth.svg)",
-        "",
-        "![Beads backlog trajectory](07-beads-backlog-trajectory.svg)",
-        "",
-        "## Growth summary",
-        "",
-        "| Project | Net tracked text | Gross churn | Gross/net | Commits | Active days | Last 30d net | Last 90d net | 50% size date |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Project | Role | Files | Bytes | Code lines |",
+        "| --- | --- | ---: | ---: | ---: |",
     ]
-    for row in summary_rows:
-        ratio = row.get("gross_to_net_ratio")
-        ratio_text = f"{ratio:.2f}×" if isinstance(ratio, (int, float)) else "n/a"
-        lines.append(
-            f"| `{row['project']}` | {row['net_tracked_text_lines']:,} | {row['gross_line_churn']:,} | "
-            f"{ratio_text} | {row['default_branch_commits']:,} | {row['active_days']:,} | "
-            f"{row['last_30_days']['net']:,} | {row['last_90_days']['net']:,} | "
-            f"{row.get('date_reached_50pct_current_size') or 'n/a'} |"
-        )
-    lines.extend(
-        (
-            "",
-            "## Current composition",
-            "",
-            "| Project | Production/tooling | Tests | Docs/context | Evidence/demo | Maintained | Test share |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-        )
-    )
     for row in composition:
-        share = row.get("Test share of production+tests")
+        code = row["code"] if row.get("loc_measured") else "unavailable"
         lines.append(
-            f"| `{row['project']}` | {row['Production/tooling']:,} | {row['Tests']:,} | "
-            f"{row['Docs/context']:,} | {row['Evidence/demo']:,} | {row['Maintained code']:,} | "
-            f"{share:.1%} |"
-            if isinstance(share, (int, float))
-            else f"| `{row['project']}` | {row['Production/tooling']:,} | {row['Tests']:,} | "
-            f"{row['Docs/context']:,} | {row['Evidence/demo']:,} | {row['Maintained code']:,} | n/a |"
+            f"| {row['project']} | {row['role']} | {row['files']} | {row['bytes']} | {code} |"
         )
-    if beads_by_project:
-        lines.extend(
-            (
-                "",
-                "## Beads delivery history",
-                "",
-                "| Project | Issues | Open now | Ready | Blocked | Closed | Unplaced closed | Median lead days | P90 lead days | Closed 30d | Closed 90d | Board |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-            )
-        )
-        for project, payload in beads_by_project.items():
-            counts = payload.get("counts") or {}
-            history_summary = payload["history"]["summary"]
-            status_counts = counts.get("by_status") or {}
-            closed = sum(
-                int(status_counts.get(status) or 0)
-                for status in ("closed", "done", "resolved")
-            )
-            median_lead = history_summary.get("median_lead_days")
-            p90_lead = history_summary.get("p90_lead_days")
-            board = f"../{project}/{project}-beads.html"
-            lines.append(
-                f"| `{project}` | {int(counts.get('issues') or 0):,} | {history_summary.get('open_current_by_status', 0):,} | {int(counts.get('ready') or 0):,} | "
-                f"{int(counts.get('blocked') or 0):,} | {closed:,} | {history_summary.get('closed_current_without_valid_timestamps', 0):,} | "
-                f"{median_lead:.2f} | {p90_lead:.2f} | "
-                f"{history_summary['closed_last_30_days']:,} | {history_summary['closed_last_90_days']:,} | "
-                f"[browse]({board}) |"
-                if isinstance(median_lead, (int, float))
-                and isinstance(p90_lead, (int, float))
-                else f"| `{project}` | {int(counts.get('issues') or 0):,} | {history_summary.get('open_current_by_status', 0):,} | {int(counts.get('ready') or 0):,} | "
-                f"{int(counts.get('blocked') or 0):,} | {closed:,} | {history_summary.get('closed_current_without_valid_timestamps', 0):,} | n/a | n/a | "
-                f"{history_summary['closed_last_30_days']:,} | {history_summary['closed_last_90_days']:,} | "
-                f"[browse]({board}) |"
-            )
     lines.extend(
-        (
+        [
             "",
-            "## Extended analysis",
-            "",
-            "Each project directory also contains a growth report with recent 30/90-day velocity, peak rolling churn, weekly churn concentration, historical change volume by today's attribution buckets, and conventional commit-kind mix. CSV and JSON files retain the underlying daily, weekly, monthly, and composition data.",
-            "",
-            "## Interpretation limits",
-            "",
-            "- The Beads backlog chart estimates historical open counts from valid creation and closure timestamps. Closed issues without valid timestamps are left unplaced; the delivery table reports the current open count from statuses separately.",
-            "- Net tracked-text growth is not a source-code line count.",
-            "- High churn can reflect refactoring, replacement, generated-surface renewal, or history structure; it is not a quality judgment.",
-            "- Current Tokei composition and historical Git growth answer different questions and should not be added together.",
-            "- Commit counts describe integration cadence, not human effort or independent review.",
-            "",
-        )
+            "CSV files contain the full measurements. JSON retains per-project methods, "
+            "coverage and 30/90-day windows. These are descriptive measurements, not quality scores.",
+        ]
     )
-    (growth_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
+    (growth_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
-        "directory": str(growth_dir),
-        "projects": list(growth_by_project),
-        "files": sorted(path.name for path in growth_dir.iterdir() if path.is_file()),
+        "directory": "growth",
+        "files": [
+            p.relative_to(output_root).as_posix() for p in sorted(growth_dir.iterdir())
+        ],
     }
 
 
@@ -5452,6 +5388,7 @@ def _write_root_index(
                 "status": results.get(plan.name, {}).get("status", "missing"),
                 "elapsed_s": results.get(plan.name, {}).get("elapsed_s"),
                 "stage_timings": results.get(plan.name, {}).get("stage_timings", []),
+                "snapshot_id": results.get(plan.name, {}).get("snapshot_id"),
                 "source": str(plan.path),
                 "git": manifest.get("git", results.get(plan.name, {}).get("git")),
                 "total_bytes": sum(int(a.get("bytes") or 0) for a in artifacts),
@@ -5480,8 +5417,9 @@ def _write_root_index(
     index = {
         "generated_at": generated_at,
         "repomix_version": repomix_version,
-        "output_root": str(output_root),
+        "output_root": ".",
         "total_elapsed_s": total_elapsed,
+        "elapsed_scope": "preflight and project generation; excludes portfolio archive and atomic publication",
         "preflight_elapsed_s": preflight_elapsed,
         "growth_analysis": "growth/README.md"
         if (output_root / "growth" / "README.md").exists()
@@ -5499,7 +5437,7 @@ def _write_root_index(
         "",
         f"Generated: {generated_at}",
         f"Repomix: `{repomix_version}`",
-        f"Output root: `{output_root}`",
+        "Output root: this extracted directory (`.`)",
         "",
         "Growth and change-shape analysis: `growth/README.md`",
         "",
@@ -5567,8 +5505,8 @@ def _write_root_index(
         )
         for name, bucket in (project.get("buckets") or {}).items():
             lines.append(
-                f"| `{name}` | {bucket['files']:,} | {bucket['lines']:,} | "
-                f"{bucket['code']:,} | {bucket['comments']:,} |"
+                f"| `{name}` | {bucket['files']:,} | {bucket.get('lines')} | "
+                f"{bucket.get('code')} | {bucket.get('comments')} |"
             )
         inline = project.get("inline_rust_tests") or {}
         if inline.get("blocks"):
@@ -5714,26 +5652,63 @@ def _build_one(
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    git = _git_state(plan.path)
+    from .chisel_inventory import capture_inventory, verify_capture
+    from .chisel_package import captured_sidecars, evidence_outputs, run_view, verify_history_bundle
+    from .chisel_metrics import build_metrics
+    from .chisel_history import build_history
 
-    planned_outputs = _planned_output_count(plan)
-    xml_snapshots = len(plan.slices) + int(plan.compressed) + 3
-    sidecars = planned_outputs - xml_snapshots
+    capture_started = time.perf_counter()
+    capture_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    _print_live(f"  → {plan.name}: capture source inventory")
+    inventory = capture_inventory(
+        plan,
+        out_dir,
+        default_ignore=DEFAULT_IGNORE,
+        scratchpad_include=_SCRATCHPAD_INCLUDE,
+        accelerant_include=_ACCELERANT_INCLUDE,
+        accelerant_ignore=_ACCELERANT_IGNORE,
+    )
+    capture_elapsed = round(time.perf_counter() - capture_started, 3)
+    _print_live(f"  ✓ {plan.name}: capture source inventory ({capture_elapsed:.1f}s)")
+    git = _git_state(plan.path)
+    if git["commit"] != inventory.revision:
+        raise RuntimeError("repository revision changed during capture")
+    cache_dir = output_root.parent / ".chisel-cache" / plan.name
+
+    def metrics_stage():
+        build_metrics(inventory, out_dir)
+        paths = list(out_dir.glob(f"{plan.name}-tokei-stats.*"))
+        return [p.name for p in paths], sum(p.stat().st_size for p in paths)
+
+    def history_stage():
+        build_history(
+            plan.path,
+            out_dir,
+            project=plan.name,
+            revision=inventory.revision,
+            cache_dir=cache_dir / "history",
+        )
+        paths = list(out_dir.glob(f"{plan.name}-growth*"))
+        return [p.name for p in paths], sum(p.stat().st_size for p in paths)
+
     _emit(
         log,
-        f"[bold]{plan.name}[/bold]  [dim]{plan.path}[/dim]  "
-        f"{git['branch']} @ {git['commit'][:8]}  "
-        f"[dim]{len(plan.slices)} configured slices, {xml_snapshots} XML snapshots, "
-        f"{sidecars} sidecars, {slice_workers} slice workers[/dim]",
+        f"[bold]{plan.name}[/bold] [dim]{plan.path}[/dim] "
+        f"{git['branch']} @ {git['commit'][:8]} "
+        f"({len(plan.slices)} configured slices; captured snapshot {inventory.snapshot_id[:12]})",
     )
     _print_live(
-        f"→ {plan.name}: start  {git['branch']} @ {git['commit'][:8]}  "
-        f"({xml_snapshots} XML + {sidecars} sidecars, {slice_workers} slice workers)"
+        f"→ {plan.name}: start {git['branch']} @ {git['commit'][:8]} "
+        f"({len(inventory.files)} inventory records, {slice_workers} slice workers)"
     )
 
     slices_done: list[tuple[str, int]] = []
     errors: list[str] = []
-    stage_timings: list[dict[str, Any]] = []
+    stage_timings: list[dict[str, Any]] = [{
+        "stage": "capture", "label": plan.name, "started_at": capture_started_at,
+        "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "elapsed_s": capture_elapsed, "queue_wait_s": 0.0,
+    }]
     stage_timings_lock = threading.Lock()
 
     # ── Run everything in parallel within the repo ──
@@ -5777,60 +5752,52 @@ def _build_one(
             f = ex.submit(run_logged)
             futures[f] = (kind, label)
 
-        # Per-slice repomix
+        # Every XML view consumes the exact captured membership.
         for slice in plan.slices:
             submit(
                 "slice",
                 slice.name,
-                _run_slice,
+                run_view,
                 repomix_bin,
                 out_dir,
                 plan,
-                slice,
+                inventory,
+                slice.name,
                 git,
                 generated_at,
                 log,
             )
-
-        # Compressed whole-repo snapshot (code repos only)
         if plan.compressed:
             submit(
                 "compressed",
                 plan.name,
-                _run_compressed,
-                repomix_bin,
-                out_dir,
-                plan,
-                git,
-                generated_at,
-                log,
+                lambda: run_view(
+                    repomix_bin,
+                    out_dir,
+                    plan,
+                    inventory,
+                    "compressed",
+                    git,
+                    generated_at,
+                    log,
+                    compressed=True,
+                ),
             )
-
-        # Scratchpad (.agent/scratch/ working notes)
-        submit(
-            "scratchpad",
-            plan.name,
-            _run_scratchpad,
-            repomix_bin,
-            out_dir,
-            plan,
-            git,
-            generated_at,
-            log,
-        )
-
-        # Accelerant corpora (.agent/scratch/corpus-* GPT-Pro packs)
-        submit(
-            "accelerants",
-            plan.name,
-            _run_accelerants,
-            repomix_bin,
-            out_dir,
-            plan,
-            git,
-            generated_at,
-            log,
-        )
+        for special in ("scratchpad", "accelerants"):
+            if any(special in row.included_by for row in inventory.files):
+                submit(
+                    special,
+                    plan.name,
+                    run_view,
+                    repomix_bin,
+                    out_dir,
+                    plan,
+                    inventory,
+                    special,
+                    git,
+                    generated_at,
+                    log,
+                )
 
         # Git log
         submit(
@@ -5844,29 +5811,10 @@ def _build_one(
         submit("prs", plan.name, _generate_prs, plan, out_dir, generated_at, log)
 
         # Portable upload sidecars not otherwise represented by XML snapshots.
-        submit("sidecars", plan.name, _generate_portable_sidecars, plan, out_dir, log)
+        submit("sidecars", plan.name, captured_sidecars, plan, inventory, out_dir, log)
 
-        # Tokei-based attribution stats by project-specific category.
-        submit(
-            "tokei-stats",
-            plan.name,
-            _generate_tokei_stats,
-            plan,
-            out_dir,
-            generated_at,
-            log,
-        )
-
-        # Default-branch growth, churn, velocity, and historical bucket shape.
-        submit(
-            "growth-analysis",
-            plan.name,
-            _generate_growth_analysis,
-            plan,
-            out_dir,
-            generated_at,
-            log,
-        )
+        submit("tokei-stats", plan.name, metrics_stage)
+        submit("growth-analysis", plan.name, history_stage)
 
         # Local-state ignore audit.
         submit("ignore-audit", plan.name, _generate_ignore_audit, plan, out_dir, log)
@@ -5958,7 +5906,15 @@ def _build_one(
                 _emit(log, f"  [red]✗[/red] {kind}: {msg}")
 
     # ── Extra copies (after repomix finishes) ──
-    _copy_extras(plan, out_dir, log)
+    _copy_extras(replace(plan, path=inventory.root), out_dir, log)
+
+    # Navigation is generated after owner records (including Beads) exist.
+    if not errors:
+        verify_history_bundle(plan, inventory, out_dir)
+    stage_timings.extend(evidence_outputs(plan, inventory, out_dir, cache_dir))
+    verify_capture(plan.path, inventory)
+    if _git_state(plan.path) != git:
+        errors.append("repository state changed during package generation")
 
     # ── Validate all XML outputs ──
     xml_errors: list[str] = []
@@ -6024,12 +5980,13 @@ def _build_one(
 
     elapsed = (dt.datetime.now() - t0).total_seconds()
     total_bytes = sum(
-        path.stat().st_size for path in out_dir.iterdir() if path.is_file()
+        path.stat().st_size for path in out_dir.rglob("*") if path.is_file()
     )
 
     return {
         "project": plan.name,
         "status": "partial" if errors or xml_errors else "generated",
+        "snapshot_id": inventory.snapshot_id,
         "git": git,
         "slices": len(slices_done),
         "slice_names": [s[0] for s in slices_done],
@@ -6069,12 +6026,90 @@ def _build_one(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+_build_chisel_lock = threading.Lock()
+
+
 def build_chisel_bundles(
     *,
     project_names: Sequence[str] | None = None,
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> dict[str, Any]:
+    # GitHub materialization and subprocess cancellation retain process-wide
+    # state. Different output roots must not race on those shared resources.
+    if not _build_chisel_lock.acquire(blocking=False):
+        raise RuntimeError("another Chisel build is active in this process")
+    try:
+        return _publish_chisel_bundles(
+            project_names=project_names,
+            output_root=output_root,
+            max_workers=max_workers,
+        )
+    finally:
+        _build_chisel_lock.release()
+
+
+def _publish_chisel_bundles(
+    *,
+    project_names: Sequence[str] | None = None,
+    output_root: Path | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+) -> dict[str, Any]:
+    """Publish one complete selected generation, preserving the last good one."""
+    from .chisel_package import build_portfolio
+    from .chisel_publication import publish_candidate, staged_publication
+
+    started = time.perf_counter()
+    root = (output_root or _default_output_root()).resolve()
+    names = list(project_names) if project_names else list(REPO_PLANS)
+    unknown = set(names) - REPO_PLANS.keys()
+    if unknown:
+        raise ValueError(f"unknown projects: {', '.join(sorted(unknown))}")
+    with staged_publication(root) as candidate:
+        for name in names:
+            (candidate / f"{name}-all.tar.gz").unlink(missing_ok=True)
+        result = _build_chisel_candidate(
+            project_names=names,
+            output_root=candidate,
+            max_workers=max_workers,
+        )
+        successful = all(
+            r.get("status") == "generated" for r in result["projects"].values()
+        )
+        if successful:
+            plans = [REPO_PLANS[name] for name in names]
+            (candidate / "portfolio-all.tar.gz").unlink(missing_ok=True)
+            _print_live("→ portfolio archive and publication validation")
+            result["portfolio"] = build_portfolio(
+                candidate,
+                plans,
+                result["projects"],
+                result["generated_at"],
+            )
+            publish_candidate(candidate, root, names)
+        else:
+            _print(
+                "[yellow]Candidate incomplete; previous published packages retained.[/yellow]"
+            )
+        result["published"] = successful
+        result["output_root"] = str(root)
+        result["total_elapsed_s"] = round(time.perf_counter() - started, 1)
+        _print_live(f"Chisel {'published' if successful else 'not published'}: "
+                    f"{result['total_elapsed_s']:.1f}s total; {root}")
+        for row in result["projects"].values():
+            row["published"] = successful
+        return result
+
+
+def _build_chisel_candidate(
+    *,
+    project_names: Sequence[str] | None = None,
+    output_root: Path | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+) -> dict[str, Any]:
+    from .chisel_context import reset_context_cache
+
+    reset_context_cache()
     global _github_context_index, _github_context_manifest, _github_context_ready
     _abort_event.clear()
     build_started = time.perf_counter()
@@ -6114,7 +6149,6 @@ def build_chisel_bundles(
     _print()
     preflight_started = time.perf_counter()
     _ensure_chisel_prerequisites(plans)
-    _archive_existing_combined_tars(plans, output_root)
     preflight_elapsed = round(time.perf_counter() - preflight_started, 1)
     _print()
 
