@@ -32,7 +32,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -67,6 +67,18 @@ def _print(*args: Any, **kwargs: Any) -> None:
 
 
 _print_lock = threading.Lock()
+_progress_lock = threading.Lock()
+_active_stages: dict[str, set[str]] = {}
+_build_state_local = threading.local()
+
+
+def _set_stage(project: str, stage: str, active: bool) -> None:
+    with _progress_lock:
+        stages = _active_stages.setdefault(project, set())
+        if active:
+            stages.add(stage)
+        else:
+            stages.discard(stage)
 _stage_timing_local = threading.local()
 _process_lock = threading.Lock()
 _active_processes: set[subprocess.Popen[str]] = set()
@@ -352,11 +364,11 @@ def _planned_output_count(plan: RepoPlan) -> int:
 
 def _print_scope(plans: Sequence[RepoPlan], output_root: Path) -> None:
     _print(
-        "[dim]Scope: raw source, evidence tables, offline index and archives; artifact counts depend on captured coverage.[/dim]"
+        "[dim]Planned projects (completion order may differ). Packages contain raw source, evidence tables, an offline index and archives.[/dim]"
     )
     for idx, plan in enumerate(plans, start=1):
         _print(
-            f"  [{idx}/{len(plans)}] {plan.name}: {len(plan.slices)} configured slices, "
+            f"  {idx}. {plan.name}: {len(plan.slices)} configured slices, "
             f"compressed={plan.compressed} -> {output_root / plan.name}"
         )
 
@@ -5613,17 +5625,17 @@ def _print_project_summary(completed: int, total: int, result: dict[str, Any]) -
     name = str(result.get("project", "?"))
     status = str(result.get("status", "?"))
     elapsed = float(result.get("elapsed_s", 0) or 0)
-    state = "failed" if status == "failed" else "complete"
+    state = "complete" if status == "generated" else status
     with _print_lock:
         _print(
-            f"\n[bold][{completed}/{total}] {name} {state}[/bold]  "
-            f"{status}  [dim]{elapsed:.1f}s[/dim]"
+            f"\n[bold]Completed {completed}/{total}: {name} {state}[/bold]  "
+            f"[dim]{elapsed:.1f}s[/dim]"
         )
         for line in result.get("log_lines") or []:
             _print(line)
 
 
-def _build_one(
+def _build_one_impl(
     plan: RepoPlan,
     output_root: Path,
     repomix_bin: str,
@@ -5632,6 +5644,7 @@ def _build_one(
 ) -> dict:
     """Build all slices, current-tree sidecars, and all-refs git history for one repo."""
     log: list[str] = []
+    _build_state_local.log = log
     if not plan.path.exists():
         return {
             "project": plan.name,
@@ -5659,7 +5672,7 @@ def _build_one(
 
     capture_started = time.perf_counter()
     capture_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    _print_live(f"  → {plan.name}: capture source inventory")
+    _set_stage(plan.name, "capture source inventory", True)
     inventory = capture_inventory(
         plan,
         out_dir,
@@ -5669,7 +5682,8 @@ def _build_one(
         accelerant_ignore=_ACCELERANT_IGNORE,
     )
     capture_elapsed = round(time.perf_counter() - capture_started, 3)
-    _print_live(f"  ✓ {plan.name}: capture source inventory ({capture_elapsed:.1f}s)")
+    _set_stage(plan.name, "capture source inventory", False)
+    log.append(f"  ✓ capture source inventory ({capture_elapsed:.1f}s)")
     git = _git_state(plan.path)
     if git["commit"] != inventory.revision:
         raise RuntimeError("repository revision changed during capture")
@@ -5697,10 +5711,7 @@ def _build_one(
         f"{git['branch']} @ {git['commit'][:8]} "
         f"({len(plan.slices)} configured slices; captured snapshot {inventory.snapshot_id[:12]})",
     )
-    _print_live(
-        f"→ {plan.name}: start {git['branch']} @ {git['commit'][:8]} "
-        f"({len(inventory.files)} inventory records, {slice_workers} slice workers)"
-    )
+    log.append(f"  {len(inventory.files)} inventory records; {slice_workers} slice workers")
 
     slices_done: list[tuple[str, int]] = []
     errors: list[str] = []
@@ -5710,6 +5721,7 @@ def _build_one(
         "elapsed_s": capture_elapsed, "queue_wait_s": 0.0,
     }]
     stage_timings_lock = threading.Lock()
+    _build_state_local.stage_timings = stage_timings
 
     # ── Run everything in parallel within the repo ──
     with ThreadPoolExecutor(max_workers=slice_workers) as ex:
@@ -5728,7 +5740,9 @@ def _build_one(
                     "queue_wait_s": round(started - queued_at, 3),
                 }
                 _stage_timing_local.current = timing
-                _print_live(f"  → {plan.name}: {kind} {label}")
+                stage_label = f"{kind} {label}"
+                _set_stage(plan.name, stage_label, True)
+                log.append(f"  → {stage_label}")
                 try:
                     result = fn(*args)
                     return result
@@ -5740,14 +5754,12 @@ def _build_one(
                     timing["finished_at"] = finished_at.isoformat()
                     timing["elapsed_s"] = round(time.perf_counter() - started, 3)
                     _stage_timing_local.current = None
+                    _set_stage(plan.name, stage_label, False)
                     with stage_timings_lock:
                         stage_timings.append(dict(timing))
                     marker = "✗" if timing.get("error") else "✓"
                     suffix = f": {timing['error']}" if timing.get("error") else ""
-                    _print_live(
-                        f"  {marker} {plan.name}: {kind} {label} "
-                        f"({timing['elapsed_s']:.1f}s){suffix}"
-                    )
+                    log.append(f"  {marker} {stage_label} ({timing['elapsed_s']:.1f}s){suffix}")
 
             f = ex.submit(run_logged)
             futures[f] = (kind, label)
@@ -5905,13 +5917,16 @@ def _build_one(
                 errors.append(f"{kind}: {msg}")
                 _emit(log, f"  [red]✗[/red] {kind}: {msg}")
 
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
     # ── Extra copies (after repomix finishes) ──
     _copy_extras(replace(plan, path=inventory.root), out_dir, log)
 
     # Navigation is generated after owner records (including Beads) exist.
     if not errors:
         verify_history_bundle(plan, inventory, out_dir)
-    stage_timings.extend(evidence_outputs(plan, inventory, out_dir, cache_dir))
+    stage_timings.extend(evidence_outputs(plan, inventory, out_dir, cache_dir, log))
     verify_capture(plan.path, inventory)
     if _git_state(plan.path) != git:
         errors.append("repository state changed during package generation")
@@ -6019,6 +6034,36 @@ def _build_one(
         "errors": errors or None,
         "log_lines": log,
     }
+
+
+def _build_one(
+    plan: RepoPlan,
+    output_root: Path,
+    repomix_bin: str,
+    generated_at: str,
+    slice_workers: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    _build_state_local.log = []
+    _build_state_local.stage_timings = []
+    try:
+        return _build_one_impl(plan, output_root, repomix_bin, generated_at, slice_workers)
+    except Exception as exc:
+        log = list(_build_state_local.log)
+        log.append(f"  [red]✗[/red] {plan.name}: {exc}")
+        return {
+            "project": plan.name,
+            "status": "failed",
+            "error": str(exc),
+            "elapsed_s": round(time.perf_counter() - started, 1),
+            "stage_timings": list(_build_state_local.stage_timings),
+            "log_lines": log,
+        }
+    finally:
+        with _progress_lock:
+            _active_stages.pop(plan.name, None)
+        _build_state_local.log = []
+        _build_state_local.stage_timings = []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6153,6 +6198,8 @@ def _build_chisel_candidate(
     _print()
 
     results: dict[str, Any] = {}
+    with _progress_lock:
+        _active_stages.clear()
     ex = ThreadPoolExecutor(max_workers=repo_workers)
     futures = {
         ex.submit(
@@ -6162,19 +6209,29 @@ def _build_chisel_candidate(
     }
     try:
         completed = 0
-        for future in as_completed(futures):
-            name = futures[future]
-            completed += 1
-            try:
-                results[name] = future.result()
-            except Exception as e:
-                results[name] = {
-                    "project": name,
-                    "status": "failed",
-                    "error": str(e),
-                    "log_lines": [f"  [red]✗[/red] {name}: {e}"],
-                }
-            _print_project_summary(completed, len(plans), results[name])
+        pending = set(futures)
+        while pending:
+            done, pending = wait(pending, timeout=20, return_when=FIRST_COMPLETED)
+            if not done:
+                with _progress_lock:
+                    running = [f"{name} ({', '.join(sorted(stages)) or 'waiting'})"
+                               for name, stages in _active_stages.items()]
+                _print_live(f"Progress: {completed}/{len(plans)} complete; "
+                            + ("; ".join(running) if running else "waiting for workers"))
+                continue
+            for future in done:
+                name = futures[future]
+                completed += 1
+                try:
+                    results[name] = future.result()
+                except Exception as e:
+                    results[name] = {
+                        "project": name,
+                        "status": "failed",
+                        "error": str(e),
+                        "log_lines": [f"  [red]✗[/red] {name}: {e}"],
+                    }
+                _print_project_summary(completed, len(plans), results[name])
     except KeyboardInterrupt:
         _abort_event.set()
         _terminate_active_processes()
@@ -6229,10 +6286,10 @@ def _build_chisel_candidate(
             )
             configured_slices = len(plan.slices)
             xml_snapshots = r.get("slices", 0)
-            snapshots = f"{configured_slices}/{xml_snapshots}"
-            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c"
-            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m"
-            commits = str(r.get("gitlog_commits", 0))
+            snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
+            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c" if status != "failed" else "?"
+            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m" if status != "failed" else "?"
+            commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
             size = r.get("total_bytes", 0)
             total_bytes += size
             elapsed = f"{r.get('elapsed_s', 0):.1f}s"
@@ -6277,10 +6334,10 @@ def _build_chisel_candidate(
             )
             configured_slices = len(plan.slices)
             xml_snapshots = r.get("slices", 0)
-            snapshots = f"{configured_slices}/{xml_snapshots}"
-            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c"
-            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m"
-            commits = str(r.get("gitlog_commits", 0))
+            snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
+            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c" if status != "failed" else "?"
+            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m" if status != "failed" else "?"
+            commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
             size = r.get("total_bytes", 0)
             total_bytes += size
             elapsed = f"{r.get('elapsed_s', 0)}s"
@@ -6299,8 +6356,10 @@ def _build_chisel_candidate(
         _print(f"\n[yellow]XML validation issues ({len(all_xml_errors)}):[/yellow]")
         for xml_err in all_xml_errors:
             _print(xml_err)
-    else:
+    elif all(results.get(plan.name, {}).get("status") == "generated" for plan in plans):
         _print("\n[green]All XML outputs well-formed.[/green]")
+    else:
+        _print("\n[yellow]XML validation incomplete because one or more projects failed.[/yellow]")
 
     index_json, index_md = _write_root_index(
         output_root,

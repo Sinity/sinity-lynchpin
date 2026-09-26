@@ -20,7 +20,8 @@ def git(root, *args):
 
 @pytest.mark.skipif(not shutil.which("repomix") or not shutil.which("tokei"),
                     reason="real package tools required")
-def test_complete_attachment_works_offline_and_failure_retains_it(tmp_path, monkeypatch):
+def test_complete_attachment_works_offline_and_failure_retains_it(
+        tmp_path, monkeypatch, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q")
@@ -28,6 +29,9 @@ def test_complete_attachment_works_offline_and_failure_retains_it(tmp_path, monk
     (repo / "src/main.py").write_text("def greet():\n    return 'hello'\n")
     (repo / "src/other.py").write_text("other = True\n")
     (repo / "src/not_in_xml.py").write_text("raw_only = True\n")
+    (repo / "src/snapshot.snap").write_text("neutral snapshot fixture\n")
+    (repo / "src/capture.raw").write_text("neutral captured text\n")
+    (repo / "src/fixture.key").write_text("neutral key fixture; no secret\n")
     (repo / "tests").mkdir()
     (repo / "tests/test_main.py").write_text("def test_greet():\n    assert True\n")
     (repo / ".agent/scratch").mkdir(parents=True)
@@ -57,12 +61,31 @@ def test_complete_attachment_works_offline_and_failure_retains_it(tmp_path, monk
     root = tmp_path / "out"
     result = chisel.build_chisel_bundles(output_root=root, max_workers=1)
     assert result["published"], result
+    console = capsys.readouterr().out
+    summary = console.index("Completed 1/1: demo complete")
+    stage = console.index("capture source inventory")
+    assert summary < stage
     manifest = json.loads((root / "demo/demo-manifest.json").read_text())
     assert "source/Cargo.lock" in {r["name"] for r in manifest["artifacts"]}
     capture = json.loads((root / "demo/capture.json").read_text())
     compressed = json.loads((root / "demo/representations/compressed.json").read_text())
-    assert compressed["members"] == [".agent/docs/guide.md", "src/main.py", "src/other.py", "tests/test_main.py"]
-    assert compressed["represented"] == compressed["members"]
+    assert compressed["members"] == [
+        ".agent/docs/guide.md", "src/capture.raw", "src/fixture.key",
+        "src/main.py", "src/other.py", "src/snapshot.snap", "tests/test_main.py",
+    ]
+    assert compressed["repomix_filtered_text_raw_only"] == [
+        "src/capture.raw", "src/fixture.key", "src/snapshot.snap",
+    ]
+    assert set(compressed["represented"]) == set(compressed["members"]) - set(
+        compressed["repomix_filtered_text_raw_only"])
+    # Repomix 1.18.0 filters these textual fixture extensions from XML. Chisel
+    # records the limitation while preserving the original bytes in source/.
+    core_representation = json.loads((root / "demo/representations/core.json").read_text())
+    assert core_representation["repomix_filtered_text_raw_only"] == [
+        "src/capture.raw", "src/fixture.key", "src/snapshot.snap",
+    ]
+    for path in core_representation["repomix_filtered_text_raw_only"]:
+        assert (root / "demo/source" / path).read_bytes() == (repo / path).read_bytes()
     assert json.loads((root / "portfolio.json").read_text())["projects"][0]["snapshot_id"] == capture["snapshot_id"]
     extracted = tmp_path / "extracted"
     with tarfile.open(root / "portfolio-all.tar.gz") as archive:
@@ -88,6 +111,56 @@ def test_bundle_and_history_ref_mismatch_is_rejected(tmp_path, monkeypatch):
         '{"name":"refs/heads/main","object":"abc"}\n')
     monkeypatch.setattr(chisel, "_run", lambda *args, **kwargs:
                         subprocess.CompletedProcess([], 0, "def refs/heads/main\n", ""))
+    with pytest.raises(RuntimeError, match="bundle refs do not match"):
+        verify_history_bundle(SimpleNamespace(name="demo", path=tmp_path),
+                              SimpleNamespace(revision="abc"), tmp_path)
+
+
+def test_bundle_accepts_linked_worktree_head_pseudoref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.name", "Fixture")
+    git(repo, "config", "user.email", "fixture@example.invalid")
+    (repo / "source.txt").write_text("neutral fixture\n")
+    git(repo, "add", "source.txt")
+    git(repo, "commit", "-qm", "fixture")
+    revision = git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "linked-worktree"
+    git(repo, "worktree", "add", "-qb", "linked", str(worktree))
+    bundle = tmp_path / "demo-all-refs.bundle"
+    git(repo, "bundle", "create", str(bundle), "--all")
+    heads = git(repo, "bundle", "list-heads", str(bundle)).splitlines()
+    assert any(name == "worktrees/linked-worktree/HEAD"
+               for _, name in (line.split(" ", 1) for line in heads))
+    refs = [line.split(" ", 1) for line in git(repo, "for-each-ref",
+                                                "--format=%(objectname) %(refname)").splitlines()]
+    out = tmp_path / "out"
+    (out / "history").mkdir(parents=True)
+    (out / "history/refs.jsonl").write_text("".join(
+        json.dumps({"object": object_id, "name": name}) + "\n"
+        for object_id, name in refs))
+    (out / "demo-all-refs.bundle").write_bytes(bundle.read_bytes())
+    (out / "capture.json").write_text("{}\n")
+    verify_history_bundle(SimpleNamespace(name="demo", path=repo),
+                          SimpleNamespace(revision=revision), out)
+
+
+@pytest.mark.parametrize("bundle_heads", [
+    "abc refs/heads/main\n",  # missing HEAD
+    "abc refs/heads/main\nabc HEAD\ndef refs/tags/unexpected\n",
+    "abc refs/heads/main\ndef HEAD\n",
+    "def refs/heads/main\nabc HEAD\n",  # true ref points at a different commit
+    "abc HEAD\n",  # missing captured true ref
+])
+def test_bundle_rejects_missing_or_mismatched_head_and_true_refs(
+        tmp_path, monkeypatch, bundle_heads):
+    (tmp_path / "history").mkdir()
+    (tmp_path / "history/refs.jsonl").write_text(
+        '{"name":"refs/heads/main","object":"abc"}\n')
+    (tmp_path / "capture.json").write_text("{}\n")
+    monkeypatch.setattr(chisel, "_run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess([], 0, bundle_heads, ""))
     with pytest.raises(RuntimeError, match="bundle refs do not match"):
         verify_history_bundle(SimpleNamespace(name="demo", path=tmp_path),
                               SimpleNamespace(revision="abc"), tmp_path)

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from lynchpin.sources.chisel_history import build_history
+from lynchpin.sources.chisel_history import _cache_patch_once, _coherence_reasons, build_history
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -109,12 +110,49 @@ def test_history_cache_reuses_commit_rows_and_patches(tmp_path: Path) -> None:
     second = build_history(repo, tmp_path / "two", project="fixture", revision=head, cache_dir=cache)
     assert second["immutable_commit_cache_rows_reused"] == 1
     assert second["patches"]["cache_reused"] == 1
+    cached_patch = next((cache / "patches").rglob(f"{head}.patch"))
+    packaged_patch = tmp_path / "two" / "history" / "patches" / f"{head}.patch"
+    assert cached_patch.stat().st_ino == packaged_patch.stat().st_ino
     (repo / "y.py").write_text("y\n", encoding="utf-8")
     next_head = _commit(repo, "two", "Related to lynchpin-c00")
     third = build_history(repo, tmp_path / "three", project="fixture", revision=next_head, cache_dir=cache)
     assert third["immutable_commit_cache_rows_reused"] == 1
     commit_rows = [json.loads(line) for line in (tmp_path / "three" / "history" / "commits.jsonl").read_text().splitlines()]
     assert "lynchpin-c00" in next(row for row in commit_rows if row["sha"] == next_head)["references"]
+
+
+def test_patch_cache_publication_is_atomic_and_never_replaces_linked_entries(tmp_path: Path) -> None:
+    cache_entry = tmp_path / "cache" / "commit.patch"
+    original = b"original complete patch\n"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: _cache_patch_once(cache_entry, original), range(16)))
+
+    package_entry = tmp_path / "package" / "commit.patch"
+    package_entry.parent.mkdir()
+    package_entry.hardlink_to(cache_entry)
+    _cache_patch_once(cache_entry, b"competing writer must not replace\n")
+
+    assert cache_entry.read_bytes() == original
+    assert package_entry.read_bytes() == original
+    assert cache_entry.stat().st_ino == package_entry.stat().st_ino
+
+
+def test_history_coherence_error_describes_safe_state_differences() -> None:
+    reasons = _coherence_reasons(
+        "rev-a", "rev-a", "rev-a", "rev-b",
+        [{"name": "refs/heads/main", "object": "a"}],
+        [{"name": "refs/heads/main", "object": "b"}, {"name": "refs/heads/new", "object": "c"}],
+        (False, False, 0), (True, False, 1),
+        {"staged": "a" * 64, "unstaged": "b" * 64},
+        {"staged": "c" * 64, "unstaged": "b" * 64},
+    )
+    rendered = "; ".join(reasons)
+    assert "HEAD moved" in rendered
+    assert "refs changed (added=1, removed=0, moved=1)" in rendered
+    assert "tracked status changed (before staged/unstaged/paths=False/False/0, after=True/False/1)" in rendered
+    assert "staged/unstaged patch fingerprint changed (staged)" in rendered
+    assert "refs/heads" not in rendered
+    assert "a" * 64 not in rendered
 
 
 def test_history_rename_out_of_maintained_scope_counts_deletion_only(tmp_path: Path) -> None:

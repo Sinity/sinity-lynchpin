@@ -10,8 +10,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -58,6 +61,24 @@ def _jsonl(path: Path, rows: Iterator[dict[str, Any]] | list[dict[str, Any]]) ->
             stream.write(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n")
 
 
+def _cache_patch_once(path: Path, body: bytes) -> None:
+    """Atomically publish a cache entry without replacing another build's inode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(body)
+        try:
+            # Linking a completed sibling temp file makes the entry visible in
+            # one step and fails if another process already published this key.
+            os.link(temp_path, path)
+        except FileExistsError:
+            pass
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def _resolve_revision(repo: Path, revision: str) -> str:
     return _git(repo, "rev-parse", "--verify", f"{revision}^{{commit}}").decode().strip()
 
@@ -95,6 +116,54 @@ def _status(repo: Path) -> tuple[bool, bool, int]:
         if record[:2] and (b"R" in record[:2] or b"C" in record[:2]) and i < len(fields):
             i += 1
     return staged, unstaged, count
+
+
+def _dirty_patch_fingerprints(history_dir: Path) -> dict[str, str]:
+    """Hash captured diffs so coherence checks retain no diff text in errors."""
+    return {
+        name: hashlib.sha256((history_dir / f"{name}.patch").read_bytes()).hexdigest()
+        for name in ("staged", "unstaged")
+    }
+
+
+def _coherence_reasons(
+    start_head: str,
+    end_head: str,
+    start_actual_head: str,
+    end_actual_head: str,
+    start_refs: list[dict[str, str]],
+    end_refs: list[dict[str, str]],
+    start_status: tuple[bool, bool, int],
+    end_status: tuple[bool, bool, int],
+    start_dirty: dict[str, str],
+    end_dirty: dict[str, str],
+) -> list[str]:
+    """Return safe, useful differences without exposing paths or diff bodies."""
+    reasons: list[str] = []
+    if start_head != end_head:
+        reasons.append("requested revision moved")
+    if start_actual_head != end_actual_head:
+        reasons.append("HEAD moved")
+    before = {row["name"]: row for row in start_refs}
+    after = {row["name"]: row for row in end_refs}
+    added = sorted(after.keys() - before.keys())
+    removed = sorted(before.keys() - after.keys())
+    changed = sorted(name for name in before.keys() & after.keys() if before[name] != after[name])
+    if added or removed or changed:
+        reasons.append(
+            "refs changed "
+            f"(added={len(added)}, removed={len(removed)}, moved={len(changed)})"
+        )
+    if start_status != end_status:
+        reasons.append(
+            "tracked status changed "
+            f"(before staged/unstaged/paths={start_status[0]}/{start_status[1]}/{start_status[2]}, "
+            f"after={end_status[0]}/{end_status[1]}/{end_status[2]})"
+        )
+    changed_patches = [name for name in ("staged", "unstaged") if start_dirty[name] != end_dirty[name]]
+    if changed_patches:
+        reasons.append("staged/unstaged patch fingerprint changed (" + ", ".join(changed_patches) + ")")
+    return reasons
 
 
 def _parse_numstat(raw: bytes, project: str) -> list[dict[str, Any]]:
@@ -273,7 +342,14 @@ def _patches(repo: Path, package_dir: Path, shas: list[str], cache_dir: Path | N
         destination = target / f"{sha}.patch"
         cached = cache / f"{sha}.patch" if cache else None
         if cached and cached.is_file():
-            destination.write_bytes(cached.read_bytes())
+            # The cache is content-addressed by commit SHA and format version.
+            # Linking avoids reading and rewriting potentially gigabytes of
+            # immutable patch data on every package build. Cross-device links
+            # and filesystems without hard-link support retain the copy path.
+            try:
+                os.link(cached, destination)
+            except OSError:
+                shutil.copyfile(cached, destination)
             reused += 1
         elif not destination.exists():
             missing.add(sha)
@@ -300,7 +376,7 @@ def _patches(repo: Path, package_dir: Path, shas: list[str], cache_dir: Path | N
                 path = target / f"{current}.patch"
                 path.write_bytes(body)
                 if cache:
-                    (cache / f"{current}.patch").write_bytes(body)
+                    _cache_patch_once(cache / f"{current}.patch", body)
 
             for line in process.stdout:
                 match = re.match(rb"CHISEL_COMMIT:([0-9a-f]{40,64})\s*$", line)
@@ -476,7 +552,7 @@ def build_history(
     start_refs_hash = hashlib.sha256(json.dumps(start_refs, sort_keys=True).encode()).hexdigest()
     start_status = _status(repo)
     dirty = _write_dirty_patches(repo, history_dir)
-    dirty_bytes = {name: (history_dir / f"{name}.patch").read_bytes() for name in ("staged", "unstaged")}
+    dirty_fingerprints = _dirty_patch_fingerprints(history_dir)
     commits_and_changes, cached_commit_rows = _commit_records(repo, project, cache_dir)
     commits = [row for row, _ in commits_and_changes]
     parents = {row["sha"]: row["parents"] for row in commits}
@@ -554,18 +630,23 @@ def build_history(
     end_status = _status(repo)
     staged, unstaged, changed_paths = end_status
     end_dirty = _write_dirty_patches(repo, history_dir)
-    end_dirty_bytes = {name: (history_dir / f"{name}.patch").read_bytes() for name in ("staged", "unstaged")}
+    end_dirty_fingerprints = _dirty_patch_fingerprints(history_dir)
     coherent = (
         start_head == end_head == start_actual_head == end_actual_head
         and start_refs_hash == end_refs_hash
         and start_status == end_status
-        and dirty_bytes == end_dirty_bytes
+        and dirty_fingerprints == end_dirty_fingerprints
         and dirty == end_dirty
     )
     if not coherent:
+        reasons = _coherence_reasons(
+            start_head, end_head, start_actual_head, end_actual_head,
+            start_refs, end_refs, start_status, end_status,
+            dirty_fingerprints, end_dirty_fingerprints,
+        )
         raise RuntimeError(
-            "Chisel history capture was rejected because HEAD, refs, tracked worktree status, "
-            "or staged/unstaged diffs changed during collection"
+            "Chisel history capture was rejected because repository state changed during collection: "
+            + ("; ".join(reasons) if reasons else "dirty patch presence changed")
         )
     role_counts = Counter(row["role"] for row in change_rows)
     unknown_status_count = sum(row["change_type"] == "?" for row in change_rows)

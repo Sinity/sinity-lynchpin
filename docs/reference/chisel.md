@@ -41,11 +41,13 @@ ID. The copy is checked against the recorded hashes during capture.
 XML slices are generated from their recorded memberships. The compressed XML
 uses the union of configured slice memberships, so its file set is the
 combined slice set; compression changes representation and may omit binary
-content. `representations/` records expected and represented paths and binary
-files available only in `source/`. XML and compressed files are alternate
-views, not substitutes for the captured source. When present, the Git bundle
-retains repository history; `working-tree.tar.gz` archives the captured source
-tree.
+content. `representations/` records expected and represented paths, including
+binary, empty, and Repomix-filtered text files available only in `source/`.
+Repomix 1.18.0 filters some text extensions such as `.snap`, `.raw`, and
+`.key`; these remain byte-for-byte in the captured source. XML and compressed
+files are alternate views, not substitutes for the captured source. When
+present, the Git bundle retains repository history; `working-tree.tar.gz`
+archives the captured source tree.
 
 Project-local documentation, scratchpads, plans, agent instructions, demos,
 and other context files retain their paths and hashes where they are captured.
@@ -85,6 +87,8 @@ Summing activity across refs and first-parent merge diffs can count the same
 change at multiple commits; cumulative changed text is not current repository
 size. Git text converters and external diff drivers are disabled for these
 exports. Bundle refs must match the history index before publication.
+Linked-worktree HEAD entries in a Git bundle are outside the normal ref
+namespace and do not alter that comparison.
 
 ## Structure, history, and project records
 
@@ -157,10 +161,11 @@ published output visible; unsupported atomic exchange fails closed rather
 than silently using a non-atomic replacement. Prior combined project archives
 are retained under the output archive directory.
 
-Stage messages identify their project. Project summaries print as complete
-blocks, and the root index records stage timing including queue and Repomix
-wait/run time. A small report can still require a large source or history
-scan. The CLI exits unsuccessfully for missing, failed, or partial projects,
+Stage messages appear inside their completed project's block. During a build,
+separate `Progress:` lines list active projects and stages. The root index
+records stage timing including queue and Repomix wait/run time. A small report
+can still require a large source or history scan. The CLI exits unsuccessfully
+for missing, failed, or partial projects,
 including invalid XML and archive failures. A GitHub refresh fallback is
 identified in the snapshot audit. Per-project manifests list artifact sizes
 and hashes; the manifest's own size is included and its own hash is omitted.

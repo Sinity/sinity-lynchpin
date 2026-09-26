@@ -1441,9 +1441,9 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     output = "\n".join(printed)
     assert "Repos:  2 selected — alpha, beta" in output
     assert "Pools:  2 across repos × 2 within each; 4 global repomix slots" in output
-    assert "[1/2] alpha: 1 configured slices, compressed=True" in output
-    assert "[2/2] beta: 2 configured slices, compressed=False" in output
-    assert "[1/2]" in output and "[2/2]" in output
+    assert "1. alpha: 1 configured slices, compressed=True" in output
+    assert "2. beta: 2 configured slices, compressed=False" in output
+    assert "Completed 1/2:" in output and "Completed 2/2:" in output
     assert "grouped header" in output
     assert "worker output with 2 slice workers" in output
     assert result["projects"]["alpha"]["status"] == "generated"
@@ -1549,7 +1549,7 @@ def _mock_captured_build_seams(
     return printed
 
 
-def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None:
+def test_build_one_buffers_project_stages_for_its_summary(monkeypatch, tmp_path: Path) -> None:
     plan = chisel.RepoPlan(
         name="alpha",
         path=tmp_path / "alpha",
@@ -1567,11 +1567,11 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
         2,
     )
 
-    output = "\n".join(printed)
-    assert "→ alpha: start" in output
-    assert "→ alpha: slice core" in output
-    assert "✓ alpha: slice core" in output
-    assert "→ alpha: beads alpha" in output
+    output = "\n".join(result["log_lines"])
+    assert printed == []
+    assert "→ slice core" in output
+    assert "✓ slice core" in output
+    assert "→ beads alpha" in output
     assert result["status"] == "generated"
     slice_timing = next(
         row
@@ -1585,6 +1585,34 @@ def test_build_one_emits_live_task_progress(monkeypatch, tmp_path: Path) -> None
         "alpha-snapshot-audit.json",
         "alpha-snapshot-audit.md",
     ]
+
+
+def test_build_one_keeps_failed_stage_time_and_skips_package_finalization(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lynchpin.sources import chisel_package
+
+    plan = chisel.RepoPlan(
+        name="alpha",
+        path=tmp_path / "alpha",
+        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+    )
+    plan.path.mkdir()
+    printed = _mock_captured_build_seams(monkeypatch, tmp_path, plan)
+
+    def fail_view(*_args, **_kwargs):
+        raise ValueError("neutral fixture failure")
+
+    monkeypatch.setattr(chisel_package, "run_view", fail_view)
+    result = chisel._build_one(plan, tmp_path / "out", "repomix", "2026-06-11T000000Z", 2)
+
+    assert result["status"] == "failed"
+    assert result["elapsed_s"] >= 0
+    assert any(row["stage"] == "slice" and "error" in row
+               for row in result["stage_timings"])
+    assert "neutral fixture failure" in "\n".join(result["log_lines"])
+    assert not (tmp_path / "out/alpha/alpha-manifest.json").exists()
+    assert printed == []
 
 
 def test_build_one_replaces_stale_project_output(monkeypatch, tmp_path: Path) -> None:

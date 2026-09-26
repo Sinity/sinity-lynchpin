@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any
 
 
+# Repomix 1.18.0 does not include these textual fixture/capture extensions in
+# its XML file list. They remain available byte-for-byte in source/ and the
+# working tree archive, and are recorded explicitly in representations/*.json.
+_REPOMIX_TEXT_FILTER_SUFFIXES = frozenset({".snap", ".raw", ".key"})
+
+
 def run_view(
     repomix_bin: str, out_dir: Path, plan: Any, inventory: Any,
     name: str, git: dict, generated_at: str, log: list[str],
@@ -64,8 +70,9 @@ def run_view(
     expected = set(members)
     # Repomix omits binary files. Keep them in source/ and state this precisely.
     omitted = expected - actual
-    binary = set()
-    empty = set()
+    binary: set[str] = set()
+    empty: set[str] = set()
+    filtered_text: set[str] = set()
     for path in omitted:
         data = (inventory.root / path).read_bytes()
         if not data:
@@ -77,7 +84,10 @@ def run_view(
                 data.decode("utf-8")
             except UnicodeDecodeError:
                 binary.add(path)
-    unexplained = omitted - binary - empty
+            else:
+                if Path(path).suffix.lower() in _REPOMIX_TEXT_FILTER_SUFFIXES:
+                    filtered_text.add(path)
+    unexplained = omitted - binary - empty - filtered_text
     if actual - expected or unexplained:
         raise ValueError(f"{name} membership mismatch: missing={sorted(unexplained)!r}, "
                          f"unexpected={sorted(actual-expected)!r}")
@@ -87,6 +97,7 @@ def run_view(
         "snapshot_id": inventory.snapshot_id, "artifact": output.name,
         "members": sorted(expected), "represented": sorted(actual),
         "binary_raw_only": sorted(binary), "empty_raw_only": sorted(empty),
+        "repomix_filtered_text_raw_only": sorted(filtered_text),
         "compressed": compressed,
         "method": "exact captured file tree; compressed view is structural and lossy",
     }, indent=2) + "\n", encoding="utf-8")
@@ -123,9 +134,27 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
     result = chisel._run(["git", "bundle", "list-heads", str(bundle)], cwd=plan.path)
     if result.returncode:
         raise RuntimeError(f"cannot verify Git bundle refs: {result.stderr}")
-    actual = dict(line.split(" ", 1)[::-1] for line in result.stdout.splitlines())
+    actual: dict[str, str] = {}
+    try:
+        for line in result.stdout.splitlines():
+            object_id, separator, name = line.partition(" ")
+            if not separator or not object_id or not name or name in actual:
+                raise ValueError("malformed or duplicate bundle head")
+            actual[name] = object_id
+    except ValueError as exc:
+        raise RuntimeError("cannot verify Git bundle refs: malformed bundle heads") from exc
     head = actual.pop("HEAD", None)
-    if actual != expected or (head is not None and head != inventory.revision):
+    # `git bundle create --all` includes linked-worktree HEAD pseudorefs. They
+    # are extra views of checked-out commits, not refs from the captured
+    # history inventory. Continue to require every true ref and the main HEAD
+    # to match exactly, and reject every other unexpected bundle name.
+    worktree_heads = {name: value for name, value in actual.items()
+                      if name.startswith("worktrees/") and name.endswith("/HEAD")}
+    actual_without_worktree_heads = {
+        name: value for name, value in actual.items() if name not in worktree_heads
+    }
+    if (actual_without_worktree_heads != expected
+            or head is None or head != inventory.revision):
         raise RuntimeError("Git bundle refs do not match captured history refs")
     capture_path = out_dir / "capture.json"
     capture = json.loads(capture_path.read_text())
@@ -134,7 +163,8 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
     capture_path.write_text(json.dumps(capture, indent=2, sort_keys=True) + "\n")
 
 
-def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path) -> list[dict]:
+def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
+                     log: list[str] | None = None) -> list[dict]:
     """Derive navigation from captured bytes and owner-exported records."""
     from . import chisel
     from .chisel_context import build_context
@@ -163,13 +193,17 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path) 
     for name, run in steps:
         start = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
-        chisel._print_live(f"  → {plan.name}: {name}")
-        run()
+        chisel._set_stage(plan.name, name, True)
+        chisel._emit(log, f"  → {plan.name}: {name}")
+        try:
+            run()
+        finally:
+            chisel._set_stage(plan.name, name, False)
         elapsed = round(time.perf_counter() - start, 3)
         timings.append({"stage": name, "label": plan.name, "started_at": started_at,
                         "finished_at": datetime.now(timezone.utc).isoformat(),
                         "elapsed_s": elapsed, "queue_wait_s": 0.0})
-        chisel._print_live(f"  ✓ {plan.name}: {name} ({elapsed:.1f}s)")
+        chisel._emit(log, f"  ✓ {plan.name}: {name} ({elapsed:.1f}s)")
     return timings
 
 
