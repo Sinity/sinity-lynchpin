@@ -20,8 +20,11 @@ just chisel "polylogue sinex sinnix sinity-lynchpin" /realm/tmp/chisel
 Each project package has a `START_HERE.md` with its capture identity, available
 datasets, methods, gaps, and offline navigation commands. The portfolio root
 also has `START_HERE.md`, `portfolio.json`, comparative `growth/` outputs, and
-`portfolio-all.tar.gz`. Extracting the portfolio archive exposes the selected
-project directories directly, alongside portfolio evidence. `portfolio.json`
+`portfolio-all.tar.gz`. The archive is the bounded ChatGPT attachment profile:
+it keeps captured source, Git bundles, evidence records, metrics, and coverage,
+while omitting duplicate XML renderings, the local SQLite index, working-tree
+tar copies, and Beads HTML. Extracting it exposes the selected project
+directories directly, alongside portfolio evidence. `portfolio.json`
 binds each project to its snapshot ID and records that project captures may
 have different times. Source snapshot IDs identify captured bytes and policy;
 the portfolio also records each complete project manifest's SHA-256, binding
@@ -84,8 +87,8 @@ under the current role-policy version. Renames retain old and new paths and
 their roles. `git numstat` additions and deletions measure changed text, not
 executable LOC, effort, or semantic change. All repository text activity is
 separate from maintained-code text changes. Binary change counts have unknown
-line totals. Merge commit patches use a first-parent diff and are labeled as
-such. Author logical dates drive daily and 30/90-day summaries. Tracked staged
+line totals. The Git bundle retains original committed changes, including
+merges. Author logical dates drive daily and 30/90-day summaries. Tracked staged
 and unstaged changes are recorded separately; untracked paths are not included
 in those patches. These measures do not infer quality or causation.
 Summing activity across refs and first-parent merge diffs can count the same
@@ -108,10 +111,11 @@ unsupported statuses, not inferred edges. Check `structure/coverage.json` for
 scope and parser availability.
 
 `history/` contains JSONL commit, changed-path, and ref records, daily CSV,
-rolling-window and growth summaries, coverage metadata, and readable patches
-for reachable commits. Commit text references remain textual references;
-they are not asserted as resolved GitHub or task links. The Git bundle is the
-repository-native history source.
+rolling-window and growth summaries, coverage metadata, and tracked staged and
+unstaged patches. The Git bundle retains complete committed history without
+duplicating every committed patch as a separate package file. Commit text
+references remain textual references; they are not asserted as resolved GitHub
+or task links. The Git bundle is the repository-native history source.
 
 `trackers/` contains available GitHub issue and pull-request records in their
 reported states, including discussion, reviews, and inline review comments,
@@ -137,12 +141,12 @@ and both source snapshot IDs. Package names alone do not create edges.
 
 ## Offline navigation
 
-Each package includes `browse.py` and `index.sqlite3`. The helper uses only
-Python's standard library; it requires no project checkout, Git, Repomix,
-network access, or Lynchpin installation. SQLite mirrors the JSONL/NDJSON
-evidence streams and captured source metadata. FTS5 is used when available;
-search falls back to literal text scanning otherwise. JSONL and source files
-remain the inspectable evidence.
+Each full local package includes `browse.py` and `index.sqlite3`. Attachment
+archives omit the SQLite index; the standard-library helper searches captured
+source and JSONL evidence directly. SQL requires the full local package. The
+helper requires no project checkout, Git, Repomix, network access, or Lynchpin
+installation for source, search, and history navigation. JSONL and source
+files remain the inspectable evidence.
 
 ```bash
 python3 browse.py --package . --help

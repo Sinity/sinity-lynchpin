@@ -12,6 +12,8 @@ from urllib.parse import quote
 
 def connect(package: Path) -> sqlite3.Connection:
     db = (package / "index.sqlite3").resolve()
+    if not db.is_file():
+        raise ValueError("SQL index is available in the full local package; this attachment keeps JSONL and source files")
     if package.resolve() not in db.parents:
         raise ValueError("index path escapes package")
     uri = "file:" + quote(str(db), safe="/") + "?mode=ro&immutable=1"
@@ -20,7 +22,48 @@ def connect(package: Path) -> sqlite3.Connection:
     return conn
 
 
+def evidence_rows(package: Path):
+    roots = [package / "inventory.jsonl"]
+    for name in ("history", "structure", "trackers", "verification", "metrics"):
+        area = package / name
+        if area.is_dir():
+            roots.extend(sorted(area.rglob("*.jsonl")))
+            roots.extend(sorted(area.rglob("*.ndjson")))
+    for path in roots:
+        if path.is_file():
+            reference = path.relative_to(package).as_posix()
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                for line_no, line in enumerate(stream, 1):
+                    yield reference, line_no, line.rstrip("\n")
+
+
 def search(package: Path, query: str) -> int:
+    if not (package / "index.sqlite3").is_file():
+        needle = query.casefold()
+        found = 0
+        source_root = package / "source"
+        if source_root.is_dir():
+            for path in sorted(p for p in source_root.rglob("*") if p.is_file()):
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                offset = content.casefold().find(needle)
+                if offset >= 0:
+                    excerpt = content[max(0, offset - 100):offset + len(query) + 100].replace("\n", " ")
+                    print(f"source {path.relative_to(package)}: {excerpt}")
+                    found += 1
+                    if found >= 100:
+                        return 0
+        for reference, line_no, content in evidence_rows(package):
+            offset = content.casefold().find(needle)
+            if offset >= 0:
+                excerpt = content[max(0, offset - 100):offset + len(query) + 100]
+                print(f"record {reference}:{line_no}: {excerpt}")
+                found += 1
+                if found >= 100:
+                    return 0
+        return 0 if found else 1
     with connect(package) as db:
         has_fts = db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='package_fts'"
@@ -77,6 +120,18 @@ def source(package: Path, path: str, start: int, end: int) -> int:
 
 
 def history(package: Path, path: str | None, commit: str | None) -> int:
+    if not (package / "index.sqlite3").is_file():
+        found = 0
+        for dataset, line_no, record in evidence_rows(package):
+            if not dataset.startswith("history/"):
+                continue
+            if path and path.casefold() not in record.casefold():
+                continue
+            if commit and commit.casefold() not in record.casefold():
+                continue
+            print(f"{dataset}:{line_no} {record}")
+            found += 1
+        return 0 if found else 1
     with connect(package) as db:
         rows = db.execute(
             "SELECT dataset,line,record FROM datasets WHERE dataset LIKE 'history/%' ORDER BY dataset,line"

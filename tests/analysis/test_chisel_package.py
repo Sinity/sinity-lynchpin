@@ -8,7 +8,7 @@ import tarfile
 import pytest
 
 from lynchpin.sources import chisel
-from lynchpin.sources.chisel_package import verify_history_bundle
+from lynchpin.sources.chisel_package import attachment_archive, verify_history_bundle
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -32,6 +32,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     (repo / "src/snapshot.snap").write_text("neutral snapshot fixture\n")
     (repo / "src/capture.raw").write_text("neutral captured text\n")
     (repo / "src/fixture.key").write_text("neutral key fixture; no secret\n")
+    (repo / "src/schema.xml").write_text("<schema>neutral</schema>\n")
     (repo / "tests").mkdir()
     (repo / "tests/test_main.py").write_text("def test_greet():\n    assert True\n")
     (repo / ".agent/scratch").mkdir(parents=True)
@@ -71,7 +72,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     compressed = json.loads((root / "demo/representations/compressed.json").read_text())
     assert compressed["members"] == [
         ".agent/docs/guide.md", "src/capture.raw", "src/fixture.key",
-        "src/main.py", "src/other.py", "src/snapshot.snap", "tests/test_main.py",
+        "src/main.py", "src/other.py", "src/schema.xml", "src/snapshot.snap", "tests/test_main.py",
     ]
     assert compressed["repomix_filtered_text_raw_only"] == [
         "src/capture.raw", "src/fixture.key", "src/snapshot.snap",
@@ -90,6 +91,12 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     extracted = tmp_path / "extracted"
     with tarfile.open(root / "portfolio-all.tar.gz") as archive:
         archive.extractall(extracted, filter="data")
+    assert (root / "demo/index.sqlite3").is_file()
+    assert not (extracted / "demo/index.sqlite3").exists()
+    assert not (extracted / "demo/demo-core.xml").exists()
+    assert (extracted / "demo/source/src/schema.xml").is_file()
+    assert (extracted / "demo/demo-all-refs.bundle").is_file()
+    assert (extracted / "ATTACHMENT_START_HERE.md").is_file()
     helper = extracted / "demo/browse.py"
     command = ["python", "-I", str(helper), "--package", str(helper.parent)]
     source = subprocess.run(command + ["source", "src/main.py", "--start", "1", "--end", "2"],
@@ -98,11 +105,29 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     history = subprocess.run(command + ["history", "--path", "src/main.py"],
                              check=True, text=True, capture_output=True)
     assert "src/main.py" in history.stdout
+    search = subprocess.run(command + ["search", "greet"],
+                            check=True, text=True, capture_output=True)
+    assert "src/main.py" in search.stdout
+    sql = subprocess.run(command + ["sql", "SELECT 1"], text=True, capture_output=True)
+    assert sql.returncode == 2 and "full local package" in sql.stderr
     old = (root / "portfolio-all.tar.gz").read_bytes()
     monkeypatch.setattr(chisel, "_build_one", lambda *args: {"status": "failed", "error": "injected"})
     failed = chisel.build_chisel_bundles(output_root=root, max_workers=1)
     assert not failed["published"]
     assert (root / "portfolio-all.tar.gz").read_bytes() == old
+
+
+def test_attachment_archive_rejects_oversize_output(tmp_path, monkeypatch):
+    from lynchpin.sources import chisel_package
+
+    project = tmp_path / "demo"
+    project.mkdir()
+    (project / "source.txt").write_text("neutral source\n")
+    monkeypatch.setattr(chisel_package, "ATTACHMENT_MAX_BYTES", 1)
+    target = tmp_path / "demo-all.tar.gz"
+    with pytest.raises(ValueError, match="exceeds"):
+        attachment_archive(tmp_path, target, ["demo"], ["demo"])
+    assert not target.exists()
 
 
 def test_bundle_and_history_ref_mismatch_is_rejected(tmp_path, monkeypatch):

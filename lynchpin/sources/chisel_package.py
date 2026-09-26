@@ -15,6 +15,32 @@ from pathlib import Path
 from typing import Any
 
 
+ATTACHMENT_MAX_BYTES = 500_000_000
+
+
+def attachment_archive(root: Path, target: Path, members: list[str],
+                       project_names: list[str]) -> int:
+    """Archive original evidence while omitting locally derived duplicate views."""
+    from . import chisel
+
+    args = ["tar", "-czf", str(target)]
+    for name in project_names:
+        args.extend(f"--exclude={name}/{relative}" for relative in (
+            "history/patches", "index.sqlite3", f"{name}-*.xml",
+            f"{name}-working-tree.tar.gz", f"{name}-beads.html",
+        ))
+    args.extend(["-C", str(root), *members])
+    result = chisel._run(args)
+    if result.returncode:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f"attachment archive failed: {result.stderr or result.stdout}")
+    size = target.stat().st_size
+    if size > ATTACHMENT_MAX_BYTES:
+        target.unlink()
+        raise ValueError(f"attachment archive exceeds {ATTACHMENT_MAX_BYTES} bytes: {size}")
+    return size
+
+
 # Repomix 1.18.0 does not include these textual fixture/capture extensions in
 # its XML file list. They remain available byte-for-byte in source/ and the
 # working tree archive, and are recorded explicitly in representations/*.json.
@@ -229,13 +255,36 @@ def build_portfolio(root: Path, plans: Any, results: dict, generated_at: str) ->
         "are excluded from maintained code counts. Test source share is not coverage.\n",
         encoding="utf-8",
     )
+    (root / "ATTACHMENT_START_HERE.md").write_text(
+        "# Chisel attachment\n\nThis archive holds the captured source, Git bundles, "
+        "history and analysis records, tracker exports, and coverage files for all "
+        "selected projects. Extract it and start with `portfolio.json` and each "
+        "project's `START_HERE.md`.\n\nThe XML renderings, SQLite indexes, "
+        "working-tree tar copies, Beads HTML, and individual commit patch files "
+        "are omitted to stay below 500 MB. The project directories under the "
+        "published Chisel output retain local derived views. `source/` holds "
+        "captured bytes; the Git bundles retain committed history. The offline "
+        "helper searches source and JSONL directly when SQLite is absent. "
+        "SQL queries require the local full package. Project manifests and "
+        "portfolio.json identify the complete local generation; "
+        "attachment-profile.json identifies the archive omissions.\n",
+        encoding="utf-8",
+    )
+    (root / "attachment-profile.json").write_text(json.dumps({
+        "profile": "chatgpt-attachment-v1",
+        "max_bytes": ATTACHMENT_MAX_BYTES,
+        "projects": [p.name for p in plans],
+        "included_primary_evidence": ["source/", "*-all-refs.bundle", "history/*.jsonl",
+                                      "trackers/", "structure/", "verification/", "metrics/"],
+        "omitted_derivatives": ["history/patches/", "index.sqlite3", "project XML renderings",
+                                "*-working-tree.tar.gz", "*-beads.html"],
+    }, indent=2) + "\n", encoding="utf-8")
     target = root / "portfolio-all.tar.gz"
-    with tarfile.open(target, "w:gz") as tar:
-        for p in plans:
-            tar.add(root / p.name, arcname=p.name)
-        for name in ("portfolio.json", "START_HERE.md", "index.json", "index.md", "growth",
-                     "cross-project-links.jsonl", "cross-project-links.coverage.json"):
-            path = root / name
-            if path.exists():
-                tar.add(path, arcname=name)
+    members = [p.name for p in plans]
+    members.extend(name for name in (
+        "ATTACHMENT_START_HERE.md", "attachment-profile.json", "portfolio.json",
+        "START_HERE.md", "index.json", "index.md", "growth",
+        "cross-project-links.jsonl", "cross-project-links.coverage.json",
+    ) if (root / name).exists())
+    attachment_archive(root, target, members, [p.name for p in plans])
     return target.name

@@ -244,7 +244,7 @@ Run `python3 browse.py --package . --help`. The helper uses only Python's standa
 - `python3 browse.py --package . search 'pattern'` searches captured source text (FTS5 over source and evidence records when available, literal fallback otherwise).
 - `python3 browse.py --package . source path/to/file.py --start 20 --end 45` prints a bounded source range.
 - `python3 browse.py --package . history --path path/to/file.py` lists matching history records; add `--commit HASH` to select a commit.
-- `python3 browse.py --package . sql 'SELECT dataset, count(*) FROM datasets GROUP BY dataset'` runs a read-only SELECT.
+- `python3 browse.py --package . sql 'SELECT dataset, count(*) FROM datasets GROUP BY dataset'` runs a read-only SELECT in the full local package.
 
 ## Package layout
 
@@ -252,11 +252,13 @@ Run `python3 browse.py --package . --help`. The helper uses only Python's standa
 
 `source/` is the directly browsable captured source tree when present. XML snapshots and compressed views are alternate representations; they are generated from selected memberships and can omit files outside those memberships. Use `inventory.jsonl` and `capture.json` for per-file role, inclusion/exclusion, digest, and capture-state evidence when supplied. The Git bundle, when present, retains repository-native reachable history. History JSONL is a searchable derivative, not a substitute for the bundle.
 
+Attachment archives omit XML renderings, the SQLite index, the duplicate working-tree tar, and Beads HTML. They keep the captured `source/`, Git bundle, JSONL evidence, metrics, and coverage. `browse.py search` and `browse.py history` scan those files directly in an extracted attachment; SQL requires the full local package. Committed patches can be recovered from the Git bundle with Git; staged and unstaged patches are included separately when present.
+
 ## Derived datasets
 
 {dataset_rows}
 
-`index.sqlite3` mirrors canonical JSONL/NDJSON evidence streams in `datasets(dataset, line, record)` and captured source metadata in `source_files`; it may include `package_fts` for source and evidence text search. It excludes arbitrary JSONL files under `source/`. JSONL remains the inspectable source representation. The `history` and `symbols` views are convenience views over records, not authoritative new claims.
+The full local package's `index.sqlite3` mirrors canonical JSONL/NDJSON evidence streams in `datasets(dataset, line, record)` and captured source metadata in `source_files`; it may include `package_fts` for source and evidence text search. It excludes arbitrary JSONL files under `source/`. JSONL remains the inspectable source representation. The `history` and `symbols` views are convenience views over records, not authoritative new claims.
 
 ## Coverage and method
 

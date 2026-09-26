@@ -5540,21 +5540,20 @@ def _write_root_index(
 def _make_combined_tar(
     plan: RepoPlan, out_dir: Path, output_root: Path, log: list[str] | None = None
 ) -> tuple[str, int] | None:
-    """Create a single tar of all files chisel generated for this project."""
+    """Create the project attachment from primary evidence and compact derivatives."""
+    from .chisel_package import attachment_archive
+
     combined_path = output_root / f"{plan.name}-all.tar.gz"
-    result = _run(
-        ["tar", "-czf", str(combined_path), "-C", str(output_root), plan.name]
-    )
-    if result.returncode == 0 and combined_path.exists():
-        size = combined_path.stat().st_size
+    try:
+        size = attachment_archive(output_root, combined_path, [plan.name], [plan.name])
         _emit(
             log,
             f"  [green]✓[/green] {combined_path.name} ([dim]{_fmt_bytes(size)}[/dim])",
         )
         return combined_path.name, size
-    details = (result.stderr or result.stdout or "tar failed").strip()
-    _emit(log, f"  [yellow]⚠[/yellow] {plan.name}: combined tar: {details}")
-    return None
+    except (OSError, RuntimeError, ValueError) as exc:
+        _emit(log, f"  [yellow]⚠[/yellow] {plan.name}: attachment tar: {exc}")
+        return None
 
 
 def _archive_timestamp_from_index(output_root: Path) -> str | None:
@@ -5984,8 +5983,22 @@ def _build_one_impl(
         plan, out_dir, generated_at, git, xml_errors, log
     )
 
-    # ── Combined tar of everything chisel generated for this project ──
-    combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
+    # ── Attachment archive ──
+    archive_started = time.perf_counter()
+    archive_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    _set_stage(plan.name, "attachment archive", True)
+    log.append("  → attachment archive")
+    try:
+        combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
+    finally:
+        _set_stage(plan.name, "attachment archive", False)
+    stage_timings.append({
+        "stage": "attachment-archive", "label": plan.name,
+        "started_at": archive_started_at,
+        "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "elapsed_s": round(time.perf_counter() - archive_started, 3),
+        "queue_wait_s": 0.0,
+    })
     if combined_tar_result is None:
         errors.append("combined tar: creation failed")
     combined_tar_name = (
@@ -6126,14 +6139,19 @@ def _publish_chisel_bundles(
         if successful:
             plans = [REPO_PLANS[name] for name in names]
             (candidate / "portfolio-all.tar.gz").unlink(missing_ok=True)
-            _print_live("→ portfolio archive and publication validation")
+            _print_live("→ portfolio attachment archive")
+            portfolio_started = time.perf_counter()
             result["portfolio"] = build_portfolio(
                 candidate,
                 plans,
                 result["projects"],
                 result["generated_at"],
             )
+            _print_live(f"✓ portfolio attachment archive ({time.perf_counter() - portfolio_started:.1f}s)")
+            _print_live("→ publication validation")
+            validation_started = time.perf_counter()
             publish_candidate(candidate, root, names)
+            _print_live(f"✓ publication validation ({time.perf_counter() - validation_started:.1f}s)")
         else:
             _print(
                 "[yellow]Candidate incomplete; previous published packages retained.[/yellow]"

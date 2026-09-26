@@ -10,11 +10,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import os
 import re
-import shutil
 import subprocess
-import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,24 +56,6 @@ def _jsonl(path: Path, rows: Iterator[dict[str, Any]] | list[dict[str, Any]]) ->
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n")
-
-
-def _cache_patch_once(path: Path, body: bytes) -> None:
-    """Atomically publish a cache entry without replacing another build's inode."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(body)
-        try:
-            # Linking a completed sibling temp file makes the entry visible in
-            # one step and fails if another process already published this key.
-            os.link(temp_path, path)
-        except FileExistsError:
-            pass
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _resolve_revision(repo: Path, revision: str) -> str:
@@ -329,70 +308,6 @@ def _commit_records(
     return [merged[sha] for sha in shas if sha in merged], len(cached_by_sha)
 
 
-def _patches(repo: Path, package_dir: Path, shas: list[str], cache_dir: Path | None,
-             parents: dict[str, list[str]]) -> tuple[int, int]:
-    target = package_dir / "history" / "patches"
-    target.mkdir(parents=True, exist_ok=True)
-    cache = cache_dir / "patches" / _FORMAT_VERSION if cache_dir else None
-    if cache:
-        cache.mkdir(parents=True, exist_ok=True)
-    missing: set[str] = set()
-    reused = 0
-    for sha in shas:
-        destination = target / f"{sha}.patch"
-        cached = cache / f"{sha}.patch" if cache else None
-        if cached and cached.is_file():
-            # The cache is content-addressed by commit SHA and format version.
-            # Linking avoids reading and rewriting potentially gigabytes of
-            # immutable patch data on every package build. Cross-device links
-            # and filesystems without hard-link support retain the copy path.
-            try:
-                os.link(cached, destination)
-            except OSError:
-                shutil.copyfile(cached, destination)
-            reused += 1
-        elif not destination.exists():
-            missing.add(sha)
-    if missing:
-        # One history walk supplies every missing patch. Merge commits use a
-        # first-parent diff, which is stated in the index and each patch header.
-        for batch in _batches(sorted(missing)):
-            process = subprocess.Popen(
-                ["git", "log", "--no-walk=unsorted", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
-                 "--diff-merges=first-parent", "--format=format:CHISEL_COMMIT:%H", "-p", *batch],
-                cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            assert process.stdout is not None
-            current: str | None = None
-            chunks: list[bytes] = []
-
-            def save() -> None:
-                if current is None or current not in missing:
-                    return
-                body = b"".join(chunks)
-                body = re.sub(rb"^CHISEL_COMMIT:[0-9a-f]+\n?", b"", body, count=1)
-                if len(parents.get(current, [])) > 1:
-                    body = b"# Merge commit patch: first-parent comparison.\n" + body
-                path = target / f"{current}.patch"
-                path.write_bytes(body)
-                if cache:
-                    _cache_patch_once(cache / f"{current}.patch", body)
-
-            for line in process.stdout:
-                match = re.match(rb"CHISEL_COMMIT:([0-9a-f]{40,64})\s*$", line)
-                if match:
-                    save()
-                    current = match.group(1).decode()
-                    chunks = [line]
-                elif current is not None:
-                    chunks.append(line)
-            save()
-            stderr = process.stderr.read() if process.stderr else b""
-            if process.wait() != 0:
-                raise RuntimeError("git log patch extraction failed: " + stderr.decode("utf-8", "replace"))
-    return len(missing), reused
-
-
 def _write_dirty_patches(repo: Path, history_dir: Path) -> dict[str, bool]:
     outcomes: dict[str, bool] = {}
     for label, args in (("staged", ("diff", "--cached", "--binary", "--no-textconv", "--no-ext-diff", "--no-color")),
@@ -555,7 +470,6 @@ def build_history(
     dirty_fingerprints = _dirty_patch_fingerprints(history_dir)
     commits_and_changes, cached_commit_rows = _commit_records(repo, project, cache_dir)
     commits = [row for row, _ in commits_and_changes]
-    parents = {row["sha"]: row["parents"] for row in commits}
     change_rows: list[dict[str, Any]] = []
     code_scope = {"implementation", "tests", "tooling"}
     per_commit: dict[str, dict[str, Any]] = {}
@@ -591,7 +505,6 @@ def build_history(
     _jsonl(history_dir / "changes.jsonl", change_rows)
     refs = start_refs
     _jsonl(history_dir / "refs.jsonl", refs)
-    written_patches, cached_patches = _patches(repo, package_dir, [r["sha"] for r in commits], cache_dir, parents)
 
     now = datetime.now().astimezone()
     cutoff30 = logical_date(now - timedelta(days=30)).isoformat()
@@ -665,7 +578,7 @@ def build_history(
         "role_counts": dict(sorted(role_counts.items())),
         "classification_policy": "current Chisel role policy applied to destination and old path separately for renames",
         "classification_policy_version": POLICY_VERSION,
-        "patches": {"written": written_patches, "cache_reused": cached_patches, "merge_diff": "first parent"},
+        "committed_diffs": {"storage": "all-refs Git bundle", "individual_patch_files": False},
         "immutable_commit_cache_rows_reused": cached_commit_rows,
         "dirty_worktree": {"staged_patch_present": dirty["staged"], "unstaged_patch_present": dirty["unstaged"], "tracked_changed_paths": changed_paths,
                            "untracked_files_included": False},
