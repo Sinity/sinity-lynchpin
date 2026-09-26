@@ -14,6 +14,12 @@ from lynchpin.sources.github import GitHubActor, GitHubItem
 from lynchpin.sources.github_context import GitHubContextRow
 
 
+@pytest.fixture(autouse=True)
+def explicit_legacy_rendering_options(monkeypatch):
+    from lynchpin.sources import chisel_options
+    monkeypatch.setattr(chisel_options, "active_options", chisel_options.BuildOptions(xml=True, refresh=True))
+
+
 def _issue(number: int, state: str) -> GitHubContextRow:
     closed_at = datetime(2026, 5, 2, tzinfo=timezone.utc) if state == "closed" else None
     return GitHubContextRow(
@@ -281,11 +287,11 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
 
     def fake_run(cmd, *, cwd=None):
         assert cwd == repo
-        if cmd == ["bd", "where", "--json"]:
+        if cmd == ["bd", "where", "--json", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd, 0, chisel.json.dumps({"path": str(repo / ".beads")}), ""
             )
-        if cmd == ["bd", "stats", "--json"]:
+        if cmd == ["bd", "stats", "--json", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -300,15 +306,15 @@ def test_generate_beads_exports_issue_dependency_and_memory_context(
                 ),
                 "",
             )
-        if cmd == ["bd", "ready", "--json"]:
+        if cmd == ["bd", "ready", "--json", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd, 0, chisel.json.dumps([{"id": "example-b"}]), ""
             )
-        if cmd == ["bd", "blocked", "--json"]:
+        if cmd == ["bd", "blocked", "--json", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd, 0, chisel.json.dumps([{"id": "example-a"}]), ""
             )
-        if cmd == ["bd", "export", "--include-memories"]:
+        if cmd == ["bd", "export", "--include-memories", "--readonly", "--sandbox"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -1491,7 +1497,7 @@ def _mock_captured_build_seams(
         lambda _path: {"branch": "main", "commit": "abcdef123456", "dirty": False},
     )
 
-    def capture(_plan, destination, **_kwargs):
+    def capture(_plan, destination, *_args, **_kwargs):
         root = Path(destination) / "source"
         root.mkdir(parents=True, exist_ok=True)
         content = b"def core():\n    return 1\n"
@@ -1518,7 +1524,8 @@ def _mock_captured_build_seams(
         )
         return captured
 
-    monkeypatch.setattr(chisel_inventory, "capture_inventory", capture)
+    from lynchpin.sources import chisel_snapshots
+    monkeypatch.setattr(chisel_snapshots, "capture_catalogue", capture)
 
     def run_view(_repomix, out_dir, _plan, _inventory, name, *_args, **_kwargs):
         if slow_slice and name == "core":
@@ -1544,6 +1551,7 @@ def _mock_captured_build_seams(
 
     monkeypatch.setattr(chisel_metrics, "build_metrics", metrics)
     monkeypatch.setattr(chisel_history, "build_history", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(chisel_history, "freeze_refs", lambda *_args: None)
 
     monkeypatch.setattr(chisel, "_generate_git_log", lambda *_args: 2)
     monkeypatch.setattr(chisel, "_generate_issues", lambda *_args: (0, 0))

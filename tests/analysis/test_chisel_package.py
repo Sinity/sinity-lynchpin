@@ -7,6 +7,7 @@ import tarfile
 
 import pytest
 
+from lynchpin.sources.chisel_options import BuildOptions
 from lynchpin.sources import chisel
 from lynchpin.sources.chisel_package import attachment_archive, verify_history_bundle
 from types import SimpleNamespace
@@ -53,6 +54,8 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     monkeypatch.setattr(chisel, "_ensure_chisel_prerequisites", lambda plans: None)
     monkeypatch.setattr(chisel, "_generate_beads", lambda *args: ([], 0, {"available": False}))
     from lynchpin.sources import chisel_context
+    from lynchpin.sources import chisel_excerpts
+    monkeypatch.setattr(chisel_excerpts, "collect_excerpts", lambda *_args: {"coverage": "unavailable"})
     monkeypatch.setattr(chisel_context, "read_native_evidence", lambda project: {
         "coverage": "unavailable", "rows": [], "gaps": ["synthetic offline owner"],
     })
@@ -60,7 +63,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
         "coverage": "unavailable", "rows": [], "gaps": ["synthetic offline owner"],
     })
     root = tmp_path / "out"
-    result = chisel.build_chisel_bundles(output_root=root, max_workers=1)
+    result = chisel.build_chisel_bundles(project_names=["demo"], output_root=root, max_workers=1, options=BuildOptions(target="worktree", xml=True, sqlite=True))
     assert result["published"], result
     console = capsys.readouterr().out
     summary = console.index("Completed 1/1: demo complete")
@@ -112,7 +115,7 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     assert sql.returncode == 2 and "full local package" in sql.stderr
     old = (root / "portfolio-all.tar.gz").read_bytes()
     monkeypatch.setattr(chisel, "_build_one", lambda *args: {"status": "failed", "error": "injected"})
-    failed = chisel.build_chisel_bundles(output_root=root, max_workers=1)
+    failed = chisel.build_chisel_bundles(project_names=["demo"], output_root=root, max_workers=1, options=BuildOptions(target="worktree", xml=True, sqlite=True))
     assert not failed["published"]
     assert (root / "portfolio-all.tar.gz").read_bytes() == old
 

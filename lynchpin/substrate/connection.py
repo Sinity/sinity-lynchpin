@@ -38,7 +38,7 @@ from lynchpin.substrate.locking import publication_lock
 if TYPE_CHECKING:
     import duckdb
 
-SUBSTRATE_VERSION = 47
+SUBSTRATE_VERSION = 48
 """Current schema contract; incompatible changes rebuild, declared additive changes migrate."""
 
 log = logging.getLogger(__name__)
@@ -1693,7 +1693,7 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
     ).fetchone()
     current = int(row[0]) if row else None
 
-    if current in (43, 44, 45, 46) and SUBSTRATE_VERSION == 47:
+    if current in (43, 44, 45, 46, 47) and SUBSTRATE_VERSION == 48:
         # Additive transitions are idempotent and cumulative: a database at any
         # supported earlier version applies every delta it is missing, so a
         # multi-step upgrade (43 -> 47) never skips a later column.
@@ -1728,6 +1728,16 @@ def apply_schema(conn: "duckdb.DuckDBPyConnection") -> None:
             "CREATE INDEX IF NOT EXISTS substrate_product_tombstone_key "
             "ON substrate_product_tombstone(product, natural_key)"
         )
+        dirty_column = conn.execute("SELECT is_nullable, column_default FROM information_schema.columns WHERE table_name = 'work_observation' AND column_name = 'git_dirty'").fetchone()
+        if dirty_column and (dirty_column[0] == "NO" or dirty_column[1] is not None):
+            indexes = conn.execute("SELECT index_name, sql FROM duckdb_indexes() WHERE table_name = 'work_observation'").fetchall()
+            for name, _sql in indexes:
+                conn.execute('DROP INDEX "' + name.replace('"', '""') + '"')
+            conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP NOT NULL")
+            conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty DROP DEFAULT")
+            for _name, sql in indexes:
+                conn.execute(sql)
+        conn.execute("UPDATE work_observation SET git_dirty = NULL WHERE source = 'agentctl'")
         # 47: the declared AgentCTL operation name is carried as evidence rather
         # than only folded into source_revision. Existing rows keep NULL until
         # the live route re-promotes them.

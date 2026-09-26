@@ -65,7 +65,7 @@ class AgentctlJobObservation:
     exit_code: int | None
     host: str
     git_commit: str | None
-    git_dirty: bool
+    git_dirty: bool | None
     live_stage: str | None
     args_json: str
     outcome_known: bool | None
@@ -236,7 +236,7 @@ def _job_observation(
         exit_code=exit_code,
         host="unknown",
         git_commit=None,
-        git_dirty=False,
+        git_dirty=None,
         live_stage=phase,
         args_json="{}",
         outcome_known=outcome_known,

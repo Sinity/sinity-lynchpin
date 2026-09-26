@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-POLICY_VERSION = "chisel-role-policy-3"
+POLICY_VERSION = "chisel-role-policy-4"
 ROLES = frozenset({"implementation", "tests", "tooling", "documentation", "context", "evidence", "unclassified"})
 
 
@@ -34,6 +34,10 @@ class InventoryFile:
     included: bool
     symlink_target: str | None = None
     mode: int | None = None
+    purpose: str = "unknown"
+    material: str = "unknown"
+    component: str = "unknown"
+    classification_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,9 +114,42 @@ def classify_role(path: str, *, project: str = "") -> tuple[str, str]:
     return "unclassified", "no explicit role rule matched"
 
 
+_SOURCE_SUFFIXES = {".py", ".rs", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".scala", ".ex", ".exs", ".sh", ".bash", ".zsh", ".fish", ".ps1"}
+_CONFIG_SUFFIXES = {".nix", ".toml", ".yaml", ".yml", ".json", ".ini", ".cfg", ".conf", ".service", ".timer"}
+
+
+def classify_dimensions(path: str, *, role: str | None = None, binary: bool = False) -> dict[str, str]:
+    role, reason = (role, "inventory role") if role is not None else classify_role(path)
+    parts = Path(path.lower()).parts
+    name = parts[-1]
+    suffix = Path(name).suffix
+    purpose = {"implementation": "production", "tests": "tests", "tooling": "build/verification tooling", "documentation": "documentation", "context": "context", "evidence": "evidence"}.get(role, "unknown")
+    if binary:
+        material = "binary"
+    elif "vendor" in parts or "vendored" in parts:
+        material = "vendored"
+    elif any(p in parts for p in ("fixtures", "golden", "testdata", "test-data", "captures")):
+        material = "fixture"
+    elif "generated" in parts or name.endswith(".lock") or name in {"package-lock.json", "go.sum"}:
+        material = "generated"
+    elif suffix in _SOURCE_SUFFIXES or name in {"justfile", "makefile", "dockerfile"}:
+        material = "source"
+    elif suffix in _CONFIG_SUFFIXES or name in {".ignore", ".tokeignore"}:
+        material = "configuration"
+    else:
+        material = "unknown"
+    if suffix == ".nix" and parts[0] in {"modules", "hosts", "packages", "overlays"}:
+        purpose = "production"
+        reason = "production Nix definition"
+    return {"purpose": purpose, "material": material,
+            "component": parts[0] if len(parts) > 1 else "root",
+            "classification_reason": f"{POLICY_VERSION}: {reason}; material={material}"}
+
+
 def _run(root: Path, *args: str) -> str | None:
     try:
-        r = subprocess.run(args, cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        r = subprocess.run(args, cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                           env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
         return r.stdout
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -168,6 +205,8 @@ def capture_inventory(
     scratchpad_include: tuple[str, ...] = (),
     accelerant_include: tuple[str, ...] = (),
     accelerant_ignore: tuple[str, ...] = (),
+    committed_paths: tuple[str, ...] | None = None,
+    committed_revision: str | None = None,
 ) -> CapturedInventory:
     """Capture source files once and record slice membership and provenance.
 
@@ -179,8 +218,8 @@ def capture_inventory(
     dest = Path(destination)
     root = dest / "source"
     root.mkdir(parents=True, exist_ok=True)
-    before_state = _git_state(source)
-    listed = _run(source, "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    before_state = (committed_revision, False, None) if committed_paths is not None else _git_state(source)
+    listed = "\0".join(committed_paths) if committed_paths is not None else _run(source, "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     if listed is None:
         raise RuntimeError(f"cannot enumerate Chisel inventory with git ls-files: {source}")
     visible_candidates = {x for x in listed.split("\0") if x and not x.startswith("../")}
@@ -283,7 +322,7 @@ def capture_inventory(
             records.append(InventoryFile(rel, digest, len(data), role, reason, included_by, tuple(excluded_by), source_kind, True, symlink_target, mode))
         except OSError as exc:
             records.append(InventoryFile(rel, None, None, "unclassified", f"unreadable: {type(exc).__name__}", included_by, tuple((*excluded_by, "unreadable")), "unreadable", False, None, None))
-    after_state = _git_state(source)
+    after_state = before_state if committed_paths is not None else _git_state(source)
     if before_state != after_state:
         raise RuntimeError(f"repository changed during Chisel capture: {before_state!r} -> {after_state!r}")
     # Membership lists contain only files actually materialized in the captured
@@ -295,7 +334,8 @@ def capture_inventory(
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     project = str(getattr(plan, "name", ""))
     provisional = CapturedInventory(root, tuple(records), slices, project, generated_at, before_state[0], before_state[1], POLICY_VERSION, "", before_state[2])
-    verify_capture(source, provisional)
+    if committed_paths is None:
+        verify_capture(source, provisional)
     identity = {
         "revision": before_state[0],
         "policy_version": POLICY_VERSION,
@@ -314,12 +354,14 @@ def capture_inventory(
             for r in records
         ],
     }
+    records = [replace(r, **classify_dimensions(r.path, role=r.role, binary=(b"\0" in (root / r.path).read_bytes()[:8192]) if r.included else False)) for r in records]
+    identity["files"] = [asdict(r) for r in records]
     snapshot_id = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     inv = CapturedInventory(root, tuple(records), slices, project, generated_at, before_state[0], before_state[1], POLICY_VERSION, snapshot_id, before_state[2])
     dest.mkdir(parents=True, exist_ok=True)
     with (dest / "inventory.jsonl").open("w", encoding="utf-8") as f:
         for record in inv.files:
             f.write(json.dumps(asdict(record), sort_keys=True) + "\n")
-    capture = {"project": inv.project, "generated_at": inv.generated_at, "revision": inv.revision, "dirty": inv.dirty, "status_fingerprint": inv.status_fingerprint, "policy_version": inv.policy_version, "snapshot_id": inv.snapshot_id, "candidate_method": "git ls-files --cached --others --exclude-standard -z plus declared ignored .agent patterns", "metric_ignore_files": [r.path for r in records if Path(r.path).name in {".ignore", ".tokeignore"} and r.included], "memberships": {k: list(v) for k, v in slices.items()}}
+    capture = {"project": inv.project, "generated_at": inv.generated_at, "revision": inv.revision, "dirty": inv.dirty, "status_fingerprint": inv.status_fingerprint, "policy_version": inv.policy_version, "snapshot_id": inv.snapshot_id, "candidate_method": "pinned Git objects via ls-tree/cat-file; no checkout" if committed_paths is not None else "git ls-files --cached --others --exclude-standard -z plus declared ignored .agent patterns", "metric_ignore_files": [r.path for r in records if Path(r.path).name in {".ignore", ".tokeignore"} and r.included], "memberships": {k: list(v) for k, v in slices.items()}}
     (dest / "capture.json").write_text(json.dumps(capture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return inv

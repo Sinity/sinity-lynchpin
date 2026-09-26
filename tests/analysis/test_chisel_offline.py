@@ -48,6 +48,7 @@ def test_offline_package_navigation_and_readonly_sql(tmp_path: Path) -> None:
 
     result = build_offline_package(
         package,
+        sqlite=True,
         project="fixture",
         snapshot_id="snap-1",
         generated_at="2026-01-01T00:00:00Z",
@@ -82,7 +83,7 @@ def test_source_helper_rejects_traversal(tmp_path: Path) -> None:
     package = tmp_path / "pkg"
     (package / "source").mkdir(parents=True)
     build_offline_package(
-        package, project="fixture", snapshot_id="s", generated_at="now"
+        package, sqlite=True, project="fixture", snapshot_id="s", generated_at="now"
     )
     result = _run(package, "source", "../outside", "--start", "1", "--end", "1")
     assert result.returncode == 2
@@ -141,7 +142,7 @@ def test_evidence_search_source_hash_and_capture_metadata(tmp_path: Path) -> Non
     )
 
     result = build_offline_package(
-        package, project="fixture", snapshot_id="snap-evidence", generated_at="now"
+        package, sqlite=True, project="fixture", snapshot_id="snap-evidence", generated_at="now"
     )
     assert "source/src/sample.jsonl" not in result["datasets"]
     guide = (package / "START_HERE.md").read_text()
@@ -164,7 +165,7 @@ def test_offline_index_rejects_inventory_hash_mismatch(tmp_path: Path) -> None:
     )
     try:
         build_offline_package(
-            package, project="fixture", snapshot_id="snap", generated_at="now"
+            package, sqlite=True, project="fixture", snapshot_id="snap", generated_at="now"
         )
     except ValueError as exc:
         assert "hash differs" in str(exc)

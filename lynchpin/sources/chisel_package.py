@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .chisel_cache import copy_file
+
 
 ATTACHMENT_MAX_BYTES = 500_000_000
 
@@ -136,16 +138,35 @@ def captured_sidecars(plan: Any, inventory: Any, out_dir: Path,
     from . import chisel
 
     bundle = out_dir / f"{plan.name}-all-refs.bundle"
-    result = chisel._run(["git", "bundle", "create", str(bundle), "--all"], cwd=plan.path)
-    if result.returncode:
-        raise RuntimeError(result.stderr or "git bundle failed")
+    refs = chisel._run(["git", "for-each-ref", "--format=%(refname) %(objectname)"], cwd=plan.path)
+    head = chisel._run(["git", "rev-parse", "HEAD"], cwd=plan.path)
+    if refs.returncode or head.returncode:
+        raise RuntimeError("cannot identify frozen history refs")
+    key = hashlib.sha256(("git-bundle-v1\n" + refs.stdout + head.stdout).encode()).hexdigest()
+    cache = out_dir.parent.parent / ".chisel-cache" / plan.name / "bundles" / key
+    cached = cache / "history.bundle"
+    checksum = cache / "sha256"
+    hit = cached.exists() and checksum.exists() and hashlib.file_digest(cached.open("rb"), "sha256").hexdigest() == checksum.read_text().strip()
+    if hit:
+        copy_file(cached, bundle)
+    else:
+        result = chisel._run(["git", "bundle", "create", str(bundle), "--all"], cwd=plan.path)
+        if result.returncode:
+            raise RuntimeError(result.stderr or "git bundle failed")
+        cache.mkdir(parents=True, exist_ok=True)
+        copy_file(bundle, cached)
+        checksum.write_text(hashlib.file_digest(cached.open("rb"), "sha256").hexdigest() + "\n")
+    chisel._emit(log, f"  history bundle cache: {'hit' if hit else 'miss'} ({key[:12]})")
     archive = out_dir / f"{plan.name}-working-tree.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(inventory.root, arcname=plan.name)
+    from .chisel_options import active_options
+
+    if active_options.xml:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(inventory.root, arcname=plan.name)
     tree = out_dir / f"{plan.name}-repo-tree.txt"
     tree.write_text("\n".join(row.path for row in inventory.files if row.included) + "\n",
                     encoding="utf-8")
-    paths = [bundle, archive, tree]
+    paths = [p for p in (bundle, archive, tree) if p.exists()]
     return [p.name for p in paths], sum(p.stat().st_size for p in paths)
 
 
@@ -170,6 +191,8 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
     except ValueError as exc:
         raise RuntimeError("cannot verify Git bundle refs: malformed bundle heads") from exc
     head = actual.pop("HEAD", None)
+    history_coverage = out_dir / "history/coverage.json"
+    expected_head = json.loads(history_coverage.read_text()).get("head_at_capture") if history_coverage.exists() else inventory.revision
     # `git bundle create --all` includes linked-worktree HEAD pseudorefs. They
     # are extra views of checked-out commits, not refs from the captured
     # history inventory. Continue to require every true ref and the main HEAD
@@ -180,7 +203,7 @@ def verify_history_bundle(plan: Any, inventory: Any, out_dir: Path) -> None:
         name: value for name, value in actual.items() if name not in worktree_heads
     }
     if (actual_without_worktree_heads != expected
-            or head is None or head != inventory.revision):
+            or head is None or head != expected_head):
         raise RuntimeError("Git bundle refs do not match captured history refs")
     capture_path = out_dir / "capture.json"
     capture = json.loads(capture_path.read_text())
@@ -196,6 +219,10 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     from .chisel_context import build_context
     from .chisel_offline import build_offline_package
     from .chisel_structure import build_structure
+    from .chisel_snapshots import build_overlay_views
+    from .chisel_options import active_options
+    from .chisel_excerpts import collect_excerpts
+    from lynchpin.analysis.projects.chisel_reports import build_reports
 
     items = [item for key, values in (chisel._github_context_index or {}).items()
              if key[0] == plan.name for item in values]
@@ -209,14 +236,25 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     steps = [
         ("structure", lambda: build_structure(inventory, out_dir, cache_dir=cache_dir / "structure")),
+        ("overlay-views", lambda: build_overlay_views(inventory, out_dir, cache_dir, active_options.datasets)),
         ("owner-evidence", lambda: build_context(plan.path, out_dir, project=plan.name,
             revision=inventory.revision, dirty=inventory.dirty, github_items=items,
             github_slug=plan.github_slug)),
+        ("context", lambda: collect_excerpts(plan.path, out_dir, active_options)),
+        ("reports", lambda: build_reports(out_dir, project=plan.name,
+            task_roots=[root for project, root in active_options.task_roots if project == plan.name])),
         ("offline-index", lambda: build_offline_package(out_dir, project=plan.name,
             snapshot_id=inventory.snapshot_id, generated_at=inventory.generated_at)),
     ]
     timings = []
     for name, run in steps:
+        dataset = {"owner-evidence": "execution", "offline-index": "source", "reports": "source", "overlay-views": "structure"}.get(name, name)
+        if name == "owner-evidence" and "trackers" in active_options.datasets:
+            pass
+        elif name == "overlay-views" and "metrics" in active_options.datasets:
+            pass
+        elif dataset not in active_options.datasets:
+            continue
         start = time.perf_counter()
         started_at = datetime.now(timezone.utc).isoformat()
         chisel._set_stage(plan.name, name, True)
@@ -256,35 +294,17 @@ def build_portfolio(root: Path, plans: Any, results: dict, generated_at: str) ->
         encoding="utf-8",
     )
     (root / "ATTACHMENT_START_HERE.md").write_text(
-        "# Chisel attachment\n\nThis archive holds the captured source, Git bundles, "
-        "history and analysis records, tracker exports, and coverage files for all "
-        "selected projects. Extract it and start with `portfolio.json` and each "
-        "project's `START_HERE.md`.\n\nThe XML renderings, SQLite indexes, "
-        "working-tree tar copies, Beads HTML, and individual commit patch files "
-        "are omitted to stay below 500 MB. The project directories under the "
-        "published Chisel output retain local derived views. `source/` holds "
-        "captured bytes; the Git bundles retain committed history. The offline "
-        "helper searches source and JSONL directly when SQLite is absent. "
-        "SQL queries require the local full package. Project manifests and "
-        "portfolio.json identify the complete local generation; "
-        "attachment-profile.json identifies the archive omissions.\n",
-        encoding="utf-8",
-    )
-    (root / "attachment-profile.json").write_text(json.dumps({
-        "profile": "chatgpt-attachment-v1",
-        "max_bytes": ATTACHMENT_MAX_BYTES,
-        "projects": [p.name for p in plans],
-        "included_primary_evidence": ["source/", "*-all-refs.bundle", "history/*.jsonl",
-                                      "trackers/", "structure/", "verification/", "metrics/"],
-        "omitted_derivatives": ["history/patches/", "index.sqlite3", "project XML renderings",
-                                "*-working-tree.tar.gz", "*-beads.html"],
-    }, indent=2) + "\n", encoding="utf-8")
-    target = root / "portfolio-all.tar.gz"
-    members = [p.name for p in plans]
-    members.extend(name for name in (
-        "ATTACHMENT_START_HERE.md", "attachment-profile.json", "portfolio.json",
-        "START_HERE.md", "index.json", "index.md", "growth",
-        "cross-project-links.jsonl", "cross-project-links.coverage.json",
-    ) if (root / name).exists())
-    attachment_archive(root, target, members, [p.name for p in plans])
-    return target.name
+        "# Chisel attachments\n\nExtract the selected attachments together. "
+        "Each archive's navigation and verified contents are listed under `attachments/`. "
+        "Those manifests name the actual companion files and snapshot identities. "
+        "Numbered parts include their reconstruction requirements under `parts/`; "
+        "run `python3 reconstruct.py` after extracting them. Start browsing with "
+        "`portfolio.json` and each project's `START_HERE.md`.\n")
+    (root / "attachment-profile.json").unlink(missing_ok=True)
+    from .chisel_attachments import build_attachments
+    from .chisel_options import active_options
+
+    manifest = build_attachments(root, [p.name for p in plans],
+                                 limit=active_options.attachment_bytes,
+                                 layout=active_options.attachment_layout)
+    return manifest["attachments"][0]["path"] if len(manifest["attachments"]) == 1 else "attachments.json"

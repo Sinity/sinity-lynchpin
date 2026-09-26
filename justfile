@@ -23,12 +23,10 @@ check:
 velocity output=".lynchpin/generated/meta/velocity.html" projects="" exclude="" aggregate="true":
     python -m lynchpin.analysis.projects velocity --output "{{output}}" --projects "{{projects}}" --exclude "{{exclude}}" --aggregate "{{aggregate}}"
 
-# Build XML repomix snapshots with semantic splitting + issues + git log.
-chisel projects="" output_root="" max_workers="4":
-    python -m lynchpin.analysis.projects chisel \
-        --projects "{{projects}}" \
-        --output-root "{{output_root}}" \
-        --max-workers {{max_workers}}
+# Build selected offline evidence packages. Arguments are passed as argv.
+[positional-arguments]
+chisel *args:
+    python -m lynchpin.cli.chisel "$@"
 
 # Operator-facing narrative of recent machine state (default: last 24h).
 machine-explain args="":

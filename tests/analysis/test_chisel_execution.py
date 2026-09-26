@@ -51,7 +51,11 @@ def test_root_index_persists_worker_measured_stage_timings(tmp_path: Path) -> No
     assert index["projects"][0]["stage_timings"] == timings
 
 
-def test_project_log_block_cannot_be_interleaved_by_other_worker(monkeypatch) -> None:
+@pytest.mark.parametrize("detailed", [False, True])
+def test_project_log_block_cannot_be_interleaved_by_other_worker(monkeypatch, detailed) -> None:
+    from lynchpin.sources.chisel_options import BuildOptions
+
+    monkeypatch.setattr(chisel.chisel_options, "active_options", BuildOptions(xml=detailed))
     printed: list[str] = []
     worker: threading.Thread | None = None
 
@@ -79,8 +83,11 @@ def test_project_log_block_cannot_be_interleaved_by_other_worker(monkeypatch) ->
     worker.join(timeout=1)
 
     assert not worker.is_alive()
-    assert printed[1:3] == ["alpha detail one", "alpha detail two"]
-    assert printed[3] == "unrelated worker event"
+    if detailed:
+        assert printed[1:3] == ["alpha detail one", "alpha detail two"]
+        assert printed[3] == "unrelated worker event"
+    else:
+        assert printed[1:] == ["unrelated worker event"]
 
 
 def test_cli_returns_failure_when_any_project_is_partial(monkeypatch) -> None:
@@ -114,23 +121,12 @@ def test_cli_returns_success_when_all_projects_generated(monkeypatch) -> None:
 
 
 def test_projects_typer_command_exits_nonzero_for_partial_project(monkeypatch) -> None:
-    import typer
-
     from lynchpin.analysis.projects import cli as projects_cli
-    from lynchpin.analysis.projects import chisel as projects_chisel
+    from lynchpin.sources import chisel as source_chisel
 
-    monkeypatch.setattr(
-        projects_chisel,
-        "build_chisel_bundles",
-        lambda **_kwargs: {"projects": {"alpha": {"status": "partial"}}},
-    )
-
-    with pytest.raises(typer.Exit) as exc_info:
-        projects_cli._chisel(
-            projects="", output_root="", max_workers=1, list_only=False
-        )
-
-    assert exc_info.value.exit_code == 1
+    monkeypatch.setattr(source_chisel, "build_chisel_bundles",
+        lambda **_kwargs: {"projects": {"alpha": {"status": "partial"}}})
+    assert projects_cli.main(["chisel", "--max-workers", "1"]) == 1
 
 
 def test_portable_sidecar_failure_is_reported(monkeypatch, tmp_path: Path) -> None:

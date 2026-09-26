@@ -322,6 +322,7 @@
           export PYTHONUSERBASE=$PWD/.pyuser
           export LYNCHPIN_REPO_ROOT=$PWD
           export PYTHONPATH=$PWD
+          export PATH="$PWD/tool:$PATH"
         '';
         mkLynchpinShell =
           profileName: packages:

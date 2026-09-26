@@ -99,6 +99,7 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
     candidates: list[str] = []
     coverage: list[str] = []
     from .chisel import _loc_policy_ignores, _read_loc_ignore_rules
+    from .chisel_inventory import classify_dimensions
 
     loc_ignore_rules = _read_loc_ignore_rules(root)
     totals: dict[str, dict[str, int]] = defaultdict(
@@ -113,7 +114,11 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
         full_path = root / path
         size = int(_get(record, "size_bytes", 0) or 0)
         digest = str(_get(record, "sha256", ""))
+        dimensions = classify_dimensions(path, role=role)
         row: dict[str, Any] = {
+            **dimensions,
+            "snapshot_id": _get(inventory, "snapshot_id"),
+            "measurement_status": "excluded",
             "path": path,
             "role": role,
             "included": included,
@@ -143,10 +148,16 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
             row["size_bytes"] = size
             totals[role]["files"] += 1
             totals[role]["bytes"] += size
-            if role in CODE_ROLES and _loc_policy_ignores(path, loc_ignore_rules):
+            if b"\0" in content[:8192]:
+                row["material"] = "binary"
+            if row["material"] not in {"source", "configuration"}:
+                row["metric_excluded_reason"] = "ineligible_material"
+                row["measurement_status"] = "inapplicable"
+            elif role in CODE_ROLES and _loc_policy_ignores(path, loc_ignore_rules):
                 row["metric_excluded_reason"] = "metric_ignore"
             elif role in CODE_ROLES:
                 candidates.append(path)
+                row["measurement_status"] = "unknown"
         rows.append(row)
 
     parsed, parser_issue = _tokei_stats(root, candidates)
@@ -171,6 +182,7 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
                 coverage.append(f"tokei_missing_file_result:{row['path']}")
                 continue
             row.update(measured)
+            row["measurement_status"] = "measured"
             total = totals[row["role"]]
             for key in ("code", "comments", "blanks", "lines"):
                 total[key] += measured[key]
@@ -178,8 +190,9 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
     # Unknowns remain visible as gaps and contribute bytes, never maintained LOC.
     has_unclassified = False
     for row in rows:
-        if row["role"] == "unclassified" and row["included"]:
+        if "unreadable" in row["exclusion_reason"] or (row["role"] == "unclassified" and row["included"] and row["material"] not in {"binary", "fixture", "generated", "vendored"}):
             has_unclassified = True
+            row["measurement_status"] = "unknown"
             coverage.append(f"unclassified_file:{row['path']}")
     roles = []
     for role in ALL_ROLES:
@@ -204,7 +217,11 @@ def build_metrics(inventory: Any, package_dir: Path) -> dict[str, Any]:
         )
     code_sum = sum(totals[role]["code"] for role in CODE_ROLES)
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "snapshot_id": _get(inventory, "snapshot_id"),
+        "measured_maintained_code_lines": code_sum,
+        "populations": {status: sum(row["measurement_status"] == status for row in rows) for status in ("measured", "excluded", "inapplicable", "unknown")},
+        "measured_subtotals": {role: dict(totals[role]) for role in CODE_ROLES},
         "project": project,
         "generated_at": generated_at,
         "inventory_root": "source/",

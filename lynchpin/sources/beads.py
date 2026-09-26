@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import os
 import re
 import subprocess
 from typing import Any
@@ -16,13 +17,14 @@ def _read(project: str, request: dict[str, Any]) -> Any:
     if canonical is None:
         raise ValueError(f"Unknown registered project: {project}")
     result = subprocess.run(
-        ["bd", "owner", "read", "--json"],
+        ["bd", "owner", "read", "--json", "--readonly", "--sandbox"],
         input=json.dumps(request),
         cwd=project_path(canonical),
         check=True,
         capture_output=True,
         text=True,
         timeout=30,
+        env={**os.environ, "DO_NOT_TRACK": "1"},
     )
     return json.loads(result.stdout)
 

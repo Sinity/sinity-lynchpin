@@ -42,6 +42,7 @@ def build_context(
     # Owner identity is read only from captured source; repo is used solely as
     # the working directory for GitHub's read-only Actions API client.
     root = package_dir / "trackers"
+    from .chisel_options import active_options
     root.mkdir(parents=True, exist_ok=True)
     observed_at = datetime.now(timezone.utc).isoformat()
 
@@ -50,16 +51,29 @@ def build_context(
     ]
     github_rows.sort(key=lambda row: (row.get("kind", ""), int(row.get("number") or 0)))
     _write_jsonl(root / "github.jsonl", github_rows)
-    _write_github_markdown(root / "github.md", github_rows)
+    if active_options.xml:
+        _write_github_markdown(root / "github.md", github_rows)
 
     beads_source = package_dir / f"{project}-beads-export.jsonl"
     beads_dest = root / "beads-export.jsonl"
-    beads_count = _copy_jsonl(beads_source, beads_dest)
+    beads_count = sum(bool(line.strip()) for line in beads_dest.read_text().splitlines()) if beads_dest.exists() else _copy_jsonl(beads_source, beads_dest)
     _write_beads_index(root / "beads.md", beads_dest, beads_count)
 
     owner_id, owner_descriptor = _owner_project(package_dir / "source", project)
     evidence = read_native_evidence(owner_id)
     jobs = _agentctl_jobs(owner_id)
+    from .campaign import read_batches
+    from .beads import read_tasks
+
+    roots = [root for name, root in active_options.task_roots if name == project]
+    frozen = package_dir / "owners"
+    frozen.mkdir(exist_ok=True)
+    snapshots = {"native": evidence, "jobs": jobs}
+    if roots:
+        snapshots["tasks"] = read_tasks(owner_id, roots=roots, max_nodes=1000)
+        snapshots["batches"] = read_batches(owner_id)
+    for name, snapshot in snapshots.items():
+        (frozen / f"{name}.json").write_text(json.dumps(snapshot, indent=2, default=str) + "\n")
     normalized = _verification_payload(
         evidence,
         jobs=jobs,
@@ -72,12 +86,25 @@ def build_context(
     )
     verification_root = package_dir / "verification"
     verification_root.mkdir(parents=True, exist_ok=True)
+    from .chisel_execution import execution_snapshot, revision_checks
+
+    if project == "sinex":
+        execution = execution_snapshot(days=active_options.context_days)
+        (verification_root / "sinex-execution.json").write_text(json.dumps(execution, indent=2, default=str) + "\n")
+        for kind, records in execution["records"].items():
+            _write_jsonl(verification_root / f"sinex-{kind}.jsonl", json.loads(json.dumps(records, default=str)))
+    if active_options.refresh and github_slug:
+        catalogue_path = package_dir / "snapshots.json"
+        catalogue = json.loads(catalogue_path.read_text()) if catalogue_path.exists() else {"snapshots": []}
+        checks = revision_checks(repo, github_slug, [revision, *[row["revision"] for row in catalogue["snapshots"] if row.get("revision")]])
+        (verification_root / "revision-checks.json").write_text(json.dumps(checks, indent=2) + "\n")
+        _write_jsonl(verification_root / "revision-checks.jsonl", checks["records"])
     ci = read_ci_runs(
         repo,
         github_slug=github_slug,
         revision=revision,
         dirty=dirty,
-    )
+    ) if active_options.refresh else {"records": [], "coverage": {"coverage": "unavailable", "reason": "network refresh not requested", "revision": revision, "record_count": 0, "window_start": None, "window_end": None, "pages_read": 0, "capped": False, "gaps": ["network refresh not requested"]}}
     normalized["coverage_document"]["hosted_ci_run_exports"] = ci["coverage"][
         "coverage"
     ]
@@ -118,7 +145,7 @@ def build_context(
         "verification_coverage": normalized["coverage"],
         "verification_jobs": len(normalized["job_observations"]),
         "owner_project": owner_id,
-        "files": [
+        "files": [name for name in [
             "trackers/github.jsonl",
             "trackers/github.md",
             "trackers/beads-export.jsonl",
@@ -129,7 +156,7 @@ def build_context(
             "verification/ci-runs.jsonl",
             "verification/ci-coverage.json",
             "verification/ci-runs.md",
-        ],
+        ] if (package_dir / name).exists()],
     }
 
 
@@ -291,6 +318,7 @@ def _verification_payload(
                 "eligible": observation.get("eligible"),
                 "result_kind": observation.get("result_kind"),
                 "execution_receipt": observation.get("execution_receipt"),
+                "execution_evidence": observation.get("execution_evidence"),
             }
             normalized_checks.append(
                 {

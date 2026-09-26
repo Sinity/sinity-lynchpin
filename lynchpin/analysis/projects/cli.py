@@ -79,43 +79,11 @@ def _velocity(
         print("Velocity dashboard unchanged or no repositories produced history.")
 
 
-@app.command(
-    "chisel",
-    help="Build XML repomix snapshots with semantic splitting and GitHub issue commentary.",
-)
-def _chisel(
-    projects: str = typer.Option("", "--projects", help="Whitespace-separated project names (default: all registered)."),
-    output_root: str = typer.Option("", "--output-root", help="Output directory (default: /realm/library/code)."),
-    max_workers: int = typer.Option(4, "--max-workers", help="Max parallel repos (default: 4)."),
-    list_only: bool = typer.Option(False, "--list/", help="List available project plans and exit."),
-) -> None:
-    from .chisel import build_chisel_bundles
+@app.command("chisel", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def _chisel(ctx: typer.Context) -> None:
+    from lynchpin.cli.chisel import main
 
-    if list_only:
-        from .chisel import REPO_PLANS
-        print("Available chisel projects:\n")
-        for name, plan in sorted(REPO_PLANS.items()):
-            slices_str = ", ".join(s.name for s in plan.slices)
-            print(f"  {name}")
-            print(f"    path:   {plan.path}")
-            print(f"    github: {plan.github_slug or '—'}")
-            print(f"    slices: {slices_str}")
-            if plan.extra_copy:
-                copies = ", ".join(f"{s}→{d}" for s, d in plan.extra_copy)
-                print(f"    copies: {copies}")
-            print()
-        return
-    output_root_path = Path(output_root) if output_root.strip() else None
-    result = build_chisel_bundles(
-        project_names=_split_names(projects),
-        output_root=output_root_path,
-        max_workers=max_workers,
-    )
-    if any(
-        project.get("status") != "generated"
-        for project in result.get("projects", {}).values()
-    ):
-        raise typer.Exit(code=1)
+    raise typer.Exit(main(list(ctx.args)))
 
 
 @app.command("active-git-facts", help="Build active-project default-branch commit and file-change facts.")
@@ -531,7 +499,9 @@ def register_commands(parent: typer.Typer) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        app(args=argv, standalone_mode=False)
+        result = app(args=argv, standalone_mode=False)
+        if isinstance(result, int):
+            return result
     except (typer.Exit, SystemExit) as exc:
         code = exc.exit_code if isinstance(exc, typer.Exit) else (exc.code or 0)
         return int(code or 0)

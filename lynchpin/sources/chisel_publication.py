@@ -54,7 +54,12 @@ def _seed_candidate(source: Path, target: Path) -> None:
         if child.is_symlink():
             raise PublicationValidationError(f"symlink in existing output: {child}")
         if child.is_dir():
-            shutil.copytree(child, destination, copy_function=os.link)
+            if child.name in {"growth", "logs"}:
+                from .chisel_cache import copy_file
+
+                shutil.copytree(child, destination, copy_function=copy_file)
+            else:
+                shutil.copytree(child, destination, copy_function=os.link)
         elif child.is_file():
             if child.name.endswith((".tar.gz", ".bundle")):
                 os.link(child, destination)

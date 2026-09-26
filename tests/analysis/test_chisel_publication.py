@@ -170,3 +170,16 @@ def test_lock_rejects_concurrent_process(tmp_path: Path) -> None:
         process.join(timeout=10)
         assert process.exitcode == 0
         assert result.get(timeout=1) == "PublicationBusyError"
+
+
+def test_failed_candidate_cannot_mutate_published_growth_or_logs(tmp_path):
+    from lynchpin.sources.chisel_publication import staged_publication
+    root = tmp_path / "published"
+    for area in ("growth", "logs"):
+        (root / area).mkdir(parents=True)
+        (root / area / "record.txt").write_text("published")
+    with staged_publication(root) as candidate:
+        for area in ("growth", "logs"):
+            (candidate / area / "record.txt").write_text("candidate")
+            assert (root / area / "record.txt").read_text() == "published"
+    assert (root / "growth/record.txt").read_text() == "published"

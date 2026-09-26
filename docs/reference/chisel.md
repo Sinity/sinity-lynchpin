@@ -1,180 +1,78 @@
-# Chisel project packages
+# Chisel evidence packages
 
-Chisel builds evidence packages for attaching to ChatGPT. The package is a
-navigation and measurement aid. ChatGPT is expected to inspect the project
-evidence and do the analysis; Chisel does not generate a project briefing,
-recommendations, or a quality score.
+Chisel packages locally pinned source, preserved work, and owner evidence for offline inspection. It produces deterministic measurements and source pointers. It does not assign quality scores or treat task closure, command success, or matching commits as acceptance.
 
-Run the configured portfolio:
+## Commands and defaults
+
+`chisel`, `just chisel`, `python -m lynchpin.cli.chisel`, and `python -m lynchpin.analysis.projects chisel` share one CLI. The older `--projects`, `--output-root`, `--max-workers`, and `--list` flags remain supported. Just forwards arguments as separate shell arguments; the old positional output and worker arguments are replaced by named options.
 
 ```bash
 just chisel
+just chisel polylogue sinex --output /path/to/packages --workers 4
+just chisel knowledgebase
+just chisel polylogue --ref polylogue=candidate-branch
+just chisel polylogue --target worktree
+just chisel polylogue --task-root polylogue:task-id
+just chisel --plan
+just chisel --refresh
+chisel list
+chisel inspect /path/to/packages
+chisel validate /path/to/packages
+chisel render /path/to/project-package --format xml
 ```
 
-Or select repositories and an explicit output root:
+The default selection is Sinex, Sinnix, Polylogue, and Sinity-Lynchpin. Knowledgebase requires explicit selection or `--all`. `--exclude` removes projects. `--profile source|review|evidence` expands to visible dataset selections; review is the default. `--dataset` and `--exclude-dataset` adjust those selections. `--plan` resolves local refs and reports selected datasets without acquisition, materialization, or network access. Size estimates use the previous published manifest when available; otherwise they remain unknown.
+
+Ordinary builds read local inputs. GitHub materialization and hosted checks require `--refresh`. A remote-tracking ref is a local observation, not evidence of a fresh fetch. Owner export failures remain explicit coverage gaps. `--events FILE` appends project and stage events in JSONL. The index retains elapsed times and queue waits.
+
+XML rendering, duplicate source archives, and SQLite indexing are optional (`--xml`, `--sqlite`). Source, JSONL evidence, and the standard-library reader are the normal inspection surfaces. Completion definitions are in `completions/`: source `_chisel` after Zsh completion initialization for both commands, `chisel.bash` for Bash, or install `chisel.fish` in Fish's completion directory. The Zsh wrapper delegates other Just recipes to `_just`. Ref completion reads local Git refs.
+
+## Snapshot identity and source
+
+`snapshots.json` is a versioned catalogue. The primary snapshot is the locally resolved default branch unless `--target worktree` is selected. It records the ref, commit, observation time, commit time, and unknown remote freshness. Explicit `--ref PROJECT=REF` selections become candidates. `source/` contains directly readable primary bytes, acquired through batched reads of pinned Git objects without changing the checkout. Git archive export-ignore attributes do not remove source.
+
+`snapshots/worktree/` and candidate directories contain manifests plus changed file contents. Manifests record deleted paths, modes, hashes, and the base snapshot. Unchanged files refer to `source/`. Worktree collection verifies source coherence while collecting it; later development does not change captured bytes. Alternate metrics and structure products identify the alternate snapshot. Sinnix activation observations retain their owner clock and can identify a locally available last-activated source snapshot. They do not establish current installed or running state.
+
+`inventory.jsonl` retains inclusion/exclusion reasons, source kinds, hashes, modes, and policy identity. Unsafe symlinks are excluded explicitly; safe in-repository file links retain their link provenance and captured target bytes. Git-ignored files enter only through declared local-context selections. Full committed history remains in the Git bundle. Captures and generated personal products belong outside Git.
+
+## Measurements and relationships
+
+Classification policy version 4 separates purpose, material, and component while retaining legacy role fields. Production Nix definitions remain identifiable as production configuration. Only eligible source/configuration files enter maintained LOC. Binary, fixtures, generated material, documentation, and context do not become maintained source. Metrics include measured subtotals, complete totals where established, and measured/excluded/inapplicable/unknown populations. An incomplete total remains unknown without erasing the measured subtotal. Rust inline test counts are non-additive subsets; test source volume is not coverage.
+
+Python import records include scope, enclosing symbol, aliases, explicit re-exports, type guards, optional imports, and conditions. Separate projections describe all static imports, imports excluding type-only references, and module-initialization imports excluding deferred function bodies. They are static projections, not execution graphs. Import occurrence counts and distinct-neighbor counts are separate. Standard-library, internal, and declared distribution-name matches retain their resolution methods; unresolved names remain unresolved.
+
+`reports/` includes snapshot differences, changed Python symbols, task dependencies, candidate evidence, operation declarations, conservative references, and preserved-work comparisons. Exact hashes, text patch comparisons, and similarity are review aids. They do not establish supersession or retirement. Campaign counts require explicit task roots. Campaign evidence reuses the versioned acceptance join over frozen owner snapshots. Partial graphs expose missing nodes, unfinished leaves, cycles, and shortest blocking paths.
+
+Python declarations and literal registries, AgentCTL operation TOML, and selected Rust, SQL, and Nix patterns carry locations and extraction methods. Text-pattern relationships retain candidate status. Same-file symbol-name references do not resolve shadowing. Read the report coverage document before treating a missing relationship as absent.
+
+## Owner evidence and context
+
+`owners/` preserves the native evidence, job observations, and selected task/campaign snapshots used by joins. Lifecycle observations and verification results remain separate. Missing dirty state remains null in the adapter and substrate. Execution receipts retain content manifests when the owner supplies them; unchanged endpoints are not immutable-execution attestations. Wrapper success and a matching revision cannot establish acceptance.
+
+Sinex execution exports use one read-only owner-ledger transaction with bounded invocation, stage, and test selections. Resource fields retain their workload, environment, units, sampling and avg/max distinctions. Under `--refresh`, selected-revision GitHub checks and statuses include provider contexts such as CircleCI when GitHub exposes them. Provider detail APIs are not inferred from a status URL.
+
+Session context uses Polylogue's public facade with an indexed workspace filter. Defaults are 30 days, at most 200 excerpts, and 2,000,000 serialized bytes per project, configurable with `--context-days`, `--context-limit`, and `--context-bytes`. Excerpts retain session/message references, timestamps, selection reasons, origin, and truncation. Explicit selected-task session links take priority over workspace matches. The route samples the latest ten messages of selected sessions; project work notes come from the canonical Beads export, with field and line references. Task-update times are not presented as note-creation times.
+
+## Attachments and offline browsing
+
+The default attachment limit is 500,000,000 bytes, configurable with `--attachment-bytes`. `--attachment-layout auto` tries a combined archive, then project boundaries, then dataset boundaries. `project` and `dataset` request those layouts directly. Oversized artifacts become numbered parts with hashes and a standard-library reconstruction helper. No source or Git history is silently discarded to satisfy the cap.
+
+`attachments.json` lists the actual selection, attachments, sizes, hashes, and reconstruction requirements. Every normal archive carries its file manifest under `attachments/`; numbered parts carry part manifests. Extract all listed attachments together. For numbered parts, run `python3 reconstruct.py` from the extraction directory. The command verifies chunks and the reconstructed artifact.
 
 ```bash
-just chisel "polylogue sinex sinnix sinity-lynchpin" /realm/tmp/chisel
-```
-
-Each project package has a `START_HERE.md` with its capture identity, available
-datasets, methods, gaps, and offline navigation commands. The portfolio root
-also has `START_HERE.md`, `portfolio.json`, comparative `growth/` outputs, and
-`portfolio-all.tar.gz`. The archive is the bounded ChatGPT attachment profile:
-it keeps captured source, Git bundles, evidence records, metrics, and coverage,
-while omitting duplicate XML renderings, the local SQLite index, working-tree
-tar copies, and Beads HTML. Extracting it exposes the selected project
-directories directly, alongside portfolio evidence. `portfolio.json`
-binds each project to its snapshot ID and records that project captures may
-have different times. Source snapshot IDs identify captured bytes and policy;
-the portfolio also records each complete project manifest's SHA-256, binding
-tracker and history evidence to the exact package contents.
-
-## Captured source and representations
-
-`source/` is the directly browsable copy of captured files. Chisel inventories
-Git tracked files, non-ignored untracked files, and explicitly selected local
-context files. Safety exclusions still apply; this is not a copy of every
-ignored file or every private runtime directory. `inventory.jsonl` records
-each discovered path, its SHA-256 and size when readable, role and reason,
-slice memberships, exclusions, source kind, and inclusion state. `capture.json`
-records the revision, dirty state, capture time, policy version, and snapshot
-ID. The copy is checked against the recorded hashes during capture.
-
-XML slices are generated from their recorded memberships. The compressed XML
-uses the union of configured slice memberships, so its file set is the
-combined slice set; compression changes representation and may omit binary
-content. `representations/` records expected and represented paths, including
-binary, empty, and Repomix-filtered text files available only in `source/`.
-Repomix 1.18.0 filters some text extensions such as `.snap`, `.raw`, and
-`.key`; these remain byte-for-byte in the captured source. XML and compressed
-files are alternate views, not substitutes for the captured source. When
-present, the Git bundle retains repository history; `working-tree.tar.gz`
-archives the captured source tree.
-
-Project-local documentation, scratchpads, plans, agent instructions, demos,
-and other context files retain their paths and hashes where they are captured.
-Their presence is provenance, not evidence that a note is current. Chisel does
-not add unrelated AI conversation archives to the package.
-
-The ignore audit lists top-level hidden and local-state paths. It measures
-regular files directly and reports directory sizes as unmeasured; calculating
-those sizes would recursively scan large runtime directories unrelated to the
-captured source or maintained LOC.
-
-## Roles and source metrics
-
-Inventory roles are `implementation`, `tests`, `tooling`, `documentation`,
-`context`, `evidence`, and `unclassified`. Only included implementation,
-tests, and tooling files enter maintained source LOC. Documentation and
-context bytes are reported separately; scratchpad prose, fenced code examples,
-fixtures, generated evidence, and unknown-role files do not become maintained
-LOC. An unknown classification remains `unclassified`, never production.
-Dependency lockfiles are preserved as generated evidence, outside maintained
-LOC. Captured `.ignore` and `.tokeignore` rules further restrict metric inputs.
-
-`metrics/` contains per-file and per-role CSV, JSON, and Markdown measures.
-Code, comments, and blank lines are separate. The policy version and coverage
-gaps are recorded. Rust inline test lines are subsets of their physical source
-files, so do not add them to implementation totals. Split test files remain in
-the tests role. Test-source share is not test coverage. If a parser or file
-result is missing, the affected measure is unavailable with a coverage gap,
-not a zero.
-
-Historical metrics have a different meaning. `history/` covers commits
-reachable from refs captured at the start and classifies historical paths
-under the current role-policy version. Renames retain old and new paths and
-their roles. `git numstat` additions and deletions measure changed text, not
-executable LOC, effort, or semantic change. All repository text activity is
-separate from maintained-code text changes. Binary change counts have unknown
-line totals. The Git bundle retains original committed changes, including
-merges. Author logical dates drive daily and 30/90-day summaries. Tracked staged
-and unstaged changes are recorded separately; untracked paths are not included
-in those patches. These measures do not infer quality or causation.
-Summing activity across refs and first-parent merge diffs can count the same
-change at multiple commits; cumulative changed text is not current repository
-size. Git text converters and external diff drivers are disabled for these
-exports. Bundle refs must match the history index before publication.
-Linked-worktree HEAD entries in a Git bundle are outside the normal ref
-namespace and do not alter that comparison.
-
-## Structure, history, and project records
-
-`structure/` derives file-level measurements, symbols, imports, package
-membership, and dependency edges from captured source. Python and Rust symbol
-extraction are supported when their parsers are available. Python imports,
-Cargo workspace/package declarations, and selected static configuration path
-references are represented with their extraction status. These records are
-source pointers and declared/static relations, not a complete call graph;
-unsupported languages or unresolved relations are coverage gaps or explicit
-unsupported statuses, not inferred edges. Check `structure/coverage.json` for
-scope and parser availability.
-
-`history/` contains JSONL commit, changed-path, and ref records, daily CSV,
-rolling-window and growth summaries, coverage metadata, and tracked staged and
-unstaged patches. The Git bundle retains complete committed history without
-duplicating every committed patch as a separate package file. Commit text
-references remain textual references; they are not asserted as resolved GitHub
-or task links. The Git bundle is the repository-native history source.
-
-`trackers/` contains available GitHub issue and pull-request records in their
-reported states, including discussion, reviews, and inline review comments,
-plus the exported Beads records and readable indexes. Missing owner exports
-are reported as unavailable. Chisel does not claim that filenames or temporal
-proximity establish a cross-project dependency.
-
-`verification/` contains only evidence returned through owner-published routes
-such as Lynchpin native evidence and AgentCTL job observations. Records retain
-revision and dirty-state fields when supplied; applicability is tied to the
-captured revision. A configured test command is not proof that tests ran.
-Coverage metadata distinguishes missing evidence from passing or failing
-results. GitHub Actions run records are read through GitHub's API over a bounded
-90-day window (up to 1,000 records), with raw owner fields and explicit partial
-or unavailable coverage. A successful workflow is not proof that every test
-ran. Benchmark and coverage-report exports remain unavailable where no stable
-owner export is provided. Chisel does not execute project tests or benchmarks
-while building packages.
-
-`cross-project-links.jsonl` in the portfolio contains explicit repository URL
-and local dependency path matches to selected projects, with source pointers
-and both source snapshot IDs. Package names alone do not create edges.
-
-## Offline navigation
-
-Each full local package includes `browse.py` and `index.sqlite3`. Attachment
-archives omit the SQLite index; the standard-library helper searches captured
-source and JSONL evidence directly. SQL requires the full local package. The
-helper requires no project checkout, Git, Repomix, network access, or Lynchpin
-installation for source, search, and history navigation. JSONL and source
-files remain the inspectable evidence.
-
-```bash
-python3 browse.py --package . --help
-python3 browse.py --package . search 'symbol or phrase'
+python3 browse.py --package . snapshots --json
 python3 browse.py --package . source path/to/file.py --start 20 --end 45
+python3 browse.py --package . source path/to/file.py --snapshot worktree
+python3 browse.py --package . reconstruct-snapshot worktree --output /new/output/path
+python3 browse.py --package . tasks task-id --json
+python3 browse.py --package . blockers task-id --json
+python3 browse.py --package . symbols symbol_name --limit 50 --offset 0 --json
+python3 browse.py --package . neighbors module.name --json
+python3 browse.py --package . differences --json
+python3 browse.py --package . candidate-evidence --json
 python3 browse.py --package . history --path path/to/file.py
-python3 browse.py --package . sql 'SELECT dataset, count(*) FROM datasets GROUP BY dataset'
 ```
 
-SQL accepts read-only `SELECT` or `WITH` statements. Check `START_HERE.md` and
-the relevant `coverage.json` before interpreting a missing dataset or parser
-result. Missing means unavailable or not exported, never zero.
+These reads require neither SQLite, Git, network, nor a Lynchpin installation. SQL requires an explicitly built SQLite index. Historical Git operations can use the included bundle when Git is installed. Existing packages without a catalogue remain readable as a single capture.
 
-## Publication and runtime
-
-Chisel constructs outputs in a sibling candidate directory, validates each
-selected project's manifest against its actual files and hashes, then
-publishes by Linux `renameat2` directory exchange. A writer lock rejects
-overlapping builds. A failed build or validation leaves the previously
-published output visible; unsupported atomic exchange fails closed rather
-than silently using a non-atomic replacement. Prior combined project archives
-are retained under the output archive directory.
-
-Stage messages appear inside their completed project's block. During a build,
-separate `Progress:` lines list active projects and stages. The root index
-records stage timing including queue and Repomix wait/run time. A small report
-can still require a large source or history scan. The CLI exits unsuccessfully
-for missing, failed, or partial projects,
-including invalid XML and archive failures. A GitHub refresh fallback is
-identified in the snapshot audit. Per-project manifests list artifact sizes
-and hashes; the manifest's own size is included and its own hash is omitted.
+Publication builds a sibling candidate, verifies selected project manifests, and atomically exchanges directories. A failure retains the prior publication. Selected builds preserve unselected published project directories while the new attachment manifest contains only the requested selection. Structure caches are keyed by source and parser/policy versions; committed history uses a consolidated immutable-record cache. Complete structure products are reused by snapshot and parser/policy identity. Delivery history separates default-branch first-parent commits and endpoint changes from all-ref activity. Subsequent selected-task builds reuse campaign scope-delta logic against the prior frozen owner snapshot.

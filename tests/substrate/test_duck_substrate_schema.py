@@ -263,7 +263,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
     """The additive graph-lineage rollout must retain the verified predecessor."""
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
 
-    assert SUBSTRATE_VERSION == 47
+    assert SUBSTRATE_VERSION == 48
     db = tmp_path / "sub.duckdb"
     with connect(db) as conn:
         apply_schema(conn)
@@ -298,7 +298,7 @@ def test_apply_schema_migrates_version_43_graph_lineage_without_data_loss(
         ).fetchall() == [("verified", 12, 34, None, None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("47",)
+        ).fetchone() == ("48",)
         migrated_indexes = {
             row[0]
             for row in conn.execute(
@@ -490,7 +490,7 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
     from lynchpin.substrate.connection import SUBSTRATE_VERSION, apply_schema, connect
     from lynchpin.substrate.schema import DDL_STATEMENTS
 
-    assert SUBSTRATE_VERSION == 47
+    assert SUBSTRATE_VERSION == 48
     # Reconstruct the pre-47 table shape from the live DDL so the fixture cannot
     # drift away from the real column list.
     create = next(
@@ -530,4 +530,21 @@ def test_apply_schema_migrates_version_46_work_observation_operation(
         ).fetchall() == [("agentctl:9", None)]
         assert conn.execute(
             "SELECT value FROM substrate_meta WHERE key = 'version'"
-        ).fetchone() == ("47",)
+        ).fetchone() == ("48",)
+
+
+def test_migrates_47_dirty_unknown_with_existing_indexes(tmp_path):
+    from lynchpin.substrate.connection import apply_schema, connect
+    with connect(tmp_path / "old.duckdb") as conn:
+        apply_schema(conn)
+        indexes = conn.execute("SELECT index_name, sql FROM duckdb_indexes() WHERE table_name='work_observation'").fetchall()
+        for name, _ in indexes:
+            conn.execute('DROP INDEX "' + name + '"')
+        conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty SET NOT NULL")
+        conn.execute("ALTER TABLE work_observation ALTER COLUMN git_dirty SET DEFAULT FALSE")
+        for _, sql in indexes:
+            conn.execute(sql)
+        conn.execute("UPDATE substrate_meta SET value='47' WHERE key='version'")
+        apply_schema(conn)
+        assert conn.execute("SELECT is_nullable, column_default FROM information_schema.columns WHERE table_name='work_observation' AND column_name='git_dirty'").fetchone() == ("YES", None)
+        assert set(conn.execute("SELECT index_name FROM duckdb_indexes() WHERE table_name='work_observation'").fetchall()) == {(name,) for name, _ in indexes}

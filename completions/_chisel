@@ -1,0 +1,18 @@
+#compdef chisel
+_chisel() {
+  local -a candidates
+  candidates=("${(@f)$(chisel complete "$PREFIX")}")
+  _describe 'Chisel selection' candidates
+  _files
+}
+_chisel_just() {
+  if [[ $words[2] == chisel ]]; then
+    words=("${words[@]:1}")
+    (( CURRENT-- ))
+    _chisel "$@"
+  else
+    _just "$@"
+  fi
+}
+compdef _chisel chisel
+compdef _chisel_just just

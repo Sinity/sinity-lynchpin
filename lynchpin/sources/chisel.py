@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.errors import MaterializationError, SourceUnavailableError
+from . import chisel_options
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Rich output (optional)
@@ -74,6 +75,11 @@ _build_state_local = threading.local()
 
 def _set_stage(project: str, stage: str, active: bool) -> None:
     with _progress_lock:
+        if chisel_options.active_options.events:
+            path = Path(chisel_options.active_options.events)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as stream:
+                stream.write(json.dumps({"project": project, "stage": stage, "active": active, "observed_at": dt.datetime.now(dt.timezone.utc).isoformat()}) + "\n")
         stages = _active_stages.setdefault(project, set())
         if active:
             stages.add(stage)
@@ -273,6 +279,8 @@ def _run(
         raise KeyboardInterrupt
     env = os.environ.copy()
     env.setdefault("NO_COLOR", "1")
+    env["DO_NOT_TRACK"] = "1"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     proc = subprocess.Popen(
         list(cmd),
         cwd=str(cwd) if cwd else None,
@@ -2600,6 +2608,15 @@ def _ensure_github_context_for_chisel(projects: set[str] | None = None) -> None:
                 "github_context",
                 reason="GitHub context materialization already failed in this run",
             )
+        if not chisel_options.active_options.refresh:
+            try:
+                _github_context_index = _build_github_context_index()
+                _github_context_manifest = {"refresh_status": "local_only", "remote_freshness": "unknown"}
+            except Exception as exc:
+                _github_context_index = {}
+                _github_context_manifest = {"refresh_status": "unavailable", "reason": str(exc)}
+            _github_context_ready = True
+            return
         from ..ingest.github_context_materialize import materialize_github_context
 
         try:
@@ -2695,7 +2712,9 @@ def _github_context_summary() -> str:
 def _ensure_chisel_prerequisites(plans: Sequence[RepoPlan]) -> None:
     if not any(plan.github_slug for plan in plans):
         return
-    _print_live("GitHub context: ensure materialized for issue/PR snapshots...")
+    if "trackers" not in chisel_options.active_options.datasets:
+        return
+    _print_live("GitHub context: refreshing..." if chisel_options.active_options.refresh else "GitHub context: reading local product; remote freshness unknown...")
     t0 = dt.datetime.now()
     _ensure_github_context_for_chisel({plan.name for plan in plans})
     elapsed = (dt.datetime.now() - t0).total_seconds()
@@ -2830,6 +2849,8 @@ def _generate_issues(
     )
     _normalize_comments(closed_issues)
 
+    if not chisel_options.active_options.xml:
+        return len(open_issues), len(closed_issues)
     count = 0
     for state, issues in [("open", open_issues), ("closed", closed_issues)]:
         xml = _build_issues_xml(issues, plan.github_slug, state, generated_at)
@@ -3017,6 +3038,8 @@ def _generate_prs(
     )
     _normalize_pr_data(closed_prs)
 
+    if not chisel_options.active_options.xml:
+        return len(open_prs), len(merged_prs)
     for state, prs in [
         ("open", open_prs),
         ("closed", closed_prs),
@@ -3038,7 +3061,7 @@ def _generate_prs(
 
 
 def _bd_json(cmd: Sequence[str], *, cwd: Path) -> Any:
-    result = _run(["bd", *cmd, "--json"], cwd=cwd)
+    result = _run(["bd", *cmd, "--json", "--readonly", "--sandbox"], cwd=cwd)
     if result.returncode != 0:
         details = (result.stderr or result.stdout or "bd command failed").strip()
         raise SourceUnavailableError("beads", reason=details)
@@ -3049,7 +3072,7 @@ def _bd_json(cmd: Sequence[str], *, cwd: Path) -> Any:
 
 
 def _bd_export_rows(repo: Path) -> list[dict[str, Any]]:
-    result = _run(["bd", "export", "--include-memories"], cwd=repo)
+    result = _run(["bd", "export", "--include-memories", "--readonly", "--sandbox"], cwd=repo)
     if result.returncode != 0:
         details = (result.stderr or result.stdout or "bd export failed").strip()
         raise SourceUnavailableError("beads", reason=details)
@@ -3634,42 +3657,44 @@ def _generate_beads(
     md_path = out_dir / f"{plan.name}-beads.md"
     html_path = out_dir / f"{plan.name}-beads.html"
     history_path = out_dir / f"{plan.name}-beads-history.csv"
-    export_path = out_dir / f"{plan.name}-beads-export.jsonl"
+    export_path = out_dir / (f"{plan.name}-beads-export.jsonl" if chisel_options.active_options.xml else "trackers/beads-export.jsonl")
+    export_path.parent.mkdir(parents=True, exist_ok=True)
 
     json_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    xml_path.write_text(
-        _build_beads_xml(
-            issues,
-            plan.path,
-            generated_at,
-            ready_ids=ready_ids,
-            blocked_ids=blocked_ids,
-            dependencies=dependencies,
-        ),
-        encoding="utf-8",
-    )
-    stripped = _sanitize_xml(xml_path)
-    if stripped:
-        _emit(
-            log,
-            f"  [dim]┄ {xml_path.name}: {stripped:,} ctrl bytes stripped[/dim]",
+    if chisel_options.active_options.xml:
+        xml_path.write_text(
+            _build_beads_xml(
+                issues,
+                plan.path,
+                generated_at,
+                ready_ids=ready_ids,
+                blocked_ids=blocked_ids,
+                dependencies=dependencies,
+            ),
+            encoding="utf-8",
         )
-    md_path.write_text(
-        _beads_markdown(
-            plan,
-            generated_at,
-            summary,
-            issues,
-            ready_ids=ready_ids,
-            blocked_ids=blocked_ids,
-        ),
-        encoding="utf-8",
-    )
-    html_path.write_text(
-        _beads_html(plan, generated_at, board_rows, memories), encoding="utf-8"
-    )
+        stripped = _sanitize_xml(xml_path)
+        if stripped:
+            _emit(
+                log,
+                f"  [dim]┄ {xml_path.name}: {stripped:,} ctrl bytes stripped[/dim]",
+            )
+        md_path.write_text(
+            _beads_markdown(
+                plan,
+                generated_at,
+                summary,
+                issues,
+                ready_ids=ready_ids,
+                blocked_ids=blocked_ids,
+            ),
+            encoding="utf-8",
+        )
+        html_path.write_text(
+            _beads_html(plan, generated_at, board_rows, memories), encoding="utf-8"
+        )
     _write_csv_rows(history_path, history["daily"])
     export_path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
@@ -3682,8 +3707,9 @@ def _generate_beads(
         md_path.name,
         html_path.name,
         history_path.name,
-        export_path.name,
+        export_path.relative_to(out_dir).as_posix(),
     ]
+    names = [name for name in names if (out_dir / name).exists()]
     size = sum((out_dir / name).stat().st_size for name in names)
     _emit(
         log,
@@ -5632,7 +5658,7 @@ def _print_project_summary(completed: int, total: int, result: dict[str, Any]) -
             f"\n[bold]Completed {completed}/{total}: {name} {state}[/bold]  "
             f"[dim]{elapsed:.1f}s[/dim]"
         )
-        for line in result.get("log_lines") or []:
+        for line in (result.get("log_lines") or []) if chisel_options.active_options.xml else (result.get("errors") or []):
             _print(line)
 
 
@@ -5663,20 +5689,26 @@ def _build_one_impl(
         if previous_manifest_path.exists()
         else None
     )
+    previous_tasks_path = out_dir / "owners/tasks.json"
+    previous_tasks = previous_tasks_path.read_bytes() if previous_tasks_path.is_file() else None
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    from .chisel_inventory import capture_inventory, verify_capture
+    if previous_tasks is not None:
+        (out_dir / "owners").mkdir(exist_ok=True)
+        (out_dir / "owners/task-baseline.json").write_bytes(previous_tasks)
+    from .chisel_snapshots import capture_catalogue, verify_snapshot
     from .chisel_package import captured_sidecars, evidence_outputs, run_view, verify_history_bundle
     from .chisel_metrics import build_metrics
-    from .chisel_history import build_history
+    from .chisel_history import build_history, freeze_refs, delivery_history
 
     capture_started = time.perf_counter()
     capture_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     _set_stage(plan.name, "capture source inventory", True)
-    inventory = capture_inventory(
+    inventory = capture_catalogue(
         plan,
         out_dir,
+        chisel_options.active_options,
         default_ignore=DEFAULT_IGNORE,
         scratchpad_include=_SCRATCHPAD_INCLUDE,
         accelerant_include=_ACCELERANT_INCLUDE,
@@ -5686,9 +5718,13 @@ def _build_one_impl(
     _set_stage(plan.name, "capture source inventory", False)
     log.append(f"  ✓ capture source inventory ({capture_elapsed:.1f}s)")
     git = _git_state(plan.path)
-    if git["commit"] != inventory.revision:
-        raise RuntimeError("repository revision changed during capture")
+    git = {**git, "commit": inventory.revision, "dirty": inventory.dirty}
+    if (out_dir / "snapshots.json").exists():
+        primary_ref = json.loads((out_dir / "snapshots.json").read_text())["snapshots"][0]["ref"]
+        git = {**git, "checkout_branch": git.get("branch"), "branch": primary_ref}
     cache_dir = output_root.parent / ".chisel-cache" / plan.name
+    frozen_history = freeze_refs(plan.path, output_root.parent) if "history" in chisel_options.active_options.datasets else None
+    history_plan = replace(plan, path=Path(frozen_history.name)) if frozen_history else plan
 
     def metrics_stage():
         build_metrics(inventory, out_dir)
@@ -5697,12 +5733,15 @@ def _build_one_impl(
 
     def history_stage():
         build_history(
-            plan.path,
+            history_plan.path,
             out_dir,
             project=plan.name,
-            revision=inventory.revision,
+            revision="HEAD",
             cache_dir=cache_dir / "history",
+            frozen=True,
         )
+        if (out_dir / "snapshots.json").exists():
+            delivery_history(history_plan.path, out_dir, plan.name)
         paths = list(out_dir.glob(f"{plan.name}-growth*"))
         return [p.name for p in paths], sum(p.stat().st_size for p in paths)
 
@@ -5729,6 +5768,12 @@ def _build_one_impl(
         futures: dict = {}
 
         def submit(kind: str, label: str, fn, *args):
+            dataset = {"git-log": "history", "growth-analysis": "history", "sidecars": "history",
+                       "issues": "trackers", "prs": "trackers", "beads": "trackers", "tokei-stats": "metrics"}.get(kind, "source")
+            if dataset not in chisel_options.active_options.datasets:
+                return
+            if kind == "git-log" and not chisel_options.active_options.xml:
+                return
             queued_at = time.perf_counter()
 
             def run_logged():
@@ -5766,7 +5811,7 @@ def _build_one_impl(
             futures[f] = (kind, label)
 
         # Every XML view consumes the exact captured membership.
-        for slice in plan.slices:
+        for slice in (plan.slices if chisel_options.active_options.xml else ()):
             submit(
                 "slice",
                 slice.name,
@@ -5780,7 +5825,7 @@ def _build_one_impl(
                 generated_at,
                 log,
             )
-        if plan.compressed:
+        if plan.compressed and chisel_options.active_options.xml:
             submit(
                 "compressed",
                 plan.name,
@@ -5796,7 +5841,7 @@ def _build_one_impl(
                     compressed=True,
                 ),
             )
-        for special in ("scratchpad", "accelerants"):
+        for special in (("scratchpad", "accelerants") if chisel_options.active_options.xml else ()):
             if any(special in row.included_by for row in inventory.files):
                 submit(
                     special,
@@ -5824,7 +5869,7 @@ def _build_one_impl(
         submit("prs", plan.name, _generate_prs, plan, out_dir, generated_at, log)
 
         # Portable upload sidecars not otherwise represented by XML snapshots.
-        submit("sidecars", plan.name, captured_sidecars, plan, inventory, out_dir, log)
+        submit("sidecars", plan.name, captured_sidecars, history_plan, inventory, out_dir, log)
 
         submit("tokei-stats", plan.name, metrics_stage)
         submit("growth-analysis", plan.name, history_stage)
@@ -5925,12 +5970,11 @@ def _build_one_impl(
     _copy_extras(replace(plan, path=inventory.root), out_dir, log)
 
     # Navigation is generated after owner records (including Beads) exist.
-    if not errors:
+    if not errors and "history" in chisel_options.active_options.datasets:
         verify_history_bundle(plan, inventory, out_dir)
     stage_timings.extend(evidence_outputs(plan, inventory, out_dir, cache_dir, log))
-    verify_capture(plan.path, inventory)
-    if _git_state(plan.path) != git:
-        errors.append("repository state changed during package generation")
+    verify_snapshot(inventory)
+    gitlog_commits = _read_json_file(out_dir / "history/coverage.json").get("commit_count", gitlog_commits)
 
     # ── Validate all XML outputs ──
     xml_errors: list[str] = []
@@ -5989,7 +6033,7 @@ def _build_one_impl(
     _set_stage(plan.name, "attachment archive", True)
     log.append("  → attachment archive")
     try:
-        combined_tar_result = _make_combined_tar(plan, out_dir, output_root, log)
+        combined_tar_result = (None, 0)  # Portfolio packaging owns attachment layout.
     finally:
         _set_stage(plan.name, "attachment archive", False)
     stage_timings.append({
@@ -6034,6 +6078,9 @@ def _build_one_impl(
         "combined_tar": combined_tar_name,
         "combined_tar_bytes": combined_tar_bytes,
         "total_bytes": total_bytes,
+        "inputs": {"files": len(inventory.files), "included_bytes": sum(row.size_bytes or 0 for row in inventory.files if row.included)},
+        "cache": {"history_records_reused": _read_json_file(out_dir / "history/coverage.json").get("immutable_commit_cache_rows_reused"),
+                  "structure": _read_json_file(out_dir / "structure/coverage.json").get("cache")},
         "issues_open": issues_open,
         "issues_closed": issues_closed,
         "prs_open": prs_open,
@@ -6094,18 +6141,22 @@ def build_chisel_bundles(
     project_names: Sequence[str] | None = None,
     output_root: Path | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    options: chisel_options.BuildOptions | None = None,
 ) -> dict[str, Any]:
     # GitHub materialization and subprocess cancellation retain process-wide
     # state. Different output roots must not race on those shared resources.
     if not _build_chisel_lock.acquire(blocking=False):
         raise RuntimeError("another Chisel build is active in this process")
+    previous_options = chisel_options.active_options
     try:
+        chisel_options.active_options = options or chisel_options.BuildOptions()
         return _publish_chisel_bundles(
             project_names=project_names,
             output_root=output_root,
             max_workers=max_workers,
         )
     finally:
+        chisel_options.active_options = previous_options
         _build_chisel_lock.release()
 
 
@@ -6121,7 +6172,7 @@ def _publish_chisel_bundles(
 
     started = time.perf_counter()
     root = (output_root or _default_output_root()).resolve()
-    names = list(project_names) if project_names else list(REPO_PLANS)
+    names = list(project_names) if project_names is not None else list(chisel_options.DEFAULT_PROJECTS)
     unknown = set(names) - REPO_PLANS.keys()
     if unknown:
         raise ValueError(f"unknown projects: {', '.join(sorted(unknown))}")
@@ -6183,8 +6234,8 @@ def _build_chisel_candidate(
     _github_context_ready = (
         None  # reset per-run so repeated calls in the same process work
     )
-    repomix_bin = _require_repomix()
-    repomix_ver = _repomix_version(repomix_bin)
+    repomix_bin = _require_repomix() if chisel_options.active_options.xml else ""
+    repomix_ver = _repomix_version(repomix_bin) if repomix_bin else "not requested"
     generated_at = _utc_ts()
     output_root = (output_root or _default_output_root()).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -6198,12 +6249,12 @@ def _build_chisel_candidate(
             )
         plans = [REPO_PLANS[n] for n in project_names]
     else:
-        plans = list(REPO_PLANS.values())
+        plans = [REPO_PLANS[name] for name in chisel_options.DEFAULT_PROJECTS]
 
     repo_workers = min(max(1, max_workers), max(1, len(plans)))
     slice_workers = DEFAULT_SLICE_WORKERS
 
-    _print(f"[bold]Chisel — XML repomix snapshots[/bold]  ({repomix_ver})")
+    _print(f"[bold]Chisel evidence packages[/bold]  (XML: {repomix_ver})")
     _print(f"Output: {output_root}")
     _print(f"Repos:  {len(plans)} selected — {', '.join(p.name for p in plans)}")
     _print(
@@ -6251,6 +6302,10 @@ def _build_chisel_candidate(
                         "error": str(e),
                         "log_lines": [f"  [red]✗[/red] {name}: {e}"],
                     }
+                logs = output_root / "logs"
+                logs.mkdir(exist_ok=True)
+                (logs / f"{name}.log").write_text("\n".join(results[name].get("log_lines") or []) + "\n")
+                results[name]["log"] = f"logs/{name}.log"
                 _print_project_summary(completed, len(plans), results[name])
     except KeyboardInterrupt:
         _abort_event.set()
@@ -6422,56 +6477,6 @@ def _parse_optional_path(value: str) -> Path | None:
 
 
 def run_from_cli(argv: list[str] | None = None) -> int:
-    import argparse
+    from lynchpin.cli.chisel import main
 
-    ap = argparse.ArgumentParser(
-        description="Chisel — XML repomix snapshots with semantic splitting and GitHub issue commentary.",
-    )
-    ap.add_argument(
-        "--projects",
-        default="",
-        help="Whitespace-separated project names (default: all registered).",
-    )
-    ap.add_argument(
-        "--output-root",
-        type=_parse_optional_path,
-        default=None,
-        help="Output directory (default: data_root/library/code — stable, overwrites on re-run).",
-    )
-    ap.add_argument(
-        "--max-workers",
-        type=int,
-        default=DEFAULT_MAX_WORKERS,
-        help=f"Max parallel repos (default: {DEFAULT_MAX_WORKERS}).",
-    )
-    ap.add_argument(
-        "--list", action="store_true", help="List available project plans and exit."
-    )
-    args = ap.parse_args(argv)
-
-    if args.list:
-        _print("Available chisel projects:\n")
-        for name, plan in sorted(REPO_PLANS.items()):
-            slices_str = ", ".join(s.name for s in plan.slices)
-            _print(f"  [bold]{name}[/bold]")
-            _print(f"    path:       {plan.path}")
-            _print(f"    github:     {plan.github_slug or '—'}")
-            _print(f"    compressed: {'yes' if plan.compressed else 'no'}")
-            _print(f"    slices:     {slices_str}")
-            if plan.extra_copy:
-                copies = ", ".join(f"{s}→{d}" for s, d in plan.extra_copy)
-                _print(f"    copies:     {copies}")
-            _print()
-        return 0
-
-    result = build_chisel_bundles(
-        project_names=_split_names(args.projects),
-        output_root=args.output_root,
-        max_workers=args.max_workers,
-    )
-    return int(
-        any(
-            project.get("status") != "generated"
-            for project in result.get("projects", {}).values()
-        )
-    )
+    return main(argv)

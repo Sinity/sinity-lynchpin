@@ -37,6 +37,7 @@ Repository = "https://github.com/Sinity/sinity-lynchpin"
 Issues = "https://github.com/Sinity/sinity-lynchpin/issues"
 
 [project.scripts]
+chisel = "lynchpin.cli.chisel:main"
 lynchpin-mcp = "lynchpin.mcp.cli:main"
 lynchpin-current-state = "lynchpin.cli.current_state:main"
 lynchpin-github-frontier = "lynchpin.cli.github_frontier:main"
@@ -57,6 +58,11 @@ include = ["lynchpin*"]
 [tool.setuptools.package-data]
 "lynchpin.analysis.projects" = ["assets/*.html"]
 "lynchpin.analysis" = ["analysis_spec.json", "tool_rules/**/*.yml"]
+
+[tool.setuptools.data-files]
+"share/zsh/site-functions" = ["completions/_chisel"]
+"share/bash-completion/completions" = ["completions/chisel.bash"]
+"share/fish/vendor_completions.d" = ["completions/chisel.fish"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

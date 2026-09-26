@@ -10,12 +10,16 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
+
+from .chisel_cache import copy_file
 
 from lynchpin.core.primitives import logical_date
 from lynchpin.sources.chisel_inventory import POLICY_VERSION, classify_role
@@ -25,9 +29,46 @@ _COMMIT_FORMAT = "%x1e%H%x1f%P%x1f%aI%x1f%cI%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%s%x
 _DIRECT_REFERENCE = re.compile(r"(?<![A-Za-z0-9])(?:#\d+|[A-Za-z][A-Za-z0-9]+-[A-Za-z0-9]+)(?![A-Za-z0-9])")
 
 
+def freeze_refs(repo: Path, parent: Path) -> tempfile.TemporaryDirectory:
+    """Own immutable ref names in a private bare repo; borrow local Git objects.
+
+    No ref is written to the inspected repository. Object loss from concurrent
+    pruning is a capture failure, never permission to substitute a newer ref.
+    """
+    refs = _refs(repo)
+    head = _resolve_revision(repo, "HEAD")
+    temporary = tempfile.TemporaryDirectory(prefix=".history-", dir=parent)
+    target = Path(temporary.name)
+    _git(target, "init", "--bare", "--quiet")
+    objects = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()) / "objects"
+    (target / "objects/info/alternates").write_text(str(objects) + "\n")
+    commands = "".join(f"create {r['name']} {r['object']}\n" for r in refs)
+    subprocess.run(["git", "update-ref", "--stdin"], cwd=target,
+                   input=commands.encode(), check=True, capture_output=True)
+    (target / "HEAD").write_text(head + "\n")
+    return temporary
+
+
+def delivery_history(repo: Path, package: Path, project: str) -> None:
+    """Separate first-parent delivery from all-ref author activity."""
+    catalogue = json.loads((package / "snapshots.json").read_text())
+    selected = next((r for r in catalogue["snapshots"] if r["name"] == "merged"), catalogue["snapshots"][0])
+    revision = selected["revision"]
+    shas = _git(repo, "rev-list", "--first-parent", "--reverse", revision).decode().splitlines()
+    first = shas[0] if shas else revision
+    net = _parse_numstat(_git(repo, "diff", "--numstat", "-z", "-M", "-C", first, revision), project)
+    result = {"schema_version": 1, "snapshot_id": selected["snapshot_id"],
+              "ref": selected["ref"], "revision": revision, "first_parent_commits": shas,
+              "net_changes": net, "net_baseline": first,
+              "all_ref_activity": "commits.jsonl", "method": "Git first-parent ancestry and endpoint diff with rename/copy detection",
+              "limitations": ["Net changes exclude the initial baseline tree.", "First-parent commits are deliveries, not proof of deployment."]}
+    (package / "history/delivery.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
 def _git(repo: Path, *args: str, check: bool = True) -> bytes:
     result = subprocess.run(
-        ["git", *args], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ["git", *args], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
     )
     if check and result.returncode:
         raise RuntimeError(
@@ -238,27 +279,20 @@ def _commit_records(
         Path(cache_dir) / "commits" / f"{_FORMAT_VERSION}-{POLICY_VERSION}"
         if cache_dir is not None else None
     )
+    shas = _git(repo, "rev-list", "--all", "HEAD", "--reverse").decode().splitlines()
+    cached_by_sha: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     if immutable_cache is not None:
         immutable_cache.mkdir(parents=True, exist_ok=True)
-        shas = _git(repo, "rev-list", "--all", "HEAD", "--reverse").decode().splitlines()
-        cached_by_sha: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-        missing: list[str] = []
-        for sha in shas:
-            path = immutable_cache / f"{sha}.json"
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if payload.get("sha") == sha:
-                    cached_by_sha[sha] = (payload["commit"], payload["changes"])
-                    continue
-            except (OSError, json.JSONDecodeError, KeyError, TypeError):
-                pass
-            missing.append(sha)
-        if not missing:
-            return [cached_by_sha[sha] for sha in shas], len(shas)
-    else:
-        shas = _git(repo, "rev-list", "--all", "HEAD", "--reverse").decode().splitlines()
-        cached_by_sha = {}
-        missing = shas
+        try:
+            selected_shas = set(shas)
+            payload = json.loads((immutable_cache / "records.json").read_text())
+            cached_by_sha = {sha: (value[0], value[1]) for sha, value in payload.items()
+                             if sha in selected_shas and value[0]["sha"] == sha}
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            cached_by_sha = {}
+    missing = [sha for sha in shas if sha not in cached_by_sha]
+    if not missing:
+        return [cached_by_sha[sha] for sha in shas], len(shas)
     if not shas:
         return [], 0
 
@@ -299,12 +333,11 @@ def _commit_records(
             for change in rows:
                 change["change_type"] = status_lookup.get((change["path"], change["old_path"])) or status_lookup.get((change["path"], None)) or "?"
             new_records[row["sha"]] = (row, rows)
-            if immutable_cache is not None:
-                (immutable_cache / f"{row['sha']}.json").write_text(
-                    json.dumps({"sha": row["sha"], "commit": row, "changes": rows}, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
     merged = {**cached_by_sha, **new_records}
+    if immutable_cache is not None:
+        temporary = immutable_cache / "records.tmp"
+        temporary.write_text(json.dumps(merged, separators=(",", ":")) + "\n")
+        temporary.replace(immutable_cache / "records.json")
     return [merged[sha] for sha in shas if sha in merged], len(cached_by_sha)
 
 
@@ -448,6 +481,7 @@ def build_history(
     project: str,
     revision: str,
     cache_dir: Path | None = None,
+    frozen: bool = False,
 ) -> dict[str, Any]:
     """Write searchable commits, path changes, refs and cached patch evidence.
 
@@ -457,6 +491,28 @@ def build_history(
     repo, package_dir = Path(repo), Path(package_dir)
     history_dir = package_dir / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
+    product_cache = None
+    if frozen and cache_dir is not None:
+        key = hashlib.sha256(json.dumps([_FORMAT_VERSION, POLICY_VERSION, _refs(repo),
+            _resolve_revision(repo, "HEAD"), logical_date(datetime.now().astimezone()).isoformat(),
+            "frozen-history-product-v1"], sort_keys=True).encode()).hexdigest()
+        product_cache = Path(cache_dir) / "products" / key
+        hashes_path = product_cache / "hashes.json"
+        if hashes_path.exists():
+            try:
+                hashes = json.loads(hashes_path.read_text())
+                if all(hashlib.sha256((product_cache / name).read_bytes()).hexdigest() == expected for name, expected in hashes.items()):
+                    for name in hashes:
+                        target = package_dir / name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        copy_file(product_cache / name, target)
+                    coverage = json.loads((history_dir / "coverage.json").read_text())
+                    coverage["product_cache_hit"] = True
+                    coverage["immutable_commit_cache_rows_reused"] = coverage["commit_count"]
+                    (history_dir / "coverage.json").write_text(json.dumps(coverage, indent=2) + "\n")
+                    return coverage
+            except (OSError, ValueError, KeyError):
+                pass
     start_head = _resolve_revision(repo, revision)
     start_actual_head = _resolve_revision(repo, "HEAD")
     if start_head != start_actual_head:
@@ -465,8 +521,11 @@ def build_history(
         )
     start_refs = _refs(repo)
     start_refs_hash = hashlib.sha256(json.dumps(start_refs, sort_keys=True).encode()).hexdigest()
-    start_status = _status(repo)
-    dirty = _write_dirty_patches(repo, history_dir)
+    start_status = (False, False, 0) if frozen else _status(repo)
+    if frozen:
+        for name in ("staged", "unstaged"):
+            (history_dir / f"{name}.patch").write_bytes(b"")
+    dirty = {"staged": False, "unstaged": False} if frozen else _write_dirty_patches(repo, history_dir)
     dirty_fingerprints = _dirty_patch_fingerprints(history_dir)
     commits_and_changes, cached_commit_rows = _commit_records(repo, project, cache_dir)
     commits = [row for row, _ in commits_and_changes]
@@ -540,9 +599,9 @@ def build_history(
     end_actual_head = _resolve_revision(repo, "HEAD")
     end_refs = _refs(repo)
     end_refs_hash = hashlib.sha256(json.dumps(end_refs, sort_keys=True).encode()).hexdigest()
-    end_status = _status(repo)
+    end_status = start_status if frozen else _status(repo)
     staged, unstaged, changed_paths = end_status
-    end_dirty = _write_dirty_patches(repo, history_dir)
+    end_dirty = dirty if frozen else _write_dirty_patches(repo, history_dir)
     end_dirty_fingerprints = _dirty_patch_fingerprints(history_dir)
     coherent = (
         start_head == end_head == start_actual_head == end_actual_head
@@ -581,7 +640,8 @@ def build_history(
         "committed_diffs": {"storage": "all-refs Git bundle", "individual_patch_files": False},
         "immutable_commit_cache_rows_reused": cached_commit_rows,
         "dirty_worktree": {"staged_patch_present": dirty["staged"], "unstaged_patch_present": dirty["unstaged"], "tracked_changed_paths": changed_paths,
-                           "untracked_files_included": False},
+                           "untracked_files_included": False,
+                           "scope": "worktree overlay is recorded separately" if frozen else "live endpoint capture"},
         "windows": windows,
         "logical_timezone": str(now.tzinfo),
         "growth_products": {"summary": growth["summary"], "daily_rows": len(growth["daily"]),
@@ -595,4 +655,16 @@ def build_history(
         ],
     }
     (history_dir / "coverage.json").write_text(json.dumps(coverage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if product_cache is not None:
+        files = [*history_dir.glob("*"), *package_dir.glob(f"{project}-growth*")]
+        hashes = {}
+        for path in files:
+            if not path.is_file():
+                continue
+            name = path.relative_to(package_dir).as_posix()
+            target = product_cache / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            copy_file(path, target)
+            hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        (product_cache / "hashes.json").write_text(json.dumps(hashes, sort_keys=True) + "\n")
     return coverage

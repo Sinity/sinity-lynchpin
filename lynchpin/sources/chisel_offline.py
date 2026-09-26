@@ -213,7 +213,7 @@ def _guide(
     dataset_rows = (
         "\n".join(
             f"- `{name}`: {count} records"
-            for name, count in sorted(db_info["datasets"].items())
+            for name, count in sorted(db_info.get("datasets", {}).items())
         )
         or "- No JSONL datasets were captured."
     )
@@ -244,7 +244,7 @@ Run `python3 browse.py --package . --help`. The helper uses only Python's standa
 - `python3 browse.py --package . search 'pattern'` searches captured source text (FTS5 over source and evidence records when available, literal fallback otherwise).
 - `python3 browse.py --package . source path/to/file.py --start 20 --end 45` prints a bounded source range.
 - `python3 browse.py --package . history --path path/to/file.py` lists matching history records; add `--commit HASH` to select a commit.
-- `python3 browse.py --package . sql 'SELECT dataset, count(*) FROM datasets GROUP BY dataset'` runs a read-only SELECT in the full local package.
+- `python3 browse.py --package . sql 'SELECT dataset, count(*) FROM datasets GROUP BY dataset'` runs a read-only SELECT when an optional SQLite index was built.
 
 ## Package layout
 
@@ -252,13 +252,13 @@ Run `python3 browse.py --package . --help`. The helper uses only Python's standa
 
 `source/` is the directly browsable captured source tree when present. XML snapshots and compressed views are alternate representations; they are generated from selected memberships and can omit files outside those memberships. Use `inventory.jsonl` and `capture.json` for per-file role, inclusion/exclusion, digest, and capture-state evidence when supplied. The Git bundle, when present, retains repository-native reachable history. History JSONL is a searchable derivative, not a substitute for the bundle.
 
-Attachment archives omit XML renderings, the SQLite index, the duplicate working-tree tar, and Beads HTML. They keep the captured `source/`, Git bundle, JSONL evidence, metrics, and coverage. `browse.py search` and `browse.py history` scan those files directly in an extracted attachment; SQL requires the full local package. Committed patches can be recovered from the Git bundle with Git; staged and unstaged patches are included separately when present.
+Attachment archives omit optional XML renderings, SQLite indexes, duplicate working-tree tar files, and Beads HTML. Their actual manifests list the captured source, history, and selected datasets. `browse.py search` and `browse.py history` scan source and JSONL directly; SQL requires an explicitly built index. The worktree overlay preserves captured differences separately from committed history.
 
 ## Derived datasets
 
 {dataset_rows}
 
-The full local package's `index.sqlite3` mirrors canonical JSONL/NDJSON evidence streams in `datasets(dataset, line, record)` and captured source metadata in `source_files`; it may include `package_fts` for source and evidence text search. It excludes arbitrary JSONL files under `source/`. JSONL remains the inspectable source representation. The `history` and `symbols` views are convenience views over records, not authoritative new claims.
+When explicitly requested, `index.sqlite3` mirrors canonical JSONL/NDJSON evidence streams in `datasets(dataset, line, record)` and captured source metadata in `source_files`. Ordinary browsing uses the listed source and JSONL files and works without SQLite.
 
 ## Coverage and method
 
@@ -271,7 +271,7 @@ Files in context or scratch areas are preserved as project context with their pa
 
 
 def build_offline_package(
-    package_dir: Path, *, project: str, snapshot_id: str, generated_at: str
+    package_dir: Path, *, project: str, snapshot_id: str, generated_at: str, sqlite: bool | None = None
 ) -> dict[str, Any]:
     """Build an offline SQLite index, self-contained helper, and factual guide."""
     package = Path(package_dir)
@@ -298,7 +298,19 @@ def build_offline_package(
             if path.is_dir()
             else None,
         }
-    db_info = _build_db(package, package / "index.sqlite3", availability)
+    for line in (package / "inventory.jsonl").read_text().splitlines() if (package / "inventory.jsonl").exists() else []:
+        row = json.loads(line)
+        if row.get("included") and row.get("sha256"):
+            path = package / "source" / row["path"]
+            _safe_relative(path, package / "source")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != row["sha256"]:
+                raise ValueError("captured source hash differs from inventory")
+    from .chisel_options import active_options
+
+    db_info = (_build_db(package, package / "index.sqlite3", availability)
+               if (active_options.sqlite if sqlite is None else sqlite) else {"status": "not_requested",
+                   "capture": json.loads((package / "capture.json").read_text()) if (package / "capture.json").exists() else {},
+                   "datasets": {p.relative_to(package).as_posix(): sum(1 for _ in p.open()) for p in _jsonl_files(package)}})
     helper_source = Path(__file__).with_name("chisel_browse.py")
     shutil.copyfile(helper_source, package / "browse.py")
     (package / "START_HERE.md").write_text(

@@ -71,6 +71,8 @@ def test_pr_context_covers_all_states_and_serializes_inline_comments(monkeypatch
 def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
     tmp_path, monkeypatch
 ):
+    from lynchpin.sources import chisel_options
+    monkeypatch.setattr(chisel_options, "active_options", chisel_options.BuildOptions(xml=True))
     monkeypatch.setattr(
         chisel_context,
         "read_native_evidence",

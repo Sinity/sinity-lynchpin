@@ -38,7 +38,7 @@ class XtaskInvocation:
     host: str
     project: str | None
     git_commit: str | None
-    git_dirty: bool
+    git_dirty: bool | None
     live_stage: str | None
     args_json: str
     cpu_usage_avg: float | None
@@ -290,7 +290,7 @@ def _row_to_invocation(row: sqlite3.Row, *, source_prefix: str) -> XtaskInvocati
         host=str(row["host"] or ""),
         project=resolve_project(cwd, row["command"], row["subcommand"], row["profile"]),
         git_commit=str(row["git_commit"]) if row["git_commit"] else None,
-        git_dirty=bool(row["git_dirty"]),
+        git_dirty=_bool(row["git_dirty"]),
         workspace_root=str(row["workspace_root"]) if row["workspace_root"] else None,
         workspace_name=str(row["workspace_name"]) if row["workspace_name"] else None,
         git_branch=str(row["git_branch"]) if row["git_branch"] else None,

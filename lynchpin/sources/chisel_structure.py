@@ -20,9 +20,11 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from .chisel_cache import copy_file
+
 from .chisel_inventory import CapturedInventory
 
-_TOOL_VERSION = "chisel-structure-v1"
+_TOOL_VERSION = "chisel-structure-v3"
 _SOURCE_ROLES = {"implementation", "tests", "tooling"}
 _SOURCE_EXTENSIONS = {".py": "python", ".rs": "rust"}
 _SYMBOL_CACHE_VERSION = _TOOL_VERSION
@@ -97,6 +99,20 @@ def build_structure(
             parser_versions[distribution] = version(distribution)
         except PackageNotFoundError:
             parser_versions[distribution] = "unavailable"
+    product_key = hashlib.sha256(json.dumps([snapshot_id, policy_version, _TOOL_VERSION, parser_versions], sort_keys=True).encode()).hexdigest()
+    product_cache = cache / "products" / product_key if cache else None
+    if product_cache is not None and (product_cache / "hashes.json").is_file():
+        try:
+            hashes = json.loads((product_cache / "hashes.json").read_text())
+            if all(hashlib.sha256((product_cache / name).read_bytes()).hexdigest() == expected for name, expected in hashes.items()):
+                for name in hashes:
+                    copy_file(product_cache / name, out / name)
+                coverage = json.loads((out / "coverage.json").read_text())
+                coverage["cache"] = {"hit": True, "key": product_key, "files": len(hashes)}
+                (out / "coverage.json").write_text(json.dumps(coverage, indent=2) + "\n")
+                return coverage
+        except (OSError, ValueError, TypeError):
+            pass
     rust_parser = None
     rust_parser_loaded = False
     python_modules = {
@@ -253,6 +269,18 @@ def build_structure(
         project, snapshot_id, source_bytes, source_rows
     )
     edges.extend(manifest_edges)
+    import_edges = [edge for edge in edges if edge.get("kind") == "python_import"]
+    declared = {re.split(r"[<>=!~;\[ @]", dep["name"])[0].replace("-", "_")
+                for manifest in manifests if manifest.get("ecosystem") == "python" for dep in manifest.get("dependencies", [])}
+    for record in imports:
+        if record["reference_class"] == "unresolved" and record["requested"].split(".")[0] in declared:
+            record["reference_class"] = "declared_third_party"
+            record["resolution_caveat"] = "distribution/module spelling match; imports may use another name"
+    projections = {"all_static_imports": import_edges,
+                   "excluding_type_only": [e for e in import_edges if not e.get("type_only")],
+                   "module_initialization": [e for e in import_edges if not e.get("type_only") and not e.get("deferred")]}
+    for name, projected in projections.items():
+        _write_jsonl(out / f"{name}.jsonl", projected)
     graph_nodes = _graph_node_rows(
         edges, (module for module in modules.values() if module), project, snapshot_id
     )
@@ -276,7 +304,8 @@ def build_structure(
 
     unresolved_edges = [edge for edge in edges if edge.get("status") != "resolved"]
     coverage = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "cache": {"hit": False, "key": product_key},
         "project": project,
         "snapshot_id": snapshot_id,
         "tool_version": _TOOL_VERSION,
@@ -324,6 +353,14 @@ def build_structure(
     (out / "coverage.json").write_text(
         json.dumps(coverage, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if product_cache is not None:
+        product_cache.mkdir(parents=True, exist_ok=True)
+        hashes = {}
+        for path in out.iterdir():
+            if path.is_file():
+                copy_file(path, product_cache / path.name)
+                hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        (product_cache / "hashes.json").write_text(json.dumps(hashes, sort_keys=True) + "\n")
     return coverage
 
 
@@ -478,9 +515,18 @@ def _python_imports(
         if PurePosixPath(path).name == "__init__.py"
         else module.rpartition(".")[0]
     )
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    exported = set()
+    for statement in getattr(tree, "body", []):
+        if isinstance(statement, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in statement.targets):
+            try:
+                exported.update(ast.literal_eval(statement.value))
+            except (ValueError, TypeError):
+                pass
     found: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         names: list[tuple[str, int]] = []
+        dynamic = False
         if isinstance(node, ast.Import):
             names = [(a.name, 0) for a in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -503,7 +549,29 @@ def _python_imports(
                 ]
                 or [(base, node.level)]
             )
-        for requested, level in names:
+        elif isinstance(node, ast.Call) and (
+                isinstance(node.func, ast.Name) and node.func.id == "__import__"
+                or isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "importlib" and node.func.attr == "import_module"):
+            dynamic = True
+            names = [(str(node.args[0].value), 0) if node.args and isinstance(node.args[0], ast.Constant)
+                     and isinstance(node.args[0].value, str) else (ast.unparse(node), 0)]
+        ancestors = []
+        parent = parents.get(node)
+        while parent is not None:
+            ancestors.append(parent)
+            parent = parents.get(parent)
+        functions = [p for p in ancestors if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
+        symbols = [p.name for p in reversed(ancestors) if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        conditions = [(ast.unparse(p.test) if any(node is d for body in p.body for d in ast.walk(body))
+                       else f"not ({ast.unparse(p.test)})") for p in ancestors if isinstance(p, ast.If)]
+        type_only = any(isinstance(p, ast.If) and isinstance(p.test, (ast.Name, ast.Attribute))
+                        and (getattr(p.test, "id", None) == "TYPE_CHECKING" or getattr(p.test, "attr", None) == "TYPE_CHECKING")
+                        and any(node is descendant for body in p.body for descendant in ast.walk(body)) for p in ancestors)
+        optional = any(isinstance(p, (ast.Try, ast.TryStar)) and any(
+            h.type is None or any(isinstance(n, ast.Name) and n.id in {"ImportError", "ModuleNotFoundError"} for n in ast.walk(h.type))
+            for h in p.handlers) for p in ancestors)
+        for index, (requested, level) in enumerate(names):
             target = requested
             parts = target.split(".")
             while parts and ".".join(parts) not in known_modules:
@@ -519,6 +587,17 @@ def _python_imports(
                     "source_module": module,
                     "requested": requested,
                     "relative_level": level,
+                    "scope": "function" if functions else "class" if symbols else "module",
+                    "enclosing_symbol": ".".join(symbols) or None,
+                    "type_only": type_only,
+                    "deferred": bool(functions),
+                    "conditions": conditions,
+                    "optional": optional,
+                    "alias": node.names[index].asname if not dynamic and index < len(node.names) else None,
+                    "explicit_reexport": (node.names[index].asname == node.names[index].name or node.names[index].name in exported) if not dynamic and index < len(node.names) else False,
+                    "reference_class": "dynamic" if dynamic else "internal" if resolved else "standard_library" if requested.split(".")[0] in sys.stdlib_module_names else "unresolved",
+                    "method": "python_ast_dynamic_import_candidate" if dynamic else "python_ast_static_import",
+
                     "target_module": resolved,
                     "status": "candidate_internal"
                     if resolved
@@ -542,7 +621,12 @@ def _resolved_python_edges(
                     "snapshot_id": row["snapshot_id"],
                     "from": source,
                     "to": target,
-                    "kind": "python_import",
+                    "kind": "python_dynamic_import" if row.get("reference_class") == "dynamic" else "python_import",
+                    "type_only": row.get("type_only", False),
+                    "deferred": row.get("deferred", False),
+                    "conditions": row.get("conditions", []),
+                    "optional": row.get("optional", False),
+                    "method": row.get("method"),
                     "status": "resolved",
                     "source_path": row["path"],
                     "source_line": row["line"],
@@ -556,7 +640,12 @@ def _resolved_python_edges(
                     "snapshot_id": row["snapshot_id"],
                     "from": source,
                     "to": row["requested"],
-                    "kind": "python_import",
+                    "kind": "python_dynamic_import" if row.get("reference_class") == "dynamic" else "python_import",
+                    "type_only": row.get("type_only", False),
+                    "deferred": row.get("deferred", False),
+                    "conditions": row.get("conditions", []),
+                    "optional": row.get("optional", False),
+                    "method": row.get("method"),
                     "status": "unresolved",
                     "source_path": row["path"],
                     "source_line": row["line"],
@@ -573,6 +662,11 @@ def _graph_node_rows(
     snapshot: str,
 ) -> list[dict[str, Any]]:
     resolved = [edge for edge in edges if edge.get("status") == "resolved"]
+    incoming_neighbors: dict[str, set[str]] = defaultdict(set)
+    outgoing_neighbors: dict[str, set[str]] = defaultdict(set)
+    for edge in resolved:
+        incoming_neighbors[str(edge["to"])].add(str(edge["from"]))
+        outgoing_neighbors[str(edge["from"])].add(str(edge["to"]))
     incoming = Counter(str(edge["to"]) for edge in resolved)
     outgoing = Counter(str(edge["from"]) for edge in resolved)
     nodes = sorted(set(all_nodes) | set(incoming) | set(outgoing))
@@ -594,6 +688,10 @@ def _graph_node_rows(
             "snapshot_id": snapshot,
             "node": node,
             "in_degree": incoming[node],
+            "incoming_occurrences": incoming[node],
+            "outgoing_occurrences": outgoing[node],
+            "distinct_in_neighbors": len(incoming_neighbors[node]),
+            "distinct_out_neighbors": len(outgoing_neighbors[node]),
             "out_degree": outgoing[node],
             "cycle_component": component_for.get(node),
             "in_cycle": node in component_for,
@@ -1050,6 +1148,8 @@ def _write_graph_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "node",
         "in_degree",
         "out_degree",
+        "incoming_occurrences", "outgoing_occurrences",
+        "distinct_in_neighbors", "distinct_out_neighbors",
         "cycle_component",
         "in_cycle",
     ]

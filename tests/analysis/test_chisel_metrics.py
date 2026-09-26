@@ -37,6 +37,17 @@ def _file(root: Path, path: str, role: str, included: bool = True) -> File:
     return File(path, role, included, hashlib.sha256(content).hexdigest(), len(content))
 
 
+def test_unreadable_source_keeps_complete_total_unknown(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    inventory = Inventory(root, (File("src/lost.py", "implementation", False, "", 0, ("unreadable",)),))
+    summary = build_metrics(inventory, tmp_path / "package")
+    assert summary["measured_maintained_code_lines"] == 0
+    assert summary["maintained_code_lines"] is None
+    assert summary["maintained_code_coverage_complete"] is False
+    assert summary["populations"]["unknown"] == 1
+
+
 def test_context_prose_and_fenced_code_never_enter_maintained_loc(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -87,8 +98,8 @@ def test_context_prose_and_fenced_code_never_enter_maintained_loc(
     summary = build_metrics(inventory, package)
     assert calls[0][calls[0].index("--") + 1 :] == ["src/main.py", "tests/test_main.py"]
     assert summary["known_maintained_code_lines"] == 4
-    assert summary["maintained_code_lines"] is None
-    assert summary["maintained_code_coverage_complete"] is False
+    assert summary["maintained_code_lines"] == 4
+    assert summary["maintained_code_coverage_complete"] is True
     roles = {row["role"]: row for row in summary["roles"]}
     assert roles["documentation"]["bytes"] == len(files["docs/guide.md"].encode())
     assert roles["context"]["bytes"] == len(files[".agent/scratchpad.md"].encode())
