@@ -102,6 +102,22 @@ def _best_commit_ai_join_refresh_id(conn: Any) -> str | None:
     ).fetchone()
     return str(row[0]) if row else None
 
+
+def _serving_source_status(conn: Any, refresh_id: str | None) -> list[dict[str, Any]]:
+    if refresh_id is None:
+        return []
+    rows = conn.execute(
+        "SELECT source, kind, status, reason, row_count, window_start, window_end, "
+        "recorded_at FROM substrate_source_status WHERE refresh_id = ? "
+        "ORDER BY source, kind",
+        [refresh_id],
+    ).fetchall()
+    columns = (
+        "source", "kind", "status", "reason", "row_count", "window_start",
+        "window_end", "recorded_at",
+    )
+    return [dict(zip(columns, (_json_safe(value) for value in row))) for row in rows]
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -135,7 +151,9 @@ def query_substrate(
             "serving": {"kind": "canonical | read_snapshot", "refresh_id": str | None,
                         "publication_id": str | None},
             "freshness": {"status": str, "reason": str,
-                          "source_high_water": dict, "coverage": dict},
+                          "source_high_water": dict, "coverage": dict,
+                          "serving_source_status_refresh_id": str | None,
+                          "serving_source_status": list},
         }
 
     max_rows is capped at 10 000.
@@ -169,6 +187,8 @@ def query_substrate(
         conn.execute("SET autoload_known_extensions = false")
         refresh_id = latest_materialized_refresh_id(conn, caller="query_substrate")
         serving_kind = "canonical" if serving.database_path == path else "read_snapshot"
+        freshness["serving_source_status_refresh_id"] = refresh_id
+        freshness["serving_source_status"] = _serving_source_status(conn, refresh_id)
         inspected_refresh_id = freshness.get("source_high_water", {}).get("serving_refresh_id")
         if freshness.get("status") == "ready" and inspected_refresh_id != refresh_id:
             freshness = {

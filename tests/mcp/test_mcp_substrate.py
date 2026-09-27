@@ -53,7 +53,11 @@ def test_query_substrate_reports_served_generation_when_convergence_is_blocked(
 
     assert result["rows"] == [["served-generation"]]
     assert result["serving"] == {"kind": "canonical", "refresh_id": "served-generation", "publication_id": None}
-    assert result["freshness"] == {"status": "blocked", "reason": "fixture failure"}
+    assert result["freshness"] == {
+        "status": "blocked", "reason": "fixture failure",
+        "serving_source_status_refresh_id": "served-generation",
+        "serving_source_status": [],
+    }
 
 
 def test_query_substrate_rejects_freshness_receipt_for_another_generation(

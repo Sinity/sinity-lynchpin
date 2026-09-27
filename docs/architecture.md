@@ -83,6 +83,11 @@ SELECT-only SQL with bounded response pages. In the DSL, `limit` is the total
 requested result scope and `max_rows` is the page size (at most 10,000 rows).
 Continue with the returned `next_offset`, the same `order_by`, and the serving
 `publication_id` as `expected_publication_id`; a changed publication is rejected.
+SQL and DSL results include the selected serving refresh and its recorded
+per-source status, row count, window, and observation time in `freshness`.
+These rows describe the retained promotion. The separate freshness status
+reports whether current inputs are known to differ; a recorded `ok` source
+does not claim current acquisition coverage.
 Unknown query fields and public action filters are rejected. Mutation is not
 exposed through query tools.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,67 @@ def test_lynchpin_query_dsl_selects_entity(tmp_path: Path, monkeypatch: pytest.M
     assert result["meta"]["action"] == "dsl"
     assert "SELECT" in result["data"]["sql"]
     assert result["data"]["row_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "query"),
+    [
+        ("sql", {"sql": "SELECT 1 AS value"}),
+        ("dsl", {"table": "commit_fact", "select": ["sha"]}),
+    ],
+)
+def test_lynchpin_query_reports_served_source_gaps(
+    mode: str, query: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = setup_substrate(tmp_path, monkeypatch)
+    import duckdb
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO substrate_promotion_run "
+            "(refresh_id, status, started_at, finished_at) VALUES "
+            "('retained', 'degraded', TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+        conn.execute(
+            "INSERT INTO substrate_source_status "
+            "(refresh_id, source, kind, status, reason, row_count, window_start, "
+            "window_end, recorded_at) VALUES "
+            "('retained', 'commits', 'stage', 'ok', NULL, 3, "
+            "DATE '2026-01-01', DATE '2026-01-03', TIMESTAMPTZ '2026-01-01 00:01:00+00'), "
+            "('retained', 'sessions', 'stage', 'unavailable', 'input missing', NULL, "
+            "NULL, NULL, TIMESTAMPTZ '2026-01-01 00:01:00+00')"
+        )
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.substrate.ensure_substrate_materialized_for_read",
+        lambda **_kwargs: {"status": "blocked", "reason": "inputs changed"},
+    )
+
+    from lynchpin.mcp.tools.public import lynchpin_query
+
+    result = lynchpin_query({"mode": mode, **query})
+
+    assert result["ok"] is True
+    assert result["data"]["serving"]["refresh_id"] == "retained"
+    assert result["data"]["freshness"]["status"] == "blocked"
+    assert result["data"]["freshness"]["serving_source_status_refresh_id"] == "retained"
+    statuses = result["data"]["freshness"]["serving_source_status"]
+    assert all(
+        datetime.fromisoformat(row["recorded_at"]).astimezone(timezone.utc)
+        == datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc)
+        for row in statuses
+    )
+    assert [{key: value for key, value in row.items() if key != "recorded_at"} for row in statuses] == [
+        {
+            "source": "commits", "kind": "stage", "status": "ok", "reason": None,
+            "row_count": 3, "window_start": "2026-01-01", "window_end": "2026-01-03",
+        },
+        {
+            "source": "sessions", "kind": "stage", "status": "unavailable",
+            "reason": "input missing", "row_count": None, "window_start": None,
+            "window_end": None,
+        },
+    ]
 
 
 def test_lynchpin_query_dsl_reports_truncation_at_requested_limit(
