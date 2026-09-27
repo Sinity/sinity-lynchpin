@@ -3670,7 +3670,9 @@ def _polylogue_date_bounds_from_sqlite(path: Path) -> tuple[date | None, date | 
     if not path.exists():
         return None, None
     try:
-        with sqlite3.connect(path) as conn:
+        from .sources.polylogue_client import _readonly_polylogue_connection
+
+        with _readonly_polylogue_connection(path) as conn:
             row = conn.execute(
                 """
                 SELECT MIN(canonical_session_date), MAX(canonical_session_date)

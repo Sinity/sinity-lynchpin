@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from lynchpin.sources.polylogue_client import _readonly_polylogue_connection
 from lynchpin.sources.polylogue_session_attribution import (
     SessionRepoInterval,
     attribute_spans_by_session_overlap,
@@ -133,7 +134,6 @@ def _make_index_db(path: str) -> None:
 def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
     db_path = str(tmp_path / "index.db")
     _make_index_db(db_path)
-    session_repo_intervals.cache_clear()
 
     intervals = session_repo_intervals(db_path)
 
@@ -145,4 +145,35 @@ def test_session_repo_intervals_reads_real_schema_shape(tmp_path):
             end=datetime.fromtimestamp(1_776_003_600_000 / 1000, tz=timezone.utc),
         ),
     )
-    session_repo_intervals.cache_clear()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?)",
+            ("claude-code-session:new", 1_776_000_000_000, 1_776_003_600_000),
+        )
+        conn.execute(
+            "INSERT INTO session_repos VALUES (?, ?)",
+            ("claude-code-session:new", "/realm/project/polylogue"),
+        )
+
+    assert {interval.session_id for interval in session_repo_intervals(db_path)} == {
+        "claude-code-session:abc",
+        "claude-code-session:new",
+    }
+    assert not (tmp_path / "index.db-wal").exists()
+    assert not (tmp_path / "index.db-shm").exists()
+
+
+def test_polylogue_connection_refuses_writes_and_missing_file(tmp_path):
+    path = tmp_path / "index.db"
+    with pytest.raises(sqlite3.OperationalError):
+        with _readonly_polylogue_connection(path):
+            pass
+    assert not path.exists()
+
+    _make_index_db(str(path))
+    with _readonly_polylogue_connection(path) as conn:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("CREATE TABLE forbidden (id INTEGER)")
+    assert not (tmp_path / "index.db-wal").exists()
+    assert not (tmp_path / "index.db-shm").exists()

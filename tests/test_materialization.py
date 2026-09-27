@@ -3525,6 +3525,16 @@ def test_polylogue_date_bounds_reads_direct_sqlite_product(tmp_path) -> None:
         date(2026, 6, 5),
     )
 
+    with sqlite3.connect(path) as conn:
+        conn.execute("INSERT INTO session_profiles VALUES ('c3', '2026-06-10')")
+
+    assert _polylogue_date_bounds_from_sqlite(path) == (
+        date(2026, 6, 1),
+        date(2026, 6, 10),
+    )
+    assert not (tmp_path / "polylogue.db-wal").exists()
+    assert not (tmp_path / "polylogue.db-shm").exists()
+
 
 def test_polylogue_date_bounds_direct_read_tolerates_missing_table(tmp_path) -> None:
     import sqlite3

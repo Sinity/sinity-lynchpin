@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 import warnings
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 warnings.filterwarnings(
     "ignore",
@@ -19,6 +21,16 @@ def _default_polylogue_db_path() -> Path:
     from ..core.config import get_config
 
     return get_config().polylogue_db
+
+
+@contextmanager
+def _readonly_polylogue_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a Polylogue SQLite tier read-only and always release its handle."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 @lru_cache(maxsize=1)

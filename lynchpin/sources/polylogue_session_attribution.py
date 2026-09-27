@@ -20,14 +20,15 @@ the work_event tier keeps low-overlap matches out.
 from __future__ import annotations
 
 import functools
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Protocol, Sequence
 
+from ..core.cache import files_signature
 from ..core.primitives import split_by_day
+from .polylogue_client import _readonly_polylogue_connection
 
 __all__ = [
     "SessionRepoInterval",
@@ -76,17 +77,21 @@ def _project_from_root_path(root_path: str) -> str | None:
     return name or None
 
 
-@functools.lru_cache(maxsize=8)
 def session_repo_intervals(db_path: str) -> tuple[SessionRepoInterval, ...]:
     """Read (session, project, [created,updated]) triples from the index DB.
 
-    Cached per ``db_path`` for the process lifetime — the index DB is
-    append-mostly and re-querying it per AW window would dominate the
-    attribution path. Call ``session_repo_intervals.cache_clear()`` in
-    tests that swap the underlying DB file.
+    Invalidate the cached intervals when the database or its WAL changes.
     """
-    conn = sqlite3.connect(db_path)
-    try:
+    path = Path(db_path)
+    signature = files_signature((path, Path(f"{path}-wal")))
+    return _session_repo_intervals_cached(db_path, signature)
+
+
+@functools.lru_cache(maxsize=8)
+def _session_repo_intervals_cached(
+    db_path: str, _signature: object
+) -> tuple[SessionRepoInterval, ...]:
+    with _readonly_polylogue_connection(Path(db_path)) as conn:
         rows = conn.execute(
             """
             SELECT sr.session_id, sr.root_path, s.created_at_ms, s.updated_at_ms
@@ -98,8 +103,6 @@ def session_repo_intervals(db_path: str) -> tuple[SessionRepoInterval, ...]:
               AND s.updated_at_ms >= s.created_at_ms
             """
         ).fetchall()
-    finally:
-        conn.close()
 
     out: list[SessionRepoInterval] = []
     for session_id, root_path, created_ms, updated_ms in rows:

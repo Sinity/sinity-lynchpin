@@ -23,7 +23,7 @@ from ..core.coverage import CoverageBounds
 from ..core.errors import MaterializationError
 from ..core.parse import parse_datetime as _parse_dt
 from ..core.projects import canonical_project_name
-from .polylogue_client import _default_polylogue_db_path, _polylogue_client
+from .polylogue_client import _default_polylogue_db_path, _polylogue_client, _readonly_polylogue_connection
 from .polylogue_models import (
     ChatDayActivity,
     ConversationLineage,
@@ -227,7 +227,7 @@ def _archive_readiness_from_sqlite(db: Path) -> PolylogueReadiness | None:
     if not db.exists():
         return None
     try:
-        with sqlite3.connect(str(db)) as conn:
+        with _readonly_polylogue_connection(db) as conn:
             if not (
                 _sqlite_has_table(conn, "session_profiles")
                 and _sqlite_has_table(conn, "session_work_events")
@@ -598,7 +598,7 @@ def _session_profiles_from_sqlite(
     if not db.exists():
         return None
     try:
-        with sqlite3.connect(str(db)) as conn:
+        with _readonly_polylogue_connection(db) as conn:
             conn.row_factory = sqlite3.Row
             if not _sqlite_has_table(conn, "session_profiles"):
                 return None
@@ -1063,7 +1063,7 @@ def _work_events_from_sqlite(
     if not db.exists():
         return None
     try:
-        with sqlite3.connect(str(db)) as conn:
+        with _readonly_polylogue_connection(db) as conn:
             conn.row_factory = sqlite3.Row
             if not _sqlite_has_table(conn, "session_work_events"):
                 return None
@@ -1360,16 +1360,14 @@ def daily_activity(*, start: date, end: date) -> list[ChatDayActivity]:
 
 
 def coverage_bounds() -> CoverageBounds | None:
-    import sqlite3
     db = _default_polylogue_db_path()
     if not db.exists():
         return None
     try:
-        conn = sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT MIN(created_at), MAX(created_at) FROM conversations"
-        ).fetchone()
-        conn.close()
+        with _readonly_polylogue_connection(db) as conn:
+            row = conn.execute(
+                "SELECT MIN(created_at), MAX(created_at) FROM conversations"
+            ).fetchone()
     except Exception:
         return None
     if not row or row[0] is None:
