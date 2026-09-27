@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
@@ -92,6 +94,67 @@ def test_agentctl_plan_still_promotes_machine_and_live_sources_when_products_are
 
     assert [node["id"] for node in plan["nodes"]] == ["substrate:promotion"]
     assert plan["nodes"][0]["depends_on"] == []
+
+
+def test_declared_converge_runs_typed_nodes_without_agentctl_plan_api(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    import pytest
+
+    from lynchpin import materialization
+    from lynchpin.cli import agentctl_plan, materialize
+
+    end = date(2026, 8, 26)
+    step = _step("activitywatch", "aw-generation", window=(date(2026, 8, 24), end))
+    transitions: list[str] = []
+    monkeypatch.setattr(agentctl_plan, "plan_materializations", lambda **_kwargs: [step])
+    monkeypatch.setattr(materialize, "_all_history_window", lambda: (date(2020, 1, 1), end))
+    monkeypatch.setattr(
+        agentctl_plan,
+        "run_materialization_plan",
+        lambda steps, **_kwargs: transitions.append("materialize") or list(steps),
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_audit_one",
+        lambda *_args, **_kwargs: SimpleNamespace(status="ready", reason=None),
+    )
+    monkeypatch.setattr(
+        materialization,
+        "_materialized_enough_for_window",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def promote(**kwargs):
+        transitions.append("promote")
+        return {
+            "schema": "lynchpin.promotion-node-result.v1",
+            "status": "succeeded",
+            **kwargs,
+        }
+
+    monkeypatch.setattr(agentctl_plan, "run_promotion_node", promote)
+
+    # This fake deliberately rejects the removed plan API if any code tries to
+    # invoke it while the declared converge operation runs.
+    agentctl = tmp_path / "agentctl"
+    invocation = tmp_path / "agentctl-called"
+    agentctl.write_text(f"#!/bin/sh\ntouch '{invocation}'\nexit 73\n")
+    agentctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+    with pytest.raises(SystemExit) as removed_submit:
+        agentctl_plan.main(["submit"])
+    assert removed_submit.value.code == 2
+    assert agentctl_plan.main(["converge", "--end", end.isoformat()]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert transitions == ["materialize", "promote"]
+    assert result["schema"] == "lynchpin.convergence-result.v1"
+    assert result["status"] == "succeeded"
+    assert result["materialized_products"] == ["activitywatch"]
+    assert result["promotion"]["schema"] == "lynchpin.promotion-node-result.v1"
+    assert not invocation.exists()
 
 
 def test_product_node_uses_the_scheduled_generation(monkeypatch) -> None:

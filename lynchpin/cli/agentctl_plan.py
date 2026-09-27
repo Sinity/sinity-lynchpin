@@ -1,17 +1,13 @@
-"""Render and execute Lynchpin nodes through Sinnix project plans."""
+"""Render typed materialization plans and run Lynchpin convergence nodes."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
-import subprocess
-import tempfile
 import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from lynchpin.core.config import get_config
@@ -376,39 +372,11 @@ def run_product_refresh(product: str) -> dict[str, Any]:
     }
 
 
-def submit_agentctl_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Submit the typed node graph to the canonical runtime client."""
-    with tempfile.TemporaryDirectory(prefix="lynchpin-plan-") as directory:
-        path = Path(directory) / "plan.json"
-        path.write_text(canonical_json({"nodes": plan["nodes"]}) + "\n")
-        completed = subprocess.run(
-            [
-                "agentctl",
-                "plan",
-                "submit",
-                "lynchpin",
-                "--input-generation",
-                str(plan["input_generation"]),
-                "--plan-file",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    result = json.loads(completed.stdout)
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        raise RuntimeError("AgentCTL rejected the Lynchpin convergence plan")
-    return result
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan_parser = subparsers.add_parser("plan")
     plan_parser.add_argument("--end")
-    submit_parser = subparsers.add_parser("submit")
-    submit_parser.add_argument("--end")
     node_parser = subparsers.add_parser("node")
     node_parser.add_argument("--product", required=True)
     node_parser.add_argument("--input-generation", required=True)
@@ -426,11 +394,11 @@ def main(argv: list[str] | None = None) -> int:
     refresh_parser = subparsers.add_parser("refresh")
     refresh_parser.add_argument("--product", required=True)
     args = parser.parse_args(argv)
-    if args.command in {"plan", "submit"}:
+    if args.command == "plan":
         plan = build_agentctl_plan(
             maintenance_end=date.fromisoformat(args.end) if args.end else None
         )
-        payload = submit_agentctl_plan(plan) if args.command == "submit" else plan
+        payload = plan
     elif args.command == "node":
         payload = run_product_node(
             product=args.product,
