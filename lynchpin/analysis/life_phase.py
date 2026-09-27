@@ -88,15 +88,27 @@ class LifePhase:
     git_commits_per_day: float = 0
     stress_mean: Optional[float] = None
     sleep_hours: Optional[float] = None
-    substance_mg_per_day: float = 0
-    wykop_comments_per_day: float = 0
+    # Positive-event exports do not establish quiet calendar days. Keep their
+    # observed totals and event-day denominators separate from daily rates.
+    sparse_event_volume: dict[str, "SparseEventVolume"] = field(default_factory=dict)
 
     # Social / music signals (None when no covered data exists in this phase).
-    reddit_comments_per_day: Optional[float] = None
     web_distraction_ratio: Optional[float] = None  # social_visits / total_visits mean
     spotify_hours_per_day: Optional[float] = None
 
     label: str = ""  # human-readable phase name
+
+
+@dataclass(frozen=True)
+class SparseEventVolume:
+    """Observed event totals with explicit event-day and calendar denominators."""
+
+    unit: str
+    total: float
+    event_days: int
+    calendar_days: int
+    per_event_day: Optional[float]
+    interpretation: str = "positive-event dates only; quiet dates are unknown, not zero"
 
 
 @dataclass
@@ -116,6 +128,8 @@ class LifePhaseReport:
 
     # Per-metric coverage provenance for the signals fed into detection.
     signal_coverage: list[str] = field(default_factory=list)
+    # Sparse event sources are summarized separately from boundary signals.
+    event_metric_coverage: list[str] = field(default_factory=list)
 
     summary: str = ""
 
@@ -172,10 +186,9 @@ class _Metric:
     # otherwise let ``accessor`` read an unobserved day as a fabricated 0.
     # Measured 2026-08-03: AW bounds claimed 2013-01-15.. while real capture
     # starts 2026-02-15, so 776/924 days (84%) of a 2024-01..2026-07 window
-    # entered the composite as zero-activity days. Presence labels are only
-    # set for observation-backed sources; counter exports (git/wykop/reddit/
-    # substance) mark presence on activity days only, so they keep the
-    # bounds-only gate (a genuine zero-activity day must still contribute).
+    # entered the composite as zero-activity days. Sparse event exports
+    # (substance, Wykop, Reddit) are excluded from daily boundary signals:
+    # their rows represent event dates, not verified zero-event dates.
     presence: Optional[str] = None
 
 
@@ -202,14 +215,9 @@ _METRICS: tuple[_Metric, ...] = (
     _Metric("stress", lambda r: r.stress_mean or 0.0, 0.5, "stress", presence="health"),
     _Metric("sleep", lambda r: r.sleep_hours or 0.0, 1.0, "sleep", presence="sleep"),
     # ── Substance ────────────────────────────────────────────────────────
-    _Metric("substance_mg", lambda r: sum(r.substance_mg_by_name.values()), 0.3, "substance"),
     # ── Social ───────────────────────────────────────────────────────────
-    # wykop_comments: Polish social-platform comment volume (export, gated by
-    # wykop coverage). Weight 0.3 — comparable social signal to reddit.
-    _Metric("wykop", lambda r: float(r.wykop_comments), 0.3, "wykop"),
-    # reddit_comments: raw comment count on Reddit. Measures social/media
-    # engagement independently of wykop. Coverage key "reddit".
-    _Metric("reddit", lambda r: float(r.reddit_comments), 0.3, "reddit"),
+    # Sparse-event exports (substance, Wykop, Reddit) are reported separately
+    # below; they do not provide verified zero-event calendar days.
     # web_distraction: social-visits / total-visits ratio (0–1). Captures days
     # dominated by distraction browsing regardless of absolute visit volume.
     # Coverage follows webhistory so it is present only when web data exists.
@@ -246,6 +254,15 @@ def analyze(
     # Resolve per-metric coverage from observed source bounds.
     metric_bounds = _resolve_metric_bounds(rows)
     report.signal_coverage = [metric_bounds[m.name].provenance() for m in _METRICS]
+    report.event_metric_coverage = [
+        f"{name}: {metric_bounds[key].provenance()}; positive-event dates only; "
+        "quiet dates unknown; excluded from boundary detection"
+        for name, key in (
+            ("substance", "substance_events"),
+            ("Wykop", "wykop_events"),
+            ("Reddit", "reddit_events"),
+        )
+    ]
 
     # Build coverage-aware composite signal (missing != zero).
     signals = _build_composite_signal(rows, metric_bounds)
@@ -270,9 +287,13 @@ def write_report(out: Path, *, start: date, end: date) -> dict[str, Any]:
     from lynchpin.core.io import save_json
     report = analyze(start, end)
     payload = {
+        "schema_version": 2,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
+        "methodology": {
+            "sparse_event_sources": "positive-event dates only; quiet dates are unknown and excluded from boundary detection",
+        },
         **asdict(report),
     }
     save_json(out, json.loads(json.dumps(payload, default=str)))
@@ -314,6 +335,13 @@ def _resolve_metric_bounds(rows: list[OperatorDay]) -> dict[str, CoverageBounds]
             out[m.name] = src_bounds.get(
                 key, CoverageBounds(source=key, first=None, last=None, kind="export")
             )
+    out["substance_events"] = health_bounds.get(
+        "substance", CoverageBounds(source="substance", first=None, last=None, kind="export")
+    )
+    for key in ("wykop", "reddit"):
+        out[f"{key}_events"] = src_bounds.get(
+            key, CoverageBounds(source=key, first=None, last=None, kind="export")
+        )
     return out
 
 
@@ -516,7 +544,6 @@ def _build_phases(
     metric_bounds: dict[str, CoverageBounds],
 ) -> list[LifePhase]:
     """Build LifePhase objects for each period between detected boundaries."""
-    reddit_cov = metric_bounds.get("reddit")
     if not boundaries:
         return []
 
@@ -536,6 +563,41 @@ def _build_phases(
             continue
 
         n = len(phase_rows)
+
+        substance_amounts: dict[str, list[float]] = defaultdict(list)
+        substance_days = [row for row in phase_rows if "substance" in row.sources_present]
+        for row in substance_days:
+            for name, amount in row.substance_mg_by_name.items():
+                substance_amounts[name].append(float(amount))
+        event_volume: dict[str, SparseEventVolume] = {}
+        if substance_days:
+            doses = float(sum(row.substance_doses for row in substance_days))
+            event_volume["substance:doses"] = SparseEventVolume(
+                unit="doses", total=doses, event_days=len(substance_days),
+                calendar_days=n, per_event_day=doses / len(substance_days),
+            )
+        for name, amounts in substance_amounts.items():
+            total = sum(amounts)
+            event_days = len(amounts)
+            event_volume[f"substance:{name}"] = SparseEventVolume(
+                unit="mg", total=total, event_days=event_days,
+                calendar_days=n, per_event_day=total / event_days,
+            )
+        for source, field_name, unit in (
+            ("wykop", "wykop_comments", "comments"),
+            ("reddit", "reddit_comments", "comments"),
+        ):
+            observed = [
+                float(getattr(row, field_name))
+                for row in phase_rows
+                if source in row.sources_present
+            ]
+            if observed:
+                total = sum(observed)
+                event_volume[source] = SparseEventVolume(
+                    unit=unit, total=total, event_days=len(observed),
+                    calendar_days=n, per_event_day=total / len(observed),
+                )
 
         # Web distraction ratio: only compute when at least one day has visits.
         web_rows = [r for r in phase_rows if r.web_visits > 0]
@@ -559,21 +621,7 @@ def _build_phases(
             sleep_hours=statistics.mean(
                 [r.sleep_hours for r in phase_rows if r.sleep_hours is not None]
             ) if any(r.sleep_hours is not None for r in phase_rows) else None,
-            substance_mg_per_day=sum(sum(r.substance_mg_by_name.values()) for r in phase_rows) / n,
-            wykop_comments_per_day=sum(r.wykop_comments for r in phase_rows) / n,
-            # Social / music: per-phase means where covered (None = not in
-            # coverage). Reddit previously averaged over ALL phase rows, which
-            # coerced out-of-coverage days (export ends 2025-03) to zero and
-            # diluted every later phase's rate toward 0.
-            reddit_comments_per_day=(
-                statistics.mean(reddit_rows)
-                if (reddit_rows := [
-                    float(r.reddit_comments)
-                    for r in phase_rows
-                    if reddit_cov is not None and reddit_cov.covers(r.date)
-                ])
-                else None
-            ),
+            sparse_event_volume=event_volume,
             web_distraction_ratio=web_dist,
             spotify_hours_per_day=statistics.mean(
                 [r.spotify_hours for r in phase_rows if r.spotify_hours is not None]
@@ -598,21 +646,27 @@ def _summarize_phases(report: LifePhaseReport) -> str:
     ]
     for prov in report.signal_coverage:
         lines.append(f"  {prov}")
+    if report.event_metric_coverage:
+        lines.append("Sparse event coverage:")
+        for prov in report.event_metric_coverage:
+            lines.append(f"  {prov}")
     lines += ["", "Phases:"]
     for p in report.phases:
         aw = f"{p.aw_active_hours:.0f}h" if p.aw_active_hours else "?"
         stress = f"{p.stress_mean:.0f}" if p.stress_mean else "?"
         sleep = f"{p.sleep_hours:.1f}h" if p.sleep_hours else "?"
-        reddit = f"{p.reddit_comments_per_day:.1f}" if p.reddit_comments_per_day is not None else "?"
         web_dist = f"{p.web_distraction_ratio:.2f}" if p.web_distraction_ratio is not None else "?"
         spotify = f"{p.spotify_hours_per_day:.1f}h" if p.spotify_hours_per_day is not None else "?"
+        event_summary = ", ".join(
+            f"{name}={value.total:g}{value.unit} on {value.event_days}/{value.calendar_days} days"
+            for name, value in sorted(p.sparse_event_volume.items())
+        ) or "none observed"
         lines.append(
             f"  {p.start} → {p.end} ({p.n_days:>4}d) | "
             f"AW={aw:>4s} git={p.git_commits_per_day:>5.1f}/d "
             f"stress={stress:>3s} sleep={sleep:>5s} "
-            f"substance={p.substance_mg_per_day:>6.0f}mg/d "
-            f"wykop={p.wykop_comments_per_day:>5.1f}/d "
-            f"reddit={reddit:>4s}/d web_soc={web_dist:>4s} spotify={spotify:>5s}"
+            f"web_soc={web_dist:>4s} spotify={spotify:>5s} "
+            f"sparse_events=[{event_summary}]"
         )
     if unaligned:
         lines += ["", "Known events with no nearby detected shift (context only, NOT boundaries):"]
@@ -629,6 +683,7 @@ def _summarize_phases(report: LifePhaseReport) -> str:
 __all__ = [
     "PhaseBoundary",
     "EventAnnotation",
+    "SparseEventVolume",
     "LifePhase",
     "LifePhaseReport",
     "analyze",

@@ -41,6 +41,8 @@ def _day(
         present.add("spotify")
     if web_total > 0:
         present.add("web")
+    if reddit > 0:
+        present.add("reddit")
     row = OperatorDay(
         date=d,
         aw_active_hours=aw,
@@ -208,6 +210,68 @@ def test_coverage_provenance_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "covers" in joined
     # The summary echoes coverage provenance.
     assert "Signal coverage:" in report.summary
+    assert len(report.event_metric_coverage) == 3
+    assert all("quiet dates unknown" in row for row in report.event_metric_coverage)
+
+
+def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None:
+    start = date(2025, 1, 1)
+    rows = [_day(start + timedelta(days=i), aw=4.0) for i in range(4)]
+    rows[0].sources_present = frozenset({"activitywatch", "substance", "wykop"})
+    rows[0].substance_doses = 1
+    rows[0].substance_mg_by_name = {"caffeine": 100.0}
+    rows[0].wykop_comments = 2
+    rows[1].sources_present = frozenset({"activitywatch", "substance", "reddit"})
+    rows[1].substance_doses = 1
+    rows[1].substance_mg_by_name = {"melatonin": 3.0}
+    rows[1].reddit_comments = 5
+
+    phases = lp._build_phases(
+        rows,
+        [lp.PhaseBoundary(rows[2].date, 0.5, ("fixture",), ())],
+        {},
+    )
+
+    first = phases[0]
+    assert first.n_days == 2
+    assert set(first.sparse_event_volume) == {
+        "substance:doses", "substance:caffeine", "substance:melatonin", "wykop", "reddit",
+    }
+    doses = first.sparse_event_volume["substance:doses"]
+    assert (doses.total, doses.unit, doses.event_days, doses.calendar_days) == (2, "doses", 2, 2)
+    caffeine = first.sparse_event_volume["substance:caffeine"]
+    melatonin = first.sparse_event_volume["substance:melatonin"]
+    assert (caffeine.total, caffeine.unit, caffeine.event_days, caffeine.calendar_days) == (
+        100.0, "mg", 1, 2,
+    )
+    assert caffeine.per_event_day == 100.0
+    assert (melatonin.total, melatonin.unit, melatonin.event_days, melatonin.calendar_days) == (
+        3.0, "mg", 1, 2,
+    )
+    assert first.sparse_event_volume["wykop"].per_event_day == 2.0
+    assert first.sparse_event_volume["reddit"].per_event_day == 5.0
+    assert all("quiet dates are unknown, not zero" in value.interpretation
+               for value in first.sparse_event_volume.values())
+    assert phases[1].sparse_event_volume == {}
+    assert not {"substance_mg", "wykop", "reddit"}.intersection(
+        metric.name for metric in lp._METRICS
+    )
+
+
+def test_life_phase_report_versions_sparse_event_schema(tmp_path, monkeypatch) -> None:
+    import json
+
+    start = date(2025, 1, 1)
+    report = lp.LifePhaseReport(start, start, 1)
+    report.event_metric_coverage = ["fixture: quiet dates unknown"]
+    monkeypatch.setattr(lp, "analyze", lambda *_args, **_kwargs: report)
+
+    output = tmp_path / "life-phase.json"
+    payload = lp.write_report(output, start=start, end=start)
+
+    assert payload["schema_version"] == 2
+    assert payload["methodology"]["sparse_event_sources"].startswith("positive-event dates only")
+    assert json.loads(output.read_text())["event_metric_coverage"] == report.event_metric_coverage
 
 
 def test_short_window_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,9 +339,8 @@ def test_social_phase_distinguishable_from_coding_phase(
     social_mean = sum(signal[n_each:]) / n_each
 
     # The two phases must have clearly different composite means. The threshold
-    # is 0.1 rather than a larger value because sleep/wykop are zero on both
-    # phases and dilute the aggregate z-score, but spotify/reddit/web_dist do
-    # pull the composite in opposite directions — the point is that the
+    # is 0.1 rather than a larger value because sleep is zero on both phases and
+    # dilutes the aggregate z-score, but spotify/web_dist still pull the composite — the point is that the
     # separation is non-trivially positive (>0) and reproducibly measurable.
     assert abs(coding_mean - social_mean) > 0.1, (
         f"Expected composite separation >0.1 between coding and social phase; "
@@ -294,13 +357,15 @@ def test_social_phase_distinguishable_from_coding_phase(
         f"Nearest boundary {nearest.date} is >21d from true transition {transition}"
     )
 
-    # ── 3. Phase characterization carries social/music means ──────────────
+    # ── 3. Phase characterization keeps sparse event counts qualified ────
     assert report.phases, "boundaries should produce at least one phase"
     for phase in report.phases:
         # Every phase object should now carry the new signal attributes.
         assert hasattr(phase, "spotify_hours_per_day")
-        assert hasattr(phase, "reddit_comments_per_day")
         assert hasattr(phase, "web_distraction_ratio")
+    social_phase = next(p for p in report.phases if "reddit" in p.sparse_event_volume)
+    assert social_phase.sparse_event_volume["reddit"].event_days == social_phase.n_days
+    assert social_phase.sparse_event_volume["reddit"].calendar_days == social_phase.n_days
 
 
 def test_in_bounds_capture_gap_is_absent_not_zero(
