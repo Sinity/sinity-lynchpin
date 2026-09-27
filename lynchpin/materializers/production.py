@@ -285,7 +285,9 @@ def plan_materializations(
         if force:
             action, reason = "materialize", row.reason
         elif maintenance:
-            if row.repair_required:
+            if row.name == "code_snapshots":
+                action, reason = "check-only", "Chisel snapshots require an explicit build; nightly tail maintenance does not rebuild the portfolio"
+            elif row.repair_required:
                 step_window = _incremental_window(row, end=end)
                 if step_window is None:
                     action, reason = "check-only", "incremental maintenance requires a proven historical product; run explicit repair/backfill"

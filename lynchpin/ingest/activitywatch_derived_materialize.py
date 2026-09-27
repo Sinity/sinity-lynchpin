@@ -30,6 +30,7 @@ from ..sources.activitywatch_derived import (
     activitywatch_derived_generation_dir,
     activitywatch_derived_manifest_path,
     activitywatch_derived_path,
+    resolve_derived_partition_path,
 )
 from ..sources.activitywatch_event_index import activitywatch_event_index_manifest_path
 from ..sources.activitywatch_raw import canonical_activitywatch_events_path
@@ -148,7 +149,7 @@ def _materialize_window(
     }
 
     previous = _load_json(activitywatch_derived_manifest_path(root))
-    paths, partition_counts = _existing_partitions(previous)
+    paths, partition_counts = _existing_partitions(previous, root=root)
     migration = previous.get("schema_version") != ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     if migration:
         # The one-time v2-to-v3 conversion copies the small persisted derived
@@ -256,6 +257,8 @@ def _default_window(start: date | None, end: date | None) -> tuple[date, date]:
 
 def _existing_partitions(
     manifest: dict[str, Any],
+    *,
+    root: Path | None = None,
 ) -> tuple[dict[str, dict[str, Path]], dict[str, dict[str, int]]]:
     raw_paths = manifest.get("product_paths")
     raw_counts = manifest.get("partition_row_counts")
@@ -269,11 +272,15 @@ def _existing_partitions(
         if not isinstance(product_paths, dict) or not isinstance(product_counts, dict):
             return {name: {} for name in PRODUCT_KINDS}, {name: {} for name in PRODUCT_KINDS}
         for day, value in product_paths.items():
-            path = Path(str(value))
+            path = resolve_derived_partition_path(str(value), root)
             count = product_counts.get(day)
-            if path.exists() and isinstance(count, int):
-                paths[kind][str(day)] = path
-                counts[kind][str(day)] = count
+            if not path.exists() or not isinstance(count, int):
+                raise MaterializationError(
+                    "activitywatch_derived",
+                    reason=f"manifest partition is unavailable or lacks its count: {kind}/{day} ({path})",
+                )
+            paths[kind][str(day)] = path
+            counts[kind][str(day)] = count
     return paths, counts
 
 

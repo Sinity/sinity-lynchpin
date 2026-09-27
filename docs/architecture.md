@@ -130,6 +130,12 @@ AgentCTL or nightly semantic scheduling can call
 `python -m lynchpin.cli.converge --start YYYY-MM-DD --end YYYY-MM-DD --json`
 for a serializable dry-run plan, adding `--execute` to publish bounded work and
 record the receipt in the existing freshness ledger.
+Nightly tail maintenance checks the code snapshot state but leaves Chisel
+portfolio builds to an explicit `just chisel` or code-snapshot materialization;
+a Git ref moving does not schedule a full portfolio rebuild overnight.
+ActivityWatch derived reads resolve retained partitions under the configured
+derived root after a root move. A failed window materialization is reported
+to the reader rather than silently returning an older partition set.
 
 High-amplification canonical products use immutable logical partitions selected by an atomic manifest. ActivityWatch events and activity-content daily rows use logical days, keylog analysis uses logical days, and title metadata uses source months. A maintenance tail may replace only affected selections. Artifact bytes are content-addressed, so an unchanged partition keeps its path and inode on a warm rerun. The previous manifest remains the serving manifest until every new artifact has been staged, validated, and the replacement manifest has been fsynced.
 

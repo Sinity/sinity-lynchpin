@@ -182,6 +182,23 @@ def test_production_plans_are_serializable_and_fully_declared(monkeypatch) -> No
     assert canonical_json([step.to_json() for step in plan])
 
 
+def test_nightly_maintenance_does_not_rebuild_chisel(monkeypatch) -> None:
+    from lynchpin import materialization
+
+    row = SimpleNamespace(
+        name="code_snapshots", status="missing", reason="new Git ref",
+        first_date=None, last_date=None, covered_dates=(), row_count=0,
+        materialized_paths=(), raw_roots=(), tail_stale=False,
+        repair_required=False,
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda **_kwargs: [row])
+
+    nightly = plan_materializations(cfg=object(), maintenance=True)
+    explicit = plan_materializations(cfg=object())
+    assert [(step.product, step.action) for step in nightly] == [("code_snapshots", "check-only")]
+    assert [(step.product, step.action) for step in explicit] == [("code_snapshots", "materialize")]
+
+
 def test_resource_and_dependency_order_is_deterministic() -> None:
     specs = (spec("z", dependencies=("a",)), spec("a"), spec("b"))
     plan = ConvergencePlanner(specs).plan(ConvergenceRequest(("z", "b")))

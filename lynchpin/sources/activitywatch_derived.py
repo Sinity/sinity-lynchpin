@@ -95,10 +95,26 @@ def activitywatch_derived_product_paths(kind: str, root: Path | None = None) -> 
     if not isinstance(product_paths, dict):
         return {}
     return {
-        str(day): Path(str(path))
+        str(day): resolved
         for day, path in product_paths.items()
-        if isinstance(path, str) and Path(path).exists()
+        if isinstance(path, str)
+        if (resolved := resolve_derived_partition_path(path, root)).exists()
     }
+
+
+def resolve_derived_partition_path(value: str, root: Path | None = None) -> Path:
+    """Resolve a retained partition after the configured derived root moves."""
+    path = Path(value)
+    if path.exists():
+        return path
+    parts = path.parts
+    marker = ("activitywatch", "graph", "generations")
+    for index in range(len(parts) - len(marker)):
+        if parts[index:index + len(marker)] == marker:
+            relative = Path(*parts[index + len(marker):])
+            if len(relative.parts) == 3:
+                return activitywatch_derived_dir(root) / "generations" / relative
+    return path
 
 
 def iter_derived_focus_spans(
@@ -319,13 +335,19 @@ def _ensure_default_product(
     if path is not None or not ensure:
         return
     from ..materialization import ensure_materialized
+    from ..core.errors import MaterializationError
 
     if isinstance(start, datetime) and isinstance(end, datetime):
         window = _datetime_window(start, end)
     else:
         start_date = _date(start)
         window = (start_date, _date(end) + timedelta(days=1))
-    ensure_materialized("activitywatch_derived", window=window)
+    result = ensure_materialized("activitywatch_derived", window=window)
+    if result.status not in {"ready", "updated"}:
+        raise MaterializationError(
+            "activitywatch_derived",
+            reason=f"read window {window[0]}..{window[1]} is not current: {result.reason}",
+        )
 
 
 def _datetime_window(start: datetime, end: datetime) -> tuple[date, date]:

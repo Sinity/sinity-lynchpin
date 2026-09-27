@@ -8,10 +8,50 @@ import pytest
 
 from lynchpin.sources import activitywatch_derived
 from lynchpin.sources.activitywatch_derived import (
+    activitywatch_derived_product_paths,
     iter_derived_daily_activity,
     iter_derived_focus_spans,
     iter_derived_project_focus_days,
 )
+
+
+def test_partition_paths_follow_relocated_derived_root(tmp_path):
+    from lynchpin.ingest.activitywatch_derived_materialize import _existing_partitions
+
+    current = tmp_path / "new" / "activitywatch" / "graph"
+    partition = current / "generations" / "generation-a" / "daily_activity" / "2026-06-06.ndjson"
+    partition.parent.mkdir(parents=True)
+    partition.write_text('{"date":"2026-06-06"}\n', encoding="utf-8")
+    old = tmp_path / "old" / "activitywatch" / "graph" / "generations" / "generation-a" / "daily_activity" / "2026-06-06.ndjson"
+    manifest = {
+        "product_paths": {kind: {} for kind in activitywatch_derived.PRODUCT_KINDS},
+        "partition_row_counts": {kind: {} for kind in activitywatch_derived.PRODUCT_KINDS},
+    }
+    manifest["product_paths"]["daily_activity"]["2026-06-06"] = str(old)
+    manifest["partition_row_counts"]["daily_activity"]["2026-06-06"] = 1
+    (current / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert activitywatch_derived_product_paths("daily_activity", root=tmp_path / "new") == {"2026-06-06": partition}
+    paths, counts = _existing_partitions(manifest, root=tmp_path / "new")
+    assert paths["daily_activity"] == {"2026-06-06": partition}
+    assert counts["daily_activity"] == {"2026-06-06": 1}
+
+    partition.unlink()
+    from lynchpin.core.errors import MaterializationError
+
+    with pytest.raises(MaterializationError, match="manifest partition is unavailable"):
+        _existing_partitions(manifest, root=tmp_path / "new")
+
+
+def test_default_read_reports_failed_materialization(monkeypatch):
+    from lynchpin.core.errors import MaterializationError
+
+    monkeypatch.setattr(
+        "lynchpin.materialization.ensure_materialized",
+        lambda *_args, **_kwargs: SimpleNamespace(status="failed", reason="partition unavailable"),
+    )
+    with pytest.raises(MaterializationError, match="partition unavailable"):
+        list(iter_derived_daily_activity(start=date(2026, 6, 6), end=date(2026, 6, 6)))
 
 
 def test_activitywatch_derived_readers_hydrate_rows(tmp_path, monkeypatch):
@@ -220,7 +260,7 @@ def test_activitywatch_derived_default_reader_materializes(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "lynchpin.materialization.ensure_materialized",
-        lambda name, *, window=None: calls.append((name, window)),
+        lambda name, *, window=None: (calls.append((name, window)) or SimpleNamespace(status="ready")),
     )
 
     spans = list(
