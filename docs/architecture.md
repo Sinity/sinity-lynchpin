@@ -160,6 +160,11 @@ record the receipt in the existing freshness ledger.
 Nightly tail maintenance checks the code snapshot state but leaves Chisel
 portfolio builds to an explicit `just chisel` or code-snapshot materialization;
 a Git ref moving does not schedule a full portfolio rebuild overnight.
+For a dated source with a proven historical product more than 31 days behind,
+each maintenance pass processes one bounded window. A manifest with an
+unfinished window stays eligible on the next pass even if its input fingerprint
+is current. Publication stops at the earliest scheduled source window end until
+later passes catch up.
 ActivityWatch derived reads resolve retained partitions under the configured
 derived root after a root move. A failed window materialization is reported
 to the reader rather than silently returning an older partition set.

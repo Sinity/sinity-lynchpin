@@ -119,6 +119,13 @@ def build_agentctl_plan(*, maintenance_end: date | None = None) -> dict[str, Any
         for step in runnable.values()
         if step.effective_window is not None
     ]
+    chunk_ends = [
+        step.effective_window[1]
+        for step in runnable.values()
+        if step.effective_window is not None
+    ]
+    if chunk_ends:
+        history_end = min(history_end, *chunk_ends)
     tail_start = min(tail_starts, default=max(history_start, history_end - timedelta(days=7)))
     product_generations = {
         product: scheduled_generation(product) for product in sorted(runnable)
@@ -342,6 +349,13 @@ def run_convergence(*, maintenance_end: date | None = None) -> dict[str, Any]:
     end = min(history_end, maintenance_end)
     if end <= history_start:
         raise RuntimeError("canonical history has no bounded maintenance window")
+    chunk_ends = [
+        step.effective_window[1]
+        for step in steps
+        if step.effective_window is not None
+    ]
+    if chunk_ends:
+        end = min(end, *chunk_ends)
     tail_start = min(
         (step.effective_window[0] for step in steps if step.effective_window is not None),
         default=max(history_start, end - timedelta(days=7)),

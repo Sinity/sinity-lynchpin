@@ -48,13 +48,36 @@ def _audit():
     return materialization
 
 
-def _incremental_window(row: Any, *, end: date) -> tuple[date, date] | None:
+def _incremental_window(
+    row: Any, *, end: date, completed_end: date | None = None
+) -> tuple[date, date] | None:
     if row.first_date is None or row.last_date is None or end <= row.first_date:
         return None
-    if end - row.last_date > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
-        return None
+    cursor = max(row.last_date, completed_end - timedelta(days=1)) if completed_end else row.last_date
+    if end - cursor > timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS):
+        start = max(row.first_date, cursor)
+        return start, min(end, start + timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS))
     overlap = _INCREMENTAL_OVERLAP_DAYS.get(row.name, 7)
-    return max(row.first_date, min(row.last_date, end - timedelta(days=overlap))), end
+    return max(row.first_date, min(cursor, end - timedelta(days=overlap))), end
+
+
+def _unfinished_bounded_window(row: Any, *, end: date) -> date | None:
+    """A bounded manifest can be input-current while its later dates are unscanned."""
+    for path in row.materialized_paths:
+        if not (path.name == "manifest.json" or path.name.endswith(".manifest.json")) or not path.is_file():
+            continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or not manifest.get("window_start"):
+                continue
+            completed_end = date.fromisoformat(str(manifest["window_end"]))
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        if completed_end < end and (
+            row.last_date is None or row.last_date < end - timedelta(days=1)
+        ):
+            return completed_end
+    return None
 
 
 def _step(
@@ -285,6 +308,7 @@ def plan_materializations(
         spec = PRODUCT_CATALOG.get(row.name)
         if spec is None:
             continue
+        unfinished_window = _unfinished_bounded_window(row, end=end) if maintenance else None
         step_window: tuple[date, date] | None = None
         if force:
             action, reason = "materialize", row.reason
@@ -298,9 +322,12 @@ def plan_materializations(
                 else:
                     action = "materialize"
                     reason = f"incremental tail {step_window[0].isoformat()}..{step_window[1].isoformat()}: {row.reason}; historical repair remains explicitly bounded"
-            elif row.status == "ready" and not row.tail_stale:
+            elif row.status == "ready" and not row.tail_stale and not unfinished_window:
                 action, reason = "skip", "canonical product is ready"
-            elif _recently_materialized(row):
+            elif not unfinished_window and _recently_materialized(row) and (
+                row.last_date is None
+                or end - row.last_date <= timedelta(days=_INCREMENTAL_MAX_CATCHUP_DAYS)
+            ):
                 action, reason = (
                     "skip",
                     "canonical product was refreshed within the maintenance debounce window",
@@ -308,7 +335,8 @@ def plan_materializations(
             elif spec.window_policy == "unbounded":
                 action, reason = "materialize", f"refresh unbounded product: {row.reason}"
             else:
-                step_window = _incremental_window(row, end=end)
+                completed_end = unfinished_window if row.status == "ready" and not row.tail_stale else None
+                step_window = _incremental_window(row, end=end, completed_end=completed_end)
                 if step_window is None:
                     action = "check-only"
                     reason = "incremental maintenance requires a proven historical product; run explicit repair/backfill"

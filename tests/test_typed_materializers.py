@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import date
@@ -208,6 +209,75 @@ def test_nightly_maintenance_does_not_rebuild_chisel(monkeypatch) -> None:
     explicit = plan_materializations(cfg=object())
     assert [(step.product, step.action) for step in nightly] == [("code_snapshots", "check-only")]
     assert [(step.product, step.action) for step in explicit] == [("code_snapshots", "materialize")]
+
+
+def test_nightly_maintenance_advances_a_long_source_backlog_in_bounded_chunks(monkeypatch, tmp_path) -> None:
+    from lynchpin.materializers import production
+
+    end = date(2026, 5, 1)
+    row = SimpleNamespace(
+        name="atuin", status="partial", reason="new source days",
+        first_date=date(2026, 1, 1), last_date=date(2026, 1, 10),
+        materialized_paths=(tmp_path / "atuin.manifest.json",), repair_required=False, tail_stale=False,
+    )
+    audit = SimpleNamespace(
+        audit_materialization=lambda **_kwargs: [row],
+        _dataset_fingerprint=lambda _row: "fixture",
+        source_contract=lambda _name: SimpleNamespace(materialization_hint="fixture"),
+        _record_materialization_step=lambda *_args, **_kwargs: None,
+        _int_or_none=lambda value: value,
+        _window_payload=lambda value: [day.isoformat() for day in value] if value else None,
+        _PRODUCT_REFRESHED_AT={},
+        monotonic=lambda: 1.0,
+    )
+    monkeypatch.setattr(production, "_audit", lambda: audit)
+    product = PRODUCT_CATALOG["atuin"]
+    fail_once = True
+
+    def materialize(context):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("temporary source failure")
+        row.status = "ready"
+        row.tail_stale = False
+        row.materialized_paths[0].write_text(json.dumps({
+            "window_start": context.step.effective_window[0].isoformat(),
+            "window_end": context.step.effective_window[1].isoformat(),
+        }))
+        return {"row_count": 1}
+
+    monkeypatch.setattr(production, "handler_registry", lambda: ClosedHandlerRegistry({
+        product.handler: HandlerDefinition(
+            product.handler, materialize,
+            raw_read_permission=product.raw_read_permission,
+            window_policy=product.window_policy,
+        ),
+    }))
+
+    first = production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=end)[0]
+    with pytest.raises(RuntimeError, match="temporary source failure"):
+        production.run_materialization_plan((first,))
+    assert production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=end)[0].effective_window == first.effective_window
+
+    windows = []
+    for _ in range(5):
+        step = production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=end)[0]
+        assert step.action == "materialize"
+        assert step.effective_window is not None
+        start, chunk_end = step.effective_window
+        assert row.last_date < chunk_end <= end
+        assert (chunk_end - start).days <= production._INCREMENTAL_MAX_CATCHUP_DAYS
+        windows.append(step.effective_window)
+        assert production.run_materialization_plan((step,)) == [step]
+        if chunk_end == end:
+            break
+
+    assert len(windows) > 1
+    assert windows[-1][1] == end
+    assert [item[1] for item in windows] == sorted(item[1] for item in windows)
+    assert len({item[0] for item in windows}) == len(windows)
+    assert production.plan_materializations(cfg=object(), maintenance=True, maintenance_end=end) == []
 
 
 def test_resource_and_dependency_order_is_deterministic() -> None:
