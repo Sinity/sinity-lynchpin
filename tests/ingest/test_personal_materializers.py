@@ -3,10 +3,14 @@ from __future__ import annotations
 import csv
 import inspect
 import json
-import sqlite3
 import re
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
+
+from lynchpin.core.errors import MaterializationError
 
 from lynchpin.ingest.bookmarks_materialize import (
     BOOKMARK_EVENTS_SCHEMA_VERSION,
@@ -390,6 +394,158 @@ def test_personal_daily_signals_empty_tail_preserves_indexed_history(monkeypatch
     assert len(output.read_text(encoding="utf-8").splitlines()) == 1
     assert manifest["row_count"] == 1
     assert manifest["row_counts"] == {"2026-05-01": 1}
+
+
+def test_personal_daily_signals_writer_rejects_missing_declared_carrier(monkeypatch, tmp_path):
+    from lynchpin.ingest import personal_signals_materialize as materializer
+
+    output = tmp_path / "personal_daily_signals.ndjson"
+    initial = [("keylog", date(2026, 5, 1), "keypress_count", 1.0, {})]
+    monkeypatch.setattr(materializer, "_personal_daily_signal_rows_with_inputs", lambda: (initial, ()))
+    manifest = materialize_personal_daily_signals(output=output)
+    manifest["carrier_file"] = "missing.generation"
+    output.with_suffix(".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        materializer,
+        "_window_personal_daily_signal_rows_with_inputs",
+        lambda _start, _end: ([], ()),
+    )
+
+    with pytest.raises(MaterializationError, match="declared carrier generation"):
+        materialize_personal_daily_signals(
+            output=output,
+            start=date(2026, 5, 2),
+            end=date(2026, 5, 4),
+        )
+
+
+def test_personal_daily_signals_manifest_failure_keeps_reader_on_previous_generation(monkeypatch, tmp_path):
+    from lynchpin.ingest import personal_signals_materialize as materializer
+    from lynchpin.sources.personal_signals import iter_personal_daily_signals
+
+    output = tmp_path / "personal_daily_signals.ndjson"
+    real_write_manifest = materializer.write_manifest
+    initial = [
+        ("keylog", date(2026, 5, day), "keypress_count", float(day), {})
+        for day in (1, 2, 3)
+    ]
+    monkeypatch.setattr(materializer, "_personal_daily_signal_rows_with_inputs", lambda: (initial, ()))
+    old_manifest = materialize_personal_daily_signals(output=output)
+    old_carrier = output.with_name(old_manifest["carrier_file"])
+    old_bytes = old_carrier.read_bytes()
+
+    replacement = [
+        ("keylog", date(2026, 5, 2), "keypress_count", 200.0, {"detail": "longer replacement row"}),
+        ("keylog", date(2026, 5, 3), "keypress_count", 30.0, {}),
+    ]
+    monkeypatch.setattr(
+        materializer,
+        "_window_personal_daily_signal_rows_with_inputs",
+        lambda _start, _end: (replacement, ()),
+    )
+
+    def fail_manifest(*_args, **_kwargs):
+        raise OSError("injected manifest publication failure")
+
+    monkeypatch.setattr(materializer, "write_manifest", fail_manifest)
+    try:
+        materialize_personal_daily_signals(
+            output=output,
+            start=date(2026, 5, 2),
+            end=date(2026, 5, 4),
+        )
+    except OSError as exc:
+        assert "injected manifest publication failure" in str(exc)
+    else:
+        raise AssertionError("injected manifest failure did not reach the caller")
+
+    selected = list(
+        iter_personal_daily_signals(
+            output,
+            start=date(2026, 5, 3),
+            end=date(2026, 5, 4),
+            ensure=False,
+        )
+    )
+    assert [(row.date, row.value) for row in selected] == [(date(2026, 5, 3), 3.0)]
+    assert old_carrier.read_bytes() == old_bytes
+
+    monkeypatch.setattr(materializer, "write_manifest", real_write_manifest)
+    new_manifest = materialize_personal_daily_signals(
+        output=output,
+        start=date(2026, 5, 2),
+        end=date(2026, 5, 4),
+    )
+    new_carrier = output.with_name(new_manifest["carrier_file"])
+    new_bytes = new_carrier.read_bytes()
+    offsets = new_manifest["row_offsets"]
+    for raw_offset in offsets.values():
+        assert raw_offset == 0 or new_bytes[raw_offset - 1 : raw_offset] == b"\n"
+    assert [json.loads(line)["date"] for line in new_bytes.splitlines()] == [
+        "2026-05-01",
+        "2026-05-02",
+        "2026-05-03",
+    ]
+    assert new_bytes[: offsets["2026-05-02"]] == old_bytes[: offsets["2026-05-02"]]
+
+
+def test_personal_daily_signals_reader_pins_carrier_before_concurrent_publish(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from lynchpin.ingest import personal_signals_materialize as materializer
+    from lynchpin.sources.personal_signals import iter_personal_daily_signals
+
+    output = tmp_path / "personal_daily_signals.ndjson"
+    initial = [("keylog", date(2026, 5, day), "keypress_count", float(day), {}) for day in (1, 2, 3)]
+    monkeypatch.setattr(materializer, "_personal_daily_signal_rows_with_inputs", lambda: (initial, ()))
+    old_manifest = materialize_personal_daily_signals(output=output)
+    old_carrier = output.with_name(old_manifest["carrier_file"])
+    replacement = [
+        ("keylog", date(2026, 5, 2), "keypress_count", 200.0, {"detail": "longer replacement row"}),
+        ("keylog", date(2026, 5, 3), "keypress_count", 30.0, {}),
+    ]
+    monkeypatch.setattr(
+        materializer,
+        "_window_personal_daily_signal_rows_with_inputs",
+        lambda _start, _end: (replacement, ()),
+    )
+
+    original_open = Path.open
+    published = False
+
+    def publish_before_open(path, *args, **kwargs):
+        nonlocal published
+        if path == old_carrier and not published:
+            published = True
+            materialize_personal_daily_signals(
+                output=output,
+                start=date(2026, 5, 2),
+                end=date(2026, 5, 4),
+            )
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", publish_before_open)
+    pinned_rows = list(
+        iter_personal_daily_signals(
+            output,
+            start=date(2026, 5, 3),
+            end=date(2026, 5, 4),
+            ensure=False,
+        )
+    )
+    assert published
+    assert [(row.date, row.value) for row in pinned_rows] == [(date(2026, 5, 3), 3.0)]
+
+    monkeypatch.setattr(Path, "open", original_open)
+    current_rows = list(
+        iter_personal_daily_signals(
+            output,
+            start=date(2026, 5, 3),
+            end=date(2026, 5, 4),
+            ensure=False,
+        )
+    )
+    assert [(row.date, row.value) for row in current_rows] == [(date(2026, 5, 3), 30.0)]
 
 
 def test_personal_daily_signal_inputs_fall_back_to_raw_roots(tmp_path) -> None:

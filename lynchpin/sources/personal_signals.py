@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, TextIO
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from .activity_content import (
     ActivityContentDay,
     ActivityTitleUsage,
@@ -164,15 +165,40 @@ def _open_window(
     end: date | None,
 )-> TextIO:
     """Open a daily product at its indexed tail when the manifest permits it."""
-    handle = path.open(encoding="utf-8")
-    if start is None:
-        return handle
     manifest_path = path.with_suffix(".manifest.json")
+    manifest: dict[str, Any] = {}
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        offset = _indexed_offset(manifest.get("row_offsets"), start=start)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        offset = None
+        pass
+    carrier = path
+    if isinstance(manifest, dict) and "carrier_file" in manifest:
+        carrier_name = manifest.get("carrier_file")
+        if not isinstance(carrier_name, str) or not carrier_name or Path(carrier_name).name != carrier_name:
+            raise SourceUnavailableError(
+                "personal_daily_signals",
+                path=str(manifest_path),
+                reason="manifest declares an invalid carrier generation",
+            )
+        candidate = path.with_name(carrier_name)
+        if not candidate.is_file() or candidate.is_symlink():
+            raise SourceUnavailableError(
+                "personal_daily_signals",
+                path=str(candidate),
+                reason="manifest-declared carrier generation is missing or is not a regular file",
+            )
+        carrier = candidate
+    try:
+        handle = carrier.open(encoding="utf-8")
+    except OSError as exc:
+        raise SourceUnavailableError(
+            "personal_daily_signals",
+            path=str(carrier),
+            reason="selected carrier generation is unreadable",
+        ) from exc
+    if start is None:
+        return handle
+    offset = _indexed_offset(manifest.get("row_offsets"), start=start) if isinstance(manifest, dict) else None
     if offset is None:
         return handle
     handle.seek(offset)

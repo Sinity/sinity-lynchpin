@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from pathlib import Path
@@ -101,16 +102,26 @@ def materialize_personal_daily_signals(
             dataset="lynchpin.personal_daily_signals",
         )
     if start is not None and end is not None and bounded_tail:
-        row_offsets = replace_indexed_ndjson_tail(
-            output,
-            encoded_rows,
-            start=start,
-            date_getter=lambda row: date.fromisoformat(str(row["date"])),
-            offsets=previous_manifest.get("row_offsets"),
-        )
+        previous_carrier = _manifest_carrier(output, previous_manifest)
+        generation = _new_generation_path(output)
+        try:
+            row_offsets = replace_indexed_ndjson_tail(
+                previous_carrier,
+                encoded_rows,
+                start=start,
+                date_getter=lambda row: date.fromisoformat(str(row["date"])),
+                offsets=previous_manifest.get("row_offsets"),
+                destination=generation,
+            )
+        except OSError as exc:
+            raise MaterializationError(
+                "lynchpin.personal_daily_signals",
+                reason=f"declared carrier generation is unreadable: {previous_carrier}",
+            ) from exc
     else:
+        generation = _new_generation_path(output)
         row_offsets = atomic_write_indexed_ndjson(
-            output,
+            generation,
             encoded_rows,
             date_getter=lambda row: date.fromisoformat(str(row["date"])),
         )
@@ -140,8 +151,39 @@ def materialize_personal_daily_signals(
         row_counts=dict(sorted(row_counts.items())),
         refresh_id=refresh_id,
     )
+    manifest["carrier_file"] = generation.name
     write_manifest(output.with_suffix(".manifest.json"), manifest)
+    _publish_carrier_alias(output, generation)
     return manifest
+
+
+def _new_generation_path(output: Path) -> Path:
+    return output.with_name(f"{output.name}.{uuid.uuid4().hex}.generation")
+
+
+def _manifest_carrier(output: Path, manifest: dict[str, Any]) -> Path:
+    if "carrier_file" not in manifest:
+        return output
+    name = manifest.get("carrier_file")
+    if isinstance(name, str) and name and Path(name).name == name:
+        candidate = output.with_name(name)
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    raise MaterializationError(
+        "lynchpin.personal_daily_signals",
+        reason=f"declared carrier generation is missing or invalid: {name!r}",
+    )
+
+
+def _publish_carrier_alias(output: Path, generation: Path) -> None:
+    """Keep direct legacy path readers pointed at the selected generation."""
+    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.link")
+    try:
+        temporary.symlink_to(generation.name)
+        temporary.replace(output)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def materialize_spotify_daily(

@@ -224,13 +224,15 @@ def replace_indexed_ndjson_tail(
     date_getter: Callable[[Any], date | None],
     offsets: object = None,
     dumps: Any = None,
+    destination: Path | None = None,
 ) -> dict[str, int]:
-    """Replace a sorted NDJSON tail in place and return its new day index.
+    """Replace a sorted NDJSON tail and return its new day index.
 
     This is intentionally only used for a proven append/tail window.  The
     caller must fall back to ``atomic_write_indexed_ndjson`` when the existing
     manifest has no offsets or when the requested window is in the middle of
-    history.  The historical prefix is never read or rewritten.
+    history. ``destination`` lets a caller publish the cloned carrier under a
+    new immutable name; the historical prefix is never read or rewritten.
     """
     if not path.exists() or not isinstance(offsets, dict):
         raise ValueError("indexed tail replacement requires an existing indexed NDJSON product")
@@ -276,11 +278,11 @@ def replace_indexed_ndjson_tail(
             _preserve_existing_mode(path, tmp_path)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
+        os.replace(tmp_path, destination or path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
-    _fsync_parent_directory(path.parent)
+    _fsync_parent_directory((destination or path).parent)
     return dict(sorted(next_offsets.items()))
 
 

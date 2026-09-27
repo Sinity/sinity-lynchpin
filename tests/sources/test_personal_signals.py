@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
+from lynchpin.core.errors import SourceUnavailableError
 from lynchpin.sources.personal_signals import iter_personal_daily_signals, iter_spotify_daily_signals
 
 
@@ -53,6 +56,40 @@ def test_personal_daily_signals_converges_default_materialization(tmp_path, monk
     calls.clear()
     assert [row.value for row in personal_signals.iter_personal_daily_signals(path)] == [2.0]
     assert calls == []
+
+
+@pytest.mark.parametrize("carrier_state", ["missing", "symlink"])
+def test_personal_daily_signals_rejects_missing_or_symlinked_declared_carrier(tmp_path, carrier_state):
+    path = tmp_path / "daily_signals.ndjson"
+    path.write_text(
+        json.dumps({"source": "keylog", "date": "2026-05-24", "metric": "keypress_count", "value": 999}) + "\n",
+        encoding="utf-8",
+    )
+    carrier = tmp_path / "selected.generation"
+    external = None
+    if carrier_state == "symlink":
+        external = tmp_path.parent / f"{tmp_path.name}-outside.ndjson"
+        external.write_text(
+            json.dumps({"source": "keylog", "date": "2026-05-24", "metric": "keypress_count", "value": 2}) + "\n",
+            encoding="utf-8",
+        )
+        carrier.symlink_to(external)
+    path.with_suffix(".manifest.json").write_text(
+        json.dumps({"carrier_file": carrier.name, "row_offsets": {"2026-05-24": 0}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SourceUnavailableError, match="carrier generation"):
+        list(
+            iter_personal_daily_signals(
+                path,
+                start=date(2026, 5, 24),
+                end=date(2026, 5, 25),
+                ensure=False,
+            )
+        )
+    if external is not None:
+        external.unlink()
 
 
 def test_spotify_daily_signals_filter_half_open_window(tmp_path) -> None:
