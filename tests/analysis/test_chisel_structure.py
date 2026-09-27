@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import lynchpin.sources.chisel_structure as structure
 from lynchpin.sources.chisel_inventory import CapturedInventory, InventoryFile
 from lynchpin.sources.chisel_structure import build_structure
 
@@ -187,6 +188,38 @@ def test_inventory_hash_mismatch_is_coverage_gap_not_metrics(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="main.py: captured hash mismatch"):
         build_structure(inventory, output)
     assert not (output / "structure").exists()
+
+
+def test_cached_import_syntax_rebinds_when_module_set_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cache = tmp_path / "cache"
+    output = tmp_path / "package"
+    importer = "import new_module\n"
+    initial = _inventory(tmp_path, {"main.py": (importer, "implementation")})
+    build_structure(initial, output, cache_dir=cache)
+    assert _jsonl(output / "structure/imports.jsonl")[0]["target_module"] is None
+
+    expanded = _inventory(
+        tmp_path / "expanded",
+        {"main.py": (importer, "implementation"),
+         "new_module.py": ("VALUE = 1\n", "implementation")},
+        snapshot="snapshot-2",
+    )
+    original = structure._python_imports
+    parsed_paths = []
+
+    def recorded_imports(project, snapshot, path, row, tree, modules):
+        parsed_paths.append(path)
+        return original(project, snapshot, path, row, tree, modules)
+
+    monkeypatch.setattr(structure, "_python_imports", recorded_imports)
+    build_structure(expanded, output, cache_dir=cache)
+    assert "main.py" not in parsed_paths
+    row = _jsonl(output / "structure/imports.jsonl")[0]
+    assert row["target_module"] == "new_module"
+    assert row["reference_class"] == "internal"
+    assert row["snapshot_id"] == "snapshot-2"
 
 
 def test_import_graph_src_layout_absolute_relative_and_cycles(tmp_path: Path) -> None:

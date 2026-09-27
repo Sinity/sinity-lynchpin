@@ -24,7 +24,7 @@ from .chisel_cache import atomic_write_text, copy_file
 
 from .chisel_inventory import CapturedInventory
 
-_TOOL_VERSION = "chisel-structure-v4"
+_TOOL_VERSION = "chisel-structure-v5"
 _SOURCE_ROLES = {"implementation", "tests", "tooling"}
 _SOURCE_EXTENSIONS = {".py": "python", ".rs": "rust"}
 _SYMBOL_CACHE_VERSION = _TOOL_VERSION
@@ -153,16 +153,13 @@ def build_structure(
                 )
             )
             if lang == "python":
-                try:
-                    tree = ast.parse(text, filename=path)
-                except SyntaxError:
-                    pass
-                else:
-                    imports.extend(
-                        _python_imports(
-                            project, snapshot_id, path, row, tree, python_modules
-                        )
+                imports.extend(
+                    _resolve_python_import(
+                        _bind_cached_row(item, project, snapshot_id, path, row["sha256"]),
+                        python_modules,
                     )
+                    for item in cached.get("imports", [])
+                )
             if cached.get("parser_unavailable"):
                 parser_missing.add("rust")
             continue
@@ -257,6 +254,7 @@ def build_structure(
             {
                 "metric": metric,
                 "symbols": file_symbols,
+                "imports": file_imports,
                 "parser_unavailable": parser_unavailable,
             },
         )
@@ -584,13 +582,8 @@ def _python_imports(
             h.type is None or any(isinstance(n, ast.Name) and n.id in {"ImportError", "ModuleNotFoundError"} for n in ast.walk(h.type))
             for h in p.handlers) for p in ancestors)
         for index, (requested, level) in enumerate(names):
-            target = requested
-            parts = target.split(".")
-            while parts and ".".join(parts) not in known_modules:
-                parts.pop()
-            resolved = ".".join(parts) if parts else None
             found.append(
-                {
+                _resolve_python_import({
                     "project": project,
                     "snapshot_id": snapshot,
                     "path": path,
@@ -607,16 +600,31 @@ def _python_imports(
                     "optional": optional,
                     "alias": node.names[index].asname if not dynamic and index < len(node.names) else None,
                     "explicit_reexport": (node.names[index].asname == node.names[index].name or node.names[index].name in exported) if not dynamic and index < len(node.names) else False,
-                    "reference_class": "dynamic" if dynamic else "internal" if resolved else "standard_library" if requested.split(".")[0] in sys.stdlib_module_names else "unresolved",
+                    "reference_class": "dynamic" if dynamic else "unresolved",
                     "method": "python_ast_dynamic_import_candidate" if dynamic else "python_ast_static_import",
-
-                    "target_module": resolved,
-                    "status": "candidate_internal"
-                    if resolved
-                    else "external_or_unresolved",
-                }
+                }, known_modules)
             )
     return found
+
+
+def _resolve_python_import(
+    record: dict[str, Any], known_modules: set[str]
+) -> dict[str, Any]:
+    """Resolve cached syntax against the module set of this snapshot."""
+    requested = str(record["requested"])
+    parts = requested.split(".")
+    while parts and ".".join(parts) not in known_modules:
+        parts.pop()
+    resolved = ".".join(parts) if parts else None
+    dynamic = record.get("method") == "python_ast_dynamic_import_candidate"
+    record["target_module"] = resolved
+    record["reference_class"] = (
+        "dynamic" if dynamic else "internal" if resolved
+        else "standard_library" if requested.split(".")[0] in sys.stdlib_module_names
+        else "unresolved"
+    )
+    record["status"] = "candidate_internal" if resolved else "external_or_unresolved"
+    return record
 
 
 def _resolved_python_edges(
