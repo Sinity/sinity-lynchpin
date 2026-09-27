@@ -610,18 +610,18 @@ def test_collect_tokei_stats_buckets_agent_docs_tests_and_other(
         path=repo,
         slices=(),
         stats_buckets=(
-            chisel.StatsBucket("agent-context", "Agent context", (".agent/**",)),
-            chisel.StatsBucket(
+            source_chisel.StatsBucket("agent-context", "Agent context", (".agent/**",)),
+            source_chisel.StatsBucket(
                 "test-suite",
                 "Tests",
                 (
                     "tests/**",
                     "crate/*/tests/**",
-                    *chisel.SINEX_RUST_SPLIT_TEST_PATTERNS,
+                    *source_chisel.SINEX_RUST_SPLIT_TEST_PATTERNS,
                 ),
             ),
-            chisel.StatsBucket("docs", "Docs", ("README.md", "docs/**")),
-            chisel.StatsBucket("code-proper", "Code", ("src/**", "crate/*/src/**")),
+            source_chisel.StatsBucket("docs", "Docs", ("README.md", "docs/**")),
+            source_chisel.StatsBucket("code-proper", "Code", ("src/**", "crate/*/src/**")),
         ),
     )
     split_test = repo / "crate" / "demo" / "src" / "api" / "flow_test.rs"
@@ -738,7 +738,7 @@ def test_tokei_inputs_exclude_ignored_local_corpora_but_keep_tracked_agent_files
 
     monkeypatch.setattr(source_chisel, "_run", fake_run)
 
-    paths, policy = chisel._tokei_input_paths(plan)
+    paths, policy = source_chisel._tokei_input_paths(plan)
 
     assert policy == "git-tracked-and-nonignored-working-tree"
     assert paths == [".agent/README.md", "src/main.py"]
@@ -813,8 +813,8 @@ def test_git_growth_uses_default_branch_and_attributes_historical_churn(
         path=repo,
         slices=(),
         stats_buckets=(
-            chisel.StatsBucket("tests", "Tests", ("tests/**",)),
-            chisel.StatsBucket("production", "Production", ("src/**",)),
+            source_chisel.StatsBucket("tests", "Tests", ("tests/**",)),
+            source_chisel.StatsBucket("production", "Production", ("src/**",)),
         ),
     )
 
@@ -937,11 +937,11 @@ def test_tokei_path_normalization_preserves_dot_directories(tmp_path: Path) -> N
     plan = chisel.RepoPlan(name="example", path=repo, slices=())
 
     assert (
-        chisel._relative_tokei_report_name(plan, str(repo / ".agent" / "README.md"))
+        source_chisel._relative_tokei_report_name(plan, str(repo / ".agent" / "README.md"))
         == ".agent/README.md"
     )
     assert (
-        chisel._relative_tokei_report_name(plan, "./.agent/README.md")
+        source_chisel._relative_tokei_report_name(plan, "./.agent/README.md")
         == ".agent/README.md"
     )
     assert chisel._glob_matches(".agent/README.md", ".agent/**")
@@ -1041,8 +1041,8 @@ def test_sinex_stats_buckets_classify_agent_separately_from_docs() -> None:
     agent_demo_slice = next(
         slice for slice in plan.slices if slice.name == "agent-demos"
     )
-    assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(code_slice.extra_ignore)
-    assert set(chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(test_slice.include)
+    assert set(source_chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(code_slice.extra_ignore)
+    assert set(source_chisel.SINEX_RUST_SPLIT_TEST_PATTERNS) <= set(test_slice.include)
     assert ".agent/archive/**" in agent_archive_slice.include
     assert ".agent/demos/**" not in agent_archive_slice.include
     assert agent_demo_slice.include == (".agent/demos/**",)
@@ -1161,19 +1161,19 @@ def test_run_slice_disables_gitignore_for_agent_slices(
 
     monkeypatch.setattr(source_chisel, "_run_repomix", fake_run_repomix)
 
-    chisel._run_slice(
+    source_chisel._run_slice(
         "repomix",
         tmp_path,
         plan,
-        chisel.Slice("agent", "Agent", (".agent/demos/**",)),
+        source_chisel.Slice("agent", "Agent", (".agent/demos/**",)),
         git,
         "now",
     )
-    chisel._run_slice(
+    source_chisel._run_slice(
         "repomix",
         tmp_path,
         plan,
-        chisel.Slice("src", "Source", ("src/**",)),
+        source_chisel.Slice("src", "Source", ("src/**",)),
         git,
         "now",
     )
@@ -1202,7 +1202,7 @@ def test_run_scratchpad_uses_curated_include_without_skip_manifest(
 
     monkeypatch.setattr(source_chisel, "_run_repomix", fake_run_repomix)
 
-    result = chisel._run_scratchpad("repomix", tmp_path, plan, git, "now")
+    result = source_chisel._run_scratchpad("repomix", tmp_path, plan, git, "now")
 
     assert result is not None
     assert "--no-gitignore" in calls[0]
@@ -1240,7 +1240,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     plan = chisel.RepoPlan(
         name="example",
         path=tmp_path / "example",
-        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+        slices=(source_chisel.Slice("core", "Core", ("src/**",)),),
         compressed=True,
     )
     out_dir = tmp_path / "out"
@@ -1410,15 +1410,15 @@ def test_build_chisel_bundles_reports_scope_and_grouped_repo_logs(
     plan_a = chisel.RepoPlan(
         name="alpha",
         path=tmp_path / "alpha",
-        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+        slices=(source_chisel.Slice("core", "Core", ("src/**",)),),
         compressed=True,
     )
     plan_b = chisel.RepoPlan(
         name="beta",
         path=tmp_path / "beta",
         slices=(
-            chisel.Slice("core", "Core", ("src/**",)),
-            chisel.Slice("tests", "Tests", ("tests/**",)),
+            source_chisel.Slice("core", "Core", ("src/**",)),
+            source_chisel.Slice("tests", "Tests", ("tests/**",)),
         ),
         compressed=False,
         extra_copy=(("README.md", "README.md"),),
@@ -1588,7 +1588,7 @@ def test_build_one_buffers_project_stages_for_its_summary(monkeypatch, tmp_path:
     plan = chisel.RepoPlan(
         name="alpha",
         path=tmp_path / "alpha",
-        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+        slices=(source_chisel.Slice("core", "Core", ("src/**",)),),
         compressed=False,
     )
     plan.path.mkdir()
@@ -1630,7 +1630,7 @@ def test_build_one_keeps_failed_stage_time_and_skips_package_finalization(
     plan = chisel.RepoPlan(
         name="alpha",
         path=tmp_path / "alpha",
-        slices=(chisel.Slice("core", "Core", ("src/**",)),),
+        slices=(source_chisel.Slice("core", "Core", ("src/**",)),),
     )
     plan.path.mkdir()
     printed = _mock_captured_build_seams(monkeypatch, tmp_path, plan)

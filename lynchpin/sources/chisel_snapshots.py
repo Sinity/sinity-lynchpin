@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .chisel_inventory import CapturedInventory, InventoryFile, capture_inventory
+from .chisel_inventory import CapturedInventory, capture_inventory
 
 SCHEMA_VERSION = 1
 

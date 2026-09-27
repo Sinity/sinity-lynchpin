@@ -14,7 +14,6 @@ from typing import Any, Callable
 
 from . import chisel_build as chisel
 from lynchpin.sources.chisel_inventory import CapturedInventory, InventoryFile
-from lynchpin.sources.chisel_package import captured_sidecars, run_view, verify_history_bundle
 from lynchpin.sources.chisel_metrics import build_metrics
 from lynchpin.sources.chisel_context import build_context
 from lynchpin.sources.chisel_offline import build_offline_package

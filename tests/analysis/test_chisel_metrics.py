@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from lynchpin.analysis.projects import chisel_build as chisel
+from lynchpin.sources import chisel as source_chisel
 from lynchpin.sources.chisel_metrics import build_metrics
 
 
@@ -220,8 +221,8 @@ def test_legacy_composition_does_not_classify_context_as_maintained(
 
 
 def test_embedded_report_blobs_do_not_inflate_host_file_stats() -> None:
-    bucket = chisel._empty_stats_bucket("docs")
-    chisel._add_report_stats(
+    bucket = source_chisel._empty_stats_bucket("docs")
+    source_chisel._add_report_stats(
         bucket,
         "Markdown",
         {

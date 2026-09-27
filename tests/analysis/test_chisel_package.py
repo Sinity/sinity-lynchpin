@@ -49,9 +49,9 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
         "commit", "-qm", "Initial implementation (#12)")
     plan = chisel.RepoPlan("demo", repo, (
-        chisel.Slice("core", "source", ("src/**",), ("src/other.py", "src/not_in_xml.py")),
-        chisel.Slice("tests", "tests", ("tests/**", "src/other.py")),
-        chisel.Slice("context", "context", (".agent/docs/**",)),
+        source_chisel.Slice("core", "source", ("src/**",), ("src/other.py", "src/not_in_xml.py")),
+        source_chisel.Slice("tests", "tests", ("tests/**", "src/other.py")),
+        source_chisel.Slice("context", "context", (".agent/docs/**",)),
     ))
     monkeypatch.setattr(chisel, "REPO_PLANS", {"demo": plan})
     monkeypatch.setattr(chisel, "_ensure_chisel_prerequisites", lambda plans: None)

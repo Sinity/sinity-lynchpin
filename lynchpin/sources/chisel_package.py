@@ -7,12 +7,10 @@ import hashlib
 import os
 import tarfile
 import tempfile
-import time
 import xml.etree.ElementTree as ET
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .chisel_cache import copy_file
 

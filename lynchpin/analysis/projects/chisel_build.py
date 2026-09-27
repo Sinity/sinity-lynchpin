@@ -4,25 +4,21 @@ from __future__ import annotations
 
 import datetime as dt
 import csv
-import fnmatch
 import hashlib
 import html
 import json
 import math
 import os
 import re
-import signal
 import shutil
 import statistics
-import subprocess
 import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from dataclasses import dataclass, replace
-from functools import lru_cache
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,8 +32,6 @@ from lynchpin.sources.chisel import (
     _build_state_local,
     _set_stage,
     _stage_timing_local,
-    _process_lock,
-    _active_processes,
     _abort_event,
     _print_live,
     _emit,
@@ -47,8 +41,6 @@ from lynchpin.sources.chisel import (
     DEFAULT_REPOMIX_WORKERS,
     DEFAULT_ISSUE_LIMIT,
     LARGE_SLICE_BYTES,
-    _repomix_semaphore,
-    _CONTROL_CHARS,
     _WORKTREE_TAR_EXCLUDES,
     DEFAULT_IGNORE,
     GROWTH_IGNORE,
@@ -62,48 +54,19 @@ from lynchpin.sources.chisel import (
     _sanitize_xml,
     _validate_xml,
     _fmt_bytes,
-    _planned_output_count,
     _print_scope,
-    Slice,
-    StatsBucket,
     RepoPlan,
     REPO_PLANS,
-    SINEX_RUST_SPLIT_TEST_PATTERNS,
-    _plan,
-    _ignore_str,
-    _slice_header,
-    _compressed_header,
-    _run_repomix,
     _record_substage_duration,
-    _run_slice,
-    _run_compressed,
     _SCRATCHPAD_INCLUDE,
     _ACCELERANT_INCLUDE,
     _ACCELERANT_IGNORE,
-    _ACCELERANT_DIR_GLOBS,
-    _run_scratchpad,
-    _run_accelerants,
-    _STAT_KEYS,
     _normalize_rel_pattern,
     _glob_matches,
     _glob_any,
     _stats_buckets,
     _classify_stats_bucket,
-    _empty_stats_bucket,
-    _add_stats,
-    _add_language_stats,
-    _add_report_stats,
-    _tokei_exclude_args,
-    _read_loc_ignore_rules,
-    _ignore_rule_matches,
-    _loc_policy_ignores,
-    _tokei_input_paths,
-    _relative_tokei_report_name,
     _collect_tokei_stats,
-    _member_name,
-    _rust_inline_test_stats,
-    _rust_split_test_file_stats,
-    _rust_inline_test_blocks,
 )
 from lynchpin.sources.chisel import _console
 

@@ -7,28 +7,20 @@ optional; the default package includes source, history, trackers, and reports.
 from __future__ import annotations
 
 import datetime as dt
-import csv
 import fnmatch
-import hashlib
-import html
 import json
-import math
 import os
-import re
 import signal
 import shutil
-import statistics
 import subprocess
-import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..core.errors import MaterializationError, SourceUnavailableError
 from . import chisel_options
@@ -39,7 +31,6 @@ from . import chisel_options
 
 try:
     from rich.console import Console
-    from rich.table import Table
 
     _console = Console(highlight=False)
     _has_rich = True
