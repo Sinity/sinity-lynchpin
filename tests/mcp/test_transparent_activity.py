@@ -50,6 +50,7 @@ def test_public_focus_query_refreshes_new_day_and_later_events(monkeypatch):
     arbtt_manifest_path().write_text(json.dumps({
         "schema_version": ARBTT_EVENTS_SCHEMA_VERSION, "row_count": 1,
         "first_date": "2022-07-01", "last_date": "2022-07-01",
+        "input_files": [], "input_file_count": 0, "input_versions": [],
     }))
 
     clock = [1000.0]

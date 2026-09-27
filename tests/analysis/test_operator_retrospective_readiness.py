@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from lynchpin.analysis.operator_retrospective_readiness import operator_retrospective_readiness
@@ -24,6 +24,11 @@ def _dataset(
         row_count=10,
         first_date=first,
         last_date=last,
+        covered_dates=(
+            tuple(first + timedelta(days=offset) for offset in range((last - first).days + 1))
+            if first is not None and last is not None
+            else ()
+        ),
         materialization_hint=f"refresh {name}",
         reason="fixture",
     )
