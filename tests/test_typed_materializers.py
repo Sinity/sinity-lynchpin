@@ -270,6 +270,38 @@ def test_nightly_maintenance_does_not_rebuild_chisel(monkeypatch) -> None:
     assert [(step.product, step.action) for step in explicit] == [("code_snapshots", "materialize")]
 
 
+def test_live_machine_source_does_not_rebuild_offline_fallback_on_read_or_maintenance(monkeypatch) -> None:
+    from lynchpin import materialization
+    from lynchpin.core.source_contracts import source_contract
+    from lynchpin.materializers import production
+
+    row = SimpleNamespace(
+        name="machine", status="ready", reason="live SQLite is active; offline fallback is stale",
+        first_date=date(2026, 1, 1), last_date=date(2026, 8, 1), covered_dates=(), row_count=1,
+        materialized_paths=(), raw_roots=(), tail_stale=True, repair_required=False,
+    )
+    monkeypatch.setattr(materialization, "audit_materialization", lambda **_kwargs: [row])
+
+    nightly = plan_materializations(cfg=object(), maintenance=True)
+    explicit = plan_materializations(cfg=object(), force=True)
+
+    assert source_contract("machine").materialization_mode == "live"
+    assert source_contract("machine").materialization_executor.kind == "none"
+    assert [(step.product, step.action) for step in nightly] == [("machine", "check-only")]
+    assert [(step.product, step.action) for step in explicit] == [("machine", "materialize")]
+    missing = SimpleNamespace(**{**vars(row), "status": "missing", "reason": "no live source or offline copy"})
+    monkeypatch.setattr(materialization, "audit_materialization", lambda **_kwargs: [missing])
+    assert [(step.product, step.action) for step in plan_materializations(cfg=object(), maintenance=True)] == [("machine", "check-only")]
+
+    monkeypatch.setattr(materialization, "_audit_one", lambda *_args, **_kwargs: row)
+    monkeypatch.setattr(materialization, "_materialized_enough_for_window", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(materialization, "_materialization_result", lambda _row, **kwargs: kwargs)
+    monkeypatch.setattr(production, "handler_registry", lambda: (_ for _ in ()).throw(AssertionError("offline rebuild")))
+    read = production.ensure_materialized("machine", cfg=object(), window=(date(2026, 8, 1), date(2026, 8, 2)))
+    assert read["status"] == "ready"
+    assert read["changed"] is False
+
+
 def test_nightly_maintenance_advances_a_long_source_backlog_in_bounded_chunks(monkeypatch, tmp_path) -> None:
     from lynchpin.materializers import production
 

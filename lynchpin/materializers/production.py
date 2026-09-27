@@ -315,6 +315,8 @@ def plan_materializations(
         elif maintenance:
             if row.name == "code_snapshots":
                 action, reason = "check-only", "Chisel snapshots require an explicit build; nightly tail maintenance does not rebuild the portfolio"
+            elif row.name == "machine":
+                action, reason = "check-only", "machine reads use live SQLite or the canonical fallback; building the offline NDJSON copy requires an explicit materialization"
             elif row.repair_required:
                 step_window = _incremental_window(row, end=end)
                 if step_window is None:

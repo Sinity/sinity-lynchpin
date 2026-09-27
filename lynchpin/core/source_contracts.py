@@ -459,7 +459,9 @@ SOURCE_CONTRACTS: tuple[SourceContract, ...] = (
         authority="machine telemetry SQLite/JSONL captures",
         query_surface="lynchpin.sources.machine plus analysis machine artifacts",
         materialization_hint="python -m lynchpin.ingest.machine_materialize",
-        materialization_executor=MaterializationExecutor.materializer("machine"),
+        collection_model="continuous",
+        materialization_mode="live",
+        materialization_target="source:machine",
     ),
     SourceContract(
         name="xtask_history",
