@@ -8,7 +8,12 @@ TAIL = date(2026, 5, 5)
 UTC = timezone.utc
 
 
-def _build(conn, refresh_id: str, predecessor: str | None = None) -> None:
+def _build(
+    conn,
+    refresh_id: str,
+    predecessor: str | None = None,
+    tail_start: date = TAIL,
+) -> None:
     conn.execute(
         """
         INSERT INTO evidence_graph_build (
@@ -23,7 +28,7 @@ def _build(conn, refresh_id: str, predecessor: str | None = None) -> None:
             date(2026, 5, 10),
             datetime(2026, 5, 10, tzinfo=UTC),
             predecessor,
-            TAIL if predecessor else None,
+            tail_start if predecessor else None,
         ],
     )
 
@@ -139,6 +144,50 @@ def test_graph_readers_use_complete_overlay_and_shadow_replacements(tmp_path) ->
 
         velocity = load_velocity_series(conn, refresh_id="r1")
         assert any(row[1] == date(2026, 5, 1) for row in velocity)
+
+
+def test_wider_correction_removes_older_rows_from_graph_and_boundary_reader(tmp_path) -> None:
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.graph import (
+        load_evidence_graph,
+        load_evidence_graph_boundary_nodes,
+    )
+    from lynchpin.substrate.integrity import measure_graph_integrity
+
+    with connect(tmp_path / "graph.duckdb") as conn:
+        apply_schema(conn)
+        _build(conn, "r0")
+        _build(conn, "r1", "r0", date(2026, 5, 8))
+        _build(conn, "r2", "r1", date(2026, 5, 3))
+        _node(conn, "r0", "retained", "commit", date(2026, 5, 2))
+        _node(conn, "r0", "prefix-other", "commit", date(2026, 5, 2))
+        _node(conn, "r0", "deleted", "commit", date(2026, 5, 4))
+        _node(conn, "r0", "renamed-old", "commit", date(2026, 5, 5))
+        _edge(conn, "r0", "retained", "prefix-other", "references")
+        _edge(conn, "r0", "retained", "deleted", "references")
+        _edge(conn, "r0", "retained", "renamed-old", "references")
+        _node(conn, "r1", "retained", "commit", date(2026, 5, 9), source="obsolete")
+        _node(conn, "r1", "old-tail", "commit", date(2026, 5, 9))
+        _node(conn, "r2", "renamed-new", "commit", date(2026, 5, 5))
+        _edge(conn, "r2", "retained", "renamed-new", "references")
+
+        graph = load_evidence_graph(conn, refresh_id="r2")
+        assert graph is not None
+        assert {node.id for node in graph.nodes} == {
+            "retained", "prefix-other", "renamed-new"
+        }
+        assert next(node for node in graph.nodes if node.id == "retained").source == "git"
+        assert {(edge.source_id, edge.target_id) for edge in graph.edges} == {
+            ("retained", "prefix-other"),
+            ("retained", "renamed-new")
+        }
+        assert measure_graph_integrity(conn, "r2") == graph.graph_integrity
+        boundary = load_evidence_graph_boundary_nodes(
+            conn, refresh_id="r2", tail_start=date(2026, 5, 3), lookback_days=10
+        )
+        assert {node.id for node in boundary} == {
+            "retained", "prefix-other", "renamed-new"
+        }
 
 
 def test_claim_evidence_reads_historical_nodes_and_shadows_claim_and_edge(

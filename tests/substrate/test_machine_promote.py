@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from dataclasses import replace
 
 
 def test_promote_machine_metric_samples_round_trip(tmp_path):
@@ -271,6 +272,34 @@ def test_promote_machine_service_states_round_trip(tmp_path):
     assert loaded[0].memory_anon_bytes == 1000
     assert loaded[0].memory_file_bytes == 200
     assert loaded[0].memory_kernel_bytes == 34
+
+
+def test_promote_machine_service_states_preserves_nullable_nanosecond_counter(tmp_path):
+    from lynchpin.sources.machine import MachineServiceState
+    from lynchpin.substrate.connection import apply_schema, connect
+    from lynchpin.substrate.machine import promote_machine_service_states
+
+    db = tmp_path / "sub.duckdb"
+    state = MachineServiceState(
+        observed_at=datetime(2026, 5, 12, 12, tzinfo=timezone.utc),
+        host="example-host",
+        boot_id="example-boot",
+        unit="example.service",
+        scope="user",
+        active_state="active",
+        sub_state="running",
+        main_pid=None,
+        control_group=None,
+        cpu_usage_nsec=2**53 + 1,
+    )
+    missing = replace(state, observed_at=datetime(2026, 5, 12, 13, tzinfo=timezone.utc), cpu_usage_nsec=None)
+    with connect(db) as conn:
+        apply_schema(conn)
+        promote_machine_service_states(conn, refresh_id="r1", states=[state, missing])
+        assert conn.execute(
+            "SELECT cpu_usage_nsec FROM machine_service_state "
+            "WHERE refresh_id = 'r1' ORDER BY observed_at"
+        ).fetchall() == [(2**53 + 1,), (None,)]
 
 
 def test_promote_machine_process_io_delta_samples_round_trip(tmp_path):

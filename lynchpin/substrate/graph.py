@@ -406,11 +406,14 @@ def load_evidence_graph(
             ):
                 edge_rows.append(row)
             shadowed_edge_ids.add(key)
+        newer_node_sql = "SELECT id FROM evidence_node WHERE refresh_id = ?"
+        newer_node_params: list[Any] = [partition_id]
+        if cutoff is not None:
+            newer_node_sql += " AND date < ?"
+            newer_node_params.append(cutoff)
         newer_partition_ids.update(
             str(row[0])
-            for row in conn.execute(
-                "SELECT id FROM evidence_node WHERE refresh_id = ?", [partition_id]
-            ).fetchall()
+            for row in conn.execute(newer_node_sql, newer_node_params).fetchall()
         )
 
     edges: list[EvidenceEdge] = []
@@ -474,8 +477,14 @@ def _graph_lineage(
     lineage: list[tuple[str, date | None]] = [(refresh_id, None)]
     current_refresh_id = predecessor_refresh_id
     current_tail_start = predecessor_tail_start
+    effective_cutoff: date | None = None
     while current_refresh_id is not None and current_tail_start is not None:
-        lineage.append((str(current_refresh_id), current_tail_start))
+        effective_cutoff = (
+            current_tail_start
+            if effective_cutoff is None
+            else min(effective_cutoff, current_tail_start)
+        )
+        lineage.append((str(current_refresh_id), effective_cutoff))
         parent = conn.execute(
             "SELECT predecessor_refresh_id, predecessor_tail_start "
             "FROM evidence_graph_build WHERE refresh_id = ?",
@@ -537,12 +546,15 @@ def _logical_graph_counts(
             " ON CONFLICT (source_id, target_id, relation) DO NOTHING"
         )
         conn.execute(edge_sql, edge_params)
-        conn.execute(
+        newer_node_sql = (
             "INSERT INTO logical_count_newer_node_ids "
-            "SELECT id FROM evidence_node WHERE refresh_id = ? "
-            "ON CONFLICT (id) DO NOTHING",
-            [partition_id],
+            "SELECT id FROM evidence_node WHERE refresh_id = ?"
         )
+        newer_node_params = [partition_id]
+        if cutoff is not None:
+            newer_node_sql += " AND date < ?"
+            newer_node_params.append(cutoff)
+        conn.execute(newer_node_sql + " ON CONFLICT (id) DO NOTHING", newer_node_params)
     return (
         int(conn.execute("SELECT COUNT(*) FROM logical_count_node_ids").fetchone()[0]),
         int(conn.execute("SELECT COUNT(*) FROM logical_count_edge_ids").fetchone()[0]),

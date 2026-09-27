@@ -39,6 +39,33 @@ def test_promote_rows_inserts_typed_rows():
         assert rows == [("a", 1, "r1"), ("b", 2, "r1")]
 
 
+def test_promote_rows_preserves_nullable_bigints_in_vectorized_insert():
+    import duckdb
+    import pandas  # noqa: F401 - the production fast path requires pandas
+
+    with duckdb.connect(":memory:") as conn:
+        conn.execute(
+            "CREATE TABLE t_bigints (label VARCHAR, value BIGINT, optional VARCHAR, refresh_id VARCHAR)"
+        )
+        source = [
+            ("above-float-exactness", 2**53 + 1, None),
+            ("maximum", 2**63 - 1, "present"),
+            ("minimum", -(2**63), None),
+            ("missing", None, "other"),
+        ]
+        promote_rows(
+            conn,
+            table="t_bigints",
+            columns=("label", "value", "optional"),
+            refresh_id="r1",
+            rows=source,
+            extractor=lambda row: row,
+        )
+        assert conn.execute(
+            "SELECT label, value, optional FROM t_bigints ORDER BY label"
+        ).fetchall() == sorted(source)
+
+
 def test_promote_rows_idempotent_on_refresh_id():
     import duckdb
     with duckdb.connect(":memory:") as conn:

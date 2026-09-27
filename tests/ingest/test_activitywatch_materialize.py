@@ -1,11 +1,76 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import pytest
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from lynchpin.sources.activitywatch_models import AWEvent
+
+
+def test_materialize_activitywatch_events_sees_committed_wal_append(monkeypatch, tmp_path):
+    from lynchpin.ingest import activitywatch_materialize
+    from lynchpin.sources import activitywatch_raw
+
+    db = tmp_path / "aw.db"
+    output = tmp_path / "events.ndjson"
+    cfg = SimpleNamespace(activitywatch_db=db, activitywatch_archive_db_dir=tmp_path / "archive")
+    monkeypatch.setattr(activitywatch_materialize, "get_config", lambda: cfg)
+    monkeypatch.setattr(activitywatch_raw, "get_config", lambda: cfg)
+
+    with sqlite3.connect(db) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE buckets (id INTEGER PRIMARY KEY, name TEXT)")
+        writer.execute(
+            "CREATE TABLE events (bucketrow INTEGER, starttime INTEGER, endtime INTEGER, data TEXT)"
+        )
+        writer.execute("INSERT INTO buckets VALUES (1, 'aw-watcher-window_host')")
+
+        def append_event(app: str, hour: int) -> None:
+            start = int(datetime(2026, 1, 1, hour, tzinfo=timezone.utc).timestamp()) * 10**9
+            writer.execute(
+                "INSERT INTO events VALUES (1, ?, ?, ?)",
+                (start, start + 60 * 10**9, json.dumps({"app": app})),
+            )
+            writer.commit()
+
+        append_event("first", 10)
+        first = activitywatch_materialize.materialize_activitywatch_events(output=output)
+        main_stat = db.stat()
+        append_event("second", 11)
+        assert db.stat().st_size == main_stat.st_size
+        assert db.stat().st_mtime_ns == main_stat.st_mtime_ns
+        assert (tmp_path / "aw.db-wal").exists()
+
+        second = activitywatch_materialize.materialize_activitywatch_events(output=output)
+        apps = [json.loads(line)["data"]["app"] for line in output.read_text().splitlines()]
+        assert apps == ["first", "second"]
+        assert second["row_count"] == 2
+        assert second["input_signature"] == first["input_signature"]
+
+        def unexpected_read(*_args, **_kwargs):
+            raise AssertionError("unchanged WAL input should reuse the published product")
+
+        monkeypatch.setattr(activitywatch_materialize, "events_from_activitywatch_dbs", unexpected_read)
+        unchanged = activitywatch_materialize.materialize_activitywatch_events(output=output)
+        assert unchanged["row_count"] == second["row_count"]
+        assert unchanged["input_signature"] == second["input_signature"]
+
+    # Closing the writer checkpoints WAL into the main database. The selected
+    # rows remain identical across that identity transition.
+    writer.close()
+    assert not (tmp_path / "aw.db-wal").exists()
+    monkeypatch.setattr(
+        activitywatch_materialize,
+        "events_from_activitywatch_dbs",
+        activitywatch_raw.events_from_activitywatch_dbs,
+    )
+    activitywatch_materialize.materialize_activitywatch_events(output=output)
+    assert [json.loads(line)["data"]["app"] for line in output.read_text().splitlines()] == [
+        "first", "second"
+    ]
 
 
 def test_materialize_activitywatch_events_records_input_high_water(monkeypatch, tmp_path):

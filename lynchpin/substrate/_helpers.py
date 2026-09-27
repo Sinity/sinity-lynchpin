@@ -16,6 +16,7 @@ from __future__ import annotations
 import gc
 import logging
 import uuid
+from numbers import Integral
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, TypeVar
 
 if TYPE_CHECKING:
@@ -121,8 +122,8 @@ def promote_rows(
         if not buffer:
             return
         # Fast path: DuckDB ingests a pandas DataFrame vectorized (~383x faster
-        # than row-by-row executemany on a nullable-BIGINT A/B, byte-identical
-        # output via convert_dtypes which preserves nullable ints). Only usable
+        # than row-by-row executemany on a nullable-BIGINT A/B). Keep nullable
+        # integers exact: pandas float inference loses bits above 2**53. Only usable
         # when no value is an actual STRUCT/LIST container (dict/list/tuple/set);
         # JSON columns hold strings and are fine. Fall back to executemany for
         # container values or when pandas is unavailable.
@@ -130,14 +131,41 @@ def promote_rows(
             isinstance(v, (dict, list, tuple, set, frozenset))
             for r in buffer for v in r
         ):
-            frame = _pd.DataFrame(buffer, columns=list(ordered_columns)).convert_dtypes()
-            conn.register(df_token, frame)
-            try:
-                conn.execute(
-                    f"INSERT INTO {write_table} ({column_list}) SELECT * FROM {df_token}"
-                )
-            finally:
-                conn.unregister(df_token)
+            frame = _pd.DataFrame(
+                buffer, columns=list(ordered_columns), dtype=object
+            )
+            vectorizable = True
+            for column in ordered_columns:
+                values = frame[column].tolist()
+                integers = [
+                    value for value in values
+                    if isinstance(value, Integral) and not isinstance(value, bool)
+                ]
+                if integers and all(
+                    value is None or isinstance(value, Integral) and not isinstance(value, bool)
+                    for value in values
+                ):
+                    if min(integers) < 0:
+                        if min(integers) < -(2**63) or max(integers) >= 2**63:
+                            vectorizable = False
+                            break
+                        dtype = "Int64"
+                    else:
+                        if max(integers) >= 2**64:
+                            vectorizable = False
+                            break
+                        dtype = "UInt64"
+                    frame[column] = _pd.array(values, dtype=dtype)
+            if vectorizable:
+                conn.register(df_token, frame)
+                try:
+                    conn.execute(
+                        f"INSERT INTO {write_table} ({column_list}) SELECT * FROM {df_token}"
+                    )
+                finally:
+                    conn.unregister(df_token)
+            else:
+                conn.executemany(insert_sql, buffer)
         else:
             conn.executemany(insert_sql, buffer)
         total += len(buffer)

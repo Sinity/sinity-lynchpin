@@ -100,7 +100,9 @@ def measure_graph_integrity(conn: Any, refresh_id: str | None) -> dict[str, Any]
             WHERE cutoff IS NULL OR date < cutoff
         ),
         newest_node AS MATERIALIZED (
-            SELECT id, min(rank) AS rank FROM node_partitions GROUP BY id
+            SELECT id, min(rank) AS rank FROM node_partitions
+            WHERE cutoff IS NULL OR date < cutoff
+            GROUP BY id
         ),
         edges AS MATERIALIZED (
             SELECT DISTINCT e.source_id, e.target_id, e.relation
