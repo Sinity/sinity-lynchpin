@@ -258,6 +258,25 @@ def test_sparse_event_volumes_keep_active_days_and_substances_separate() -> None
     )
 
 
+def test_sparse_source_ending_does_not_create_a_zero_rate_boundary(monkeypatch) -> None:
+    start = date(2025, 1, 1)
+    rows = [_day(start + timedelta(days=i), aw=5.0) for i in range(80)]
+    for row in rows[:8]:
+        row.sources_present = row.sources_present | {"wykop"}
+        row.wykop_comments = 4
+    _patch_sources(monkeypatch, rows, cov_first=rows[0].date, cov_last=rows[-1].date)
+    bounds = _full_coverage_bounds(rows[0].date, rows[-1].date)
+    bounds["wykop"] = CoverageBounds("wykop", rows[0].date, rows[7].date, "export")
+    monkeypatch.setattr(lp, "coverage_bounds", lambda: bounds)
+
+    report = lp.analyze(rows[0].date, rows[-1].date, known_events=[])
+
+    assert report.boundaries == []
+    wykop_coverage = next(row for row in report.event_metric_coverage if row.startswith("Wykop:"))
+    assert rows[7].date.isoformat() in wykop_coverage
+    assert "quiet dates unknown" in wykop_coverage
+
+
 def test_life_phase_report_versions_sparse_event_schema(tmp_path, monkeypatch) -> None:
     import json
 
