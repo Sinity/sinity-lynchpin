@@ -3102,7 +3102,6 @@ def test_themotte_audit_uses_synced_date_bounds(tmp_path) -> None:
 
 def test_machine_audit_uses_live_sqlite_without_rewriting_snapshot(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
-    from lynchpin.ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION
 
     db = tmp_path / "telemetry.sqlite"
     db.write_text("fixture", encoding="utf-8")
@@ -3123,7 +3122,7 @@ def test_machine_audit_uses_live_sqlite_without_rewriting_snapshot(monkeypatch, 
                 },
                 "input_file_count": 1,
                 "input_latest_mtime": "2000-01-01T00:00:00+00:00",
-                "schema_version": MACHINE_TELEMETRY_SCHEMA_VERSION,
+                "schema_version": 1,
             }
         ),
         encoding="utf-8",
@@ -3238,8 +3237,13 @@ def test_machine_table_materialization_merges_requested_window(monkeypatch, tmp_
         end=date(2026, 1, 3),
     )
 
-    rows = [json.loads(line) for line in table.read_text(encoding="utf-8").splitlines()]
-    assert [row["value"] for row in rows] == ["before", "new", "after"]
+    from lynchpin.sources.machine_package import iter_machine_table_rows
+
+    assert [row["value"] for row in iter_machine_table_rows(table, start=None, end=None)] == [
+        "before", "old", "after"
+    ]
+    partition = tmp_path / report["partitions"]["2026-01-02"]["path"]
+    assert [json.loads(line)["value"] for line in partition.read_text().splitlines()] == ["new"]
     assert report["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
     assert report["first_date"] == "2026-01-01"
     assert report["last_date"] == "2026-01-03"
@@ -3247,7 +3251,6 @@ def test_machine_table_materialization_merges_requested_window(monkeypatch, tmp_
 
 def test_machine_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
-    from lynchpin.ingest.machine_materialize import MACHINE_TELEMETRY_SCHEMA_VERSION
 
     db = tmp_path / "telemetry.sqlite"
     db.write_text("fixture", encoding="utf-8")
@@ -3268,7 +3271,7 @@ def test_machine_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> Non
                 },
                 "input_file_count": 1,
                 "input_latest_mtime": datetime.fromtimestamp(db.stat().st_mtime, timezone.utc).astimezone().isoformat(),
-                "schema_version": MACHINE_TELEMETRY_SCHEMA_VERSION,
+                "schema_version": 1,
             }
         ),
         encoding="utf-8",
@@ -3288,6 +3291,30 @@ def test_machine_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> Non
 
     assert row.status == "ready"
     assert row.covered_dates == (date(2026, 1, 1), date(2026, 1, 3))
+
+
+def test_machine_audit_requires_every_manifest_selected_partition(monkeypatch, tmp_path) -> None:
+    from lynchpin import materialization
+
+    partition = tmp_path / "machine-partitions" / "metric_sample" / f"2026-01-01.{'a' * 64}.ndjson"
+    manifest = tmp_path / "manifest.json"
+    tables = {name: {"partitions": {}, "row_count": 0} for name in MACHINE_TABLE_NAMES}
+    tables["metric_sample"]["partitions"] = {
+        "2026-01-01": {"path": str(partition.relative_to(tmp_path)), "row_count": 1}
+    }
+    manifest.write_text(json.dumps({"schema_version": 2, "tables": tables}), encoding="utf-8")
+    monkeypatch.setattr(materialization, "canonical_machine_table_path", lambda name: tmp_path / f"{name}.ndjson")
+    monkeypatch.setattr(materialization, "machine_input_files", lambda _cfg: ())
+    cfg = SimpleNamespace(machine_telemetry_db=tmp_path / "absent.sqlite", machine_capture_root=tmp_path)
+
+    missing = materialization._machine_dataset(cfg)
+    assert missing.status == "missing"
+    assert partition in missing.materialized_paths
+
+    partition.parent.mkdir(parents=True)
+    partition.write_text("{}\n", encoding="utf-8")
+    ready = materialization._machine_dataset(cfg)
+    assert ready.status == "ready"
 
 
 # Obsolete procedural-registry test removed by the typed materializer cutover.

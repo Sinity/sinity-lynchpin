@@ -135,3 +135,30 @@ def test_cleanup_machine_staging_rechecks_activity_at_deletion_boundary(
     assert report["deleted_bytes"] == 0
     assert report["entries"][0]["disposition"] == "active"
     assert stale.exists()
+
+
+def test_cleanup_machine_staging_preserves_selected_partitions_and_reclaims_old_orphans(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(machine_materialize, "MACHINE_TABLES", ("metric_sample",))
+    monkeypatch.setattr(machine_materialize, "canonical_machine_table_path", lambda name: tmp_path / f"{name}.ndjson")
+    monkeypatch.setattr(machine_materialize, "_path_is_open", lambda _path: False)
+    partition_dir = tmp_path / "machine-partitions" / "metric_sample"
+    partition_dir.mkdir(parents=True)
+    selected = partition_dir / f"2026-01-01.{'a' * 64}.ndjson"
+    orphan = partition_dir / f"2026-01-01.{'b' * 64}.ndjson"
+    selected.write_text("selected\n", encoding="utf-8")
+    orphan.write_text("orphan\n", encoding="utf-8")
+    _age(selected, now=100_000)
+    _age(orphan, now=100_000)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"schema_version": 2, "tables": {"metric_sample": {
+            "partitions": {"2026-01-01": {"path": str(selected.relative_to(tmp_path)), "row_count": 1}}
+        }}}), encoding="utf-8"
+    )
+
+    report = machine_materialize.cleanup_machine_staging(grace_period_s=0, apply=True, now=200_000)
+
+    assert report["deleted_bytes"] == len(b"orphan\n")
+    assert selected.exists()
+    assert not orphan.exists()

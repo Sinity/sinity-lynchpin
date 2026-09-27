@@ -113,6 +113,7 @@ from .sources.activitywatch_derived import (
     activitywatch_derived_product_paths,
 )
 from .sources.machine import canonical_machine_table_path
+from .sources.machine_package import machine_table_available, machine_table_files
 from .sources.terminal import canonical_atuin_history_path
 from .sources.title_metadata import title_metadata_manifest_path, title_metadata_path
 from .sources.google_takeout import discover_takeout_archives
@@ -3261,7 +3262,12 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     input_files = machine_input_files(cfg)
     tables = meta.get("tables") if isinstance(meta.get("tables"), dict) else {}
     paths = tuple(canonical_machine_table_path(name) for name in MACHINE_TABLES)
-    snapshot_ready = _manifest_valid(manifest) and all(path.exists() for path in paths)
+    selected_paths = tuple(
+        dict.fromkeys(path for table in paths for path in machine_table_files(table, meta))
+    )
+    snapshot_ready = _manifest_valid(manifest) and all(
+        machine_table_available(path, meta) for path in paths
+    )
 
     # The live SQLite database is the authoritative machine source. Graph
     # promotion reads it incrementally and uses the verified Parquet lake for
@@ -3272,6 +3278,8 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     if input_files:
         status: Status = "ready"
         reason = "live machine telemetry SQLite is the active query source; NDJSON tables are an offline fallback"
+        if not snapshot_ready:
+            reason += "; canonical offline fallback is unavailable"
     elif snapshot_ready:
         status = "ready"
         reason = "canonical machine telemetry NDJSON fallback tables are present"
@@ -3283,7 +3291,7 @@ def _machine_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         status=status,
         authority="machine telemetry SQLite/JSONL captures",
         query_surface="lynchpin.sources.machine plus analysis machine artifacts",
-        materialized_paths=(*paths, manifest),
+        materialized_paths=(*selected_paths, manifest),
         raw_roots=(cfg.machine_capture_root,),
         row_count=_int_or_none(meta.get("row_count")),
         first_date=_date_from_iso(_first_table_date(tables)),

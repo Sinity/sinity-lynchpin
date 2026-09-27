@@ -67,6 +67,7 @@ from .machine_sqlite import (
     default_route_interface,
     json_obj,
 )
+from .machine_package import iter_machine_table_rows, machine_table_available
 
 __all__ = [
     "MachineBlockDeviceSample",
@@ -734,7 +735,7 @@ def process_memory_samples(
             if yielded:
                 return
         ndjson = canonical_machine_table_path("process_memory_sample")
-        if ndjson.exists():
+        if machine_table_available(ndjson):
             yield from _process_memory_samples_from_ndjson(
                 ndjson, start=_as_date(start), end=_as_date(end)
             )
@@ -875,7 +876,7 @@ def cgroup_memory_samples(
             yield from cgroup_memory_samples(start=start, end=end, path=db)
             return
         ndjson = canonical_machine_table_path("cgroup_memory_sample")
-        if ndjson.exists():
+        if machine_table_available(ndjson):
             yield from _cgroup_memory_samples_from_ndjson(ndjson, start=start, end=end)
         return
     db = path
@@ -955,7 +956,7 @@ def kill_events(
             yield from kill_events(start=start, end=end, path=db)
             return
         ndjson = canonical_machine_table_path("kill_event")
-        if ndjson.exists():
+        if machine_table_available(ndjson):
             yield from _kill_events_from_ndjson(ndjson, start=_as_date(start), end=_as_date(end))
         return
     db = path
@@ -1264,26 +1265,18 @@ def _load_machine_rows(
     from ..materialization import ensure_materialized
 
     ensure_materialized("machine", window=_inclusive_date_window(start, end))
-    if not path.exists():
+    if not machine_table_available(path):
         raise FileNotFoundError(
             f"canonical machine telemetry materialization is missing: {path}. "
             "Run python -m lynchpin.ingest.machine_materialize."
         )
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            observed_at = as_utc(row.get("observed_at"))
-            if observed_at is None:
-                continue
-            day = observed_at.date()
-            if start is not None and day < start:
-                continue
-            if end is not None and day > end:
-                continue
-            row["observed_at"] = observed_at
-            yield row
+    for row in iter_machine_table_rows(path, start=start, end=end):
+        raw_observed_at = row.get("observed_at")
+        observed_at = as_utc(raw_observed_at) if isinstance(raw_observed_at, str) else None
+        if observed_at is None:
+            continue
+        row["observed_at"] = observed_at
+        yield row
 
 
 def _inclusive_date_window(start: date | None, end: date | None) -> tuple[date, date] | None:

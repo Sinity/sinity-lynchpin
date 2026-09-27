@@ -47,6 +47,8 @@ are traversed once. Missing or unreadable archives, and output files that
 differ from the published manifest, remain visible as incomplete coverage in
 source readiness.
 
+The machine source reads live telemetry SQLite when available. Its offline canonical fallback uses `processed/manifest.json` to select immutable daily NDJSON partitions. A bounded refresh writes only the requested days and replaces the manifest after those files are durable. Version 1 packages with one NDJSON file per table remain readable; on a bounded refresh that file stays as the historical base while partition entries replace the touched dates for current readers. A fresh package can be built entirely from partitions. A full rebuild over an existing legacy monolith requires a separately verified migration because the live SQLite database alone may not reproduce its complete history. The machine staging cleanup command also identifies unreferenced partition files, retaining them for at least 24 hours so readers holding an earlier manifest can finish.
+
 IRC uses `lynchpin.sources.irc_raw` over the canonical materialized event
 product, with raw WeeChat logs as its explicit fallback. It exposes
 operator-centered conversation units with a bounded preceding context window,
