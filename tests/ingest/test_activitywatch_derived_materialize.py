@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_derived_materialize as mod
@@ -97,6 +99,102 @@ def test_materialize_activitywatch_derived_writes_graph_products(monkeypatch, tm
         ("fragmentation", False),
         ("attention", False),
     ]
+
+
+def test_materialize_repairs_missing_partition_only_inside_requested_window(
+    monkeypatch, tmp_path
+):
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.ingest import activitywatch_derived_materialize as mod
+    from lynchpin.sources.activitywatch_derived import PRODUCT_KINDS
+
+    def seed_missing(root: Path, day: date) -> Path:
+        manifest_path = root / "activitywatch/graph/manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        missing = (
+            root
+            / "activitywatch/graph/generations/generation-old/daily_activity"
+            / f"{day.isoformat()}.ndjson"
+        )
+        product_paths = {kind: {} for kind in PRODUCT_KINDS}
+        product_counts = {kind: {} for kind in PRODUCT_KINDS}
+        product_paths["daily_activity"][day.isoformat()] = str(missing)
+        product_counts["daily_activity"][day.isoformat()] = 1
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": mod.ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
+                    "product_paths": product_paths,
+                    "partition_row_counts": product_counts,
+                    "row_count": 1,
+                    "covered_dates": [day.isoformat()],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return manifest_path
+
+    for name in (
+        "focus_spans",
+        "project_focus_days",
+        "deep_work",
+        "circadian",
+        "loops",
+        "fragmentation",
+        "attention",
+    ):
+        monkeypatch.setattr(mod, name, lambda **_kwargs: ())
+
+    def daily_activity(*, start, **_kwargs):
+        return (
+            SimpleNamespace(
+                date=start,
+                active_hours=1.0,
+                deep_work_min=30.0,
+                fragmentation_score=0.2,
+                project_count=1,
+                dominant_mode="coding",
+                dominant_project="synthetic",
+                hourly_active=(0.0,) * 24,
+                outage_hours=0.0,
+                presence_active_hours=1.0,
+                presence_typing_hours=0.5,
+                presence_data_gap_hours=0.0,
+            ),
+        )
+
+    monkeypatch.setattr(mod, "daily_activity", daily_activity)
+    monkeypatch.setattr(mod, "_clip_to_real_coverage", lambda start, end: (start, end))
+
+    day = date(2026, 6, 6)
+    inside_root = tmp_path / "inside"
+    seed_missing(inside_root, day)
+    inside_input = inside_root / "events.ndjson"
+    inside_input.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod, "activitywatch_derived_input_files", lambda: (inside_input,)
+    )
+    repaired = mod.materialize_activitywatch_derived(
+        start=day, end=day + timedelta(days=1), root=inside_root
+    )
+    repaired_path = Path(repaired["product_paths"]["daily_activity"][day.isoformat()])
+    assert repaired_path.is_file()
+    repaired_row = json.loads(repaired_path.read_text(encoding="utf-8"))
+    assert repaired_row["dominant_project"] == "synthetic"
+
+    outside_root = tmp_path / "outside"
+    seed_missing(outside_root, day)
+    outside_input = outside_root / "events.ndjson"
+    outside_input.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod, "activitywatch_derived_input_files", lambda: (outside_input,)
+    )
+    with pytest.raises(MaterializationError, match="daily_activity/2026-06-06"):
+        mod.materialize_activitywatch_derived(
+            start=day + timedelta(days=1),
+            end=day + timedelta(days=2),
+            root=outside_root,
+        )
 
 
 def test_materialize_activitywatch_derived_replaces_only_requested_window(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ..core.parse import as_local
 from ..core.primitives import logical_date
 from .activitywatch_models import (
@@ -98,7 +99,7 @@ def activitywatch_derived_product_paths(kind: str, root: Path | None = None) -> 
         str(day): resolved
         for day, path in product_paths.items()
         if isinstance(path, str)
-        if (resolved := resolve_derived_partition_path(path, root)).exists()
+        if (resolved := resolve_derived_partition_path(path, root))
     }
 
 
@@ -292,11 +293,21 @@ def _product_paths_for_window(
     if not partitioned:
         return (activitywatch_derived_path(kind),)
     first = start - timedelta(days=1) if include_previous else start
-    return tuple(
-        path
-        for raw_day, path in sorted(paths.items())
-        if first <= date.fromisoformat(raw_day) <= end
-    )
+    selected: list[Path] = []
+    for raw_day, path in sorted(paths.items()):
+        day = date.fromisoformat(raw_day)
+        if first <= day <= end:
+            if not path.is_file():
+                raise SourceUnavailableError(
+                    "activitywatch_derived",
+                    path=str(path),
+                    reason=(
+                        f"manifest names missing {kind} partition "
+                        f"for logical day {raw_day}"
+                    ),
+                )
+            selected.append(path)
+    return tuple(selected)
 
 
 def _rows(paths: Path | tuple[Path, ...]) -> Iterator[dict[str, object]]:

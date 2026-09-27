@@ -5,6 +5,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_materialize_activitywatch_event_index_writes_logical_day_files(monkeypatch, tmp_path):
     from lynchpin.ingest import activitywatch_event_index_materialize as mod
@@ -168,6 +170,67 @@ def test_materialize_activitywatch_event_index_replaces_only_requested_window(mo
         )
     )
     assert [event.data["app"] for event in indexed] == ["new-window"]
+
+
+def test_event_index_repairs_missing_member_only_inside_requested_window(
+    monkeypatch, tmp_path
+):
+    from lynchpin.core.errors import MaterializationError
+    from lynchpin.ingest import activitywatch_event_index_materialize as mod
+
+    def seed(root: Path, missing_day: date) -> None:
+        manifest_path = root / "activitywatch/events_by_day/manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        missing = manifest_path.parent / "generations/old" / f"{missing_day}.ndjson"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "product_paths": {missing_day.isoformat(): str(missing)},
+                    "row_counts": {missing_day.isoformat(): 1},
+                    "covered_dates": [missing_day.isoformat()],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    event = {
+        "bucket": "aw-watcher-window_host",
+        "start": "2026-06-06T08:00:00+00:00",
+        "end": "2026-06-06T08:30:00+00:00",
+        "data": {"app": "synthetic"},
+    }
+    monkeypatch.setattr(mod, "_iter_tail_rows", lambda **_kwargs: iter((event,)))
+
+    inside_root = tmp_path / "inside"
+    seed(inside_root, date(2026, 6, 6))
+    inside_input = inside_root / "events.ndjson"
+    inside_input.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod, "activitywatch_event_index_input_files", lambda: (inside_input,)
+    )
+    repaired = mod.materialize_activitywatch_event_index(
+        root=inside_root,
+        start=date(2026, 6, 6),
+        end=date(2026, 6, 7),
+    )
+    repaired_path = Path(repaired["product_paths"]["2026-06-06"])
+    repaired_row = json.loads(repaired_path.read_text(encoding="utf-8"))
+    assert repaired_row["data"]["app"] == "synthetic"
+
+    outside_root = tmp_path / "outside"
+    seed(outside_root, date(2026, 6, 5))
+    outside_input = outside_root / "events.ndjson"
+    outside_input.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod, "activitywatch_event_index_input_files", lambda: (outside_input,)
+    )
+    with pytest.raises(MaterializationError, match="2026-06-05"):
+        mod.materialize_activitywatch_event_index(
+            root=outside_root,
+            start=date(2026, 6, 6),
+            end=date(2026, 6, 7),
+        )
 
 
 def test_materialize_activitywatch_event_index_reads_only_bounded_raw_tail(monkeypatch, tmp_path):

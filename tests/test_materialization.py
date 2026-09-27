@@ -2050,7 +2050,9 @@ def test_activitywatch_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
 
 def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
     from lynchpin import materialization
-    from lynchpin.ingest.activitywatch_derived_materialize import ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    from lynchpin.ingest.activitywatch_derived_materialize import (
+        ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
+    )
     from lynchpin.sources.activitywatch_derived import PRODUCT_KINDS
 
     root = tmp_path / "derived/activitywatch/graph"
@@ -2089,6 +2091,128 @@ def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tm
 
     assert row.status == "ready"
     assert row.covered_dates == (date(2026, 6, 5), date(2026, 6, 7))
+
+
+def test_activitywatch_derived_audit_rejects_missing_v3_member_despite_legacy_files(
+    monkeypatch, tmp_path
+) -> None:
+    from lynchpin import materialization
+    from lynchpin.ingest.activitywatch_derived_materialize import ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    from lynchpin.sources.activitywatch_derived import PRODUCT_KINDS
+
+    root = tmp_path / "derived/activitywatch/graph"
+    root.mkdir(parents=True)
+    legacy = {kind: root / f"{kind}.ndjson" for kind in PRODUCT_KINDS}
+    for path in legacy.values():
+        path.write_text("", encoding="utf-8")
+    missing = root / "generations/generation-x/daily_activity/2026-06-06.ndjson"
+    manifest = root / "manifest.json"
+    canonical = tmp_path / "captures/activitywatch/events.ndjson"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("{}\n", encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": ACTIVITYWATCH_DERIVED_SCHEMA_VERSION,
+                "row_count": 1,
+                "covered_dates": ["2026-06-06"],
+                "product_paths": {
+                    **{kind: {} for kind in PRODUCT_KINDS},
+                    "daily_activity": {"2026-06-06": str(missing)},
+                },
+                "partition_row_counts": {
+                    **{kind: {} for kind in PRODUCT_KINDS},
+                    "daily_activity": {"2026-06-06": 1},
+                },
+                "input_file_count": 1,
+                "input_latest_mtime": datetime.fromtimestamp(
+                    canonical.stat().st_mtime, timezone.utc
+                ).astimezone().isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        materialization, "activitywatch_derived_manifest_path", lambda: manifest
+    )
+    monkeypatch.setattr(
+        materialization, "activitywatch_derived_path", lambda kind: legacy[kind]
+    )
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_derived_product_paths",
+        lambda kind: {"2026-06-06": missing} if kind == "daily_activity" else {},
+    )
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_derived_input_files",
+        lambda: (canonical,),
+    )
+
+    row = materialization._activitywatch_derived_dataset(
+        SimpleNamespace(data_root=tmp_path)
+    )
+
+    assert row.status == "partial"
+    assert "daily_activity/2026-06-06" in row.reason
+
+
+def test_activitywatch_event_index_audit_rejects_missing_manifest_member(
+    monkeypatch, tmp_path
+) -> None:
+    from lynchpin import materialization
+    from lynchpin.sources.activitywatch_event_index import (
+        ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+    )
+
+    root = tmp_path / "captures/activitywatch/events_by_day"
+    root.mkdir(parents=True)
+    missing = root / "generations/generation-x/2026-06-06.ndjson"
+    canonical = tmp_path / "captures/activitywatch/events.ndjson"
+    canonical.write_text("{}\n", encoding="utf-8")
+    canonical_manifest = canonical.with_suffix(".manifest.json")
+    canonical_manifest.write_text('{"row_count": 1}\n', encoding="utf-8")
+    manifest = root / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "row_count": 1,
+                "covered_dates": ["2026-06-06"],
+                "product_paths": {"2026-06-06": str(missing)},
+                "input_file_count": 2,
+                "input_latest_mtime": datetime.fromtimestamp(
+                    canonical_manifest.stat().st_mtime, timezone.utc
+                ).astimezone().isoformat(),
+                "canonical_row_count_verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_event_index_manifest_path",
+        lambda: manifest,
+    )
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_event_index_product_paths",
+        lambda: {"2026-06-06": missing},
+    )
+    monkeypatch.setattr(
+        materialization,
+        "activitywatch_event_index_input_files",
+        lambda: (canonical, canonical_manifest),
+    )
+
+    row = materialization._activitywatch_event_index_dataset(
+        SimpleNamespace(data_root=tmp_path)
+    )
+
+    assert row.status == "partial"
+    assert "2026-06-06" in row.reason
 
 
 def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:

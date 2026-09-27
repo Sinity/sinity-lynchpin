@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +41,93 @@ def test_partition_paths_follow_relocated_derived_root(tmp_path):
 
     with pytest.raises(MaterializationError, match="manifest partition is unavailable"):
         _existing_partitions(manifest, root=tmp_path / "new")
+
+
+def test_missing_manifest_partitions_are_named_gaps_not_empty_days(
+    tmp_path, monkeypatch
+):
+    from lynchpin.core.errors import SourceUnavailableError
+    from lynchpin.sources import activitywatch_event_index
+    from lynchpin.sources.activitywatch_event_index import (
+        ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+        iter_indexed_activitywatch_events,
+    )
+
+    day = "2026-06-06"
+    missing_derived = tmp_path / "derived" / "daily_activity.ndjson"
+    derived_manifest = tmp_path / "derived" / "manifest.json"
+    derived_manifest.parent.mkdir(parents=True)
+    derived_manifest.write_text(
+        json.dumps(
+            {"product_paths": {"daily_activity": {day: str(missing_derived)}}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        activitywatch_derived,
+        "activitywatch_derived_manifest_path",
+        lambda _root=None: derived_manifest,
+    )
+    with pytest.raises(SourceUnavailableError, match=f"daily_activity.*{day}"):
+        list(
+            iter_derived_daily_activity(
+                start=date.fromisoformat(day),
+                end=date.fromisoformat(day) + timedelta(days=1),
+                ensure=False,
+            )
+        )
+
+    empty_derived = tmp_path / "derived" / "empty.ndjson"
+    empty_derived.write_text("", encoding="utf-8")
+    derived_manifest.write_text(
+        json.dumps({"product_paths": {"daily_activity": {day: str(empty_derived)}}}),
+        encoding="utf-8",
+    )
+    assert list(
+        iter_derived_daily_activity(
+            start=date.fromisoformat(day),
+            end=date.fromisoformat(day) + timedelta(days=1),
+            ensure=False,
+        )
+    ) == []
+
+    missing_index = tmp_path / "events" / "missing.ndjson"
+    index_manifest = tmp_path / "events" / "manifest.json"
+    index_manifest.parent.mkdir(parents=True)
+    index_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION,
+                "product_paths": {day: str(missing_index)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        activitywatch_event_index,
+        "activitywatch_event_index_manifest_path",
+        lambda _root=None: index_manifest,
+    )
+    start = datetime(2026, 6, 6, 12, tzinfo=timezone.utc)
+    with pytest.raises(SourceUnavailableError, match=day):
+        list(
+            iter_indexed_activitywatch_events(
+                bucket_prefix="aw-watcher-window_",
+                start=start,
+                end=start + timedelta(hours=1),
+                root=tmp_path,
+            )
+        )
+
+    missing_index.write_text("", encoding="utf-8")
+    assert list(
+        iter_indexed_activitywatch_events(
+            bucket_prefix="aw-watcher-window_",
+            start=start,
+            end=start + timedelta(hours=1),
+            root=tmp_path,
+        )
+    ) == []
 
 
 def test_default_read_reports_failed_materialization(monkeypatch):

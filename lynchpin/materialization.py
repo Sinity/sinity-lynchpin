@@ -1878,17 +1878,33 @@ def _activitywatch_event_index_dataset(cfg: LynchpinConfig) -> MaterializedDatas
     input_files = activitywatch_event_index_input_files()
     covered_dates = _manifest_covered_dates(meta)
     paths_by_day = activitywatch_event_index_product_paths()
-    product_paths = tuple(paths_by_day[day.isoformat()] for day in covered_dates if day.isoformat() in paths_by_day)
+    product_paths = tuple(
+        paths_by_day[day.isoformat()]
+        for day in covered_dates
+        if day.isoformat() in paths_by_day
+    )
+    schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
+    missing_days = [
+        day for day, path in paths_by_day.items() if not path.is_file()
+    ]
+    covered_day_keys = {day.isoformat() for day in covered_dates}
     products_ready = (
         _manifest_valid(manifest)
         and bool(covered_dates)
         and len(product_paths) == len(covered_dates)
+        and (not schema_current or set(paths_by_day) == covered_day_keys)
+        and not missing_days
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
-    schema_current = meta.get("schema_version") == ACTIVITYWATCH_EVENT_INDEX_SCHEMA_VERSION
     repair_required = products_ready and schema_current and not bool(meta.get("canonical_row_count_verified"))
     tail_stale = False
-    if products_ready and not schema_current:
+    if schema_current and missing_days:
+        status = "partial"
+        reason = (
+            "ActivityWatch event index manifest names missing partitions: "
+            + ", ".join(missing_days[:8])
+        )
+    elif products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch event index schema is older than the current reader contract"
     elif products_ready and repair_required:
@@ -1948,13 +1964,30 @@ def _activitywatch_derived_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
         and len(partition_paths[kind]) == len(raw_product_paths[kind])
         for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS
     )
+    schema_current = meta.get("schema_version") == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
+    missing_partitions = [
+        f"{kind}/{day}"
+        for kind, paths_for_kind in partition_paths.items()
+        for day, path in paths_for_kind.items()
+        if not path.is_file()
+    ]
     products_ready = manifest.exists() and (
-        partition_manifest or all(activitywatch_derived_path(kind).exists() for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS)
+        partition_manifest and not missing_partitions
+        if schema_current and "product_paths" in meta
+        else all(
+            activitywatch_derived_path(kind).exists()
+            for kind in ACTIVITYWATCH_DERIVED_PRODUCT_KINDS
+        )
     )
     inputs_current = _manifest_inputs_current(meta, input_files)
-    schema_current = meta.get("schema_version") == ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     tail_stale = False
-    if products_ready and not schema_current:
+    if schema_current and missing_partitions:
+        status = "partial"
+        reason = (
+            "ActivityWatch derived manifest names missing partitions: "
+            + ", ".join(missing_partitions[:8])
+        )
+    elif products_ready and not schema_current:
         status: Status = "partial"
         reason = "ActivityWatch derived graph product schema is older than the current reader contract"
     elif products_ready and not inputs_current:

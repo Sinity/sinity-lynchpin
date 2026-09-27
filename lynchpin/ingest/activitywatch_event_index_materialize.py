@@ -65,6 +65,22 @@ def materialize_activitywatch_event_index(
         previous = _read_existing_manifest(activitywatch_event_index_manifest_path(root))
         paths = _string_dict(previous.get("product_paths"))
         row_counts = _int_dict(previous.get("row_counts"))
+        requested_days = {item.isoformat() for item in window_dates}
+        missing_outside_window = [
+            day
+            for day, value in paths.items()
+            if day not in requested_days
+            and not Path(value).is_file()
+        ]
+        if missing_outside_window:
+            raise MaterializationError(
+                "activitywatch_event_index_materialize",
+                reason=(
+                    "cannot preserve manifest partitions missing outside the "
+                    "requested window: "
+                    + ", ".join(sorted(missing_outside_window)[:8])
+                ),
+            )
         for day in window_dates:
             raw_day = day.isoformat()
             paths.pop(raw_day, None)

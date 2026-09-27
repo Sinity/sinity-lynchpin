@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.config import get_config
+from ..core.errors import SourceUnavailableError
 from ..core.primitives import logical_date
 from .activitywatch_models import AWEvent
 
@@ -67,7 +68,7 @@ def activitywatch_event_index_product_paths(root: Path | None = None) -> dict[st
     return {
         str(day): Path(str(path))
         for day, path in raw_paths.items()
-        if isinstance(path, str) and Path(path).exists()
+        if isinstance(path, str)
     }
 
 
@@ -104,8 +105,14 @@ def iter_indexed_activitywatch_events(
         if path is None:
             cursor += timedelta(days=1)
             continue
-        if path.exists():
+        if path.is_file():
             rows.extend(_read_day(path, bucket_prefix=bucket_prefix, start=start, end=end))
+        elif generation_manifest and raw_day in product_paths:
+            raise SourceUnavailableError(
+                "activitywatch_event_index",
+                path=str(path),
+                reason=f"manifest names missing partition for logical day {raw_day}",
+            )
         cursor += timedelta(days=1)
     rows.sort(key=lambda event: event.start)
     yield from rows

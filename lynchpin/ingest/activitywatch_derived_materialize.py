@@ -149,7 +149,9 @@ def _materialize_window(
     }
 
     previous = _load_json(activitywatch_derived_manifest_path(root))
-    paths, partition_counts = _existing_partitions(previous, root=root)
+    paths, partition_counts = _existing_partitions(
+        previous, root=root, repair_window=(start, end)
+    )
     migration = previous.get("schema_version") != ACTIVITYWATCH_DERIVED_SCHEMA_VERSION
     if migration:
         # The one-time v2-to-v3 conversion copies the small persisted derived
@@ -259,6 +261,7 @@ def _existing_partitions(
     manifest: dict[str, Any],
     *,
     root: Path | None = None,
+    repair_window: tuple[date, date] | None = None,
 ) -> tuple[dict[str, dict[str, Path]], dict[str, dict[str, int]]]:
     raw_paths = manifest.get("product_paths")
     raw_counts = manifest.get("partition_row_counts")
@@ -274,7 +277,12 @@ def _existing_partitions(
         for day, value in product_paths.items():
             path = resolve_derived_partition_path(str(value), root)
             count = product_counts.get(day)
-            if not path.exists() or not isinstance(count, int):
+            if not path.is_file() and repair_window is not None:
+                start, end = repair_window
+                partition_day = date.fromisoformat(str(day))
+                if start <= partition_day < end and isinstance(count, int):
+                    continue
+            if not path.is_file() or not isinstance(count, int):
                 raise MaterializationError(
                     "activitywatch_derived",
                     reason=f"manifest partition is unavailable or lacks its count: {kind}/{day} ({path})",
