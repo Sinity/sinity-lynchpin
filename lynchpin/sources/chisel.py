@@ -5536,91 +5536,6 @@ def _github_summary_count(counts: Mapping[str, Any], kind: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Combined-output tar
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _make_combined_tar(
-    plan: RepoPlan, out_dir: Path, output_root: Path, log: list[str] | None = None
-) -> tuple[str, int] | None:
-    """Create the project attachment from primary evidence and compact derivatives."""
-    from .chisel_package import attachment_archive
-
-    combined_path = output_root / f"{plan.name}-all.tar.gz"
-    try:
-        size = attachment_archive(output_root, combined_path, [plan.name], [plan.name])
-        _emit(
-            log,
-            f"  [green]✓[/green] {combined_path.name} ([dim]{_fmt_bytes(size)}[/dim])",
-        )
-        return combined_path.name, size
-    except (OSError, RuntimeError, ValueError) as exc:
-        _emit(log, f"  [yellow]⚠[/yellow] {plan.name}: attachment tar: {exc}")
-        return None
-
-
-def _archive_timestamp_from_index(output_root: Path) -> str | None:
-    index_path = output_root / "index.json"
-    if not index_path.exists():
-        return None
-    payload = _read_json_file(index_path)
-    if not isinstance(payload, dict):
-        return None
-    generated_at = payload.get("generated_at")
-    return generated_at if isinstance(generated_at, str) and generated_at else None
-
-
-def _combined_tar_archive_timestamp(paths: Sequence[Path], output_root: Path) -> str:
-    indexed = _archive_timestamp_from_index(output_root)
-    if indexed is not None:
-        return indexed
-    newest = max(path.stat().st_mtime for path in paths)
-    return dt.datetime.fromtimestamp(newest, dt.timezone.utc).strftime(
-        "%Y-%m-%dT%H%M%SZ"
-    )
-
-
-def _archive_dir_for_combined_tars(
-    output_root: Path, timestamp: str, filenames: Sequence[str]
-) -> Path:
-    archive_root = output_root / "archive"
-    candidate = archive_root / timestamp
-    suffix = 1
-    while any((candidate / filename).exists() for filename in filenames):
-        suffix += 1
-        candidate = archive_root / f"{timestamp}-{suffix:02d}"
-    return candidate
-
-
-def _archive_existing_combined_tars(
-    plans: Sequence[RepoPlan], output_root: Path, log: list[str] | None = None
-) -> list[str]:
-    """Move previous root combined packages aside before this run overwrites them."""
-    existing = [output_root / f"{plan.name}-all.tar.gz" for plan in plans]
-    existing = [path for path in existing if path.exists()]
-    if not existing:
-        return []
-
-    timestamp = _combined_tar_archive_timestamp(existing, output_root)
-    archive_dir = _archive_dir_for_combined_tars(
-        output_root, timestamp, [path.name for path in existing]
-    )
-    archive_dir.mkdir(parents=True, exist_ok=True)
-
-    archived: list[str] = []
-    for path in existing:
-        target = archive_dir / path.name
-        shutil.move(str(path), str(target))
-        archived.append(str(target.relative_to(output_root)))
-
-    _emit(
-        log,
-        f"[dim]Archived previous combined packages:[/dim] {archive_dir.relative_to(output_root)}",
-    )
-    return archived
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Per-repo builder (parallel slices within repo)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5993,34 +5908,9 @@ def _build_one_impl(
         log=log,
     )
 
-    # ── Manifest after all per-project artifacts exist, before combined tar ──
+    # ── Manifest after all per-project artifacts exist ──
     manifest_name, manifest_bytes = _write_project_manifest(
         plan, out_dir, generated_at, git, xml_errors, log
-    )
-
-    # ── Attachment archive ──
-    archive_started = time.perf_counter()
-    archive_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    _set_stage(plan.name, "attachment archive", True)
-    log.append("  → attachment archive")
-    try:
-        combined_tar_result = (None, 0)  # Portfolio packaging owns attachment layout.
-    finally:
-        _set_stage(plan.name, "attachment archive", False)
-    stage_timings.append({
-        "stage": "attachment-archive", "label": plan.name,
-        "started_at": archive_started_at,
-        "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "elapsed_s": round(time.perf_counter() - archive_started, 3),
-        "queue_wait_s": 0.0,
-    })
-    if combined_tar_result is None:
-        errors.append("combined tar: creation failed")
-    combined_tar_name = (
-        combined_tar_result[0] if combined_tar_result is not None else None
-    )
-    combined_tar_bytes = (
-        combined_tar_result[1] if combined_tar_result is not None else 0
     )
 
     elapsed = (dt.datetime.now() - t0).total_seconds()
@@ -6045,8 +5935,8 @@ def _build_one_impl(
         "overview_files": overview_files_done,
         "snapshot_audit_files": snapshot_audit_files_done,
         "manifest": manifest_name,
-        "combined_tar": combined_tar_name,
-        "combined_tar_bytes": combined_tar_bytes,
+        "combined_tar": None,
+        "combined_tar_bytes": 0,
         "total_bytes": total_bytes,
         "inputs": {"files": len(inventory.files), "included_bytes": sum(row.size_bytes or 0 for row in inventory.files if row.included)},
         "cache": {"history_records_reused": _read_json_file(out_dir / "history/coverage.json").get("immutable_commit_cache_rows_reused"),

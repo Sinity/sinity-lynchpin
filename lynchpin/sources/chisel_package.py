@@ -17,32 +17,6 @@ from typing import Any, Callable
 from .chisel_cache import copy_file
 
 
-ATTACHMENT_MAX_BYTES = 500_000_000
-
-
-def attachment_archive(root: Path, target: Path, members: list[str],
-                       project_names: list[str]) -> int:
-    """Archive original evidence while omitting locally derived duplicate views."""
-    from . import chisel
-
-    args = ["tar", "-czf", str(target)]
-    for name in project_names:
-        args.extend(f"--exclude={name}/{relative}" for relative in (
-            "history/patches", "index.sqlite3", f"{name}-*.xml",
-            f"{name}-working-tree.tar.gz", f"{name}-beads.html",
-        ))
-    args.extend(["-C", str(root), *members])
-    result = chisel._run(args)
-    if result.returncode:
-        target.unlink(missing_ok=True)
-        raise RuntimeError(f"attachment archive failed: {result.stderr or result.stdout}")
-    size = target.stat().st_size
-    if size > ATTACHMENT_MAX_BYTES:
-        target.unlink()
-        raise ValueError(f"attachment archive exceeds {ATTACHMENT_MAX_BYTES} bytes: {size}")
-    return size
-
-
 # Repomix 1.18.0 does not include these textual fixture/capture extensions in
 # its XML file list. They remain available byte-for-byte in source/ and the
 # working tree archive, and are recorded explicitly in representations/*.json.

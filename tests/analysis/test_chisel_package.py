@@ -10,7 +10,7 @@ import pytest
 from lynchpin.sources.chisel_options import BuildOptions
 from lynchpin.sources import chisel
 from lynchpin.analysis.projects.chisel import build_chisel_bundles
-from lynchpin.sources.chisel_package import attachment_archive, evidence_outputs, verify_history_bundle
+from lynchpin.sources.chisel_package import evidence_outputs, verify_history_bundle
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -119,19 +119,6 @@ def test_complete_attachment_works_offline_and_failure_retains_it(
     failed = build_chisel_bundles(project_names=["demo"], output_root=root, max_workers=1, options=BuildOptions(target="worktree", xml=True, sqlite=True))
     assert not failed["published"]
     assert (root / "portfolio-all.tar.gz").read_bytes() == old
-
-
-def test_attachment_archive_rejects_oversize_output(tmp_path, monkeypatch):
-    from lynchpin.sources import chisel_package
-
-    project = tmp_path / "demo"
-    project.mkdir()
-    (project / "source.txt").write_text("neutral source\n")
-    monkeypatch.setattr(chisel_package, "ATTACHMENT_MAX_BYTES", 1)
-    target = tmp_path / "demo-all.tar.gz"
-    with pytest.raises(ValueError, match="exceeds"):
-        attachment_archive(tmp_path, target, ["demo"], ["demo"])
-    assert not target.exists()
 
 
 def test_github_coverage_attachment_preserves_possible_truncation(tmp_path, monkeypatch):
