@@ -231,11 +231,17 @@ def evidence_outputs(plan: Any, inventory: Any, out_dir: Path, cache_dir: Path,
              if key[0] == plan.name for item in values]
     tracker_dir = out_dir / "trackers"
     tracker_dir.mkdir(exist_ok=True)
+    materialization = chisel._github_context_manifest or None
+    project_inventory_coverage = (
+        (materialization or {}).get("inventory_coverage", {}).get(plan.name, {})
+        if isinstance(materialization, dict) else {}
+    )
     (tracker_dir / "github-coverage.json").write_text(json.dumps({
         "project": plan.name, "repository": plan.github_slug,
         "exported_records": len(items),
-        "materialization": chisel._github_context_manifest or None,
-        "interpretation": "Record count describes this export. Missing materialization or stale fallback does not establish current zero issues or PRs.",
+        "inventory_coverage": project_inventory_coverage,
+        "materialization": materialization,
+        "interpretation": "Exported record counts are observed rows. An inventory at its requested limit may be truncated; its total is unknown. Missing materialization or stale fallback does not establish current zero issues or PRs.",
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     steps = [
         ("structure", lambda: build_structure(inventory, out_dir, cache_dir=cache_dir / "structure")),

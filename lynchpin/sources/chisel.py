@@ -2744,6 +2744,12 @@ def _github_context_items(
     )
 
 
+def _github_inventory_coverage(project: str, kind: str) -> str:
+    manifest = _github_context_manifest or {}
+    coverage = ((manifest.get("inventory_coverage") or {}).get(project) or {}).get(kind) or {}
+    return str(coverage.get("coverage") or "unknown")
+
+
 def _issues_from_context_product(
     project: str, repo_slug: str, state: str, limit: int
 ) -> list[dict]:
@@ -2787,7 +2793,8 @@ def _normalize_comments(issues: list[dict]) -> None:
 
 
 def _build_issues_xml(
-    issues: list[dict], repo_slug: str, state: str, generated_at: str
+    issues: list[dict], repo_slug: str, state: str, generated_at: str,
+    *, coverage: str = "unknown",
 ) -> str:
     root = ET.Element(
         "issues",
@@ -2796,6 +2803,8 @@ def _build_issues_xml(
             "state": state,
             "generated-at": generated_at,
             "count": str(len(issues)),
+            "coverage": coverage,
+            "total-count": str(len(issues)) if coverage == "complete" else "unknown",
         },
     )
     for iss in issues:
@@ -2853,7 +2862,10 @@ def _generate_issues(
         return len(open_issues), len(closed_issues)
     count = 0
     for state, issues in [("open", open_issues), ("closed", closed_issues)]:
-        xml = _build_issues_xml(issues, plan.github_slug, state, generated_at)
+        xml = _build_issues_xml(
+            issues, plan.github_slug, state, generated_at,
+            coverage=_github_inventory_coverage(plan.name, "issue"),
+        )
         (out_dir / f"{plan.name}-issues-{state}.xml").write_text(xml, encoding="utf-8")
         count += len(issues)
 
@@ -2937,7 +2949,8 @@ def _normalize_pr_data(prs: list[dict]) -> None:
 
 
 def _build_prs_xml(
-    prs: list[dict], repo_slug: str, state: str, generated_at: str
+    prs: list[dict], repo_slug: str, state: str, generated_at: str,
+    *, coverage: str = "unknown",
 ) -> str:
     root = ET.Element(
         "prs",
@@ -2946,6 +2959,8 @@ def _build_prs_xml(
             "state": state,
             "generated-at": generated_at,
             "count": str(len(prs)),
+            "coverage": coverage,
+            "total-count": str(len(prs)) if coverage == "complete" else "unknown",
         },
     )
     for pr in prs:
@@ -3045,7 +3060,10 @@ def _generate_prs(
         ("closed", closed_prs),
         ("merged", merged_prs),
     ]:
-        xml = _build_prs_xml(prs, plan.github_slug, state, generated_at)
+        xml = _build_prs_xml(
+            prs, plan.github_slug, state, generated_at,
+            coverage=_github_inventory_coverage(plan.name, "pr"),
+        )
         (out_dir / f"{plan.name}-prs-{state}.xml").write_text(xml, encoding="utf-8")
 
     _emit(
@@ -4368,7 +4386,25 @@ def _generate_snapshot_overview(
     github_coverage = _read_json_file(out_dir / "trackers/github-coverage.json")
     materialization = github_coverage.get("materialization") or _github_context_manifest or {}
     github_refresh_status = materialization.get("refresh_status")
-    current_github_unknown = github_refresh_status in {"local_only", "unavailable", "stale_fallback"}
+    project_inventory_coverage = (
+        github_coverage.get("inventory_coverage")
+        or (materialization.get("inventory_coverage") or {}).get(plan.name, {})
+    )
+    issue_coverage = project_inventory_coverage.get("issue") or {}
+    pr_coverage = project_inventory_coverage.get("pr") or {}
+    issue_coverage_status = str(issue_coverage.get("coverage") or "unavailable")
+    pr_coverage_status = str(pr_coverage.get("coverage") or "unavailable")
+    issue_limit_reached = issue_coverage_status == "possibly_truncated"
+    pr_limit_reached = pr_coverage_status == "possibly_truncated"
+    github_limit_reached = issue_limit_reached or pr_limit_reached
+    refresh_unknown = github_refresh_status in {"local_only", "unavailable", "stale_fallback"}
+    current_issue_unknown = refresh_unknown or issue_coverage_status != "complete"
+    current_pr_unknown = refresh_unknown or pr_coverage_status != "complete"
+    github_count_coverage = (
+        "possibly_truncated" if github_limit_reached
+        else "unavailable" if refresh_unknown or not (issue_coverage_status == pr_coverage_status == "complete")
+        else "captured_export"
+    )
 
     large_artifacts = [
         row
@@ -4409,6 +4445,28 @@ def _generate_snapshot_overview(
     beads_dependencies = int(beads_counts.get("dependencies") or 0)
     beads_memories = int(beads_counts.get("memories") or 0)
 
+    issue_open_display = (
+        f"observed rows: {issues_open}; current total unknown (inventory limit reached)"
+        if issue_limit_reached
+        else f"current unavailable; local snapshot {issues_open}"
+        if current_issue_unknown
+        else str(issues_open)
+    )
+    pr_open_display = (
+        f"observed rows: {prs_open}; current total unknown (inventory limit reached)"
+        if pr_limit_reached
+        else f"current unavailable; local snapshot {prs_open}"
+        if current_pr_unknown
+        else str(prs_open)
+    )
+    pr_merged_display = (
+        f"observed rows: {prs_merged}; total unknown (inventory limit reached)"
+        if pr_limit_reached
+        else f"local snapshot {prs_merged}; current value unavailable"
+        if refresh_unknown
+        else str(prs_merged)
+    )
+
     open_first = [
         f"{plan.name}-overview.md",
         f"{plan.name}-manifest.json",
@@ -4438,9 +4496,21 @@ def _generate_snapshot_overview(
             "issues_closed": issues_closed,
             "prs_open": prs_open,
             "prs_merged": prs_merged,
-            "github_current_count_coverage": "unavailable" if current_github_unknown else "captured_export",
-            "issues_open_current": None if current_github_unknown else issues_open,
-            "prs_open_current": None if current_github_unknown else prs_open,
+            "github_current_count_coverage": github_count_coverage,
+            "issues_open_count_coverage": issue_coverage_status,
+            "issues_closed_count_coverage": issue_coverage_status,
+            "prs_open_count_coverage": pr_coverage_status,
+            "prs_merged_count_coverage": pr_coverage_status,
+            "issues_open_total": issues_open if not current_issue_unknown else None,
+            "issues_closed_total": issues_closed if not current_issue_unknown else None,
+            "prs_open_total": prs_open if not current_pr_unknown else None,
+            "prs_merged_total": prs_merged if not current_pr_unknown else None,
+            "issues_open_count_semantics": "captured_count" if not current_issue_unknown else "observed_rows_total_unknown",
+            "issues_closed_count_semantics": "captured_count" if not current_issue_unknown else "observed_rows_total_unknown",
+            "prs_open_count_semantics": "captured_count" if not current_pr_unknown else "observed_rows_total_unknown",
+            "prs_merged_count_semantics": "captured_count" if not current_pr_unknown else "observed_rows_total_unknown",
+            "issues_open_current": None if current_issue_unknown else issues_open,
+            "prs_open_current": None if current_pr_unknown else prs_open,
             "gitlog_commits": gitlog_commits,
             "beads_available": bool(beads.get("available")),
             "beads_issues": beads_issues,
@@ -4498,9 +4568,9 @@ def _generate_snapshot_overview(
         f"| XML snapshots | {xml_snapshot_count} |",
         f"| Captured snapshot differences | {snapshot_difference_count} |",
         f"| Artifacts | {artifact_count} |",
-        f"| Open issues | {'current unavailable; local snapshot ' + str(issues_open) if current_github_unknown else issues_open} |",
-        f"| Open PRs | {'current unavailable; local snapshot ' + str(prs_open) if current_github_unknown else prs_open} |",
-        f"| Merged PRs | {prs_merged} |",
+        f"| Open issues | {issue_open_display} |",
+        f"| Open PRs | {pr_open_display} |",
+        f"| Merged PRs | {pr_merged_display} |",
         f"| Beads issues | {beads_issues} |",
         f"| Beads ready | {beads_ready} |",
         f"| Beads blocked | {beads_blocked} |",

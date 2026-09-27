@@ -93,6 +93,36 @@ def test_overview_marks_local_github_counts_and_links_only_existing_artifacts(tm
     assert "current unavailable; local snapshot 0" in (out / "example-overview.md").read_text()
 
 
+def test_overview_marks_at_limit_counts_as_unknown_totals(tmp_path: Path) -> None:
+    plan = _plan(tmp_path / "repo")
+    out = tmp_path / "out"
+    (out / "trackers").mkdir(parents=True)
+    (out / "trackers/github-coverage.json").write_text(json.dumps({
+        "inventory_coverage": {
+            "issue": {"coverage": "possibly_truncated", "observed_count": 3,
+                      "requested_limit": 3, "total_count": None},
+            "pr": {"coverage": "complete", "observed_count": 1,
+                   "requested_limit": 3, "total_count": 1},
+        },
+        "materialization": {"refresh_status": "refreshed"},
+    }))
+
+    chisel._generate_snapshot_overview(
+        plan, out, "2026-09-27T000000Z", {"branch": "master", "commit": "abc", "dirty": False},
+        issues_open=2, issues_closed=1, prs_open=1, prs_merged=0, gitlog_commits=3,
+        xml_errors=[],
+    )
+
+    overview = json.loads((out / "example-overview.json").read_text())
+    counts = overview["counts"]
+    assert counts["github_current_count_coverage"] == "possibly_truncated"
+    assert counts["issues_open_total"] is None
+    assert counts["issues_open_count_semantics"] == "observed_rows_total_unknown"
+    assert counts["prs_open_current"] == 1
+    report = (out / "example-overview.md").read_text()
+    assert "observed rows: 2; current total unknown (inventory limit reached)" in report
+
+
 def test_snapshot_audit_marks_xml_errors_as_attention(tmp_path: Path) -> None:
     plan = _plan(tmp_path / "repo")
     out = tmp_path / "out"

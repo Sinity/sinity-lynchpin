@@ -279,6 +279,59 @@ def test_materialize_github_context_refreshes_open_lists_without_gh_cache(
     assert {row["kind"] for row in rows} == {"issue", "pr"}
 
 
+def test_inventory_at_synthetic_limit_marks_totals_unknown_and_preserves_open_rows(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    output = tmp_path / "github" / "context.ndjson"
+    output.parent.mkdir(parents=True)
+    old_open = {
+        "project": "lynchpin", "repo": "lynchpin", "slug": "Sinity/lynchpin",
+        "kind": "issue", "number": 99, "title": "older open row", "state": "open",
+    }
+    output.write_text(json.dumps(old_open) + "\n", encoding="utf-8")
+    monkeypatch.setattr(materializer, "_active_repo_paths", lambda: {"lynchpin": repo})
+    monkeypatch.setattr(materializer, "repo_slug", lambda _path: "Sinity/lynchpin")
+    monkeypatch.setattr(materializer, "commit_facts", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        materializer,
+        "fetch_issue_inventory",
+        lambda *_args, **_kwargs: GitHubInventoryResult(
+            "ok", "lynchpin", "Sinity/lynchpin",
+            (_inventory(number=1, state="open"), _inventory(number=2, state="closed")),
+        ),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "fetch_pr_inventory",
+        lambda *_args, **_kwargs: GitHubInventoryResult("ok", "lynchpin", "Sinity/lynchpin", ()),
+    )
+    monkeypatch.setattr(materializer, "fetch_issue", lambda _path, number, **_kwargs: _item(number=number))
+    monkeypatch.setattr(materializer, "fetch_pr", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_promote_github_context_with_retry",
+        lambda _path: materializer.SubstratePromotionResult(0, "ok", 1),
+    )
+
+    manifest = materializer.materialize_github_context(
+        output=output,
+        start=datetime(2026, 6, 1, tzinfo=timezone.utc).date(),
+        end=datetime(2026, 6, 3, tzinfo=timezone.utc).date(),
+        open_limit=2,
+        closed_limit=2,
+        closed_pr_limit=2,
+    )
+
+    issue_coverage = manifest["inventory_coverage"]["lynchpin"]["issue"]
+    assert issue_coverage == {
+        "state": "all", "observed_count": 2, "requested_limit": 2,
+        "coverage": "possibly_truncated", "total_count": None, "limit_reached": True,
+    }
+    assert manifest["project_stale_open_removed"] == {}
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert any(row.get("number") == 99 for row in rows)
+
+
 def test_materialize_github_context_reuses_existing_closed_pr_details(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     output = tmp_path / "github" / "context.ndjson"

@@ -10,7 +10,7 @@ import pytest
 from lynchpin.sources.chisel_options import BuildOptions
 from lynchpin.sources import chisel
 from lynchpin.analysis.projects.chisel import build_chisel_bundles
-from lynchpin.sources.chisel_package import attachment_archive, verify_history_bundle
+from lynchpin.sources.chisel_package import attachment_archive, evidence_outputs, verify_history_bundle
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -132,6 +132,29 @@ def test_attachment_archive_rejects_oversize_output(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="exceeds"):
         attachment_archive(tmp_path, target, ["demo"], ["demo"])
     assert not target.exists()
+
+
+def test_github_coverage_attachment_preserves_possible_truncation(tmp_path, monkeypatch):
+    from lynchpin.sources import chisel_options
+
+    plan = SimpleNamespace(name="demo", github_slug="Sinity/demo", path=tmp_path)
+    inventory = SimpleNamespace()
+    out_dir = tmp_path / "package"
+    out_dir.mkdir()
+    monkeypatch.setattr(chisel_options, "active_options", BuildOptions(datasets=()))
+    monkeypatch.setattr(chisel, "_github_context_index", {})
+    monkeypatch.setattr(chisel, "_github_context_manifest", {
+        "refresh_status": "refreshed",
+        "inventory_coverage": {
+            "demo": {"issue": {"coverage": "possibly_truncated", "total_count": None}}
+        },
+    })
+
+    evidence_outputs(plan, inventory, out_dir, tmp_path / "cache")
+
+    attachment = json.loads((out_dir / "trackers/github-coverage.json").read_text())
+    assert attachment["inventory_coverage"]["issue"]["total_count"] is None
+    assert "may be truncated" in attachment["interpretation"]
 
 
 def test_bundle_and_history_ref_mismatch_is_rejected(tmp_path, monkeypatch):

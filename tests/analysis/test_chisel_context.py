@@ -68,6 +68,23 @@ def test_pr_context_covers_all_states_and_serializes_inline_comments(monkeypatch
     assert "Fix this line" in xml
 
 
+def test_github_xml_marks_capped_inventory_total_unknown(monkeypatch):
+    monkeypatch.setattr(chisel, "_github_context_manifest", {
+        "inventory_coverage": {
+            "project": {"pr": {"coverage": "possibly_truncated"}}
+        }
+    })
+    row = chisel._prs_from_context_product("project", "Example/project", "open")
+    chisel._normalize_pr_data(row)
+    xml = chisel._build_prs_xml(
+        row, "Example/project", "open", "today",
+        coverage=chisel._github_inventory_coverage("project", "pr"),
+    )
+
+    assert 'coverage="possibly_truncated"' in xml
+    assert 'total-count="unknown"' in xml
+
+
 def test_context_preserves_missing_dates_and_marks_stale_dirty_evidence(
     tmp_path, monkeypatch
 ):

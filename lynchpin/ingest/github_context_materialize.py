@@ -86,6 +86,7 @@ def materialize_github_context(
     project_stale_open_removed: Counter[str] = Counter()
     project_disabled_issue_rows_removed: Counter[str] = Counter()
     inventory_items_seen = 0
+    inventory_coverage: dict[str, dict[str, dict[str, Any]]] = {}
     missing_commit_refs_seen = 0
     missing_commit_refs_attempted = 0
     missing_commit_refs_fetched = 0
@@ -100,14 +101,34 @@ def materialize_github_context(
             continue
         if progress is not None:
             progress(f"GitHub context: refreshing {project} ({slug})")
+        issue_limit = max(open_limit, closed_limit)
+        pr_limit = max(open_limit, closed_pr_limit)
         inventories = [
-            ("issue", "all", lambda: fetch_issue_inventory(path, state="all", limit=max(open_limit, closed_limit), use_cache=False)),
-            ("pr", "all", lambda: fetch_pr_inventory(path, state="all", limit=max(open_limit, closed_pr_limit), use_cache=False)),
+            (
+                "issue", "all", issue_limit,
+                lambda: fetch_issue_inventory(path, state="all", limit=issue_limit, use_cache=False),
+            ),
+            (
+                "pr", "all", pr_limit,
+                lambda: fetch_pr_inventory(path, state="all", limit=pr_limit, use_cache=False),
+            ),
         ]
-        for kind, state, refresh in inventories:
+        for kind, state, requested_limit, refresh in inventories:
             if progress is not None:
                 progress(f"GitHub context: fetching {project} {kind}s {state} inventory")
             result = refresh()
+            limit_reached = result.status == "ok" and len(result.items) >= requested_limit
+            inventory_coverage.setdefault(project, {})[kind] = {
+                "state": state,
+                "observed_count": len(result.items),
+                "requested_limit": requested_limit,
+                "coverage": (
+                    "possibly_truncated" if limit_reached
+                    else "complete" if result.status == "ok" else "unavailable"
+                ),
+                "total_count": None if limit_reached or result.status != "ok" else len(result.items),
+                "limit_reached": limit_reached,
+            }
             statuses[result.status] += 1
             if result.reason:
                 reasons[result.reason] += 1
@@ -119,7 +140,11 @@ def materialize_github_context(
                     project_disabled_issue_rows_removed[project] += removed
                 continue
             inventory_items_seen += len(result.items)
-            stale_removed = _reconcile_current_open_rows(rows, project=project, kind=kind, items=result.items)
+            # A capped all-state inventory is not a complete basis for deleting
+            # stale open rows: an omitted open item may simply be past the cap.
+            stale_removed = 0 if limit_reached else _reconcile_current_open_rows(
+                rows, project=project, kind=kind, items=result.items
+            )
             if stale_removed:
                 project_stale_open_removed[project] += stale_removed
             for inventory in result.items:
@@ -206,6 +231,7 @@ def materialize_github_context(
         "fetch_status_counts": dict(statuses),
         "fetch_reason_counts": dict(reasons),
         "inventory_items_seen": inventory_items_seen,
+        "inventory_coverage": inventory_coverage,
         "detail_refreshes": detail_refreshes,
         "detail_reuses": detail_reuses,
         "detail_misses": detail_misses,
