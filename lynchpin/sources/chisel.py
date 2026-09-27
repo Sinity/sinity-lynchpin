@@ -1,15 +1,7 @@
-"""Chisel — XML repomix snapshots with semantic splitting and GitHub issue commentary.
+"""Build pinned source and evidence packages with atomic publication.
 
-Produces AI-ready codebase snapshots split by concern (code modules, tests, docs,
-issues, log) plus one compressed whole-repo XML per project.
-By default outputs are written to the stable derived-data root returned by
-``code_snapshots_path()``:
-
-    /realm/library/code
-
-Re-running chisel keeps the stable snapshot set current and moves previous
-combined ``*-all.tar.gz`` packages into ``archive/<timestamp>/`` before
-overwriting them. Pass ``--output-root`` only for explicit one-off exports.
+The default output is the configured code snapshot root. XML renderings are
+optional; the default package includes source, history, trackers, and reports.
 """
 
 from __future__ import annotations
@@ -31,7 +23,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -5457,8 +5449,8 @@ def _write_root_index(
         counts = (project.get("overview") or {}).get("counts") or {}
         lines.append(
             f"| `{project['name']}` | {project['status']} | `{git.get('branch', '?')}` | "
-            f"{str(git.get('dirty', '?')).lower()} | {counts.get('issues_open', 0)} | "
-            f"{counts.get('prs_open', 0)} | {counts.get('beads_issues', 0)} | "
+            f"{str(git.get('dirty', '?')).lower()} | {_github_open_index_count(counts, 'issues')} | "
+            f"{_github_open_index_count(counts, 'prs')} | {counts.get('beads_issues', 0)} | "
             f"{counts.get('beads_ready', 0)} | {counts.get('beads_blocked', 0)} | "
             f"{project['artifact_count']} | "
             f"{_fmt_bytes(project['total_bytes'])} | `{overview_link}` | `{audit_link}` | `{manifest_link}` |"
@@ -5518,6 +5510,27 @@ def _write_root_index(
         lines.append("")
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path.name, md_path.name
+
+
+def _github_open_index_count(counts: Mapping[str, Any], kind: str) -> str:
+    observed = counts.get(f"{kind}_open", 0)
+    if counts.get(f"{kind}_open_current") is not None:
+        return str(observed)
+    coverage = counts.get(f"{kind}_open_count_coverage")
+    if coverage == "possibly_truncated":
+        return f"unknown (at least {observed} observed)"
+    return f"unknown (local {observed})"
+
+
+def _github_summary_count(counts: Mapping[str, Any], kind: str) -> str:
+    observed = counts.get(f"{kind}_open", 0)
+    completed = counts.get("issues_closed" if kind == "issues" else "prs_merged", 0)
+    suffix = "c" if kind == "issues" else "m"
+    values = f"{observed}o/{completed}{suffix}"
+    if counts.get(f"{kind}_open_current") is not None:
+        return values
+    qualifier = "observed" if counts.get(f"{kind}_open_count_coverage") == "possibly_truncated" else "local"
+    return f"? ({qualifier} {values})"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6325,8 +6338,9 @@ def _build_chisel_candidate(
             configured_slices = len(plan.slices)
             xml_snapshots = r.get("slices", 0)
             snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
-            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c" if status != "failed" else "?"
-            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m" if status != "failed" else "?"
+            counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
+            issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
+            prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
             commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
             size = r.get("total_bytes", 0)
             total_bytes += size
@@ -6373,8 +6387,9 @@ def _build_chisel_candidate(
             configured_slices = len(plan.slices)
             xml_snapshots = r.get("slices", 0)
             snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
-            issues = f"{r.get('issues_open', 0)}o/{r.get('issues_closed', 0)}c" if status != "failed" else "?"
-            prs = f"{r.get('prs_open', 0)}o/{r.get('prs_merged', 0)}m" if status != "failed" else "?"
+            counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
+            issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
+            prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
             commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
             size = r.get("total_bytes", 0)
             total_bytes += size

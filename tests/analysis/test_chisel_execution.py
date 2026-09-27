@@ -51,6 +51,39 @@ def test_root_index_persists_worker_measured_stage_timings(tmp_path: Path) -> No
     assert index["projects"][0]["stage_timings"] == timings
 
 
+def test_index_and_terminal_counts_mark_local_github_observations(tmp_path: Path) -> None:
+    plan = chisel.RepoPlan(name="alpha", path=tmp_path / "alpha", slices=())
+    project_dir = tmp_path / "out" / "alpha"
+    project_dir.mkdir(parents=True)
+    (project_dir / "alpha-overview.json").write_text(
+        json.dumps({"counts": {
+            "issues_open": 0, "issues_closed": 8, "prs_open": 2, "prs_merged": 10,
+            "issues_open_current": None, "prs_open_current": None,
+            "issues_open_count_coverage": "unavailable",
+            "prs_open_count_coverage": "possibly_truncated",
+        }}), encoding="utf-8",
+    )
+
+    _, markdown = chisel._write_root_index(
+        tmp_path / "out", [plan], {"alpha": {"status": "generated"}},
+        "2026-09-27T000000Z", "test", 1.0,
+    )
+
+    index_text = (tmp_path / "out" / markdown).read_text(encoding="utf-8")
+    assert "unknown (local 0)" in index_text
+    assert "unknown (at least 2 observed)" in index_text
+    assert chisel._github_summary_count(
+        {"issues_open": 0, "issues_closed": 8, "issues_open_current": None}, "issues"
+    ) == "? (local 0o/8c)"
+    assert chisel._github_summary_count(
+        {"prs_open": 2, "prs_merged": 10, "prs_open_current": None,
+         "prs_open_count_coverage": "possibly_truncated"}, "prs"
+    ) == "? (observed 2o/10m)"
+    assert chisel._github_summary_count(
+        {"prs_open": 2, "prs_merged": 10, "prs_open_current": 2}, "prs"
+    ) == "2o/10m"
+
+
 @pytest.mark.parametrize("detailed", [False, True])
 def test_project_log_block_cannot_be_interleaved_by_other_worker(monkeypatch, detailed) -> None:
     from lynchpin.sources.chisel_options import BuildOptions

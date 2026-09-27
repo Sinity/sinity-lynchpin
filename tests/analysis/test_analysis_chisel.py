@@ -1781,6 +1781,8 @@ def test_write_root_index_surfaces_beads_counts(tmp_path: Path) -> None:
                 "counts": {
                     "issues_open": 0,
                     "prs_open": 0,
+                    "issues_open_current": 0,
+                    "prs_open_current": 0,
                     "beads_issues": 4,
                     "beads_ready": 2,
                     "beads_blocked": 1,
