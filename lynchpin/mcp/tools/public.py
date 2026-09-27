@@ -858,9 +858,11 @@ def lynchpin_personal(
     if action == "phone":
         return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view="phone", start=start, end=end, source=source, limit=limit)
     if action == "health":
-        health_view = view or ("daily" if start is not None or end is not None else "trend")
+        health_view = view or "daily"
         if health_view == "daily" and (start is None or end is None):
             return _error("missing_argument", "start and end are required for daily health")
+        if health_view == "trend" and (start is not None or end is not None):
+            return _error("invalid_request", "substrate promotion trend does not accept start or end")
         if health_view in {"phone_health", "xiaomi", "coverage"}:
             return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view=health_view, start=start, end=end, source=source, limit=limit)
         fn = {

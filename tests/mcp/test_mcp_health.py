@@ -101,10 +101,12 @@ def test_substrate_confidence_matrix_materializes_only_for_default_snapshot(
     )
     monkeypatch.setattr("lynchpin.mcp.tools.health.best_materialized_refresh_id", fail_reader)
 
-    result = substrate_confidence_matrix(refresh_id="historical-rid")
+    from lynchpin.core.errors import SourceUnavailableError
+
+    with pytest.raises(SourceUnavailableError, match="no source coverage evidence"):
+        substrate_confidence_matrix(refresh_id="historical-rid")
 
     assert calls == [("substrate_confidence_matrix", None)]
-    assert result["refresh_id"] == "historical-rid"
 
 
 def test_public_confidence_route_discloses_zero_node_source_failures(
@@ -209,6 +211,22 @@ def test_public_confidence_route_reports_all_empty_sources_and_excludes_internal
     assert payload["summary"]["empty_source_count"] == 2
     assert payload["summary"]["confidence_pct"] == 100.0
     assert payload["summary"]["total_nodes"] == 0
+
+
+def test_public_confidence_route_rejects_refresh_without_source_evidence(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.mcp.conftest import setup_substrate
+
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    response = lynchpin_evidence(action="confidence", refresh_id="nonexistent")
+    assert response["ok"] is False
+    assert response["error_code"] == "source_unavailable"
+    assert "no source coverage evidence" in response["reason"]
 
 
 def test_work_package_durability_uses_best_symbol_snapshot(

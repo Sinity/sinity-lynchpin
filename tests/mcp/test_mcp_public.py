@@ -335,6 +335,22 @@ def test_personal_health_default_preserves_requested_window(monkeypatch: pytest.
     assert calls == [("2026-01-01", "2026-01-02")]
 
 
+def test_personal_health_requires_dates_by_default_and_rejects_dates_for_substrate_trend(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools.public import lynchpin_personal
+
+    calls: list[str] = []
+    monkeypatch.setattr("lynchpin.mcp.tools.health.health_trend", lambda: calls.append("trend") or {"kind": "substrate"})
+
+    default = lynchpin_personal(action="health")
+    dated_trend = lynchpin_personal(action="health", view="trend", start="2026-01-01", end="2026-01-02")
+    explicit_trend = lynchpin_personal(action="health", view="trend")
+
+    assert default["ok"] is False and default["error_code"] == "missing_argument"
+    assert dated_trend["ok"] is False and dated_trend["error_code"] == "invalid_request"
+    assert explicit_trend["ok"] is True and explicit_trend["data"] == {"kind": "substrate"}
+    assert calls == ["trend"]
+
+
 def test_invalid_actions_return_structured_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup_substrate(tmp_path, monkeypatch)
 

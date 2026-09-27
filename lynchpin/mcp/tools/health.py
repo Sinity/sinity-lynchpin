@@ -202,6 +202,13 @@ def substrate_confidence_matrix(
         # refresh's status rows or observed in the graph. Coverage counts
         # successful observations and sources explicitly known empty.
         source_count = len(dimensions)
+        if source_count == 0:
+            from lynchpin.core.errors import SourceUnavailableError
+
+            raise SourceUnavailableError(
+                "substrate_confidence_matrix",
+                reason=f"no source coverage evidence for refresh {refresh_id}",
+            )
         observed = sum(1 for d in dimensions if d["node_count"] > 0)
         unavailable = sum(1 for d in dimensions if d["status"] == "unavailable")
         errors = sum(1 for d in dimensions if d["status"] == "error")
