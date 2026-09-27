@@ -5529,8 +5529,8 @@ def _github_summary_count(counts: Mapping[str, Any], kind: str) -> str:
     values = f"{observed}o/{completed}{suffix}"
     if counts.get(f"{kind}_open_current") is not None:
         return values
-    qualifier = "observed" if counts.get(f"{kind}_open_count_coverage") == "possibly_truncated" else "local"
-    return f"? ({qualifier} {values})"
+    marker = "≥" if counts.get(f"{kind}_open_count_coverage") == "possibly_truncated" else ""
+    return f"?{marker}{values}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6306,6 +6306,7 @@ def _build_chisel_candidate(
     )
 
     # ── Summary table ──
+    github_counts_unknown = False
     if _console is not None:
         table = Table(title=f"Chisel — {generated_at}", title_style="bold")
         table.add_column("Repo", style="bold", no_wrap=True)
@@ -6339,6 +6340,9 @@ def _build_chisel_candidate(
             xml_snapshots = r.get("slices", 0)
             snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
             counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
+            github_counts_unknown |= status != "failed" and (
+                counts.get("issues_open_current") is None or counts.get("prs_open_current") is None
+            )
             issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
             prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
             commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
@@ -6388,6 +6392,9 @@ def _build_chisel_candidate(
             xml_snapshots = r.get("slices", 0)
             snapshots = f"{configured_slices}/{xml_snapshots}" if status != "failed" else "?"
             counts = _read_json_file(output_root / plan.name / f"{plan.name}-overview.json").get("counts") or {}
+            github_counts_unknown |= status != "failed" and (
+                counts.get("issues_open_current") is None or counts.get("prs_open_current") is None
+            )
             issues = _github_summary_count(counts, "issues") if status != "failed" else "?"
             prs = _github_summary_count(counts, "prs") if status != "failed" else "?"
             commits = str(r.get("gitlog_commits", 0)) if status != "failed" else "?"
@@ -6398,6 +6405,9 @@ def _build_chisel_candidate(
                 f"{plan.name:<22} {status_label:<5} {snapshots:>7} {issues:>12} {prs:>12} {commits:>8} {_fmt_bytes(size):>12} {elapsed:>8}"
             )
         _print("-" * 100)
+
+    if github_counts_unknown:
+        _print("? = current GitHub count unknown; following numbers are local observations. ≥ = inventory may be truncated.")
 
     # ── Validation summary ──
     all_xml_errors: list[str] = []

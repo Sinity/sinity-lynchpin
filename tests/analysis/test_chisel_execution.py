@@ -74,11 +74,11 @@ def test_index_and_terminal_counts_mark_local_github_observations(tmp_path: Path
     assert "unknown (at least 2 observed)" in index_text
     assert chisel._github_summary_count(
         {"issues_open": 0, "issues_closed": 8, "issues_open_current": None}, "issues"
-    ) == "? (local 0o/8c)"
+    ) == "?0o/8c"
     assert chisel._github_summary_count(
         {"prs_open": 2, "prs_merged": 10, "prs_open_current": None,
          "prs_open_count_coverage": "possibly_truncated"}, "prs"
-    ) == "? (observed 2o/10m)"
+    ) == "?≥2o/10m"
     assert chisel._github_summary_count(
         {"prs_open": 2, "prs_merged": 10, "prs_open_current": 2}, "prs"
     ) == "2o/10m"
