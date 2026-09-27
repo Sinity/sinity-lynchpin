@@ -65,6 +65,10 @@ def _promote_current_state_graph(
     projects: Sequence[str] | None,
 ) -> dict[str, Any]:
     """Promote materialized current-state packs and return explicit status."""
+    from lynchpin.substrate.connection import CandidateGenerationRejected, in_candidate_generation
+
+    if not in_candidate_generation():
+        raise CandidateGenerationRejected("current-state graph promotion requires an active candidate generation")
     project_key = ",".join(sorted(projects or ())) if projects else "all"
     refresh_id = f"current-state:{start.isoformat()}:{end.isoformat()}:{project_key}"
     try:

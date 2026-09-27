@@ -418,7 +418,11 @@ def promote_graph_to_substrate(
     recorder: GraphStageRecorder | None = None,
     input_fingerprint: str | None = None,
 ) -> None:
-    """Best-effort write of graph to DuckDB substrate. Errors logged, not raised."""
+    """Write within a candidate; retain best-effort handling for write failures."""
+    from lynchpin.substrate.connection import CandidateGenerationRejected, in_candidate_generation
+
+    if not in_candidate_generation():
+        raise CandidateGenerationRejected("evidence graph promotion requires an active candidate generation")
     try:
         from lynchpin.substrate import connect, apply_schema
         from lynchpin.substrate.claims import promote_analysis_claims

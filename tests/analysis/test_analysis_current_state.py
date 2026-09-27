@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 import json
+import pytest
 
 from lynchpin.analysis.ecosystem import current_state
+from lynchpin.substrate.connection import CandidateGenerationRejected, _substrate_path_override
 
 
 @dataclass(frozen=True)
@@ -73,3 +75,38 @@ def test_current_state_analysis_github_frontier_promotes_to_network(monkeypatch,
     )
 
     assert calls["include_github_frontier"] is True
+
+
+def test_current_state_analysis_refuses_promotion_without_candidate(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        current_state,
+        "context_pack",
+        lambda **kwargs: _FakePack(start=kwargs["start"], mode="materialized", projects=()),
+    )
+    output = tmp_path / "pack.json"
+
+    with pytest.raises(CandidateGenerationRejected, match="active candidate generation"):
+        current_state.run_current_state_analysis(
+            start=date(2026, 5, 1), end=date(2026, 5, 2), out_file=output,
+        )
+
+    assert not output.exists()
+
+
+def test_current_state_promotion_reports_write_failure_inside_candidate(monkeypatch, tmp_path):
+    import lynchpin.substrate as substrate
+
+    def fail_connect(*_args, **_kwargs):
+        raise RuntimeError("synthetic write failure")
+
+    monkeypatch.setattr(substrate, "connect", fail_connect)
+    token = _substrate_path_override.set(tmp_path / "candidate.duckdb")
+    try:
+        status = current_state._promote_current_state_graph(
+            "graph", start=date(2026, 5, 1), end=date(2026, 5, 2), projects=(),
+        )
+    finally:
+        _substrate_path_override.reset(token)
+
+    assert status["status"] == "failed"
+    assert "synthetic write failure" in status["reason"]
