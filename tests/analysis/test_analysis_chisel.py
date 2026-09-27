@@ -1254,7 +1254,8 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
         "<?xml version='1.0'?><issues count='3'></issues>",
         encoding="utf-8",
     )
-    (out_dir / "example-branch-delta.patch").write_text("diff", encoding="utf-8")
+    (out_dir / "reports").mkdir()
+    (out_dir / "reports/snapshot-differences.jsonl").write_text("{}\n", encoding="utf-8")
     (out_dir / "example-tokei-stats.json").write_text(
         chisel.json.dumps(
             {
@@ -1314,6 +1315,7 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert set(names) == {"example-overview.json", "example-overview.md"}
     assert size > 0
     assert payload["counts"]["open_pr_xml_count"] == 2
+    assert payload["counts"]["snapshot_differences"] == 1
     assert payload["counts"]["beads_issues"] == 8
     assert payload["counts"]["beads_ready"] == 2
     assert payload["counts"]["beads_blocked"] == 1
@@ -1322,6 +1324,8 @@ def test_generate_snapshot_overview_surfaces_counts_and_attention(
     assert "example-beads.md" not in payload["open_first"]
     assert payload["attention"]["large_artifacts"][0]["name"] == "example-core.xml"
     assert "`example-prs-open.xml`" in markdown
+    assert "reports/snapshot-differences.jsonl" in payload["open_first"]
+    assert chisel._file_scope_and_purpose(plan, "snapshot-differences.jsonl")[0] == "captured-snapshots"
     assert "| Beads blocked | 1 |" in markdown
 
     audit_names, audit_size = chisel._generate_snapshot_audit(
@@ -1559,7 +1563,6 @@ def _mock_captured_build_seams(
     monkeypatch.setattr(chisel, "_generate_prs", lambda *_args: (0, 0))
     monkeypatch.setattr(chisel, "_generate_ignore_audit", lambda *_args: ([], 0))
     monkeypatch.setattr(chisel, "_generate_agent_audit", lambda *_args: ([], 0))
-    monkeypatch.setattr(chisel, "_generate_branch_delta", lambda *_args: ([], 0))
     monkeypatch.setattr(
         chisel,
         "_generate_beads",

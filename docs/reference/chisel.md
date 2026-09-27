@@ -43,6 +43,8 @@ Python import records include scope, enclosing symbol, aliases, explicit re-expo
 
 `reports/` includes snapshot differences, changed Python symbols, task dependencies, candidate evidence, operation declarations, conservative references, and preserved-work comparisons. Exact hashes, text patch comparisons, and similarity are review aids. They do not establish supersession or retirement. Campaign counts require explicit task roots. Campaign evidence reuses the versioned acceptance join over frozen owner snapshots. Partial graphs expose missing nodes, unfinished leaves, cycles, and shortest blocking paths.
 
+Snapshot differences compare the policy-filtered primary capture with named captured overlays in `snapshots.json`; they remain bound to those IDs when checkout refs advance. Chisel does not attach a live `git diff` from the current checkout. Selecting `history` still includes the complete captured history bundle and keeps its full-history meaning; source-profile filtering does not redact selected history.
+
 Python declarations and literal registries, AgentCTL operation TOML, and selected Rust, SQL, and Nix patterns carry locations and extraction methods. Text-pattern relationships retain candidate status. Same-file symbol-name references do not resolve shadowing. Read the report coverage document before treating a missing relationship as absent.
 
 ## Owner evidence and context

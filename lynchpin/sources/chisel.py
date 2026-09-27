@@ -4006,6 +4006,8 @@ def _sha256_file(path: Path) -> str:
 
 
 def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
+    if name == "snapshot-differences.jsonl":
+        return "captured-snapshots", "Differences between policy-filtered captured source snapshots"
     if name.endswith("-overview.json") or name.endswith("-overview.md"):
         return "overview", "Human-oriented snapshot guide and triage summary"
     if (
@@ -4029,23 +4031,6 @@ def _file_scope_and_purpose(plan: RepoPlan, name: str) -> tuple[str, str]:
             "current-working-tree",
             "Working-tree archive with uncommitted changes and local-state ignores",
         )
-    if name.endswith("-branch-delta.patch"):
-        return (
-            "current-branch",
-            "Patch for current HEAD against the remote default branch merge-base",
-        )
-    if name.endswith("-branch-delta-log.txt"):
-        return (
-            "current-branch",
-            "Commit log for current HEAD against the remote default branch",
-        )
-    if name.endswith("-branch-delta-files.txt"):
-        return (
-            "current-branch",
-            "Changed file list for current HEAD against the remote default branch",
-        )
-    if name.endswith("-branch-delta.md"):
-        return "current-branch", "Human-readable branch delta summary"
     if name.endswith("-scratchpad.xml"):
         return "scratchpad", "Repomix XML over .agent/scratch working notes"
     if name.endswith("-accelerants.xml"):
@@ -4320,100 +4305,6 @@ def _generate_agent_audit(
     return [json_path.name, md_path.name], size
 
 
-def _remote_default_ref(repo: Path) -> str:
-    symbolic = _run(
-        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
-        cwd=repo,
-    )
-    if symbolic.returncode == 0 and symbolic.stdout.strip():
-        return symbolic.stdout.strip()
-    for candidate in ("origin/master", "origin/main"):
-        exists = _run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=repo)
-        if exists.returncode == 0:
-            return candidate
-    return "HEAD"
-
-
-def _generate_branch_delta(
-    plan: RepoPlan, out_dir: Path, log: list[str] | None = None
-) -> tuple[list[str], int]:
-    base_ref = _remote_default_ref(plan.path)
-    if base_ref == "HEAD":
-        md_path = out_dir / f"{plan.name}-branch-delta.md"
-        md_path.write_text(
-            f"# {plan.name} branch delta\n\nNo remote default branch is configured for this checkout.\n",
-            encoding="utf-8",
-        )
-        _emit(log, "  [dim]branch-delta: no remote default branch configured[/dim]")
-        return [md_path.name], md_path.stat().st_size
-
-    merge_base = _run(["git", "merge-base", "HEAD", base_ref], cwd=plan.path)
-    files: list[str] = []
-    if merge_base.returncode != 0 or not merge_base.stdout.strip():
-        md_path = out_dir / f"{plan.name}-branch-delta.md"
-        md_path.write_text(
-            f"# {plan.name} branch delta\n\nUnable to determine merge-base for `{base_ref}`.\n",
-            encoding="utf-8",
-        )
-        _emit(
-            log,
-            f"  [yellow]⚠[/yellow] branch-delta: merge-base unavailable for {base_ref}",
-        )
-        return [md_path.name], md_path.stat().st_size
-
-    base = merge_base.stdout.strip()
-    diff_flags = ["--no-textconv", "--no-ext-diff", "--no-color"]
-    stat = _run(["git", "diff", *diff_flags, "--stat", f"{base}...HEAD"], cwd=plan.path)
-    diff = _run(["git", "diff", *diff_flags, "--binary", f"{base}...HEAD"], cwd=plan.path)
-    changed = _run(["git", "diff", *diff_flags, "--name-status", f"{base}...HEAD"], cwd=plan.path)
-    commits = _run(
-        ["git", "log", "--oneline", "--decorate", f"{base}..HEAD"], cwd=plan.path
-    )
-    for result in (stat, diff, changed, commits):
-        if result.returncode:
-            raise RuntimeError(f"branch delta failed: {result.stderr or result.stdout}")
-
-    outputs = {
-        f"{plan.name}-branch-delta.patch": diff.stdout,
-        f"{plan.name}-branch-delta-files.txt": changed.stdout,
-        f"{plan.name}-branch-delta-log.txt": commits.stdout,
-    }
-    for name, content in outputs.items():
-        path = out_dir / name
-        path.write_text(content, encoding="utf-8")
-        files.append(path.name)
-
-    md_path = out_dir / f"{plan.name}-branch-delta.md"
-    md_path.write_text(
-        "\n".join(
-            (
-                f"# {plan.name} branch delta",
-                "",
-                f"Base ref: `{base_ref}`",
-                f"Merge base: `{base}`",
-                "",
-                "## Diff Stat",
-                "",
-                "```text",
-                stat.stdout.strip(),
-                "```",
-                "",
-                "## Commits",
-                "",
-                "```text",
-                commits.stdout.strip(),
-                "```",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
-    files.append(md_path.name)
-    size = sum((out_dir / name).stat().st_size for name in files)
-    _emit(log, f"  [green]✓[/green] branch-delta vs {base_ref} ({_fmt_bytes(size)})")
-    return files, size
-
-
 def _read_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -4500,11 +4391,12 @@ def _generate_snapshot_overview(
     )
     ignored_local_state = ignore_audit.get("ignored_local_state_bytes")
     tracked_hidden = ignore_audit.get("tracked_hidden_bytes")
-    branch_delta_patch = out_dir / f"{plan.name}-branch-delta.patch"
-    branch_delta_size = (
-        branch_delta_patch.stat().st_size if branch_delta_patch.exists() else 0
-    )
     xml_snapshot_count = sum(1 for path in out_dir.glob("*.xml") if path.is_file())
+    differences_path = out_dir / "reports/snapshot-differences.jsonl"
+    snapshot_difference_count = (
+        sum(1 for line in differences_path.read_text(encoding="utf-8").splitlines() if line)
+        if differences_path.is_file() else 0
+    )
     artifact_count = len(
         {row["name"] for row in artifacts}.union(pending_artifact_names)
     )
@@ -4523,7 +4415,7 @@ def _generate_snapshot_overview(
         f"{plan.name}-beads.md" if beads.get("available") else None,
         f"{plan.name}-prs-open.xml" if prs_open else None,
         f"{plan.name}-issues-open.xml" if issues_open else None,
-        f"{plan.name}-branch-delta.md",
+        "reports/snapshot-differences.jsonl",
         f"{plan.name}-growth.md",
         f"{plan.name}-tokei-stats.md",
         f"{plan.name}-agent-audit.md" if agent_audit else None,
@@ -4540,6 +4432,7 @@ def _generate_snapshot_overview(
         "counts": {
             "configured_slices": len(plan.slices),
             "xml_snapshots": xml_snapshot_count,
+            "snapshot_differences": snapshot_difference_count,
             "artifacts": artifact_count,
             "issues_open": issues_open,
             "issues_closed": issues_closed,
@@ -4569,7 +4462,6 @@ def _generate_snapshot_overview(
             "agent_archive_or_generated_bytes": archive_agent_bytes,
             "ignored_local_state_bytes": ignored_local_state,
             "tracked_hidden_bytes": tracked_hidden,
-            "branch_delta_patch_bytes": branch_delta_size,
             "beads_blocked": beads_blocked,
         },
         "top_buckets": [
@@ -4604,6 +4496,7 @@ def _generate_snapshot_overview(
         "| --- | ---: |",
         f"| Configured slices | {len(plan.slices)} |",
         f"| XML snapshots | {xml_snapshot_count} |",
+        f"| Captured snapshot differences | {snapshot_difference_count} |",
         f"| Artifacts | {artifact_count} |",
         f"| Open issues | {'current unavailable; local snapshot ' + str(issues_open) if current_github_unknown else issues_open} |",
         f"| Open PRs | {'current unavailable; local snapshot ' + str(prs_open) if current_github_unknown else prs_open} |",
@@ -4645,10 +4538,6 @@ def _generate_snapshot_overview(
         )
     elif tracked_hidden is None and ignore_audit:
         attention_lines.append("- Hidden path size: unmeasured.")
-    if branch_delta_size:
-        attention_lines.append(
-            f"- Current branch delta patch: {_fmt_bytes(branch_delta_size)}."
-        )
     if beads_blocked:
         attention_lines.append(
             f"- Beads has {beads_blocked} blocked issue{'s' if beads_blocked != 1 else ''}."
@@ -4769,11 +4658,6 @@ def _generate_snapshot_audit(
             "ignored_local_state_bytes": ignore_audit.get("ignored_local_state_bytes"),
             "tracked_hidden_bytes": ignore_audit.get("tracked_hidden_bytes"),
             "unmeasured_directories": ignore_audit.get("unmeasured_directories") or [],
-        },
-        "branch_delta": {
-            "patch_bytes": int(
-                ((overview.get("attention") or {}).get("branch_delta_patch_bytes")) or 0
-            ),
         },
         "beads": {
             "available": bool(beads.get("beads_available")),
@@ -5514,8 +5398,8 @@ def _write_root_index(
             "",
             "## Attention Summary",
             "",
-            "| Project | Large artifacts | Agent review | Agent archive/generated | Branch delta | Beads blocked |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Project | Large artifacts | Agent review | Agent archive/generated | Beads blocked |",
+            "| --- | ---: | ---: | ---: | ---: |",
         )
     )
     for project in projects:
@@ -5524,7 +5408,6 @@ def _write_root_index(
             f"| `{project['name']}` | {len(attention.get('large_artifacts') or [])} | "
             f"{attention.get('agent_review_entries', 0)} | "
             f"{_fmt_bytes(int(attention.get('agent_archive_or_generated_bytes') or 0))} | "
-            f"{_fmt_bytes(int(attention.get('branch_delta_patch_bytes') or 0))} | "
             f"{attention.get('beads_blocked', 0)} |"
         )
     lines.extend(("", "## Largest Artifacts", ""))
@@ -5890,9 +5773,6 @@ def _build_one_impl(
         # Agent workspace layout and cleanup candidate audit.
         submit("agent-audit", plan.name, _generate_agent_audit, plan, out_dir, log)
 
-        # Current branch delta against the remote default branch.
-        submit("branch-delta", plan.name, _generate_branch_delta, plan, out_dir, log)
-
         # Local Beads issue tracker context.
         submit("beads", plan.name, _generate_beads, plan, out_dir, generated_at, log)
 
@@ -5909,8 +5789,6 @@ def _build_one_impl(
         audit_bytes = 0
         agent_audit_files_done: list[str] = []
         agent_audit_bytes = 0
-        delta_files_done: list[str] = []
-        delta_bytes = 0
         beads_files_done: list[str] = []
         beads_bytes = 0
         beads_context: dict[str, Any] = {"available": False}
@@ -5960,10 +5838,6 @@ def _build_one_impl(
                     names, size = result
                     agent_audit_files_done.extend(names)
                     agent_audit_bytes += size
-                elif kind == "branch-delta":
-                    names, size = result
-                    delta_files_done.extend(names)
-                    delta_bytes += size
                 elif kind == "beads":
                     names, size, beads_context = result
                     beads_files_done.extend(names)
@@ -6081,7 +5955,6 @@ def _build_one_impl(
         "growth_files": growth_files_done,
         "audit_files": audit_files_done,
         "agent_audit_files": agent_audit_files_done,
-        "delta_files": delta_files_done,
         "beads_files": beads_files_done,
         "beads_bytes": beads_bytes,
         "overview_files": overview_files_done,
