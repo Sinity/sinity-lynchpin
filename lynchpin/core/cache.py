@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import stat
 from pathlib import Path
 from typing import Any, Callable, Iterable, ParamSpec, Tuple, TypeVar, cast
 
@@ -84,6 +85,41 @@ def file_signature(path: Path) -> Tuple[str, int | None, int | None]:
 
 def files_signature(paths: Iterable[Path]) -> Tuple[Tuple[str, int | None, int | None], ...]:
     return tuple(file_signature(path) for path in paths)
+
+
+def input_versions(paths: Iterable[Path]) -> list[dict[str, Any]]:
+    """Record each materializer input's file identity, including SQLite WAL state."""
+    versions: list[dict[str, Any]] = []
+    for path in sorted(paths, key=str):
+        item: dict[str, Any] = {"path": str(path), "stat": _file_version(path)}
+        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            item["wal_stat"] = _file_version(Path(f"{path}-wal"))
+        versions.append(item)
+    return versions
+
+
+def manifest_versions_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
+    expected = manifest.get("input_versions")
+    if not isinstance(expected, list):
+        return False
+    current = input_versions(paths)
+    return all(item["stat"] is not None for item in current) and expected == current
+
+
+def _file_version(path: Path) -> list[int] | None:
+    try:
+        stat_result = path.stat()
+        if not stat.S_ISREG(stat_result.st_mode):
+            return None
+    except OSError:
+        return None
+    return [
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    ]
 
 
 def file_digest(path: Path, *, chunk_size: int = 1024 * 1024) -> Tuple[str, int | None, int | None, str | None]:

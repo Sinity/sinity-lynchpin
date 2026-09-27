@@ -28,7 +28,7 @@ from typing import Any, Iterable, Literal
 from threading import Lock
 from time import monotonic
 
-from .core.cache import file_signature, files_signature
+from .core.cache import file_signature, files_signature, manifest_versions_current
 from .core.config import LynchpinConfig, get_config
 from .core.errors import MaterializationError
 from .core.parse import iter_dates
@@ -42,6 +42,7 @@ from .core.source_contracts import (
 )
 from .ingest.webhistory import (
     WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
+    _candidate_segment_files,
     full_history_manifest_path,
 )
 from .ingest.exports_materialize import (
@@ -1261,9 +1262,7 @@ def _can_read_stale_github_context(row: MaterializedDataset, window: tuple[date,
         requested = _requested_dates(start, end)
         covered = set(row.covered_dates)
         return all(day in covered for day in requested)
-    if row.first_date is None or row.last_date is None:
-        return True
-    return _covered_day_count(row.first_date, row.last_date, start=start, end=end) >= (_requested_day_count(start, end) or 0)
+    return False
 
 
 def _source_high_water(row: MaterializedDataset) -> dict[str, str | int | float | None]:
@@ -1325,11 +1324,14 @@ def _raindrop_input_files() -> tuple[Path, ...]:
 
 
 def _manifest_inputs_current(manifest: dict[str, Any], paths: Iterable[Path]) -> bool:
+    current_paths = tuple(paths)
+    if not manifest_versions_current(manifest, current_paths):
+        return False
     expected_count = _int_or_none(manifest.get("input_file_count"))
     expected_latest = manifest.get("input_latest_mtime")
-    if expected_count is None and not expected_latest:
-        return True
-    current_count, current_latest = _path_high_water(paths)
+    if expected_count is None:
+        return False
+    current_count, current_latest = _path_high_water(current_paths)
     if expected_count is not None and expected_count != current_count:
         return False
     if expected_latest and str(expected_latest) != current_latest:
@@ -1533,15 +1535,24 @@ def materialized_dataset_coverage(
             covered_set = set(precise_dates)
             covered_days = sum(1 for day in requested if day in covered_set)
         else:
-            covered_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
-        overlaps = covered_days > 0
-        fully_covers = covered_days >= (requested_days or 0) if requested_days is not None else False
-        if fully_covers:
+            extent_days = _covered_day_count(row.first_date, row.last_date, start=start, end=end)
+            covered_days = None if extent_days else 0
+            overlaps = extent_days > 0
+            fully_covers = True if requested_days == 0 else False if extent_days == 0 else None
+            relation = "extent_overlap" if overlaps else "no_overlap"
+        if covered_days is not None:
+            overlaps = covered_days > 0
+            fully_covers = covered_days >= (requested_days or 0) if requested_days is not None else False
+            if fully_covers:
+                relation = "covers_window"
+            elif overlaps:
+                relation = "partial_overlap"
+            else:
+                relation = "no_overlap"
+        if requested_days == 0:
+            covered_days = 0
+            fully_covers = True
             relation = "covers_window"
-        elif overlaps:
-            relation = "partial_overlap"
-        else:
-            relation = "no_overlap"
     ratio = (
         round(covered_days / requested_days, 6)
         if isinstance(covered_days, int) and requested_days
@@ -1602,6 +1613,10 @@ def _coverage_interpretation(collection_model: str, relation: str) -> str:
         return "continuous source only partially covers the requested window"
     if relation == "partial_overlap":
         return "some materialized event/export rows overlap the requested window"
+    if relation == "extent_overlap":
+        if collection_model == "continuous":
+            return "recorded events overlap the requested window; intervening capture coverage is unknown"
+        return "event dates overlap the requested window; days between those dates have unknown coverage"
     if relation == "covers_window":
         return "known materialized date bounds cover the requested window"
     return "known materialized date bounds are available"
@@ -1666,7 +1681,10 @@ def _webhistory_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     last = _date_from_iso(meta.get("last_date"))
     covered_dates = _manifest_covered_dates(meta)
     cheap_bounds_complete = row_count is not None and first is not None and last is not None
-    input_files = _manifest_declared_input_files(meta)
+    input_files = tuple(
+        path for path in _candidate_segment_files(cfg.webhistory_dir, start=None, end=None)
+        if path not in {output, manifest}
+    )
     inputs_current = _manifest_inputs_current(meta, input_files)
     schema_current = meta.get("schema_version") == WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION
     if manifest_valid and not schema_current:
@@ -1719,9 +1737,9 @@ def _google_takeout_dataset(cfg: LynchpinConfig) -> MaterializedDataset:
     inventory_schema_current = meta.get("schema_version") == GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION
     products_schema_current = product_meta.get("schema_version") == GOOGLE_TAKEOUT_PRODUCTS_SCHEMA_VERSION
     gmail_schema_current = gmail_meta.get("schema_version") == GMAIL_EVENTS_SCHEMA_VERSION
-    inventory_inputs_current = _manifest_inputs_current(meta, _manifest_declared_input_files(meta))
-    products_inputs_current = _manifest_inputs_current(product_meta, _manifest_declared_input_files(product_meta))
-    gmail_inputs_current = _manifest_inputs_current(gmail_meta, _manifest_declared_input_files(gmail_meta))
+    inventory_inputs_current = _manifest_inputs_current(meta, archives)
+    products_inputs_current = _manifest_inputs_current(product_meta, archives)
+    gmail_inputs_current = _manifest_inputs_current(gmail_meta, archives)
     raw_product_counts = product_meta.get("products")
     product_counts = raw_product_counts if isinstance(raw_product_counts, dict) else {}
     typed_rows = sum(
@@ -2149,7 +2167,6 @@ def _raw_source_dataset(
 ) -> MaterializedDataset:
     existing = tuple(path for path in raw_roots if path.exists())
     status: Status = "ready" if existing else "missing"
-    observed = max((_path_mtime_date(path) for path in existing), default=None)
     return MaterializedDataset(
         name=name,
         status=status,
@@ -2159,7 +2176,7 @@ def _raw_source_dataset(
         raw_roots=raw_roots,
         row_count=row_count,
         first_date=None,
-        last_date=observed,
+        last_date=None,
         materialization_hint=materialization_hint,
         reason=(
             "raw source authority is present"
@@ -3832,23 +3849,6 @@ def _count_files(root: Path, *, suffixes: tuple[str, ...] | None = None) -> int:
         except OSError:
             continue
     return count
-
-
-def _path_mtime_date(path: Path) -> date | None:
-    try:
-        if not path.exists():
-            return None
-        if path.is_file():
-            return datetime.fromtimestamp(path.stat().st_mtime).date()
-        latest = path.stat().st_mtime
-        for child in path.iterdir():
-            try:
-                latest = max(latest, child.stat().st_mtime)
-            except OSError:
-                continue
-        return datetime.fromtimestamp(latest).date()
-    except OSError:
-        return None
 
 
 def _csv_count(path: Path) -> int | None:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..core.io import latest_mtime_iso
+from ..core.cache import manifest_versions_current
 from ..core.parse import local_tz
 from ..core.primitives import duration_s, split_by_day
 from ..sources.activity_content import activity_content_daily_path, activity_title_usage_path
@@ -279,7 +280,9 @@ def materialize_activity_content(
     ):
         metadata = partition_store.metadata
         if metadata.get("input_signature") == input_signature and output.exists():
-            return _read_manifest(output.with_suffix(".manifest.json"))
+            existing_manifest = _read_manifest(output.with_suffix(".manifest.json"))
+            if manifest_versions_current(existing_manifest, input_files):
+                return existing_manifest
     classifications = load_title_classification_map()
 
     existing_by_day = _read_partitioned_daily(partition_store)

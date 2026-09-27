@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lynchpin.core.cache import input_versions, manifest_versions_current
 from lynchpin.core.errors import MaterializationError
 from lynchpin.core.io import (
     latest_mtime_iso,
@@ -695,9 +696,10 @@ def write_keylog_analysis(
     for _attempt in range(_MAX_INPUT_STABILITY_ATTEMPTS):
         input_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
         input_signature = _input_signature(input_files)
+        input_version = input_versions(input_files)
         if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and target.exists():
             payload = load_json(target)
-            if isinstance(payload, dict):
+            if isinstance(payload, dict) and manifest_versions_current(payload, input_files):
                 return _analysis_from_payload(payload)
         bind_rows = parse_hyprland_keybinds(bindings_path)
         by_chord = {row.chord: row for row in bind_rows}
@@ -717,7 +719,7 @@ def write_keylog_analysis(
             text_top_n=1000,
         )
         current_files = _analysis_input_files(start=start, end=end, bindings_path=bindings_path)
-        if _input_signature(current_files) == input_signature:
+        if _input_signature(current_files) == input_signature and input_versions(current_files) == input_version:
             break
     else:
         raise MaterializationError(
@@ -733,6 +735,7 @@ def write_keylog_analysis(
             "input_files": [str(path) for path in input_files],
             "input_file_count": len(input_files),
             "input_latest_mtime": latest_mtime_iso(input_files),
+            "input_versions": input_version,
         }
     )
     payload["text_content"] = text_content.to_json()

@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..core.cache import input_versions
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
@@ -37,7 +38,7 @@ from ..sources.web import (
     normalize_url,
 )
 from .manifest_windows import merge_manifest_covered_dates
-from ._manifest import atomic_write_ndjson, atomic_write_text, guard_incremental_shrinkage, write_manifest
+from ._manifest import _read_manifest_dict, atomic_write_ndjson, atomic_write_text, guard_incremental_shrinkage, write_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -352,7 +353,28 @@ def build_full_history(
 
     if not data_dir.is_dir():
         return {"output": str(output), "row_count": 0, "duplicate_count": 0, "skipped": True}
-    input_files = tuple(_candidate_segment_files(data_dir, start=start, end=end))
+    all_input_files = tuple(
+        path for path in _candidate_segment_files(data_dir, start=None, end=None)
+        if path not in {output, full_history_manifest_path(output)}
+    )
+    initial_input_versions = input_versions(all_input_files)
+    if start is not None and end is not None:
+        expanded = _window_inputs_range(
+            _read_manifest_dict(full_history_manifest_path(output)),
+            initial_input_versions,
+            start=start,
+            end=end,
+        )
+        if expanded is None:
+            raise MaterializationError(
+                "webhistory",
+                reason="input history is unverified; a full rebuild is required before bounded refresh",
+            )
+        start, end = expanded
+    input_files = tuple(
+        path for path in _candidate_segment_files(data_dir, start=start, end=end)
+        if path not in {output, full_history_manifest_path(output)}
+    )
 
     segment_visits = _load_segment_visits(input_files, start=start, end=end)
     if start is not None and end is not None:
@@ -464,14 +486,47 @@ def build_full_history(
             }
         )
     report["segment_count"] = len(input_files)
-    report["input_files"] = [str(path) for path in input_files]
-    report["input_file_count"] = len(input_files)
-    report["input_latest_mtime"] = latest_mtime_iso(input_files)
+    report["input_files"] = [str(path) for path in all_input_files]
+    report["input_file_count"] = len(all_input_files)
+    report["input_latest_mtime"] = latest_mtime_iso(all_input_files)
+    report["input_versions"] = initial_input_versions
 
     if not dry_run:
+        if input_versions(all_input_files) != initial_input_versions:
+            raise MaterializationError("webhistory", reason="source segments changed during materialization")
         _write_full_history_manifest(output, report)
 
     return report
+
+
+def _window_inputs_range(
+    previous: dict[str, Any],
+    current_versions: list[dict[str, Any]],
+    *,
+    start: date,
+    end: date,
+) -> tuple[date, date] | None:
+    previous_versions = previous.get("input_versions")
+    if not isinstance(previous_versions, list):
+        return None
+    old = {
+        item["path"]: item
+        for item in previous_versions
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    if len(old) != len(previous_versions):
+        return None
+    current = {item["path"]: item for item in current_versions}
+    effective_start, effective_end = start, end
+    for path in old.keys() | current.keys():
+        if old.get(path) == current.get(path):
+            continue
+        bounds = _segment_file_bounds(Path(path))
+        if bounds is None:
+            return None
+        effective_start = min(effective_start, bounds[0])
+        effective_end = max(effective_end, bounds[1] + timedelta(days=1))
+    return effective_start, effective_end
 
 
 def _load_segment_visits(

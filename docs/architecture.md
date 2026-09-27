@@ -128,6 +128,8 @@ its paths and covered dates. Paired `start` and `end` dates report coverage of
 that inclusive window without refreshing products. `tail_stale` distinguishes
 new live input from historical repair requirements.
 
+Materialization manifests retain the identity of each declared input file, including the SQLite WAL where applicable. A missing identity is unverified, and an input replacement invalidates the product even when the newest mtime and file count are unchanged. Date extrema describe observed event extent; only explicit covered dates or a source-specific verified index establish coverage between them. Raw capture directory mtimes do not supply event dates.
+
 Generated artifacts live under the ignored local root or configured derived
 root. Tracked documentation describes contracts, not generated personal
 results.

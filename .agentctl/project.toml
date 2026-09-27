@@ -51,7 +51,7 @@ description = "Render the current canonical materialization plan without writes"
 exec = ["python", "-m", "lynchpin.cli.materialize", "--all", "--plan-json", "--progress", "quiet"]
 pool = "normal"
 result = "exit"
-cache = "tree+environment"
+cache = "none"
 
 [operations.converge]
 description = "Materialize, verify, and publish the complete Lynchpin maintenance snapshot"

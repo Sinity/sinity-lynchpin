@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..core.cache import manifest_versions_current
 from ..core.config import get_config
 from ..core.errors import SchemaVersionError, SourceUnavailableError
 from ..core.io import latest_mtime_iso
@@ -34,7 +35,9 @@ def materialize_title_metadata(
     store = ArtifactStore(output.with_name(f".{output.stem}.partitions"))
     input_signature = _input_signature(db)
     if store.selection_is_readable() and store.metadata.get("input_signature") == input_signature and output.exists():
-        return _read_manifest(output.with_suffix(".manifest.json"))
+        existing_manifest = _read_manifest(output.with_suffix(".manifest.json"))
+        if manifest_versions_current(existing_manifest, (db,)):
+            return existing_manifest
     _migrate_title_store(store, output, db)
 
     try:

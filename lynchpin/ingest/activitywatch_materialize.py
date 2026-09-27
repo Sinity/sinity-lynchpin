@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..core.cache import manifest_versions_current
 from ..core.config import get_config
 from ..core.errors import MaterializationError
 from ..core.io import latest_mtime_iso
@@ -68,7 +69,9 @@ def materialize_activitywatch_events(
     if start is None and end is None and store.selection_is_readable():
         metadata = store.metadata
         if metadata.get("input_signature") == input_signature:
-            return _read_manifest(output.with_suffix(".manifest.json"))
+            existing_manifest = _read_manifest(output.with_suffix(".manifest.json"))
+            if manifest_versions_current(existing_manifest, input_files):
+                return existing_manifest
     had_partition_store = bool(store.logical_partitions())
     _migrate_event_store(store, output)
 

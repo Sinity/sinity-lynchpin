@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from lynchpin.core.cache import input_versions
 from lynchpin.ingest.webhistory import (
     WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
     _write_raw_batch,
@@ -93,6 +96,84 @@ def test_build_full_history_writes_manifest(tmp_path):
     assert manifest["source_counts"] == {str(segment): 2}
 
 
+def test_webhistory_audit_invalidates_nonlatest_replaced_input(monkeypatch, tmp_path) -> None:
+    from lynchpin import materialization
+
+    data_dir = tmp_path / "raw"
+    data_dir.mkdir()
+    older = data_dir / "segment_unique_2026-01-01_to_2026-01-01.ndjson"
+    newer = data_dir / "segment_unique_2026-01-02_to_2026-01-02.ndjson"
+    for path, day in ((older, "2026-01-01"), (newer, "2026-01-02")):
+        path.write_text(
+            json.dumps({"iso_time": f"{day}T10:00:00+00:00", "url": "https://example.com/old", "title": "Old", "source": "fixture"}) + "\n",
+            encoding="utf-8",
+        )
+    newer_ns = newer.stat().st_mtime_ns + 10_000_000_000
+    os.utime(newer, ns=(newer_ns, newer_ns))
+    output = tmp_path / "derived" / "full_history.ndjson"
+    build_full_history(data_dir=data_dir, output=output)
+    cfg = SimpleNamespace(
+        webhistory_ndjson=output,
+        webhistory_raw_dir=data_dir,
+        webhistory_dir=data_dir,
+        accounts_root=tmp_path / "exports",
+    )
+    assert materialization._webhistory_dataset(cfg).status == "ready"
+
+    replacement = data_dir / "replacement.ndjson"
+    replacement.write_text(older.read_text(encoding="utf-8").replace("/old", "/new"), encoding="utf-8")
+    old_ns = older.stat().st_mtime_ns
+    os.utime(replacement, ns=(old_ns, old_ns))
+    os.replace(replacement, older)
+    assert newer.stat().st_mtime_ns == newer_ns
+    assert materialization._webhistory_dataset(cfg).status == "partial"
+
+    report = build_full_history(
+        data_dir=data_dir,
+        output=output,
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 3),
+    )
+    assert materialization._webhistory_dataset(cfg).status == "ready"
+    assert report["window_start"] == "2026-01-01"
+    assert "https://example.com/new" in output.read_text(encoding="utf-8")
+    older.rename(data_dir / "segment_unique_2026-01-01_to_2026-01-01_new.ndjson")
+    assert materialization._webhistory_dataset(cfg).status == "partial"
+
+
+def test_manifest_input_versions_detect_same_count_swap_and_sqlite_wal(tmp_path) -> None:
+    from lynchpin.ingest._manifest import write_manifest
+    from lynchpin.materialization import _manifest_inputs_current
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text("one\n", encoding="utf-8")
+    second.write_text("two\n", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    write_manifest(manifest_path, {"input_files": [str(first), str(second)], "input_file_count": 2})
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert _manifest_inputs_current(manifest, (first, second))
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text("two\n", encoding="utf-8")
+    assert not _manifest_inputs_current(manifest, (first, replacement))
+
+    database = tmp_path / "events.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE events (value TEXT)")
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        write_manifest(manifest_path, {"input_files": [str(database)], "input_file_count": 1})
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert _manifest_inputs_current(manifest, (database,))
+        writer.execute("INSERT INTO events VALUES ('new')")
+        writer.commit()
+        assert not _manifest_inputs_current(manifest, (database,))
+    finally:
+        writer.close()
+
+
 def test_build_full_history_merges_requested_window(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -143,12 +224,23 @@ def test_build_full_history_merges_requested_window(tmp_path):
         + "\n",
         encoding="utf-8",
     )
+    before = data_dir / "segment_unique_2026-01-01_to_2026-01-01.ndjson"
+    after = data_dir / "segment_unique_2026-01-03_to_2026-01-03.ndjson"
+    before.write_text(
+        json.dumps({"iso_time": "2026-01-01T10:00:00+00:00", "url": "https://example.com/before", "title": "Before", "source": "old"}) + "\n",
+        encoding="utf-8",
+    )
+    after.write_text(
+        json.dumps({"iso_time": "2026-01-03T10:00:00+00:00", "url": "https://example.com/after", "title": "After", "source": "old"}) + "\n",
+        encoding="utf-8",
+    )
     full_history_manifest_path(output).write_text(
         json.dumps(
             {
                 "covered_dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
                 "first_date": "2026-01-01",
                 "last_date": "2026-01-03",
+                "input_versions": input_versions((before, segment, after)),
             }
         )
         + "\n",
@@ -172,6 +264,9 @@ def test_build_full_history_merges_requested_window(tmp_path):
     assert report["covered_dates"] == ["2026-01-01", "2026-01-02", "2026-01-03"]
     assert report["window_start"] == "2026-01-02"
     assert report["window_end"] == "2026-01-03"
+    assert report["segment_count"] == 1
+    assert report["input_file_count"] == 3
+    assert report["input_versions"] == input_versions((before, segment, after))
 
 
 def test_build_full_history_reports_logical_date_bounds(tmp_path):
@@ -299,6 +394,7 @@ def test_webhistory_audit_uses_manifest_logical_bounds_without_scan(monkeypatch,
                 "last_visit_at": "2026-01-02T01:00:00+00:00",
                 "input_files": [str(segment)],
                 "input_file_count": 1,
+                "input_versions": input_versions((segment,)),
                 "input_latest_mtime": datetime.fromtimestamp(segment.stat().st_mtime, timezone.utc).astimezone().isoformat(),
                 "schema_version": WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
             }
@@ -345,6 +441,7 @@ def test_webhistory_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> 
                 "last_visit_at": "2026-01-03T10:00:00+00:00",
                 "input_files": [str(segment)],
                 "input_file_count": 1,
+                "input_versions": input_versions((segment,)),
                 "input_latest_mtime": datetime.fromtimestamp(segment.stat().st_mtime, timezone.utc).astimezone().isoformat(),
                 "schema_version": WEBHISTORY_FULL_HISTORY_SCHEMA_VERSION,
             }
@@ -573,6 +670,7 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
                 "schema_version": GOOGLE_TAKEOUT_INVENTORY_SCHEMA_VERSION,
                 "input_files": [str(archive)],
                 "input_file_count": 1,
+                "input_versions": input_versions((archive,)),
                 "input_latest_mtime": latest,
             }
         ),
@@ -588,6 +686,7 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
                 "products": {"tasks": {"row_count": 1}},
                 "input_files": [str(archive)],
                 "input_file_count": 1,
+                "input_versions": input_versions((archive,)),
                 "input_latest_mtime": latest,
             }
         ),
@@ -600,6 +699,7 @@ def test_google_takeout_audit_uses_product_manifest_bounds(monkeypatch, tmp_path
                 "row_count": 0,
                 "input_files": [str(archive)],
                 "input_file_count": 1,
+                "input_versions": input_versions((archive,)),
                 "input_latest_mtime": latest,
             }
         ),
@@ -987,6 +1087,7 @@ def test_keylog_analysis_dataset_reports_artifact_coverage(monkeypatch, tmp_path
                 "source_event_count": 7,
                 "input_files": [str(log)],
                 "input_file_count": 1,
+                "input_versions": input_versions((log,)),
                 "input_latest_mtime": datetime.fromtimestamp(
                     log.stat().st_mtime,
                     timezone.utc,
@@ -1396,6 +1497,7 @@ def test_reddit_audit_uses_manifest_bounds(monkeypatch, tmp_path) -> None:
                 "first_date": "2026-01-01",
                 "last_date": "2026-01-03",
                 "input_file_count": 1,
+                "input_versions": input_versions((source,)),
                 "input_latest_mtime": latest,
                 "schema_version": REDDIT_CANONICAL_SCHEMA_VERSION,
             }
@@ -1432,6 +1534,7 @@ def test_reddit_audit_preserves_zero_manifest_row_count(monkeypatch, tmp_path) -
                 "first_date": "2026-01-01",
                 "last_date": "2026-01-01",
                 "input_file_count": 1,
+                "input_versions": input_versions((source,)),
                 "input_latest_mtime": latest_mtime_iso((source,)),
                 "schema_version": REDDIT_CANONICAL_SCHEMA_VERSION,
             }
@@ -1820,6 +1923,7 @@ def test_irc_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
                 "last_date": "2026-06-07",
                 "covered_dates": ["2026-06-05", "2026-06-07"],
                 "input_file_count": 1,
+                "input_versions": input_versions((source,)),
                 "input_latest_mtime": datetime.fromtimestamp(source.stat().st_mtime, timezone.utc).astimezone().isoformat(),
                 "schema_version": IRC_EVENTS_SCHEMA_VERSION,
             }
@@ -1918,6 +2022,7 @@ def test_atuin_audit_reads_precise_covered_dates(monkeypatch, tmp_path) -> None:
                 "last_date": "2026-06-07",
                 "covered_dates": ["2026-06-05", "2026-06-07"],
                 "input_file_count": 1,
+                "input_versions": input_versions((db,)),
                 "input_latest_mtime": datetime.fromtimestamp(db.stat().st_mtime, timezone.utc).astimezone().isoformat(),
                 "schema_version": ATUIN_HISTORY_SCHEMA_VERSION,
             }
@@ -2072,6 +2177,7 @@ def test_activitywatch_derived_audit_reads_precise_covered_dates(monkeypatch, tm
                 "last_date": "2026-06-07",
                 "covered_dates": ["2026-06-05", "2026-06-07"],
                 "input_file_count": 1,
+                "input_versions": input_versions((canonical,)),
                 "input_latest_mtime": datetime.fromtimestamp(
                     canonical.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
@@ -2236,6 +2342,7 @@ def test_activitywatch_event_index_audit_reads_precise_covered_dates(monkeypatch
                 "last_date": "2026-06-05",
                 "covered_dates": ["2026-06-05"],
                 "input_file_count": 2,
+                "input_versions": input_versions((canonical, canonical_manifest)),
                 "input_latest_mtime": datetime.fromtimestamp(
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
@@ -2284,6 +2391,7 @@ def test_activitywatch_event_index_does_not_compare_legacy_monolith_counts(monke
                 "last_date": "2026-06-05",
                 "covered_dates": ["2026-06-05"],
                 "input_file_count": 2,
+                "input_versions": input_versions((canonical, canonical_manifest)),
                 "input_latest_mtime": datetime.fromtimestamp(
                     canonical_manifest.stat().st_mtime, timezone.utc
                 ).astimezone().isoformat(),
@@ -2653,6 +2761,7 @@ def test_spotify_daily_audit_reads_precise_covered_dates(monkeypatch, tmp_path) 
                 "last_date": "2026-05-03",
                 "covered_dates": ["2026-05-01", "2026-05-03"],
                 "input_file_count": 0,
+                "input_versions": input_versions(()),
                 "schema_version": SPOTIFY_DAILY_SCHEMA_VERSION,
             }
         ),
@@ -3241,7 +3350,7 @@ def test_materialized_dataset_coverage_empty_window_is_vacuously_covered() -> No
     assert coverage["relation"] == "covers_window"
 
 
-def test_materialized_dataset_coverage_caps_days_to_requested_window() -> None:
+def test_materialized_dataset_coverage_does_not_infer_days_between_event_extrema() -> None:
     from lynchpin.materialization import materialized_dataset_coverage
 
     row = MaterializedDataset(
@@ -3265,8 +3374,35 @@ def test_materialized_dataset_coverage_caps_days_to_requested_window() -> None:
     )
 
     assert coverage["requested_days"] == 2
-    assert coverage["covered_days"] == 2
-    assert coverage["coverage_ratio"] == 1.0
+    assert coverage["covered_days"] is None
+    assert coverage["coverage_ratio"] is None
+    assert coverage["fully_covers_requested_window"] is None
+    assert coverage["relation"] == "extent_overlap"
+
+
+def test_raw_source_directory_mtime_is_not_an_event_date(tmp_path) -> None:
+    from lynchpin.materialization import _raw_source_dataset, materialized_dataset_coverage
+
+    root = tmp_path / "sessions"
+    nested = root / "year" / "month"
+    nested.mkdir(parents=True)
+    capture = nested / "session.jsonl"
+    capture.write_text('{"event": 1}\n', encoding="utf-8")
+    row = _raw_source_dataset(
+        SimpleNamespace(),
+        name="codex",
+        raw_roots=(root,),
+        authority="fixture",
+        query_surface="fixture",
+        materialization_hint="fixture",
+    )
+    capture.write_text('{"event": 1}\n{"event": 2}\n', encoding="utf-8")
+
+    assert row.status == "ready"
+    assert row.last_date is None
+    assert materialized_dataset_coverage(
+        row, start=date(2026, 9, 26), end=date(2026, 9, 28)
+    )["fully_covers_requested_window"] is None
 
 
 def test_materialized_dataset_coverage_uses_precise_covered_dates() -> None:

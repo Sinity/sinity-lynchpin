@@ -22,6 +22,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, TextIO
 
+from ..core.cache import input_versions
 from ..core.errors import MaterializationError
 
 _SHRINK_GUARD_MIN_ROWS = 1000
@@ -292,6 +293,9 @@ def write_manifest(path: Path, fields: dict[str, Any]) -> None:
     Adds ``materialized_at`` (ISO timestamp) if not already present.
     Sorts keys for stable diffs. Written atomically (see module docstring).
     """
+    input_files = fields.get("input_files")
+    if isinstance(input_files, list) and "input_versions" not in fields:
+        fields = {**fields, "input_versions": input_versions(Path(str(item)) for item in input_files)}
     if "materialized_at" not in fields:
         fields = {**fields, "materialized_at": datetime.now(timezone.utc).astimezone().isoformat()}
     atomic_write_text(path, json.dumps(fields, indent=2, sort_keys=True) + "\n")
