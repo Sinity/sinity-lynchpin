@@ -102,6 +102,13 @@ def _require_action(tool_name: str, action: str) -> dict[str, Any] | None:
     return None
 
 
+def _require_view(tool_name: str, action: str, view: str | None) -> dict[str, Any] | None:
+    spec = public_action_spec(tool_name, action)
+    if view is not None and spec is not None and spec.views and view not in spec.views:
+        return _error("invalid_view", f"unknown view {view!r} for {tool_name}.{action}", choices=spec.views)
+    return None
+
+
 def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
@@ -343,6 +350,8 @@ def _internal_call(module_name: str, function_name: str, **kwargs: Any) -> dict[
     try:
         meta = {"route": route} if not tool_name or not action else _action_meta(str(tool_name), str(action), route=route)
         result = _call(fn, **kwargs)
+        if isinstance(result, dict) and isinstance(result.get("error"), str) and result["error"].startswith("unknown view "):
+            return _error("invalid_view", result["error"], hint=f"route: {route}")
         meta.update(extra_meta(result) if callable(extra_meta) else extra_meta)
         caveats = _MATERIALIZATION_CAVEATS.get()
         if caveats:
@@ -700,6 +709,8 @@ def lynchpin_project(
     """Project router: repository products, campaign_evidence, campaign_progress, campaign_scope_delta, verification_regression, project_trajectory, project_context."""
     if invalid := _mark_route("lynchpin_project", action):
         return invalid
+    if invalid := _require_view("lynchpin_project", action, view):
+        return invalid
     target = repo or project
     from lynchpin.mcp.project_contracts import PROJECT_INPUTS
 
@@ -739,19 +750,22 @@ def lynchpin_project(
             _meta={"source_mode": "live_git"},
         )
     if action == "velocity":
+        velocity_view = "throughput" if view in {None, "daily", "weekly"} else view
+        granularity = "day" if view == "daily" else "week"
         return _internal_call(
             "lynchpin.mcp.tools.velocity",
             "code_velocity",
-            view=view or "throughput",
+            view=velocity_view,
             project=target,
             start=start,
             end=end,
+            granularity=granularity,
             _meta={"source_mode": "substrate"},
         )
     if action == "hotspots":
         return _internal_call("lynchpin.mcp.tools.change", "code_hotspots", view=view or "files", project=target, top_n=limit)
     if action == "change_kinds":
-        return _internal_call("lynchpin.mcp.tools.change", "commit_analysis", view=view or "conventional", project=target)
+        return _internal_call("lynchpin.mcp.tools.change", "commit_analysis", view="attribution" if view == "ai" else view or "conventional", project=target)
     if action == "github":
         if number is not None and view == "issue":
             return _internal_call("lynchpin.mcp.tools.github", "get_github_issue", project=target, number=number)
@@ -785,6 +799,8 @@ def lynchpin_personal(
     """Personal router. action: daily, activity, phone, health, communications, web, bookmarks, media, operator, reports."""
     if invalid := _mark_route("lynchpin_personal", action):
         return invalid
+    if invalid := _require_view("lynchpin_personal", action, view):
+        return invalid
     if action == "daily":
         return _internal_call("lynchpin.mcp.tools.personal", "personal_daily_signals", start=start, end=end, source=source, limit=limit)
     if action == "activity":
@@ -794,14 +810,17 @@ def lynchpin_personal(
     if action == "phone":
         return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view="phone", start=start, end=end, source=source, limit=limit)
     if action == "health":
-        if view in {"phone_health", "xiaomi", "coverage"}:
-            return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view=view, start=start, end=end, source=source, limit=limit)
+        health_view = view or ("daily" if start is not None or end is not None else "trend")
+        if health_view == "daily" and (start is None or end is None):
+            return _error("missing_argument", "start and end are required for daily health")
+        if health_view in {"phone_health", "xiaomi", "coverage"}:
+            return _internal_call("lynchpin.mcp.tools.wearables", "wearable_records", view=health_view, start=start, end=end, source=source, limit=limit)
         fn = {
             "daily": "health_daily_summary",
             "stress": "health_stress_detail",
             "heart_rate": "health_heart_rate_detail",
             "hrv": "health_hrv_trend",
-        }.get(view or "trend", "health_trend")
+        }.get(health_view, "health_trend")
         return _internal_call("lynchpin.mcp.tools.health", fn, start=start, end=end)
     if action == "communications":
         return _internal_call("lynchpin.mcp.tools.personal", "communication", view=view or "events", start=start, end=end, limit=limit)

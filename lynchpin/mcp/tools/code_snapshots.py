@@ -93,15 +93,29 @@ def list_code_snapshot_slices(project: str | None = None) -> dict[str, Any]:
     }
 
 
+def list_code_snapshot_runs(project: str | None = None) -> list[dict[str, Any]]:
+    """Read the latest materialized snapshot runs, optionally for one project."""
+    from lynchpin.materialization import ensure_materialized
+    from lynchpin.substrate.code_snapshots import iter_code_snapshot_runs
+    from lynchpin.substrate.connection import connect
+    from lynchpin.mcp.tools._utils import json_safe as _json_safe
+
+    ensure_materialized("code_snapshots", budget="manual")
+    with connect(read_only=True) as conn:
+        return [_json_safe(row) for row in iter_code_snapshot_runs(conn, project=project)]
+
+
 def code_snapshots(
     view: str = "status",
     project: str | None = None,
 ) -> Any:
-    """Code snapshot materialization status and slice discovery. view: status, slices, audit."""
+    """Code snapshot materialization status and discovery. view: status, runs, slices, audit."""
     if view == "status":
         return code_snapshot_status()
+    if view == "runs":
+        return list_code_snapshot_runs(project=project)
     if view == "slices":
         return list_code_snapshot_slices(project=project)
     if view == "audit":
         return code_snapshot_audit(project=project)
-    return {"error": f"unknown view {view!r}. choices: status, slices, audit"}
+    return {"error": f"unknown view {view!r}. choices: status, runs, slices, audit"}

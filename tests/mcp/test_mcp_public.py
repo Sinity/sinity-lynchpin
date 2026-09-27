@@ -220,10 +220,12 @@ def test_lynchpin_project_dispatches_every_declared_snapshot_view(
     setup_substrate(tmp_path, monkeypatch)
     expected = {
         "status": {"view": "status"},
+        "runs": [{"project": "alpha"}],
         "slices": {"view": "slices", "project": "alpha"},
         "audit": {"view": "audit", "project": "alpha"},
     }
     monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_status", lambda: expected["status"])
+    monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.list_code_snapshot_runs", lambda *, project=None: [{"project": project}])
     monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.list_code_snapshot_slices", lambda *, project=None: {"view": "slices", "project": project})
     monkeypatch.setattr("lynchpin.mcp.tools.code_snapshots.code_snapshot_audit", lambda *, project=None: {"view": "audit", "project": project})
 
@@ -238,6 +240,99 @@ def test_lynchpin_project_dispatches_every_declared_snapshot_view(
         result = lynchpin_project(action="snapshots", view=view, project="alpha")
         assert result["ok"] is True
         assert result["data"] == expected[view]
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "view", "module", "function", "expected_kwargs"),
+    [
+        ("project", "velocity", "throughput", "velocity", "engineering_throughput", {"granularity": "week"}),
+        ("project", "velocity", "daily", "velocity", "engineering_throughput", {"granularity": "day"}),
+        ("project", "velocity", "weekly", "velocity", "engineering_throughput", {"granularity": "week"}),
+        ("project", "change_kinds", "conventional", "change", "conventional_commits", {}),
+        ("project", "change_kinds", "breaking", "change", "breaking_changes", {}),
+        ("project", "change_kinds", "ai", "change", "commit_kind_attribution", {}),
+        ("project", "change_kinds", "attribution", "change", "commit_kind_attribution", {}),
+        ("personal", "activity", "daily", "personal", "activity_content_daily", {}),
+        ("personal", "activity", "focus", "personal", "focus_daily", {}),
+        ("personal", "activity", "titles", "personal", "activity_title_usage", {}),
+        ("personal", "activity", "unmatched", "personal", "activity_unmatched_titles", {}),
+        ("personal", "activity", "coverage", "personal", "activity_content_coverage", {}),
+        ("personal", "web", "daily", "personal", "web_daily", {}),
+        ("personal", "web", "provenance", "personal", "webhistory_provenance", {}),
+        ("personal", "web", "takeout", "personal", "google_takeout_events", {}),
+        ("personal", "operator", "rhythm", "personal", "operator_rhythm", {}),
+        ("personal", "operator", "readiness", "personal", "operator_retrospective_readiness", {}),
+    ],
+)
+def test_catalog_view_reaches_its_executable_route(
+    tool: str, action: str, view: str, module: str, function: str,
+    expected_kwargs: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lynchpin.mcp.registry import public_action_spec
+    from lynchpin.mcp.tools import public
+
+    spec = public_action_spec(f"lynchpin_{tool}", action)
+    assert spec is not None and view in spec.views
+    calls: list[dict[str, object]] = []
+
+    def leaf(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"reached": function}
+
+    monkeypatch.setattr(f"lynchpin.mcp.tools.{module}.{function}", leaf)
+    route = public.lynchpin_project if tool == "project" else public.lynchpin_personal
+    result = route(action=action, view=view, start="2026-01-01", end="2026-01-02")
+
+    assert result["ok"] is True
+    assert result["data"] == {"reached": function}
+    assert calls and all(calls[0].get(key) == value for key, value in expected_kwargs.items())
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "view"),
+    [
+        ("project", "velocity", "unlisted"),
+        ("project", "snapshots", "unlisted"),
+        ("personal", "activity", "buckets"),
+        ("personal", "web", "domains"),
+        ("personal", "operator", "verify_vs_edit_ratio"),
+    ],
+)
+def test_unknown_public_view_is_typed_error(tool: str, action: str, view: str) -> None:
+    from lynchpin.mcp.tools import public
+
+    route = public.lynchpin_project if tool == "project" else public.lynchpin_personal
+    result = route(action=action, view=view)
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_view"
+
+
+def test_nested_unknown_view_payload_is_not_wrapped_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools.public import lynchpin_personal
+
+    monkeypatch.setattr(
+        "lynchpin.mcp.tools.personal.communication",
+        lambda **_kwargs: {"error": "unknown view 'missing'. choices: events, daily"},
+    )
+    result = lynchpin_personal(action="communications", view="missing")
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_view"
+
+
+def test_personal_health_default_preserves_requested_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lynchpin.mcp.tools.public import lynchpin_personal
+
+    calls: list[tuple[str, str]] = []
+
+    def daily(start: str, end: str) -> list[dict[str, str]]:
+        calls.append((start, end))
+        return [{"date": start}]
+
+    monkeypatch.setattr("lynchpin.mcp.tools.health.health_daily_summary", daily)
+    result = lynchpin_personal(action="health", start="2026-01-01", end="2026-01-02")
+    assert result["ok"] is True
+    assert result["data"] == [{"date": "2026-01-01"}]
+    assert calls == [("2026-01-01", "2026-01-02")]
 
 
 def test_invalid_actions_return_structured_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
