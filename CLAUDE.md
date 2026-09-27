@@ -24,8 +24,9 @@ the operator's datasets or generated personal results.
   parallel representations when their replacement is established.
 - Read related source, promoter, substrate, graph, MCP, and test paths before
   changing a cross-layer contract.
-- Batch related edits, run focused production-route tests, then run the broad
-  gate once at the commit boundary.
+- Run focused production-route tests for the changed contract. When a workflow
+  requires AgentCTL verification, use the operation mapped by the current
+  `.agentctl/project.toml` descriptor.
 - Commit and push verified work directly to `master` unless the operator or an
   active workflow says to hold.
 
@@ -152,14 +153,17 @@ default suite. Heavy or scheduled work uses the declared AgentCTL operations:
 agentctl job start lynchpin check
 agentctl job start lynchpin materialize_plan
 agentctl job start lynchpin promote_incremental
-agentctl job start lynchpin promote_full
+agentctl job start lynchpin converge
 agentctl job start lynchpin chisel
 ```
 
-These operations execute the checked-in typed materializer catalog through its
-serializable plans and closed handler registry. Per-node AgentCTL execution is
-not part of the current architecture; do not document or code against it as if
-it already exists.
+The descriptor maps both focused and candidate verification to `check`, which
+runs lint, maintained type checks, and the default tests. `materialize_plan`
+previews the typed catalog; `materialize_node` runs one typed product node;
+`promote_node` atomically publishes a complete substrate generation after its
+product nodes; `promote_incremental` refreshes stale source tails and promotes
+the affected window; and `converge` runs the complete maintenance sequence.
+Read the descriptor for required operation arguments and current mappings.
 
 When changing a contract:
 
