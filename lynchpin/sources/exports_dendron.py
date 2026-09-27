@@ -14,6 +14,8 @@ from ..core.config import get_config
 __all__ = [
     "DendronNote",
     "iter_dendron_notes",
+    "search_notes",
+    "read_note",
 ]
 
 
@@ -61,6 +63,66 @@ def iter_dendron_notes(root: Optional[Path] = None) -> Iterator[DendronNote]:
             )
 
     return generator()
+
+
+def search_notes(
+    query: str,
+    *,
+    root: Optional[Path] = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> dict[str, object]:
+    """Search the owner note tree and return addressable, paged matches."""
+    if offset < 0 or not 1 <= limit <= 200:
+        raise ValueError("offset must be nonnegative and limit must be 1..200")
+    vault = Path(root) if root is not None else get_config().dendron_root
+    if not vault.is_dir():
+        return {"source": "dendron", "status": "unavailable", "reason": "note root is unavailable", "total": 0, "notes": [], "omissions": []}
+    needle = query.casefold()
+    matches: list[dict[str, object]] = []
+    omissions: list[dict[str, str]] = []
+    for path in sorted(vault.rglob("*.md")):
+        rel = path.relative_to(vault)
+        if any(part.startswith(".") for part in rel.parts) or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            note = _read_note_file(path, rel)
+            modified_at = path.stat().st_mtime_ns
+        except (OSError, UnicodeError) as error:
+            omissions.append({"path": rel.as_posix(), "reason": type(error).__name__})
+            continue
+        if needle not in f"{note.title}\n{note.id or ''}\n{' '.join(note.tags)}\n{note.body}".casefold():
+            continue
+        matches.append({"path": rel.as_posix(), "id": note.id, "title": note.title, "tags": note.tags,
+                        "source_mtime_ns": modified_at})
+    return {"source": "dendron", "status": "complete" if not omissions else "partial",
+            "root": str(vault), "query": query, "offset": offset, "limit": limit,
+            "total": len(matches), "next_offset": offset + limit if offset + limit < len(matches) else None,
+            "notes": matches[offset:offset + limit], "omissions": omissions,
+            "coverage": "current local note tree; no provider acquisition claim"}
+
+
+def read_note(path: str, *, root: Optional[Path] = None) -> dict[str, object]:
+    """Read one note by its relative path, retaining its local provenance."""
+    vault = Path(root) if root is not None else get_config().dendron_root
+    relative = Path(path)
+    if relative.is_absolute() or not relative.parts or any(part in {".", ".."} or part.startswith(".") for part in relative.parts) or relative.suffix != ".md":
+        raise ValueError("note path must be a visible relative Markdown path")
+    file = vault / relative
+    if any((vault / parent).is_symlink() for parent in (relative, *relative.parents)) or not file.resolve().is_relative_to(vault.resolve()) or not file.is_file():
+        raise FileNotFoundError(path)
+    note = _read_note_file(file, relative)
+    return {"source": "dendron", "path": relative.as_posix(), "id": note.id,
+            "title": note.title, "tags": note.tags, "frontmatter": note.frontmatter,
+            "body": note.body, "source_mtime_ns": file.stat().st_mtime_ns,
+            "coverage": "current local note tree; no provider acquisition claim"}
+
+
+def _read_note_file(path: Path, relative: Path) -> DendronNote:
+    frontmatter, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    return DendronNote(path=relative, id=_safe_str(frontmatter.get("id")),
+                       title=_derive_title(frontmatter, body, relative),
+                       tags=_normalise_tags(frontmatter), frontmatter=frontmatter, body=body)
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, object], str]:

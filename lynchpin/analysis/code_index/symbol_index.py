@@ -32,7 +32,7 @@ from lynchpin.core.io import resolve_analysis_path, save_json
 from lynchpin.sources.symbol_extraction import _extract_symbols, _load_parsers
 from ..active.git_facts import select_active_profiles, tracked_files
 
-_MAX_FILE_BYTES = 1_000_000
+_MAX_FILE_BYTES = 8_000_000
 
 def build_active_symbol_index(
     *,
@@ -59,7 +59,8 @@ def build_active_symbol_index(
                 "caveats": ["project checkout not present"],
             })
             continue
-        rows = list(_index_project(name=name, path=path, parsers=parsers))
+        omissions: list[dict[str, str]] = []
+        rows = list(_index_project(name=name, path=path, parsers=parsers, omissions=omissions))
         languages_seen = sorted({r["language"] for r in rows})
         project_rows.append({
             "project": name,
@@ -68,7 +69,9 @@ def build_active_symbol_index(
             "symbol_count": len(rows),
             "languages": languages_seen,
             "symbols": rows,
-            "caveats": [],
+            "omissions": omissions,
+            "coverage_complete": not omissions and not caveats,
+            "caveats": [f"{len(omissions)} tracked supported source files omitted"] if omissions else [],
         })
 
     return {
@@ -104,6 +107,7 @@ def _index_project(
     name: str,
     path: Path,
     parsers: dict[str, Any],
+    omissions: list[dict[str, str]] | None = None,
 ) -> Iterable[dict[str, Any]]:
     if not parsers:
         return
@@ -115,13 +119,23 @@ def _index_project(
         full = path / rel
         try:
             stat = full.stat()
-        except OSError:
+        except OSError as error:
+            if omissions is not None:
+                omissions.append({"path": rel, "reason": "stat_failed", "error_type": type(error).__name__})
             continue
         if stat.st_size > _MAX_FILE_BYTES:
+            if omissions is not None:
+                omissions.append({"path": rel, "reason": "size_limit", "bytes": str(stat.st_size), "limit_bytes": str(_MAX_FILE_BYTES)})
             continue
         try:
             source = full.read_bytes()
-        except OSError:
+        except OSError as error:
+            if omissions is not None:
+                omissions.append({"path": rel, "reason": "read_failed", "error_type": type(error).__name__})
+            continue
+        if len(source) > _MAX_FILE_BYTES:
+            if omissions is not None:
+                omissions.append({"path": rel, "reason": "size_limit", "bytes": str(len(source)), "limit_bytes": str(_MAX_FILE_BYTES)})
             continue
         for symbol in _extract_symbols(source=source, parser=parsers[lang], language=lang, project=name, path=rel):
             yield {

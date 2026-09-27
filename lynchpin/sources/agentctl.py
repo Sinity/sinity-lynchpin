@@ -173,6 +173,43 @@ def _load_public_rows() -> Any:
         ) from error
 
 
+def read_job_detail(
+    job_id: str,
+    *,
+    snapshot: AgentctlObservationSnapshot | None = None,
+    loader: Callable[[str, str], Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve a listed job through AgentCTL's referenced owner detail route."""
+    observed = snapshot or read_observation_snapshot()
+    source_id = f"agentctl:{job_id}"
+    row = next((item for item in observed.observations if item.source_id == source_id), None)
+    if row is None:
+        raise LookupError(f"job {job_id!r} is absent from the retained job list")
+    reference = observed.detail_references.get(source_id)
+    if reference is None:
+        raise AgentctlObservationUnavailable("AgentCTL did not publish a detail reference for this job")
+    detail = (loader or _load_job_detail)(job_id, reference)
+    if not isinstance(detail, Mapping) or str(detail.get("job_id")) != job_id or detail.get("reference") != reference:
+        raise AgentctlObservationContractError("agentctl job.get returned a mismatched job or reference")
+    return {"owner": "agentctl", "interface": "agentctl.job.get", "source_id": source_id,
+            "reference": reference, "list_source_revision": row.source_revision,
+            "detail": dict(detail), "coverage": "owner detail for one retained job"}
+
+
+def _load_job_detail(job_id: str, reference: str) -> Any:
+    try:
+        result = subprocess.run(
+            ["agentctl", "job", "get", job_id, "--reference", reference, "--json"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise AgentctlObservationUnavailable("agentctl job.get route is unavailable") from error
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise AgentctlObservationContractError("agentctl job.get returned invalid JSON") from error
+
+
 def _job_observation(
     job: Mapping[str, Any],
     *,
@@ -346,4 +383,5 @@ __all__ = [
     "CONTRACT_SCHEMA",
     "SOURCE",
     "read_observation_snapshot",
+    "read_job_detail",
 ]

@@ -54,6 +54,30 @@ def test_agentctl_native_adapter_projects_only_public_observation_fields() -> No
     assert "private-reference" not in serialized
 
 
+def test_agentctl_detail_uses_list_reference_and_preserves_owner_receipt() -> None:
+    from lynchpin.sources.agentctl import read_job_detail, read_observation_snapshot
+
+    snapshot = read_observation_snapshot(loader=lambda: _rows())
+    calls: list[tuple[str, str]] = []
+
+    def load(job_id: str, reference: str) -> dict:
+        calls.append((job_id, reference))
+        return {"job_id": 111, "reference": reference, "outcome": {"execution_receipt": {"checks": 3}}}
+
+    detail = read_job_detail("111", snapshot=snapshot, loader=load)
+    assert calls == [("111", "private-reference")]
+    assert detail["detail"]["outcome"]["execution_receipt"] == {"checks": 3}
+    assert detail["list_source_revision"].startswith("sha256:")
+
+
+def test_agentctl_detail_rejects_mismatched_reference() -> None:
+    from lynchpin.sources.agentctl import AgentctlObservationContractError, read_job_detail, read_observation_snapshot
+
+    snapshot = read_observation_snapshot(loader=lambda: _rows())
+    with pytest.raises(AgentctlObservationContractError, match="mismatched"):
+        read_job_detail("111", snapshot=snapshot, loader=lambda _id, _ref: {"job_id": 111, "reference": "other"})
+
+
 @pytest.mark.parametrize(
     ("phase", "terminal", "expected_outcome", "expected_exit"),
     [

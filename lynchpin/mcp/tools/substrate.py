@@ -569,6 +569,14 @@ def contract_coverage(
             "reason": row.reason,
             "materialization_hint": row.materialization_hint,
         }
+        if row.to_json()["collection_model"] == "event_export":
+            acquisition_gap = end_d is not None and (row.last_date is None or row.last_date < end_d)
+            payload["freshness"] = {
+                "source_event_last_date": _json_safe(row.last_date),
+                "acquisition_gap": acquisition_gap,
+                "needed_action": "acquire a newer owner export" if acquisition_gap else None,
+                "interpretation": "reprocessing existing export bytes does not extend source event coverage",
+            }
         if materialization is not None:
             payload["materialization"] = materialization
         rows.append(payload)
