@@ -191,6 +191,7 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
     predecessor_rows = [
         ("webhistory", date(2026, 5, 1), "visit_count", 10.0, {}),
         ("webhistory", date(2026, 5, 5), "visit_count", 50.0, {}),
+        ("webhistory", date(2026, 5, 5), "session_count", 2.0, {}),
     ]
     refreshed_rows = [
         ("webhistory", date(2026, 5, 5), "visit_count", 55.0, {}),
@@ -229,12 +230,24 @@ def test_incremental_personal_daily_signal_preserves_history_and_matches_full_ou
             "WHERE refresh_id = 'full' ORDER BY date, metric"
         ).fetchall()
         logical = load_personal_daily_signals(conn, refresh_id="incremental")
+        historical_revision = conn.execute(
+            "SELECT value FROM personal_daily_signal "
+            "WHERE refresh_id = 'prior' AND date = DATE '2026-05-05' "
+            "AND metric = 'visit_count'"
+        ).fetchone()[0]
+        historical_deleted_key = conn.execute(
+            "SELECT COUNT(*) FROM personal_daily_signal "
+            "WHERE refresh_id = 'prior' AND date = DATE '2026-05-05' "
+            "AND metric = 'session_count'"
+        ).fetchone()[0]
 
     assert before_rerun == after_rerun
     assert len(before_rerun) == 2
     assert logical == [row[:5] for row in full]
     assert logical[0][1] == date(2026, 5, 1)
     assert logical[1][3] == 55.0
+    assert historical_revision == 50.0
+    assert historical_deleted_key == 1
 
 
 def test_apply_schema_recreates_on_version_bump(tmp_path: Path) -> None:
