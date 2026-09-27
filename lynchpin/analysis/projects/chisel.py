@@ -18,8 +18,6 @@ from lynchpin.sources.chisel import (  # noqa: F401
     StatsBucket,
 )
 
-from lynchpin.cli.chisel import main as run_from_cli  # noqa: F401
-
 
 def build_chisel_bundles(**kwargs: Any) -> dict[str, Any]:
     return chisel_build.build_chisel_bundles(report_builder=build_reports, **kwargs)
