@@ -96,11 +96,7 @@ def test_substrate_confidence_matrix_materializes_only_for_default_snapshot(
         raise AssertionError("explicit refresh_id path should not select default snapshot")
 
     monkeypatch.setattr(
-        "lynchpin.substrate.readers_health.load_evidence_node_by_source",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        "lynchpin.substrate.readers_health.load_source_status_map",
+        "lynchpin.substrate.readers_health.load_evidence_source_confidence_rows",
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr("lynchpin.mcp.tools.health.best_materialized_refresh_id", fail_reader)
@@ -109,6 +105,110 @@ def test_substrate_confidence_matrix_materializes_only_for_default_snapshot(
 
     assert calls == [("substrate_confidence_matrix", None)]
     assert result["refresh_id"] == "historical-rid"
+
+
+def test_public_confidence_route_discloses_zero_node_source_failures(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.mcp.conftest import setup_substrate
+
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute(
+            """
+            INSERT INTO evidence_node
+                (refresh_id, id, kind, source, date, project, summary)
+            VALUES ('rid-confidence', 'terminal-1', 'command', 'terminal',
+                    DATE '2026-09-01', 'synthetic', 'fixture')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+                (refresh_id, source, kind, status, reason, row_count, recorded_at)
+            VALUES
+                ('rid-confidence', 'atuin', 'stage', 'ok', NULL, 1, now()),
+                ('rid-confidence', 'health', 'stage', 'unavailable', 'not configured', 0, now()),
+                ('rid-confidence', 'polylogue', 'stage', 'error', 'fixture failure', 0, now()),
+                ('rid-confidence', 'spotify_daily', 'stage', 'empty', NULL, 0, now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_node
+                (refresh_id, id, kind, source, date, project, summary)
+            VALUES
+                ('rid-confidence', 'orphan-1', 'fixture', 'orphan', DATE '2026-09-01',
+                 'synthetic', 'missing status'),
+                ('rid-confidence', 'temporal-1', 'fixture', 'temporal', DATE '2026-09-01',
+                 'synthetic', 'internal graph node')
+            """
+        )
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    response = lynchpin_evidence(action="confidence", refresh_id="rid-confidence")
+    assert response["ok"] is True
+    payload = response["data"]
+    dimensions = {row["source"]: row for row in payload["dimensions"]}
+    summary = payload["summary"]
+    assert payload["coverage_status"] == "degraded"
+    assert summary["source_count"] == 5
+    assert summary["confidence_pct"] == 40.0
+    assert summary["observed_source_count"] == 2
+    assert summary["unavailable_source_count"] == 1
+    assert summary["error_source_count"] == 1
+    assert summary["unknown_source_count"] == 1
+    assert summary["empty_source_count"] == 1
+    assert dimensions["health"]["status"] == "unavailable"
+    assert dimensions["polylogue"]["status"] == "error"
+    assert dimensions["orphan"]["status"] == "unknown"
+    assert "temporal" not in dimensions
+    assert "healthy_source_count / source_count" in payload["coverage_basis"]
+
+
+def test_public_confidence_route_reports_all_empty_sources_and_excludes_internal_nodes(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.mcp.conftest import setup_substrate
+
+    setup_substrate(tmp_path, monkeypatch)
+
+    from lynchpin.substrate.connection import connect, substrate_path
+
+    with connect(substrate_path()) as conn:
+        conn.execute(
+            """
+            INSERT INTO substrate_source_status
+                (refresh_id, source, kind, status, reason, row_count, recorded_at)
+            VALUES
+                ('rid-empty', 'health', 'stage', 'empty', NULL, 0, now()),
+                ('rid-empty', 'atuin', 'stage', 'ok', NULL, 0, now())
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_node
+                (refresh_id, id, kind, source, date, project, summary)
+            VALUES ('rid-empty', 'internal-1', 'fixture', 'analysis', DATE '2026-09-01',
+                    'synthetic', 'internal graph node')
+            """
+        )
+
+    from lynchpin.mcp.tools.public import lynchpin_evidence
+
+    response = lynchpin_evidence(action="confidence", refresh_id="rid-empty")
+    payload = response["data"]
+    assert payload["coverage_status"] == "complete"
+    assert payload["summary"]["source_count"] == 2
+    assert payload["summary"]["empty_source_count"] == 2
+    assert payload["summary"]["confidence_pct"] == 100.0
+    assert payload["summary"]["total_nodes"] == 0
 
 
 def test_work_package_durability_uses_best_symbol_snapshot(

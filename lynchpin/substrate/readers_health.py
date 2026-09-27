@@ -78,6 +78,75 @@ def load_source_status_map(
     ).fetchall()
 
 
+def load_evidence_source_confidence_rows(
+    conn: "duckdb.DuckDBPyConnection",
+    *,
+    refresh_id: str,
+    evidence_to_status_source: dict[str, str],
+    graph_internal_sources: frozenset[str],
+) -> list[tuple[Any, ...]]:
+    """Return status-declared sources joined to graph-node statistics.
+
+    Rows are (source, node_count, project_count, date_span_days,
+    has_caveats, status, reason). A status source is retained even when it
+    emitted no graph nodes; node-only sources remain visible as unknown.
+    """
+    node_rows = load_evidence_node_by_source(conn, refresh_id=refresh_id)
+    nodes: dict[str, tuple[int, int, int, bool]] = {}
+    for source, node_count, project_count, date_span_days, has_caveats in node_rows:
+        if source in graph_internal_sources:
+            continue
+        canonical = evidence_to_status_source.get(source, source)
+        previous = nodes.get(canonical, (0, 0, 0, False))
+        nodes[canonical] = (
+            previous[0] + node_count,
+            max(previous[1], project_count),
+            max(previous[2], date_span_days),
+            previous[3] or bool(has_caveats),
+        )
+
+    status_groups: dict[str, list[tuple[str, str | None, int | None]]] = {}
+    for source, status, reason, row_count in conn.execute(
+        "SELECT source, status, reason, row_count FROM substrate_source_status "
+        "WHERE refresh_id = ? ORDER BY source, kind",
+        [refresh_id],
+    ).fetchall():
+        if source in graph_internal_sources:
+            continue
+        canonical = evidence_to_status_source.get(source, source)
+        status_groups.setdefault(canonical, []).append((status, reason, row_count))
+
+    priorities = {"error": 4, "unavailable": 3, "unknown": 2, "ok": 1, "empty": 0}
+    rows = []
+    for source in sorted(nodes.keys() | status_groups.keys()):
+        node_count, project_count, date_span_days, has_caveats = nodes.get(
+            source, (0, 0, 0, False)
+        )
+        observations = status_groups.get(source, [])
+        if observations:
+            status, reason, _row_count = max(
+                observations,
+                key=lambda item: priorities.get(item[0], priorities["unknown"]),
+            )
+            if status not in priorities:
+                status = "unknown"
+            # Only status evidence that reports zero source rows proves an
+            # empty source. A source can have rows without graph nodes.
+            if (
+                status == "ok"
+                and node_count == 0
+                and all(item[2] is not None for item in observations)
+                and sum(item[2] or 0 for item in observations) == 0
+            ):
+                status = "empty"
+        else:
+            status, reason = "unknown", None
+        rows.append(
+            (source, node_count, project_count, date_span_days, has_caveats, status, reason)
+        )
+    return rows
+
+
 # ── kind_audit ────────────────────────────────────────────────────────────────
 
 

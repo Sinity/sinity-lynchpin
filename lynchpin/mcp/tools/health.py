@@ -121,9 +121,9 @@ def substrate_confidence_matrix(
     """Per-dimension confidence scores for the substrate (Arc M.17).
 
     Aggregates across evidence_node metadata, substrate_source_status,
-    and evidence_graph_build caveats to produce a per-source confidence
-    score based on row count, observed date coverage, cross-source agreement,
-    and caveat count.
+    and evidence_graph_build caveats to produce source coverage by declared
+    status population. The percentage is the share of sources whose status is
+    ``ok`` or ``empty``; zero-node sources remain in the denominator.
 
     Parameters:
         refresh_id: snapshot to assess; default = latest promote.
@@ -134,17 +134,19 @@ def substrate_confidence_matrix(
             "dimensions": [
                 {"source": str, "node_count": int, "project_count": int,
                  "date_span_days": int, "has_caveats": bool,
-                 "status": "ok|empty|unavailable|error"},
+                 "status": "ok|empty|unavailable|error|unknown", "reason": str | None},
             ],
+            "coverage_status": "complete|degraded",
+            "coverage_basis": str,
             "summary": {"total_nodes": int, "source_count": int,
-                        "healthy_source_count": int, "confidence_pct": float},
+                        "healthy_source_count": int, "observed_source_count": int,
+                        "unavailable_source_count": int, "error_source_count": int,
+                        "unknown_source_count": int, "empty_source_count": int,
+                        "confidence_pct": float},
         }
     """
     from lynchpin.substrate.connection import connect, substrate_path
-    from lynchpin.substrate.readers_health import (
-        load_evidence_node_by_source,
-        load_source_status_map,
-    )
+    from lynchpin.substrate.readers_health import load_evidence_source_confidence_rows
 
     if refresh_id is None:
         ensure_substrate_materialized_for_read(caller="substrate_confidence_matrix")
@@ -154,18 +156,6 @@ def substrate_confidence_matrix(
             refresh_id = best_materialized_refresh_id(conn, "evidence_node", caller="substrate_confidence_matrix")
             if refresh_id is None:
                 return {"error": "no promote runs"}
-
-        dimensions = []
-        for row in load_evidence_node_by_source(conn, refresh_id=refresh_id):
-            dimensions.append(
-                {
-                    "source": row[0],
-                    "node_count": row[1],
-                    "project_count": row[2],
-                    "date_span_days": row[3],
-                    "has_caveats": bool(row[4]),
-                }
-            )
 
         # Attach status from substrate_source_status. The evidence_node.source
         # vocabulary uses graph-layer labels (terminal, web, git) while
@@ -189,34 +179,56 @@ def substrate_confidence_matrix(
             "temporal",
         })
 
-        status_map = {}
-        for srow in load_source_status_map(conn, refresh_id=refresh_id):
-            status_map[srow[0]] = srow[1]
-
-        for dim in dimensions:
-            source = dim["source"]
-            lookup = _evidence_to_status_source.get(source, source)
-            if lookup in status_map:
-                dim["status"] = status_map[lookup]
-            elif source in _evidence_graph_internal:
-                dim["status"] = "graph_internal"
-            else:
-                dim["status"] = "unknown"
+        dimensions = [
+            {
+                "source": row[0],
+                "node_count": row[1],
+                "project_count": row[2],
+                "date_span_days": row[3],
+                "has_caveats": bool(row[4]),
+                "status": row[5],
+                "reason": row[6],
+            }
+            for row in load_evidence_source_confidence_rows(
+                conn,
+                refresh_id=refresh_id,
+                evidence_to_status_source=_evidence_to_status_source,
+                graph_internal_sources=_evidence_graph_internal,
+            )
+        ]
 
         total_nodes = sum(d["node_count"] for d in dimensions)
-        # graph_internal sources don't have a "could fail" state — they're
-        # emitter-controlled and always populate when the build runs. Count
-        # them as healthy so the confidence_pct isn't artificially deflated.
-        healthy = sum(1 for d in dimensions if d["status"] in {"ok", "graph_internal"})
-        confidence = (healthy / max(len(dimensions), 1)) * 100
+        # The denominator is every non-internal source declared by this
+        # refresh's status rows or observed in the graph. Coverage counts
+        # successful observations and sources explicitly known empty.
+        source_count = len(dimensions)
+        observed = sum(1 for d in dimensions if d["node_count"] > 0)
+        unavailable = sum(1 for d in dimensions if d["status"] == "unavailable")
+        errors = sum(1 for d in dimensions if d["status"] == "error")
+        unknown = sum(1 for d in dimensions if d["status"] == "unknown")
+        empty = sum(1 for d in dimensions if d["status"] == "empty")
+        healthy = sum(1 for d in dimensions if d["status"] in {"ok", "empty"})
+        confidence = (healthy / source_count * 100) if source_count else 0.0
+        coverage_status = "degraded" if unavailable or errors or unknown else "complete"
 
     return {
         "refresh_id": refresh_id,
+        "coverage_status": coverage_status,
+        "coverage_basis": (
+            "healthy_source_count / source_count; healthy means status ok or "
+            "empty, and source_count includes refresh status rows plus graph-only "
+            "sources while excluding graph-internal nodes"
+        ),
         "dimensions": dimensions,
         "summary": {
             "total_nodes": total_nodes,
-            "source_count": len(dimensions),
+            "source_count": source_count,
             "healthy_source_count": healthy,
+            "observed_source_count": observed,
+            "unavailable_source_count": unavailable,
+            "error_source_count": errors,
+            "unknown_source_count": unknown,
+            "empty_source_count": empty,
             "confidence_pct": round(confidence, 1),
         },
     }
