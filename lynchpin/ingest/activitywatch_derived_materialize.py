@@ -353,6 +353,7 @@ def _focus_span_row(span: Any) -> dict[str, object]:
         "duration_s": round(float(span.duration_s), 3),
         "keypress_count": int(getattr(span, "keypress_count", 0)),
         "keylog_state": getattr(span, "keylog_state", "not_requested"),
+        "positive_observations": getattr(span, "positive_observations", None),
     }
 
 

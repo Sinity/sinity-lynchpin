@@ -23,6 +23,11 @@ class AWEvent:
 
 @dataclass(frozen=True)
 class FocusSpan:
+    """Classified span; positive observations on AFK spans do not assert activity.
+
+    ``None`` means the row was not assessed, including older persisted rows.
+    An empty tuple records no positive observation found, not complete coverage.
+    """
     start: datetime
     end: datetime
     kind: str  # "focused" | "afk" | "active_unknown"
@@ -32,6 +37,7 @@ class FocusSpan:
     project: str | None
     keypress_count: int = 0
     keylog_state: str = "not_requested"
+    positive_observations: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.end < self.start:
@@ -67,6 +73,7 @@ class ProjectFocusDay:
 
 @dataclass(frozen=True)
 class FocusTimelineSpan:
+    """Prompt-facing span with the same observed AFK contradictions as FocusSpan."""
     start: datetime
     end: datetime
     kind: str  # "focused" | "afk" | "active_unknown" | "coverage_gap"
@@ -77,6 +84,7 @@ class FocusTimelineSpan:
     source: str
     keypress_count: int = 0
     keylog_state: str = "not_requested"
+    positive_observations: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.end < self.start:

@@ -7,6 +7,7 @@ flipped to AFK.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -160,6 +161,47 @@ def test_sleep_overlap_beats_phantom_keystrokes() -> None:
     sleep_flips = [e for e in out if e.repair_source == "sleep-overlap"]
     assert sleep_flips
     assert (sleep_flips[0].end - sleep_flips[0].start).total_seconds() == 4 * 3600
+
+
+def test_focus_product_keeps_positive_observations_during_selected_afk(monkeypatch) -> None:
+    import lynchpin.sources.activitywatch as activitywatch
+    import lynchpin.sources.activitywatch_repair as repair
+    from lynchpin.ingest.activitywatch_derived_materialize import _focus_span_row
+    from lynchpin.sources.activitywatch_derived import _focus_span
+
+    event = _aw("not-afk", 0, 3 * 3600)
+    sleep = (BASE + timedelta(minutes=30), BASE + timedelta(minutes=90))
+    later_sleep = (BASE + timedelta(minutes=120), BASE + timedelta(minutes=150))
+    keypress = BASE + timedelta(minutes=50)
+    command = BASE + timedelta(minutes=60)
+    monkeypatch.setattr(activitywatch, "afk_events", lambda **_kwargs: iter((event,)))
+    monkeypatch.setattr(activitywatch, "window_events", lambda **_kwargs: iter(()))
+    monkeypatch.setattr(activitywatch, "_activitywatch_cache_revision", lambda: ())
+    monkeypatch.setattr(activitywatch, "_keypress_timestamps", lambda *_args: ((keypress,), "covered"))
+    monkeypatch.setattr(repair, "keylog_coverage", lambda: KeylogCoverage(days=frozenset()))
+    monkeypatch.setattr(repair, "_sleep_intervals", lambda: (sleep, later_sleep))
+    monkeypatch.setattr(repair, "_atuin_timestamps", lambda: (command,))
+    monkeypatch.setattr(repair, "window_events", lambda **_kwargs: iter(()))
+    activitywatch._repaired_afk_events_cached.cache_clear()
+    activitywatch._focus_spans_cached.cache_clear()
+
+    spans = activitywatch.focus_spans(
+        start=event.start, end=event.end, enrich_polylogue=False, ensure=False
+    )
+    afk_spans = [span for span in spans if span.kind == "afk"]
+    assert len(afk_spans) == 2
+    afk = afk_spans[0]
+    assert (afk.start, afk.end) == sleep
+    assert afk.keypress_count == 1
+    assert afk.positive_observations == ("keylog", "atuin")
+    assert (afk_spans[1].start, afk_spans[1].end) == later_sleep
+    assert afk_spans[1].positive_observations == ()
+    assert all(span.positive_observations == () for span in spans if span.kind != "afk")
+
+    persisted = json.loads(json.dumps(_focus_span_row(afk)))
+    assert _focus_span(persisted).positive_observations == ("keylog", "atuin")
+    persisted.pop("positive_observations")
+    assert _focus_span(persisted).positive_observations is None
 
 
 # ── Keylog-silent + atuin rescue ────────────────────────────────────

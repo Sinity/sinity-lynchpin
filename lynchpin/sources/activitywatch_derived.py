@@ -383,6 +383,7 @@ def _datetime(value: object) -> datetime:
 def _focus_span(row: dict[str, object]) -> FocusSpan:
     start = _datetime(row["start"])
     end = _datetime(row["end"])
+    positive_observations = row.get("positive_observations")
     if end < start:
         duration = _float(row.get("duration_s"), default=-1.0)
         if duration < 0:
@@ -410,6 +411,11 @@ def _focus_span(row: dict[str, object]) -> FocusSpan:
         project=_str_or_none(row.get("project")),
         keypress_count=_int(row.get("keypress_count")),
         keylog_state=str(row.get("keylog_state") or "not_requested"),
+        positive_observations=(
+            tuple(str(value) for value in positive_observations)
+            if isinstance(positive_observations, list)
+            else None
+        ),
     )
 
 

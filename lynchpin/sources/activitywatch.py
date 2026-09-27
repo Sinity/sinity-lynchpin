@@ -509,6 +509,7 @@ def focus_timeline(
             mode=span.mode,
             project=span.project,
             source="aw_trimmed",
+            positive_observations=span.positive_observations,
         )
         for span in focus_spans(start=start_local, end=end_local, min_duration_s=0.0)
     ]
@@ -786,10 +787,27 @@ def _attach_keypress_counts(
         if press_times
         else [0] * len(spans)
     )
-    return [
-        replace(span, keypress_count=count, keylog_state=keylog_state)
-        for span, count in zip(spans, counts)
-    ]
+    from .activitywatch_repair import _atuin_in_window
+
+    result: list[_FocusCountSpan] = []
+    for span, count in zip(spans, counts):
+        observations: tuple[str, ...] = ()
+        if span.kind == "afk":
+            positive = []
+            if count > 0:
+                positive.append("keylog")
+            if _atuin_in_window(span.start, span.end):
+                positive.append("atuin")
+            observations = tuple(positive)
+        result.append(
+            replace(
+                span,
+                keypress_count=count,
+                keylog_state=keylog_state,
+                positive_observations=observations,
+            )
+        )
+    return result
 
 
 def _linearize_windows(spans: Sequence[_WindowSpan]) -> list[_WindowSpan]:
