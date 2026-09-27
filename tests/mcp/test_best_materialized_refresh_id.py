@@ -99,6 +99,115 @@ def test_best_materialized_refresh_id_prefers_ok_source_status(monkeypatch, tmp_
     assert result == older_id
 
 
+def test_best_materialized_refresh_id_respects_declared_window_and_project_scope(
+    tmp_path,
+) -> None:
+    """A larger old snapshot cannot satisfy a scoped typed read."""
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE commit_fact (sha VARCHAR, project VARCHAR, authored_at TIMESTAMPTZ, refresh_id VARCHAR)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR, source VARCHAR, status VARCHAR,
+            window_start DATE, window_end DATE, recorded_at TIMESTAMPTZ
+        )
+        """
+    )
+    # The largest snapshot is outside the requested month. The second-largest
+    # covers the month but not the requested project.
+    for index in range(8):
+        conn.execute(
+            "INSERT INTO commit_fact VALUES (?, ?, ?, ?)",
+            [
+                f"old-{index}",
+                "other",
+                datetime(2025, 12, 20 + index, tzinfo=timezone.utc),
+                "outside-window",
+            ],
+        )
+    for index in range(5):
+        conn.execute(
+            "INSERT INTO commit_fact VALUES (?, ?, ?, ?)",
+            [
+                f"wrong-project-{index}",
+                "other",
+                datetime(2026, 1, 12 + index, tzinfo=timezone.utc),
+                "wrong-project",
+            ],
+        )
+    conn.execute(
+        "INSERT INTO commit_fact VALUES (?, ?, ?, ?)",
+        ["target-1", "target", datetime(2026, 1, 15, tzinfo=timezone.utc), "target-window"],
+    )
+    conn.execute(
+        """
+        INSERT INTO substrate_source_status VALUES
+        ('outside-window', 'commits', 'ok', DATE '2025-01-01', DATE '2025-12-31', TIMESTAMPTZ '2026-02-01 10:00:00+00'),
+        ('wrong-project', 'commits', 'ok', DATE '2026-01-01', DATE '2026-01-31', TIMESTAMPTZ '2026-02-02 10:00:00+00'),
+        ('target-window', 'commits', 'ok', DATE '2026-01-01', DATE '2026-01-31', TIMESTAMPTZ '2026-01-31 10:00:00+00')
+        """
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        selected = best_materialized_refresh_id(
+            test_conn,
+            "commit_fact",
+            caller="test.scoped_snapshot",
+            start=date(2026, 1, 1),
+            end=date(2026, 1, 31),
+            projects=("target",),
+        )
+    finally:
+        test_conn.close()
+
+    assert selected == "target-window"
+
+
+def test_best_materialized_refresh_id_accepts_declared_empty_window(tmp_path) -> None:
+    import duckdb
+
+    db_path = tmp_path / "substrate.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE commit_fact (sha VARCHAR, refresh_id VARCHAR)")
+    conn.execute(
+        """
+        CREATE TABLE substrate_source_status (
+            refresh_id VARCHAR, source VARCHAR, status VARCHAR,
+            window_start DATE, window_end DATE, recorded_at TIMESTAMPTZ
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO substrate_source_status VALUES
+        ('empty-window', 'commits', 'empty', DATE '2026-02-01', DATE '2026-02-28',
+         TIMESTAMPTZ '2026-02-28 10:00:00+00')
+        """
+    )
+    conn.close()
+
+    test_conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        selected = best_materialized_refresh_id(
+            test_conn,
+            "commit_fact",
+            caller="test.empty_window",
+            start=date(2026, 2, 1),
+            end=date(2026, 2, 28),
+        )
+    finally:
+        test_conn.close()
+
+    assert selected == "empty-window"
+
+
 def test_latest_materialized_refresh_id_prefers_successful_promotion_run(tmp_path) -> None:
     import duckdb
 

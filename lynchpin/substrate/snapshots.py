@@ -24,6 +24,10 @@ def _table_row_count(conn: Any, table: str) -> int:
     return int(row[0]) if row else 0
 
 
+def _table_columns(conn: Any, table: str) -> set[str]:
+    return {str(row[0]) for row in conn.execute(f"DESCRIBE {table}").fetchall()}
+
+
 def latest_materialized_snapshot(
     conn: Any,
     *,
@@ -230,28 +234,101 @@ def best_materialized_refresh_id(
             [source_name],
         ).fetchone()
         source_status_known = bool(status_row and status_row[0])
+        status_columns = _table_columns(conn, "substrate_source_status")
+        table_columns = _table_columns(conn, table)
+        status_fields = ["refresh_id", "status", "recorded_at"]
+        has_declared_window = {
+            "window_start",
+            "window_end",
+        }.issubset(status_columns)
+        legacy_graph_window = (
+            source_name == "evidence_graph"
+            and not has_declared_window
+            and "date" in table_columns
+        )
+        if has_declared_window:
+            status_fields.extend(("window_start", "window_end"))
         candidates = conn.execute(
-            "SELECT refresh_id, recorded_at FROM substrate_source_status "
-            "WHERE source = ? AND status = 'ok' "
+            f"SELECT {', '.join(status_fields)} FROM substrate_source_status "
+            "WHERE source = ? AND status IN ('ok', 'empty') "
             "ORDER BY recorded_at DESC",
             [source_name],
         ).fetchall()
         if candidates:
-            ids = [row[0] for row in candidates]
-            recorded_at_by_id = {row[0]: row[1] for row in candidates}
-            placeholders = ",".join("?" * len(ids))
-            ranked = conn.execute(
-                f"SELECT refresh_id, COUNT(*) AS rc FROM {table} "
-                f"WHERE refresh_id IN ({placeholders}) "
-                "GROUP BY refresh_id",
-                ids,
-            ).fetchall()
-            if ranked:
-                ranked.sort(
-                    key=lambda row: (row[1], recorded_at_by_id.get(row[0])),
-                    reverse=True,
-                )
-                return str(ranked[0][0])
+            # The newest status row is authoritative when one source emitted
+            # more than one component status for the same refresh.
+            status_by_id: dict[str, tuple[Any, ...]] = {}
+            for candidate in candidates:
+                status_by_id.setdefault(str(candidate[0]), candidate[1:])
+
+            scoped = start is not None or end is not None or bool(projects)
+            eligible: list[tuple[str, str, Any]] = []
+            for refresh_id, values in status_by_id.items():
+                status, recorded_at, *window = values
+                if scoped and (start is not None or end is not None):
+                    if has_declared_window:
+                        window_start, window_end = window
+                        if start is not None and (window_start is None or window_start > start):
+                            continue
+                        if end is not None and (window_end is None or window_end < end):
+                            continue
+                    elif legacy_graph_window:
+                        span = conn.execute(
+                            f"SELECT MIN(date), MAX(date) FROM {table} WHERE refresh_id = ?",
+                            [refresh_id],
+                        ).fetchone()
+                        if not span or span[0] is None or span[1] is None:
+                            continue
+                        if start is not None and span[0] > start:
+                            continue
+                        if end is not None and span[1] < end:
+                            continue
+                    else:
+                        continue
+                eligible.append((refresh_id, str(status), recorded_at))
+
+            if projects:
+                if "project" not in table_columns:
+                    eligible = []
+                else:
+                    matching = conn.execute(
+                        f"SELECT refresh_id, COUNT(DISTINCT project) "
+                        f"FROM {table} WHERE refresh_id IN "
+                        f"({','.join('?' * len(eligible))}) AND project IN "
+                        f"({','.join('?' * len(projects))}) GROUP BY refresh_id",
+                        [item[0] for item in eligible] + list(projects),
+                    ).fetchall() if eligible else []
+                    project_counts = {str(row[0]): int(row[1]) for row in matching}
+                    required_projects = len(set(projects))
+                    eligible = [
+                        item for item in eligible
+                        if project_counts.get(item[0], 0) == required_projects
+                    ]
+
+            if eligible:
+                ids = [item[0] for item in eligible]
+                placeholders = ",".join("?" * len(ids))
+                row_counts = conn.execute(
+                    f"SELECT refresh_id, COUNT(*) AS rc FROM {table} "
+                    f"WHERE refresh_id IN ({placeholders}) GROUP BY refresh_id",
+                    ids,
+                ).fetchall()
+                counts = {str(row[0]): int(row[1]) for row in row_counts}
+                # An explicit empty status is a valid publication even though
+                # no physical fact rows exist for its refresh.
+                eligible = [
+                    item for item in eligible
+                    if counts.get(item[0], 0) > 0 or item[1] == "empty"
+                ]
+                if eligible:
+                    if scoped:
+                        selected = max(eligible, key=lambda item: item[2])
+                    else:
+                        selected = max(
+                            eligible,
+                            key=lambda item: (counts.get(item[0], 0), item[2]),
+                        )
+                    return selected[0]
     except Exception:
         pass
     if source_status_known:
@@ -259,6 +336,9 @@ def best_materialized_refresh_id(
             f"best_materialized_refresh_id({table!r}): source_status rows exist for "
             f"{source_name!r}, but none point to promoted rows in {table!r}"
         )
+        return None
+
+    if start is not None or end is not None or projects:
         return None
 
     row = conn.execute(
