@@ -20,7 +20,7 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from .chisel_cache import copy_file
+from .chisel_cache import atomic_write_text, copy_file
 
 from .chisel_inventory import CapturedInventory
 
@@ -1124,11 +1124,11 @@ def _write_cache(cache: Path | None, key: str, value: Mapping[str, Any]) -> None
         return
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / f"{key}.json"
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(value, sort_keys=True, ensure_ascii=False), encoding="utf-8"
+    atomic_write_text(
+        target,
+        json.dumps(value, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
     )
-    temporary.replace(target)
 
 
 def _write_metrics_csv(path: Path, rows: list[dict[str, Any]]) -> None:

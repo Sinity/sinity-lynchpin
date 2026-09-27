@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 
+from lynchpin.sources import chisel_cache
 from lynchpin.sources.chisel_history import _coherence_reasons, build_history
 
 
@@ -118,6 +120,39 @@ def test_history_cache_reuses_commit_rows_without_patch_copies(tmp_path: Path) -
     assert third["immutable_commit_cache_rows_reused"] == 1
     commit_rows = [json.loads(line) for line in (tmp_path / "three" / "history" / "commits.jsonl").read_text().splitlines()]
     assert "lynchpin-c00" in next(row for row in commit_rows if row["sha"] == next_head)["references"]
+
+
+def test_concurrent_cache_publication_uses_independent_atomic_temporaries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = tmp_path / "cache.json"
+    barrier = threading.Barrier(2)
+    replace = chisel_cache.os.replace
+
+    def synchronized_replace(source: Path, destination: Path) -> None:
+        if Path(destination) == target:
+            barrier.wait(timeout=5)
+        replace(source, destination)
+
+    monkeypatch.setattr(chisel_cache.os, "replace", synchronized_replace)
+    errors: list[BaseException] = []
+
+    def publish(payload: str) -> None:
+        try:
+            chisel_cache.atomic_write_text(target, payload)
+        except BaseException as exc:
+            errors.append(exc)
+
+    writers = [threading.Thread(target=publish, args=(payload,)) for payload in ("first\n", "second\n")]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=10)
+
+    assert not any(writer.is_alive() for writer in writers)
+    assert errors == []
+    assert target.read_text(encoding="utf-8") in {"first\n", "second\n"}
+    assert list(tmp_path.glob(".cache.json.*.tmp")) == []
 
 
 def test_history_coherence_error_describes_safe_state_differences() -> None:

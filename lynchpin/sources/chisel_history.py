@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from .chisel_cache import copy_file
+from .chisel_cache import atomic_write_text, copy_file
 
 from lynchpin.core.primitives import logical_date
 from lynchpin.sources.chisel_inventory import POLICY_VERSION, classify_role
@@ -335,9 +335,10 @@ def _commit_records(
             new_records[row["sha"]] = (row, rows)
     merged = {**cached_by_sha, **new_records}
     if immutable_cache is not None:
-        temporary = immutable_cache / "records.tmp"
-        temporary.write_text(json.dumps(merged, separators=(",", ":")) + "\n")
-        temporary.replace(immutable_cache / "records.json")
+        atomic_write_text(
+            immutable_cache / "records.json",
+            json.dumps(merged, separators=(",", ":")) + "\n",
+        )
     return [merged[sha] for sha in shas if sha in merged], len(cached_by_sha)
 
 
